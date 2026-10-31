@@ -323,6 +323,9 @@ fn case_of(line: string) -> CaseCall? {
 /// Where a program's instantiation homes are remembered, by its entry.
 fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", entry]) }
 
+/// Where a store says an entry was derived once already: what follows that derivation is warm.
+fn derived_key(entry: string) -> string { node_key(Stored.Unit, ["derived", entry]) }
+
 /// Where the reads the last standing attempt needed are remembered, by its entry and the
 /// files its edit moved: a guess that only pre-admits, each path with the words of the
 /// reason it was read for. The same edit needs the same reads. Under no edit the row is
@@ -677,6 +680,7 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
+        self.keys.warm.set(store.has(Stored.Unit, derived_key(self.known_as(at))))
         self.hold.serving.set(match at.want { .Diagnostics -> !db_judging(), .Binary -> false })
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
@@ -877,6 +881,7 @@ impl Workspace {
     fn kept(at: Attempt, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, Turn> {
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
+        let _ = store.keep_once(Stored.Unit, derived_key(self.known_as(at)), "")
         self.keep_uses(store)
         let defects = self.defects.get()
         if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
