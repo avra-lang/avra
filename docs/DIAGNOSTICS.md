@@ -5139,6 +5139,28 @@ error[type.narrow]: a type pattern narrows a `dyn` — this is `int`
 help: only a `dyn` hides which type it holds; match this value by its own shape
 ```
 
+## type.fraction_pattern
+
+a number pattern matches an `int`
+
+```avra
+let x = 2
+match x {
+    1.5 -> 1
+    _ -> 0
+}
+```
+
+```
+error[type.fraction_pattern]: `1.5` is no integer — a number pattern matches an `int`
+  ╭─[witness.av:3:5]
+3 │     1.5 -> 1
+  ·     ┬
+  ·     ╰── a fraction
+──╯
+help: compare a `float` with `==` in a guard — `x if x == 1.5 -> …`
+```
+
 ## type.enum_decl
 
 an enum declares at least one variant, each named once

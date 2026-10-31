@@ -27,6 +27,7 @@ use core.{
     UseItem,
     FieldPat,
     Given,
+    FnSeat,
     Mark,
     Variant,
     CompClause,
@@ -104,6 +105,12 @@ impl Slots for Builder {
         .Ok(use_items_at(self.args, self.slot_of(label)?))
     }
 
+    /// The `FnSeat` records the payload `label` carries.
+    fn fn_seats_of(label: string) -> Result<List<FnSeat>, string> {
+        let items = list_at(self.args, self.slot_of(label)?)
+        .Ok(flatten([some_list(fn_seat_at(items, j)) for j in 0..items.length]))
+    }
+
     /// The `given` groups the payload `label` carries.
     fn givens_of(label: string) -> Result<List<Given>, string> {
         let items = list_at(self.args, self.slot_of(label)?)
@@ -141,6 +148,36 @@ impl Slots for Builder {
 
     /// An error node, placeless, for a payload the rule left unwritten.
     fn hollow() -> ExprId { self.store.alloc_expr(Expr.Error) }
+
+    /// The arena this build allocates into.
+    fn arena() -> SyntaxArena { self.store }
+
+    /// A new statement at this build's place, every facet field the rule's
+    /// payload carries written into the store table its mark names. A
+    /// table no row names is a defect at the mark, never a silent drop.
+    fn made_stmt(s: Stmt) -> Result<StmtId, string> {
+        let id = self.store.alloc_stmt(s, self.node_span())
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.present_of(f.name)? { continue }
+            let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(id)
+    }
+
+    /// A new expression at this build's place, its facet fields written
+    /// like a statement's.
+    fn made_expr(e: Expr) -> Result<ExprId, string> {
+        let id = self.store.alloc_expr(e, self.node_span())
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.present_of(f.name)? { continue }
+            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(id)
+    }
 
     /// The catch arms the payload `label` carries.
     fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
@@ -366,35 +403,14 @@ impl Builder {
     /// branch's. A `@facet` field the rule's payload carries is written to
     /// its side table here, keyed by the node just allocated.
     fn make_stmt(s: Stmt) -> Result<LangNode, string> {
-        let id = self.store.alloc_stmt(s, self.node_span())
-        self.faceted_stmt(id)
-    }
-
-    /// The node `id` names, once every facet field the rule's payload
-    /// carries is written into the store table its mark names. A table
-    /// no row names is a defect at the mark, never a silent drop.
-    fn faceted_stmt(id: StmtId) -> Result<LangNode, string> {
-        for f in self.payloads {
-            let side? = facet_table(f) else { continue }
-            if !self.present_of(f.name)? { continue }
-            let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
-            (row.mark)(self.store, id)
-        }
-        .Ok(LangNode.NStmt(id))
+        .Ok(LangNode.NStmt(self.made_stmt(s)?))
     }
 
     /// A new expression node, at the span its anchor names or the matched
     /// branch's, its facet fields written to their side tables like a
     /// statement's.
     fn make_expr(e: Expr) -> Result<LangNode, string> {
-        let id = self.store.alloc_expr(e, self.node_span())
-        for f in self.payloads {
-            let side? = facet_table(f) else { continue }
-            if !self.present_of(f.name)? { continue }
-            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
-            (row.mark)(self.store, id)
-        }
-        self.meant(id)
+        self.meant(self.made_expr(e)?)
     }
 
     /// `id` as this build's node, with what it means minted beside it when
@@ -474,19 +490,9 @@ impl Builder {
         .Ok(LangNode.NStmt(id))
     }
 
-    /// A head WIDENED by its trailing blocks — each marked as one,
-    /// the call given them as its last arguments through the call
-    /// protocol. A head that is no call refuses in the block's words.
+    /// A head widened by its trailing blocks, at this build's place.
     fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
-        if blocks.is_empty() { return .Ok(h) }
-        for k in blocks { self.store.mark_trailing(k) }
-        let widened: Expr? = self.store.called_with(h, blocks)
-        if widened == null {
-            return .Err(
-                "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read",
-            )
-        }
-        .Ok(self.expr_node(widened!))
+        self.store.trailed(h, blocks, self.node_span())
     }
 
     /// THE BLOCK LAW: statements as a scope answering with its tail.
@@ -508,12 +514,7 @@ impl Builder {
     }
 
     /// The span from the first statement's start to the last one's end.
-    fn extent_of(stmts: List<StmtId>) -> Span? {
-        let first? = stmts.first() else { return null }
-        let a? = self.store.stmt_span(first) else { return null }
-        let b? = self.store.stmt_span(stmts.last()!) else { return a }
-        a.cover(b)
-    }
+    fn extent_of(stmts: List<StmtId>) -> Span? { self.store.stmts_extent(stmts) }
 
     /// Where this build's branch ENDED — the bound a positional
     /// reconstruction measures against. Absent for a synthesized
@@ -617,6 +618,10 @@ fn variant_of(args: List<Captured<Token, LangNode>>, i: int) -> Variant? {
 export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<UseItem> {
     let items = list_at(args, i)
     flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
+}
+
+fn fn_seat_at(args: List<Captured<Token, LangNode>>, i: int) -> FnSeat? {
+    match args[i] { .Node(.NFnSeat(r)) -> r, _ -> null }
 }
 
 fn given_at(args: List<Captured<Token, LangNode>>, i: int) -> Given? {

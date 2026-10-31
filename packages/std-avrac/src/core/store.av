@@ -950,6 +950,24 @@ impl SyntaxArena {
     /// Null for every shape that is not a call.
     fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? { self.expr(e).called_with(blocks) }
 
+    /// A head WIDENED by its trailing blocks — each marked as one, the
+    /// call given them as its last arguments through the call protocol,
+    /// at `span`. A head that is no call refuses in the block's words.
+    fn trailed(h: ExprId, blocks: List<ExprId>, span: Span?) -> Result<ExprId, string> {
+        if blocks.is_empty() { return .Ok(h) }
+        for k in blocks { self.mark_trailing(k) }
+        let widened? = self.called_with(h, blocks) else { return .Err(not_a_call_trailed()) }
+        .Ok(self.alloc_expr(widened, span))
+    }
+
+    /// The span from the first statement's start to the last one's end.
+    fn stmts_extent(stmts: List<StmtId>) -> Span? {
+        let first? = stmts.first() else { return null }
+        let a? = self.stmt_span(first) else { return null }
+        let b? = self.stmt_span(stmts.last()!) else { return a }
+        a.cover(b)
+    }
+
     /// THE PIPE PROTOCOL: `value |> stage` IS the stage's call with
     /// `value` as its FIRST argument — the call protocol's other end.
     /// A name or a field read with no parentheses is a call with
@@ -1994,4 +2012,8 @@ fn filler(labels: List<string>, seat: string, j: int) -> int {
     if named >= 0 { return named }
     if j < labels.length && labels[j] == "" { return j }
     0 - 1
+}
+
+fn not_a_call_trailed() -> string {
+    "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read"
 }

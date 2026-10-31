@@ -195,6 +195,16 @@ fn node_build<T>(owner: string, variant: string, written: List<BuildArg>) -> Res
     ok<T>(GrammarNode.NBuild(Build.Node(owner, variant, [fixed_arg(a)? for a in written], null)))
 }
 
+/// A branch whose node a named fn COMPUTES from its labels: it names
+/// the node and the fn, and states nothing.
+fn computed_build<T>(owner: string, variant: string, by: string, written: List<BuildArg>) -> Result<
+    Captured<T, GrammarNode>,
+    string,
+> {
+    if !written.is_empty() { return .Err("a computed build states no payloads — its fn reads the labels") }
+    ok<T>(GrammarNode.NBuild(Build.Computed(owner, variant, by, null)))
+}
+
 fn fixed_arg(a: BuildArg) -> Result<Fixed, string> {
     let term? = a.term else { return .Err(capture_is_not_an_argument(a.name)) }
     match term {
@@ -233,6 +243,7 @@ fn term_of_build<T>(v: Captured<T, GrammarNode>) -> Result<Captured<T, GrammarNo
         .Var(name) -> ok<T>(GrammarNode.NTerm(Term.Text(name))),
         .Node(_, _, _, _) -> ok<T>(GrammarNode.NTerm(Term.Node(b))),
         .Call(name, _) -> .Err(term_calls_a_builder(name)),
+        .Computed(_, _, by, _) -> .Err(term_calls_a_builder(by)),
     }
 }
 
@@ -447,6 +458,15 @@ export fn grammar_build<T>(
             let name_text = tok_text(lex, args[0], "a builder name")?
             let variant: T? = tok_of(args[1])
             let written = call_args(args[3])?
+            let by: T? = tok_of(args[4])
+            if by != null {
+                if variant == null {
+                    return .Err(
+                        "`by` names the fn that computes a node — `-> Owner.Variant by fn`",
+                    )
+                }
+                return computed_build(name_text, lex.text(variant!), lex.text(by!), written)
+            }
             if variant != null { return node_build(name_text, lex.text(variant!), written) }
             match args[2] {
                 .Absent -> ok<T>(GrammarNode.NBuild(Build.Var(name_text))),
