@@ -3,11 +3,12 @@
 // in every order — the pass settled or not — and needs no edge. Outside one, asking records
 // the pass and the answer is what was declared or found. `bump` writes through `self`
 // without saying `mut`, so only the pass knows.
-use core.{DeclId}
-use compiler.{Workspace}
+use core.{DeclId, FileId}
+use compiler.{Workspace, resolved_in_key}
 use @std.relation.engine.{Key}
 
-fn resolve_ordinal() -> int { family_ordinal("Resolved") }
+/// A resolve in flight, at a file no workspace here has.
+fn resolving_key(ws: Workspace) -> Key { Key { family: resolved_in_key(ws, FileId { index: 0 }).family, arg: 9999 } }
 
 /// A `bump` that writes through `self` without saying `mut`.
 fn writer_body() -> string {
@@ -36,7 +37,7 @@ fn settled_over_writer() -> Workspace {
 /// What `writes_receiver` answers for `d` with a resolve open, which is where the pass
 /// cannot be asked.
 fn writes_inside_resolve(ws: Workspace, d: DeclId) -> bool {
-    let k = Key { family: resolve_ordinal(), arg: 9999 }
+    let k = resolving_key(ws)
     ws.db.begin(k)
     let answer = ws.decls.writes_receiver(d)
     ws.db.settle(k, 1)
@@ -45,7 +46,7 @@ fn writes_inside_resolve(ws: Workspace, d: DeclId) -> bool {
 
 /// What `written_found` answers for `d` with a resolve open.
 fn found_inside_resolve(ws: Workspace, d: DeclId) -> bool? {
-    let k = Key { family: resolve_ordinal(), arg: 9999 }
+    let k = resolving_key(ws)
     ws.db.begin(k)
     let answer = ws.decls.written_found(d)
     ws.db.settle(k, 1)

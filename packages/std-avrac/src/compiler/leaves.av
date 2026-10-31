@@ -251,7 +251,6 @@ impl Workspace {
         rdb.answer_known(self.named_by_decl("CancelBits", Family.CancelBits))
         rdb.answer_known(self.named_by_file("Items", Family.Items))
         rdb.answer_known(self.named_by_file("Visible", Family.Visible))
-        rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
         rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
         rdb.answer_known(self.named_names())
         rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
@@ -359,15 +358,13 @@ impl Workspace {
         if arg < 0 || arg >= self.decls.decl_count() { return null }
         if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
         let x = self.decls.decl(DeclId { index: arg })
-        match self.relation(Family.Resolved).values.entry(x.file.index) {
-            .Present(r) -> name_slice_fp(
-                resolved_of(r),
-                x.lo,
-                x.hi,
-                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
-            ),
-            .Missing -> null,
-        }
+        let names? = resolved_in_held(self, x.file) else { return null }
+        name_slice_fp(
+            names,
+            x.lo,
+            x.hi,
+            self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
+        )
     }
 
     /// The `Named` cells: a name's bucket of declarations, spelled by the name.

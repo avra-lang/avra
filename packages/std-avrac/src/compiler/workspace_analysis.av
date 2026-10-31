@@ -151,7 +151,7 @@ impl Workspace {
         // analysis must not force ANOTHER file's resolve (a re-entrant
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
-        if self.db.family_active(Family.Resolved.ordinal) { return [] }
+        if self.resolving() { return [] }
         let _ = method_clashes(self, f)
         self.method_diag_rows.at(f.index) ?? []
     }
@@ -223,7 +223,7 @@ impl Workspace {
                     (r: DbRow) -> fp(
                         1,
                         [
-                            dep_hash_fp(ws.db.value_hash_of(key(Family.Resolved, f.index))),
+                            dep_hash_fp(ws.db.value_hash_of(resolved_in_key(ws, f))),
                             dep_hash_fp(ws.db.value_hash_of(folded_in_key(ws, f))),
                             fp_list([diag_fp(d) for d in analysis_of(r).diagnostics]),
                         ],
@@ -245,7 +245,7 @@ impl Workspace {
     /// caller's real answer comes from the normal analysis, exactly as
     /// `failures()` guards.
     fn read_reach() -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.resolving() { return false }
         let _ = reach_solved(self)
         true
     }

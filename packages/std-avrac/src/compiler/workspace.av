@@ -778,10 +778,6 @@ fn visible_verified(ws: Workspace, arg: int) -> int {
     touch(ws.visible(file_at(arg)))
     ws.db.changed_at(key(Family.Visible, arg))
 }
-fn resolved_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.resolved(file_at(arg)))
-    ws.db.changed_at(key(Family.Resolved, arg))
-}
 fn sig_verified(ws: Workspace, arg: int) -> int {
     touch(ws.sig(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Sig, arg))
@@ -885,7 +881,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Items -> items_verified(ws, arg),
         .Namespace -> namespace_verified(ws, arg),
         .Visible -> visible_verified(ws, arg),
-        .Resolved -> resolved_verified(ws, arg),
         .Sig -> sig_verified(ws, arg),
         .Typed -> typed_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
@@ -922,6 +917,17 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
 }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
+/// A file's names resolved. A resolve under an open expansion is a smaller
+/// view: the tables sized here are short of the arena the expansion ends
+/// with, so it answers its asker alone.
+@query
+@recursive
+@digested_by(resolved_digest)
+fn resolved_in(ws: Workspace, f: FileId) -> NameFacts { ws.resolution(f) }
+
+/// What a reader of a file's names reads: each name's place, by declaration identity.
+fn resolved_digest(ws: Workspace, _f: FileId, n: NameFacts) -> int { name_facts_fp(n, ws.decls.ids()) }
+
 /// A file's bodies as one table. Annotation evaluation re-enters the file
 /// after the active annotation has been hidden; that recursive view is
 /// smaller. A fold under an open expansion lacks the nodes it is about to
@@ -1300,7 +1306,7 @@ impl Workspace {
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
     fn writes_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.resolving() { return false }
         if seated(self.decls.decl(d)) { let _ = self.writes_of(d) }
         true
     }
@@ -1311,7 +1317,7 @@ impl Workspace {
     /// a mark would otherwise re-enter it. Only a kind a call can enter is asked, so a
     /// record or a type pulls nothing.
     fn cancel_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.resolving() { return false }
         if self.comptime_active() || self.hold.marking.get() > 0 { return false }
         if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
@@ -1320,14 +1326,14 @@ impl Workspace {
     /// Runs the references pass and says so, or says it cannot: a whole-program pass
     /// never runs inside a resolve.
     fn refs_ensured() -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
+        if self.resolving() || self.typing_open() { return false }
         let _ = self.references()
         true
     }
 
     /// Runs the references pass for one declaration's read bit and says so, or says it cannot.
     fn read_found_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
+        if self.resolving() || self.typing_open() { return false }
         let _ = read_found(self, d)
         true
     }
@@ -2074,18 +2080,20 @@ impl Workspace {
     /// asks for a resolve, and a re-entry is a SMALLER view of the file
     /// in flight — the acyclic `start` answers a cycle with a defect,
     /// and one file's resolve may be demanded while another is served.
-    fn resolved(f: FileId) -> NameFacts {
-        match self.relation(Family.Resolved).start_recursive(f.index) {
-            .Reuse(value) -> { return resolved_of(value) },
-            .Compute -> nothing(),
-        }
+    fn resolved(f: FileId) -> NameFacts { resolved_in(self, f) }
+
+    /// Whether some file is resolving now.
+    fn resolving() -> bool { self.db.family_active(resolved_in_key(self, FileId { index: 0 }).family) }
+
+    /// One resolve of a file's names.
+    fn resolution(f: FileId) -> NameFacts {
         touch(self.items(f))
         // A RESOLVE UNDER AN OPEN EXPANSION IS A SMALLER VIEW: the
         // expansion is still minting, so the tables sized here are
         // short of the arena it ends with. Its answer serves the run
         // that asked and is never kept — the next ask resolves the
         // finished arena.
-        let partial = self.db.active(expanded_in_key(self, f))
+        if self.db.active(expanded_in_key(self, f)) { self.query_db().unkept() }
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
         // per-expression tables are sized to the arena as it stands —
@@ -2113,17 +2121,9 @@ impl Workspace {
         )
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
-        let out = resolved with { voices: Voices {
+        resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
-        let ids = self.decls.ids()
-        let facts = resolved_of(
-            self
-                .relation(Family.Resolved)
-                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
-        )
-        if partial { self.relation(Family.Resolved).evict_call(f.index) }
-        facts
     }
 
     /// The statements of generated declarations that are members, or
@@ -2273,7 +2273,7 @@ impl Workspace {
         if blocks
             .any(
                 (b) -> self.registering(b) ||
-                    self.db.active(key(Family.Resolved, self.decls.decl(b).file.index)),
+                    self.db.active(resolved_in_key(self, self.decls.decl(b).file)),
             ) {
             self.query_db().unkept()
             return self.table_standing(target)
@@ -2344,13 +2344,10 @@ impl Workspace {
     /// inside that resolve, whose view is still in flight.
     fn names_of(d: DeclId) -> NameFacts {
         let f = self.decls.decl(d).file
-        if self.relation(Family.Resolved).open(f.index) { return self.resolved(f) }
+        if self.db.active(resolved_in_key(self, f)) { return self.resolved(f) }
         touch(self.name_slice(d))
         touch(self.visible(f))
-        match self.relation(Family.Resolved).values.entry(f.index) {
-            .Present(r) -> resolved_of(r),
-            .Missing -> self.resolved(f),
-        }
+        resolved_in_held(self, f) ?? self.resolved(f)
     }
 
     /// Whether an impl block written under the target's NAME can mean
@@ -2617,7 +2614,6 @@ export fn family_code_hash(f: Family) -> string {
         .Items -> code_hash(items_verified) ?? "",
         .Namespace -> code_hash(namespace_verified) ?? "",
         .Visible -> code_hash(visible_verified) ?? "",
-        .Resolved -> code_hash(resolved_verified) ?? "",
         .Sig -> code_hash(sig_verified) ?? "",
         .Typed -> code_hash(typed_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
