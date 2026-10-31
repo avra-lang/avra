@@ -86,6 +86,9 @@ type Asker = {
     /// then, never later, so a write that moved its input while it ran
     /// leaves it re-verified on its next ask.
     began: Cell<List<int>>,
+    /// The open queries a recursive view re-entered, as edges: each settles standing on what it
+    /// read, never on its own cell.
+    views: Cell<List<int>>,
     /// Each open query's reader id; `reader` is the innermost's, 0
     /// when none is open.
     readers: Cell<List<int>>,
@@ -102,6 +105,7 @@ fn new_asker() -> Asker {
         restore: list_cell(),
         began: list_cell(),
         readers: list_cell(),
+        views: list_cell(),
         reader: Cell.new(0),
         last: Cell.new(no_edge()),
     }
@@ -475,6 +479,19 @@ impl Kernel {
         self.family_names.set_at(family, name)
     }
 
+    /// The name a family's owner gave it, none when it gave none.
+    fn named_word(family: int) -> string? {
+        let names = self.family_names.get()
+        if family < 0 || family >= names.length || names[family] == "" { return null }
+        names[family]
+    }
+
+    /// The family its owner named `name`, none when none is.
+    fn named_family(name: string) -> int? {
+        let at = self.family_names.get().index_of(name)
+        if at < 0 { null } else { at }
+    }
+
     /// A family's trace name: the name its owner gave, else its number.
     fn family_name(family: int) -> string {
         let known = if family < self.family_names.get().length { self.family_names.get()[family] } else { "" }
@@ -838,7 +855,7 @@ impl Kernel {
 
     fn settle(key: Key, value_hash: int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
-        let deps = self.closed_frame()
+        let deps = self.closed_reads(key)
         let kept = kept_since(self.cell(key), value_hash)
         self.why(key.family, if kept != null { "same" } else { "changed" })
         self.settled(key, deps, kept ?? self.rev.get(), value_hash, began)
@@ -856,7 +873,7 @@ impl Kernel {
     /// comparison after it is exact.
     fn settle_lazy(key: Key, fingerprint: fn() -> int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
-        let deps = self.closed_frame()
+        let deps = self.closed_reads(key)
         let prior? = self.cell(key) else {
             self.settled(key, deps, self.rev.get(), null, began)
             if self.folds_kept.get() { self.folds.put("${edge_of(key)}", fingerprint) }
@@ -883,6 +900,23 @@ impl Kernel {
 
     /// Closes the innermost open frame: its edges, held at their own
     /// size, with the frame's restores replayed and its stacks popped.
+    /// `key`'s frame closed, its reads kept: a recursive view's read of its own cell
+    /// contributes nothing, so a re-entered view never stands on itself — while a query that
+    /// reads its own cell (a fixpoint member) keeps that read.
+    fn closed_reads(key: Key) -> List<int> {
+        let deps = self.closed_frame()
+        let own = edge_of(key)
+        if !self.asker.views.get().contains(own) { return deps }
+        if !self.active(key) { self.asker.views.set([e for e in self.asker.views.get() if e != own]) }
+        [e for e in deps if e != own]
+    }
+
+    /// A recursive view re-entered while `key` is open: its settles keep no read of itself.
+    fn reentered(key: Key) {
+        let own = edge_of(key)
+        if !self.asker.views.get().contains(own) { self.asker.views.push(own) }
+    }
+
     fn closed_frame() -> List<int> {
         let edges = self.asker.pending.get().last()!.get()
         let restores = self.asker.restore.get()

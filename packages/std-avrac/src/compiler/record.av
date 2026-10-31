@@ -218,6 +218,9 @@ fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
     out
 }
 
+/// Whether a declaration line keeps what holding it needs: a const's verdict, or nothing to keep.
+fn const_kept(parts: List<string>) -> bool { parts[0] != "const" || parts.length > 14 && parts[14] != "" }
+
 /// One file's declaration lines.
 fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
     if at == null { [] } else { fields.slice(at!.lo, at!.hi) }
@@ -723,6 +726,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         // a module none of whose files this attempt read has its lines carried forward whole
         if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
         let prior = record_cached(ws, store, m)
+        let forms_were = ws.producers_for(store, m)?.forms
         let made = ws.record_of(store, m)
         ws.keep_items(store, m, made)
         // a record is keyed by its module's NAME: a write is owed when its words moved
@@ -732,7 +736,11 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
             ws.keep_producers(store, m, iface)
-            if seen_part(made) != seen_part(prior) { seen_moved = true }
+            // a plain free fn's form is what a file that spells its name sees of it
+            if seen_part(made) != seen_part(prior) ||
+                ws.producers_for(store, m)?.forms != forms_were {
+                seen_moved = true
+            }
         }
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
@@ -986,11 +994,7 @@ fn plan_of_field(field: string) -> FieldPlan? {
 
 /// What a collect gathers by, as a record's two words.
 fn kind_words(kind: CollectKind) -> List<string> {
-    match kind {
-        .Annotated(w) -> ["mark", w],
-        .Component(w) -> ["component", w],
-        .UnknownKind(w) -> ["unknown", w],
-    }
+    match kind { .Annotated(w) -> ["mark", w], .Component(w) -> ["component", w] }
 }
 
 /// The scope a `gathers` line holds its collect to, as its last field.
@@ -1013,7 +1017,6 @@ fn kind_of_words(word: string, name: string) -> CollectKind? {
     match word {
         "mark" -> CollectKind.Annotated(name),
         "component" -> CollectKind.Component(name),
-        "unknown" -> CollectKind.UnknownKind(name),
         _ -> null,
     }
 }
@@ -1110,7 +1113,7 @@ fn read_why(
     if ws.reads_pending(store, m, f) { return null }
     if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)
-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+    if !rows.all(const_kept) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
 }

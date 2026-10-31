@@ -501,9 +501,9 @@ type Lift = { lifts: bool, params: List<Param>, inits: Inits }
 /// parameters.
 fn fields_of(s: Stmt) -> List<Param>? {
     match s {
-        .StructDecl(_, _, fields) -> fields,
+        .StructDecl(_, _, fields, _) -> fields,
         .FnDecl(_, _, params, _, _) -> params,
-        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
     }
 }
 
@@ -816,14 +816,13 @@ fn unread_word(name: string, origin: string) -> ComponentWord {
     }
 }
 
-/// What a file's module exports as components: its record says, or — with no
-/// record — the file's own tokens do.
+/// What a file exports as components: a held file's record says; a file this attempt reads,
+/// or one with no record, says it in its own tokens — never in the record its last read kept.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn exported_components(ws: Workspace, path: string) -> List<string> {
-    let rows? = module_block_rows(ws, ws.module_path_of(path)) else {
-        return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] }
-    }
-    [r.name for r in rows if r.exported && facts_unblocked(r.facts)?.is_component ?? false]
+    let rows = if ws.read_here(path) { null } else { module_block_rows(ws, ws.module_path_of(path)) }
+    if rows == null { return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] } }
+    [r.name for r in rows! if r.path == path && r.exported && facts_unblocked(r.facts)?.is_component ?? false]
 }
 
 /// Every component the given files' modules export, by name: the modules that

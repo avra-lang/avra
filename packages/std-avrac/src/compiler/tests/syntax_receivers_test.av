@@ -14,7 +14,10 @@ use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn summary_key(d: DeclId) -> Key { Key { family: family_ordinal("WriteSummary"), arg: d.index } }
+/// Every write summary settled — the cells of the query's own family.
+fn summary_cells(ws: Workspace) -> List<Key> {
+    [c.key for cells in ws.db.cells_by_family() for c in cells if ws.db.kernel.family_name(c.key.family) == "write_summary"]
+}
 
 fn syntax_key(d: DeclId) -> Key { Key { family: family_ordinal("Syntax"), arg: d.index } }
 
@@ -46,7 +49,7 @@ fn receivers_source(a_body: string, b_body: string) -> string {
 /// would settle on.
 fn receivers_synced_b(ws: Workspace) -> int {
     let _ = ws.items(ws.file_id("/w/src/main.av"))
-    let _ = ws.summary_of(receivers_decl_named(ws, "b"))
+    let _ = ws.writes_of(receivers_decl_named(ws, "b"))
     ws.syntax(receivers_decl_named(ws, "b"))
 }
 
@@ -56,11 +59,17 @@ spec "compiler/receivers — a foreign store_of read depends on the declaration'
             let ws = receivers_workspace(receivers_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
             let b = receivers_decl_named(ws, "b")
-            let _ = ws.summary_of(b)
-            ws
-                .db
-                .edges_by_reader(summary_key(b))
-                .any((k: Key) -> k.family == syntax_key(b).family && k.arg == syntax_key(b).arg)
+            let _ = ws.writes_of(b)
+            summary_cells(ws)
+                .any(
+                    (s: Key) -> ws
+                        .db
+                        .edges_by_reader(s)
+                        .any(
+                            (k: Key) -> k.family == syntax_key(b).family &&
+                                k.arg == syntax_key(b).arg,
+                        ),
+                )
         }
     }
     given "a reader that depends on `b`'s syntax through its summary, in a file where `a` is edited" {

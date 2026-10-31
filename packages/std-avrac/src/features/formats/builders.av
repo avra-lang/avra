@@ -6,6 +6,9 @@
 //! are re-derived from the node and spoken by typing, where they
 //! carry a span and a code.
 use core.{
+    Slots,
+    Built,
+    computed,
     Expr,
     Pat,
     Stmt,
@@ -20,16 +23,18 @@ use core.{
     binds,
     plain_mark,
 }
-use features.{LangNode, Builder}
 use features.formats.{read_format, has_holes, Format, Fault, reads_of, read_type_name}
 
-fn build_format_pat(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    let f = read_format(t.text)
+/// A STRING in pattern position: the format it spells, or the literal
+/// pattern it always was when it spells no holes.
+@computed
+fn format_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let f = read_format(s.text_of("text")?)
     let text: string? = refusal_of(f.fault)
     if text != null { return .Err(text!) }
-    if !has_holes(f) { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.StrLit(f.head), b.span))) }
-    b.make_pat(Pat.Format(f.head, f.parts))
+    let pat = if has_holes(f) { Pat.Format(f.head, f.parts) } else { Pat.Lit(store.alloc_expr(Expr.StrLit(f.head), s.built_at())) }
+    .Ok(Built.Pat(store.alloc_pat(pat, s.built_at())))
 }
 
 /// The words a TEXT fault earns. The two laws over the holes answer
@@ -48,10 +53,16 @@ fn refusal_of(fault: Fault?) -> string? {
 /// declared once so the shape and the text it reads cannot drift.
 /// Every fault refuses here: a declaration's format is known whole at
 /// build time, so there is no later place that knows more.
-fn build_grammar_decl(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let t = b.token(1)?
-    .Ok(LangNode.NStmt(b.store.declared_format(n.text, t.text, b.span, true)?))
+@computed
+fn grammar_written(s: dyn Slots) -> Result<Built, string> {
+    .Ok(
+        Built
+            .Stmt(
+                s
+                    .arena()
+                    .declared_format(s.text_of("name")?, s.text_of("text")?, s.built_at(), true)?,
+            ),
+    )
 }
 
 impl SyntaxArena {
@@ -70,7 +81,12 @@ impl SyntaxArena {
         let s = self
             .alloc_stmt(
                 Stmt
-                    .StructDecl(Scoped(name), [], [self.field_of(p.hole) for p in f.parts if binds(p.hole)]),
+                    .StructDecl(
+                        Scoped(name),
+                        [],
+                        [self.field_of(p.hole) for p in f.parts if binds(p.hole)],
+                        [],
+                    ),
                 span,
             )
         self.mark_grammar(s, GrammarSpec { head: f.head, parts: f.parts })

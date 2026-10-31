@@ -11,7 +11,7 @@
 //! false })` — the first arm's pattern anchors the parse away from
 //! a lone bind (`{ x -> body }` stays the ordinary one-seat
 //! lambda, unchanged, both spellings one node).
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use features.closures.{pronoun_lambda}
 // LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
 // file — a rule that states a payload writes a `Fixed` literal, and one that builds a node in
@@ -20,10 +20,6 @@ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, 
 use diagnostics.{DiagCode}
 
 export fn closures() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name            | build
-        "trailing_arms" | build_trailing_arms
-    }
     let codes = table<DiagCode> {
         kind               | summary
         "type.lambda"      | "a lambda's parameters, body, and captures obey the closure laws"
@@ -34,11 +30,11 @@ export fn closures() -> LanguageFeature {
             type = "fn" "(" ( seats:fn_seat ( "," seats:fn_seat )* ","? )? ")" ( "->" answer:type )? -> Record.TypeRef(name = "fn", optional = false, dynamic = false, arrow = true)
             fn_seat = ( settled:"const" )? ( mutable:"mut" )? ty:type -> Record.FnSeat
             primary = "(" ( params:seat ( "," params:seat )* ","? )? ")" "->" body:expression -> Expr.Lambda
-            trailing = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> trailing_arms(hp, hg, hv, a)
-            nonbind_pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> Pat.Lit(value = Expr.BoolLit(value = true)) | "false" -> Pat.Lit(value = Expr.BoolLit(value = false)) | value:NUMBER -> Pat.Lit(value = Expr.IntLit(value = value))
+            trailing = "{" BREAK* arms:arms_head ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> Expr.Lambda by arms_lambda_written
+            arms_head = pats:nonbind_pattern ( "if" guard:expression )? "->" value:expression -> Record.Arm
+            nonbind_pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> Pat.Lit(value = Expr.BoolLit(value = true)) | "false" -> Pat.Lit(value = Expr.BoolLit(value = false)) | bits:FRACTION -> Pat.Lit(value = Expr.FloatLit(bits = bits)) | value:NUMBER -> Pat.Lit(value = Expr.IntLit(value = value))
         }
         diags: codes
-        builders: rows
     }
     closures
 }

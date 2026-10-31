@@ -476,14 +476,14 @@ impl SourceText {
             ],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
             .Setting(name, value) -> self.setting(name.of, value, depth),
-            .ComponentDecl(name, tparams, head, fields, fns) -> [
+            .ComponentDecl(name, tparams, head, fields, fns, spreads) -> [
                 self
                     .component_decl(
                         exported,
                         name.of,
                         tparams,
                         head,
-                        self.entries(fields, self.store.spreads_of(s), depth + 1),
+                        self.entries(fields, self.store.placed(fields, spreads), depth + 1),
                         fns,
                         self.stmt_end(s),
                         depth,
@@ -524,7 +524,7 @@ impl SourceText {
                         ),
                 ]
             },
-            .StructDecl(name, tparams, fields) -> [
+            .StructDecl(name, tparams, fields, _) -> [
                 self
                     .struct_or_grammar_decl(
                         s,
@@ -692,7 +692,7 @@ impl SourceText {
     }
 
     fn collect_kind_word(k: CollectKind) -> string {
-        match k { .Component(w) or .UnknownKind(w) -> w, .Annotated(w) -> "@${w}" }
+        match k { .Component(w) -> w, .Annotated(w) -> "@${w}" }
     }
 
     fn collect_scope_word(s: CollectScope) -> string {
@@ -2625,6 +2625,7 @@ export const rule_scale: List<RuleTier> = [
     RuleTier { rule: "primary", tier: atom_tier },
     RuleTier { rule: "head_name", tier: atom_tier },
     RuleTier { rule: "hole_content", tier: atom_tier },
+    RuleTier { rule: "collected_trait", tier: atom_tier },
 ]
 
 /// The nodes the printer reads from their rule, as `Owner.Variant`. Each

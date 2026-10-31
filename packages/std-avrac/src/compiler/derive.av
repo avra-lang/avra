@@ -6,7 +6,7 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.debug.{db_verified_files}
+use core.debug.{db_verified_files, db_judging}
 use core.{
     distinct,
     flatten,
@@ -369,7 +369,7 @@ impl Workspace {
         self.timed("open", opening)
         let named = "check:${entry ?? ""}"
         let judging = self.clock()
-        let standing = self.standing_verdict(store, named)
+        let standing = if db_judging() { null } else { self.standing_verdict(store, named) }
         self.timed("judge", judging)
         let kept? = standing else { return self.checked_anew(store, entry, named) }
         Checked {
@@ -451,7 +451,7 @@ impl Workspace {
                     want: want,
                     parse: parse,
                     homes: self.homes_were_read(entry ?? self.root),
-                    hold: !db_verified(),
+                    hold: !db_judging(),
                     edit: self.edit_print(entry, want),
                 },
                 owes,
@@ -680,7 +680,7 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
-        self.hold.serving.set(match at.want { .Diagnostics -> !db_verified(), .Binary -> false })
+        self.hold.serving.set(match at.want { .Diagnostics -> !db_judging(), .Binary -> false })
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -880,7 +880,7 @@ impl Workspace {
     fn kept(at: Attempt, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, Turn> {
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
-        let _ = self.keep_const_units(store, moved)
+        self.keep_uses(store)
         let defects = self.defects.get()
         if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
         let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]

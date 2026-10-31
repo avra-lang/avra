@@ -1,52 +1,29 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, Pat, pronoun_param, Plain, Scoped, some_list}
-use features.{LangNode, Builder, expr_id_at, params_at}
-
-fn build_int_lit(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    // A FRACTION is a different literal wearing the same token: the
-    // scanner joined the point, so the value is bits and not digits.
-    if t.is_fraction() { return b.make_expr(Expr.FloatLit(t.float_bits())) }
-    // the lexer already refused a literal no `int` holds, so absence
-    // here is a defect, not a program's mistake
-    b.make_expr(Expr.IntLit(t.int_value() ?? 0))
-}
-/// A bare name binds — except `rest`, the spec's deliberate
-/// remainder, and `null`, a LITERAL never a binder: read as
-/// `Pat.Bind` it earns the keyword refusal beside whatever else the
-/// arm earns, one mistake wearing two voices.
-fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    if n.text == "rest" { return b.make_pat(Pat.Rest) }
-    if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
-    b.make_pat(Pat.Bind(Scoped(n.text)))
-}
-
-/// `subject.name(args)` — a method call; an argument the pronoun rides
-/// becomes a one-seat lambda (`xs.map(it * 2)`).
-fn build_method_link(b: Builder) -> Result<LangNode, string> {
-    let args = [b.store.pronouned(a) for a in b.exprs(2)?]
-    b.make_expr(Expr.MethodCall(b.expr(0)?, Plain((b.token(1)?).text), args))
-}
+use core.{Expr, Slots, Built, pronoun_param, computed, some_list}
 
 /// `subject { … }` and `subject { … } else { … }` — the call so far
 /// takes the blocks as its last arguments. Only a call takes one, and
 /// never after a type literal or another block.
-fn build_trailed_link(b: Builder) -> Result<LangNode, string> {
-    let subject = b.expr(0)?
-    if b.store.spells_a_type(subject) { return .Err(block_after_literal()) }
-    if b.store.ends_in_block(subject) { return .Err(second_block()) }
-    b.wrap_expr(b.trailed(subject, [b.expr(1)?].concat(some_list(expr_id_at(b.args, 2))))?)
+@computed
+fn trailed_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let subject = s.expr_of("subject")?
+    if store.spells_a_type(subject) { return .Err(block_after_literal()) }
+    if store.ends_in_block(subject) { return .Err(second_block()) }
+    let blocks = (s.exprs_of("blocks")?).concat(some_list(s.expr_opt_of("else_block")?))
+    .Ok(Built.Expr(store.trailed(subject, blocks, s.built_at())?))
 }
 
 /// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a
 /// block: the written seats, or the pronoun's one seat when no seat
 /// is written and the body reads `it`, or none.
-fn build_trailing(b: Builder) -> Result<LangNode, string> {
-    let written = params_at(b.args, 0)
-    let body = b.block_of(b.stmts(1)?)
-    let seats = if written.is_empty() && b.store.pronoun_rides(body) { [pronoun_param] } else { written }
-    b.make_expr(Expr.Lambda(seats, body))
+@computed
+fn block_lambda_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let written = s.params_of("seats")?
+    let body = store.block_over(s.stmts_of("stmts")?, s.built_at())
+    let seats = if written.is_empty() && store.pronoun_rides(body) { [pronoun_param] } else { written }
+    .Ok(Built.Expr(s.made_expr(Expr.Lambda(seats, body))?))
 }
 
 // ── voices ──

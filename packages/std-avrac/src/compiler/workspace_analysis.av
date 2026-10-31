@@ -76,6 +76,7 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
+use @std.relation.{query}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -94,10 +95,31 @@ fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned 
     Interned.Found(known)
 }
 
-/// A file's clash diagnostics by what each says — the value a `Family.MethodDiags`
-/// cell settles on, and the hash a witness edge holds.
+/// A file's clash diagnostics by what each says.
 fn diags_fingerprint(out: List<Diag>) -> int {
     fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
+}
+
+/// A file's method-table clashes, kept for its analysis; the answer is what they say.
+@query
+fn method_clashes(ws: Workspace, f: FileId) -> int {
+    let out = ws.file_method_clashes(f)
+    ws.method_diag_rows.keep(f.index, out)
+    diags_fingerprint(out)
+}
+
+/// Which declarations read `state` through the calls their bodies make: the read-set fixpoint
+/// over the call graph, asked after typing, so every file is resolved and a declaration a
+/// `@derive` generated stands. The answer is every member's reach.
+@query
+fn reach_solved(ws: Workspace) -> int {
+    let fns = [x.id for x in ws.decls.unheld_decls() if ws.read_member(x.kind, x.external, x.file, x.root)]
+    let solved = ws
+        .read_fixpoint
+        .solve([d.index for d in fns], (arg: int) -> ws.read_contribution(DeclId { index: arg }))
+    let refusal? = refusal_of(solved) else { return reach_fp([ws.read_fixpoint.value_at(d.index) for d in fns]) }
+    ws.defect("defect: ${fixpoint_spoken(refusal)}")
+    reach_fp([ws.read_fixpoint.value_at(d.index) for d in fns])
 }
 
 /// One expression of file `f` wanted as a program's entry.
@@ -122,22 +144,17 @@ export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> strin
 }
 
 impl Workspace {
-    /// The method-table clashes spoken in a file, asked as `Family.MethodDiags`
-    /// so the file's `Analysis` depends on the method tables its own methods
-    /// belong to — never the whole table.
+    /// The method-table clashes spoken in a file, asked as `method_clashes`, so the file's
+    /// `Analysis` depends on the method tables its own methods belong to — never the whole
+    /// table.
     fn method_diagnostics(f: FileId) -> List<Diag> {
         // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
         // analysis must not force ANOTHER file's resolve (a re-entrant
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(Family.Resolved.ordinal) { return [] }
-        let k = key(Family.MethodDiags, f.index)
-        if !(self.db.ask(k) is .Compute) { return self.method_diag_rows.at(f.index) ?? [] }
-        self.db.begin(k)
-        let out = self.file_method_clashes(f)
-        self.method_diag_rows.keep(f.index, out)
-        self.db.settle(k, diags_fingerprint(out))
-        out
+        let _ = method_clashes(self, f)
+        self.method_diag_rows.at(f.index) ?? []
     }
 
     /// The clashes spoken in file `f`. A clash is recorded at the LATER
@@ -224,28 +241,15 @@ impl Workspace {
     /// contribution; a callee's settled answer is read through
     /// `value_at`, which records the edge the worklist propagates on.
     /// The lattice is monotone — `bottom` is pure, `join` is `||`, so a
-    /// declaration that reads state never stops. Settled once per
-    /// program state, keyed by `Family.ReadReach`.
-    fn read_reach() -> int {
-        // A pass that ran inside a resolve would read a half-built
-        // namespace: the caller's own real answer comes from the
-        // normal analysis, exactly as `failures()` guards.
-        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.ReadReach, 0)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
-        // The plan is asked after typing, so every file is already
-        // resolved and a declaration a `@derive` generated stands —
-        // the same completeness `failures()` leans on. A pass that ran
-        // earlier is refused above.
-        let fns = [x.id for x in self.decls.unheld_decls() if self.read_member(x.kind, x.external, x.file, x.root)]
-        let solved = self
-            .read_fixpoint
-            .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
-        self.db.settle(k, reach_fp([self.read_fixpoint.value_at(d.index) for d in fns]))
-        let refusal? = refusal_of(solved) else { return fns.length }
-        self.defect("defect: ${fixpoint_spoken(refusal)}")
-        fns.length
+    /// declaration that reads state never stops. Solved once per program
+    /// state (`reach_solved`); whether it could run is the answer — a
+    /// pass inside a resolve would read a half-built namespace, so the
+    /// caller's real answer comes from the normal analysis, exactly as
+    /// `failures()` guards.
+    fn read_reach() -> bool {
+        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        let _ = reach_solved(self)
+        true
     }
 
     /// Whether a declaration's evaluation reads `state` — directly, or
@@ -263,12 +267,9 @@ impl Workspace {
         match x.kind {
             .State -> [place_key(StatePlace.Global(d))],
             .Fn or .Method or .Default or .Main or .Case -> {
-                if x.root == null { return [unknown_key()] }
-                let _ = self.read_reach()
-                // A pass that could not run (asked mid-resolve) has no
-                // settled cell, and an unsettled member reads as
+                // A pass that could not run (asked mid-resolve) leaves every member at
                 // `bottom` — pure. Answer conservatively instead.
-                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return [unknown_key()] }
+                if x.root == null || !self.read_reach() { return [unknown_key()] }
                 plain_places(self.read_fixpoint.value_at(d.index))
             },
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> [],
