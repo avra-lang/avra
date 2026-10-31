@@ -697,7 +697,15 @@ impl Workspace {
             self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
             _ -> self.analysis(w.file)
         }
-        lower_unit(analysis, self.extern_symbols(), w, settle, cross, checks)
+        lower_unit(analysis, self.extern_symbols(), self.rooted(w), settle, cross, checks)
+    }
+
+    /// A declared unit's want with its root as this process reads the declaration: a want
+    /// written while its file was held carries none, whatever its body.
+    fn rooted(w: Wanted) -> Wanted {
+        let d? = w.decl else { return w }
+        if w.root != null || w.sub != null { return w }
+        w with { root: self.decls.declared_unit(d).root }
     }
 
     /// Whether a declaration lowers from the expressions its own range holds: a fn or a

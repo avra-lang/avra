@@ -1827,6 +1827,23 @@ rm $R/ds/src/mid/b.av
 steps=$((steps+1)); ds_out=$(./avra check $R/ds 2>&1)
 case "$ds_out" in *"resolve.unresolved"*"mid/a.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    ds: the sibling gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  ds: a's sibling is gone and the check did not refuse h(): $(printf '%s' "$ds_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 
+# A WANT WRITTEN UNDER A HOLD IS THE SAME WANT READ WITHOUT ONE: `main`'s unit, saved while
+# `cmds/hi.av` was held, wants the `hi` instance with no root — the held file's body was never
+# read. Edited, the file is read, and the restored want is lowered over the body it names.
+mkdir -p $R/ci/src/cmds $R/ci/src/util
+printf '[package]\nname = "rt-ci"\nversion = "0.1.0"\n' > $R/ci/avra.toml
+ci_hi() { printf 'use @std.cli.{CliResult, Runnable, command}\ntype HiCmd = {}\nimpl Runnable for HiCmd {\n    fn run(args: CliResult) -> int { 0 }\n}\nexport command hi {\n    description: "hi"\n    run: HiCmd {}\n}\nfn word() -> string { "%s" }\n' "$1" > $R/ci/src/cmds/hi.av; }
+ci_util() { printf 'export fn other() -> int { %s }\n' "$1" > $R/ci/src/util/u.av; }
+ci_hi a; ci_util 1
+printf 'use @std.cli.{cli}\nuse cmds.{hi}\nuse util.{other}\ncli app {\n    description: "app"\n    version: "0.0.1"\n    hi\n}\nprintln("${app.run()} ${other()}")\n' > $R/ci/src/main.av
+HR "cold ci" check ci 0
+ci_util 2
+HR "ci: a body edit holds the command's file" check ci 0 cmds/hi.av held
+ci_util 3
+HR "ci: a second body edit stands on the saved unit" check ci 0 cmds/hi.av held
+ci_hi b
+HR "ci: the command's file edited, the restored want is lowered whole" check ci 0 cmds/hi.av read
+
 # A MODULE WITH NO RECORD KEYS ON ITS BYTES, NEVER ON NOTHING: with `nrl`'s record
 # gone, `user`'s key rides `nrl`'s bytes, so removing the import target re-reads the
 # importer and a WARM check REFUSES where a stale hold would have passed over it. The
