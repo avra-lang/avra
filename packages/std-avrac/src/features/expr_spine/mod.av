@@ -47,7 +47,6 @@ export fn expr_spine() -> LanguageFeature {
         "method_link"  | build_method_link
         "trailed_link" | build_trailed_link
         "trailing"     | build_trailing
-        "bind_pat"     | build_bind_pat
     }
     let codes = table<DiagCode> {
         kind                 | summary                                            | remedy
@@ -70,7 +69,7 @@ export fn expr_spine() -> LanguageFeature {
             trailing_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME -> Record.ParamSyntax
             stmt = "|>" expression END -> Refusal.leading_pipe
             asked = "." name:NAME ( "(" ( args:asked_payload ( "," args:asked_payload )* ","? )? ")" )? -> Pat.Variant | name:NAME ":" ty:type_atom -> Pat.Typed
-            asked_payload = "_" -> Pat.Wild | n:NAME -> bind_pat(n)
+            asked_payload = "_" -> Pat.Wild | "rest" -> Pat.Rest | "null" -> Pat.Lit(value = Expr.NullLit) | name:NAME -> Pat.Bind
             climbed = left:additive @operators {
                 left "||"
                 left "&&"
@@ -90,6 +89,7 @@ export fn expr_spine() -> LanguageFeature {
         }
         builders: rows
         diags: codes
+        soft_words: ["rest"]
         refusals: [
             RefusalRow { name: "leading_pipe", kind: "parse.leading_pipe", voice: leading_pipe },
         ]
