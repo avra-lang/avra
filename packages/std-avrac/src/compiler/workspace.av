@@ -78,7 +78,8 @@ use features.{
     SettleRoot,
     BlockWords,
 }
-use core.{ComponentWord, Instanced}
+use core.{ComponentWord, Instanced, Span}
+use @std.text.{repeat}
 use grammar.{Token}
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
 use core.{
@@ -294,6 +295,8 @@ type Hold = {
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
+    /// How many use-site warning queries are open: a whole-program pass never runs under one.
+    marking: Cell<int>,
     read_files: Cell<List<ReadFile>>,
     /// The modules this attempt loaded for real: a file in one was read, so it is not held.
     loaded_turn: Cell<Map<string, bool>>,
@@ -408,6 +411,7 @@ fn new_hold() -> Hold {
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
+        marking: Cell.new(0),
         read_files: Cell.new(no_read_files),
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
@@ -459,6 +463,11 @@ type Records = {
     line_index: Cell<Map<string, Map<string, List<string>>>>,
     /// Each file's use lines as its parse said them this build, kept at its end.
     uses_seen: Cell<Map<string, string>>,
+    /// Each file's kept declaration wires by the name each declares, read once per build.
+    line_refs: Cell<Map<string, LineRefs>>,
+    /// A name's whole bucket as `named_refs` answers it, once it answers: a whole answer
+    /// stands for the build.
+    named_refs: Cell<Map<string, List<string>>>,
     /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
     /// marks as re-exporting a name, read once per build however many
     /// modules see it.
@@ -485,11 +494,19 @@ type Records = {
     /// block word, decoded once per build — the names, and the instances whose
     /// word alone answers (no form to parse).
     block_rows: Cell<Map<string, List<Row>>>,
+    /// The text digest each provider file's recorded rows were read from, by path.
+    block_digests: Cell<Map<string, string>>,
+    /// What each provider file's record says of its block words, once asked.
+    recorded: Cell<Map<string, Recorded>>,
     /// Files whose text a component lookup lexed, this build: what the witness counts.
     component_lexes: Cell<int>,
     /// The modules that export a component, by its name; null until first asked.
     component_index: Cell<Map<string, List<string>>?>,
 }
+
+/// A file's kept declaration wires by the name each declares — `kept` false when no read of
+/// its text as it stands kept lines.
+type LineRefs = { kept: bool, by: Map<string, List<string>> }
 
 fn new_records() -> Records {
     let no_loaded: Map<string, bool> = {}
@@ -513,12 +530,16 @@ fn new_records() -> Records {
         record_files: Cell.new(no_files),
         line_index: map_cell(),
         uses_seen: map_cell(),
+        line_refs: map_cell(),
+        named_refs: map_cell(),
         record_producers: Cell.new(no_producers_of),
         record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
+        block_digests: map_cell(),
+        recorded: map_cell(),
         component_lexes: Cell.new(0),
         component_index: Cell.new(no_index),
     }
@@ -877,10 +898,6 @@ fn placed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.placed(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Placed, arg))
 }
-fn marks_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.computed_marks(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Marks, arg))
-}
 fn admitted_verified(ws: Workspace, arg: int) -> int {
     ws.admission(file_at(arg))
     ws.db.changed_at(key(Family.Admitted, arg))
@@ -929,7 +946,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Placed -> placed_verified(ws, arg),
-        .Marks -> marks_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
@@ -937,6 +953,16 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
     }
+}
+
+/// A declaration's use-site warnings: each `List<Diagnostic>` annotation run, its WARNINGS
+/// kept (errors speak at the declaration).
+@query
+fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
+    ws.hold.marking.set(ws.hold.marking.get() + 1)
+    let out = ws.warnings_of(ws.decls.decl(d))
+    ws.hold.marking.set(ws.hold.marking.get() - 1)
+    out
 }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
@@ -1147,6 +1173,7 @@ fn built(
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
     ws.arm_audit()
+    ws.stage_language()
     ws.load_packages(src)
     ws
 }
@@ -1294,7 +1321,7 @@ impl Workspace {
     /// record or a type pulls nothing.
     fn cancel_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        if self.comptime_active() || self.db.family_active(Family.Marks.ordinal) { return false }
+        if self.comptime_active() || self.hold.marking.get() > 0 { return false }
         if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
     }
@@ -1333,12 +1360,8 @@ impl Workspace {
             self.decls.record_marks(d, [])
             return []
         }
-        let k = key(Family.Marks, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.marks.get()[d.index] ?? [] }
-        self.db.begin(k)
-        let out = self.warnings_of(self.decls.decl(d))
+        let out = marks_of(self, d)
         self.decls.record_marks(d, out)
-        self.db.settle(k, use_warnings_fp(out))
         out
     }
 
@@ -1815,36 +1838,61 @@ impl Workspace {
         // (`maybe_declares_block`), and only a file that survives THAT
         // reaches the parse below.
         if !module_names_block_word(self, m, self.module_files(m), u.items) { return BlockWords {} }
-        // A BLOCK NAME WITH NO FORM TO READ — an instance — is answered by the record
-        // alone, so a `use` of one never parses its provider. A module that also declares
-        // a grammar or a component must be parsed: their FORMS are not in the record.
-        if !module_has_forms(self, m) {
-            let insts: List<Instanced> = module_block_instances(self, m) ?? []
-            return BlockWords {
-                grammars: [],
-                components: [],
-                instances: flatten(
-                    [[x with { name: u.bound_as(j) } for x in insts if x.name == item] for j, item in u.items],
-                ),
-            }
-        }
-        // Only a file that can OPEN a block word is parsed for its words;
-        // the rest of the module never is.
-        let declared = [self.provided_words(path) for path in self.module_files(m) if file_lexes_block(self, path)]
-        let grammars = flatten([d.grammars for d in declared])
-        let components = flatten([d.components for d in declared])
-        let instances = flatten([d.instances for d in declared])
+        // A BLOCK WORD WHOSE FORM IS DATA — an instance, a component that is a literal of
+        // its record — is answered by the record alone, so a `use` of one never parses its
+        // provider. A module that declares a grammar or a template must be parsed: their
+        // FORMS are nodes, not in the record.
+        let declared = self.declared_words(m)
         BlockWords {
             grammars: flatten(
-                [[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items],
+                [[g with { word: u.bound_as(j) } for g in declared.grammars if g.word == item] for j, item in u.items],
             ),
             components: flatten(
-                [[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items],
+                [[c with { word: u.bound_as(j) } for c in declared.components if c.word == item] for j, item in u.items],
             ),
             instances: flatten(
-                [[x with { name: u.bound_as(j) } for x in instances if x.name == item] for j, item in u.items],
+                [[x with { name: u.bound_as(j) } for x in declared.instances if x.name == item] for j, item in u.items],
             ),
         }
+    }
+
+    /// Every block word a module's files declare: what the record says whole, else read
+    /// off the parse of a file that can OPEN one. No other file of the module is parsed.
+    fn declared_words(m: ModulePath) -> BlockWords {
+        let declared = [recorded_words(self, path) ?? self.lexed_words(path) for path in self.module_files(m)]
+        BlockWords {
+            grammars: flatten([d.grammars for d in declared]),
+            components: flatten([d.components for d in declared]),
+            instances: flatten([d.instances for d in declared]),
+        }
+    }
+
+    /// The components a provider declares at `spans`, read off those declarations ALONE — each
+    /// from where its own text begins (`declared_from`): the file's text
+    /// with every other byte but a line break blanked to a space, so each node stands at the
+    /// offset, line and column the whole file gives it. Null unless every statement `prints`
+    /// names is among those read, and for two declarations that share a line.
+    fn read_alone(path: string, spans: List<Span>, prints: List<int>) -> List<ComponentWord>? {
+        if spans.is_empty() { return [] }
+        let f = self.file_id(path)
+        let source = self.source(f)
+        let froms = [declared_from(source, s.lo) for s in spans]
+        let ends = [0].concat([s.hi for s in spans])
+        if ![j for j, from in froms if from < ends[j]].is_empty() { return null }
+        let kept = [blanked(source.text.substring(ends[j], from)) + source.text.substring(from, spans[j].hi) for j, from in froms]
+        let p = parse_program(
+            self.lang,
+            new_source_file(path, joined(kept, "")),
+            BlockWords { components: self.unread_words(f) },
+        )
+        let found = [p.stmts.find((st: StmtId) -> p.store.stmt_fingerprint(st) == print) for print in prints]
+        if found.any(it == null) { return null }
+        flatten([some_list(word_of(p.store, s!, path)) for s in found])
+    }
+
+    /// A file's block words read off its parse — none for a file whose text opens none.
+    fn lexed_words(path: string) -> BlockWords {
+        if file_lexes_block(self, path) { self.provided_words(path) } else { BlockWords {} }
     }
 
     /// The exported block words a provider file declares, each under
@@ -2652,7 +2700,6 @@ export fn family_code_hash(f: Family) -> string {
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Placed -> code_hash(placed_verified) ?? "",
-        .Marks -> code_hash(marks_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
@@ -2660,4 +2707,26 @@ export fn family_code_hash(f: Family) -> string {
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",
     }
+}
+
+/// Text with every byte but a line break turned to a space.
+fn blanked(text: string) -> string {
+    let starts = new_source_file("", text).line_starts
+    let ends = [at - 1 for at in starts.drop(1)].concat([text.length])
+    joined([repeat(" ", ends[j] - at) for j, at in starts], "\n")
+}
+
+/// Where a declaration's own text begins: the start of its line, so a prefix like `export`
+/// is read with it, taken up over the doc lines and annotations written directly above it,
+/// which are part of the statement.
+fn declared_from(source: SourceFile, lo: int) -> int {
+    mut line = source.line_starts.filter(it <= lo).length - 1
+    while line > 0 && heads_a_declaration(source, line - 1) { line = line - 1 }
+    source.line_starts[line]
+}
+
+/// Whether a line is a doc line or an annotation.
+fn heads_a_declaration(source: SourceFile, line: int) -> bool {
+    let text = source.text.substring(source.line_starts[line], source.line_starts[line + 1]).trim()
+    text.starts_with("///") || text.starts_with("@")
 }
