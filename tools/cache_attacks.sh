@@ -10,6 +10,17 @@ cd "$(dirname "$0")/.."
 # warning a shell with no terminal prints when the watchdog asks for job control.
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
 
+# KEPT ROWS JUDGED AGAINST A FRESH READING: an unheld run (`AVRA_DB_VERIFY`) compares each
+# file's Items row kept under the same text with the one a read makes now, and wrecks on a
+# difference; a run that judged no row is a failure, never a clean pass.
+judged() { # <label> <package>
+    steps=$((steps+1)); jd=$(AVRA_DB_VERIFY=items,decl AVRA_QTRACE=1 ./avra check "$2" 2>&1 | unwatched)
+    jn=$(printf '%s\n' "$jd" | awk -F'\t' '$1 == "Q" && $2 == "items" && $3 == "judged" { n += $5 } END { print n + 0 }')
+    if [ "$jn" -eq 0 ]; then fails=$((fails+1)); echo "FAIL  $1: the verify judged no kept row"
+    elif printf '%s' "$jd" | grep -q -e "Items row kept for" -e "shape moved under the same text"; then fails=$((fails+1)); echo "FAIL  $1: $(printf '%s' "$jd" | grep -e "Items row kept for" -e "shape moved" | head -2 | tr '\n' ' ')"
+    else [ -n "${VERBOSE:-}" ] && echo "ok    $1: $jn kept lines judged against a fresh reading"; fi
+}
+
 R=build/cache-attacks; fails=0; steps=0; holds=0
 # CACHE_ATTACKS names the sections to run, comma-separated (`kr,kv`); unset runs all.
 section() { [ -z "${CACHE_ATTACKS:-}" ] || case ",$CACHE_ATTACKS," in *",$1,"*) ;; *) false ;; esac; }
@@ -867,8 +878,8 @@ fi
 
 # A REFERENCE BETWEEN TWO HELD FILES IS NOT RESTORED UNTIL ASKED. `user.av` is the only
 # reader of `target`, and both stay held: the relation holds no row for the edge, yet
-# `refs_of` on the held target answers it on demand, so `--verify-held` finds the warm
-# count equal to a fresh reading. Then the target is renamed with `user.av` untouched:
+# `refs_of` on the held target answers it on demand, and the kept rows judge equal to a
+# fresh reading. Then the target is renamed with `user.av` untouched:
 # the edge must surface as the refusal a cold check speaks, never a stale held answer.
 if section hh; then
 hh=$R/hh; mkdir -p $hh/src/t $hh/src/u
@@ -879,12 +890,7 @@ printf 'use u.{user}\nprintln("hh ${user()}")\n' > $hh/src/main.av
 S "hh: cold" hh
 printf '// moved\n' >> $hh/src/main.av
 S "hh: an edit elsewhere, both ends of the edge held" hh
-steps=$((steps+1)); hh_vh=$(./avra check $hh --verify-held 2>&1 | unwatched)
-case "$hh_vh" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  hh: verify-held compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: verify-held over a held-to-held edge -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  hh: verify-held: $(printf '%s' "$hh_vh" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "hh: a held-to-held edge" $hh
 ed $hh/src/t/target.av "fn target()" "fn goal()"
 steps=$((steps+1)); hh_out=$(./avra check $hh 2>&1); hh_st=$?
 if [ $hh_st -ne 1 ]; then fails=$((fails+1)); echo "FAIL  hh: a rename the only reader never followed exited $hh_st, wanted 1"
@@ -1385,16 +1391,10 @@ for app in a b c; do
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  check [$app] speaks otherwise under the hold"; }
 done
 
-# `--verify-held` OVER A WARM `a`: every held declaration this build just kept
-# decodes back to what a fresh reading of the same file produces, and a run
-# that compared nothing is a failure, never a clean pass.
+# KEPT ROWS OVER A WARM `a`: every Items row this build just kept judges equal to what a
+# fresh reading of the same file admits.
 steps=$((steps+1)); ./avra check $R/a >/dev/null 2>&1
-vh=$(./avra check $R/a --verify-held 2>&1 | unwatched)
-case "$vh" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over a compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over a -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over a: $(printf '%s' "$vh" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "a, warm" $R/a
 
 # A CALLER'S CONST FOLLOWS ITS CALLEE'S BODY EVEN WHEN THE CALLER'S OWN FILE IS
 # HELD, NEVER THE ENTRY: `hcl/src/lib.av` declares `const M` and is a library
@@ -1416,13 +1416,7 @@ ed $R/hcl/src/seed.av "{ 41 }" "{ 42 }"
 S "hc: the callee's body moves, the held caller's const must follow" hc
 got=$($R/hc/src/main 2>&1)
 [ "$got" = "hc 42" ] || { fails=$((fails+1)); echo "FAIL  warm hc printed '$got', wanted 'hc 42' — a held const did not follow its callee's body"; }
-vh_hc=$(./avra check $R/hc --verify-held 2>&1 | unwatched)
-steps=$((steps+1))
-case "$vh_hc" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over hc compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over hc -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over hc: $(printf '%s' "$vh_hc" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "hc" $R/hc
 
 # A BARE INTRA-PACKAGE MODULE KEYS ON ITS OWN INTERFACE, NEVER THE PACKAGE'S
 # RAW TEXT: `lib.av` reaches `pad.av`'s exported `pad` through a `use` and its
@@ -1525,7 +1519,7 @@ impl Say for Pt { fn say() -> int { self.v + base() } }"
 S "mh: the impl back home" mh
 
 
-# `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
+# KEPT ROWS JUDGED OVER A HELD `collect enum`: its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
 # shape alone and the held declaration is a plain enum, so the decl wire naming
 # it (`…~collect_enum~~Command`) resolves to nothing: its references vanish and
@@ -1547,15 +1541,9 @@ export fn describe(c: Command) -> string {
 AV
 S "cold ce: a collect enum in a library module" ce
 S "warm ce: the collect enum's file is held" ce
-vh_ce=$(./avra check $R/ce --verify-held 2>&1 | unwatched)
-steps=$((steps+1))
-case "$vh_ce" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over ce compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over ce -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over ce: $(printf '%s' "$vh_ce" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "ce" $R/ce
 
-# `--verify-held` COVERS AN IMPL'S TARGET (avra-8sb5.57.86): the target lives in
+# THE JUDGEMENT COVERS AN IMPL'S TARGET: the target lives in
 # Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
 # — a held file with no OTHER declaration worth diffing would pass this suite
 # clean while the one fact an impl carries went unchecked. `vtlib/src/lib.av` is
@@ -1579,14 +1567,8 @@ export type Sq = { s: int }
 AV
 printf 'use @rt.vtlib.{Sq}\nprintln("vt ${Sq { s: 3 }.s}")\n' > $R/vt/src/main.av
 S "cold vt: a trait/type pair, no impl yet" vt
-vh_vt0=$(./avra check $R/vt --verify-held 2>&1 | unwatched)
-n_vt0=$(printf '%s' "$vh_vt0" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
-steps=$((steps+1))
-case "$vh_vt0" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl) compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (no impl) -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (no impl): $(printf '%s' "$vh_vt0" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "vt0" $R/vt
+n_vt0=$jn
 ed $R/vtlib/src/lib.av 'export type Sq = { s: int }' 'export type Sq = { s: int }
 impl Shape for Sq { fn area() -> int { self.s * self.s } }'
 ed $R/vt/src/main.av 'use @rt.vtlib.{Sq}
@@ -1594,22 +1576,16 @@ println("vt ${Sq { s: 3 }.s}")' 'use @rt.vtlib.{Shape, Sq}
 let sh: dyn Shape = Sq { s: 3 }
 println("vt ${sh.area()}")'
 S "vt: the impl lands in the same held file — a held impl is now present" vt
-vh_vt1=$(./avra check $R/vt --verify-held 2>&1 | unwatched)
-n_vt1=$(printf '%s' "$vh_vt1" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
-steps=$((steps+1))
-case "$vh_vt1" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl) compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vt (with impl) -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over vt (with impl): $(printf '%s' "$vh_vt1" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "vt1" $R/vt
+n_vt1=$jn
 # THE DELTA IS THE PROOF: +2 is the impl block's own declaration and its one
-# method, measured (avra-8sb5.57.86) against this exact fixture shape — a run
+# method, measured against this exact fixture shape — a run
 # that walked the file but skipped the impl (a kind filter dropping it, say)
 # would still pass every case above while this alone catches it.
 steps=$((steps+1))
 if [ -z "$n_vt0" ] || [ -z "$n_vt1" ] || [ "$n_vt1" -ne "$((n_vt0 + 2))" ]; then
     fails=$((fails+1))
-    echo "FAIL  the impl's own declarations never joined the held count: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
+    echo "FAIL  the impl's own declarations never joined the judged lines: no-impl=$n_vt0 with-impl=$n_vt1, wanted with-impl=no-impl+2"
 fi
 
 # A BODY EDIT MUST NOT COST A DEPENDENT ITS HOLD: `wrap` alone takes `leaf`'s
@@ -1652,17 +1628,11 @@ if [ -z "$h2" ] || [ -z "$m2" ] || [ "$h2" -lt "$((m2 - 2))" ]; then
     echo "FAIL  a body edit in leaf/mod.av cost the package its holds: held $held_vh2, wanted >= $((m2 - 2))/$m2 (only leaf/mod.av's own file need move)"
 fi
 # leaf/mod.av settles as a hold candidate now that nothing further edits it —
-# `--verify-held` then compares `helper`'s OWN kept marks (written the run
+# The judgement then compares `helper`'s OWN kept lines (written the run
 # above, while `wrap/mod.av` was held) against a fresh reading: a wrongly-set
 # `consumed` bit from that run is a MISMATCH here, never a clean pass.
 S "vh2: no-op rebuild — leaf/mod.av is now itself a hold candidate" vh2
-vh_vh2=$(./avra check $R/vh2 --verify-held 2>&1 | unwatched)
-steps=$((steps+1))
-case "$vh_vh2" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vh2 compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over vh2 -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over vh2: $(printf '%s' "$vh_vh2" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "vh2" $R/vh2
 
 # A HELD `_`-DECLARED CALLEE MUST NOT LOSE ITS ERROR UNION: `helper/mod.av`
 # declares `raise_thing`, whose `Result<int, _>` infers `SomeErr` from its
@@ -2090,13 +2060,7 @@ ND "nd: a type inserted between two in a" read
 ed $R/nd/src/a/mod.av 'export type Fnew = { n: int }
 ' ''
 ND "nd: a type nobody uses removed from a" read
-vh_nd=$(./avra check $R/nd --verify-held 2>&1 | unwatched)
-steps=$((steps+1))
-case "$vh_nd" in
-    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over nd compared nothing" ;;
-    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over nd -> clean" ;;
-    *) fails=$((fails+1)); echo "FAIL  verify-held over nd: $(printf '%s' "$vh_nd" | tail -5 | tr '\n' ' ')" ;;
-esac
+judged "nd" $R/nd
 
 # `avra explain` IS ITS OWN PROCESS, reading what an earlier check kept — and an
 # INSPECTION KEEPS NOTHING. A check, then ONE edit, then every form in a process of
@@ -2531,7 +2495,7 @@ S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held
 # each edit touching no file the collect stands in, so lib.av is held — and A's ordinal follows
 # every time. The root package's own `in package` collect follows the same edits, and `@rt/kc`'s
 # `in closure` list stands with no package collect beside it. After every step a held reading
-# answers what a fresh one does (`--verify-held`), and the evaluator agrees with the binary.
+# answers what a fresh one does (`judged`), and the evaluator agrees with the binary.
 mkdir -p $R/gk/src/m $R/gk/src/c $R/kc/src/z $R/kg/src/m
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
 printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $R/gk/src/k.av
@@ -2546,12 +2510,11 @@ printf 'use @std.meta.{Named}\nexport fn rank(_t: Named, _r: int) {}\n' > $R/kg/
 printf 'use rm.{rank}\nexport collect enum Rk = @rank in package by it.mark.args[0]\nexport fn r_at() -> int { Rk.P.ordinal }\n' > $R/kg/src/rk.av
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
 printf 'use @rt.gk.c.{a_at}\nuse @rt.kc.kc.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
-kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees with the evaluator and prints it, a held reading agrees with a fresh one
+kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees with the evaluator and prints it, its kept rows judge equal to a fresh reading
     S "kg: $1" kg
     steps=$((steps+1)); kg_out=$($R/kg/src/main 2>&1)
     case "$kg_out" in "$2 c="*) ;; *) fails=$((fails+1)); echo "FAIL  kg: $1: the binary printed '$kg_out', wanted '$2 c=…'" ;; esac
-    steps=$((steps+1)); kg_v=$(./avra check --verify-held $R/kg 2>&1); kg_st=$?
-    [ $kg_st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kg: $1: --verify-held exit $kg_st: $(printf '%s' "$kg_v" | grep -aE 'held=|verify-held:|^avra:' | head -3 | tr '\n' ' ' | cut -c1-260)"; }
+    judged "kg: $1" $R/kg
 }
 kg_step "cold" "a=0 r=0"
 printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
