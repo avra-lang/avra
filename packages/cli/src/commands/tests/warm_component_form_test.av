@@ -1,0 +1,77 @@
+//! A warm check after a provider's component changes says what a cold check of the changed
+//! tree says: a component's form is read from its provider's record, so the record must move
+//! with the form, whether the form is a record's fields or a template's quote.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use commands.{checked_at}
+use @std.avrac.testing.{vendored_meta}
+
+/// An app over a path dependency whose `kit` module exports a record component `pane`
+/// and a template component `twice`, both instanced by the app.
+fn wf_tree(name: string, pane: string, twice: string) -> string {
+    let root = "/tmp/avra-warm-component-form-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/app/src")
+    let _ = make_dirs("${root}/lib/src")
+    let _ = make_dirs("${root}/vendor/meta/src")
+    let _ = make_dirs("${root}/vendor/errors/src")
+    for path, text in vendored_meta({}) { let _ = write_text(path.replace("/w/", "${root}/"), text) }
+    let _ = write_text(
+        "${root}/lib/avra.toml",
+        "[package]\nname = \"@x/lib\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"x-lib\"\npath = \"src/main.av\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../vendor/meta\" }\n",
+    )
+    let _ = write_text("${root}/lib/src/main.av", "export fn top() -> int { 0 }\n")
+    let _ = write_text("${root}/lib/src/pane.av", pane)
+    let _ = write_text("${root}/lib/src/twice.av", twice)
+    let _ = write_text(
+        "${root}/app/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"app\"\npath = \"src/main.av\"\n\n[dependencies]\n\"@x/lib\" = { path = \"../lib\" }\n",
+    )
+    let _ = write_text(
+        "${root}/app/src/main.av",
+        "use @x.lib.pane.{pane}\nuse @x.lib.twice.{twice}\n\nexport fn f() -> int {\n    pane top { title: \"a\" }\n    twice 3 { 0 } + top.title.length\n}\n",
+    )
+    root
+}
+
+fn pane_titled() -> string { "export component pane {\n    title: string = \"\"\n}\n" }
+
+fn pane_headed() -> string { "export component pane(title: string) {\n}\n" }
+
+fn twice_doubled() -> string {
+    "use @std.meta.{Code}\n\nexport component twice(n: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.n} * 2 + \${self.body} }\n    }\n}\n"
+}
+
+fn twice_texted() -> string { twice_doubled().replace("* 2", "* true") }
+
+/// What a check of `root`'s app says, its root spelled out of it.
+fn wf_said(root: string) -> string {
+    match checked_at("${root}/app") {
+        .Ok(c) -> "ok ${c.warnings.replace(root, "<root>")}",
+        .Err(report) -> "refused ${report.replace(root, "<root>")}",
+    }
+}
+
+/// A warm check after one provider file is rewritten, beside a cold check of the rewritten tree.
+fn wf_pair(file: string, text: string) -> List<string> {
+    let warm = wf_tree("warm", pane_titled(), twice_doubled())
+    let before = wf_said(warm)
+    let _ = write_text("${warm}/lib/src/${file}", text)
+    let cold = wf_tree("cold", pane_titled(), twice_doubled())
+    let _ = write_text("${cold}/lib/src/${file}", text)
+    [before, wf_said(warm), wf_said(cold)]
+}
+
+spec "commands/check warm after a provider's component changes" {
+    given "a record component that gains a head after a check, so a named instance stops binding its name" {
+        then "the warm check reads the new form, as a cold check does" {
+            let said = wf_pair("pane.av", pane_headed())
+            said[0].starts_with("ok") && said[1] == said[2] && said[1].starts_with("refused")
+        }
+    }
+    given "a template component whose quote changes after a check, no `use` line moving" {
+        then "the warm check copies the changed template, as a cold check does" {
+            let said = wf_pair("twice.av", twice_texted())
+            said[0].starts_with("ok") && said[1] == said[2] && said[1].starts_with("refused")
+        }
+    }
+}

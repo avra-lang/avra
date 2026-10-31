@@ -13,6 +13,9 @@
 use @std.text.{parse_int}
 use @std.relation.engine.{list_cell}
 use core.{
+    Record as RecordForm,
+    ChildSlot,
+    Event as ComponentEvent,
     CollectKind,
     CollectScope,
     Plain,
@@ -543,7 +546,41 @@ export fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? 0 - 1
     let shi = f.span?.hi ?? 0 - 1
     let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${if f.hosted { "1" } else { "0" }};${f.variadic ?? 0 - 1};${f.fingerprint()}"
-    packed([head, doc_wire(f.doc), annotations_wire(f.annotations)])
+    packed([head, doc_wire(f.doc), annotations_wire(f.annotations), form_wire(f.form)])
+}
+
+/// A component's record form as a `packed` record — empty for none. Every text in it is
+/// a name a declaration wrote, which carries no `~`.
+fn form_wire(r: RecordForm?) -> string {
+    let f? = r else { return "" }
+    packed(
+        [
+            list_field(f.head),
+            packed([packed([s.name, s.of, bit_word(s.gathers)]) for s in f.slots]),
+            bit_word(f.named),
+            bit_word(f.checks),
+            list_field(some_list(f.fn_field)),
+            bit_word(f.fn_optional),
+            packed([packed([e.name, list_field(e.says), bit_word(e.default)]) for e in f.events]),
+            bit_word(f.words),
+        ],
+    )
+}
+
+/// The inverse: none for the empty wire, and none for one that is not eight parts.
+fn form_of_wire(wire: string) -> RecordForm? {
+    let p = unpacked(wire)
+    if p.length != 8 { return null }
+    RecordForm {
+        head: read_list(p[0]),
+        slots: [ChildSlot { name: q[0], of: q[1], gathers: q[2] == "1" } for x in unpacked(p[1]) for q in [unpacked(x)] if q.length == 3],
+        named: p[2] == "1",
+        checks: p[3] == "1",
+        fn_field: read_list(p[4]).first(),
+        fn_optional: p[5] == "1",
+        events: [ComponentEvent { name: q[0], says: read_list(q[1]), default: q[2] == "1" } for x in unpacked(p[6]) for q in [unpacked(x)] if q.length == 3],
+        words: p[7] == "1",
+    }
 }
 
 /// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
@@ -713,6 +750,7 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
         variadic: if seat < 0 { null } else { seat },
         doc: doc_of_wire(top[1]),
         annotations: annotations_of_wire(top[2]),
+        form: if top.length > 3 { form_of_wire(top[3]) } else { null },
     }
     if "${facts.fingerprint()}" != p[18] { return null }
     facts
