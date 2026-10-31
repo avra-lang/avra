@@ -5,6 +5,7 @@
 use core.{DeclId, ModulePath, joined, flatten, same_decl, some_list}
 use features.{Decl, kind_word}
 use compiler.store.{Store, Stored, node_key}
+use core.debug.{db_verified_items, wreck}
 
 impl Workspace {
     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
@@ -18,7 +19,10 @@ impl Workspace {
                 "\n",
             )
             let key = items_key(self.root, path, self.text_digest(path))
-            if store.get(Stored.Unit, key) != text { let _ = store.keep(Stored.Unit, key, text, []) }
+            let kept = store.get(Stored.Unit, key)
+            if kept == text { continue }
+            if kept != null && db_verified_items() && items_identity(kept!) != items_identity(text) { wreck(items_drifted(path)) }
+            let _ = store.keep(Stored.Unit, key, text, [])
         }
     }
 
@@ -76,3 +80,14 @@ impl RecordBodies {
 /// WHERE A FILE'S ITEMS ARE KEPT: its path and the digest of the text they were read from, so
 /// a record of any revision reads back the lines it was made with.
 fn items_key(root: string, path: string, digest: string) -> string { node_key(Stored.Unit, ["items", root, path, digest]) }
+
+/// WHAT A FILE'S TEXT ALONE DECIDES OF ITS ITEMS: each line's identity columns, its shape and
+/// payload left out — those read the declarations it names, which move without its text.
+fn items_identity(text: string) -> string { joined([identity_of(l.split("\t")) for l in text.split("\n").drop(1)], "\n") }
+
+/// A line's identity: a maker line whole, a declaration line from its path to its facts.
+fn identity_of(p: List<string>) -> string { if p.length < 13 { joined(p, "\t") } else { joined(p.slice(1, 13), "\t") } }
+
+fn items_drifted(path: string) -> string {
+    "the Items row kept for `${path}` names other declarations than a read of the same text admits — a held file would mint the wrong ones"
+}
