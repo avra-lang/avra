@@ -2,14 +2,15 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, ModulePath, joined, flatten}
+use core.{DeclId, ModulePath, joined, flatten, wreck, qtrace}
+use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
-use core.debug.{db_verified_items, wreck}
 
 impl Workspace {
     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
-    /// the record just made, under the text they were read from. An unread file's stand as its last read kept
-    /// them.
+    /// the record just made, under the text they were read from. An unread file's stand as its
+    /// last read kept them. Under `AVRA_DB_VERIFY=decl` the shapes kept for the same text are
+    /// judged against the ones made now.
     fn keep_items(store: Store, m: ModulePath, made: string) {
         let by_file = lines_by_file(made.split("\n"))
         for path in [p for p in self.module_files(m) if self.read_here(p)] {
@@ -21,6 +22,7 @@ impl Workspace {
             let kept = store.get(Stored.Unit, key)
             if kept == text { continue }
             if kept != null && db_verified_items() && items_identity(kept!) != items_identity(text) { wreck(items_drifted(path)) }
+            if kept != null && db_verified_decl() { shapes_judged(path, kept!, text) }
             let _ = store.keep(Stored.Unit, key, text, [])
         }
     }
@@ -95,3 +97,49 @@ fn identity_of(p: List<string>) -> string { if p.length < 13 { joined(p, "\t") }
 fn items_drifted(path: string) -> string {
     "the Items row kept for `${path}` names other declarations than a read of the same text admits — a held file would mint the wrong ones"
 }
+
+/// A file's kept shapes judged against the ones made now, declaration by declaration, by
+/// name: a moved signature, seat, written bit, bound or aim is a read the kept row missed
+/// and wrecks; a moved cancel reach, const value, layout word or consumed mark may move with
+/// another file and is only traced.
+fn shapes_judged(path: string, kept: string, made: string) {
+    let was = by_wire(path, kept)
+    for w, now in by_wire(path, made) {
+        let prior? = was.get(w) else { continue }
+        let old = shape_words(prior)
+        for j, word in shape_words(now) {
+            if j < old.length && old[j] != word { shape_moved(w, j, now[0], old[j], word) }
+        }
+    }
+}
+
+/// An Items text's declaration lines by the wire each spells.
+fn by_wire(path: string, text: string) -> Map<string, List<string>> {
+    let lines = [read_fields(l) for l in text.split("\n").drop(1)]
+    let decls = [p for p in lines if declares(p)]
+    mut out: Map<string, List<string>> = {}
+    for j, w in line_wires(path, lines) { out.set(w, decls[j]) }
+    out
+}
+
+/// A line's shape: its word, then each payload field.
+fn shape_words(line: List<string>) -> List<string> { [line[0]].concat(line.drop(13)) }
+
+/// One shape word moved between the kept line and the made one.
+fn shape_moved(wire: string, j: int, word: string, was: string, now: string) {
+    if traced_only(word, j, was, now) { qtrace("Q\tdecl\tmoved\t${wire}\t${j}\n") } else { wreck("a kept declaration's shape moved under the same text — ${wire} field ${j}") }
+}
+
+/// Whether a shape word may move with another file: a layout word, a const's value or verdict
+/// (never its type), a fn's marks (they carry `consumed`) or its cancel reach.
+fn traced_only(word: string, j: int, was: string, now: string) -> bool {
+    when {
+        j == 0 -> true
+        word == "const" -> j > 1 || type_part(was) == type_part(now)
+        word == "fn" || word == "extern" -> j == 3 || j == 6 || j == 7
+        _ -> false
+    }
+}
+
+/// A const's type, the part of its first payload field before its print.
+fn type_part(field: string) -> string { field.split(";").first() ?? "" }
