@@ -773,7 +773,7 @@ impl Kernel {
 
     fn settle(key: Key, value_hash: int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
-        let deps = self.closed_frame()
+        let deps = self.closed_reads(key)
         let kept = kept_since(self.cell(key), value_hash)
         self.why(key.family, if kept != null { "same" } else { "changed" })
         self.settled(key, deps, kept ?? self.rev.get(), value_hash, began)
@@ -791,7 +791,7 @@ impl Kernel {
     /// comparison after it is exact.
     fn settle_lazy(key: Key, fingerprint: fn() -> int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
-        let deps = self.closed_frame()
+        let deps = self.closed_reads(key)
         let prior? = self.cell(key) else {
             self.settled(key, deps, self.rev.get(), null, began)
             if self.folds_kept.get() { self.folds.put("${edge_of(key)}", fingerprint) }
@@ -818,6 +818,15 @@ impl Kernel {
 
     /// Closes the innermost open frame: its edges, held at their own
     /// size, with the frame's restores replayed and its stacks popped.
+    /// `key`'s frame closed, its reads kept: a recursive view's read of its own cell
+    /// contributes nothing, so no cell stands on itself.
+    fn closed_reads(key: Key) -> List<int> {
+        let deps = self.closed_frame()
+        let own = edge_of(key)
+        if !deps.contains(own) { return deps }
+        [e for e in deps if e != own]
+    }
+
     fn closed_frame() -> List<int> {
         let edges = self.asker.pending.get().last()!.get()
         let restores = self.asker.restore.get()
