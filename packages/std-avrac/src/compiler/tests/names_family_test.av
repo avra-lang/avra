@@ -4,12 +4,12 @@
 // names the stable, append-only ordinals: `Visible` is 4, `WriteSummary`
 // is 16, `Names` is 26 (compiler/workspace.av's `ordinal`).
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, write_summary, write_summary_answers}
 use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn names_summary_key(d: DeclId) -> Key { Key { family: family_ordinal("WriteSummary"), arg: d.index } }
+fn names_summary_key(ws: Workspace, d: DeclId) -> Key { write_summary_answers().under(ws.query_db()).int_key(d.index) }
 
 fn names_key(d: DeclId) -> Key { Key { family: family_ordinal("Names"), arg: d.index } }
 
@@ -39,7 +39,7 @@ fn names_source(a_body: string, b_body: string) -> string {
 /// `b`'s name slice after its write summary has read it.
 fn names_slice_of_b(ws: Workspace) -> int {
     let _ = ws.items(ws.file_id("/w/src/main.av"))
-    let _ = ws.summary_of(names_decl_named(ws, "b"))
+    let _ = write_summary(ws, names_decl_named(ws, "b"))
     ws.name_slice(names_decl_named(ws, "b"))
 }
 
@@ -49,21 +49,21 @@ spec "compiler/workspace — Family.Names is declaration-grain" {
             let ws = names_workspace(names_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
             let b = names_decl_named(ws, "b")
-            let _ = ws.summary_of(b)
+            let _ = write_summary(ws, b)
             ws
                 .db
-                .edges_by_reader(names_summary_key(b))
+                .edges_by_reader(names_summary_key(ws, b))
                 .any((k: Key) -> k.family == names_key(b).family && k.arg == names_key(b).arg)
         }
         then "and names the file's Visible, which carries the namespace the slice leaves out" {
             let ws = names_workspace(names_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
             let b = names_decl_named(ws, "b")
-            let _ = ws.summary_of(b)
+            let _ = write_summary(ws, b)
             let v = names_visible_key(ws)
             ws
                 .db
-                .edges_by_reader(names_summary_key(b))
+                .edges_by_reader(names_summary_key(ws, b))
                 .any((k: Key) -> k.family == v.family && k.arg == v.arg)
         }
     }
