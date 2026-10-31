@@ -241,7 +241,25 @@ export enum CollectScope {
 /// `path` is a NAME run because the grammar may grow multi-segment
 /// paths; today it holds zero or one.
 @derive(Identity)
-export type ProjField = { field: Plain, path: List<Plain> }
+@derive(Grammar)
+@derive(Makes)
+export type ProjField = { field: Plain, path: List<Plain> = [] }
+
+/// One `by` key as written: its `it.a.b` segments, and the `[i]` it reads
+/// when written.
+@derive(Grammar)
+@derive(Makes)
+export type OrderKey = { segs: List<Plain>, index: string? = null }
+
+impl OrderKey {
+    /// The key as the one text a collect orders by: its segments joined by
+    /// `.`, its `[i]` after them.
+    fn spelled() -> Plain {
+        let path = [s.of for s in self.segs].join(".")
+        let i? = self.index else { return Plain(path) }
+        Plain("${path}[${i}]")
+    }
+}
 
 /// A collect's projection: the type it builds, and each field's fill.
 @derive(Identity)
@@ -428,6 +446,9 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_Given())
         .concat(grammar_payloads_FnSeat())
         .concat(grammar_payloads_CatchArm())
+        .concat(grammar_payloads_Mark())
+        .concat(grammar_payloads_ProjField())
+        .concat(grammar_payloads_OrderKey())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -737,6 +758,7 @@ export const pronoun_param: Param = Param {
 // mitigation the doctrine names is paid in full: the unknown SPEAKS
 // (workspace's claim law) rather than falling through.
 @derive(Identity)
+@derive(Grammar)
 export type Mark = {
     name: string,
     args: List<string>,

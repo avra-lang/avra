@@ -11,46 +11,56 @@ use core.{
     Scoped,
     BodyView,
     SyntaxArena,
+    Slots,
+    Built,
+    computed,
     flatten,
     some_list,
 }
-use features.{LangNode, Builder, arg_text}
+use features.{arg_text}
 
-fn build_annotated(b: Builder) -> Result<LangNode, string> {
-    let name = b.token(0)?
-    let args = b.exprs(1)?
-    let d = b.stmt(2)?
-    // the token carries its `@`; the callee is the name behind it
-    let word = name.text.substring(1, name.text.length)
-    let callee = b.store.alloc_expr(Expr.Ident(Scoped(word)), name.span)
-    let at = b.span ?? name.span
-    applied(b, word, args, at)
-    b.store.annotate_before(d, Annotation { name: word, callee: callee, args: args, span: b.span })
-    .Ok(LangNode.NStmt(d))
+/// `@name(args)` before a declaration: the annotation filed on it, the
+/// declaration answered.
+@computed
+fn annotated_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let d? = (s.stmts_of("decl")?).first() else { return .Err(no_declaration()) }
+    let word = mark_word(s.text_of("name")?)
+    let named_at? = s.at_of("name")? else { return .Err(no_place()) }
+    let args = s.exprs_of("args")?
+    let callee = store.alloc_expr(Expr.Ident(Scoped(word)), named_at)
+    let _ = applied(store, word, args, s.built_at() ?? named_at)
+    store
+        .annotate_before(d, Annotation { name: word, callee: callee, args: args, span: s.built_at() })
+    .Ok(Built.Stmt(d))
 }
 
 /// A MARK on a declared member: the word behind the `@`, each
 /// argument's words, and the call a reader may splice. Nothing here
 /// is walked where it is written.
-fn build_mark(b: Builder) -> Result<LangNode, string> {
-    let word = b.token(0)?
-    let args = b.exprs(1)?
-    // the token carries its `@`; the mark is the word behind it
-    let name = word.text.substring(1, word.text.length)
-    let at = b.span ?? word.span
+@computed
+fn mark_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let name = mark_word(s.text_of("name")?)
+    let named_at? = s.at_of("name")? else { return .Err(no_place()) }
+    let args = s.exprs_of("args")?
+    let at = s.built_at() ?? named_at
     .Ok(
-        LangNode
-            .NMark(
+        Built
+            .Marked(
                 Mark {
                     name: name,
-                    args: [arg_text(b.store, e) for e in args if b.store.arg_label(e) == null],
-                    named: flatten([some_list(named_arg(b.store, e)) for e in args]),
+                    args: [arg_text(store, e) for e in args if store.arg_label(e) == null],
+                    named: flatten([some_list(named_arg(store, e)) for e in args]),
                     span: at,
-                    call: applied(b, name, args, at),
+                    call: applied(store, name, args, at),
                 },
             ),
     )
 }
+
+/// The word behind a `@`: the token carries it.
+fn mark_word(written: string) -> string { written.substring(1, written.length) }
 
 /// An argument written `label: value`, as the pair a mark carries.
 fn named_arg(store: SyntaxArena, e: ExprId) -> MarkArg? {
@@ -62,16 +72,23 @@ fn named_arg(store: SyntaxArena, e: ExprId) -> MarkArg? {
 /// where the `@` stands: a reader fills the hole with the value the
 /// annotation judges and splices the call where it reads it, so the
 /// call is typed there and its refusals point here.
-fn applied(b: Builder, name: string, args: List<ExprId>, at: Span) -> ExprId {
-    let value = b.store.alloc_expr(Expr.Ident(Scoped("value")), at)
-    let hole = b.store.alloc_expr(Expr.Ident(Scoped("\${0}")), at)
-    b.store.mark_hole(hole)
-    let call = b.store.alloc_expr(Expr.Call(Scoped(name), [], [hole].concat(args)), at)
+fn applied(store: SyntaxArena, name: string, args: List<ExprId>, at: Span) -> ExprId {
+    let value = store.alloc_expr(Expr.Ident(Scoped("value")), at)
+    let hole = store.alloc_expr(Expr.Ident(Scoped("\${0}")), at)
+    store.mark_hole(hole)
+    let call = store.alloc_expr(Expr.Call(Scoped(name), [], [hole].concat(args)), at)
     // placeless, so no doc comment takes it for the declaration it wraps
-    let body = [b.store.alloc_stmt(Stmt.ExprStmt(call))]
-    let q = b
-        .store
+    let body = [store.alloc_stmt(Stmt.ExprStmt(call))]
+    let q = store
         .alloc_expr(Expr.Body("quote", ["${name}(", ")"], [value], BodyView.Verbatim(body, [])), at)
-    b.store.mark_quote_at(q)
+    store.mark_quote_at(q)
     q
 }
+
+// ── voices ──
+
+fn no_declaration() -> string {
+    "defect: an annotation's rule built no declaration — the grammar and the door disagree"
+}
+
+fn no_place() -> string { "defect: an `@` word with no place — the arena and the grammar disagree" }

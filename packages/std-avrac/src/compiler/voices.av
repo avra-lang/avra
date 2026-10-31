@@ -822,7 +822,7 @@ fn component_names(ws: Workspace, path: string) -> List<string> { components_in(
 
 /// What one lex of a file's text answers about its block words — the scans' one query.
 @query
-fn text_scan_of(db: RelDb, path: string) -> TextScan { scan_text(file_text(db, path), avra().keywords) }
+fn text_scan_of(db: RelDb, path: string) -> TextScan { scan_text(file_text(db, path), language_words(db, "").split(" ")) }
 
 /// Whether a file may declare a block word.
 @query
@@ -846,14 +846,13 @@ fn unread_word(name: string, origin: string) -> ComponentWord {
     ComponentWord { word: name, declared: name, form: Instancing.Unread, origin: origin, own: true }
 }
 
-/// What a file's module exports as components: its record says, or — with no
-/// record — the file's own tokens do.
+/// What a file exports as components: a held file's record says; a file this attempt reads,
+/// or one with no record, says it in its own tokens — never in the record its last read kept.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn exported_components(ws: Workspace, path: string) -> List<string> {
-    let rows? = module_block_rows(ws, ws.module_path_of(path)) else {
-        return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] }
-    }
-    [r.name for r in rows if r.exported && facts_unblocked(r.facts)?.is_component ?? false]
+    let rows = if ws.read_here(path) { null } else { module_block_rows(ws, ws.module_path_of(path)) }
+    if rows == null { return if file_declares_component(ws, path) { ws.lexed_components(path) } else { [] } }
+    [r.name for r in rows! if r.path == path && r.exported && facts_unblocked(r.facts)?.is_component ?? false]
 }
 
 /// Every component the given files' modules export, by name: the modules that

@@ -1,10 +1,19 @@
 //! Parse-time lowering: `export` marks the declaration it heads and
 //! answers that same node.
-use features.{LangNode, Builder}
+use core.{Slots, Built, computed}
 
-fn build_export(b: Builder) -> Result<LangNode, string> {
-    let d = b.stmt(0)?
-    if b.store.is_exported(d) { return .Err("`export` written twice") }
-    b.store.mark_exported(d)
-    .Ok(LangNode.NStmt(d))
+/// `export` before a declaration: the declaration, marked.
+@computed
+fn exported_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let d? = (s.stmts_of("decl")?).first() else { return .Err(no_declaration()) }
+    if store.is_exported(d) { return .Err(exported_twice()) }
+    store.mark_exported(d)
+    .Ok(Built.Stmt(d))
 }
+
+// ── voices ──
+
+fn exported_twice() -> string { "`export` written twice" }
+
+fn no_declaration() -> string { "defect: `export`'s rule built no declaration — the grammar and the door disagree" }

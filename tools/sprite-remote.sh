@@ -473,7 +473,23 @@ supervise() {
         elif [ "${route%%:*}" = builder ]; then
             # The merge-base's published compiler stands as the builder, byte for byte across runs, so
             # the store it filled is still its own; this tree's compiler is never built for the run.
-            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "$(builder_stamp "${route#builder:}")" ]; then
+            # A lane that needs a newer one (a grammar the published builder cannot read) keeps it at
+            # build/avra.builder, and that stands instead, until the lane removes it. One that does not
+            # run is said and passed over, never stood in silently.
+            lane_builder=
+            if [ -e build/avra.builder ]; then
+                lane_sha=$(sha256sum build/avra.builder | cut -c1-12)
+                if [ -x build/avra.builder ] && timeout 20 build/avra.builder help >/dev/null 2>&1; then
+                    lane_builder=$lane_sha
+                else
+                    echo "sprite-run: the lane's own builder (build/avra.builder, $lane_sha) does not run — the published builder stands" >&2
+                fi
+            fi
+            if [ -n "$lane_builder" ]; then
+                cmp -s build/avra.builder build/avra || cp -p build/avra.builder build/avra
+                : > build/.avra-compiler-hash
+                compiler="builder, the lane's own (build/avra.builder, $lane_builder)"
+            elif [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "$(builder_stamp "${route#builder:}")" ]; then
                 compiler="builder, warm (merge-base key ${route#builder:})"
             elif install_published "${route#builder:}"; then
                 builder_stamp "${route#builder:}" > build/.avra-builder-key

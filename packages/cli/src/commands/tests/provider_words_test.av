@@ -1,0 +1,52 @@
+//! A file's block words come from its use lines and from what its providers declare NOW: a
+//! provider that renames its component moves the words of a file whose use lines never
+//! moved, so a warm check reads it as a cold one does.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use commands.{checked_at}
+
+/// A package whose `main.av` instances a component its `lib` module declares.
+fn instancing(name: string) -> string {
+    let root = "/tmp/avra-provider-words-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"pw\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", "use lib.{tag}\n\nlet t = tag 7 {}\nt.note\n")
+    let _ = write_text(
+        "${root}/src/lib/a.av",
+        "export component tag(head: int) {\n    note: string = \"a\"\n}\n",
+    )
+    root
+}
+
+/// The provider's component renamed under the same use line.
+fn renamed(root: string) {
+    let _ = write_text(
+        "${root}/src/lib/a.av",
+        "export component mark(head: int) {\n    note: string = \"a\"\n}\n",
+    )
+}
+
+/// What a check of `root` says, its root spelled out of it.
+fn said(root: string) -> string {
+    let words = match checked_at(root) { .Ok(c) -> c.warnings, .Err(r) -> r }
+    words.replace(root, "<root>")
+}
+
+/// A warm check after the rename, beside a cold one of the same tree.
+fn warm_and_cold() -> List<string> {
+    let warm = instancing("warm")
+    let _ = said(warm)
+    renamed(warm)
+    let cold = instancing("cold")
+    renamed(cold)
+    [said(warm), said(cold)]
+}
+
+spec "commands/check — a provider's words are read as they stand" {
+    given "a component renamed in its provider under an unmoved use line" {
+        then "a warm check says what a cold one says" {
+            let seen = warm_and_cold()
+            seen[0] == seen[1]
+        }
+    }
+}

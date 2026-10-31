@@ -26,7 +26,7 @@
 //! held rows is let go with its last holder.
 //!
 use rows.{Rows, named_rows, Stamp, INT_CAP}
-use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table, edge_of}
+use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table, edge_of, list_cell}
 use stable.{
     Writer,
     Reader,
@@ -74,7 +74,8 @@ export type Db = {
     cells: Cell<Map<string, int>>,
     runs: Cell<List<int>>,
     names: Cell<List<string>>,
-    asking: Cell<int>,
+    /// Each open `@query` body, innermost last: whether its answer is kept.
+    asking: Cell<List<bool>>,
     written: Cell<int>,
     /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
     cap: Cell<int>,
@@ -160,6 +161,9 @@ export type AnswerRef = {
     spelled: fn(int) -> string?,
     arg: fn(string) -> int?,
     hash: fn(int) -> int?,
+    /// Whether a reader of one of these answers stands on the answer itself, by its name and
+    /// digest, rather than on what it read: a query's, whose key is a name another process reads.
+    by_answer: bool = false,
 }
 
 impl AnswerRef {
@@ -239,6 +243,7 @@ fn made(durable: Durable) -> Db {
     let row_families: Cell<List<int>> = Cell.new([])
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
+    let asking: Cell<List<bool>> = Cell.new([])
     let names: Cell<List<string>> = Cell.new([""])
     let registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>> = Cell.new([])
     let relations: Cell<List<RelRef>> = Cell.new([])
@@ -267,7 +272,7 @@ fn made(durable: Durable) -> Db {
         cells: cells,
         runs: runs,
         names: names,
-        asking: Cell.new(0),
+        asking: asking,
         cap: Cell.new(0),
         written: Cell.new(0),
     }
@@ -408,7 +413,7 @@ impl Db {
     /// Whether a write with no owner named is refused: inside a
     /// `@query`'s body it is, spoken — anywhere else it is no one's.
     fn unowned_refused() -> bool {
-        if self.asking.get() == 0 { return false }
+        if self.asking.get().is_empty() { return false }
         self.refuse(query_writes())
         true
     }
@@ -437,21 +442,31 @@ impl Db {
     /// Whose a row stamped `owner` is, in words.
     fn whose(owner: int) -> string { if owner == 0 { "no one's" } else { "`${self.names.get()[owner]}`'s" } }
 
-    /// A `@query`'s body entered, and left.
+    /// A `@query`'s body entered, and left: whether its answer is kept.
     fn entered() {
-        self.asking.set(self.asking.get() + 1)
+        self.asking.push(true)
         open_queries().set(open_queries().get() + 1)
     }
 
-    fn left() {
-        self.asking.set(self.asking.get() - 1)
+    fn left() -> bool {
+        let open = self.asking.get()
+        self.asking.set(open.slice(0, open.length - 1))
         open_queries().set(open_queries().get() - 1)
+        open.last() ?? true
+    }
+
+    /// The running `@query` cannot finish its answer: it reaches the asker, and no cell holds
+    /// it, so the next ask computes again.
+    fn unkept() {
+        let open = self.asking.get()
+        if open.is_empty() { trapped(unkept_outside()) }
+        self.asking.set_at(open.length - 1, false)
     }
 
     /// A read of this Db's rows that no open query hears: some query is open elsewhere,
     /// so that query stands on rows its record can never name.
     fn foreign_read() {
-        if open_queries().get() > 0 && self.asking.get() == 0 {
+        if open_queries().get() > 0 && self.asking.get().is_empty() {
             foreign_reads().set(foreign_reads().get() + 1)
         }
     }
@@ -534,6 +549,10 @@ impl Db {
 
     fn answer_leaves(k: Key) -> List<Leaf>? {
         let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        if owner.by_answer {
+            let named = self.spelled_leaves(owner, k)
+            if named != null { return named }
+        }
         let edge = edge_of(k)
         let noted? = self.leaves.get().get("${edge}") else { return self.spelled_leaves(owner, k) }
         self.known(edge, noted)
@@ -801,17 +820,37 @@ fn open_hash<R>(s: Slot<R>) -> int {
 
 // ── queries and inputs ──
 
-/// One `@query`'s or `@input`'s answers under every Db, by the Db's id.
-export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>>, name: string }
+/// One `@query`'s or `@input`'s answers under every Db, by the Db's id: `name` keeps them past
+/// the process, `word` names their family in the kernel's counts and traces.
+export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>>, name: string, word: string, dense: bool }
 
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, spells: Cell<List<string>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int>, next: Cell<int>, free: Cell<List<int>> }
+type AnswersUnder<V> = {
+    memo: Relation<V>,
+    args: Cell<Map<string, int>>,
+    spells: Cell<List<string>>,
+    ints: Cell<List<int>>,
+    again: Table<fn() -> V>,
+    cap: int,
+    since: Cell<int>,
+    next: Cell<int>,
+    free: Cell<List<int>>,
+    /// Whether a call is keyed by a process's own number, which only `named` makes durable.
+    dense: bool,
+    /// Each int-keyed call's number, by its arg.
+    numbers: Cell<List<int>>,
+    named: Cell<DenseNames?>,
+}
 
-export fn answers<V>(name: string) -> Answers<V> {
+/// How a query keyed by one dense number names its calls past the process: the number's
+/// durable spelling, its inverse in this process, and the call asked by its number alone.
+export type DenseNames = { spell: fn(int) -> string?, number: fn(string) -> int?, ask: fn(int) -> void }
+
+export fn answers<V>(name: string, word: string, dense: bool) -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
-    Answers { held: Cell.new(none), name: name }
+    Answers { held: Cell.new(none), name: name, word: word, dense: dense }
 }
 
 impl Answers<V> {
@@ -830,8 +869,9 @@ impl Answers<V> {
         let id = db.id
         let kernel = db.engine()
         let family = kernel.family()
+        kernel.named(family, self.word)
         kernel.set_verify(family, (arg: int) -> reasked(slots.get()[id], arg))
-        self.placed(db, held_in(kernel, family, db.cap.get()))
+        self.placed(db, held_in(kernel, family, db.cap.get(), self.dense))
     }
 
     /// `made` kept as the answers under `db`, until the Db closes or is
@@ -850,6 +890,7 @@ impl Answers<V> {
                     spelled: (arg: int) -> held_spelled(slots, id, arg),
                     arg: (spelled: string) -> held_arg(slots, id, spelled),
                     hash: (arg: int) -> held_hash(slots, id, arg),
+                    by_answer: true,
                 },
             )
         made
@@ -862,26 +903,29 @@ fn held_family<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int) -> int {
     h.memo.query_key(0).family
 }
 
-/// The arguments call `arg` was asked with, spelled.
+/// The arguments call `arg` was asked with, spelled so another process reads the same call.
 fn held_spelled<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> string? {
     let h? = slots.get()[id] else { return null }
-    h.spelled_at(arg)
+    h.durable_at(arg)
 }
 
-/// The call asked with `spelled`, none if it was never asked here.
+/// The call a durable spelling names here — asked by its number when this process never
+/// asked it; none for a spelling that names nothing here.
 fn held_arg<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, spelled: string) -> int? {
     let h? = slots.get()[id] else { return null }
-    h.args.get().get(spelled)
+    h.durable_arg(spelled)
 }
 
-/// The hash of call `arg`'s settled value, none until it settles.
+/// The hash of call `arg`'s settled value — the call asked first, by its number, when it
+/// never settled here; none for one nothing can ask.
 fn held_hash<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> int? {
     let h? = slots.get()[id] else { return null }
-    h.memo.kernel.value_hash_of(h.memo.query_key(arg))
+    h.hash_asked(arg)
 }
 
 /// A query's empty answers in one kernel family.
-fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
+fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnder<V> {
+    let none: DenseNames? = null
     let free: Cell<List<int>> = Cell.new([])
     let memo: Relation<V> = new_memo(kernel, family)
     let args: Cell<Map<string, int>> = Cell.new({})
@@ -898,6 +942,9 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
         since: Cell.new(0),
         next: Cell.new(0),
         free: free,
+        dense: dense,
+        numbers: list_cell(),
+        named: Cell.new(none),
     }
 }
 
@@ -1042,16 +1089,60 @@ impl AnswersUnder<V> {
         }
         let made = self.arg(spelled_with([(w: Writer) -> w.int(n)]))
         if inside { self.remember_int(n, made) }
+        while self.numbers.get().length <= made { self.numbers.push(-1) }
+        self.numbers.set_at(made, n)
         made
+    }
+
+    /// Whether this query's calls name themselves past the process yet.
+    fn durably_named() -> bool { !self.dense || self.named.get() != null }
+
+    /// How a dense-keyed query's calls are named past the process, set by its first call.
+    fn durable_by(names: DenseNames) { self.named.set(names) }
+
+    /// Call `arg`'s spelling another process reads alike: its arguments as the codec spells
+    /// them, or — keyed by a dense number — that number's durable name; none for a number no
+    /// name stands for.
+    fn durable_at(arg: int) -> string? {
+        if !self.dense { return self.spelled_at(arg) }
+        let names? = self.named.get() else { return null }
+        let n? = self.number_at(arg) else { return null }
+        let spell = names.spell
+        spell(n)
+    }
+
+    /// `durable_at`'s inverse: the call a spelling names here, interned when never asked.
+    fn durable_arg(spelled: string) -> int? {
+        if !self.dense { return self.args.get().get(spelled) }
+        let names? = self.named.get() else { return null }
+        let number = names.number
+        let n? = number(spelled) else { return null }
+        self.int_arg(n)
+    }
+
+    /// The number call `arg` was asked with, when it was asked by one.
+    fn number_at(arg: int) -> int? {
+        if arg < 0 || arg >= self.numbers.get().length { return null }
+        let n = self.numbers.get()[arg]
+        if n < 0 { null } else { n }
+    }
+
+    /// Call `arg`'s settled hash, the call asked by its number first when it never settled.
+    fn hash_asked(arg: int) -> int? {
+        let key = self.memo.query_key(arg)
+        let held = self.memo.kernel.value_hash_of(key)
+        if held != null { return held }
+        let names? = self.named.get() else { return null }
+        let n? = self.number_at(arg) else { return null }
+        let ask = names.ask
+        ask(n)
+        self.memo.kernel.value_hash_of(key)
     }
 
     fn remember_int(n: int, made: int) {
         while self.ints.get().length <= n { self.ints.push(-1) }
         self.ints.set_at(n, made)
     }
-
-    /// The cell an int argument's call lives in.
-    fn int_key(n: int) -> Key { self.memo.query_key(self.int_arg(n)) }
 
     /// An open call computed: `body` run, its answer settled under the
     /// reads the kernel recorded.
@@ -1149,8 +1240,12 @@ impl AnswersUnder<V> {
         db.entered()
         defer self.abandoned_unless(db, settled, arg)
         let value = body()
-        db.left()
+        let kept = db.left()
         settled.set(true)
+        if !kept {
+            self.memo.kernel.abandon(self.memo.query_key(arg))
+            return Run { value: value, wrote: true }
+        }
         // digested as it settles: its readers cut off on that digest
         let answer = self.memo.finish(arg, value, digest(value))
         let key = self.memo.query_key(arg)
@@ -1162,7 +1257,7 @@ impl AnswersUnder<V> {
     /// here and no open query in the kernel.
     fn abandoned_unless(db: Db, settled: Cell<bool>, arg: int) {
         if settled.get() { return }
-        db.left()
+        let _ = db.left()
         self.memo.kernel.abandon(self.memo.query_key(arg))
     }
 
@@ -1172,7 +1267,8 @@ impl AnswersUnder<V> {
     }
 }
 
-/// A run's answer and whether a row was filed or removed while it ran.
+/// A run's answer and whether a row was filed or removed while it ran — an unkept run counts
+/// as one, so no record keeps its answer.
 type Run<V> = { value: V, wrote: bool }
 
 /// How an answer is kept past the process: the query's durable name, the
@@ -1187,6 +1283,10 @@ export fn code_keyed(name: string, hash: string?) -> string? {
 export type KeptRecord<V> = { query: string?, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
 
 // ── voices ──
+
+fn unkept_outside() -> string {
+    "`unkept()` says a running `@query` cannot finish its answer, and no query is running here"
+}
 
 fn query_writes() -> string {
     "a `@query` wrote a row with no owner — a query answers, it writes no rows of its own; hand the rows to a named owner (`Rel.replaced(db, owner, rows)`)"
