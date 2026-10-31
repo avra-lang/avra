@@ -39,6 +39,7 @@ any unheld call is. Anything else is refused, by file and line.
     clock_holds.py --self   the fixtures alone
 """
 import glob
+import avsrc
 import re
 import sys
 
@@ -179,7 +180,7 @@ def main():
         return 0
     sources = sorted(glob.glob("runtime/*.c") + glob.glob("runtime/host/*.c")
                       + glob.glob("packages/*/src/c/*.c"))
-    declaring = sorted(p for p in glob.glob("packages/**/*.av", recursive=True) if "/tests/" not in p)
+    declaring = avsrc.av_files(["packages"])
     vendored = sorted(glob.glob("packages/*/vendor/**/*.c", recursive=True))
     found, calls, externs, holders = [], 0, 0, set()
     for path in sources:
