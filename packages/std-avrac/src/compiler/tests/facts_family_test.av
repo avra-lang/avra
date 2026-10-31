@@ -21,16 +21,14 @@
 // syntax_receivers_test.av already does: `Resolved` is 5, `Folded` is
 // 10, `References` is 19 (places in `Family`, compiler/workspace.av).
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, folded_in_key}
 use compiler.host.{memory_host}
 use core.{FileId}
-use @std.relation.engine.{Key}
+use @std.relation.engine.{Key, same_key}
 
 fn references_key(f: FileId) -> Key { Key { family: family_ordinal("FileRefs"), arg: f.index } }
 
 fn resolved_key(f: FileId) -> Key { Key { family: family_ordinal("Resolved"), arg: f.index } }
-
-fn folded_key(f: FileId) -> Key { Key { family: family_ordinal("Folded"), arg: f.index } }
 
 fn facts_workspace(main: string) -> Workspace {
     test_workspace(
@@ -65,7 +63,7 @@ spec "compiler/references — a foreign resolved/folded read depends on their ow
             ws
                 .db
                 .edges_by_reader(references_key(f))
-                .any((k: Key) -> k.family == folded_key(f).family && k.arg == folded_key(f).arg)
+                .any((k: Key) -> same_key(k, folded_in_key(ws, f)))
         }
     }
 }

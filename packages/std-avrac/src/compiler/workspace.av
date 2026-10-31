@@ -113,7 +113,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query, digested_by}
+use @std.relation.{query, digested_by, recursive}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -794,10 +794,6 @@ fn const_typed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.const_type_at(arg))
     ws.db.changed_at(key(Family.ConstTyped, arg))
 }
-fn folded_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.folded(file_at(arg)))
-    ws.db.changed_at(key(Family.Folded, arg))
-}
 fn analysis_verified(ws: Workspace, arg: int) -> int {
     touch(ws.analysis(file_at(arg)))
     ws.db.changed_at(key(Family.Analysis, arg))
@@ -893,7 +889,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Sig -> sig_verified(ws, arg),
         .Typed -> typed_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
-        .Folded -> folded_verified(ws, arg),
         .Analysis -> analysis_verified(ws, arg),
         .Settled -> settled_verified(ws, arg),
         .Lowered -> lowered_verified(ws, arg),
@@ -927,6 +922,27 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
 }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
+/// A file's bodies as one table. Annotation evaluation re-enters the file
+/// after the active annotation has been hidden; that recursive view is
+/// smaller. A fold under an open expansion lacks the nodes it is about to
+/// add, so it answers its asker alone.
+@query
+@recursive
+@digested_by(folded_digest)
+fn folded_in(ws: Workspace, f: FileId) -> TypeFacts { ws.folding_of(f) }
+
+/// What a reader of a fold reads: its bodies' own typed answers, by their digests.
+fn folded_digest(ws: Workspace, f: FileId, _t: TypeFacts) -> int {
+    fp(
+        122,
+        [
+            fp_list(
+                [dep_hash_fp(ws.db.value_hash_of(key(Family.Typed, d.index))) for d in ws.bodies_of(f)],
+            ),
+        ],
+    )
+}
+
 /// A type's method table: its methods, and the clashes among them.
 export type MethodTable = { methods: List<DeclId>, clashes: List<Clash> }
 
@@ -2471,13 +2487,13 @@ impl Workspace {
     /// spans the file), each declaration's laid over its own range,
     /// their voices in source order — what the facade and lowering
     /// read by expression.
-    fn folded(f: FileId) -> TypeFacts {
-        // Annotation evaluation re-enters the file after the active
-        // annotation has been hidden; that recursive view is smaller.
-        match self.relation(Family.Folded).start_recursive(f.index) {
-            .Reuse(value) -> { return folded_of(value) },
-            .Compute -> nothing(),
-        }
+    fn folded(f: FileId) -> TypeFacts { folded_in(self, f) }
+
+    /// Whether some file's bodies are folding now.
+    fn folding() -> bool { self.db.family_active(folded_in_key(self, FileId { index: 0 }).family) }
+
+    /// One fold of a file's typed bodies.
+    fn folding_of(f: FileId) -> TypeFacts {
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), 0 - 1, 0, p.store.stmts.count(), hole)
@@ -2493,40 +2509,8 @@ impl Workspace {
         // a window folded now lacks the nodes it is about to add, so it
         // answers this asker alone and is never memoized — the fold
         // settles once the expansion has closed.
-        if self.db.family_active(expanded_in_key(self, f).family) {
-            self.db.abandon(key(Family.Folded, f.index))
-            return folded_facts
-        }
-        // DERIVED, AND LAZY: `folded_facts` is entirely `absorb`ed
-        // from each body's own `typed(d)`, already asked above — so
-        // its own fingerprints, in the same order, are folded
-        // content, never re-walked. LAZY because reading them back
-        // through `value_hash_of` would otherwise force every one of
-        // those folds on every cold compile, the moment this file's
-        // Folded settles — this closure runs only when `Folded`
-        // ITSELF has a prior settle to compare against
-        // (the kernel's `settle_lazy`), so on a cold compile,
-        // where Folded's own settle is always its first, nothing
-        // here ever runs (CLAUDE.md, "the key a remembered value
-        // settles on and the name its result is stored under are
-        // one derivation").
-        let ws = self
-        folded_of(
-            self
-                .relation(Family.Folded)
-                .finish_lazy(
-                    f.index,
-                    DbRow.Folded(folded_facts),
-                    (r: DbRow) -> fp(
-                        122,
-                        [
-                            fp_list(
-                                [dep_hash_fp(ws.db.value_hash_of(key(Family.Typed, d.index))) for d in bodies],
-                            ),
-                        ],
-                    ),
-                ),
-        )
+        if self.db.family_active(expanded_in_key(self, f).family) { self.query_db().unkept() }
+        folded_facts
     }
 
     /// A file's bodies to type: Main, then every declaration owning a
@@ -2637,7 +2621,6 @@ export fn family_code_hash(f: Family) -> string {
         .Sig -> code_hash(sig_verified) ?? "",
         .Typed -> code_hash(typed_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
-        .Folded -> code_hash(folded_verified) ?? "",
         .Analysis -> code_hash(analysis_verified) ?? "",
         .Settled -> code_hash(settled_verified) ?? "",
         .Lowered -> code_hash(lowered_verified) ?? "",
