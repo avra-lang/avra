@@ -9,9 +9,9 @@
 #
 #   sh tools/code_hash_attacks.sh
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 A=$(pwd)/avra
-R=build/code-hash-attacks; fails=0; cases=0
+R=build/code-hash-attacks; cases=0
 rm -rf "$R" .avra-cache && mkdir -p "$R"
 
 # One program: the leaf's value, the path's declarations, the query's body,

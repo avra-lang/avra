@@ -7,7 +7,7 @@
 # references relation; the fn's read bit reaches its consumers through `Consumed`, not
 # through a Lowered unit's own reads.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
 R=build/readfound-attack

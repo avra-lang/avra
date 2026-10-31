@@ -1171,6 +1171,7 @@ static void sig_disarm(int sig) {
     if (g_poller >= 0) {
         struct kevent ev;
         EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+        // the clock: a change list with no events asked returns at once
         kevent(g_poller, &ev, 1, NULL, 0, NULL);
     }
     sigaction(sig, &g_sig_prior[sig], NULL);
@@ -1209,6 +1210,7 @@ static int sig_arm(int sig) {
     signal(sig, SIG_IGN);
     struct kevent ev;
     EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    // the clock: a change list with no events asked returns at once
     if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) {
         sigaction(sig, &prior, NULL);
         return 0;
@@ -1257,6 +1259,7 @@ static int sig_arm(int sig) {
 // its signal and claims that signal's waiters.
 static void sigfd_drain(void) {
     struct signalfd_siginfo si;
+    // the clock: the signalfd is SFD_NONBLOCK, so an empty one answers EAGAIN
     while (read(g_signalfd, &si, sizeof si) == (ssize_t)sizeof si) sig_ready((int)si.ssi_signo);
 }
 #endif
@@ -3927,6 +3930,7 @@ static void path_wire_put(int fd, const PathWire* w) {
 static int path_wire_get(int fd, PathWire* w) {
     char* at = (char*)w;
     for (size_t n = sizeof *w; n > 0;) {
+        // the clock: the suite reads its schedule's child, outside every clock run
         ssize_t got = read(fd, at, n);
         if (got <= 0) return 0;
         at += got;

@@ -7,9 +7,9 @@
 # so the rebuild turns once however long the chain, never once a link. It
 # CLEARS the store, as the attacks beside it do.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 . tools/lib/failed_tail.sh
-R=build/held-runs-attack; fails=0; LINKS=${HELD_LINKS:-5}
+R=build/held-runs-attack; LINKS=${HELD_LINKS:-5}
 rm -rf "$R" .avra-cache && mkdir -p $R/app/src
 cat > $R/app/avra.toml <<'TOML'
 [package]
@@ -28,16 +28,15 @@ last 1
 printf 'use s0.{f0}\n\nconst K: int = f0()\n\nprintln("k ${K}")\n' > $R/app/src/main.av
 B() { # B <label> <wanted output>: build through the store and run it
     ./avra build --time $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out $R/err; return 1; }
+    [ $st -eq 0 ] || { fail "$1: status $st"; failed_tail $R/out $R/err; return 1; }
     got=$($R/app/src/main 2>&1)
-    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted '$2'"; }
+    [ "$got" = "$2" ] || fail "$1: printed '$got', wanted '$2'"
 }
 turned() { grep -oE 'discarded [0-9]+' $R/err | tail -1 | grep -oE '[0-9]+'; }
 B "cold" "k $LINKS" || { echo "held-runs-attack: the cold build failed"; exit 1; }
 last 10
 if B "the chain's last link moved" "k $((LINKS + 9))"; then
     # learned link by link, the rebuild turns once for each held link
-    [ "$(turned)" -le 1 ] || { fails=$((fails+1)); echo "FAIL  the rebuild turned $(turned) time(s) over a $LINKS-link chain: the verdict's reads were learned link by link"; }
+    [ "$(turned)" -le 1 ] || fail "the rebuild turned $(turned) time(s) over a $LINKS-link chain: the verdict's reads were learned link by link"
 fi
-echo "held-runs-attack: a $LINKS-link chain's last link moved, rebuilt with $(turned) turned attempt(s), $fails failed"
-[ "$fails" -eq 0 ]
+verdict "held-runs-attack" "a $LINKS-link chain's last link moved, rebuilt with $(turned) turned attempt(s)"

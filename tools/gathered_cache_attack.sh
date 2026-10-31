@@ -7,8 +7,8 @@
 # variant's payload and what a derive is handed; a new member in a new
 # file must become a variant; an edit nothing reads must change nothing.
 set -u
-cd "$(dirname "$0")/.."
-T=$(pwd); B=build/gathered-cache-attack; R=$B/plain; W=$B/recursive; fails=0; steps=0
+. "$(dirname "$0")/lib/attack.sh"
+T=$(pwd); B=build/gathered-cache-attack; R=$B/plain; W=$B/recursive
 rm -rf "$B" && mkdir -p $R/src/shapes $W/src/shapes
 # a store stands at the nearest checkout root ABOVE a package, so the fixtures'
 # directory is marked as one: their store is their own, cold here, never the tree's
@@ -55,7 +55,7 @@ export fn width(s: Shape) -> int {
 
 fn wide(n: int) -> int { n }
 AV
-ed() { python3 - "$@" <<'PY' || { fails=$((fails+1)); echo "FAIL  a fixture edit found nothing to edit: $1 <- $2"; }
+ed() { python3 - "$@" <<'PY' || fail "a fixture edit found nothing to edit: $1 <- $2"
 import sys
 p,old,new=sys.argv[1:4]; t=open(p).read(); assert old in t,(p,old); open(p,'w').write(t.replace(old,new,1))
 PY
@@ -63,13 +63,13 @@ PY
 ran() { (cd ${1:-$R} && "$T/build/avra" run . 2>&1 | grep -v '^watch:' | tail -1); }
 
 steps=$((steps+1)); cold=$(ran)
-[ "$cold" = "Dot() Line(int/Int) 0" ] || { fails=$((fails+1)); echo "FAIL  cold build: got '$cold'"; }
+[ "$cold" = "Dot() Line(int/Int) 0" ] || fail "cold build: got '$cold'"
 
 # the member's field changes TYPE in a module the enum's file does not hold
 ed $R/src/shapes/shapes.av 'type Line = { to: int }' 'type Line = { to: string }'
 ed $R/src/shapes/shapes.av 'fn wide(n: int) -> int { n }' 'fn wide(n: string) -> int { n.length }'
 steps=$((steps+1)); moved=$(ran)
-[ "$moved" = "Dot() Line(string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member's field changed type: got '$moved' (a held enum signature would still carry int)"; }
+[ "$moved" = "Dot() Line(string/Str) 0" ] || fail "after a member's field changed type: got '$moved' (a held enum signature would still carry int)"
 
 # a member arrives in a file nothing imports
 cat > $R/src/shapes/more.av <<'AV'
@@ -79,19 +79,19 @@ use shapes.{shape}
 type Box = { side: int, deep: bool }
 AV
 steps=$((steps+1)); grown=$(ran)
-[ "$grown" = "Dot() Line(string/Str) Box(int/Int,bool/Bool) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member arrived in a new file: got '$grown'"; }
+[ "$grown" = "Dot() Line(string/Str) Box(int/Int,bool/Bool) 0" ] || fail "after a member arrived in a new file: got '$grown'"
 
 # a member's field changes type in a file NOTHING IMPORTS — no `use` line
 # carries the edit to the enum's module
 ed $R/src/shapes/more.av 'deep: bool' 'deep: string'
 steps=$((steps+1)); far=$(ran)
-[ "$far" = "Dot() Line(string/Str) Box(int/Int,string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after an unimported member's field changed type: got '$far' (a held enum signature would still carry bool)"; }
+[ "$far" = "Dot() Line(string/Str) Box(int/Int,string/Str) 0" ] || fail "after an unimported member's field changed type: got '$far' (a held enum signature would still carry bool)"
 grown=$far
 
 ed $R/src/shapes/shapes.av 'fn wide(n: string) -> int { n.length }' 'fn wide(n: string) -> int { n.length }
 fn nobody_calls_this() -> int { 42 }'
 steps=$((steps+1)); unrelated=$(ran)
-[ "$unrelated" = "$grown" ] || { fails=$((fails+1)); echo "FAIL  an unrelated edit changed the answer: got '$unrelated', want '$grown'"; }
+[ "$unrelated" = "$grown" ] || fail "an unrelated edit changed the answer: got '$unrelated', want '$grown'"
 
 # a member MOVES to another file: the same enum, its file's members regathered
 cat > $R/src/shapes/more.av <<'AV'
@@ -103,19 +103,19 @@ cat >> $R/src/shapes/shapes.av <<'AV'
 type Box = { side: int, deep: string }
 AV
 steps=$((steps+1)); moved_home=$(ran)
-[ "$moved_home" = "$grown" ] || { fails=$((fails+1)); echo "FAIL  a member moved between files: got '$moved_home', want '$grown'"; }
+[ "$moved_home" = "$grown" ] || fail "a member moved between files: got '$moved_home', want '$grown'"
 
 # a member is RENAMED in a file nothing else reads: its variant takes the new name
 ed $R/src/shapes/shapes.av 'type Box = { side: int, deep: string }' 'type Crate = { side: int, deep: string }'
 steps=$((steps+1)); renamed=$(ran)
-[ "$renamed" = "Dot() Line(string/Str) Crate(int/Int,string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member was renamed: got '$renamed'"; }
+[ "$renamed" = "Dot() Line(string/Str) Crate(int/Int,string/Str) 0" ] || fail "after a member was renamed: got '$renamed'"
 ed $R/src/shapes/shapes.av 'type Crate = ' 'type Box = '
 
 # a member is REMOVED from a file nothing else reads
 ed $R/src/shapes/shapes.av '@shape(2)
 type Box = { side: int, deep: string }' ''
 steps=$((steps+1)); gone=$(ran)
-[ "$gone" = "Dot() Line(string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member was removed: got '$gone'"; }
+[ "$gone" = "Dot() Line(string/Str) 0" ] || fail "after a member was removed: got '$gone'"
 
 # A MEMBER THAT NAMES ITS OWN ENUM, and nothing asking the enum first: the
 # member's signature and the enum's each read the other, so a warm run that
@@ -158,13 +158,12 @@ type Both = { left: Shape, right: List<Shape> }
 export fn made() -> Shape { Shape.Line(7, null) }
 AV
 steps=$((steps+1)); first=$(ran $W)
-[ "$first" = "7." ] || { fails=$((fails+1)); echo "FAIL  recursive, cold build: got '$first'"; }
+[ "$first" = "7." ] || fail "recursive, cold build: got '$first'"
 
 ed $W/src/shapes/shapes.av 'type Line = { to: int, next: Shape? }' 'type Line = { to: string, next: Shape? }'
 ed $W/src/shapes/shapes.av 'Shape.Line(7, null)' 'Shape.Line("seven", null)'
 steps=$((steps+1)); turned=$(ran $W)
-[ "$turned" = "seven." ] || { fails=$((fails+1)); echo "FAIL  recursive, after the member's field changed type: got '$turned' (a held enum signature would still carry int)"; }
+[ "$turned" = "seven." ] || fail "recursive, after the member's field changed type: got '$turned' (a held enum signature would still carry int)"
 
-[ -d $B/.avra-cache ] || { fails=$((fails+1)); echo "FAIL  the fixtures kept no store of their own — the runs were not warm"; }
-echo "gathered-cache-attack: $steps runs through one store, $fails failed"
-[ $fails -eq 0 ]
+[ -d $B/.avra-cache ] || fail "the fixtures kept no store of their own — the runs were not warm"
+verdict "gathered-cache-attack" "$steps runs through one store"

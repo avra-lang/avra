@@ -16,7 +16,8 @@ flattens pattern and expression fingerprints into one list, a
 statement folds its expression's, and `restamp` wraps a statement's).
 The memo tags in workspace.av and receivers.av are their own spaces.
 """
-import re, sys, os, glob, collections
+import re, sys, os, collections
+import avsrc
 
 TAG = re.compile(r"\bfp\(\s*(\d+)\s*,")
 MARK = re.compile(r"\brestamp\(\s*\w+\s*,\s*(\d+)")
@@ -120,8 +121,7 @@ def selftest():
 
 def sources():
     """The compiler's files and the engine's: where a fingerprint is folded."""
-    return [p for root in ("packages/std-avrac/src", "packages/std-relation/src/engine")
-            for p in glob.glob(f"{root}/**/*.av", recursive=True)]
+    return avsrc.av_files(["packages/std-avrac/src", "packages/std-relation/src/engine"], tests=True)
 
 
 def free_report():

@@ -7,10 +7,10 @@
 # ("index N is out of bounds"). The rebuild answers what a cold build answers. It
 # CLEARS the store, as the attacks beside it do.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 . tools/lib/failed_tail.sh
 AVRA=${AVRA:-./avra}
-R=build/held-generated-attack; fails=0
+R=build/held-generated-attack
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/shapes $R/app/src
 cat > $R/lib/avra.toml <<'TOML'
 [package]
@@ -73,16 +73,15 @@ println("size ${shown(Shape.Line(1, 2))}")
 AV
 B() { # B <label>: build through the store and run it
     $AVRA build --time $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out $R/err; return 1; }
+    [ $st -eq 0 ] || { fail "$1: status $st"; failed_tail $R/out $R/err; return 1; }
     got=$($R/app/src/main 2>&1)
-    [ "$got" = "size 2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted 'size 2'"; }
+    [ "$got" = "size 2" ] || fail "$1: printed '$got', wanted 'size 2'"
 }
 B "cold" || { echo "held-generated-attack: the cold build failed"; exit 1; }
 echo "// edited" >> $R/lib/src/shapes/shape.av
 held=none
 if B "the enum's file edited, its members' held"; then
     held=$(grep -oE 'held [0-9]+/[0-9]+' $R/err | tail -1)
-    case "$held" in "held 0/"*|"") fails=$((fails+1)); echo "FAIL  the rebuild held no file (${held:-no held count}), so it never met a record" ;; esac
+    case "$held" in "held 0/"*|"") fail "the rebuild held no file (${held:-no held count}), so it never met a record" ;; esac
 fi
-echo "held-generated-attack: a held member file expanded again ($held), $fails failed"
-[ "$fails" -eq 0 ]
+verdict "held-generated-attack" "a held member file expanded again ($held)"

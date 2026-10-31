@@ -18,29 +18,20 @@ or as an ACKNOWLEDGED GAP, named with the reason it is not exercised.
 Both are read FROM THE SOURCE, never hand-copied here, so neither list
 can drift from what the file actually says.
 """
-import re, sys, os, glob
+import re, sys, os
+import avsrc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "packages", "std-avrac", "src")
 REGISTRY = os.path.join(SRC, "compiler", "codecs.av")
 
-# The registry file itself is not scanned for CANDIDATES — it is the
-# thing candidates are checked AGAINST, and it is full of harness fns
-# (`derived`, `codec_one`, …) that wear no wire fn's shape but would
-# otherwise false-match a suffix rule (`derived_total` ends `_total`,
-# not a rule here, but `codec_disagreements`/`total_disagreements`
-# share a stem by accident of this file's own vocabulary).
-SKIP_DIRS = (os.sep + "tests" + os.sep,)
 
 
 def av_files():
-    for path in sorted(glob.glob(os.path.join(SRC, "**", "*.av"), recursive=True)):
-        rel = os.path.relpath(path, ROOT)
-        if any(s in path for s in SKIP_DIRS):
-            continue
-        if os.path.abspath(path) == os.path.abspath(REGISTRY):
-            continue
-        yield rel
+    """The compiler's sources, its tests and the codec registry left out: the registry is what
+    candidates are checked AGAINST, full of harness fns a suffix rule would false-match."""
+    registry = os.path.relpath(REGISTRY, ROOT)
+    return [rel for rel in avsrc.av_files([os.path.relpath(SRC, ROOT)], ROOT) if rel != registry]
 
 
 FN_DEF = re.compile(r"^\s*(?:export\s+)?(?:static\s+)?(?:mut\s+)?fn\s+([a-z_][a-zA-Z0-9_]*)\s*\(", re.M)
@@ -191,18 +182,10 @@ def fn_body(text, name):
     if not m:
         return None
     i = text.find("{", m.end())
-    if i < 0:
+    j = avsrc.braced_end(text, i) if i >= 0 else None
+    if j is None:
         return None
-    depth = 0
-    for j in range(i, len(text)):
-        c = text[j]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return (text.count("\n", 0, m.start()) + 1, text[i:j + 1])
-    return None
+    return (text.count("\n", 0, m.start()) + 1, text[i:j + 1])
 
 
 def raw_splits(text, decoders):

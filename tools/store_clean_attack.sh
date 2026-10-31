@@ -16,7 +16,7 @@
 #   hold        clean during a compaction hold: it says it skipped, no corruption
 #   size        a byte ceiling evicts the oldest history to fit
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 # The harness holds the slot: a reader beside clean needs two processes at once,
 # and the `avra` shim serialises package-scale runs on the machine lock.
 export AVRA_WATCH_HELD=1
