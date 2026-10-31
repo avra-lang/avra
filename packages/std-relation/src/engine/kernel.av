@@ -86,6 +86,9 @@ type Asker = {
     /// then, never later, so a write that moved its input while it ran
     /// leaves it re-verified on its next ask.
     began: Cell<List<int>>,
+    /// The open queries a recursive view re-entered, as edges: each settles standing on what it
+    /// read, never on its own cell.
+    views: Cell<List<int>>,
     /// Each open query's reader id; `reader` is the innermost's, 0
     /// when none is open.
     readers: Cell<List<int>>,
@@ -102,6 +105,7 @@ fn new_asker() -> Asker {
         restore: list_cell(),
         began: list_cell(),
         readers: list_cell(),
+        views: list_cell(),
         reader: Cell.new(0),
         last: Cell.new(no_edge()),
     }
@@ -884,12 +888,20 @@ impl Kernel {
     /// Closes the innermost open frame: its edges, held at their own
     /// size, with the frame's restores replayed and its stacks popped.
     /// `key`'s frame closed, its reads kept: a recursive view's read of its own cell
-    /// contributes nothing, so no cell stands on itself.
+    /// contributes nothing, so a re-entered view never stands on itself — while a query that
+    /// reads its own cell (a fixpoint member) keeps that read.
     fn closed_reads(key: Key) -> List<int> {
         let deps = self.closed_frame()
         let own = edge_of(key)
-        if !deps.contains(own) { return deps }
+        if !self.asker.views.get().contains(own) { return deps }
+        if !self.active(key) { self.asker.views.set([e for e in self.asker.views.get() if e != own]) }
         [e for e in deps if e != own]
+    }
+
+    /// A recursive view re-entered while `key` is open: its settles keep no read of itself.
+    fn reentered(key: Key) {
+        let own = edge_of(key)
+        if !self.asker.views.get().contains(own) { self.asker.views.push(own) }
     }
 
     fn closed_frame() -> List<int> {
