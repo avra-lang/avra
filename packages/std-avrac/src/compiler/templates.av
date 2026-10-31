@@ -16,6 +16,8 @@ use core.{
     Expr,
     ExprId,
     StmtId,
+    Stmt,
+    SyntaxArena,
     PatId,
     BinOp,
     Scoped,
@@ -28,6 +30,7 @@ use core.{
     UseItem,
     FieldPat,
     Given,
+    FnSeat,
     CompClause,
     MapEntry,
     TypeRef,
@@ -105,7 +108,7 @@ type NodeBuild = { owner: string, variant: string, slots: List<Slot> }
 fn node_of(b: Build) -> NodeBuild? {
     match b {
         .Node(owner, variant, _, slots) -> NodeBuild { owner: owner, variant: variant, slots: slots ?? [] },
-        .Var(_) or .Call(_, _) -> null,
+        .Var(_) or .Call(_, _) or .Computed(_, _, _, _) -> null,
     }
 }
 
@@ -159,6 +162,7 @@ impl Slots for Probe {
     fn use_items_of(_label: string) -> Result<List<UseItem>, string> { .Ok([]) }
     fn field_pats_of(_label: string) -> Result<List<FieldPat>, string> { .Ok([]) }
     fn givens_of(_label: string) -> Result<List<Given>, string> { .Ok([]) }
+    fn fn_seats_of(_label: string) -> Result<List<FnSeat>, string> { .Ok([]) }
     fn marks_of(_label: string) -> Result<List<Mark>, string> { .Ok([]) }
     fn arms_of(_label: string) -> Result<List<Arm>, string> { .Ok([]) }
     fn catch_arms_of(_label: string) -> Result<List<CatchArm>, string> { .Ok([]) }
@@ -172,7 +176,13 @@ impl Slots for Probe {
     fn types_of(label: string) -> Result<List<TypeRef>, string> { .Ok([named_ref(label)]) }
     fn type_opt_of(label: string) -> Result<TypeRef?, string> { .Ok(named_ref(label)) }
     fn at_of(_label: string) -> Result<Span?, string> { .Ok(null) }
+    fn spans_of(_label: string) -> Result<List<Span?>, string> { .Ok([]) }
+    fn source() -> string { "" }
     fn built_at() -> Span? { null }
+    fn hollow() -> ExprId { ExprId { index: 0 - 1 } }
+    fn arena() -> SyntaxArena { new_node_store() }
+    fn made_stmt(s: Stmt) -> Result<StmtId, string> { .Ok(new_node_store().alloc_stmt(s)) }
+    fn made_expr(e: Expr) -> Result<ExprId, string> { .Ok(new_node_store().alloc_expr(e)) }
 }
 
 // ── voices ──

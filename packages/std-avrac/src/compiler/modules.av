@@ -351,7 +351,7 @@ impl Workspace {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
         let here = [self.decls.file(f).path for f in files]
-        self.minted_files([p for p in self.hold.named_by.get().get(name) ?? [] if here.contains(p)])
+        self.minted_files([p for p in self.envs.names.get().get(name) ?? [] if here.contains(p)])
         let named = self.decls.named_filed(name)
         [x.id for f in files for x in named if self.written_export_in(x, f)]
     }
@@ -527,22 +527,21 @@ impl Workspace {
             normalized(dir_of(asker)) == normalized(joined_path(m.dir_under(pkg.src), "tests"))
     }
 
-    /// The written top-level declarations of `m` that bind `name` and
-    /// are not exported, in file order.
+    /// The top-level declarations of `m` that bind `name` and are not exported, in file order —
+    /// written, or generated where they stand.
     fn private_named(m: ModulePath, name: string) -> List<DeclId> {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
-        [x.id for f in files for x in self.decls.named(name) if self.written_private_in(x, f)]
+        [x.id for f in files for x in self.decls.named(name) if self.private_in(x, f)]
     }
 
-    /// Whether a row is one of `f`'s own written top-level private names.
-    fn written_private_in(x: Decl, f: FileId) -> bool {
+    /// Whether a row is one of `f`'s own top-level private names.
+    fn private_in(x: Decl, f: FileId) -> bool {
         same_file(x.file, f) &&
             !x.exported &&
             x.parent == null &&
             !x.nested() &&
-            table_of(x.kind) != null &&
-            self.decls.provenance_of(x.id) == null
+            table_of(x.kind) != null
     }
 
     /// A name that is both a directory and a file under the source root.

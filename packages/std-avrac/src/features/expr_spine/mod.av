@@ -44,11 +44,9 @@ use diagnostics.{DiagCode, Remedy}
 export fn expr_spine() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name           | build
-        "int_lit"      | build_int_lit
         "method_link"  | build_method_link
         "trailed_link" | build_trailed_link
         "trailing"     | build_trailing
-        "bind_pat"     | build_bind_pat
     }
     let codes = table<DiagCode> {
         kind                 | summary                                            | remedy
@@ -71,7 +69,7 @@ export fn expr_spine() -> LanguageFeature {
             trailing_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME -> Record.ParamSyntax
             stmt = "|>" expression END -> Refusal.leading_pipe
             asked = "." name:NAME ( "(" ( args:asked_payload ( "," args:asked_payload )* ","? )? ")" )? -> Pat.Variant | name:NAME ":" ty:type_atom -> Pat.Typed
-            asked_payload = "_" -> Pat.Wild | n:NAME -> bind_pat(n)
+            asked_payload = "_" -> Pat.Wild | "rest" -> Pat.Rest | "null" -> Pat.Lit(value = Expr.NullLit) | name:NAME -> Pat.Bind
             climbed = left:additive @operators {
                 left "||"
                 left "&&"
@@ -87,10 +85,11 @@ export fn expr_spine() -> LanguageFeature {
             unary = "!" value:unary -> Expr.Not | "-" value:unary -> Expr.Neg | "~" value:unary -> Expr.Bitnot | withed
             withed = subject:postfix "with" "{" BREAK? fields:NAME ":" values:expression ( "," BREAK? fields:NAME ":" values:expression )* ","? BREAK? "}" -> Expr.With | v:postfix
             postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> Expr.TypeLiteral | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> method_link(subject, name, args) | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" else_block:trailing )? @trailer(blocks) -> trailed_link(subject, blocks, else_block) )* @fold(subject) -> subject
-            primary = v:NUMBER -> int_lit(v) | name:NAME -> Expr.Ident | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
+            primary = bits:FRACTION -> Expr.FloatLit | value:INTEGER -> Expr.IntLit | name:NAME -> Expr.Ident | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
         }
         builders: rows
         diags: codes
+        soft_words: ["rest"]
         refusals: [
             RefusalRow { name: "leading_pipe", kind: "parse.leading_pipe", voice: leading_pipe },
         ]

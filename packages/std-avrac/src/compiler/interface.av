@@ -25,6 +25,7 @@ use core.{
 use @std.text.{text_before}
 use features.{
     Decl,
+    Settlement,
     LANGUAGE_HOME,
     DeclAt,
     FnSig,
@@ -46,91 +47,14 @@ type FileLines = { path: string, lines: List<string>, iface: string, idents: str
 
 impl Workspace {
 
-    /// EVERY MODULE'S CONSTS, KEPT: a settled value under its key, or — for a
-    /// const whose settlement is STRUCTURALLY refused (`Unsettled.structural`,
-    /// `Reach`) — the refusal itself, since that verdict is as stable as a
-    /// value and is what lets the file hold. A non-structural refusal SPEAKS a
-    /// diagnostic elsewhere and stays unkept, so the next build asks again.
-    /// A gathered member — a `rule`'s `run: fn(Code) -> Fix?`, any declared
-    /// instance holding behavior — refuses structurally too and is kept the
-    /// same way: `lower_collect` and a direct read (`instance_value_reg`)
-    /// both call such a member by its `instance_unit` symbol, and
-    /// `held_stubs`/`Workspace.stub_of` already declare that symbol for a
-    /// held file exactly as a held fn's own symbol is declared — the same
-    /// door an ordinary call into a held function goes through, never a
-    /// second one for collects.
-    fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
-        mut count = 0
-        for m in modules {
-            for d in self.interface_decls(m) {
-                if d.kind is .Const && !self.is_held(d.file) {
-                    let path = self.decls.file(d.file).path
-                    let key = self.const_unit_key(store, m, path, d.name)
-                    if !store.has(Stored.Unit, key) {
-                        match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
-                            .Ok(value) -> {
-                                let _ = store
-                                    .keep(
-                                        Stored.Unit,
-                                        key,
-                                        kept_wire(value),
-                                        [obj_key_of(self, store, m, path)],
-                                    )
-                                count = count + 1
-                            },
-                            .Err(_) -> {
-                                // `settled` collapses a reused refusal to `.Spoken` so a
-                                // diagnostic never repeats — ask the relation directly for
-                                // the const's one real verdict, `Spoken` or not.
-                                let verdict = self
-                                    .settle_verdict(d.file, SettleRoot.Const(d.stmt), [])
-                                if verdict != null {
-                                    match verdict! {
-                                        .Refused(why) -> {
-                                            if why.structural() {
-                                                let _ = store
-                                                    .keep(
-                                                        Stored.Unit,
-                                                        key,
-                                                        reach_wire(why.words()),
-                                                        [obj_key_of(self, store, m, path)],
-                                                    )
-                                                count = count + 1
-                                            }
-                                        },
-                                        .Held(_) -> { let _ = 0 },
-                                    }
-                                }
-                            },
-                        }
-                    }
-                }
-            }
-        }
-        count
-    }
-
-    fn const_rows_ready(store: Store, m: ModulePath, path: string, rows: List<List<string>>) -> bool {
-        for parts in rows {
-            if parts.length > 5 && parts[0] == "const" {
-                if !store.has(Stored.Unit, self.const_unit_key(store, m, path, parts[5])) { return false }
-            }
-        }
-        true
-    }
-
-    fn const_unit_key(store: Store, m: ModulePath, path: string, name: string) -> string {
-        node_key(Stored.Unit, ["const", obj_key_cached(self, store, m, path), name])
-    }
-
     // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
     // spelling it does not know is a DEFECT in the record, not a name to guess at. The
     // fallback is `error`, the ABSORBING type, so a broken record produces a type that
     // refuses rather than one that is silently wrong.
-    fn fill_shape(store: Store, m: ModulePath, id: DeclId, row: Row) {
+    fn fill_shape(store: Store, m: ModulePath, id: DeclId, row: RowShape) {
         let d = self.decls.decl(id)
         match row.shape {
-            .Const -> self.fill_const(store, m, row, d.file, d.stmt, id),
+            .Const -> self.fill_const(store, m, row, d, id),
             .Collect or .State -> self.decls.record_const_type(d.file, d.stmt, self.interface_type(row.of_wire())),
             .Aims -> self.fill_aims(row, id),
             .Named -> self.fill_named(row, id),
@@ -143,37 +67,39 @@ impl Workspace {
         }
     }
 
-    fn fill_const(store: Store, m: ModulePath, row: Row, f: FileId, stmt: StmtId, id: DeclId) {
+    fn fill_const(store: Store, m: ModulePath, row: RowShape, d: Decl, id: DeclId) {
         let ty = self.interface_type(row.of_wire())
-        self.decls.record_const_type(f, stmt, ty)
-        // a held const has no initializer to settle again: its kept row is the
-        // only one, and one that decodes as neither a value nor a structural
-        // refusal is a defect said
-        let raw = store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? ""
+        self.decls.record_const_type(d.file, d.stmt, ty)
+        // a held const has no initializer to settle again: its line's kept verdict is the
+        // only one, and one that decodes as neither a value nor a structural refusal is a
+        // defect said
+        let raw = text_of_field(row.field(1))
         let value? = settled_from_wire(raw) else {
             let words? = reach_from_wire(raw) else {
                 return self
-                    .defect("a held const's value did not decode — `${row.name}` in ${row.path}")
+                    .defect(
+                        "a held const's value did not decode — `${d.name}` in ${self.decls.file(d.file).path}",
+                    )
             }
             return self.decls.remember_held_reach(id, words)
         }
         self.decls.remember_held_value(id, value)
     }
 
-    fn fill_aims(row: Row, id: DeclId) {
+    fn fill_aims(row: RowShape, id: DeclId) {
         let aimed = self.decl_from_ref(row.field(0))
         if aimed != null { self.decls.record_target(id, aimed!) }
     }
 
-    fn fill_named(row: Row, id: DeclId) {
+    fn fill_named(row: RowShape, id: DeclId) {
         let of = self.interface_type(row.of_wire())
         self.decls.declare(id, .Named(NamedSig { of: of }))
-        let named = self.decls.types.intern(Type.Struct(id, row.name))
+        let named = self.decls.types.intern(Type.Struct(id, self.decls.decl(id).name))
         self.decls.types.mark_named(named, of)
         self.decls.types.mark_flat(named, [of])
     }
 
-    fn fill_record(row: Row, id: DeclId, boxed: bool) {
+    fn fill_record(row: RowShape, id: DeclId, boxed: bool) {
         // a seal is sticky, so the layout the record kept lands before the declaration
         if boxed { self.decls.types.unflatten(self.decls.record_type(id)) }
         let fields = row.items()
@@ -209,7 +135,7 @@ impl Workspace {
             .decl_from_ref(if j < refs.length { refs[j] } else { "" })
     }
 
-    fn fill_enum(row: Row, id: DeclId) {
+    fn fill_enum(row: RowShape, id: DeclId) {
         let arms = row.items()
         self
             .decls
@@ -224,7 +150,7 @@ impl Workspace {
             )
     }
 
-    fn fill_fn(row: Row, id: DeclId) {
+    fn fill_fn(row: RowShape, id: DeclId) {
         let seats = row.items()
         self.decls.record_seats(id, row.marks())
         self
@@ -266,7 +192,7 @@ impl Workspace {
 
     /// A `trait`/`syntax`/`default`/`main`/`case`/`builtin` declaration has no
     /// signature to fill — `sig(d.id)` answered null when its line was written.
-    fn fill_opaque(_row: Row, _id: DeclId) {}
+    fn fill_opaque(_row: RowShape, _id: DeclId) {}
 
     fn interface_decls(m: ModulePath) -> List<Decl> {
         mut ids: List<DeclId> = []
@@ -298,72 +224,59 @@ impl Workspace {
         if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
     }
 
-    fn fill_row(store: Store, m: ModulePath, ids: List<DeclId>, parts: List<string>) {
-        let row? = read_row(parts) else { return }
-        if row.ordinal >= 0 && row.ordinal < ids.length { self.fill_shape(store, m, ids[row.ordinal], row) }
-    }
-
-    /// A HELD DECLARATION'S OWN ROW, FILLED ON THE ASK THAT NAMES IT,
-    /// never eagerly with the rest of its module: a row that fills
-    /// EARLIER in record order can itself name a declaration whose row
-    /// sits LATER, and a settle read through that name must see the
-    /// later row's own fill, not the blank default sitting there until
-    /// the module's sweep reaches it. Guarded per declaration, so a
-    /// name reached while filling ITS OWN row (a cycle) sees "not
-    /// filled yet" rather than recursing.
-    fn fill_ensured(d: DeclId) {
-        if self.hold.row_filled.at(d.index) != null { return }
-        self.hold.row_filled.keep(d.index, true)
-        let x = self.decls.decl(d)
-        let store? = self.store.get() else { return }
-        let path = self.decls.file(x.file).path
-        let m = self.module_path_of(path)
-        let ids = self.decls.decls_so_far(x.file)
-        let ordinal? = [i for i, id in ids if same_decl(id, d)].first() else { return }
-        let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
-        if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
-    }
-
-    /// HELD FILES OF ONE MODULE, MINTED: each file's declarations from its record
-    /// lines, adopted by their parents — names before shapes, since a shape names a
-    /// type of its own module. A file stands once, and its flag stands before the
-    /// work does, so two files that name each other meet once. SHAPES ARE NOT FILLED
-    /// HERE: `fill_ensured` fills each row lazily, on the ask that names it.
-    fn mint_files(store: Store, m: ModulePath, paths: List<string>) {
-        let held = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
-        if held.is_empty() { return }
-        for path in held {
-            if traced() { qtrace("Q\tmint\t${m.text()}\t${path}\n") }
+    /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
+    /// file stands once, and its flag stands before the work does, so two files that name
+    /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each
+    /// declaration from its own row, on the ask that names it.
+    fn mint_files(paths: List<string>) {
+        let unread = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
+        if unread.is_empty() { return }
+        for path in unread {
+            if traced() { qtrace("Q\tmint\t${path}\n") }
             self.hold.minted.put(path, true)
         }
         work_module_minted()
-        let fields = record_fields(self, store, m)
-        let places = record_places(self, store, m)
-        for path in held {
-            let lines = file_lines(self, store, m, path)
-            self.mint_file(path, file_rows(fields, places.get(path)), makers_in(lines, path))
-        }
-        for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
-        let lead? = held.first() else { return }
-        self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
+        for path in unread { let _ = self.items(self.file_id(path)) }
     }
 
-    /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
-    /// file's statement table is written ONCE: read out and stored back per line, it
-    /// is held twice while it is written, and every line copies it.
-    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
+    /// AN UNREAD FILE'S ITEMS, minted from the lines its last read kept: its declarations in
+    /// kept order, adopted by their parents. Answers the top-level ids.
+    fn items_minted(f: FileId) -> List<DeclId> {
+        let path = self.decls.file(f).path
+        self.hold.minted.put(path, true)
+        self.decls.note_rows(f, 0)
+        let lines? = self.items_lines(path) else {
+            self.defect("an unread file's items were not kept — ${path}")
+            return []
+        }
+        let rows = [p for p in lines if declares(p)]
+        let top = self.mint_file(path, rows, makers_in(lines, path))
+        self.link_file(path, rows)
+        self.decls.note_rows(f, 2)
+        top
+    }
+
+    /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
+    /// top-level ones. The file's statement table is written ONCE: read out and stored back
+    /// per line, two copies stand while it is written, and every line copies it.
+    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
+        DeclId,
+    > {
         work_file_minted()
         let f = self.file_id(path)
         self.decls.held_opened(f, makers.values())
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
+        mut top: List<DeclId> = []
         for parts in rows {
             let id: DeclId? = self.minted(f, path, parts, makers)
-            let stmt_index = read_row(parts)?.stmt ?? 0
-            by_stmt.grow_to(stmt_index + 1)
-            if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
+            let row? = read_row(parts) else { continue }
+            by_stmt.grow_to(row.stmt + 1)
+            if id != null && by_stmt.get(row.stmt).decl == null { by_stmt.set(row.stmt, DeclAt { decl: id }) }
+            if id != null && row.item { top.push(id!) }
         }
         self.decls.held_closed(f, makers.values())
         self.decls.keep_stmt_decls(f, by_stmt)
+        top
     }
 
     /// One record line as a declaration — null for a line that names nothing. A line
@@ -393,24 +306,17 @@ impl Workspace {
                 makers.get("${row.ordinal}") ?? "",
                 facts!,
             )
-        self.decls.held_joins(f, id, kind! is .Main, row.item)
+        if kind! is .Main { self.decls.seat_main(f, id) }
         // the cancel bit is read before any signature is asked, so it lands with the row
-        self.decls.record_cancel(id, row.reach())
+        self.decls.record_cancel(id, row.shaped().reach())
         id
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
-        let shape = self.record_shape(d)
+        let shape = self.row_shape(d)
         let at = shape.index_of("\t")
         let visibility = bit_word(d.exported)
-        // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
-        // and a held file has no store, so the record must carry it: the word is the one
-        // column every kind already has, and the payload's layout is unchanged.
-        let first = when {
-            self.decls.is_extern(d.id) -> "extern"
-            at < 0 -> shape
-            _ -> shape.substring(0, at)
-        }
+        let first = if at < 0 { shape } else { shape.substring(0, at) }
         let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
         mut parent_at = 0 - 1
         if d.parent != null {
@@ -427,11 +333,21 @@ impl Workspace {
         "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
     }
 
-    /// The shape word and payload a declaration's record line carries.
+    /// The shape word and payload a declaration's row and record line carry. AN `extern fn`
+    /// WEARS ITS OWN SHAPE WORD: the fact is a STORE read (`extern_parts`), which a held file
+    /// has none of, and the payload's layout is unchanged.
+    fn row_shape(d: Decl) -> string {
+        let shape = self.record_shape(d)
+        if !self.decls.is_extern(d.id) { return shape }
+        let at = shape.index_of("\t")
+        if at < 0 { "extern" } else { "extern${shape.substring(at, shape.length)}" }
+    }
+
+    /// The shape word and payload of a declaration's kind.
     fn record_shape(d: Decl) -> string {
         match d.kind {
             // a reader bakes the VALUE in, so the value is the interface
-            .Const -> "const\t${self.const_type_wire(d)};${self.const_print(d)}",
+            .Const -> "const\t${self.const_type_wire(d)};${self.const_print(d)}\t${field_text(self.const_kept(d))}",
             // a reader calls the gathered list's own symbol, so its type is the interface
             .Collect -> "collect\t${self.const_type_wire(d)}",
             // a reader calls the shared cell's own symbol, so its type is the interface
@@ -529,7 +445,8 @@ impl Workspace {
                 .concat(here)
                 .concat(refs)
                 .concat(read)
-                .concat(flatten([f.lines for f in parts])),
+                .concat(flatten([[l for l in f.lines if !items_line(read_fields(l))] for f in parts]))
+                .concat(flatten([[l for l in f.lines if items_line(read_fields(l))] for f in parts])),
             "\n",
         )
     }
@@ -591,6 +508,21 @@ impl Workspace {
                 [maker_line(path, ordinal, self.decl_at(id).maker) for ordinal, id in ids if self.decl_at(id).maker != ""],
             )
             .concat([reexport_line(path, r) for r in self.file_reexports(path)])
+    }
+
+    /// A CONST'S KEPT VERDICT, the one its line carries: its settled value, or — for a
+    /// settlement STRUCTURALLY refused (`Unsettled.structural`, `Reach`) — the refusal
+    /// itself, since that verdict is as stable as a value and is what lets the file hold.
+    /// A non-structural refusal SPEAKS a diagnostic elsewhere and keeps nothing, so its file
+    /// is read again. A gathered member — a `rule`'s `run: fn(Code) -> Fix?`, any declared
+    /// instance holding behavior — refuses structurally too and is kept the same way.
+    fn const_kept(d: Decl) -> string {
+        match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
+            .Ok(value) -> kept_wire(value),
+            // `settled` collapses a reused refusal to `.Spoken` so a diagnostic never
+            // repeats — ask the relation for the const's one real verdict
+            .Err(_) -> reach_kept(self.settle_verdict(d.file, SettleRoot.Const(d.stmt), [])),
+        }
     }
 
     /// A settled const's value as one number — 0 for one that did not settle.
@@ -734,35 +666,38 @@ impl Decls {
     /// position. A moved declaration keeps this wire; a declaration reordered
     /// around it never steals it. `owner` is a method's impl target ("" for
     /// anything not one), which is what tells `impl Word { fn one() }`'s `one`
-    /// apart from a free `fn one()` sharing its name. Two declarations sharing
-    /// kind+owner+name in one file is the namespace law's to refuse (F3003) for
-    /// every kind decl_wire actually names; the trailing index is a belt for a
-    /// kind the law does not police (defaults, generated members) — a tilde in
-    /// owner or name (case labels are sentences) has none of decl_wire's
-    /// callers, and wears NO_ORDINAL rather than corrupt the tilde stream.
+    /// apart from a free `fn one()` sharing its name. A generated declaration
+    /// adds its maker, and declarations sharing all of these are told apart by
+    /// their place among them — a group that arrives whole, written ones at
+    /// the parse and a maker's at its expansion, so its count never depends on
+    /// what else is minted yet (`wire_spelled`). A tilde in owner, name or maker
+    /// (case labels are sentences) wears NO_ORDINAL rather than corrupt the
+    /// tilde stream.
     fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).path) }
 
     /// `decl_wire`, its file spelled by `home`.
     fn decl_wire_from(d: DeclId, home: fn(FileId) -> string) -> string {
         let x = self.decl(d)
-        if x.owner.contains("~") || x.name.contains("~") { return "${home(x.file)}~${NO_ORDINAL}" }
         let kind = kind_word(x.kind)
         // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
         // one declaration has one spelling whichever file a process met first.
-        if self.is_builtin(d) { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
-        let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
-        let base = "${home(x.file)}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
-        if siblings.length <= 1 { return base }
-        let at = [j for j, id in siblings if same_decl(id, d)].first() ?? 0
-        "${base}~${at}"
+        if self.is_builtin(d) && !x.owner.contains("~") && !x.name.contains("~") { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
+        let group = self.wire_siblings(x.file, kind, x.owner, x.name, x.maker)
+        let at = [j for j, id in group if same_decl(id, d)].first() ?? 0
+        wire_spelled(
+            home(x.file),
+            WireName { kind: kind, owner: x.owner, name: x.name, maker: x.maker },
+            at,
+            group.length,
+        )
     }
 
-    /// Every declaration of one file sharing a wire's identity — one, almost
-    /// always; more only for a kind the namespace law leaves unpoliced.
-    /// `f`'s declarations of one kind, owner and name, in file order. The
+    /// `f`'s declarations of one kind, owner, name and maker, in file order. The
     /// reader owes only the NAME's bucket, so a declaration of another name
     /// never moves it.
-    fn wire_siblings(f: FileId, kind: string, owner: string, name: string) -> List<DeclId> {
+    fn wire_siblings(f: FileId, kind: string, owner: string, name: string, maker: string) -> List<
+        DeclId,
+    > {
         let ids = self.wire_rows(f)
         let kept = self.wire_index.get().get("${f.index}")
         let by = if kept != null && kept!.count == ids.length { kept!.by } else { self.wire_indexed(f, ids) }
@@ -771,7 +706,7 @@ impl Decls {
         self.bucket_moved(b)
         // a `main` is its own file's: the shared bucket holds one per file
         if kind == kind_word(DeclKind.Main) { self.rows_read(f) } else { self.record_kernel.record_at(self.record_names.get(), b) }
-        by.get(wire_key(kind, owner, name)) ?? []
+        by.get(wire_key(kind, owner, name, maker)) ?? []
     }
 
     /// `f`'s declaration ids for the wire index: the rows are minted, and
@@ -787,7 +722,7 @@ impl Decls {
         mut by: Map<string, List<DeclId>> = {}
         for id in ids {
             let x = self.raw_decl(id)
-            let k = wire_key(kind_word(x.kind), x.owner, x.name)
+            let k = wire_key(kind_word(x.kind), x.owner, x.name, x.maker)
             by.set(k, (by.get(k) ?? []).concat([id]))
         }
         self.wire_index.put("${f.index}", WireIndex { count: ids.length, by: by })
@@ -963,7 +898,8 @@ impl Decls {
     }
 
     /// `decl_wire`'s inverse — the declaration a wire names, and how many
-    /// words it read (4, or 5 across a name it shared with a sibling).
+    /// words it read: four, then a maker's when one is spelled, then a place
+    /// when its group has more than one.
     fn wire_decl(words: List<string>, at: int) -> WireDeclRef? {
         if at + 3 >= words.length { return null }
         let kind = words[at + 1]
@@ -977,24 +913,74 @@ impl Decls {
         }
         let f: FileId? = self.known_file_id(words[at])
         if f == null { return null }
-        let siblings = self.wire_siblings(f!, kind, owner, name)
-        if siblings.length == 1 { return WireDeclRef { id: siblings[0], next: at + 4 } }
-        if siblings.is_empty() { return null }
-        if at + 4 >= words.length { return null }
-        let idx? = wire_number(words[at + 4]) else { return null }
-        if idx < 0 || idx >= siblings.length { return null }
-        WireDeclRef { id: siblings[idx], next: at + 5 }
+        let made = at + 4 < words.length && words[at + 4].starts_with(MAKER_MARK)
+        let maker = if made { text_of_field(words[at + 4].substring(MAKER_MARK.length, words[at + 4].length)) } else { "" }
+        let past = if made { at + 5 } else { at + 4 }
+        let group = self.wire_siblings(f!, kind, owner, name, maker)
+        if group.length == 1 { return WireDeclRef { id: group[0], next: past } }
+        if group.is_empty() || past >= words.length { return null }
+        let idx? = wire_number(words[past]) else { return null }
+        if idx < 0 || idx >= group.length { return null }
+        WireDeclRef { id: group[idx], next: past + 1 }
     }
 }
 
 /// A declaration's place in its file's wire index.
-fn wire_key(kind: string, owner: string, name: string) -> string { "${kind}\t${owner}\t${name}" }
+fn wire_key(kind: string, owner: string, name: string, maker: string) -> string { "${kind}\t${owner}\t${name}\t${maker}" }
+
+/// What a declaration's wire names it by, apart from its file and place.
+export type WireName = { kind: string, owner: string, name: string, maker: string }
+
+/// The word a generated declaration's maker opens with in its wire.
+const MAKER_MARK: string = "="
+
+/// THE ONE SPELLING of a declaration's wire: its file, kind, owner and name, its maker's
+/// when one made it, and its place `at` among the `count` that share all of these.
+export fn wire_spelled(home: string, n: WireName, at: int, count: int) -> string {
+    if [n.owner, n.name, n.maker].any(it.contains("~")) { return "${home}~${NO_ORDINAL}" }
+    let base = "${home}~${n.kind}~${field_text(n.owner)}~${field_text(n.name)}"
+    let made = if n.maker == "" { base } else { "${base}~${MAKER_MARK}${field_text(n.maker)}" }
+    if count <= 1 { made } else { "${made}~${at}" }
+}
+
+/// Every declaration line's wire, from a file's Items lines alone — what `decl_wire` spells
+/// for each once it is minted, so an unminted file is named without minting it.
+export fn line_wires(path: string, lines: List<List<string>>) -> List<string> {
+    let makers = makers_in(lines, path)
+    let names = [line_name(p, makers) for p in lines if declares(p)]
+    let counts: Cell<Map<string, int>> = Cell.new({})
+    for n in names { counts.put(name_key(n), (counts.get().get(name_key(n)) ?? 0) + 1) }
+    let seen: Cell<Map<string, int>> = Cell.new({})
+    [wire_spelled(path, n, seen_once(seen, name_key(n)), counts.get().get(name_key(n)) ?? 1) for n in names]
+}
+
+/// The place of the next declaration filed under `key`: how many came before it.
+fn seen_once(seen: Cell<Map<string, int>>, key: string) -> int {
+    let at = seen.get().get(key) ?? 0
+    seen.put(key, at + 1)
+    at
+}
+
+fn name_key(n: WireName) -> string { wire_key(n.kind, n.owner, n.name, n.maker) }
+
+fn line_name(p: List<string>, makers: Map<string, string>) -> WireName {
+    WireName { kind: p[6], owner: p[7], name: p[5], maker: makers.get(p[2]) ?? "" }
+}
 
 /// `wire_decl`'s answer: the declaration, and where the next field starts.
 type WireDeclRef = { id: DeclId, next: int }
 
 /// One bounded seat in the fn row's bounds column.
 fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|")}" }
+
+/// A refused const's verdict as its line keeps it: a structural refusal's reach, else nothing.
+fn reach_kept(verdict: Settlement?) -> string {
+    let v? = verdict else { return "" }
+    match v {
+        .Refused(why) -> if why.structural() { reach_wire(why.words()) } else { "" },
+        .Held(_) -> "",
+    }
+}
 
 /// What generated the declaration at `ordinal` of `path` — written only for a generated one.
 fn maker_line(path: string, ordinal: int, maker: string) -> string {
@@ -1028,3 +1014,6 @@ fn parks_word(r: CancelReach) -> string {
 
 /// One read's identity: the file and the declaration read in it.
 fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
+
+/// Whether a record line is one a file's Items keep: a declaration's, or the maker that made it.
+fn items_line(parts: List<string>) -> bool { declares(parts) || parts[0] == "maker" }

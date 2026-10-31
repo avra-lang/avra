@@ -6,16 +6,11 @@
 //! `Decls`, by what the body parsed as. The template's own names
 //! resolve here; a name arriving through a hole resolves where the
 //! code is spliced.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn quote_lit() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name       | build
-        "quote"    | build_quote
-        "run_hole" | build_run_hole
-    }
     let codes = table<DiagCode> {
         kind                   | summary
         "type.quote_hole"      | "a hole takes what its seat takes"
@@ -32,12 +27,11 @@ export fn quote_lit() -> LanguageFeature {
         name: "quote"
         gram: grammar {
             primary = q:quote_lit -> q
-            quote_lit = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:hole_content )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
+            quote_lit = "quote" open:"{" ( arms:arm | stmts:stmt | BREAK )* close:"}" ( begins:HOLE_BEGIN ( holes:hole_content )? ends:HOLE_END )* -> Expr.Body by quote_written
             pattern = body:quote_lit -> Pat.Quote
             nonbind_pattern = body:quote_lit -> Pat.Quote
-            hole_content = ".." n:NAME -> run_hole(n) | e:expression -> e
+            hole_content = run:".." name:NAME -> Expr.Ident | e:expression -> e
         }
-        builders: rows
         diags: codes
     }
     quote_lit

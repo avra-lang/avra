@@ -28,6 +28,7 @@ use core.{
 }
 use features.{NameFacts, Decls, Decl}
 use compiler.families.{Family}
+use @std.relation.{query}
 
 impl Workspace {
     /// The pass: asking IS the query — the hook the workspace arms
@@ -73,21 +74,14 @@ impl Workspace {
         out
     }
 
-    /// A declaration's consumed seats as its own answer: the cell a reader of the bits stands
-    /// on, so a caller moves only when a callee it reads has its bits move. Where the pass
-    /// cannot settle a cell, the bits are read as the pass would infer them, recorded nowhere.
-    fn consumed_cell(d: DeclId) -> int {
-        if self.db.family_active(Family.Resolved.ordinal) || self.comptime_active() {
-            if self.decls.consumed_known(d) { return 0 }
-            let _ = self.computed_consumed(d)
-            return 0
+    /// A declaration's consumed seats, asked as its own answer. Where the pass cannot settle
+    /// one, the bits are read as the pass would infer them, recorded nowhere.
+    fn consumed_ensured(d: DeclId) {
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() {
+            if !self.decls.consumed_known(d) { let _ = self.computed_consumed(d) }
+            return
         }
-        let k = key(Family.Consumed, d.index)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
-        let bits = if self.decls.consumed_known(d) { self.decls.consumed_bits(d) } else { self.computed_consumed(d) }
-        self.db.settle(k, fp(44, [fp_list([if b { 1 } else { 0 } for b in bits])]))
-        0
+        let _ = seats_consumed(self, d)
     }
 
     /// No seat of `d` consumed, recorded.
@@ -240,3 +234,10 @@ impl Consumed {
 
 /// The seats both sides keep.
 fn both(a: List<bool>, b: List<bool>) -> List<bool> { [x && b[i] for i, x in a] }
+
+/// A declaration's consumed seats: a reader of the bits stands on this answer, so a caller moves
+/// only when a callee it reads has its bits move.
+@query
+fn seats_consumed(ws: Workspace, d: DeclId) -> List<bool> {
+    if ws.decls.consumed_known(d) { ws.decls.consumed_bits(d) } else { ws.computed_consumed(d) }
+}

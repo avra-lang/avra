@@ -128,11 +128,13 @@ impl Leaf {
     }
 }
 
-/// What a settled query stands on, or that something it read has no name.
-type Noted = { leaves: List<Leaf>, nameable: bool }
-
-impl Noted {
-    fn known() -> List<Leaf>? { if self.nameable { self.leaves } else { null } }
+/// What a settled query stands on: named, unnamed (something it read has no name), or owed —
+/// named from its cell's reads the first time a reader asks, so a query no saved answer reads
+/// never walks them.
+enum Noted {
+    Known(leaves: List<Leaf>)
+    Unnamed
+    Owed(key: Key)
 }
 
 /// A relation reached in a Db, by name: its family and its rows' hash, read live.
@@ -532,8 +534,13 @@ impl Db {
 
     fn answer_leaves(k: Key) -> List<Leaf>? {
         let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
-        let noted = self.leaves.get().get("${edge_of(k)}")
-        if noted != null { return noted!.known() }
+        let edge = edge_of(k)
+        let noted? = self.leaves.get().get("${edge}") else { return self.spelled_leaves(owner, k) }
+        self.known(edge, noted)
+    }
+
+    /// A cell no query settled, named by its owner's spelling of its argument.
+    fn spelled_leaves(owner: AnswerRef, k: Key) -> List<Leaf>? {
         let spelled? = owner.spelled_at(k.arg) else { return null }
         let digest? = owner.hash_at(k.arg) else { return null }
         [Leaf.Input(owner.name, spelled, digest)]
@@ -541,10 +548,31 @@ impl Db {
 
     /// What the query at `edge` settled standing on.
     fn noted(edge: int, leaves: List<Leaf>?) {
-        self.leaves.put("${edge}", Noted { leaves: leaves ?? [], nameable: leaves != null })
+        self
+            .leaves
+            .put("${edge}", if leaves == null { Noted.Unnamed } else { Noted.Known(leaves!) })
     }
 
-    fn leaves_noted(edge: int) -> List<Leaf>? { self.leaves.get().get("${edge}")?.known() }
+    /// The query at `edge` settled on its cell's reads, named when first asked.
+    fn owed(edge: int, key: Key) { self.leaves.put("${edge}", Noted.Owed(key)) }
+
+    fn leaves_noted(edge: int) -> List<Leaf>? {
+        let noted? = self.leaves.get().get("${edge}") else { return null }
+        self.known(edge, noted)
+    }
+
+    /// What a noted query stands on, an owed one named now and kept.
+    fn known(edge: int, noted: Noted) -> List<Leaf>? {
+        match noted {
+            .Known(leaves) -> leaves,
+            .Unnamed -> null,
+            .Owed(key) -> {
+                let found = self.leaves_of(self.engine().deps_of(key))
+                self.noted(edge, found)
+                found
+            },
+        }
+    }
 
     /// Whether every read still has the digest it was kept at.
     fn leaves_hold(ls: List<Leaf>) -> bool { ls.all((l) -> self.leaf_holds(l)) }
@@ -1048,6 +1076,9 @@ impl AnswersUnder<V> {
         self.ints.set_at(n, made)
     }
 
+    /// The cell an int argument's call lives in.
+    fn int_key(n: int) -> Key { self.memo.query_key(self.int_arg(n)) }
+
     /// An open call computed: `body` run, its answer settled under the
     /// reads the kernel recorded.
     fn ran(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> V {
@@ -1083,11 +1114,10 @@ impl AnswersUnder<V> {
         self.memo.finish(arg, kept.value, digest(kept.value))
     }
 
-    /// What a settled call stands on, absent when a read of rows it could not hear
-    /// happened since `foreign` or any of its reads has no name.
-    fn leaves_after(db: Db, key: Key, foreign: int) -> List<Leaf>? {
-        if foreign_reads().get() > foreign { return null }
-        db.leaves_of(self.memo.kernel.deps_of(key))
+    /// What a settled call stands on, noted: unnamed when a read of rows it could not hear
+    /// happened since `foreign`, else owed to its first reader.
+    fn note_leaves(db: Db, key: Key, foreign: int) {
+        if foreign_reads().get() > foreign { db.noted(edge_of(key), null) } else { db.owed(edge_of(key), key) }
     }
 
     /// A call run, its answer kept with what it stood on.
@@ -1150,7 +1180,7 @@ impl AnswersUnder<V> {
         // digested as it settles: its readers cut off on that digest
         let answer = self.memo.finish(arg, value, digest(value))
         let key = self.memo.query_key(arg)
-        db.noted(edge_of(key), self.leaves_after(db, key, foreign))
+        self.note_leaves(db, key, foreign)
         Run { value: answer, wrote: db.written.get() > before }
     }
 

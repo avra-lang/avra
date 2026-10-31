@@ -108,7 +108,10 @@ fn slots_of(src: string) -> List<Slot>? {
     let g = bind_nodes(grammar_of(src), rows()).g
     if g.rules.is_empty() { return null }
     let held? = g.rules[0].body.branches[0].build else { return null }
-    match held { .Node(_, _, _, slots) -> slots, .Call(_, _) or .Var(_) -> null }
+    match held {
+        .Node(_, _, _, slots) -> slots,
+        .Computed(_, _, _, _) or .Call(_, _) or .Var(_) -> null,
+    }
 }
 
 /// A slot as text: a label, `=text` for a stated word, `{Owner.Variant}` for
@@ -119,7 +122,7 @@ fn slot_text(s: Slot) -> string {
         .Fixed(text) -> "=${text}",
         .Nested(b) -> match b {
             .Node(owner, variant, _, _) -> "{${owner}.${variant}}",
-            .Call(_, _) or .Var(_) -> "{?}",
+            .Computed(_, _, _, _) or .Call(_, _) or .Var(_) -> "{?}",
         },
         .Items(items) -> "[${[slot_text(i) for i in items].join(",")}]",
         .Empty -> "-",
@@ -367,7 +370,7 @@ fn nested_label(src: string) -> string {
     let held? = group_build(g.rules[0].body.branches[0].items[1].prim) else { return "<no nested build>" }
     match held {
         .Node(_, _, _, slots) -> first_label(slots),
-        .Call(_, _) or .Var(_) -> "<not a node>",
+        .Computed(_, _, _, _) or .Call(_, _) or .Var(_) -> "<not a node>",
     }
 }
 

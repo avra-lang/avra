@@ -8,17 +8,12 @@
 //! type. Never a runtime lookup (spec 4.5). `mut fn` DECLARES that a
 //! method writes its receiver: a trait sig's contract, an inherent
 //! method's documentation (ROADMAP: the inout receiver).
-use features.{LanguageFeature, BuilderRow, KeywordRemedy}
+use features.{LanguageFeature, KeywordRemedy}
 use features.impls.{default_override}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode, Remedy}
 
 export fn impls() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name           | build
-        "impl_decl"    | build_impl
-        "trait_member" | build_trait_member
-    }
     let codes = table<DiagCode> {
         kind                   | summary                                                                        | remedy
         "type.method"          | "a method call resolves through the receiver's impl"                           | Remedy.Fix
@@ -31,6 +26,7 @@ export fn impls() -> LanguageFeature {
         "type.static_fn"       | "`static fn` marks a method with no receiver — a plain fn needs no mark"     | Remedy.Help
         "resolve.receiver"     | "`self` names a method's receiver"                                             | Remedy.Help
         "resolve.nested_impl"  | "impl and trait blocks live at the top level"                                  | Remedy.Help
+        "resolve.impl_member"  | "an `impl` block holds `fn` declarations only"                                 | Remedy.Help
         "type.receiver"        | "a writing method is called on a `mut` place"                                  | Remedy.Help
         "type.alias_copy"      | "a `mut` local copies a place — a write through it will not reach the place" | Remedy.Help
         "type.seat"            | "a `mut` seat is handed a `mut` place, one root per seat"                      | Remedy.Help
@@ -49,9 +45,10 @@ export fn impls() -> LanguageFeature {
     }
     LanguageFeature impls {
         gram: grammar {
-            stmt = "impl" it:NAME ( "<" tp:type ( "," tp:type )* ","? ">" )? ( "for" ib:NAME ( "<" tp2:NAME ( "," tp2:NAME )* ","? ">" )? )? "{" ( fs:stmt | BREAK )* "}" END @recover(sync_to: "END") -> impl_decl(it, tp, ib, tp2, fs)
+            stmt = "impl" of:NAME ( "<" of_args:type ( "," of_args:type )* ","? ">" )? "for" target:NAME ( "<" target_args:type ( "," target_args:type )* ","? ">" )? "{" ( fns:stmt | BREAK )* "}" END -> Stmt.ImplDecl
+            stmt = "impl" target:NAME ( "<" target_args:type ( "," target_args:type )* ","? ">" )? "{" ( fns:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.ImplDecl
             stmt = "trait" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "{" ( BREAK | fns:member )* "}" END @recover(sync_to: "END") -> Stmt.TraitDecl
-            member = ( sk:"static" )? ( mk:"mut" )? "fn" mn:NAME "(" ( ps:tseat ( "," ps:tseat )* ","? )? ")" ( "->" mr:type )? ( mb:block )? -> trait_member(sk, mk, mn, ps, mr, mb)
+            member = ( is_static:"static" )? ( is_mutating:"mut" )? "fn" name:NAME "(" ( params:tseat ( "," params:tseat )* ","? )? ")" ( "->" ret:type )? ( body:block )? -> Stmt.FnDecl
             tseat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax
             mparam = ( constant:"const" )? ( mutable:"mut" )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             mtparam = name:NAME ( ":" NAME )? -> Record.ParamSyntax
@@ -60,7 +57,6 @@ export fn impls() -> LanguageFeature {
             primary = "self" -> Expr.Receiver
         }
         diags: codes
-        builders: rows
         remedies: words
     }
     impls

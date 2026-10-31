@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 54 more
+help: it could begin with `yield`, `@fair`, PKG, `component`, COMPONENT, `use`, `export`, `spec` — and 56 more
 ```
 
 ## build.failed
@@ -3617,10 +3617,10 @@ trait T {
 
 ```
 error[type.trait_member]: `T.a` is declared twice
-  ╭─[witness.av:3:8]
+  ╭─[witness.av:3:5]
 3 │     fn a() -> int
-  ·        ┬
-  ·        ╰── declared again here
+  ·     ┬
+  ·     ╰── declared again here
 ──╯
 help: a trait names each member once — drop or rename one
 ```
@@ -3712,6 +3712,28 @@ error[resolve.nested_impl]: impl and trait blocks live at the top level
   ·     ╰── declared inside a block
 ──╯
 help: move it out of the block
+```
+
+## resolve.impl_member
+
+an `impl` block holds `fn` declarations only
+
+```avra
+type C = { n: int }
+impl C {
+    mut x = 1
+}
+2
+```
+
+```
+error[resolve.impl_member]: an `impl` block holds `fn` declarations only
+  ╭─[witness.av:3:5]
+3 │     mut x = 1
+  ·     ┬
+  ·     ╰── not a `fn`
+──╯
+help: move it out of the block — an `impl` holds the type's methods
 ```
 
 ## type.receiver
@@ -3921,10 +3943,10 @@ trait T {
 
 ```
 error[type.derive_contract]: a trait's `derive` answers the declarations it makes
-  ╭─[witness.av:2:15]
+  ╭─[witness.av:2:5]
 2 │     static fn derive(n: int) -> int { n }
-  ·               ┬
-  ·               ╰── declared here
+  ·     ┬
+  ·     ╰── declared here
 ──╯
 help: take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`
 ```
@@ -4855,6 +4877,25 @@ error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it
 help: ask `urls` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere
 ```
 
+## parse.spread
+
+a field spread is written `..R`
+
+```avra
+type C = { a: int }
+type A = { x: int, ..C = 1 }
+1
+```
+
+```
+error[parse.spread]: a spread places a record's fields and takes no value
+  ╭─[witness.av:2:20]
+2 │ type A = { x: int, ..C = 1 }
+  ·                    ┬
+──╯
+help: write the record whose fields it places — `..R`
+```
+
 ## type.coalesce
 
 `??` answers a nullable with a value of its type
@@ -5096,6 +5137,28 @@ error[type.narrow]: a type pattern narrows a `dyn` — this is `int`
   ·     ╰── this is `int`
 ──╯
 help: only a `dyn` hides which type it holds; match this value by its own shape
+```
+
+## type.fraction_pattern
+
+a number pattern matches an `int`
+
+```avra
+let x = 2
+match x {
+    1.5 -> 1
+    _ -> 0
+}
+```
+
+```
+error[type.fraction_pattern]: `1.5` is no integer — a number pattern matches an `int`
+  ╭─[witness.av:3:5]
+3 │     1.5 -> 1
+  ·     ┬
+  ·     ╰── a fraction
+──╯
+help: compare a `float` with `==` in a guard — `x if x == 1.5 -> …`
 ```
 
 ## type.enum_decl
@@ -6173,6 +6236,12 @@ error[type.shift_count]: a shift count must be between 0 and 63, this is 99
 ──╯
 help: an `int` is 64 bits, so a wider shift has no answer to give
 ```
+
+## type.mixed_bitwise
+
+a run of bitwise operators uses one operator
+
+No witness yet.
 
 ## parse.leading_pipe
 
