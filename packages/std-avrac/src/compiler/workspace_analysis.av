@@ -25,6 +25,7 @@ use core.{
 }
 use @std.path.{dir_of}
 use features.{
+    ConstType,
     Unsettled,
     Settled,
     Settlement,
@@ -948,49 +949,54 @@ impl Workspace {
         settled_symbol(own, seats)
     }
 
-    /// A const's inferred type is a program fact, like a signature:
-    /// type its declaration on demand and publish the answer through
-    /// Decls so every other body reads the same identity. Answers
-    /// whether THIS ask closed a cycle — a const's value asking for
-    /// the const's own type.
-    fn const_type_at(id: int) -> bool {
+    /// A const's inferred type is a program fact, like a signature: its declaration's typing
+    /// found it, so it is read off that typed answer — every reader sees the one identity,
+    /// whether the body was typed here or read back. A held const's is its row's. A value
+    /// asking for the const's own type is the cycle it is.
+    fn const_type_at(id: int) -> ConstType {
         let error = self.decls.types.intern(Type.Error)
         match self.relation(Family.ConstTyped).ask(id) {
-            .Cycle -> { return true },
-            .Reuse(_) -> { return false },
+            .Cycle -> { return ConstType.Cyclic },
+            .Reuse(row) -> { return known_const(const_typed_of(row), error) },
             .Compute -> self.relation(Family.ConstTyped).begin(id),
         }
         let ask = self.settle_asks.get()[id]
-        // only a const's statement has a type to publish
-        let held: StmtId? = const_stmt(ask.root)
-        if held == null {
-            let _ = self
-                .relation(Family.ConstTyped)
-                .finish(id, DbRow.ConstTyped(error), self.type_digest(error))
-            return false
-        }
-        let s = held!
-        touch(self.items(ask.file))
-        // a top-level const is a declaration: typing it records the
-        // value's type; a nested one is recorded by the body it is in.
-        // Its typing already OPEN is the same cycle seen from the
-        // other side — the value is asking for the const's own type.
-        let d: DeclId? = self.decls.decl_of(ask.file, s)
-        let cyclic = d != null && self.relation(Family.Typed).open(d!.index)
-        // A HELD CONST'S TYPE IS ALREADY THE RECORD'S: its declaration's
-        // `lo`/`hi` are blank (a held Decl carries a signature, never an
-        // expression range), so typing its body here would read past an
-        // empty window. Fill its row instead — `fill_const` reads the
-        // record's own type.
-        if d != null && !cyclic {
-            let dv = d!
-            if self.is_held(ask.file) { self.decl_row_filled(dv) } else { touch(self.typed(dv)) }
-        }
-        let ty = self.decls.held_const_type(ask.file, s) ?? error
+        let s = const_stmt(ask.root)
+        let found: TypeId? = if s == null { null } else { self.const_typed_in(ask.file, s!) }
+        let ty = found ?? error
         let _ = self
             .relation(Family.ConstTyped)
             .finish(id, DbRow.ConstTyped(ty), self.type_digest(ty))
-        cyclic
+        if found == null && self.const_open(ask) { ConstType.Cyclic } else { known_const(ty, error) }
+    }
+
+    /// The type `s`'s typing found: a top-level const's own declaration, a nested one the body
+    /// it is in. Its typing already open is the value asking for the const's own type.
+    fn const_typed_in(f: FileId, s: StmtId) -> TypeId? {
+        touch(self.items(f))
+        let d? = self.decls.decl_of(f, s) ?? self.decl_holding(f, s) else { return null }
+        if self.relation(Family.Typed).open(d.index) { return null }
+        // a held declaration has no range to type: its row carries the type
+        if self.is_held(f) {
+            self.decl_row_filled(d)
+            return self.decls.held_const_type(f, s)
+        }
+        self.typed(d).const_type(s)
+    }
+
+    /// Whether the const `ask` names is being typed right now.
+    fn const_open(ask: SettleAsk) -> bool {
+        let s? = const_stmt(ask.root) else { return false }
+        let d? = self.decls.decl_of(ask.file, s) ?? self.decl_holding(ask.file, s) else { return false }
+        self.relation(Family.Typed).open(d.index)
+    }
+
+    /// The declaration of `f` whose statements hold `s`.
+    fn decl_holding(f: FileId, s: StmtId) -> DeclId? {
+        self
+            .decls
+            .decls_of_file(f)
+            .find((d) -> self.decls.decl(d).stmt_lo <= s.index && s.index < self.decls.decl(d).stmt_hi)
     }
 
     /// THE NAMES AN ANSWER'S RUN READ stand as one read: the declarations a run's code
@@ -1348,3 +1354,6 @@ fn places_fp(v: List<int>) -> int { fp_list(v) }
 /// hashed — `[1, 2] | [3]` and `[1] | [2, 3]` hold the same ints and are two
 /// answers.
 export fn reach_fp(sets: List<List<int>>) -> int { fp(3, [fp_list([fp_list(s) for s in sets])]) }
+
+/// A const's answered type as the program reads it: the absorbing type is a refusal.
+fn known_const(t: TypeId, error: TypeId) -> ConstType { if t == error { ConstType.Refused } else { ConstType.Known(t) } }

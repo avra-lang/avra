@@ -331,6 +331,9 @@ export type TypeFacts = {
     // method's non-`mut` receiver — its seed is boxed into a cell, thawed,
     // the same way a `mut` local's is.
     stmt_flags: SideTable<int>,
+    // a const's, a collect's or a module state's type, as its declaration's typing found it —
+    // what the program answers every reader of it
+    const_types: SideTable<TypeId?>,
     // each `collect`'s kept values, so a re-typed one never re-walks its body
     collections: SideTable<List<ExprId>?>,
     // the method a dot-call chose among a generic trait's impls
@@ -374,6 +377,7 @@ export fn new_type_facts(lo: int, hi: int, stmt_lo: int, stmt_hi: int, stmts: in
         binding_types: side_table<TypeId?>("binding_types", wlo, whi, null),
         index_types: side_table<TypeId?>("index_types", wlo, whi, null),
         stmt_flags: side_table("stmt_flags", wlo, whi, 0),
+        const_types: side_table<TypeId?>("const_types", wlo, whi, null),
         voices: no_voices(),
     }
 }
@@ -597,9 +601,15 @@ impl TypeFacts {
         // declaration's flags from being stomped by another's empty
         // cells — the same law `binding_types` pays
         self.stmt_flags.lay_named(other.stmt_flags, marked_stmt)
+        self.const_types.lay_named(other.const_types, is_typed)
     }
 
     fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
+
+    /// The type a const's, a collect's or a module state's typing found, when it found one.
+    fn const_type(s: StmtId) -> TypeId? { if self.const_types.holds(s.index) { self.const_types.get(s.index) } else { null } }
+
+    fn record_const_type(s: StmtId, ty: TypeId) { self.const_types.set(s.index, ty) }
 
     fn index_type(s: StmtId) -> TypeId? { self.index_types.get(s.index) }
 

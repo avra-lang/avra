@@ -38,7 +38,7 @@ use core.{
     joined,
     sorted_texts,
 }
-use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
+use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets, TypeFacts, Decl}
 use compiler.backend.{reaches_world}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.work.{work_spell_lookup}
@@ -303,7 +303,13 @@ impl Workspace {
     fn note_decl_types(d: DeclId) {
         let x = self.decls.decl(d)
         if self.is_held(x.file) { return }
-        let facts = self.typed(d)
+        self.note_facts_types(x, self.typed(d))
+    }
+
+    /// The named types a body's typing resolved, read from its typed answer while a settlement
+    /// is open: a body read back and one typed here note the same types.
+    fn note_facts_types(x: Decl, facts: TypeFacts) {
+        if self.hold.settle_frames.get().is_empty() { return }
         for e in x.body_exprs() { self.decls.note_named(facts.type_at(e)) }
     }
 

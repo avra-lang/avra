@@ -745,7 +745,7 @@ export type Decls = {
     ensure_target: Cell<fn(DeclId) -> void>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
-    ensure_const: Cell<fn(FileId, StmtId) -> bool>,
+    ensure_const: Cell<fn(FileId, StmtId) -> ConstType>,
     // whether THIS compilation is a program (has an entry) or a
     // library — the closure-fold law's door (features/consts/check.av)
     ensure_entry: Cell<fn() -> bool>,
@@ -924,7 +924,7 @@ export fn gathers_across_files(scope: CollectScope) -> bool {
 }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
-fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
+fn no_const_ensure(f: FileId, s: StmtId) -> ConstType { ConstType.Refused }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
@@ -2035,7 +2035,7 @@ impl Decls {
         self.ensure_target.set(ensure)
     }
 
-    fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
+    fn arm_const(ensure: fn(FileId, StmtId) -> ConstType) { self.ensure_const.set(ensure) }
 
     /// The workspace arms the entry hook once.
     fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
@@ -2140,11 +2140,8 @@ impl Decls {
         self.package_named(self.module_name(self.file(f).module_id))
     }
 
-    fn const_type(f: FileId, s: StmtId) -> ConstType {
-        if (self.ensure_const.get())(f, s) { return ConstType.Cyclic }
-        let held? = self.held_const_type(f, s) else { return ConstType.Refused }
-        ConstType.Known(held)
-    }
+    /// A const's type as the program answers it.
+    fn const_type(f: FileId, s: StmtId) -> ConstType { (self.ensure_const.get())(f, s) }
 
     fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get().get(const_type_key(f, s)) }
 

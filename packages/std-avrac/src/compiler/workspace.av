@@ -48,6 +48,7 @@ use core.{
 use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
+    ConstType,
     ExternNote,
     Listed,
     Ref,
@@ -1312,7 +1313,7 @@ impl Workspace {
         let _ = self.methods(d)
     }
 
-    fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
+    fn const_type_ensured(f: FileId, s: StmtId) -> ConstType { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
 
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
@@ -2442,6 +2443,7 @@ impl Workspace {
         let x = self.decls.decl(d)
         let kept = if nested { null } else { self.typed_restored(x) }
         let out = kept ?? self.typed_fresh(x)
+        self.note_facts_types(x, out)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
         // so it answers this asker alone and is never memoized — the

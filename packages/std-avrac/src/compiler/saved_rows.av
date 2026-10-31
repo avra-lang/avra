@@ -47,8 +47,11 @@ impl Workspace {
     }
 
     /// An answer this process settled at `k`, kept under what it stood on; nothing is kept for
-    /// one whose read has no name, since it could never be judged again.
+    /// one whose read has no name, since it could never be judged again, and nothing by a COLD
+    /// derivation, one that stood on the store for no file: it would keep every answer of the
+    /// program, each with its whole read list.
     fn saved_keep(row: string, k: Key, text: string, what: string) {
+        if held_paths(self).is_empty() { return }
         let store? = self.store.get() else { return }
         let leaves? = self.decls.rows_db.get().leaves_of(self.db.kernel.deps_of(k)) else {
             if traced() { qtrace("Q\tsaved\tunnamed\t${what}\n") }
