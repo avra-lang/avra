@@ -1,209 +1,81 @@
-//! Parse-time lowering: captures -> the Collect statement. `it` and
-//! `by` are NEVER grammar keywords — a keyword literal here would
-//! reserve the word across the whole language (breaking every
-//! lambda's pronoun, `xs.any(it > 0)`, and every `by: int` seat
-//! tree-wide). So each reads an ordinary NAME, checked here to carry
-//! the right word. A projection field's optional `.path` is an
-//! ANCHORED WINDOW read — the field name always arrives, so
-//! `aligned_binds` finds the `.NAME` written in its window, or "" for
-//! the bare `it`.
+//! Parse-time lowering: the Collect statements, computed from their
+//! rules. `it`, `by` and `dense` are the feature's SOFT words — matched
+//! where its rules write them, never reserved; each projected field and
+//! each `by` key is a record its own rule makes.
 use core.{
     Stmt,
-    Expr,
-    ExprId,
     Scoped,
     Plain,
-    TypeRef,
     CollectKind,
     CollectScope,
     Projection,
-    ProjField,
+    OrderKey,
+    Slots,
+    Built,
+    computed,
     named_ref,
 }
-use features.{LangNode, Builder, aligned_binds}
-use grammar.{Token, TokenKind}
 
-fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let t = b.type_ref(1)?
-    let k = b.token(2)?
-    let sc = b.token(3)?
-    let pt = b.token(4)?
-    let ends? = b.span_end() else {
-        return .Err(
-            "defect: a collect declaration without a span — the arena and the grammar disagree",
-        )
-    }
-    let fns = b.tokens(5)?
-    let iws = b.tokens(6)?
-    let fps = b.tokens(7)?
-    let bws = b.tokens(8)?
-    let biws = b.tokens(9)?
-    let bp = b.tokens(10)?
-    let bidx = b.tokens(11)?
-    let dn = b.tokens(12)?
-    let bad_it? = iws.concat(biws).find(not_word("it")) else { return collect_decl_node(b, bws, biws, n, t, k, sc, pt, fns, fps, bp, bidx, dn, ends) }
-    .Err("a collect's projection reads its declaration through `it` — found `${bad_it.text}`")
+/// `collect name: List<T> = kind in scope as Ty { field: it.path, … } by …`.
+@computed
+fn collect_written(s: dyn Slots) -> Result<Built, string> {
+    let proj = Projection { ty: named_ref(s.text_of("of")?), fields: s.proj_fields_of("fields")? }
+    dense_made(
+        s,
+        Stmt
+            .Collect(
+                Scoped(s.text_of("name")?),
+                s.type_of("ty")?,
+                kind_of(s)?,
+                scope_of(s.text_of("scope")?),
+                proj,
+                order_of(s)?,
+            ),
+    )
 }
 
-fn collect_decl_node(
-    b: Builder,
-    bws: List<Token>,
-    biws: List<Token>,
-    n: Token,
-    t: TypeRef,
-    k: Token,
-    sc: Token,
-    pt: Token,
-    fns: List<Token>,
-    fps: List<Token>,
-    bp: List<Token>,
-    bidx: List<Token>,
-    dn: List<Token>,
-    ends: int,
-) -> Result<LangNode, string> {
-    let bad? = bws.find(not_word("by")) else {
-        let dense? = dense_flag(dn) else { return .Err(dense_error(dn)) }
-        let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
-        let made = b
-            .make_stmt(
-                Stmt
-                    .Collect(
-                        Scoped(n.text),
-                        t,
-                        kind_of(b, k),
-                        scope_of(sc),
-                        proj,
-                        order_paths(biws, bp, bidx, ends),
-                    ),
-            )?
-        let s? = match made { .NStmt(id) -> id, rest -> null } else { return .Ok(made) }
-        b.store.mark_collect_dense(s, dense)
-        return .Ok(made)
-    }
-    .Err("a collect's order is declared with `by` — found `${bad.text}`")
+/// `collect enum Name: T = kind in scope by …` — no declared type and no
+/// projection; each `: T` the enum implements, a name read where written.
+@computed
+fn collect_enum_written(s: dyn Slots) -> Result<Built, string> {
+    dense_made(
+        s,
+        Stmt
+            .CollectEnum(
+                Scoped(s.text_of("name")?),
+                kind_of(s)?,
+                scope_of(s.text_of("scope")?),
+                order_of(s)?,
+                s.exprs_of("traits")?,
+            ),
+    )
 }
 
-/// `collect enum Name = kind in scope by …` — `build_collect_decl`'s
-/// twin with no declared type and no projection.
-fn build_collect_enum_decl(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let k = b.token(1)?
-    let sc = b.token(2)?
-    let ends? = b.span_end() else {
-        return .Err("defect: a collect enum without a span — the arena and the grammar disagree")
-    }
-    let bws = b.tokens(3)?
-    let biws = b.tokens(4)?
-    let bp = b.tokens(5)?
-    let bidx = b.tokens(6)?
-    let dn = b.tokens(7)?
-    let traits = [b.store.alloc_expr(Expr.Ident(Scoped(t.text)), t.span) for t in b.tokens(8)?]
-    let bad_it? = biws.find(not_word("it")) else { return collect_enum_node(b, bws, biws, n, k, sc, bp, bidx, dn, traits, ends) }
-    .Err("a collect enum's order reads its declaration through `it` — found `${bad_it.text}`")
+/// The collect as this build's statement, marked `dense` when the word
+/// was written.
+fn dense_made(s: dyn Slots, gathering: Stmt) -> Result<Built, string> {
+    let made = s.made_stmt(gathering)?
+    if s.present_of("dense")? { s.arena().mark_collect_dense(made, true) }
+    .Ok(Built.Stmt(made))
 }
 
-fn collect_enum_node(
-    b: Builder,
-    bws: List<Token>,
-    biws: List<Token>,
-    n: Token,
-    k: Token,
-    sc: Token,
-    bp: List<Token>,
-    bidx: List<Token>,
-    dn: List<Token>,
-    traits: List<ExprId>,
-    ends: int,
-) -> Result<LangNode, string> {
-    let bad? = bws.find(not_word("by")) else {
-        let dense? = dense_flag(dn) else { return .Err(dense_error(dn)) }
-        let made = b
-            .make_stmt(
-                Stmt
-                    .CollectEnum(
-                        Scoped(n.text),
-                        kind_of(b, k),
-                        scope_of(sc),
-                        order_paths(biws, bp, bidx, ends),
-                        traits,
-                    ),
-            )?
-        let s? = match made { .NStmt(id) -> id, rest -> null } else { return .Ok(made) }
-        b.store.mark_collect_dense(s, dense)
-        return .Ok(made)
-    }
-    .Err("a collect enum's order is declared with `by` — found `${bad.text}`")
+/// Each `by` key as the one text a collect orders by.
+fn order_of(s: dyn Slots) -> Result<List<Plain>, string> {
+    .Ok([k.spelled() for k in s.order_keys_of("order")?])
 }
 
-/// Whether the trailing word is `dense` — `null` when it is neither
-/// absent nor `dense`, so the caller names the offending word.
-fn dense_flag(dn: List<Token>) -> bool? {
-    let word? = dn.first() else { return false }
-    if word.text == "dense" { return true }
-    null
+/// A collect's kind: `@name` is `Annotated` — every declaration wearing
+/// that annotation; a bare word is a component's own name (`model`,
+/// `rule`), as written, for `collect`'s own laws to judge.
+fn kind_of(s: dyn Slots) -> Result<CollectKind, string> {
+    if !s.present_of("mark")? { return .Ok(CollectKind.Component(s.text_of("kind")?)) }
+    let written = s.text_of("mark")?
+    .Ok(CollectKind.Annotated(written.substring(1, written.length)))
 }
 
-fn dense_error(dn: List<Token>) -> string {
-    let word? = dn.first() else { return "expected the line to end after the collect" }
-    "expected the line to end after the collect — `${word.text}` is not `dense`"
-}
-
-/// Each order entry's `it` path, encoded as ONE text: its segments
-/// joined by `.`, and its `[i]` element when one was written. The
-/// boundary between entries is the `it` anchor's own position, the
-/// same window `aligned_binds` reads for a projection field.
-fn order_paths(biws: List<Token>, segs: List<Token>, idxs: List<Token>, ends: int) -> List<Plain> {
-    [order_key(biws, segs, idxs, j, ends) for j in 0..biws.length]
-}
-
-fn order_key(biws: List<Token>, segs: List<Token>, idxs: List<Token>, j: int, ends: int) -> Plain {
-    let lo = biws[j].span.hi
-    let hi = if j + 1 < biws.length { biws[j + 1].span.lo } else { ends }
-    let mine = [t for t in segs if t.span.lo >= lo && t.span.lo < hi]
-    let idx = [t for t in idxs if t.span.lo >= lo && t.span.lo < hi].first()
-    Plain(order_key_text(mine, idx))
-}
-
-fn order_key_text(segs: List<Token>, idx: Token?) -> string {
-    let path = [t.text for t in segs].join(".")
-    match idx {
-        t? -> "${path}[${t.text}]"
-        null -> path
-    }
-}
-
-fn not_word(word: string) -> fn(Token) -> bool {
-    (t: Token) -> t.text != word
-}
-
-/// A collect's kind word: `@name`, the token carrying its `@`, is
-/// `Annotated` — every declaration wearing that annotation, never
-/// resolved against the component list at all. A BARE word is
-/// resolved to an imported component's own name (`model`, `rule`)
-/// — never `instance of`. Not KNOWN, the word stands as written for
-/// `collect`'s own laws to refuse.
-fn kind_of(b: Builder, k: Token) -> CollectKind {
-    if k.kind == TokenKind.Pkg { return CollectKind.Annotated(k.text.substring(1, k.text.length)) }
-    if b.words.component(k.text) != null { return CollectKind.Component(k.text) }
-    CollectKind.UnknownKind(k.text)
-}
-
-fn scope_of(sc: Token) -> CollectScope {
-    if sc.text == "self" { return CollectScope.Self }
-    if sc.text == "package" { return CollectScope.Package }
-    if sc.text == "closure" { return CollectScope.Closure }
-    CollectScope.UnknownScope(sc.text)
-}
-
-/// Each field's fill: the name always arrives, so `aligned_binds`
-/// finds the `.NAME` written in its window, or "" for the bare `it`
-/// — folded here into the empty path that means the same thing.
-fn proj_fields(fns: List<Token>, fps: List<Token>, ends: int) -> List<ProjField> {
-    let paths = aligned_binds(fns, fps, ends)
-    [ProjField { field: Plain(f.text), path: path_of(paths[j]) } for j, f in fns]
-}
-
-fn path_of(word: string) -> List<Plain> {
-    if word == "" { [] } else { [Plain(word)] }
+fn scope_of(word: string) -> CollectScope {
+    if word == "self" { return CollectScope.Self }
+    if word == "package" { return CollectScope.Package }
+    if word == "closure" { return CollectScope.Closure }
+    CollectScope.UnknownScope(word)
 }

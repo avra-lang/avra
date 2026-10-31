@@ -494,9 +494,11 @@ impl Workspace {
     }
 
     /// The plain free fn names whose form differs between the forms a module had at `was` and its
-    /// forms now — added, removed or changed; null where either side's forms cannot be read.
+    /// forms now — added, removed or changed; null where either side's forms cannot be read. Both
+    /// sides key the answer: a record written mid-build moves the forms now.
     fn moved_forms(store: Store, m: ModulePath, was: string) -> Map<string, bool>? {
-        let known: Map<string, bool>? = self.hold.forms_moved.get().get("${m.text()}\t${was}")
+        let at = "${m.text()}\t${was}\t${self.forms_stamp(store, m)}"
+        let known: Map<string, bool>? = self.hold.forms_moved.get().get(at)
         if known != null { return known }
         let kept? = store.get(Stored.Unit, forms_key(was)) else { return null }
         let now? = self.forms_at(store, m) else { return null }
@@ -505,7 +507,7 @@ impl Workspace {
         let moved: Cell<Map<string, bool>> = Cell.new({})
         for l in before.keys() { if !after.has(l) { moved.put(l.split("\t")[1], true) } }
         for l in after.keys() { if !before.has(l) { moved.put(l.split("\t")[1], true) } }
-        self.hold.forms_moved.put("${m.text()}\t${was}", moved.get())
+        self.hold.forms_moved.put(at, moved.get())
         moved.get()
     }
 }

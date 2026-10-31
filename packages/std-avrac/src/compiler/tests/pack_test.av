@@ -6,6 +6,7 @@ use @std.time.{stamp}
 use @std.io.{list_dir, remove, read_bytes, write_bytes}
 use @std.path.{joined_path}
 use compiler.store.{
+    Pack,
     pack_at,
     pack_put,
     pack_has,
@@ -32,9 +33,7 @@ fn damaged_root(name: string) -> string {
     let writer = pack_at(root, "print-one")
     let _ = pack_put(writer, "unit", "k", "v", [])
     let _ = seal(writer)
-    for file in pack_files(root) {
-        if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
-    }
+    segments_gone(root)
     let _ = write_bytes(val_path("${root}/store", writer.val_rev.get()), "X".bytes())
     root
 }
@@ -46,13 +45,30 @@ fn sealed_many(name: string, n: int) -> string {
     let w = pack_at(root, "print-one")
     for i in 0..n { let _ = pack_put(w, "unit", "k${i}", "v${i}", ["d9 shared.av"]) }
     let _ = seal(w)
-    for file in pack_files(root) {
-        if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
-    }
+    segments_gone(root)
     root
 }
 
 fn segments_of(root: string) -> List<string> { [f for f in pack_files(root) if f.starts_with("seg-")] }
+
+/// Each open run's row count, newest first.
+fn run_counts(p: Pack) -> string { ["${s.count}" for s in p.sealed.get()].join(",") }
+
+/// Every segment removed, so an open reads the sealed runs alone.
+fn segments_gone(root: string) {
+    for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
+}
+
+/// The sealed body of `sealed_many`, then `fresh` rows over it written and sealed, with
+/// the segments gone again: `k0`..`k<fresh>` answer `new<i>` and read `d1 moved.av`.
+fn run_over(name: string, fresh: int) -> string {
+    let root = sealed_many(name, 64)
+    let w = pack_at(root, "print-one")
+    for i in 0..fresh { let _ = pack_put(w, "unit", "k${i}", "new${i}", ["d1 moved.av"]) }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
 
 spec "store/pack — segments, commit markers, the two tiers" {
     given "a row written to one writer's segment" {
@@ -134,7 +150,7 @@ spec "store/pack — segments, commit markers, the two tiers" {
             let sealer = pack_at(root, "print-one")
             let _ = pack_put(sealer, "unit", "first", "1", [])
             let _ = seal(sealer)
-            for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
+            segments_gone(root)
             let _ = pack_put(stale, "unit", "second", "2", [])
             let refused = !seal(stale)
             let fresh = pack_at(root, "print-one")
@@ -151,9 +167,7 @@ spec "store/pack — segments, commit markers, the two tiers" {
             let _ = pack_put(w, "unit", "b", "2", ["d2 b.av", "d9 shared.av"])
             let _ = pack_put(w, "warn", "c", "3", ["d3 c.av"])
             let _ = seal(w)
-            for file in pack_files(root) {
-                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
-            }
+            segments_gone(root)
             let r = pack_at(root, "print-one")
             pack_suspects(r, ["a.av"], pack_readers(r)).length == 1 &&
                 pack_suspects(r, ["shared.av"], pack_readers(r)).length == 2 &&
@@ -199,14 +213,56 @@ spec "store/pack — segments, commit markers, the two tiers" {
             let writer = pack_at(root, "print-one")
             let _ = pack_put(writer, "unit", "k", "value", [])
             let _ = seal(writer)
-            for file in pack_files(root) {
-                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
-            }
+            segments_gone(root)
             let reader = pack_at(root, "print-one")
             let _ = pack_has(reader, "unit", "absent")
             let _ = pack_get(reader, "unit", "k")
             let t = pack_traffic(reader)
             t.hits == 1 && t.misses == 1 && t.values == 1 && t.bytes == 5
+        }
+    }
+    given "a seal over a body far larger than what it adds" {
+        then "folds only the new rows into a run that stands over the body" {
+            let r = pack_at(run_over("run", 2), "print-one")
+            pack_get(r, "unit", "k1") == "new1" &&
+                pack_get(r, "unit", "k40") == "v40" &&
+                run_counts(r).starts_with("2,")
+        }
+        then "a moved input names each reader once, by the run that wrote it last" {
+            let r = pack_at(run_over("run-suspects", 2), "print-one")
+            pack_suspects(r, ["shared.av"], pack_readers(r)).length == 62 &&
+                pack_suspects(r, ["moved.av"], pack_readers(r)).length == 2
+        }
+        then "a second seal folds the run above it, never the runs below" {
+            let root = run_over("run-fold", 1)
+            let before = pack_at(root, "print-one")
+            let _ = pack_has(before, "unit", "k0")
+            let below = run_counts(before).substring(2, run_counts(before).length)
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "extra", "e", [])
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            pack_get(r, "unit", "extra") == "e" &&
+                pack_get(r, "unit", "k0") == "new0" &&
+                run_counts(r) == "2,${below}"
+        }
+        then "a run whose body is gone is skipped for the newest body that stands whole" {
+            let root = run_over("run-broken", 2)
+            let opened = pack_at(root, "print-one")
+            let _ = pack_has(opened, "unit", "k1")
+            let below = opened.sealed.get()[1].rev
+            let _ = remove(joined_path("${root}/store", "body-${below}.pack"))
+            let r = pack_at(root, "print-one")
+            pack_get(r, "unit", "k1") == "v1" && r.torn.get()
+        }
+    }
+    given "a seal that adds a quarter of the body or more" {
+        then "folds everything into one whole body" {
+            let r = pack_at(run_over("run-whole", 16), "print-one")
+            pack_get(r, "unit", "k3") == "new3" &&
+                pack_get(r, "unit", "k40") == "v40" &&
+                run_counts(r) == "64"
         }
     }
 }

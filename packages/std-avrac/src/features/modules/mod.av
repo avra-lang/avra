@@ -6,16 +6,12 @@
 //! node the workspace resolves before any file's names do; `export`
 //! is a prefix that marks the declaration it heads — no node of its
 //! own.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use features.modules.{unused_import}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn modules() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name          | build
-        "export_stmt" | build_export
-    }
     let codes = table<DiagCode> {
         kind                              | summary
         "resolve.no_module"               | "a `use` names a module the package does not have"
@@ -66,10 +62,9 @@ export fn modules() -> LanguageFeature {
     }
     LanguageFeature modules {
         gram: grammar {
-            stmt = "use" ( path:PKG | path:NAME ) ( "." path:NAME )* "." "{" BREAK? items:use_item ( ( "," | BREAK ) BREAK? items:use_item )* ","? BREAK? "}" END @recover(sync_to: "END") -> Stmt.Use | "export" d:stmt -> export_stmt(d)
+            stmt = "use" ( path:PKG | path:NAME ) ( "." path:NAME )* "." "{" BREAK? items:use_item ( ( "," | BREAK ) BREAK? items:use_item )* ","? BREAK? "}" END @recover(sync_to: "END") -> Stmt.Use | "export" decl:stmt -> Stmt.FnDecl by exported_written
             use_item = name:NAME ( "as" rename:NAME )? -> Record.UseItem
         }
-        builders: rows
         diags: codes
     }
     modules
