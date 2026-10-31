@@ -157,6 +157,14 @@ impl Slots for Builder {
         .Ok(map_entries_at(self.args, self.slot_of(label)?))
     }
 
+    /// Where each capture under `label` was written, in order.
+    fn spans_of(label: string) -> Result<List<Span?>, string> {
+        .Ok([extent_of_capture(c, self.store) for c in list_at(self.args, self.slot_of(label)?)])
+    }
+
+    /// The text of the file this build reads.
+    fn source() -> string { self.text }
+
     /// The span this build was written at.
     fn built_at() -> Span? { self.span }
 
@@ -735,33 +743,8 @@ export fn list_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Capture
 }
 
 impl Builder {
-    /// The value between field `j`'s name and the next field's — null
-    /// for a hole standing as the whole field.
-    fn value_after(vn: List<Token>, ve: List<ExprId>, j: int) -> ExprId? {
-        let lo = vn[j].span.lo
-        let hi: int = if j + 1 < vn.length { vn[j + 1].span.lo } else { 1000000000 }
-        ve.find((e) -> self.starts_between(e, lo, hi))
-    }
-
     /// Where a member was written.
     fn written_at(p: Param) -> int { self.store.param_id_span(p.id)?.lo ?? 0 }
-
-    fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
-        let sp: Span? = self.store.expr_span(e)
-        sp != null && between(sp!.lo, lo, hi)
-    }
-}
-
-/// An entry's name as written: a hole SPREAD by `..` keeps the `..`,
-/// which is how a template tells a run of entries from a name hole.
-export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> string {
-    if spreads.any((s: Token) -> spread_before(s, f, all)) { "..${f.text}" } else { f.text }
-}
-
-/// Whether `..` stands directly before entry `f` — after every entry
-/// written before it.
-fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
-    s.span.hi == f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
 }
 
 /// The mark that makes an event the one bare statements in an instance fill.
