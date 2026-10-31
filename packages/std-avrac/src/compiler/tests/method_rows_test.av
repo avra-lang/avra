@@ -1,10 +1,10 @@
 // A method table is read at its own cell. A reader that is not making the table records
-// the type's `Methods` in the open query, so it depends on the impls it dispatches through;
+// the type's `method_table` in the open query, so it depends on the impls it dispatches through;
 // the table's own bracket and the registration inside it record nothing, since the table
 // waits on them. `base_b` (decl_rows_test.av) declares `Box` and its impl.
 use core.{DeclId}
-use compiler.{Workspace}
-use @std.relation.engine.{Key}
+use compiler.{Workspace, method_table_key}
+use @std.relation.engine.{Key, same_key}
 
 fn references_ordinal() -> int { family_ordinal("References") }
 
@@ -22,12 +22,9 @@ fn referenced_workspace() -> Workspace {
     ws
 }
 
-/// Whether `frame`'s cell lists a dep on `Methods` of `target`.
+/// Whether `frame`'s cell lists a dep on the method table of `target`.
 fn reads_methods(ws: Workspace, frame: Key, target: DeclId) -> bool {
-    ws
-        .db
-        .edges_by_reader(frame)
-        .any((k: Key) -> k.family == methods_ordinal() && k.arg == target.index)
+    ws.db.edges_by_reader(frame).any((k: Key) -> same_key(k, method_table_key(ws, target)))
 }
 
 spec "compiler/methods — a method table is read at its own cell" {
@@ -35,7 +32,7 @@ spec "compiler/methods — a method table is read at its own cell" {
         let ws = referenced_workspace()
         ws.db.value_hash_of(Key { family: references_ordinal(), arg: 0 }) != null
     }
-    then "the file making the call lists the Methods of a type whose method it resolves through" {
+    then "the file making the call lists the method table of a type whose method it resolves through" {
         let ws = referenced_workspace()
         reads_methods(
             ws,
@@ -43,18 +40,15 @@ spec "compiler/methods — a method table is read at its own cell" {
             decl_in_file(ws, "/w/src/b.av", "Box"),
         )
     }
-    then "a type's Methods does not list itself" {
+    then "a type's method table does not list itself" {
         let ws = referenced_workspace()
         let box = decl_in_file(ws, "/w/src/b.av", "Box")
-        !reads_methods(ws, Key { family: methods_ordinal(), arg: box.index }, box)
+        !reads_methods(ws, method_table_key(ws, box), box)
     }
-    then "a type's Methods lists a signature it waits on" {
+    then "a type's method table lists a signature it waits on" {
         let ws = referenced_workspace()
         let box = decl_in_file(ws, "/w/src/b.av", "Box")
-        ws
-            .db
-            .edges_by_reader(Key { family: methods_ordinal(), arg: box.index })
-            .any((k: Key) -> k.family == sig_ordinal())
+        ws.db.edges_by_reader(method_table_key(ws, box)).any((k: Key) -> k.family == sig_ordinal())
     }
 }
 

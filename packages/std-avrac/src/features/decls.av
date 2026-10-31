@@ -679,7 +679,7 @@ export type Decls = {
     /// and one index, the shape the dense table had.
     decl_cells: Cell<List<Decl?>>,
     record_items: Cell<int>,
-    record_methods: Cell<int>,
+    method_key: Cell<fn(DeclId) -> Key>,
     record_names: Cell<int>,
     /// THE NAME READS A FRAME GATHERS: while a run's frame gathers, the name buckets its own
     /// reads touch are held here and recorded as ONE read of their digest, never one each.
@@ -865,6 +865,9 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
 /// Where no workspace stands behind the table, nothing resolves.
 fn no_namespace(_f: FileId) -> Namespace { no_names() }
 
+/// Before the workspace arms it, a method table is no query's: its read records nothing.
+fn no_method_key(_d: DeclId) -> Key { Key { family: -1, arg: 0 } }
+
 fn none_apart(_f: FileId) -> List<DeclId> { [] }
 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
@@ -991,7 +994,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         decl_row_rows: Cell.new(Decl.rows_in(db)),
         decl_cells: Decl.rows_in(db).rows,
         record_items: Cell.new(0),
-        record_methods: Cell.new(0),
+        method_key: Cell.new(no_method_key),
         record_names: Cell.new(0),
         gathering: Cell.new(0 - 1),
         gather_depths: list_cell(),
@@ -1394,9 +1397,9 @@ impl Decls {
 
     /// The workspace arms the recording once: the families a file's rows, methods and
     /// names settle under.
-    fn arm_recording(items: int, methods: int, names: int) {
+    fn arm_recording(items: int, methods: fn(DeclId) -> Key, names: int) {
         self.record_items.set(items)
-        self.record_methods.set(methods)
+        self.method_key.set(methods)
         self.record_names.set(names)
         self.recording.set(true)
         for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
@@ -3554,7 +3557,8 @@ impl Decls {
     @bracket("methods")
     fn methods_of(target: DeclId) -> List<DeclId> {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
-        self.record_kernel.record_at(self.record_methods.get(), target.index)
+        let k = (self.method_key.get())(target)
+        if k.family >= 0 { self.record_kernel.record_at(k.family, k.arg) }
         self.registered_methods(target)
     }
 

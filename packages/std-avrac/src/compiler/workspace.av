@@ -570,7 +570,6 @@ export type Workspace = {
     // lowering (index 0)
     externs: Table<ExternNames>,
     sig_voices: Table<Voices>,
-    method_clashes: Table<List<Clash>>,
     /// each file's clash diagnostics as `method_clashes` last settled them
     method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
@@ -787,10 +786,6 @@ fn sig_verified(ws: Workspace, arg: int) -> int {
     touch(ws.sig(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Sig, arg))
 }
-fn methods_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.methods(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Methods, arg))
-}
 fn typed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.typed(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Typed, arg))
@@ -900,7 +895,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Visible -> visible_verified(ws, arg),
         .Resolved -> resolved_verified(ws, arg),
         .Sig -> sig_verified(ws, arg),
-        .Methods -> methods_verified(ws, arg),
         .Typed -> typed_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
@@ -938,6 +932,15 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
 }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
+/// A type's method table: its methods, and the clashes among them.
+export type MethodTable = { methods: List<DeclId>, clashes: List<Clash> }
+
+/// A type's method table, filled from its own members and every impl
+/// block that names it. One that cannot be completed answers its asker
+/// alone and is never kept.
+@query
+fn method_table(ws: Workspace, target: DeclId) -> MethodTable { ws.method_table_made(target) }
+
 /// A file's parse under the block words it stands under, cut off on its structure.
 @query
 @digested_by(fingerprint_of_parsed)
@@ -1053,7 +1056,6 @@ fn built(
         store: attached,
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
-        method_clashes: new_table<List<Clash>>(),
         method_diag_rows: new_table<List<Diag>>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
@@ -1144,7 +1146,9 @@ fn built(
         args: List<ExprId>,
     ) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
-    ws.decls.arm_recording(Family.Items.ordinal, Family.Methods.ordinal, Family.Named.ordinal)
+    ws
+        .decls
+        .arm_recording(Family.Items.ordinal, (d: DeclId) -> method_table_key(ws, d), Family.Named.ordinal)
     ws.answers_named()
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
@@ -2217,14 +2221,28 @@ impl Workspace {
     /// body depends on exactly the impls it dispatches through. Asked
     /// again from inside one of those impls' own registration, it
     /// answers what stands.
+    fn methods(target: DeclId) -> List<DeclId> { self.method_table_of(target).methods }
+
+    /// A type's method table and its clashes — what stands, when the table is
+    /// itself being made.
+    fn method_table_of(target: DeclId) -> MethodTable {
+        if self.db.active(method_table_key(self, target)) { return self.table_standing(target) }
+        method_table(self, target)
+    }
+
+    /// A type's method table as it stands, its clashes beside it.
+    fn table_standing(target: DeclId) -> MethodTable {
+        MethodTable {
+            methods: self.decls.registered_methods(target),
+            clashes: self.decls.method_clashes(target),
+        }
+    }
+
+    /// The table's own frame reads the files it gathers from, so a caller
+    /// depends on the table and never on the target's whole resolved file
+    /// or an impl's namespace.
     @bracket("methods")
-    fn methods(target: DeclId) -> List<DeclId> {
-        // THE TABLE'S OWN FRAME READS THE FILES IT GATHERS FROM, so a
-        // caller depends on `Methods(target)` and never on the target's
-        // whole resolved file or an impl's namespace.
-        let k = key(Family.Methods, target.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.registered_methods(target) }
-        self.db.begin(k)
+    fn method_table_made(target: DeclId) -> MethodTable {
         // A GENERATED IMPL IS MINTED INTO THE TARGET'S OWN FILE, so the
         // table must not be read before that file's expansion has run —
         // or a caller in another file sees a table missing the derived
@@ -2246,17 +2264,13 @@ impl Workspace {
                 (b) -> self.registering(b) ||
                     self.db.active(key(Family.Resolved, self.decls.decl(b).file.index)),
             ) {
-            self.db.abandon(k)
-            return self.decls.registered_methods(target)
+            self.query_db().unkept()
+            return self.table_standing(target)
         }
         for b in blocks {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
-        let out = self.decls.registered_methods(target)
-        self.note_methods(k, target)
-        self.method_clashes.keep(target.index, self.decls.method_clashes(target))
-        self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
-        out
+        self.table_standing(target)
     }
 
     /// A declaration's own syntax, DECLARATION-GRAIN (COMPILER DB
@@ -2626,7 +2640,6 @@ export fn family_code_hash(f: Family) -> string {
         .Visible -> code_hash(visible_verified) ?? "",
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Sig -> code_hash(sig_verified) ?? "",
-        .Methods -> code_hash(methods_verified) ?? "",
         .Typed -> code_hash(typed_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",

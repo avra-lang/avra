@@ -44,43 +44,6 @@ impl Workspace {
         }
     }
 
-    /// The impl sets, spelled by their type: a set is the blocks aimed at it and their members, so
-    /// an impl joining or leaving, or a method added to a block that already stood, moves it. No
-    /// kernel key carries it.
-    fn named_impl_sets() -> AnswerRef {
-        let ws = self
-        AnswerRef {
-            name: "ImplSet",
-            family: () -> -1,
-            spelled: (arg: int) -> ws.spelled_decl(arg),
-            arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
-        }
-    }
-
-    fn impl_set_hash(target: DeclId) -> int {
-        let blocks = self.method_blocks(target)
-        fp_str(
-            joined(
-                sorted_texts(
-                    [self.decl_ref(d) for d in blocks.concat(flatten([self.decls.children_of(b) for b in blocks]))],
-                ),
-                ",",
-            ),
-        )
-    }
-
-    /// A type's method table says what it stood on: the set of blocks aimed at it and their members,
-    /// which is what the table's own digest was (its method names). A reader of a member reads that
-    /// member's own signature.
-    fn note_methods(k: Key, target: DeclId) {
-        self
-            .decls
-            .rows_db
-            .get()
-            .noted(edge_of(k), [Leaf.Input("ImplSet", self.decl_ref(target), self.impl_set_hash(target))])
-    }
-
     /// The signatures, spelled by declaration. A signature settled by no query (a held
     /// declaration's, a builtin's) is digested as the signature it is.
     fn named_sigs() -> AnswerRef {
@@ -266,7 +229,6 @@ impl Workspace {
         let rdb = self.decls.rows_db.get()
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_sigs())
-        rdb.answer_known(self.named_impl_sets())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
@@ -287,7 +249,6 @@ impl Workspace {
             )
         rdb.answer_known(self.named_by_decl("Writes", Family.Writes))
         rdb.answer_known(self.named_by_decl("CancelBits", Family.CancelBits))
-        rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
         rdb.answer_known(self.named_by_file("Items", Family.Items))
         rdb.answer_known(self.named_by_file("Visible", Family.Visible))
         rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
