@@ -5,7 +5,7 @@
 //! were simply absent ("`T` has no method `big`" with no budget in sight).
 use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths}
 use compiler.host.{memory_host}
-use compiler.families.{Family}
+use compiler.{expanded_in_key}
 
 const LIFT_BUDGET: string = "\n[lifted]\nmemory = 1\n"
 
@@ -39,7 +39,8 @@ spec "compiler/expand — a derive cut by its budget" {
             let ws = test_workspace(memory_host(files(), paths()), "/w")
             let f = ws.file_id("/w/src/main.av")
             let _ = ws.expanded(f)
-            ws.relation(Family.Expanded).evict_call(f.index)
+            ws.db.kernel.forget(expanded_in_key(ws, f))
+            ws.db.kernel.bump()
             ws.program("/w/src/main.av").report().contains("annotation.unsettled")
         }
     }

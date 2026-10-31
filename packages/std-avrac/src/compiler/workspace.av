@@ -828,10 +828,6 @@ fn cancel_bits_verified(ws: Workspace, arg: int) -> int {
     touch(ws.cancel_bits_of(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.CancelBits, arg))
 }
-fn expanded_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.expanded(file_at(arg)))
-    ws.db.changed_at(key(Family.Expanded, arg))
-}
 fn plain_verified(ws: Workspace, arg: int) -> int {
     touch(ws.plain_parsed(file_at(arg)))
     ws.db.changed_at(key(Family.Plain, arg))
@@ -903,7 +899,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
-        .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
         .FileRefs -> file_refs_verified(ws, arg),
@@ -2074,7 +2069,7 @@ impl Workspace {
         // short of the arena it ends with. Its answer serves the run
         // that asked and is never kept — the next ask resolves the
         // finished arena.
-        let partial = self.relation(Family.Expanded).open(f.index)
+        let partial = self.db.active(expanded_in_key(self, f))
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
         // per-expression tables are sized to the arena as it stands —
@@ -2452,7 +2447,7 @@ impl Workspace {
         // window typed now lacks the ids the expansion is about to add,
         // so it answers this asker alone and is never memoized — the
         // facts settle once the expansion has closed.
-        if self.db.active(key(Family.Expanded, x.file.index)) {
+        if self.db.active(expanded_in_key(self, x.file)) {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
@@ -2498,7 +2493,7 @@ impl Workspace {
         // a window folded now lacks the nodes it is about to add, so it
         // answers this asker alone and is never memoized — the fold
         // settles once the expansion has closed.
-        if self.db.family_active(Family.Expanded.ordinal) {
+        if self.db.family_active(expanded_in_key(self, f).family) {
             self.db.abandon(key(Family.Folded, f.index))
             return folded_facts
         }
@@ -2648,7 +2643,6 @@ export fn family_code_hash(f: Family) -> string {
         .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
-        .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
         .FileRefs -> code_hash(file_refs_verified) ?? "",

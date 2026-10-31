@@ -98,7 +98,7 @@ use core.{
     is_name_cont,
 }
 use diagnostics.{loc_at, Diag}
-use compiler.families.{Family}
+use @std.relation.{query, recursive}
 use compiler.lower.{ordered_collect_members}
 use @std.testing.{words}
 
@@ -112,6 +112,12 @@ type WornMark = { mark: Mark, file: FileId, gatherer: string? = null }
 
 /// How many consts a chain of names may pass through — past it, a
 /// cycle the const law refuses.
+/// The declarations a file's expansions generated. Re-entered while it
+/// runs — a resolve's miss asks it — it expands again, a smaller view.
+@query
+@recursive
+fn expanded_in(ws: Workspace, f: FileId) -> List<DeclId> { ws.expansion(f) }
+
 const const_chain_limit: int = 64
 
 impl Workspace {
@@ -126,15 +132,19 @@ impl Workspace {
         // its answer for the run; a later one reads it, so a file is not
         // expanded once per member that asks. A re-entry that arrives
         // while that first one still computes reads what is minted so far.
-        let reentrant = self.relation(Family.Expanded).open(f.index)
+        let reentrant = self.db.active(expanded_in_key(self, f))
         let settled = if reentrant { self.decls.reentry_answer(f) } else { null }
         if settled != null { return settled! }
         if reentrant && self.decls.reentry_running(f) { return self.generated_so_far(f) }
-        match self.relation(Family.Expanded).start_recursive(f.index) {
-            .Reuse(value) -> { return expanded_of(value) },
-            .Compute -> nothing(),
-        }
         if reentrant { self.decls.reentry_begun(f) }
+        let made = expanded_in(self, f)
+        if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
+        made
+    }
+
+    /// One run of a file's expansions: what its derives, declaring
+    /// annotations, components and delegations generated.
+    fn expansion(f: FileId) -> List<DeclId> {
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
@@ -149,10 +159,6 @@ impl Workspace {
             made = made.concat(self.delegated(f, d, p, vis))
         }
         self.hold_marks_to_a_reader(f, p, vis)
-        self
-            .relation(Family.Expanded)
-            .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
-        if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
     }
 

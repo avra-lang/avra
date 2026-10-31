@@ -7,7 +7,7 @@
 // workspace_fixtures.av's own.
 use @std.avrac.testing.{test_workspace}
 use @std.avrac.testing.{vendored_meta, vendored_meta_paths}
-use compiler.{Workspace, type_facts_fp, parsed_of_key}
+use compiler.{Workspace, type_facts_fp, parsed_of_key, expanded_in_key}
 use compiler.host.{memory_host}
 use core.{sorted_texts, distinct}
 use @std.relation.engine.{Key, same_key}
@@ -122,9 +122,10 @@ fn grain_frontier(ws: Workspace) -> List<string> {
 /// A query `main.av` asks that reads `a.av` whole.
 fn grain_reads_whole(ws: Workspace, k: Key) -> bool {
     let label = ws.key_label(k)
-    same_key(k, parsed_of_key(ws, ws.file_id(grain_lib()))) ||
-        ["Plain", "Expanded", "Visible", "Resolved"]
-            .any((w: string) -> label == "${w}(src/lib/a.av)")
+    let lib = ws.file_id(grain_lib())
+    same_key(k, parsed_of_key(ws, lib)) ||
+        same_key(k, expanded_in_key(ws, lib)) ||
+        ["Plain", "Visible", "Resolved"].any((w: string) -> label == "${w}(src/lib/a.av)")
 }
 
 fn grain_whole_reads(ws: Workspace) -> List<string> {
