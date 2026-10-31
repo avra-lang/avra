@@ -1,64 +1,84 @@
 //! The parsed body and the deferred hole expressions -> the Quote
 //! node. The runs of source between holes ride along as the printing
 //! projection; a body of arms takes a lone hole statement as an arm.
-use core.{Expr, Pat, Arm, StmtId, Scoped, BodyView}
-use features.{LangNode, Builder, arms_at, zip_defect_of}
-use grammar.{runs}
+use core.{
+    Expr,
+    Pat,
+    Arm,
+    StmtId,
+    Scoped,
+    Span,
+    BodyView,
+    SyntaxArena,
+    Slots,
+    Built,
+    computed,
+    flatten,
+    some_list,
+}
+use features.{zip_defect_of}
 
-fn build_quote(b: Builder) -> Result<LangNode, string> {
-    let open = b.token(0)?
-    let arms = arms_at(b.args, 1)
-    let stmts = b.stmts(2)?
-    let close = b.token(3)?
-    let begins = b.tokens(4)?
-    let holes = b.exprs(5)?
-    let ends = b.tokens(6)?
+/// `quote { … }` — the body as written, its holes, and the source runs
+/// between them. A HOLE'S TOKENS ARE DEFERRED to after the closing brace
+/// in the stream (grammar/lexer.av), so the branch's own span ends at the
+/// last hole: the quote's span is its braces', read straight off the source.
+@computed
+fn quote_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let open? = written(s.spans_of("open")?).first() else { return .Err(braces_missing()) }
+    let close? = written(s.spans_of("close")?).first() else { return .Err(braces_missing()) }
+    let begins = written(s.spans_of("begins")?)
+    let ends = written(s.spans_of("ends")?)
+    let holes = s.exprs_of("holes")?
     if begins.length != holes.length { return .Err("a hole is empty — `\${e}` takes an expression") }
     if ends.length != holes.length { return .Err(zip_defect_of("quote holes")) }
-    let parts = runs(b.text, open.span.hi, close.span.lo, begins, ends)
-    if !arms.is_empty() && !stmts.all((s: StmtId) -> b.store.hole_stmt(s) != null) { return .Err("a quote holds arms or statements, not both") }
-    let body_stmts = if arms.is_empty() { b.store.answered(stmts) } else { [] }
-    let body_arms = if arms.is_empty() { [] } else { merged(b, arms, stmts) }
-    // A HOLE'S TOKENS ARE DEFERRED to after `close` in the stream (the
-    // lexer's own scheme — grammar/lexer.av), so `b.span` (the branch's
-    // consumed range, `entry` token to `cursor - 1`) covers only up to
-    // the LAST hole when one exists: a `${…}` sits textually INSIDE the
-    // quote, but lexically AFTER it. `open`/`close` are read straight
-    // off the source and stay in text order regardless.
-    let e = b
-        .store
+    let arms = s.arms_of("arms")?
+    let stmts = s.stmts_of("stmts")?
+    if !arms.is_empty() && !stmts.all((st: StmtId) -> store.hole_stmt(st) != null) { return .Err("a quote holds arms or statements, not both") }
+    let starts = [open.hi].concat([e.hi for e in ends])
+    let stops = [b.lo for b in begins].concat([close.lo])
+    let parts = [s.source().substring(starts[j], stops[j]) for j in 0..starts.length]
+    let body_stmts = if arms.is_empty() { store.answered(stmts) } else { [] }
+    let body_arms = if arms.is_empty() { [] } else { merged(store, arms, stmts) }
+    let e = store
         .alloc_expr(
             Expr.Body("quote", parts, holes, BodyView.Verbatim(body_stmts, body_arms)),
-            open.span.cover(close.span),
+            open.cover(close),
         )
-    b.store.mark_quote_at(e)
-    .Ok(LangNode.NExpr(e))
+    store.mark_quote_at(e)
+    .Ok(Built.Expr(e))
 }
+
+/// The spans that were written.
+fn written(spans: List<Span?>) -> List<Span> { flatten([some_list(x) for x in spans]) }
 
 /// Arms and lone hole statements in source order — each hole
 /// statement an arm whose pattern and value are the one hole.
-fn merged(b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
+fn merged(store: SyntaxArena, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
     mut out: List<Arm> = []
     mut i = 0
     mut j = 0
     while i < arms.length || j < stmts.length {
-        if j >= stmts.length || i < arms.length && arm_start(b, arms[i]) <= stmt_start(b, stmts[j]) {
+        if j >= stmts.length ||
+            i < arms.length && arm_start(store, arms[i]) <= stmt_start(store, stmts[j]) {
             out.push(arms[i])
             i = i + 1
         } else {
-            out.push(hole_arm(b, stmts[j]))
+            out.push(hole_arm(store, stmts[j]))
             j = j + 1
         }
     }
     out
 }
 
-fn arm_start(b: Builder, a: Arm) -> int { b.store.pat_span(a.pats[0])?.lo ?? 0 }
+fn arm_start(store: SyntaxArena, a: Arm) -> int { store.pat_span(a.pats[0])?.lo ?? 0 }
 
-fn stmt_start(b: Builder, s: StmtId) -> int { b.store.stmt_span(s)?.lo ?? 0 }
+fn stmt_start(store: SyntaxArena, s: StmtId) -> int { store.stmt_span(s)?.lo ?? 0 }
 
-fn hole_arm(b: Builder, s: StmtId) -> Arm {
-    let value = b.store.answer_of(s)!
-    let name = b.store.ident_name(value) ?? ""
-    Arm { pats: [b.store.alloc_pat(Pat.Bind(Scoped(name)), b.store.stmt_span(s))], value: value }
+fn hole_arm(store: SyntaxArena, s: StmtId) -> Arm {
+    let value = store.answer_of(s)!
+    let name = store.ident_name(value) ?? ""
+    Arm { pats: [store.alloc_pat(Pat.Bind(Scoped(name)), store.stmt_span(s))], value: value }
 }
+
+fn braces_missing() -> string { "defect: a quote without its braces — the arena and the grammar disagree" }
