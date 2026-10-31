@@ -473,7 +473,13 @@ supervise() {
         elif [ "${route%%:*}" = builder ]; then
             # The merge-base's published compiler stands as the builder, byte for byte across runs, so
             # the store it filled is still its own; this tree's compiler is never built for the run.
-            if [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "$(builder_stamp "${route#builder:}")" ]; then
+            # A lane that needs a newer one (a grammar the published builder cannot read) keeps it at
+            # build/avra.builder, and that stands instead, until the lane removes it.
+            if [ -x build/avra.builder ]; then
+                cmp -s build/avra.builder build/avra || cp -p build/avra.builder build/avra
+                : > build/.avra-compiler-hash
+                compiler="builder, the lane's own (build/avra.builder, $(sha256sum build/avra.builder | cut -c1-12))"
+            elif [ -x build/avra ] && [ "$(cat build/.avra-builder-key 2>/dev/null)" = "$(builder_stamp "${route#builder:}")" ]; then
                 compiler="builder, warm (merge-base key ${route#builder:})"
             elif install_published "${route#builder:}"; then
                 builder_stamp "${route#builder:}" > build/.avra-builder-key
