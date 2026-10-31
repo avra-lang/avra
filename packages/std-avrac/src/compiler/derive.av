@@ -13,6 +13,7 @@ use core.{
     some_list,
     joined,
     sorted_texts,
+    sorted_by,
     digest_of,
     module_path,
     ModulePath,
@@ -26,13 +27,14 @@ use core.{
     DeclId,
     TypeId,
 }
-use features.{SettleRoot, Wanted, Analysed}
+use features.{SettleRoot, Wanted, Analysed, FileInfo}
 use @std.path.{relative_path, joined_path}
+use @std.text.{text_before}
 use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
 use compiler.host.{no_source}
-use compiler.findings.{Finding, findings_read, findings_text, file_findings}
+use compiler.findings.{Finding}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -265,61 +267,6 @@ export fn analysed(a: Analysis) -> Analysed {
 /// What was said, the silent dropped.
 fn spoken(texts: List<string>) -> string { joined([text for text in texts if !text.is_empty()], "\n\n") }
 
-/// Where what a file said lives: beside its object, under the object's key.
-fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
-
-/// Where a file's rule findings live, beside what it said — kept only by
-/// a derivation that wants diagnostics, since nothing a build makes reads
-/// them.
-fn rules_key(okey: string) -> string { node_key(Stored.Warn, ["rules", okey]) }
-
-/// Where a file's findings rows live, beside its rendered rule findings.
-fn findings_key(okey: string) -> string { node_key(Stored.Warn, ["findings", okey]) }
-
-/// Whether a file's rule findings were kept, rendered and as rows.
-fn ruled(store: Store, okey: string) -> bool {
-    store.has(Stored.Warn, rules_key(okey)) && store.has(Stored.Warn, findings_key(okey))
-}
-
-/// What a parsed file says now: its `Said`, and its rule findings.
-type Spoken = { said: Said, rules: Ruled }
-
-/// A file's rule findings: rendered for what it says, and as findings rows.
-type Ruled = { rendered: string, rows: List<Finding> }
-
-/// A `Said` as its row: the case count, a line per case, then the warnings.
-fn said_wire(s: Said) -> string {
-    joined(
-        ["${s.cases.length}"]
-            .concat(["${c.symbol}\t${field_text(c.label)}" for c in s.cases])
-            .concat([s.warnings]),
-        "\n",
-    )
-}
-
-/// `said_wire`, read back — null for a row that is not one.
-fn said_of(path: string, raw: string) -> Said? {
-    let lines = raw.split("\n")
-    let n? = wire_number(lines.first() ?? "") else { return null }
-    if n < 0 || lines.length < n + 1 { return null }
-    let cases = [case_of(line) for line in lines.slice(1, n + 1)]
-    if cases.any(it == null) { return null }
-    Said {
-        path: path,
-        warnings: joined(lines.slice(n + 1, lines.length), "\n"),
-        cases: [c! for c in cases],
-    }
-}
-
-fn case_of(line: string) -> CaseCall? {
-    let at = line.index_of("\t")
-    if at < 0 { return null }
-    CaseCall {
-        symbol: line.substring(0, at),
-        label: text_of_field(line.substring(at + 1, line.length)),
-    }
-}
-
 /// Where a program's instantiation homes are remembered, by its entry.
 fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", entry]) }
 
@@ -531,9 +478,7 @@ impl Workspace {
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Warn, said_key(okey)) ||
-            !s.has(Stored.Unit, self.asks_key(okey)) ||
-            !s.has(Stored.Unit, self.codes_key(okey)) {
+        if !s.has(Stored.Unit, self.asks_key(okey)) || !s.has(Stored.Unit, self.codes_key(okey)) {
             return false
         }
         want is .Diagnostics || s.has(Stored.Obj, okey)
@@ -576,7 +521,6 @@ impl Workspace {
     /// what each keeps.
     fn missing_rows(store: Store, okey: string, want: Want) -> List<string> {
         let rows = [
-            StoreRow { says: "what it said", kept: store.has(Stored.Warn, said_key(okey)) },
             StoreRow {
                 says: "what its bodies ask",
                 kept: store.has(Stored.Unit, self.asks_key(okey)),
@@ -585,32 +529,12 @@ impl Workspace {
                 says: "what its code is",
                 kept: store.has(Stored.Unit, self.codes_key(okey)),
             },
-            match want {
-                .Diagnostics -> StoreRow { says: "its rule findings", kept: ruled(store, okey) },
-                .Binary -> StoreRow { says: "its object", kept: store.has(Stored.Obj, okey) },
+            StoreRow {
+                says: "its object",
+                kept: want is .Diagnostics || store.has(Stored.Obj, okey),
             },
         ]
         [r.says for r in rows if !r.kept]
-    }
-
-    /// The held files a diagnostics want must read after all: the ones whose
-    /// rule findings were never kept, since only a check keeps them.
-    fn unruled(store: Store, want: Want) -> List<ReadFile> {
-        match want {
-            .Diagnostics -> {
-                // A HELD FILE'S OWN KEY MAY OPEN A PENDING READ: one of its runs read
-                // a file whose text moved, and `read_token` holds the key at
-                // `?<print>` until the read file is parsed and the read declaration
-                // judged (`resolve_pending_reads`). The keys asked HERE open their own,
-                // so they are resolved too, or a reader whose reads all stand is forced
-                // read as if they had moved.
-                let held = held_paths(self)
-                for path in held { let _ = self.held_okey(store, path) }
-                let _ = self.resolve_pending_reads(store)
-                [ReadFile { path: path, why: Reads.Unruled } for path in held if !ruled(store, self.held_okey(store, path))]
-            },
-            .Binary -> [],
-        }
     }
 
     /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
@@ -656,7 +580,6 @@ impl Workspace {
     /// the rest, lower it, keep what was learned.
     fn tried(at: Attempt, mut clock: Marks) -> Result<Derived, Turn> {
         let store = self.holding(at)?
-        at.having_read(self.unruled(store, at.want))?
         clock.next(PHASES)
         self.admit_all()
         self.presealed(at)
@@ -1255,40 +1178,27 @@ impl Workspace {
     }
 
     /// What every file said, the root package's files first, each part by path —
-    /// never mint order, which a hold reorders: a parsed file's KEPT, a held file's
-    /// as the store kept it — null when a held row cannot be read. A file the
-    /// table knows and nothing read said nothing.
+    /// never mint order, which a hold reorders — null when a file's facts no longer
+    /// place. A file the table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
-        mut fresh: Map<string, Spoken> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(store, p, a)) }
-        let saying = [fi.path for fi in self.decls.all_files() if fresh.get(fi.path) != null || self.is_held(fi.id)]
-        let rooted = sorted_texts([path for path in saying if self.holder_of_path(path) == 0])
-            .concat(sorted_texts([path for path in saying if self.holder_of_path(path) != 0]))
-        let said = [self.file_said(store, path, fresh.get(path), want) for path in rooted]
+        let read = [a.view.file for a in p.files]
+        for a in p.files { self.keep_file_key(store, a.view.source.file) }
+        let saying = [fi for fi in self.decls.all_files() if read.any(same_file(it, fi.id)) || self.is_held(fi.id)]
+        let rooted = sorted_by(
+            saying,
+            (a: FileInfo, b: FileInfo) -> self.said_before(a.path, b.path),
+        )
+        let said = [self.said_now(fi.id, want) for fi in rooted]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
 
-    /// What a parsed file says now: its warnings, and its rule findings —
-    /// kept under every want, printed only under a diagnostics want.
-    fn says(store: Store, p: Program, a: Analysis) -> Spoken {
-        let said = Said {
-            path: a.view.source.file,
-            warnings: p.warned(a.diagnostics),
-            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
-        }
-        let kept = self.kept_ruled(store, a.view.source.file)
-        if kept != null && !db_verified_files() {
-            self.keep_warning_facts(store, a.view.source.file, a.diagnostics, null)
-            return Spoken { said: said, rules: kept! }
-        }
-        let found = rule_findings(analysed(a), a.view.stmts)
-        // THE WARNINGS ARE KEPT AS DATA beside what they say, their places token places, so a
-        // text that moved and kept its shape is said again from them (`standing_verdict`).
-        self.keep_warning_facts(store, a.view.source.file, a.diagnostics, found)
-        let now = ruled_now(p, a, found)
-        if kept != null && kept!.rendered != now.rendered { self.defect(kept_rules_stale(a.view.source.file)) }
-        Spoken { said: said, rules: now }
+    /// The root package's files first, then by path.
+    fn said_before(a: string, b: string) -> bool {
+        let ra = self.holder_of_path(a) == 0
+        let rb = self.holder_of_path(b) == 0
+        if ra != rb { return ra }
+        text_before(a, b)
     }
 
     /// A read file's key parts: its own under its path, the modules it sees
@@ -1327,63 +1237,21 @@ impl Workspace {
         let _ = store.keep(Stored.Unit, key, wire, [])
     }
 
-    /// One file's `Said`: kept under its key when it parsed, read from there
-    /// when it did not. Its rule findings are kept under every want; only a
-    /// diagnostics want speaks them.
-    fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
-        // A READ FILE'S KEY MAY OPEN A PENDING READ: `held_okey` gathers one, and a
-        // key kept while a token is `?<print>` is a DIFFERENT key from the one the
-        // next build judges — `unruled` resolves first. Resolve here too, so what is
-        // kept and what is asked wear one spelling.
-        if fresh != null {
-            let _ = self.held_okey(store, path)
-            let _ = self.resolve_pending_reads(store)
-        }
-        let okey = self.held_okey(store, path)
-        let told? = fresh else {
-            let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
-            let said? = said_of(path, kept) else { return null }
-            return held_said(store, okey, said, want)
-        }
-        let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
+    /// A read file's key: its pending reads resolved first, so what is kept and what is
+    /// asked wear one spelling — its parts, and the object key under its path.
+    fn keep_file_key(store: Store, path: string) {
+        let _ = self.held_okey(store, path)
+        let _ = self.resolve_pending_reads(store)
         self.keep_parts(store, path)
-        let rules = told.rules
-        let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
-        let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
-        self.keep_file_row(store, path, Stored.Unit, self.okey_row(path), okey)
-        self.keep_file_row(store, path, Stored.Warn, self.said_row(path), said_wire(told.said))
-        self.keep_file_row(store, path, Stored.Warn, self.rules_row(path), rules.rendered)
         self
-            .keep_file_row(store, path, Stored.Warn, self.findings_row(path), findings_text(rules.rows))
-        match want {
-            .Diagnostics -> told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows },
-            .Binary -> told.said,
-        }
+            .keep_file_row(store, path, Stored.Unit, self.okey_row(path), self.held_okey(store, path))
     }
-}
-
-/// A file's rule findings found now.
-fn ruled_now(p: Program, a: Analysis, found: List<Diag>) -> Ruled {
-    Ruled { rendered: p.warned(found), rows: file_findings(p.ws.host, a, found) }
 }
 
 /// A `boxed` row's name, when it names `path` — null for every other row.
 fn boxed_name(parts: List<string>, path: string) -> string? {
     let row? = read_row(parts) else { return null }
     if row.shape is .Boxed && row.path == path { row.name } else { null }
-}
-
-/// A held file's `Said` under `want`: a diagnostics want reads its rule
-/// findings beside it, and `stands_in` held it only where they were kept.
-fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
-    match want {
-        .Diagnostics -> {
-            let rules? = store.get(Stored.Warn, rules_key(okey)) else { return null }
-            let rows? = store.get(Stored.Warn, findings_key(okey)) else { return null }
-            said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
-        },
-        .Binary -> said,
-    }
 }
 
 // ── The voices ──
@@ -1449,6 +1317,3 @@ fn guess_line(r: ReadFile) -> string {
     if r.path.contains("\t") || r.path.contains("\n") || r.why.says().contains("\n") { "" } else { "${r.path}\t${r.why.says()}" }
 }
 
-fn kept_rules_stale(path: string) -> string {
-    "the rule findings kept for `${path}` stood by their reads where a fresh walk of its rules says otherwise — a read the findings stand on is missing from their row"
-}

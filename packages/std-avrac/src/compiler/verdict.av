@@ -336,7 +336,7 @@ impl Workspace {
         }
         let said? = verdict_of_wire(row.bytes) else { return null }
         if row.moved.is_empty() { return said }
-        let again? = self.said_again(store, said, row.moved) else { return null }
+        let again? = self.said_again(said, row.moved) else { return null }
         self.kept_again(store, key, verdict_wire(again))
         again
     }
@@ -362,35 +362,35 @@ impl Workspace {
     }
 
     /// The verdict with every part that points into a moved text said again.
-    fn said_again(store: Store, said: CheckSaid, moved: List<string>) -> CheckSaid? {
+    fn said_again(said: CheckSaid, moved: List<string>) -> CheckSaid? {
         if said.voice_files.any((f) -> moved.contains(f)) { return null }
-        let files = [self.spoke_again(store, f, moved) for f in said.files]
+        let files = [self.spoke_again(f, moved) for f in said.files]
         if files.any(it == null) { return null }
         said with { files: [f! for f in files] }
     }
 
     /// One file's part, said again where it points into a moved text: its licenses from a
     /// lex of its own text, its warnings and findings from its facts row.
-    fn spoke_again(store: Store, f: FileSpoke, moved: List<string>) -> FileSpoke? {
+    fn spoke_again(f: FileSpoke, moved: List<string>) -> FileSpoke? {
         let own = moved.contains(f.path)
         let shown = f.said != "" || !f.findings.is_empty()
-        if !own && !(shown && self.facts_point_into(store, f.path, moved)) { return f }
+        let facts? = self.facts_said_by(f.path) else { return null }
+        let rules = facts.rules ?? []
+        if !own && !(shown && points_into(facts.warnings.concat(rules), moved)) { return f }
         let licenses = if own { self.stale_lines_now(f.path) } else { f.licenses }
         if licenses == null { return null }
         if !shown { return f with { licenses: licenses! } }
-        let facts? = self.facts_standing(store, f.path) else { return null }
-        let rules? = facts.rules else { return null }
         let said = if f.reached { self.facts_said(facts.warnings, rules) } else { "" }
         if said == null { return null }
         let src = new_source_file(f.path, self.listed_text(f.path))
         f with { said: said!, findings: flatten([finding_at(src, d.kind, d.primary.loc) for d in rules]), licenses: licenses! }
     }
 
-    /// Whether a file's facts row places anything in a moved text.
-    fn facts_point_into(store: Store, path: string, moved: List<string>) -> bool {
-        let lines = store.reads_of(Stored.Warn, self.warning_facts_row(path)) ?? []
-        let named = [verdict_read_word(VerdictRead.Shape(m)) for m in moved]
-        lines.any((l) -> named.contains(read_spelled(l)?.name ?? ""))
+    /// A file's warnings and rule findings as `file_said` holds them; none for a file the
+    /// table does not know.
+    fn facts_said_by(path: string) -> FileFacts? {
+        let f? = self.decls.known_file_id(path) else { return null }
+        file_said(self, f).facts
     }
 
     /// A file's warnings and rule findings rendered as a derivation renders them: the
@@ -444,6 +444,9 @@ fn warned_facts(facts: List<DiagFacts>, sources: List<SourceFile>) -> string {
 }
 
 /// The files a diagnostic's places name, and how many places it has.
+/// Whether any of `facts` places something in a moved text.
+fn points_into(facts: List<DiagFacts>, moved: List<string>) -> bool { facts.any((d) -> facts_files(d).any(moved.contains(it))) }
+
 fn facts_files(d: DiagFacts) -> List<string> { flatten([some_list(l.file) for l in facts_locs(d)]) }
 
 fn facts_places(d: DiagFacts) -> int { facts_locs(d).length }

@@ -1,0 +1,43 @@
+//! WHAT A FILE SAID, as one answer: the cases it declares, and its warnings and rule
+//! findings as facts — never rendered. The print renders them, through the one renderer.
+use core.{flatten, FileId}
+use @std.relation.{query}
+use diagnostics.{diag_facts_of, new_source_file}
+use compiler.findings.{finding_at}
+
+/// A file's saying: its cases and its facts.
+export type FileSaid = { cases: List<CaseCall>, facts: FileFacts }
+
+/// What a file says: its analysis's warnings and its rule findings, and its cases.
+@query
+fn file_said(ws: Workspace, f: FileId) -> FileSaid { ws.saying(f) }
+
+impl Workspace {
+    fn saying(f: FileId) -> FileSaid {
+        let a = self.analysis(f)
+        let found = rule_findings(analysed(a), a.view.stmts)
+        FileSaid {
+            cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(f)],
+            facts: FileFacts {
+                warnings: [diag_facts_of(d) for d in a.diagnostics if is_warning(d)],
+                rules: [diag_facts_of(d) for d in found],
+            },
+        }
+    }
+
+    /// What a file said under `want`, rendered over its texts now: under a diagnostics want
+    /// its rule findings beside its warnings, and as rows. None where a fact places nowhere.
+    fn said_now(f: FileId, want: Want) -> Said? {
+        let path = self.decls.file(f).path
+        let fs = file_said(self, f)
+        let rules = match want { .Diagnostics -> fs.facts.rules ?? [], .Binary -> [] }
+        let warnings? = self.facts_said(fs.facts.warnings, rules) else { return null }
+        let src = new_source_file(path, self.listed_text(path))
+        Said {
+            path: path,
+            warnings: warnings,
+            cases: fs.cases,
+            findings: flatten([finding_at(src, d.kind, d.primary.loc) for d in rules]),
+        }
+    }
+}

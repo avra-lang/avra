@@ -1,12 +1,10 @@
-// A FILE'S WARNINGS ARE KEPT AS DATA, AND THEIR PLACES FOLLOW THE TOKENS HOLDING THEM. The row
-// is the durable witness `render_facts_among` reads: every diagnostic through `diag_facts_wire`,
-// whose `Loc` crosses as a token place. So comment lines added above move the text this row was
-// made over and leave the row standing — the reader lands on the same bytes at their new place —
-// while a token edit leaves no row standing. Absence is its own arm: a file with no row answers
-// null, never an empty list.
+// A FILE'S WARNINGS ARE KEPT AS DATA, AND THEIR PLACES FOLLOW THE TOKENS HOLDING THEM. A file's
+// facts cross on `file_facts_wire`, whose `Loc` crosses as a token place, so comment lines added
+// above move the text the facts were made over and the reader lands on the same bytes at their
+// new place. A file the table does not know says no facts.
 use @std.errors.{Loc, Frame}
-use @std.avrac.diagnostics.{Diag, Severity}
-use compiler.{Workspace}
+use @std.avrac.diagnostics.{Diag, Severity, diag_facts_of}
+use compiler.{Workspace, FileFacts}
 
 fn wf_path() -> string { "/w/src/b.av" }
 
@@ -29,28 +27,21 @@ fn wf_diag(text: string, needle: string, width: int) -> Diag {
     }
 }
 
-/// A process over `text` that keeps its rows in memory, beside `kept`'s.
-fn wf_over(text: string, kept: Workspace?) -> Workspace {
-    let ws = a_process_over({wf_path(): text}, [wf_path()])
-    ws.inspecting()
-    if kept != null { ws.keys.keeping.set(kept!.keys.keeping.get()) }
-    ws
-}
+fn wf_over(text: string) -> Workspace { a_process_over({wf_path(): text}, [wf_path()]) }
 
-/// `text`'s facts, as a process over `now` reads them back.
+/// `text`'s facts on their wire, as a process over `now` reads them back.
 fn wf_back(text: string, now: string) -> List<Loc>? {
-    let a = wf_over(text, null)
-    a.keep_warning_facts(a.opened_store(), wf_path(), [wf_diag(text, "n + 2", 5)], [])
-    let b = wf_over(now, a)
-    let back? = b.facts_standing(b.opened_store(), wf_path()) else { return null }
+    let wire = wf_over(text)
+        .file_facts_wire(FileFacts { warnings: [diag_facts_of(wf_diag(text, "n + 2", 5))], rules: [] })
+    let back? = wf_over(now).file_facts_of_wire(wire) else { return null }
     [f.primary.loc! for f in back.warnings if f.primary.loc != null]
 }
 
 const WF_SHIFT: int = 21
 
-spec "compiler/warning-facts — a kept warning follows its tokens" {
-    given "a file's warning, kept over the text it was found in" {
-        then "the row reads back at the same place while the text stands" {
+spec "compiler/warning-facts — a warning's facts follow its tokens" {
+    given "a file's warning, on its wire over the text it was found in" {
+        then "it reads back at the same place while the text stands" {
             let at? = wf_back(wf_text(), wf_text())?.first() else { return false }
             at.lo == wf_text().index_of("n + 2")
         }
@@ -59,12 +50,8 @@ spec "compiler/warning-facts — a kept warning follows its tokens" {
             at.lo == wf_text().index_of("n + 2") + WF_SHIFT &&
                 at.hi == wf_text().index_of("n + 2") + 5 + WF_SHIFT
         }
-        then "a token edit leaves no row standing" {
-            wf_back(wf_text(), wf_text().replace("n + 2", "n + 3")) == null
-        }
-        then "a file nothing kept answers null, never an empty list" {
-            let a = wf_over(wf_text(), null)
-            a.facts_standing(a.opened_store(), "/w/src/never.av") == null
+        then "a file the table does not know says no facts" {
+            wf_over(wf_text()).facts_said_by("/w/src/never.av") == null
         }
     }
 }

@@ -107,55 +107,6 @@ fn reads_of_parts(k: KeyParts) -> List<Reading> {
 }
 
 impl Workspace {
-    /// FILE-SAID: what a file said, with the answers it stood on. Rows are the program's own — a
-    /// file's answers are spelled in the view of the program that kept them.
-    fn said_row(path: string) -> string { node_key(Stored.Warn, ["said-row", self.root, path]) }
-
-    /// FILE-SAID: a file's rule findings, rendered.
-    fn rules_row(path: string) -> string { node_key(Stored.Warn, ["rules-row", self.root, path]) }
-
-    /// FILE-SAID: a file's findings rows.
-    fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", self.root, path]) }
-
-    /// A FILE'S WARNINGS AS DATA, the row `render_facts_among` reads: its diagnostics and its
-    /// rule findings through `diag_facts_wire`, whose places cross as TOKEN places, so the row
-    /// stands while the shape of every file it points into does (`verdict_read_stands`) and reads back
-    /// against a lex of their texts now.
-    fn warning_facts_row(path: string) -> string { node_key(Stored.Warn, ["facts-row", self.root, path]) }
-
-    /// A read file's facts kept. Rule findings kept from an earlier run are no `Diag`s here
-    /// (`rules` null), and the row says they are unknown.
-    fn keep_warning_facts(store: Store, path: string, diags: List<Diag>, rules: List<Diag>?) {
-        let facts = FileFacts {
-            warnings: [diag_facts_of(d) for d in diags],
-            rules: if rules == null { null } else { [diag_facts_of(d) for d in rules!] },
-        }
-        let places = flatten([facts_files(d) for d in facts.warnings.concat(facts.rules ?? [])])
-        let pointed = [VerdictRead.Shape(f) for f in distinct([path].concat(places)) if f.ends_with(".av")]
-        let _ = store
-            .keep_reading(
-                Stored.Warn,
-                self.warning_facts_row(path),
-                self.file_facts_wire(facts),
-                self.readings(pointed),
-            )
-    }
-
-    /// THE FACTS THAT ROW KEEPS, while every shape it points into stands, placed in the texts
-    /// as they are now.
-    fn facts_standing(store: Store, path: string) -> FileFacts? {
-        let moved: Cell<List<string>> = list_cell()
-        let row? = store
-            .get_standing(
-                Stored.Warn,
-                self.warning_facts_row(path),
-                (r: Reading) -> self.verdict_read_stands(r, moved),
-            ) else {
-            return null
-        }
-        self.file_facts_of_wire(row)
-    }
-
     /// A file's kept answer filed under its path with what it stood on.
     fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
         if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
@@ -215,20 +166,15 @@ impl Workspace {
     /// reader of its module. The on-demand load's gate: a file whose rows so stand is never met.
     fn file_rows_stand(store: Store, path: string, want: Want) -> bool {
         let suspects = self.suspect_rows(store)
-        let said_key = self.said_row(path)
         let asks_key = self.asks_row(path)
         let codes_key = self.codes_row(path)
-        let said = store.unsuspected(Stored.Warn, said_key, suspects) ||
-            self.file_judged(store, path, Stored.Warn, said_key)
         let asks = store.unsuspected(Stored.Unit, asks_key, suspects) ||
             self.file_judged(store, path, Stored.Unit, asks_key)
         let codes = store.unsuspected(Stored.Unit, codes_key, suspects) ||
             self.file_judged(store, path, Stored.Unit, codes_key)
-        if want is .Diagnostics {
-            said && asks && codes && self.file_ruled(store, path)
-        } else {
-            said && asks && codes && store.has(Stored.Obj, self.held_okey(store, path))
-        }
+        asks &&
+            codes &&
+            (want is .Diagnostics || store.has(Stored.Obj, self.held_okey(store, path)))
     }
 
     fn file_judged(store: Store, path: string, family: Stored, key: string) -> bool {
@@ -317,40 +263,11 @@ impl Workspace {
         answer_in(k, r)
     }
 
-    /// Whether a file's rule findings were kept, rendered and as rows, and still stand.
-    fn file_ruled(store: Store, path: string) -> bool {
-        self.file_kept(store, path, Stored.Warn, self.rules_row(path)) &&
-            self.file_kept(store, path, Stored.Warn, self.findings_row(path))
-    }
-
-    /// A READ FILE'S RULE FINDINGS, WHEN WHAT THEY STOOD ON STILL STANDS: the rules ran over its text
-    /// and what its analysis read, both named by the rows' reads, so a file read only because
-    /// something it reads re-ran is not walked by the rules again.
-    fn kept_ruled(store: Store, path: string) -> Ruled? {
-        if !self.file_ruled(store, path) { return null }
-        let rendered? = store.get(Stored.Warn, self.rules_row(path)) else { return null }
-        let rows? = store.get(Stored.Warn, self.findings_row(path)) else { return null }
-        Ruled { rendered: rendered, rows: findings_read(rows) }
-    }
-
-    /// A held file's `Said` under `want`: a diagnostics want reads its rule
-    /// findings beside it, and `stands_in` held it only where they were kept.
-    fn held_said(store: Store, path: string, said: Said, want: Want) -> Said? {
-        match want {
-            .Diagnostics -> {
-                let rules? = self.file_row(store, path, Stored.Warn, self.rules_row(path)) else { return null }
-                let rows? = self.file_row(store, path, Stored.Warn, self.findings_row(path)) else { return null }
-                said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
-            },
-            .Binary -> said,
-        }
-    }
-
     /// The first answer a file's kept answer stood on that has moved, in the words of its row;
     /// "no row" for a file never kept.
     fn moved_read(store: Store, path: string) -> string {
         let k = self.key_parts_cached(store, self.module_path_of(path), path)
-        let lines? = store.reads_of(Stored.Warn, self.said_row(path)) else { return "no row" }
+        let lines? = store.reads_of(Stored.Unit, self.asks_row(path)) else { return "no row" }
         let moved = [line for line in lines if self.line_moved(line, k)]
         moved.first() ?? "none"
     }
@@ -369,7 +286,7 @@ impl Workspace {
         let paths = self.decls.file_paths()
         if self.keys.suspects.get().files == paths.length { return self.keys.suspects.get().rows }
         mut row_of: Map<string, string> = {}
-        for p in paths { row_of.set(store.suspect_key(Stored.Warn, self.said_row(p)), p) }
+        for p in paths { row_of.set(store.suspect_key(Stored.Unit, self.asks_row(p)), p) }
         let readers = store.readers()
         let edited = [p for p in paths if self.text_moved(store, p)]
             .concat(self.gone_files(readers, paths))
@@ -480,7 +397,7 @@ impl Workspace {
 
     /// Whether a file's text differs from what its kept row stood on; a file never kept has moved.
     fn text_moved(store: Store, path: string) -> bool {
-        let lines? = store.reads_of(Stored.Warn, self.said_row(path)) else { return true }
+        let lines? = store.reads_of(Stored.Unit, self.asks_row(path)) else { return true }
         let read = FileRead.Text.name(path)
         let line? = lines.find(read_name(it) == read) else { return true }
         line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
