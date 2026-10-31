@@ -18,9 +18,8 @@ use diagnostics.{DiagCode, Remedy}
 
 export fn structs() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "type_decl"  | build_type_decl
-        "struct_lit" | build_struct_lit
+        name        | build
+        "type_decl" | build_type_decl
     }
     let codes = table<DiagCode> {
         kind                     | summary                                                                | remedy
@@ -54,7 +53,7 @@ export fn structs() -> LanguageFeature {
             stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( ( fields:field | rs:".." ( dd:"." )? ( rt:type )? ( ev:"=" expression )? ( tv:":" type )? | od:"." rt:type ) ( ( "," | BREAK ) BREAK? ( fields:field | rs:".." ( dd:"." )? ( rt:type )? ( ev:"=" expression )? ( tv:":" type )? | od:"." rt:type ) )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fields, nt, rs, rt, dd, od, ev, tv)
             field = ( marks:mark )* ( state_field:STATE )? name:NAME ":" ty:type ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             stmt = "alias" name:NAME ( "<" tparams:NAME ( "," tparams:NAME )* ","? ">" )? "=" of:type END @recover(sync_to: "END") -> Stmt.Alias
-            primary = t:NAME ( "<" ta:type ( "," ta:type )* ","? ">" )? "{" BREAK? ( ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) ( ( "," | BREAK ) BREAK? ( vn:NAME ":" ve:expression | sp:".." ( vn:HOLE | se:postfix ) ) )* ","? BREAK? )? "}" -> struct_lit(t, ta, vn, ve, sp, se)
+            primary = name:NAME ( "<" targs:type ( "," targs:type )* ","? ">" )? "{" BREAK? ( ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) ( ( "," | BREAK ) BREAK? ( keys:NAME ":" vals:expression | dots:".." ( keys:HOLE | whole:postfix ) ) )* ","? BREAK? )? "}" -> Expr.StructLit by struct_lit_written
             pattern = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             asked = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
             destructure = name:NAME "{" BREAK? ( ( fields:field_pat | rests:fields_rest ) ( ( "," | BREAK ) BREAK? ( fields:field_pat | rests:fields_rest ) )* ","? BREAK? )? "}" -> Pat.Fields
