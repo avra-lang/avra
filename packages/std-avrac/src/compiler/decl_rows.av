@@ -2,9 +2,11 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, ModulePath, joined, flatten, wreck, qtrace, traced}
+use core.{DeclId, FileId, ModulePath, joined, flatten, distinct, wreck, qtrace, traced}
+use compiler.families.{Family}
 use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
+use features.{Decl}
 
 impl Workspace {
     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
@@ -25,6 +27,45 @@ impl Workspace {
             if kept != null && db_verified_decl() { shapes_judged(path, kept!, text) }
             let _ = store.keep(Stored.Unit, key, text, [])
         }
+    }
+
+    /// THE DURABLE REFS OF EVERY DECLARATION NAMED `name`, program-wide, nothing minted,
+    /// parsed or expanded and nothing recorded: each file the name environments or the standing
+    /// rows place it in, answered by `refs_in`. None while a file cannot answer whole.
+    fn named_refs(name: string) -> List<string>? {
+        let b = self.decls.bucket_standing(name)
+        let standing = if b == null { [] } else { self.decls.decl_row_rows.get().members(b!) }
+        let files = distinct(
+            (self.envs.names.get().get(name) ?? [])
+                .concat([self.decls.file(x.file).path for x in standing]),
+        )
+        let refs = [self.refs_in(path, name, standing) for path in files]
+        if refs.any(it == null) { return null }
+        flatten([r! for r in refs])
+    }
+
+    /// The refs one file gives `name`: off its kept lines while they stand for its text, so the
+    /// answer never depends on what this process minted or expanded; else off its rows once
+    /// the file is made whole; else none.
+    fn refs_in(path: string, name: string, standing: List<Decl>) -> List<string>? {
+        let lines? = self.items_lines(path) else { return self.rows_in(path, standing) }
+        line_wires_named(path, lines, name)
+    }
+
+    /// A read file's standing rows as refs, once every declaration it makes is one.
+    fn rows_in(path: string, standing: List<Decl>) -> List<string>? {
+        let f? = self.decls.known_file_id(path) else { return null }
+        if !self.made_whole(f) { return null }
+        [self.decl_ref(x.id) for x in standing if x.file.index == f.index]
+    }
+
+    /// Whether every declaration a file makes is a row: it is parsed, and it generates none
+    /// or its expansion has finished.
+    fn made_whole(f: FileId) -> bool {
+        if self.relation(Family.Parsed).values.entry(f.index) is .Missing { return false }
+        if !self.has_declares(f) && !self.has_marks(f) { return true }
+        if self.db.active(key(Family.Expanded, f.index)) { return false }
+        self.relation(Family.Expanded).values.entry(f.index) is .Present
     }
 
     /// A file's kept Items lines, split — none when no read of its text as it stands kept them.
