@@ -6,7 +6,7 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.debug.{db_verified_files, lowered_verified}
+use core.debug.{db_verified_files, lowered_verified, db_judging}
 use core.{
     distinct,
     flatten,
@@ -369,7 +369,7 @@ impl Workspace {
         self.timed("open", opening)
         let named = "check:${entry ?? ""}"
         let judging = self.clock()
-        let standing = self.standing_verdict(store, named)
+        let standing = if db_judging() { null } else { self.standing_verdict(store, named) }
         self.timed("judge", judging)
         let kept? = standing else { return self.checked_anew(store, entry, named) }
         Checked {
@@ -451,7 +451,7 @@ impl Workspace {
                     want: want,
                     parse: parse,
                     homes: self.homes_were_read(entry ?? self.root),
-                    hold: !db_verified(),
+                    hold: !db_judging(),
                     edit: self.edit_print(entry, want),
                 },
                 owes,

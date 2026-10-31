@@ -1,0 +1,91 @@
+// proves: `@digested_by(f)` cuts a reader off on the named digest — an answer
+// that moves while its digest stands leaves the reader standing; `@recursive`
+// lets a call re-entered before it settles compute again, a smaller view,
+// where a plain query answers the cycle; and an answer the body leaves
+// `unkept()` reaches its asker and no cell holds it, so the next ask runs
+// again — in both engines
+use @std.relation.{query, input, digested_by, recursive}
+use @std.relation.db.{Db, new_db}
+
+once fn runs() -> Cell<List<string>> { Cell.new([]) }
+
+fn ran(word: string) {
+    let r = runs()
+    r.push(word)
+}
+
+fn since(from: int) -> string { runs().get().slice(from, runs().get().length).join(",") }
+
+@input
+fn width(_db: Db, _of: string) -> int { 10 }
+
+type Measure = { width: int, wide: bool }
+
+/// What a reader of a measure reads: whether it is wide.
+fn wideness(m: Measure) -> int { if m.wide { 1 } else { 0 } }
+
+@query
+@digested_by(wideness)
+fn measure(db: Db, of: string) -> Measure {
+    ran("measure")
+    let w = width(db, of)
+    Measure { width: w, wide: w >= 100 }
+}
+
+@query
+fn shown(db: Db, of: string) -> string {
+    ran("shown")
+    if measure(db, of).wide { "wide" } else { "narrow" }
+}
+
+once fn entered_depth() -> Cell<int> { Cell.new(0) }
+
+/// A view that asks itself until it is two deep: each re-entry computes again.
+@query
+@recursive
+fn view(db: Db, k: string) -> int {
+    ran("view")
+    let d = entered_depth().get()
+    if d >= 2 { return d }
+    entered_depth().set(d + 1)
+    let inner = view(db, k)
+    entered_depth().set(d)
+    inner + 1
+}
+
+@query
+fn halfway(db: Db, of: string) -> int {
+    ran("halfway")
+    if width(db, of) < 50 { db.unkept() }
+    width(db, of)
+}
+
+fn main_run() -> string {
+    let db = new_db()
+    let a = shown(db, "x")
+    let n0 = runs().get().length
+    set_width(db, "x", 20)
+    let b = shown(db, "x")
+    let cut = since(n0)
+    let n1 = runs().get().length
+    set_width(db, "x", 200)
+    let c = shown(db, "x")
+    let moved = since(n1)
+    let nv = runs().get().length
+    let v = view(db, "k")
+    let viewed = since(nv)
+    let nw = runs().get().length
+    let v2 = view(db, "k")
+    let d = "${v} [${viewed}] ${v2} [${since(nw)}]"
+    let n2 = runs().get().length
+    let h1 = halfway(db, "y")
+    let h2 = halfway(db, "y")
+    let unkept = since(n2)
+    set_width(db, "y", 60)
+    let n3 = runs().get().length
+    let h3 = halfway(db, "y")
+    let h4 = halfway(db, "y")
+    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${since(n3)}]"
+}
+
+main_run()
