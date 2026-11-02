@@ -348,10 +348,6 @@ impl Workspace {
         ]
     }
 
-    fn codec_loc_labels() -> List<string> {
-        ["no file", "at its declaration's start", "inside its declaration", "cross-file"]
-    }
-
     /// A `DiagFacts` bearing each loc shape, so the row's own `Loc`s
     /// are exercised beside the pair's.
     fn codec_diag_exemplars() -> List<DiagFacts> {
@@ -399,10 +395,13 @@ impl Workspace {
     /// A facts row of each shape: rules unknown, and rules found.
     fn codec_file_facts_exemplars() -> List<FileFacts> {
         let d = self.codec_diag_exemplars()
-        [FileFacts { warnings: [d[1]], rules: null }, FileFacts { warnings: [], rules: d }]
+        [
+            FileFacts { warnings: [d[1]], rules: null },
+            FileFacts { warnings: [], rules: d },
+            FileFacts { warnings: [placed_at(l) for l in self.codec_loc_exemplars()], rules: null },
+        ]
     }
 
-    fn codec_diag_labels() -> List<string> { ["an unlocated warning", "a note pointing elsewhere", "an error with a frame and a fix"] }
 }
 
 fn type_exemplar_labels() -> List<string> {
@@ -1353,17 +1352,9 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_decl(x, y),
         ),
         derived(
-            "DiagFacts.encoded_in/decoded_in, a place of each shape",
-            [placed_at(l) for l in ws.codec_loc_exemplars()],
-            ws.codec_loc_labels(),
-            (d) -> ws.diag_bytes(d),
-            (b) -> ws.diag_back(b),
-            same_diag_facts,
-        ),
-        derived(
             "diag_wire.file_facts_wire/file_facts_of_wire",
             ws.codec_file_facts_exemplars(),
-            ["no rules found anew", "rules found, one a fix"],
+            ["no rules found anew", "rules found, one a fix", "a place of each shape"],
             (f) -> ws.file_facts_wire(f),
             (w) -> ws.file_facts_of_wire(w),
             same_file_facts,
@@ -1418,14 +1409,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             verdict_read_word,
             verdict_read_of_word,
             same_verdict_read,
-        ),
-        derived(
-            "DiagFacts.encoded_in/decoded_in",
-            ws.codec_diag_exemplars(),
-            ws.codec_diag_labels(),
-            (d) -> ws.diag_bytes(d),
-            (b) -> ws.diag_back(b),
-            same_diag_facts,
         ),
         derived(
             "interface.type_wire/read_type_wire",
