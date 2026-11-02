@@ -221,7 +221,7 @@ impl Workspace {
         let root? = self.decls.root_of(w) else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
         let owner? = self.root_owner(w.file, root) else { return null }
         // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
-        "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_wire(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
+        "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_text(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
     }
 
     fn spec_arg(spelled: string) -> int? {
@@ -380,7 +380,7 @@ impl Workspace {
 
     fn durable_unit(arg: int) -> int? {
         match self.relation(Family.LiftLowered).values.entry(arg) {
-            .Present(r) -> lowered_of(r).fingerprint_in(self.decls.ids()),
+            .Present(r) -> lowered_of(r).fingerprint_in(self.facts_scope(0, 0)),
             .Missing -> null,
         }
     }
@@ -436,12 +436,7 @@ impl Workspace {
         if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
         let x = self.decls.decl(DeclId { index: arg })
         match self.relation(Family.Resolved).values.entry(x.file.index) {
-            .Present(r) -> name_slice_fp(
-                resolved_of(r),
-                x.lo,
-                x.hi,
-                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
-            ),
+            .Present(r) -> name_slice_fp(resolved_of(r), x.lo, x.hi, self.facts_scope(x.lo, x.stmt_lo)),
             .Missing -> null,
         }
     }
@@ -679,7 +674,7 @@ impl Workspace {
         if !u.voices.list.is_empty() { return null }
         joined(
             [
-                self.wanted_list_wire(u.wants),
+                self.wants_text(u.wants),
                 code_facts_wire(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
             ],
             "\n",
@@ -707,7 +702,7 @@ impl Workspace {
                 spoke = spoke + 1
                 continue
             }
-            let row = node_key(Stored.Unit, ["loweredsaid", self.wanted_list_wire([ask])])
+            let row = node_key(Stored.Unit, ["loweredsaid", self.wants_text([ask])])
             let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
             if kept == null {
                 recomputed = recomputed + 1

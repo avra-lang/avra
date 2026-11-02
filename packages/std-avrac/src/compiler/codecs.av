@@ -155,20 +155,6 @@ fn total_one<T, W>(
     "${pair}: exemplar \\`${label}\\` round-tripped to a different value"
 }
 
-// ── ADAPTERS — a decoder whose own shape does not match `fn(W) -> T?`
-// (a `mut` seat, a bound method, extra context) gets ONE free-fn
-// wrapper here, never a re-implementation. ──
-
-/// `heap_from_wire`'s seat is `mut WireReader`, a different TYPE from
-/// `fn(string) -> MetaHeap?` (CLAUDE.md, "a fn type carries its
-/// seats' contract") — and `heap_wire` writes no envelope of its own
-/// (it is always framed by a caller), so the reader starts at 0, not
-/// `wire_reader`'s 2.
-fn heap_from_wire_wire(raw: string) -> MetaHeap? {
-    mut r = WireReader { raw: raw, pos: 0 }
-    heap_from_wire(r)
-}
-
 // ── A FIXTURE WORKSPACE — the codecs that cross `TypeId`/`FileId`/
 // `DeclId` need a real `Decls`/`TypeRegistry` to intern into; this is
 // that one, and `codec_decl_exemplars` mints its file's declarations
@@ -237,10 +223,7 @@ impl Workspace {
 
     /// A handful of `Wanted` rows — `decl: null`/`sub: null`
     /// throughout: `decl_wire`'s own round trip is exercised beside its
-    /// decoder (`interface.decl_wire/wire_decl`), so `sub_wire`'s nested
-    /// declaration ref is covered here only as far as its decoder never
-    /// runs (`sub_mark == "+"`) — `seat_wire`'s shape is exercised in
-    /// full through a seat carrying a real `TypeId`.
+    /// decoder (`interface.decl_wire/wire_decl`); a seat carries a real `TypeId`.
     fn codec_wanted_exemplars() -> List<Wanted> {
         let i = self.decls.types.type(int)
         let seat = SeatValue {
@@ -288,7 +271,7 @@ impl Workspace {
     }
 
     fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
-        a.root == b.root && self.wanted_wire(a) == self.wanted_wire(b)
+        a.root == b.root && self.wants_text([a]) == self.wants_text([b])
     }
 
     /// The fixture's real declarations: `items` mints every row of the
@@ -1107,7 +1090,7 @@ impl Workspace {
 /// parsed for one cold run — never as asks, and never a crash.
 export fn codec_w2_asks_unread() -> bool {
     let ws = codec_workspace()
-    ws.held_asks_from_wire("/w/src/main.av", ws.wanted_list_wire(ws.codec_wanted_exemplars())) == null
+    ws.held_asks_from_wire("/w/src/main.av", "W21:0") == null
 }
 
 export fn codec_pairs() -> List<CodecCheck> {
@@ -1194,14 +1177,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             settlement_of_text,
             (x, y) -> x.codec_same(y),
         ),
-        derived(
-            "settlement_wire.heap_wire/heap_from_wire",
-            MetaHeap.exemplars(),
-            MetaHeap.exemplar_labels(),
-            heap_wire,
-            heap_from_wire_wire,
-            (x, y) -> x.codec_same(y),
-        ),
         derived_total(
             "record.packed/unpacked",
             packed_exemplars(),
@@ -1251,7 +1226,7 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_type_shape(x, y),
         ),
         derived(
-            "interface.type_wire/settlement_wire.type_from_wire",
+            "interface.type_wire/facts_scope.type_from_wire",
             ws.codec_type_exemplars(),
             type_exemplar_labels(),
             (t) -> ws.decls.type_wire(t),
@@ -1259,11 +1234,11 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_type_shape(x, y),
         ),
         derived(
-            "settlement_wire.wanted_list_wire/wanted_list_from_wire",
+            "facts_scope.wants_text/wants_of_text",
             ws.codec_wanted_batches(),
             wanted_batch_labels(),
-            (xs) -> ws.wanted_list_wire(xs),
-            (w) -> ws.wanted_list_from_wire(w),
+            (xs) -> ws.wants_text(xs),
+            (w) -> ws.wants_of_text(w),
             (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
         ),
         derived(
@@ -1356,14 +1331,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             verdict_read_word,
             verdict_read_of_word,
             same_verdict_read,
-        ),
-        derived(
-            "interface.type_wire/read_type_wire",
-            ws.codec_type_exemplars(),
-            type_exemplar_labels(),
-            (t) -> ws.decls.type_wire(t),
-            (w) -> ws.read_type_wire_of_wire(w),
-            (x, y) -> ws.codec_same_type_shape(x, y),
         ),
         dbrow_check(),
     ]
