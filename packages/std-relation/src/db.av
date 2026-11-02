@@ -90,9 +90,11 @@ export type Db = {
     written: Cell<int>,
     /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
     cap: Cell<int>,
-    /// Each named read's key at `keys_at`, by its identity: the cell a read of it records.
+    /// What each named read answers at `known_at`, by its identity: the cell a read of it
+    /// records, and its digest — asked once a revision however many saved answers name it.
     keys_known: Cell<Map<string, Key>>,
-    keys_at: Cell<int>,
+    digests_known: Cell<Map<string, int>>,
+    known_at: Cell<int>,
 }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
@@ -295,7 +297,8 @@ fn made(durable: Durable) -> Db {
         asking: asking,
         cap: Cell.new(0),
         keys_known: map_cell(),
-        keys_at: Cell.new(0 - 1),
+        digests_known: map_cell(),
+        known_at: Cell.new(0 - 1),
         written: Cell.new(0),
     }
 }
@@ -656,9 +659,26 @@ impl Db {
 
     /// An input's value hash here, absent when this Db has not been asked it.
     fn input_digest(name: string, spelled: string) -> int? {
+        self.known_now()
+        let id = "${name}\t${spelled}"
+        let known = self.digests_known.get().get(id)
+        if known != null { return known }
         let owner? = self.answer_named(name) else { return null }
         let arg? = owner.arg_of(spelled) else { return null }
-        owner.hash_at(arg)
+        let made? = owner.hash_at(arg) else { return null }
+        self.digests_known.put(id, made)
+        made
+    }
+
+    /// The tables of what this revision answered, emptied when the revision moved.
+    fn known_now() {
+        let rev = self.kernel.get()?.revision() ?? 0 - 1
+        if rev == self.known_at.get() { return }
+        let no_keys: Map<string, Key> = {}
+        self.keys_known.set(no_keys)
+        let no_digests: Map<string, int> = {}
+        self.digests_known.set(no_digests)
+        self.known_at.set(rev)
     }
 
     /// The one query or input asked here wearing `name`; none when two do.
@@ -691,12 +711,7 @@ impl Db {
     /// The cell a read of the answer `spelled` of `name` records, resolved once a revision; none
     /// for one no family here records — not kept, since a declaration minted later may name it.
     fn input_key(name: string, spelled: string) -> Key? {
-        let rev = self.kernel.get()?.revision() ?? 0 - 1
-        if rev != self.keys_at.get() {
-            let none: Map<string, Key> = {}
-            self.keys_known.set(none)
-            self.keys_at.set(rev)
-        }
+        self.known_now()
         let id = "${name}\t${spelled}"
         let known = self.keys_known.get().get(id)
         if known != null { return known }
