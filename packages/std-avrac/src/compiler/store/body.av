@@ -503,6 +503,8 @@ export type Sealed = {
     rows: Place,
     /// The slot section, read once by the first value that asks where it stands.
     slot_table: Cell<List<Bytes>>,
+    /// Each slot line's ordinal by its digest, built once with the section.
+    slot_index: Cell<List<Map<string, int>>>,
 }
 
 /// The record keys of the sealed rows that read any of `moved`, from the body's reverse
@@ -642,15 +644,20 @@ export fn sealed_slot(pack: Pack, digest: string) -> ValueSlot? {
 
 fn run_slot(s: Sealed, digest: string) -> ValueSlot? {
     let slot_lines? = slot_table_of(s) else { return null }
-    let needle = "\n${digest}".bytes()
-    mut from = 0
-    while from < slot_lines.length {
-        let found = slot_lines.index_of(needle, from)
-        if found < 0 { return null }
-        if found % SLOT_LINE == 0 { return slot_at(slot_lines, found / SLOT_LINE) }
-        from = found + 1
+    let k? = slot_ordinals(s, slot_lines).get(digest) else { return null }
+    slot_at(slot_lines, k)
+}
+
+/// The slot section's ordinals by digest, read once per run.
+fn slot_ordinals(s: Sealed, slot_lines: Bytes) -> Map<string, int> {
+    let known = s.slot_index.get().first()
+    if known != null { return known! }
+    mut by: Map<string, int> = {}
+    for k in 0..slot_lines.length / SLOT_LINE {
+        by.set(slot_lines.slice(k * SLOT_LINE + 1, k * SLOT_LINE + 1 + DIGEST_HEX).text() ?? "", k)
     }
-    null
+    s.slot_index.set([by])
+    by
 }
 
 fn slot_table_of(s: Sealed) -> Bytes? {
@@ -841,6 +848,7 @@ fn sealed_from(m: Mapped, payload: Bytes, base: int) -> Sealed? {
         reverse: places[4],
         rows: places[5],
         slot_table: list_cell(),
+        slot_index: list_cell(),
     }
 }
 
