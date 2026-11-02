@@ -329,14 +329,6 @@ export fn scoped_by(f: Fn, by: Fn) -> List<Diagnostic> {
     []
 }
 
-/// `@cycled_by(f)`: the answer a call re-entered before it settles gets, made from the call's own
-/// seats — where a plain query answers the value it last held.
-export fn cycled_by(f: Fn, by: Fn) -> List<Diagnostic> {
-    if by.params.length != f.params.length || by.answer != f.answer { return [cycle_shape(f, by)] }
-    if !queried(f) { return [mark_alone(f, "cycled_by")] }
-    []
-}
-
 /// `@recursive`: a call re-entered before it settles computes again — the smaller view.
 export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "recursive")] } }
 
@@ -363,15 +355,8 @@ fn digest_code(f: Fn) -> Code {
     quote { (v: ${f.answer}) -> ${seated}(..${seats}, v) }
 }
 
-/// How a call opens: a recursive query computes again on re-entry, a cycled one answers it
-/// with the fn its mark names.
+/// How a call opens: a recursive query computes again on re-entry.
 fn opened(f: Fn) -> Code {
-    let by? = mark_word(f, "cycled_by") else { return opened_plain(f) }
-    let seats = [name(p.name) for p in f.params]
-    quote { held.memo.start_cycled(arg, () -> ${by}(..${seats})) }
-}
-
-fn opened_plain(f: Fn) -> Code {
     if f.annotations.any((a: Annotation) -> a.name == "recursive") { quote { held.memo.start_recursive(arg) } } else { quote { held.memo.start(arg) } }
 }
 
@@ -694,15 +679,6 @@ fn scope_shape(f: Fn, by: Fn) -> Diagnostic {
         by.at ?? f.at,
         "`${by.name}` makes the scope `${f.name}`'s call crosses under, so it takes `${f.name}`'s seats and answers a `dyn Scope`",
         "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}) -> dyn Scope`",
-    )
-}
-
-fn cycle_shape(f: Fn, by: Fn) -> Diagnostic {
-    refuse_as_at(
-        "query_cycle",
-        by.at ?? f.at,
-        "`${by.name}` answers a re-entered `${f.name}` call, so it takes `${f.name}`'s seats and answers a `${f.answer}`",
-        "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}) -> ${f.answer}`",
     )
 }
 
