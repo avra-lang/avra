@@ -25,10 +25,6 @@ use core.{
     TypeRef,
     spelled,
     Binding,
-    SeatMark,
-    Static,
-    StaticBox,
-    DeclId,
 }
 use compiler.families.{Family}
 use features.{
@@ -42,17 +38,9 @@ use features.{
     FileView,
     spelled_type,
     BlockGrammar,
-    Namespace,
-    BoundNames,
     NameFacts,
-    TypeFacts,
     Cap,
     Asked as NullableAsk,
-    ParamScope,
-    Sub,
-    RunChoice,
-    PipeStage,
-    Wanted,
     SeatValue,
 }
 use core.{Instanced, ComponentWord, Instancing}
@@ -73,13 +61,12 @@ use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of,
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at, unread_behind}
-use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
-use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
+use diagnostics.{Diag, refusal}
+use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.store.{Store, Stored}
 use @std.relation.{query}
 use @std.relation.db.{Db as RelDb}
-use compiler.lower.{Unit, code_facts_wire}
 
 // ── voices ──
 
@@ -966,10 +953,6 @@ fn bool_fp(b: bool) -> int {
     if b { 1 } else { 0 }
 }
 
-fn opt_sub_fp(s: Sub?, ids: Ids) -> int {
-    if s == null { fp(134, []) } else { fp(135, [s!.fingerprint_in(ids)]) }
-}
-
 fn opt_binding_fp(b: Binding?, ids: Ids) -> int {
     if b == null { fp(140, []) } else { fp(141, [b!.fingerprint_in(ids)]) }
 }
@@ -1003,78 +986,24 @@ fn name_cell_col(n: NameFacts, lo: int, j: int, ids: Ids) -> int {
     bool_fp(n.settled_reads.get(i))
 }
 
-fn opt_decl_id_fp(d: DeclId?, ids: Ids) -> int {
-    if d == null { fp(166, []) } else { fp(167, [d!.fingerprint_in(ids)]) }
-}
-
-fn opt_expr_id_fp(e: ExprId?) -> int {
-    if e == null { fp(168, []) } else { fp(169, [e!.fingerprint()]) }
-}
-
 /// A compile-time seat value's content: `fp` is already the seat's
 /// own canonical fingerprint string (`settle_symbol`'s currency), so
 /// this adds only what that string does not carry — the type it
 /// wears and the crossed value itself, walked through its heap.
-fn seat_value_fp(v: SeatValue, ids: Ids) -> int {
-    fp(170, [v.index, fp_str(v.fp), v.ty.fingerprint_in(ids), meta_hash(v.heap, v.value)])
-}
-
-fn wanted_fp(w: Wanted, ids: Ids) -> int {
-    fp(
-        171,
-        [
-            w.file.fingerprint_in(ids),
-            opt_decl_id_fp(w.decl, ids),
-            fp_str(w.name),
-            opt_sub_fp(w.sub, ids),
-            fp_list([seat_value_fp(s, ids) for s in w.seats]),
-            opt_expr_id_fp(w.root),
-        ],
-    )
-}
-
-/// A settled aggregate's octets, walked byte by byte — bounded by
-/// the blob's own size, which is what laying it out already cost.
-fn bytes_fp(b: Bytes) -> int {
-    fp_list([b.at(i) for i in 0..b.length])
-}
-
-fn static_box_fp(b: StaticBox) -> int {
-    match b {
-        .Slots(cells) -> fp(172, [fp_list([c.fingerprint() for c in cells])]),
-        .Table(keys, values) -> fp(173, [fp_list([fp_str(k) for k in keys]), fp_list([v.fingerprint() for v in values])]),
-        .Octets(o) -> fp(174, [bytes_fp(o)]),
+impl SeatValue {
+    fn fingerprint_in(ids: Ids) -> int {
+        fp(
+            170,
+            [
+                self.index,
+                fp_str(self.fp),
+                self.ty.fingerprint_in(ids),
+                meta_hash(self.heap, self.value),
+            ],
+        )
     }
-}
 
-fn opt_file_id_fp(f: FileId?, ids: Ids) -> int {
-    if f == null { fp(175, []) } else { fp(176, [f!.fingerprint_in(ids)]) }
-}
-
-fn static_fp(s: Static, ids: Ids) -> int {
-    fp(
-        177,
-        [fp_str(s.name), fp_list([static_box_fp(b) for b in s.boxes]), opt_file_id_fp(s.file, ids)],
-    )
-}
-
-/// One lowered unit's content: its bodies (`Body` already derives
-/// `Fingerprint`), the instantiations it asked for, its voices, and
-/// the static data it laid out.
-export fn unit_fp(u: Unit) -> int { unit_fp_in(u, indexed_ids()) }
-
-/// `unit_fp` with every arena id folded through `ids`.
-export fn unit_fp_in(u: Unit, ids: Ids) -> int {
-    fp(
-        178,
-        [
-            fp_list([b.fingerprint_in(ids) for b in u.bodies]),
-            fp_list([wanted_fp(w, ids) for w in u.wants]),
-            u.voices.fingerprint(),
-            fp_list([static_fp(s, ids) for s in u.statics]),
-            fp_list([fp_str(code_facts_wire(k)) for k in u.kept]),
-        ],
-    )
+    fn fingerprint() -> int { self.fingerprint_in(indexed_ids()) }
 }
 
 /// A dependency's own settled hash, read back for a DERIVED fold
