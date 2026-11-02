@@ -7,6 +7,7 @@
 use compiler.{facts_block, facts_unblocked}
 use @std.avrac.features.{DeclFacts, AnnotationFact, LitArg, LitKind, NamedLit}
 use @std.avrac.core.{Span}
+use @std.relation.stable.{indexed_scope}
 
 fn sample() -> DeclFacts {
     DeclFacts {
@@ -44,6 +45,8 @@ fn sample() -> DeclFacts {
     }
 }
 
+fn dg(f: DeclFacts) -> int { DeclFacts.digest_in(indexed_scope(), f) }
+
 fn doc_text(d: List<string>?) -> string { (d ?? []).join("\n") }
 
 fn ann_text(a: AnnotationFact) -> string { "${a.name}|${[x.text for x in a.args].join(",")}|${a.span?.lo ?? 0 - 1}|${a.span?.hi ?? 0 - 1}|${named_text(a.named)}" }
@@ -79,7 +82,7 @@ spec "a declaration's facts survive their record" {
         then "the decoded value's own fingerprint agrees with the source's" {
             let f = sample()
             let back_fp = facts_unblocked(facts_block(f))
-            back_fp != null && back_fp!.fingerprint() == f.fingerprint()
+            back_fp != null && dg(back_fp!) == dg(f)
         }
         then "the head's own facts still round-trip, unmoved by the new fields" {
             let f = sample()
@@ -103,7 +106,7 @@ spec "a declaration's facts survive their record" {
         then "the fingerprint moves" {
             let a = sample()
             let b = sample() with { doc: ["a different line"] }
-            a.fingerprint() != b.fingerprint()
+            dg(a) != dg(b)
         }
     }
     given "a fn's mut seats" {
@@ -115,7 +118,7 @@ spec "a declaration's facts survive their record" {
                 .is_empty()
         }
         then "a change to them moves the fingerprint" {
-            sample().fingerprint() != (sample() with { mut_seats: ["Cx"] }).fingerprint()
+            dg(sample()) != dg(sample() with { mut_seats: ["Cx"] })
         }
     }
     given "a component instance's word" {
@@ -127,7 +130,7 @@ spec "a declaration's facts survive their record" {
             back != null && back!.word == null
         }
         then "a change to it moves the fingerprint" {
-            sample().fingerprint() != (sample() with { word: "rule" }).fingerprint()
+            dg(sample()) != dg(sample() with { word: "rule" })
         }
     }
     given "a record whose written fingerprint disagrees with its fields" {
@@ -154,7 +157,7 @@ spec "a declaration's facts survive their record" {
                     span: null,
                 },
             ] }
-            a.fingerprint() != b.fingerprint()
+            dg(a) != dg(b)
         }
     }
 }
