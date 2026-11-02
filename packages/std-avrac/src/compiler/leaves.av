@@ -500,7 +500,7 @@ impl Workspace {
     /// A typed declaration's reads: its name and each read's identity and digest.
     fn reads_line(arg: int) -> string? {
         let name? = self.spelled_decl(arg) else { return null }
-        let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+        let reads = self.db.kernel.deps_of(typed_body_key(self, DeclId { index: arg }))
         if reads.is_empty() { return null }
         "leaves-reads\t${name}\t${[self.read_word(k) for k in reads].join(";")}"
     }
@@ -533,7 +533,6 @@ impl Workspace {
     /// Every family the meter covers.
     fn leaves_report() -> string {
         [
-            self.leaves_meter(Family.Typed, self.decls.decl_count()),
             self.leaves_meter(Family.Lowered, self.asks.get().length),
             self.leaves_meter(Family.Settled, self.settle_asks.get().length),
         ]
@@ -550,7 +549,7 @@ impl Workspace {
     /// it sits.
     fn named_typed() -> AnswerRef {
         let ws = self
-        let ordinal = Family.Typed.ordinal
+        let ordinal = self.typed_family()
         AnswerRef {
             name: "Typed",
             family: () -> ordinal,
@@ -562,7 +561,7 @@ impl Workspace {
 
     /// A settled body's digest; absent for one not settled here or unplaceable.
     fn typed_digest(arg: int) -> int? {
-        if self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg)).is_empty() { return null }
+        if self.db.kernel.deps_of(typed_body_key(self, DeclId { index: arg })).is_empty() { return null }
         let says? = self.typed_says(DeclId { index: arg }) else { return null }
         fp_str(says)
     }
@@ -604,7 +603,7 @@ impl Workspace {
         mut unplaceable = 0
         mut mismatched = 0
         for arg in 0..self.decls.decl_count() {
-            let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+            let reads = self.db.kernel.deps_of(typed_body_key(self, DeclId { index: arg }))
             if reads.is_empty() { continue }
             settled = settled + 1
             let leaves? = rdb.leaves_of(reads) else { continue }

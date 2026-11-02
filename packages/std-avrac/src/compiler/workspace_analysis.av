@@ -77,7 +77,8 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query}
+use @std.relation.{query, scoped_by, digested_with, recursive}
+use @std.relation.stable.{Scope}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -99,6 +100,33 @@ fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned 
 /// A file's clash diagnostics by what each says.
 fn diags_fingerprint(out: List<Diag>) -> int {
     fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
+}
+
+/// One declaration's body typed: its facts, a table over its own window. A declaration still
+/// expanding has a range that will grow, so a window typed now answers its asker alone.
+@query
+@recursive
+@scoped_by(body_scope)
+@digested_with(typed_digest)
+fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
+    let x = ws.decls.decl(d)
+    mut t = ws.type_cx_for(x)
+    let out = t.type_decl(x)
+    ws.note_facts_types(x, out)
+    if ws.db.active(key(Family.Expanded, x.file.index)) { ws.query_db().unkept() }
+    out
+}
+
+/// The scope a body's ids cross under: offsets from its own window.
+fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
+    let x = ws.decls.decl(d)
+    ws.facts_scope(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo })
+}
+
+/// What readers of a body's typing cut off on: where its facts sit and what they say. The facts
+/// carry arena ids, so a shift that leaves `syntax(d)` and `names(d)` alike still moves it.
+fn typed_digest(ws: Workspace, d: DeclId, facts: TypeFacts) -> int {
+    fp(123, [ws.placed(d), TypeFacts.digest_in(ws.facts_scope(0, 0), facts)])
 }
 
 /// A file's method-table clashes, kept for its analysis; the answer is what they say.
@@ -991,7 +1019,7 @@ impl Workspace {
 
     /// The type `d`'s typing found for `s`; none while that typing is open.
     fn const_typed_by(d: DeclId, s: StmtId) -> TypeId? {
-        if self.relation(Family.Typed).open(d.index) { return null }
+        if self.typing_of(d) { return null }
         self.typed(d).const_type(s)
     }
 
@@ -1000,7 +1028,7 @@ impl Workspace {
         let s? = const_stmt(ask.root) else { return false }
         let own = self.decls.decl_of(ask.file, s)
         let d? = own ?? self.decl_holding(ask.file, s, own) else { return false }
-        self.relation(Family.Typed).open(d.index)
+        self.typing_of(d)
     }
 
     /// The declaration of `f` other than `own` whose statements hold `s`.
