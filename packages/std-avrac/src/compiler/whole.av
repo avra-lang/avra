@@ -53,7 +53,7 @@ use compiler.lower.{
     FieldPlan,
     collect_answer_type,
 }
-use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
+use compiler.host.{library_stem, Beneath, Read, InputName, Manifest, embedded_kind}
 use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
 
@@ -540,13 +540,15 @@ impl Workspace {
         self.packages().any((p) -> self.manifest(p.ordinal).dynamic_symbols)
     }
 
-    fn package_link(pkg: Package) -> List<string> {
-        let m = self.manifest(pkg.ordinal)
-        self
-            .package_objects(pkg, "")
+    fn package_link(pkg: Package) -> List<string> { self.manifest_link(self.manifest(pkg.ordinal), pkg.root, pkg.ordinal == 0) }
+
+    /// One manifest's link words under its root: its objects, directories and libraries, and
+    /// its raw options when it is the program's own.
+    fn manifest_link(m: Manifest, root: string, own: bool) -> List<string> {
+        [joined_path(root, o) for o in self.filled_words(m.objects)]
             .concat(["-L${d}" for d in self.filled_words(m.search)])
             .concat(["-l${l}" for l in self.filled_words(m.libs)])
-            .concat(if pkg.ordinal == 0 { self.filled_words(m.raw) } else { [] })
+            .concat(if own { self.filled_words(m.raw) } else { [] })
     }
 
     /// The objects a package's manifest links into every program that
