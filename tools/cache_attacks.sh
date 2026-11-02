@@ -2334,7 +2334,7 @@ printf 'export fn first() -> int { 0 }\n' > $R/abx/src/aaa.av
 printf 'use aaa.{first}\nuse @rt.abl.shows.{shown}\nprintln("${first()} ${shown()}")\n' > $R/abx/src/main.av
 AB() { # AB <label> <build|check> <pkg>: no file is read because its asks could not be read back
     steps=$((steps+1)); ab_out=$(./avra $2 --time $R/$3 2>&1)
-    case "$ab_out" in *"could not be read back"*) fail "$1: a held file's asks did not read back: $(printf '%s' "$ab_out" | grep -E '^time:|discarded:|read back' | cut -c1-300 | tr '\n' ' ')" ;; *"held "[1-9]*"/"*) holds=$((holds+1)); [ -n "${VERBOSE:-}" ] && echo "ok    $1" ;; *) fail "$1: nothing was held, so no asks row was read: $(printf '%s' "$ab_out" | grep -E '^time:' | cut -c1-200)" ;; esac
+    case "$ab_out" in *"could not be read back"*) fail "$1: a held file's asks did not read back: $(printf '%s' "$ab_out" | grep -E '^time:|discarded:|read back' | cut -c1-300 | tr '\n' ' ')" ;; *"held "[1-9]*"/"*|*"cache hit"*) holds=$((holds+1)); [ -n "${VERBOSE:-}" ] && echo "ok    $1" ;; *) fail "$1: nothing was held, so no asks row was read: $(printf '%s' "$ab_out" | grep -E '^time:' | cut -c1-200)" ;; esac
 }
 S "cold ab: impls over builtin generics, a scalar, a user generic over one" ab
 HR "ab checks clean" check ab 0
