@@ -177,7 +177,13 @@ impl Decls {
 
     fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(ensure) }
 
-    fn remember_store(f: FileId, store: SyntaxArena) { self.stores.set_at(f.index, store) }
+    /// A file's parse given to its declarations: the store stands, and every expression goes
+    /// to the declaration that owns it.
+    fn remember_store(f: FileId, store: SyntaxArena) {
+        self.stores.set_at(f.index, store)
+        let main? = self.main_of(f) else { return }
+        self.range_bodies(f, store, main)
+    }
 
     /// A file admitted with its parse: its declarations as `admission` reads them. Answers
     /// the top-level ids, in order.
@@ -186,9 +192,8 @@ impl Decls {
     /// A file admitted with the lines its parse declares: minted, and every expression of its
     /// store given to the declaration that owns it.
     fn admitted(f: FileId, store: SyntaxArena, lines: List<ItemLine>) -> List<DeclId> {
-        self.stores.set_at(f.index, store)
         let ids = self.mint_lines(f, lines, store.stmts.count())
-        self.range_bodies(f, store, self.mains.get()[f.index]!)
+        self.remember_store(f, store)
         [ids[j] for j, l in lines if l.item]
     }
 
