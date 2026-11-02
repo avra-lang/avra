@@ -1,0 +1,79 @@
+//! THE SCOPE A COMPILER VALUE CROSSES UNDER — a declaration, a type and a file by their
+//! durable names, an expression and a statement by their offset from the window it was made
+//! over, and a place in a text as the token place it stands in.
+use core.{DeclId, TypeId, FileId}
+use compiler.{Workspace}
+use @std.text.{parse_int}
+use @std.relation.stable.{Scope}
+
+/// The id types a typing table holds.
+enum IdKind {
+    Decl
+    Type
+    File
+    Expr
+    Stmt
+}
+
+/// The id type a column names by its own declaration's name. A name this table does not hold is
+/// spoken at the site, never guessed.
+fn id_kind(name: string) -> IdKind? {
+    match name {
+        "DeclId" -> .Decl,
+        "TypeId" -> .Type,
+        "FileId" -> .File,
+        "ExprId" -> .Expr,
+        "StmtId" -> .Stmt,
+        _ -> null,
+    }
+}
+
+/// An offset text as the index it stands for under `base`.
+fn counted_from(text: string, base: int) -> int? {
+    let n? = parse_int(text) else { return null }
+    n + base
+}
+
+/// A workspace and the two window starts a body's ids are offset from.
+type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int }
+
+impl Scope for FactsScope {
+    fn spelled(kind: string, index: int) -> string {
+        let k? = id_kind(kind) else {
+            self.ws.defect("a typing table holds an id of `${kind}`, which no scope spells")
+            return ""
+        }
+        match k {
+            .Decl -> self.ws.decl_ref(DeclId { index: index }),
+            .Type -> self.ws.type_ref(TypeId { index: index }),
+            .File -> self.ws.file_ref(FileId { index: index }),
+            .Expr -> "${index - self.expr_base}",
+            .Stmt -> "${index - self.stmt_base}",
+        }
+    }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { self.ws.place_of(file, lo, hi) }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { self.ws.span_of(file, at) }
+
+    fn unspelled(kind: string, text: string) -> int? {
+        let k? = id_kind(kind) else { return null }
+        match k {
+            .Decl -> self.ws.decl_from_ref(text)?.index,
+            .Type -> self.ws.type_from_wire(text)?.index,
+            .File -> self.ws.decls.known_file_id(text)?.index,
+            .Expr -> counted_from(text, self.expr_base),
+            .Stmt -> counted_from(text, self.stmt_base),
+        }
+    }
+}
+
+impl Workspace {
+    /// The scope a body's facts cross under: expressions counted from `lo`, statements from
+    /// `stmt_lo` — the declaration's own window, whose negative statement start reads as the
+    /// whole file's, exactly as `new_type_facts` reads it. One rule, applied on both sides, is
+    /// what makes a written offset and a read one the same offset.
+    fn facts_scope(lo: int, stmt_lo: int) -> dyn Scope {
+        FactsScope { ws: self, expr_base: lo, stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo } }
+    }
+}
