@@ -114,7 +114,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query}
+use @std.relation.{query, codec}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -273,6 +273,67 @@ fn new_name_envs() -> NameEnvs {
         externs: list_cell(),
         implementors: list_cell(),
     }
+}
+
+/// ONE MODULE'S NAME ENVIRONMENT, as a value: under each declaration name, component word and
+/// annotation mark, the root-relative files declaring it, in file order; its externs; and the
+/// files declaring a kind that implements a trait for a type.
+@codec
+export type NameEnv = {
+    names: Map<string, List<string>>,
+    words: Map<string, List<string>>,
+    marks: Map<string, List<string>>,
+    externs: List<ExternNote>,
+    implementors: List<string>,
+}
+
+impl NameEnv {
+    /// Two environments as one: each name's files, this one's first.
+    fn joined(o: NameEnv) -> NameEnv {
+        NameEnv {
+            names: merged_files(self.names, o.names),
+            words: merged_files(self.words, o.words),
+            marks: merged_files(self.marks, o.marks),
+            externs: self.externs.concat(o.externs),
+            implementors: distinct(self.implementors.concat(o.implementors)),
+        }
+    }
+}
+
+/// Each key's files from both, `a`'s first, every file once.
+fn merged_files(a: Map<string, List<string>>, b: Map<string, List<string>>) -> Map<
+    string,
+    List<string>,
+> {
+    mut out = a
+    for key, files in b { out.set(key, distinct((out.get(key) ?? []).concat(files))) }
+    out
+}
+
+impl NameEnvs {
+    /// A module's environment filed into the program's.
+    fn noted(e: NameEnv) {
+        for key, files in e.names { filed_into(self.names, key, files) }
+        for key, files in e.words { filed_into(self.words, key, files) }
+        for key, files in e.marks { filed_into(self.marks, key, files) }
+        self.externs.set(self.externs.get().concat(e.externs))
+        for path in e.implementors { if !self.implementors.get().contains(path) { self.implementors.push(path) } }
+    }
+
+    /// The files a bucket reader's listing names.
+    fn listed(l: Listed) -> List<string> {
+        match l {
+            .Name(name) -> self.names.get().get(name) ?? [],
+            .Word(word) -> self.words.get().get(word) ?? [],
+            .Mark(mark) -> self.marks.get().get(mark) ?? [],
+            .Extern(name) -> [n.path for n in self.externs.get() if n.name == name],
+            .Hosted -> [n.path for n in self.externs.get() if n.hosted],
+        }
+    }
+}
+
+fn filed_into(map: Cell<Map<string, List<string>>>, key: string, files: List<string>) {
+    map.put(key, distinct((map.get().get(key) ?? []).concat(files)))
 }
 
 @identity
@@ -870,10 +931,6 @@ fn file_refs_verified(ws: Workspace, arg: int) -> int {
     touch(ws.file_references(file_at(arg)))
     ws.db.changed_at(key(Family.FileRefs, arg))
 }
-fn failures_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.failures())
-    ws.db.changed_at(key(Family.Failures, arg))
-}
 fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
@@ -934,7 +991,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
         .FileRefs -> file_refs_verified(ws, arg),
-        .Failures -> failures_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
@@ -1258,16 +1314,7 @@ impl Workspace {
     /// modules of every unread file listed under it are minted first — so the row exists
     /// before the read, and only where it is wanted.
     fn minted_for(l: Listed) {
-        self
-            .minted_files(
-                match l {
-                    .Name(name) -> self.envs.names.get().get(name) ?? [],
-                    .Word(word) -> self.envs.words.get().get(word) ?? [],
-                    .Mark(mark) -> self.envs.marks.get().get(mark) ?? [],
-                    .Extern(name) -> [n.path for n in self.envs.externs.get() if n.name == name],
-                    .Hosted -> [n.path for n in self.envs.externs.get() if n.hosted],
-                },
-            )
+        self.minted_files(self.envs.listed(l))
     }
 
     /// Every held file of each listed module minted, once.
@@ -2084,7 +2131,7 @@ impl Workspace {
         visible_of(
             self
                 .relation(Family.Visible)
-                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r), ids)),
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> visible_of(r).fingerprint_in(ids)),
         )
     }
 
@@ -2149,7 +2196,7 @@ impl Workspace {
         let facts = resolved_of(
             self
                 .relation(Family.Resolved)
-                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
+                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> resolved_of(r).fingerprint_in(ids)),
         )
         if partial { self.relation(Family.Resolved).evict_call(f.index) }
         facts
@@ -2497,7 +2544,7 @@ impl Workspace {
                 .finish_lazy(
                     d.index,
                     DbRow.Typed(out),
-                    (r: DbRow) -> fp(123, [spot, type_facts_fp(typed_of(r), ids, true)]),
+                    (r: DbRow) -> fp(123, [spot, typed_of(r).fingerprint_in(ids)]),
                 ),
         )
     }
@@ -2684,7 +2731,6 @@ export fn family_code_hash(f: Family) -> string {
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
         .FileRefs -> code_hash(file_refs_verified) ?? "",
-        .Failures -> code_hash(failures_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",

@@ -66,7 +66,7 @@ use core.{
     db_verified,
     quoted_text,
 }
-use @std.relation.db.{Db, Durable, durable_db, transient}
+use @std.relation.db.{Db, Durable, durable_db, transient, unheard_read}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
@@ -91,7 +91,7 @@ use features.{
     no_names,
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
-use @std.relation.{relation}
+use @std.relation.{relation, codec}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -929,6 +929,7 @@ fn no_externs() -> List<ExternNote> { [] }
 fn no_modules() -> List<string> { [] }
 
 /// An `extern fn` a record declares: its module and file, its symbol, and whether it has a body.
+@codec
 export type ExternNote = { module: string, path: string, name: string, hosted: bool }
 
 /// What a bucket reader is about to read, as the name environments list it: a declaration
@@ -1168,6 +1169,7 @@ impl Decls {
     fn decl(d: DeclId) -> Decl {
         let x = self.decl_cells.get()[d.index] ?? self.removed(d)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+        if x.standing == 0 { unheard_read() }
         self.row_read(x)
         x
     }
@@ -1249,6 +1251,13 @@ impl Decls {
         self.auditing.set(false)
         (self.audit_hook.get())(r)
         self.auditing.set(true)
+    }
+
+    /// A read the kernel never hears: told to the audit, and to any open query, whose answer
+    /// then stands on something its record cannot name.
+    fn bypassed(r: Bypassed) {
+        if audit_build && self.auditing.get() { self.audited(r) }
+        unheard_read()
     }
 
     /// The workspace arms the audit once, when `AVRA_DEP_AUDIT` asks.
@@ -1354,6 +1363,7 @@ impl Decls {
             file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
             expr: (i: int) -> i,
             stmt: (i: int) -> i,
+            place: (i: int) -> i,
         }
     }
 
@@ -1947,7 +1957,7 @@ impl Decls {
     /// `d` itself belongs to) and must not recurse back into it —
     /// null answers "not settled yet," never "not there is an error."
     fn sig_so_far(d: DeclId) -> DeclSig? {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
+        self.bypassed(Bypassed.SigSoFar(d))
         self.sigs.get()[d.index]
     }
 
@@ -2477,7 +2487,7 @@ impl Decls {
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Written(d)) }
+        self.bypassed(Bypassed.Written(d))
         let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
@@ -2513,7 +2523,7 @@ impl Decls {
     /// A `_`-declared fn's growing error set, as the fixpoint found it
     /// so far — deduped by type identity, the pass's own read, hook-free.
     fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
+        self.bypassed(Bypassed.Errors(d))
         self.inferred_errs.at(d.index) ?? []
     }
 
@@ -3579,7 +3589,7 @@ impl Decls {
     /// cell.
     @bracket("methods")
     fn methods_of(target: DeclId) -> List<DeclId> {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
+        self.bypassed(Bypassed.Methods(target))
         self.record_kernel.record_at(self.record_methods.get(), target.index)
         self.registered_methods(target)
     }

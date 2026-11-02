@@ -1,0 +1,37 @@
+// A place is `@std/errors`' own declaration, never its name: a record of one's own called `Loc`
+// is a record, crossed field by field whatever the scope does with places.
+use @std.meta.{derive}
+use @std.relation.{codec}
+use @std.relation.stable.{CodecFault, Scope}
+
+type Loc = { file: string?, lo: int, hi: int }
+
+@codec
+type Seen = { at: Loc }
+
+/// Moves every place it reads back.
+type Shifted = {}
+
+impl Scope for Shifted {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { [at[0] + 10, at[1] + 10] }
+}
+
+fn back() -> string {
+    let s = Seen { at: Loc { file: "a.av", lo: 4, hi: 9 } }
+    match Seen.decoded_in(Shifted {}, s.encoded_in(Shifted {})) {
+        .Ok(r) -> "${r.at.lo} ${r.at.hi}",
+        .Err(f) -> f.word(),
+    }
+}
+
+spec "std/relation — a place is a declaration, not a name" {
+    given "a record of one's own named `Loc`" {
+        then "it crosses as its fields, untouched by the scope's places" { back() == "4 9" }
+    }
+}
