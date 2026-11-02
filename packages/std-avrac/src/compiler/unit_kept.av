@@ -1,0 +1,87 @@
+//! A LOWERED UNIT KEPT BY DECLARATION. A plain fn's or method's lowering is kept as the
+//! instantiations it asks and the code facts it hashes — one `@query` answer, read back
+//! wherever every read its lowering made still stands. A kept unit stands in for its
+//! lowering only when it spoke nothing, so serving one can never hide a voice.
+use core.{DeclId, DeclKind, FileId, flatten, distinct}
+use features.{Wanted}
+use diagnostics.{no_voices}
+use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire}
+use compiler.families.{Family}
+use @std.relation.{query, codec}
+
+/// What a unit's lowering keeps: the instantiations it asks and the code it stands for, each as
+/// the wire its type crosses by.
+@codec
+type KeptUnit = { wants: string, facts: string }
+
+/// A unit served from its kept answer: the file it belongs to and the code it stood for.
+type Served = { file: FileId, facts: CodeFacts }
+
+/// A plain declaration's lowering, kept: a unit that spoke cannot be.
+@query
+fn unit_kept(ws: Workspace, d: DeclId) -> KeptUnit {
+    let out = ws.lowered_fresh(ws.spec_id(ws.plain_want(d)))
+    if !out.voices.list.is_empty() { ws.query_db().unkept() }
+    KeptUnit {
+        wants: ws.wanted_list_wire(out.wants),
+        facts: code_facts_wire(code_facts(ws.decls, out.bodies, out.statics, out.hashes)),
+    }
+}
+
+impl Workspace {
+    /// A unit lowered for a check: a plain declaration's comes through its kept answer — this
+    /// process's own lowering when it ran one, else the kept answer standing in as its stub.
+    fn unit_checked(w: Wanted, id: int) -> Unit {
+        let d? = self.kept_decl(w) else { return self.lowered_fresh(id) }
+        let kept = unit_kept(self, d)
+        let fresh = self.relation(Family.Lowered).values.entry(id)
+        if fresh is .Present { return self.lowered_fresh(id) }
+        self.served_from(w, d, kept) ?? self.lowered_fresh(id)
+    }
+
+    /// The declaration whose kept answer stands for `w`: a plain fn or method, unspecialized,
+    /// asked whole, outside a compile-time run, of a file this program reads.
+    fn kept_decl(w: Wanted) -> DeclId? {
+        let d? = w.decl else { return null }
+        if !self.hold.serving.get() ||
+            w.sub != null ||
+            !w.seats.is_empty() ||
+            w.root != null ||
+            self.comptime_active() { return null }
+        let x = self.decls.decl(d)
+        if !plain_unit(x.kind) || x.external { return null }
+        d
+    }
+
+    /// A plain declaration's whole want.
+    fn plain_want(d: DeclId) -> Wanted {
+        Wanted { file: self.decls.decl(d).file, decl: d, name: self.decls.symbol(d), sub: null }
+    }
+
+    /// The unit a kept answer stands for: the declaration's stub, the instantiations it asked
+    /// and the code it stood for; none when a want or the code no longer reads back.
+    fn served_from(w: Wanted, d: DeclId, kept: KeptUnit) -> Unit? {
+        let wants? = self.wanted_list_from_wire(kept.wants) else { return null }
+        let facts? = code_facts_from_wire(kept.facts) else { return null }
+        let stub? = self.stub_of(self.decls.decl(d)) else { return null }
+        self.hold.served.push(Served { file: w.file, facts: facts })
+        Unit { bodies: [stub], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
+    }
+}
+
+/// Whether a declaration kind lowers as one plain unit a kept answer can stand for.
+fn plain_unit(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method -> true,
+        .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> false,
+    }
+}
+
+/// A file's code: what its fresh bodies are and what each served unit stood for.
+fn merged_facts(fresh: CodeFacts, served: List<CodeFacts>) -> CodeFacts {
+    CodeFacts {
+        nodes: fresh.nodes.concat(flatten([f.nodes for f in served])),
+        addressed: distinct(fresh.addressed.concat(flatten([f.addressed for f in served]))),
+        asked: distinct(fresh.asked.concat(flatten([f.asked for f in served]))),
+    }
+}
