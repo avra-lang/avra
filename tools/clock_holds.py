@@ -39,6 +39,7 @@ any unheld call is. Anything else is refused, by file and line.
     clock_holds.py --self   the fixtures alone
 """
 import glob
+import avsrc
 import re
 import sys
 
@@ -54,8 +55,9 @@ REACH = 3
 
 
 def code_of(lines):
-    """Each line with its comments taken out: `//` to the end, and every
-    `/* … */`, which may span lines."""
+    """Each line with its comments taken out — `//` to the end, and every
+    `/* … */`, which may span lines — and each string or character literal
+    emptied, so a word inside one is no call and a `//` inside one no comment."""
     out, inside = [], False
     for line in lines:
         kept, i = "", 0
@@ -70,6 +72,12 @@ def code_of(lines):
                 inside, i = True, i + 2
             elif line.startswith("//", i):
                 break
+            elif line[i] in "\"'":
+                quote, j = line[i], i + 1
+                while j < len(line) and line[j] != quote:
+                    j += 2 if line[j] == "\\" else 1
+                kept += quote + quote
+                i = j + 1
             else:
                 kept += line[i]
                 i += 1
@@ -141,6 +149,10 @@ def proved():
         ("the resolver", ["int rc = getaddrinfo(host, service, &hints, out);"], 1),
         ("a read", ["ssize_t got = read(fd, buf, n);"], 1),
         ("a database step", ["int rc = sqlite3_step(stmt);"], 1),
+        ("a word in a string", ['avra_trap("its waiters are read (0) or write (1)");'], 0),
+        ("a comment mark in a string", ['printf("// x"); sleep(1);'], 1),
+        ("a quote in a character", ["char q = '\"'; usleep(1);"], 1),
+        ("an escaped quote in a string", ['puts("say \\"read(\\" now"); poll(fds, 1, 0);'], 1),
     ]
     av = [
         ("an extern to a step", ["export extern fn sqlite3_step(stmt: ptr?) -> i32"], 1),
@@ -179,7 +191,7 @@ def main():
         return 0
     sources = sorted(glob.glob("runtime/*.c") + glob.glob("runtime/host/*.c")
                       + glob.glob("packages/*/src/c/*.c"))
-    declaring = sorted(p for p in glob.glob("packages/**/*.av", recursive=True) if "/tests/" not in p)
+    declaring = avsrc.av_files(["packages"])
     vendored = sorted(glob.glob("packages/*/vendor/**/*.c", recursive=True))
     found, calls, externs, holders = [], 0, 0, set()
     for path in sources:

@@ -6,7 +6,8 @@ argument; a literal there that docs/DIAGNOSTICS.md (generated from the
 assembled registry by `make witnesses`) has no entry for is a voice that
 speaks a kind nothing registered — no row, no summary, no witness, no
 help for `avra docs` to find. Reports what it examined."""
-import glob, re, sys
+import re, sys
+import avsrc
 
 CALL = re.compile(r'\b(?:refusal|warning|error_at)\(\s*"([a-z_]+\.[a-z_]+)"')
 # The CLI's own failure wrapper is a kind of the program `avra`, never of
@@ -17,7 +18,7 @@ if not registered:
     print("voices-spoken: docs/DIAGNOSTICS.md names no kind — nothing to compare against")
     sys.exit(1)
 spoken = {}
-files = [f for f in glob.glob('packages/*/src/**/*.av', recursive=True) if '/tests/' not in f]
+files = avsrc.av_files(['packages/*/src'])
 for f in files:
     text = open(f).read()
     for m in CALL.finditer(text):

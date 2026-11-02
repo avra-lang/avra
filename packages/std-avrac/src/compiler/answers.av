@@ -8,6 +8,7 @@ use @std.relation.{input}
 use @std.relation.db.{Db as RelDb, Durable}
 use compiler.store.{Store, Stored, node_key}
 use core.digest.{hex, unhex}
+use core.{joined}
 
 /// A source file's text as a query reads it. The workspace stages every text a
 /// query is asked about (`stage_text`) before asking, so a record names the text
@@ -18,7 +19,18 @@ export fn file_text(_db: RelDb, _path: string) -> string {
     ""
 }
 
+/// The words the workspace's language reserves, space-joined, as a query reads them: what a
+/// lex of a source answers stands on the language it was lexed in, never the process's.
+@input
+export fn language_words(_db: RelDb, _of: string) -> string {
+    avra_trap("defect: a language's words were read before the workspace staged them")
+    ""
+}
+
 impl Workspace {
+    /// The workspace's language staged as the relation Db's `language_words` input, once.
+    fn stage_language() { set_language_words(self.decls.rows_db.get(), "", joined(self.lang.keywords, " ")) }
+
     /// A source's text staged as the relation Db's `file_text` input — what a query that
     /// reads the file is asked of, so its record names the text by its hash.
     fn stage_text(path: string) { set_file_text(self.decls.rows_db.get(), path, self.listed_text(path)) }
