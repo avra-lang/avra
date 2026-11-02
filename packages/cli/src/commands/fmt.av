@@ -313,8 +313,14 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
                 Checked1 { outcome: Outcome.Differs, phases: base.concat([compare]) }
             }
         },
-        .Err(_) -> ended(Outcome.Refused, base),
+        .Err(report) -> refused_one(path, report, base),
     }
+}
+
+/// A file fmt will not print, said with its reason — `--check` and `--write` alike.
+fn refused_one(path: string, report: string, base: List<Phase>) -> Checked1 {
+    eprintln("${path}: ${report}")
+    ended(Outcome.Refused, base)
 }
 
 /// `--write`'s one file: the receipt-checked text, put on disk and
@@ -340,10 +346,7 @@ fn written_one(
                 },
             }
         },
-        .Err(report) -> {
-            eprintln("${path}: ${report}")
-            ended(Outcome.Refused, base)
-        },
+        .Err(report) -> refused_one(path, report, base),
     }
 }
 
