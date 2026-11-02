@@ -5,14 +5,13 @@
 use core.{DeclId, DeclKind, FileId, flatten, distinct}
 use features.{Wanted}
 use diagnostics.{no_voices}
-use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire}
+use compiler.lower.{Unit, CodeFacts, code_facts}
 use compiler.families.{Family}
 use @std.relation.{query, codec}
 
-/// What a unit's lowering keeps: the instantiations it asks and the code it stands for, each as
-/// the wire its type crosses by.
+/// What a unit's lowering keeps: the instantiations it asks and the code it stands for.
 @codec
-type KeptUnit = { wants: string, facts: string }
+type KeptUnit = { wants: List<Wanted>, facts: CodeFacts }
 
 /// A unit served from its kept answer: the file it belongs to and the code it stood for.
 type Served = { file: FileId, facts: CodeFacts }
@@ -22,10 +21,7 @@ type Served = { file: FileId, facts: CodeFacts }
 fn unit_kept(ws: Workspace, d: DeclId) -> KeptUnit {
     let out = ws.lowered_fresh(ws.spec_id(ws.plain_want(d)))
     if !out.voices.list.is_empty() { ws.query_db().unkept() }
-    KeptUnit {
-        wants: ws.wanted_list_wire(out.wants),
-        facts: code_facts_wire(code_facts(ws.decls, out.bodies, out.statics, out.hashes)),
-    }
+    KeptUnit { wants: out.wants, facts: code_facts(ws.decls, out.bodies, out.statics, out.hashes) }
 }
 
 impl Workspace {
@@ -61,13 +57,17 @@ impl Workspace {
     }
 
     /// The unit a kept answer stands for: the declaration's stub, the instantiations it asked
-    /// and the code it stood for; none when a want or the code no longer reads back.
+    /// and the code it stood for; none when the stub is gone.
     fn served_from(w: Wanted, d: DeclId, kept: KeptUnit) -> Unit? {
-        let wants? = self.wanted_list_from_wire(kept.wants) else { return null }
-        let facts? = code_facts_from_wire(kept.facts) else { return null }
         let stub? = self.stub_of(self.decls.decl(d)) else { return null }
-        self.hold.served.push(Served { file: w.file, facts: facts })
-        Unit { bodies: [stub], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
+        self.hold.served.push(Served { file: w.file, facts: kept.facts })
+        Unit {
+            bodies: [stub],
+            wants: kept.wants,
+            voices: no_voices(),
+            statics: [],
+            kept: [kept.facts],
+        }
     }
 }
 
