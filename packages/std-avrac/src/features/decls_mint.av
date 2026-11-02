@@ -389,7 +389,6 @@ impl Decls {
     /// READS THE FILE WHOLE, so it records the file's own rows — a row read
     /// by id records its name alone, which a row arriving later never moves.
     fn decls_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
         self.rows_read(f)
         self.decls_so_far(f)
     }
@@ -412,10 +411,6 @@ impl Decls {
         [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
     }
 
-    /// The name environments' door, read by the bucket readers and answered by the armed
-    /// workspace hook: mint the unread files listed under what is about to be read.
-    fn listed(l: Listed) { (self.ensure_listed.get())(l) }
-
     /// The externs the records of the files held now declare.
     fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
 
@@ -427,16 +422,8 @@ impl Decls {
     /// Whether a file's rows came from a record rather than a parse.
     fn file_held(f: FileId) -> bool { self.held.get().get(self.file(f).path) != null }
 
-    fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
-
-    /// THE NAME ENVIRONMENTS, armed: the door a bucket reader mints through, and the
-    /// extern and implementor indexes it reads.
-    fn arm_listed(
-        ensure: fn(Listed) -> void,
-        externs: fn() -> List<ExternNote>,
-        types: fn() -> List<string>,
-    ) {
-        self.ensure_listed.set(ensure)
+    /// The extern and implementor indexes the name environments keep, armed.
+    fn arm_externs(externs: fn() -> List<ExternNote>, types: fn() -> List<string>) {
         self.externs_index.set(externs)
         self.types_index.set(types)
     }
