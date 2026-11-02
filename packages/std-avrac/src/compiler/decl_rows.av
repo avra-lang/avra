@@ -2,7 +2,7 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, FileId, ModulePath, joined, flatten, distinct, wreck, qtrace, traced, same_file}
+use core.{DeclId, FileId, ModulePath, joined, flatten, distinct, wreck, qtrace, traced}
 use compiler.families.{Family}
 use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
@@ -42,7 +42,8 @@ impl Workspace {
 
     /// `named_refs` as the build stands now.
     fn named_refs_now(name: string) -> List<string>? {
-        let standing = self.decls.rows_standing(name)
+        let b = self.decls.bucket_standing(name)
+        let standing = if b == null { [] } else { self.decls.decl_row_rows.get().members(b!) }
         let files = distinct(
             self
                 .envs
@@ -82,7 +83,7 @@ impl Workspace {
     fn rows_in(path: string, standing: List<Decl>) -> List<string>? {
         let f? = self.decls.known_file_id(path) else { return null }
         if !self.made_whole(f) { return null }
-        [self.decl_ref(x.id) for x in standing if same_file(x.file, f)]
+        [self.decl_ref(x.id) for x in standing if x.file.index == f.index]
     }
 
     /// Whether every declaration a file makes is a row: it is parsed, and it generates none

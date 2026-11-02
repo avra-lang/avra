@@ -229,7 +229,6 @@ impl CollectKind {
 
 /// Where a `collect` gathers from.
 @derive(Identity)
-@derive(Worded)
 export enum CollectScope {
     Self
     Package
@@ -282,32 +281,65 @@ export type ModuleId = { index: int }
 /// renumbering would silently rewrite every memo key.
 @derive(Fingerprint)
 @derive(Identity)
-@derive(Worded)
-export enum BinOp {
-    @word("+") Add
-    @word("-") Sub
-    @word("*") Mul
-    @word("/") Div
-    @word("%") Mod
-    @word("==") Eq
-    @word("!=") Ne
-    @word("<") Lt
-    @word("<=") Le
-    @word(">") Gt
-    @word(">=") Ge
-    @word("&&") And
-    @word("||") Or
-    @word("&") BitAnd
-    @word("|") BitOr
-    @word("^") BitXor
-    @word("<<") Shl
-    @word(">>") Shr
-}
+export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor, Shl, Shr }
 
 /// A jump's surface word — THE one projection: `continue` starts the
 /// next turn (`again`), `break` ends the loop.
 export fn jump_word(again: bool) -> string {
     if again { "continue" } else { "break" }
+}
+
+/// The operator's surface symbol — THE one projection; consumers
+/// (parser, law wording, renderer) query, never keep their own.
+export fn op_symbol(op: BinOp) -> string {
+    match op {
+        .Add -> "+",
+        .Sub -> "-",
+        .Mul -> "*",
+        .Div -> "/",
+        .Mod -> "%",
+        .Eq -> "==",
+        .Ne -> "!=",
+        .Lt -> "<",
+        .Le -> "<=",
+        .Gt -> ">",
+        .Ge -> ">=",
+        .And -> "&&",
+        .Or -> "||",
+        .BitAnd -> "&",
+        .BitOr -> "|",
+        .BitXor -> "^",
+        .Shl -> "<<",
+        .Shr -> ">>",
+    }
+}
+
+/// Every binary operator — the roster symbol->op derivations scan.
+export const all_binops: List<BinOp> = [
+    BinOp.Add,
+    BinOp.Sub,
+    BinOp.Mul,
+    BinOp.Div,
+    BinOp.Mod,
+    BinOp.Eq,
+    BinOp.Ne,
+    BinOp.Lt,
+    BinOp.Le,
+    BinOp.Gt,
+    BinOp.Ge,
+    BinOp.And,
+    BinOp.Or,
+    BinOp.BitAnd,
+    BinOp.BitOr,
+    BinOp.BitXor,
+    BinOp.Shl,
+    BinOp.Shr,
+]
+
+/// The operator a source word spells — `op_symbol`'s inverse, derived
+/// from the roster so the symbol projection stays the single source.
+export fn binop_of(symbol: string) -> BinOp? {
+    all_binops.find(op_symbol(it) == symbol)
 }
 
 // THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree is
@@ -637,11 +669,6 @@ export enum Built {
 @derive(Makes)
 export type FnSeat = { ty: TypeRef, mutable: bool = false, settled: bool = false }
 
-impl FnSeat {
-    /// The promise this seat makes.
-    fn mark() -> SeatMark { SeatMark { mutable: self.mutable, settled: self.settled } }
-}
-
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
 /// field rides across: a fn type's `marks` are part of its identity
@@ -676,7 +703,7 @@ impl TypeRef {
 
     /// A fn type's seat promises, one per seat.
     fn seat_marks() -> List<SeatMark> {
-        [s.mark() for s in self.seats]
+        [SeatMark { mutable: s.mutable, settled: s.settled } for s in self.seats]
     }
 
     /// This type, spelled back — `spelled`, as a method a quote
@@ -699,7 +726,7 @@ export fn spelled(t: TypeRef) -> string {
 
 /// A fn type: its seats, each with its promise, then its answer.
 fn spelled_arrow(t: TypeRef) -> string {
-    let seats = [mark_prefixed(s.mark(), spelled(s.ty)) for s in t.seats]
+    let seats = [mark_prefixed(SeatMark { mutable: s.mutable, settled: s.settled }, spelled(s.ty)) for s in t.seats]
     "fn(${joined(seats, ", ")}) -> ${spelled(t.answer ?? void_ref)}"
 }
 

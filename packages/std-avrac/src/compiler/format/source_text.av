@@ -39,7 +39,7 @@ use core.{
     Projection,
     quoted_text,
     spelled,
-    word_of_BinOp,
+    op_symbol,
     joined,
     flatten,
     filled,
@@ -1553,7 +1553,7 @@ impl SourceText {
         let operands = self.chain_operands(op, left).concat([right])
         let docs = [text(self.expression(operands[j], if j == 0 { p } else { p + 1 }, depth + 1)) for j in 0..operands.length]
         let rendered = render_doc_at(
-            chain_doc(word_of_BinOp(op), docs),
+            chain_doc(op_symbol(op), docs),
             self.layout_width(),
             depth * 4,
             resolved_col(col, depth),
@@ -1834,7 +1834,7 @@ impl SourceText {
         // conventional precedence table would drop it.
         let lp = if comparison(op) || self.mixed_bitwise(op, left) { p + 1 } else { p }
         grouped(
-            "${self.expression(left, lp, depth, col)} ${word_of_BinOp(op)} ${self.expression(right, p + 1, depth)}",
+            "${self.expression(left, lp, depth, col)} ${op_symbol(op)} ${self.expression(right, p + 1, depth)}",
             p,
             parent,
         )
@@ -1843,7 +1843,7 @@ impl SourceText {
     fn mixed_bitwise(op: BinOp, left: ExprId) -> bool {
         if !bitwise(op) { return false }
         match self.store.expr(left) {
-            .Binary(held, _, _) -> bitwise(held) && word_of_BinOp(held) != word_of_BinOp(op),
+            .Binary(held, _, _) -> bitwise(held) && op_symbol(held) != op_symbol(op),
             rest -> false,
         }
     }

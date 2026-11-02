@@ -4,12 +4,11 @@
 //! text; what needs the disk — a dependency's directory, the name it
 //! calls itself, the cycle — is the workspace's to judge, in this
 //! file's words.
-use core.{span_of, joined, is_package_key, is_name_word, is_digit, all_codes, Span, Worded}
+use core.{span_of, joined, is_package_key, is_name_word, is_digit, all_codes, Span}
 use @std.toml.{TomlDoc, TomlValue, TomlEntry, parse_toml, toml_text, toml_field}
 use features.{Budgets, budgets_of}
 use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
 use @std.errors.{Loc}
-use @std.meta.{derive}
 
 /// A dependency as the manifest names it: its key (`@scope/name`),
 /// its path when it is a path dependency, whether it serves tests
@@ -18,7 +17,6 @@ export type Dependency = { key: string, path: string?, dev: bool, at: Loc? }
 
 /// Where a declared tool comes from: one PATH lookup at start; the
 /// environment's variable `var`, else `default`; or the file `at`.
-@derive(Worded)
 export enum Provenance {
     Path
     Env
@@ -238,6 +236,15 @@ fn is_tool_key(key: string) -> bool {
     ["from", "var", "default", "at", "terminator", "min"].contains(key)
 }
 
+/// The provenance a row's `from` word names; absence for a word that
+/// names none.
+fn provenance_of(word: string) -> Provenance? {
+    if word == "path" { return Provenance.Path }
+    if word == "env" { return Provenance.Env }
+    if word == "abs" { return Provenance.Abs }
+    null
+}
+
 /// The opt levels the spec names.
 fn lawful_opt_level(v: TomlValue) -> bool {
     match v {
@@ -376,7 +383,7 @@ impl Reader {
     /// is refused and read as the PATH.
     fn provenance(word: string?, name: string, at: Loc?) -> Provenance {
         if word == null { return Provenance.Path }
-        let p: Provenance? = worded_Provenance(word!)
+        let p: Provenance? = provenance_of(word!)
         if p == null {
             self
                 .speak(
