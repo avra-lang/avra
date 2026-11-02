@@ -1332,9 +1332,7 @@ impl Workspace {
         self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
     }
 
-    /// A held declaration may need syntax-only facts that were not part of
-    /// its signature. Parse that file on first such read; the declaration
-    /// identities and object reuse still come from the stored interface.
+    /// A file's parse, given to declarations minted without it: their nodes and ranges.
     fn store_ensured(f: FileId) {
         self.decls.remember_store(f, self.parsed(f).store)
     }
@@ -2450,19 +2448,20 @@ impl Workspace {
     /// on `placed(x)` — WHERE those nodes sit, since the context is over
     /// an arena range. Reads the file's `parsed` table UNRECORDED, so an
     /// edit elsewhere in the file never retypes this declaration.
-    fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
-        // A file's module pseudo-declaration owns no statements, so it
-        // owes no own-syntax edge.
-        if x.stmt.index < self.decls.store(x.id).stmts.count() { let _ = self.syntax(x.id) }
-        let _ = self.placed(x.id)
-        let p = if self.relation(Family.Parsed).open(x.file.index) {
-            self.parsed(x.file)
+    fn cx_over(asked: Decl, names: NameFacts) -> TypeCx {
+        let p = if self.relation(Family.Parsed).open(asked.file.index) {
+            self.parsed(asked.file)
         } else {
-            match self.relation(Family.Parsed).values.entry(x.file.index) {
+            match self.relation(Family.Parsed).values.entry(asked.file.index) {
                 .Present(r) -> parsed_of(r),
-                .Missing -> self.parsed(x.file),
+                .Missing -> self.parsed(asked.file),
             }
         }
+        // A file's module pseudo-declaration owns no statements, so it
+        // owes no own-syntax edge.
+        if asked.stmt.index < self.decls.store(asked.id).stmts.count() { let _ = self.syntax(asked.id) }
+        let _ = self.placed(asked.id)
+        let x = self.decls.decl(asked.id)
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
             self.lang.dispatch,
@@ -2487,8 +2486,8 @@ impl Workspace {
             .Reuse(value) -> { return typed_of(value) },
             .Compute -> nothing(),
         }
+        mut t = self.type_cx_for(self.decls.decl(d))
         let x = self.decls.decl(d)
-        mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
