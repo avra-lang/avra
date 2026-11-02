@@ -90,9 +90,11 @@ export type Db = {
     written: Cell<int>,
     /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
     cap: Cell<int>,
-    /// Each named read's key at `keys_at`, by its identity: the cell a read of it records.
+    /// What each named read answers at `known_at`, by its identity: the cell a read of it
+    /// records, and its digest — asked once a revision however many saved answers name it.
     keys_known: Cell<Map<string, Key>>,
-    keys_at: Cell<int>,
+    digests_known: Cell<Map<string, int>>,
+    known_at: Cell<int>,
 }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
@@ -213,6 +215,12 @@ once fn open_queries() -> Cell<int> { Cell.new(0) }
 
 once fn foreign_reads() -> Cell<int> { Cell.new(0) }
 
+/// A read no kernel hears — a table its owner answers without a read — made while a query is
+/// open: that query stands on something its record cannot name, so its answer is never kept.
+export fn unheard_read() {
+    if open_queries().get() > 0 { foreign_reads().set(foreign_reads().get() + 1) }
+}
+
 /// Where an owner keeps query answers past the process, by a query's
 /// durable name and its arguments' stable hash: `answer` reads a kept
 /// record back, `keep` hands one over. What key a record lives under,
@@ -295,7 +303,8 @@ fn made(durable: Durable) -> Db {
         asking: asking,
         cap: Cell.new(0),
         keys_known: map_cell(),
-        keys_at: Cell.new(0 - 1),
+        digests_known: map_cell(),
+        known_at: Cell.new(0 - 1),
         written: Cell.new(0),
     }
 }
@@ -656,9 +665,26 @@ impl Db {
 
     /// An input's value hash here, absent when this Db has not been asked it.
     fn input_digest(name: string, spelled: string) -> int? {
+        self.known_now()
+        let id = "${name}\t${spelled}"
+        let known = self.digests_known.get().get(id)
+        if known != null { return known }
         let owner? = self.answer_named(name) else { return null }
         let arg? = owner.arg_of(spelled) else { return null }
-        owner.hash_at(arg)
+        let made? = owner.hash_at(arg) else { return null }
+        self.digests_known.put(id, made)
+        made
+    }
+
+    /// The tables of what this revision answered, emptied when the revision moved.
+    fn known_now() {
+        let rev = self.kernel.get()?.revision() ?? 0 - 1
+        if rev == self.known_at.get() { return }
+        let no_keys: Map<string, Key> = {}
+        self.keys_known.set(no_keys)
+        let no_digests: Map<string, int> = {}
+        self.digests_known.set(no_digests)
+        self.known_at.set(rev)
     }
 
     /// The one query or input asked here wearing `name`; none when two do.
@@ -691,12 +717,7 @@ impl Db {
     /// The cell a read of the answer `spelled` of `name` records, resolved once a revision; none
     /// for one no family here records — not kept, since a declaration minted later may name it.
     fn input_key(name: string, spelled: string) -> Key? {
-        let rev = self.kernel.get()?.revision() ?? 0 - 1
-        if rev != self.keys_at.get() {
-            let none: Map<string, Key> = {}
-            self.keys_known.set(none)
-            self.keys_at.set(rev)
-        }
+        self.known_now()
         let id = "${name}\t${spelled}"
         let known = self.keys_known.get().get(id)
         if known != null { return known }
@@ -888,6 +909,9 @@ type AnswersUnder<V> = {
 
 /// How a query keyed by one dense number names its calls past the process: the number's
 /// durable spelling, its inverse in this process, and the call asked by its number alone.
+/// A scope's spelling as a call's name: an empty one names nothing.
+export fn named_spelling(s: string) -> string? { if s.is_empty() { null } else { s } }
+
 export type DenseNames = { spell: fn(int) -> string?, number: fn(string) -> int?, ask: fn(int) -> void }
 
 export fn answers<V>(name: string, word: string, dense: bool) -> Answers<V> {
@@ -1167,6 +1191,23 @@ impl AnswersUnder<V> {
         if arg < 0 || arg >= self.numbers.get().length { return null }
         let n = self.numbers.get()[arg]
         if n < 0 { null } else { n }
+    }
+
+    /// The answer call `arg` holds, none when it holds none — computing and recording nothing.
+    fn peeked(arg: int) -> V? {
+        match self.memo.values.entry(arg) { .Present(value) -> value, .Missing -> null }
+    }
+
+    /// The number a key of this query was asked with, none for another query's key.
+    fn number_of(k: Key) -> int? {
+        if k.family != self.memo.family { return null }
+        self.number_at(k.arg)
+    }
+    /// Every answer and cell dropped, and every re-ask with them: what a call's closure held of
+    /// its context is let go.
+    fn dropped() {
+        self.memo.evict()
+        self.again.clear()
     }
 
     /// Call `arg`'s settled hash, the call asked by its number first when it never settled —

@@ -46,7 +46,9 @@ fi
 
 orig=$(mktemp)
 cp "$file" "$orig"
-restore() { cp "$orig" "$file"; rm -f "$orig"; }
+# The timed command's whole output, kept so a round with no time line says what it said.
+said=$(mktemp)
+restore() { cp "$orig" "$file"; rm -f "$orig" "$said"; }
 trap restore EXIT INT TERM
 
 # A FRESH EDIT per round: the appended line carries a run nonce and the
@@ -78,7 +80,8 @@ phases() {
 
 timed() {
     cmd=$1
-    "$avra" "$cmd" "$target" --time 2>&1 >/dev/null | grep '^time:' | tail -1
+    "$avra" "$cmd" "$target" --time > "$said" 2>&1
+    grep '^time:' "$said" | tail -1
 }
 
 run_rounds() {
@@ -88,7 +91,11 @@ run_rounds() {
         i=$((i + 1))
         edit "$cmd-$i"
         line=$(timed "$cmd")
-        [ -n "$line" ] || { echo "speed_measure: $cmd answered no time line" >&2; continue; }
+        [ -n "$line" ] || {
+            echo "speed_measure: $cmd answered no time line; its first refusals:" >&2
+            grep -a -m 6 -e '^error' -e 'failed' -e 'defect' "$said" >&2 || tail -n 6 "$said" >&2
+            continue
+        }
         phases "$cmd" "${line#time: }"
     done
 }

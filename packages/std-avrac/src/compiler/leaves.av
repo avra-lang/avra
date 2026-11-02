@@ -22,8 +22,8 @@ use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.voices.{name_slice_fp}
-use features.{SettleRoot, SeatValue}
-use compiler.lower.{code_facts, code_facts_wire}
+use features.{SettleRoot, SeatValue, DeclSig, TypeFacts}
+use compiler.lower.{code_facts}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
@@ -41,6 +41,19 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// A unit's lowering, named by nothing: a reader stands on what the lowering read, owed when
+    /// the unit settles.
+    fn named_lowerings() -> AnswerRef {
+        let ordinal = Family.Lowered.ordinal
+        AnswerRef {
+            name: "Lowered",
+            family: () -> ordinal,
+            spelled: (_arg: int) -> null,
+            arg: (_spelled: string) -> null,
+            hash: (_arg: int) -> null,
         }
     }
 
@@ -105,7 +118,7 @@ impl Workspace {
         let s? = self.decls.sigs.get()[arg] else {
             return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
         }
-        fp_str(self.decl_sig_wire(s))
+        sig_hash(s, self.facts_scope(0, 0))
     }
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
@@ -118,7 +131,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.settle_hash(ordinal, arg),
         }
     }
 
@@ -176,7 +189,27 @@ impl Workspace {
     fn settle_arg(spelled: string) -> int? {
         let ws = self
         self
-            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled)
+            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled) ?? self
+            .own_settle_arg(spelled)
+    }
+
+    /// A const's own settlement — asked under no seats — named before this run asked it: its
+    /// name is the const's wire alone, so the ask is minted from the declaration.
+    fn own_settle_arg(spelled: string) -> int? {
+        if !spelled.ends_with("#") { return null }
+        let d? = self.decl_from_ref(spelled.substring(0, spelled.length - 1)) else { return null }
+        let x = self.decls.decl(d)
+        self.settle_id(x.file, SettleRoot.Const(x.stmt), [])
+    }
+
+    /// A settlement's hash as this run answers it: settled when nothing asked it yet.
+    fn settle_hash(ordinal: int, arg: int) -> int? {
+        let k = key_at(ordinal, arg)
+        let held = self.db.kernel.hash_forced(k)
+        if held != null || arg < 0 || arg >= self.settle_asks.get().length { return held }
+        let ask = self.settle_asks.get()[arg]
+        let _ = self.settled_replay(ask.file, ask.root, ask.seats)
+        self.db.kernel.hash_forced(k)
     }
 
     /// A lifted unit's name: its file, its declaration and its symbol; an expression unit, the
@@ -185,10 +218,10 @@ impl Workspace {
         if arg < 0 || arg >= self.asks.get().length { return null }
         let w = self.asks.get()[arg]
         let path = self.decls.file(w.file).path
-        let root? = w.root else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
+        let root? = self.decls.root_of(w) else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
         let owner? = self.root_owner(w.file, root) else { return null }
         // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
-        "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_wire(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
+        "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_text(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
     }
 
     fn spec_arg(spelled: string) -> int? {
@@ -268,6 +301,7 @@ impl Workspace {
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_sigs())
         rdb.answer_known(self.named_impl_sets())
+        rdb.answer_known(self.named_lowerings())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
@@ -346,7 +380,7 @@ impl Workspace {
 
     fn durable_unit(arg: int) -> int? {
         match self.relation(Family.LiftLowered).values.entry(arg) {
-            .Present(r) -> lowered_of(r).fingerprint_in(self.decls.ids()),
+            .Present(r) -> lowered_of(r).fingerprint_in(self.facts_scope(0, 0)),
             .Missing -> null,
         }
     }
@@ -402,12 +436,7 @@ impl Workspace {
         if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
         let x = self.decls.decl(DeclId { index: arg })
         match self.relation(Family.Resolved).values.entry(x.file.index) {
-            .Present(r) -> name_slice_fp(
-                resolved_of(r),
-                x.lo,
-                x.hi,
-                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
-            ),
+            .Present(r) -> name_slice_fp(resolved_of(r), x.lo, x.hi, self.facts_scope(x.lo, x.stmt_lo)),
             .Missing -> null,
         }
     }
@@ -577,7 +606,7 @@ impl Workspace {
         if placed.any(it == null) { return null }
         joined(
             [
-                "${(facts with { voices: Voices { list: [] } }).fingerprint_in(self.decls.ids().rebased(facts.of_expr.lo))}",
+                "${TypeFacts.digest_in(self.facts_scope(facts.of_expr.lo(), facts.stmt_flags.lo()), facts with { voices: Voices { list: [] } })}",
             ]
                 .concat([p! for p in placed]),
             "\n",
@@ -645,8 +674,8 @@ impl Workspace {
         if !u.voices.list.is_empty() { return null }
         joined(
             [
-                self.wanted_list_wire(u.wants),
-                code_facts_wire(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
+                self.wants_text(u.wants),
+                self.facts_text(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
             ],
             "\n",
         )
@@ -673,7 +702,7 @@ impl Workspace {
                 spoke = spoke + 1
                 continue
             }
-            let row = node_key(Stored.Unit, ["loweredsaid", self.wanted_list_wire([ask])])
+            let row = node_key(Stored.Unit, ["loweredsaid", self.wants_text([ask])])
             let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
             if kept == null {
                 recomputed = recomputed + 1
