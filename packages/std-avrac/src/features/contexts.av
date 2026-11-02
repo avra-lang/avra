@@ -363,7 +363,7 @@ export fn implements_trait(types: TypeRegistry, decls: Decls, ty: TypeId, tr: De
     let worn: DynContract? = dyn_decl(types.shape_of(ty))
     if worn != null { return same_decl(worn!.decl, tr) }
     let d? = decls.implementor(ty) else { return false }
-    decls.implements(d, tr)
+    decls.implements_type(ty, d, tr)
 }
 
 /// A `dyn`'s trait: its declaration, and the name it is spelled by.
@@ -599,15 +599,30 @@ impl TypeCx {
     }
     fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
     fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
-    fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    fn implements(ty: TypeId, tname: string) -> bool {
+        self.seat_bound(ty) == tname ||
+            implements_of(self.view.types, self.view.decls, self.names, ty, tname)
+    }
+    /// The bound a type parameter carries here — its impl's, where the
+    /// body walked is one's method — and "" for every other type.
+    fn seat_bound(ty: TypeId) -> string {
+        match self.view.types.shape_of(ty) { .Var(d, j, _) -> self.bound_name(d, j), _ -> "" }
+    }
     /// Whether `ty` meets a declaration's bound — the trait read in the
     /// file that WROTE the bound, never the caller's: a caller need not
     /// import the trait a callee is bounded by.
     fn meets_bound(decl: DeclId, tname: string, ty: TypeId, at: List<TypeId> = []) -> bool {
+        if self.seat_bound(ty) == tname && self.seat_args_are(ty, at) { return true }
         let tr = self.bound_trait(decl, tname)
         if at.is_empty() { return implements_named(self.view.types, self.view.decls, ty, tname, tr) }
         let g? = tr else { return false }
         self.view.decls.implements_at(ty, g, at)
+    }
+    fn seat_args_are(ty: TypeId, at: List<TypeId>) -> bool {
+        match self.view.types.shape_of(ty) {
+            .Var(d, j, _) -> same_types(self.seat_bound_args(d, j), at),
+            _ -> at.is_empty(),
+        }
     }
     /// The trait a declaration's bound names — read in the file that
     /// WROTE the bound, then where the asking file stands.

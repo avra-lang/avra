@@ -101,6 +101,10 @@ export type FileInfo = { id: FileId, path: string, name: string, module_id: Modu
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
+/// A trait a type implements, and the impl block that answers it — whose
+/// written bounds say for which arguments it does.
+type ImplRow = { of: DeclId, block: DeclId }
+
 /// `Decl`'s indexes: its key's first, then in field order its name, a component
 /// instance's `word`, every `@name` it wears, the
 /// file that homes it, and whether it is an `extern fn`. `word` and `marks` are TWO INDEXES, never one —
@@ -720,8 +724,9 @@ export type Decls = {
     children: Cell<List<Cell<List<DeclId>>>>,
     /// TWO LAYERS SHARED — see `children`.
     methods: Cell<List<Cell<List<DeclId>>>>,
-    /// TWO LAYERS SHARED — see `children`.
-    impls: Cell<List<Cell<List<DeclId>>>>,
+    /// TWO LAYERS SHARED — see `children`. Each trait a type implements,
+    /// with the impl that answers it.
+    impls: Cell<List<Cell<List<ImplRow>>>>,
     ensure: Cell<fn(DeclId) -> void>,
     // the workspace's held-row hook: fills a held declaration's own
     // record row before a fact it fills (an impl's target among them)
@@ -952,7 +957,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
     let no_expansion_voices: List<Cell<List<Diag>>> = []
     let no_children: List<Cell<List<DeclId>>> = []
     let no_methods: List<Cell<List<DeclId>>> = []
-    let no_impls: List<Cell<List<DeclId>>> = []
+    let no_impls: List<Cell<List<ImplRow>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let empty_consumed: List<List<bool>?> = []
     let db = durable_db(durable)
@@ -2713,6 +2718,14 @@ impl Decls {
         self.facts_of(d)?.bounds ?? []
     }
 
+    /// The bound a trait impl writes on its target's parameter `j` —
+    /// "" when `block` is no impl of `target`, or writes none there.
+    fn impl_bound_name(block: DeclId?, target: DeclId, j: int) -> string {
+        let b? = block else { return "" }
+        let served? = self.target_of(b) else { return "" }
+        if same_decl(served, target) { self.bound_name(b, j) } else { "" }
+    }
+
     /// The bound a seat declares, by name.
     fn bound_name(d: DeclId, j: int) -> string {
         let tb = self.tbounds(d)
@@ -3416,6 +3429,7 @@ impl Decls {
 
     fn implemented_at(recv: TypeId, g: DeclId, at: List<TypeId>) -> bool {
         let d? = self.implementor(recv) else { return false }
+        if self.implements(d, g) && !self.implements_type(recv, d, g) { return false }
         self.trait_fns(g).all((r) -> self.has_body(r) || self.answered_at(d, r, g, at))
     }
 
@@ -3469,8 +3483,8 @@ impl Decls {
     /// A method the type never wrote: the DEFAULT of a trait it
     /// implements, when that trait's member carries a body.
     fn defaulted(target: DeclId, name: string) -> DeclId? {
-        for tr in self.impls.get()[target.index].get() {
-            let m: DeclId? = self.default_member(tr, name)
+        for row in self.impls.get()[target.index].get() {
+            let m: DeclId? = self.default_member(row.of, name)
             if m != null { return m }
         }
         null
@@ -3488,9 +3502,9 @@ impl Decls {
     /// arguments — the contract every impl of it agrees to — or none.
     fn shared_member(target: DeclId, name: string) -> DeclId? {
         if self.methods_named(target, name).length < 2 { return null }
-        for tr in self.impls.get()[target.index].get() {
-            if self.tparams(tr).length > 1 {
-                let m: DeclId? = self.trait_member(tr, name)
+        for row in self.impls.get()[target.index].get() {
+            if self.tparams(row.of).length > 1 {
+                let m: DeclId? = self.trait_member(row.of, name)
                 if m != null { return m }
             }
         }
@@ -3553,9 +3567,9 @@ impl Decls {
         self.methods.get()[target.index].push(m)
     }
 
-    fn record_impl(ty: DeclId, tr: DeclId) {
+    fn record_impl(ty: DeclId, tr: DeclId, block: DeclId) {
         if self.holds_impl(ty, tr) { return }
-        self.impls.get()[ty.index].push(tr)
+        self.impls.get()[ty.index].push(ImplRow { of: tr, block: block })
     }
 
     /// Whether a type implements a trait — asked through the hook,
@@ -3566,7 +3580,36 @@ impl Decls {
     }
 
     fn holds_impl(ty: DeclId, tr: DeclId) -> bool {
-        self.impls.get()[ty.index].get().any(same_decl(it, tr))
+        self.impls.get()[ty.index].get().any(same_decl(it.of, tr))
+    }
+
+    /// Whether a TYPE implements a trait: its declaration's impl, and every
+    /// bound that impl writes on a parameter met by the type's own argument
+    /// there — `List<Order>` is `Decode` when `Order` is.
+    fn implements_type(ty: TypeId, d: DeclId, tr: DeclId) -> bool {
+        if !self.implements(d, tr) { return false }
+        let row? = self.impls.get()[d.index].get().find(same_decl(it.of, tr)) else { return false }
+        let args = self.types.args_of(ty)
+        [j for j in 0..self.tbounds(row.block).length]
+            .all((j) -> self.bound_met(row.block, j, args))
+    }
+
+    /// Whether the argument at `j` meets the bound an impl writes there.
+    fn bound_met(block: DeclId, j: int, args: List<TypeId>) -> bool {
+        let name = self.bound_name(block, j)
+        if name == "" { return true }
+        if j >= args.length { return false }
+        let tr? = self.impl_bound_trait(block, name) else { return false }
+        let at = self.bound_args(block, j)
+        if at.is_empty() { implements_trait(self.types, self, args[j], tr) } else { self.implements_at(args[j], tr, at) }
+    }
+
+    /// The trait an impl's bound names, read where the impl is written.
+    fn impl_bound_trait(block: DeclId, name: string) -> DeclId? {
+        let x = self.decl(block)
+        let d? = (self.namespace_of.get())(self.origin_of_stmt(x.file, x.stmt) ?? x.file)
+            .type_decl(name) else { return null }
+        if self.is_trait(d) { d } else { null }
     }
 }
 

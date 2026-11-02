@@ -87,6 +87,7 @@ fn declared_call(
     // arguments are judged as any call's, the `dyn` one as itself
     let run = if choosing { cx.facts.dispatch_at(e) } else { null }
     if run != null { return dispatched_answer(cx, target, name, run!, found, args) }
+    if unmet_bound(cx, e, subject, m, name) { return cx.error_type }
     let at = generic_default_at(cx, e, subject, m, found, args)
     if at.refused { return cx.error_type }
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found), at.args)
@@ -425,9 +426,32 @@ fn same_decl_as(t: DeclId, d: DeclId?) -> bool {
     d != null && d!.index == t.index
 }
 
+/// Whether the receiver misses a bound the method's impl writes — an
+/// impl's methods are the receiver's only where its arguments meet them,
+/// and the refusal names the bound.
+fn unmet_bound(mut cx: TypeCx, e: ExprId, subject: ExprId, m: DeclId, name: string) -> bool {
+    let block? = cx.view.decls.decl(m).parent else { return false }
+    let bounds = cx.view.decls.tbounds(block)
+    if bounds.all(it == "") { return false }
+    let recv = cx.type_at(subject)
+    let args = cx.view.types.args_of(recv)
+    let missed = [j for j, b in bounds if b != "" && !bound_met_here(cx, block, j, args)]
+    let j? = missed.first() else { return false }
+    let arg = if j < args.length { cx.view.types.name_of(args[j]) } else { "?" }
+    bound_unmet(cx, e, cx.view.types.name_of(recv), name, arg, bounds[j])
+    true
+}
+
+/// A bound met by the argument — a type parameter by the bound it
+/// carries here, any other type by its impls.
+fn bound_met_here(cx: TypeCx, block: DeclId, j: int, args: List<TypeId>) -> bool {
+    j < args.length && cx.seat_bound(args[j]) == cx.view.decls.bound_name(block, j) ||
+        cx.view.decls.bound_met(block, j, args)
+}
+
 fn implements_at(cx: TypeCx, ty: TypeId, tr: DeclId) -> bool {
     let d? = cx.view.decls.implementor(ty) else { return false }
-    cx.view.decls.implements(d, tr)
+    cx.view.decls.implements_type(ty, d, tr)
 }
 
 /// How many members the names share, a generic trait's arguments
@@ -692,7 +716,7 @@ fn bounded_call(
 ) -> TypeId {
     let trait_name = cx.bound_name(decl, j)
     if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
-    trait_judged(cx, e, subject, trait_name, name, args, cx.view.decls.bound_args(decl, j)) ?? no_trait_method(
+    trait_judged(cx, e, subject, trait_name, name, args, cx.seat_bound_args(decl, j)) ?? no_trait_method(
         cx,
         e,
         trait_name,
@@ -722,7 +746,7 @@ fn bound_static_call(
     if !cx.view.decls.is_static_of(member) { return receiver_through_type(cx, e, trait_name, name, tname) }
     let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
     if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
-    let sig = selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j))
+    let sig = selfed_sig(cx, subject, member, found, cx.seat_bound_args(decl, j))
     placed_judged(cx, e, trait_name, name, member, args, sig)
 }
 
@@ -734,12 +758,16 @@ fn bound_static_call(
 fn bound_remedy(cx: TypeCx, decl: DeclId, tname: string) -> string {
     if cx.view.decls.component_parts_of(decl) != null { return bound_written(tname) }
     match cx.view.decls.decl(decl).kind {
-        .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now",
+        .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> served_bound(cx.view.decls.decl(decl).name, tname),
         .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> bound_written(tname),
     }
 }
 
 fn bound_written(tname: string) -> string { "add a bound — `<${tname}: SomeTrait>`" }
+
+fn served_bound(owner: string, tname: string) -> string {
+    "bound it where an impl serves the type — `impl SomeTrait for ${owner}<${tname}: Bound>`"
+}
 
 /// A method on a CONTRACT value: the trait's sig judges (self
 /// omitted — the boxed value fills that seat at dispatch); the
@@ -1001,6 +1029,19 @@ fn default_unimplemented(
                 "`${recv}` does not implement `${trait_name}<${args.join(", ")}>`",
                 "called here",
                 "a default runs through the impl at its arguments — implement `${trait_name}<${args.join(", ")}>` for `${recv}`",
+            ),
+        )
+}
+
+fn bound_unmet(mut cx: TypeCx, e: ExprId, recv: string, name: string, arg: string, bound: string) {
+    cx
+        .emit(
+            refusal(
+                "type.bound_unmet",
+                cx.loc_of(e),
+                "`${recv}` has `${name}` only where `${arg}` implements `${bound}`",
+                "called here",
+                "implement `${bound}` for `${arg}` — `impl ${bound} for ${arg} { … }`",
             ),
         )
 }

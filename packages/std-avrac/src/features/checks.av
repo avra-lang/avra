@@ -487,7 +487,16 @@ impl TypeCx {
     /// The bound a tparam SEAT declares — "" when unconstrained. The
     /// one law both the bounded-call and the boxing widen read.
     fn bound_name(decl: DeclId, j: int) -> string {
-        self.view.decls.bound_name(decl, j)
+        let own = self.view.decls.impl_bound_name(self.owner_impl, decl, j)
+        if own != "" { own } else { self.view.decls.bound_name(decl, j) }
+    }
+
+    /// The trait arguments the same seat's bound names, read where
+    /// `bound_name` reads the bound.
+    fn seat_bound_args(decl: DeclId, j: int) -> List<TypeId> {
+        let block? = self.owner_impl else { return self.view.decls.bound_args(decl, j) }
+        if self.view.decls.impl_bound_name(block, decl, j) == "" { return self.view.decls.bound_args(decl, j) }
+        self.view.decls.bound_args(block, j)
     }
 
     /// The channel's RESCUE at the one assignment door: a hungry
