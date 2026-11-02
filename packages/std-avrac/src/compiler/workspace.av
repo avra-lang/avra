@@ -649,6 +649,8 @@ export type Workspace = {
     method_diag_rows: Table<List<Diag>>,
     /// each module's names as their query last made them
     names_rows: Table<ModuleNames>,
+    /// each file's plain parse as its query last made it
+    plain_rows: Table<Parsed>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
     /// than scanning the whole table on every ask.
@@ -910,10 +912,6 @@ fn expanded_verified(ws: Workspace, arg: int) -> int {
     touch(ws.expanded(file_at(arg)))
     ws.db.changed_at(key(Family.Expanded, arg))
 }
-fn plain_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.plain_parsed(file_at(arg)))
-    ws.db.changed_at(key(Family.Plain, arg))
-}
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn file_refs_verified(ws: Workspace, arg: int) -> int {
     touch(ws.file_references(file_at(arg)))
@@ -966,7 +964,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
-        .Plain -> plain_verified(ws, arg),
         .FileRefs -> file_refs_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
@@ -1008,6 +1005,10 @@ fn placement_of(ws: Workspace, d: DeclId) -> int {
 @query
 @recursive
 fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
+
+/// A file parsed under NO block words: the pre-scan every first read starts from.
+@query
+fn plain_made(ws: Workspace, f: FileId) -> int { ws.plain_make(f) }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1121,6 +1122,7 @@ fn built(
         method_clashes: new_table<List<Clash>>(),
         method_diag_rows: new_table<List<Diag>>(),
         names_rows: new_table<ModuleNames>(),
+        plain_rows: new_table<Parsed>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
@@ -1616,15 +1618,15 @@ impl Workspace {
     /// sharing the name would sum a span and its own subset into one
     /// double-counted total.
     fn plain_parsed(f: FileId) -> Parsed {
-        plain_of(
-            self
-                .relation(Family.Plain)
-                .demand(
-                    f.index,
-                    () -> DbRow.Plain(self.clocked_parse(f)),
-                    (s: DbRow) -> program_hash(plain_of(s)),
-                ),
-        )
+        let _ = plain_made(self, f)
+        self.plain_rows.at(f.index)!
+    }
+
+    /// A file's plain parse, made and kept beside the cell; the word is its structure's hash.
+    fn plain_make(f: FileId) -> int {
+        let p = self.clocked_parse(f)
+        self.plain_rows.keep(f.index, p)
+        program_hash(p)
     }
 
     fn clocked_parse(f: FileId) -> Parsed {
@@ -2694,7 +2696,6 @@ export fn family_code_hash(f: Family) -> string {
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
-        .Plain -> code_hash(plain_verified) ?? "",
         .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
