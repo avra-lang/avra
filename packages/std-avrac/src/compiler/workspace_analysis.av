@@ -3,6 +3,7 @@
 //! workspace.av.
 use core.{
     EmbedKind,
+    same_decl,
     StmtId,
     qtrace,
     traced,
@@ -971,34 +972,46 @@ impl Workspace {
         if found == null && self.const_open(ask) { ConstType.Cyclic } else { known_const(ty, error) }
     }
 
-    /// The type `s`'s typing found: a top-level const's own declaration, a nested one the body
-    /// it is in. Its typing already open is the value asking for the const's own type.
+    /// The type `s`'s typing found: its own declaration's, else the body it is nested in, which
+    /// types it in scope. A typing already open is the value asking for the const's own type.
     fn const_typed_in(f: FileId, s: StmtId) -> TypeId? {
         touch(self.items(f))
-        let d? = self.decls.decl_of(f, s) ?? self.decl_holding(f, s) else { return null }
-        if self.relation(Family.Typed).open(d.index) { return null }
+        let own = self.decls.decl_of(f, s)
         // a held declaration has no range to type: its row carries the type
         if self.is_held(f) {
+            let d? = own else { return null }
             self.decl_row_filled(d)
             return self.decls.held_const_type(f, s)
         }
+        let found = if own == null { null } else { self.const_typed_by(own!, s) }
+        if found != null { return found }
+        let holder? = self.decl_holding(f, s, own) else { return null }
+        self.const_typed_by(holder, s)
+    }
+
+    /// The type `d`'s typing found for `s`; none while that typing is open.
+    fn const_typed_by(d: DeclId, s: StmtId) -> TypeId? {
+        if self.relation(Family.Typed).open(d.index) { return null }
         self.typed(d).const_type(s)
     }
 
     /// Whether the const `ask` names is being typed right now.
     fn const_open(ask: SettleAsk) -> bool {
         let s? = const_stmt(ask.root) else { return false }
-        let d? = self.decls.decl_of(ask.file, s) ?? self.decl_holding(ask.file, s) else { return false }
+        let own = self.decls.decl_of(ask.file, s)
+        let d? = own ?? self.decl_holding(ask.file, s, own) else { return false }
         self.relation(Family.Typed).open(d.index)
     }
 
-    /// The declaration of `f` whose statements hold `s`.
-    fn decl_holding(f: FileId, s: StmtId) -> DeclId? {
+    /// The declaration of `f` other than `own` whose statements hold `s`.
+    fn decl_holding(f: FileId, s: StmtId, own: DeclId?) -> DeclId? {
         self
             .decls
             .decls_of_file(f)
-            .find((d) -> self.decls.decl(d).stmt_lo <= s.index && s.index < self.decls.decl(d).stmt_hi)
+            .find((d) -> self.holds_stmt(d, s) && !(own != null && same_decl(d, own!)))
     }
+
+    fn holds_stmt(d: DeclId, s: StmtId) -> bool { self.decls.decl(d).stmt_lo <= s.index && s.index < self.decls.decl(d).stmt_hi }
 
     /// THE NAMES AN ANSWER'S RUN READ stand as one read: the declarations a run's code
     /// reaches are looked up by name, thousands of them, and each bucket read alone would
