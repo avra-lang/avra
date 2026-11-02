@@ -28,6 +28,7 @@ use core.{
     traced,
     leaves_traced,
 }
+extern fn avra_now_ns() -> int
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, is_note, render_among, user_code}
@@ -142,6 +143,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
             voices: Voices { list: lang.diagnostics },
         }
     }
+    let t_lex = avra_now_ns()
     let lexed = lex_blocks(
         src.text,
         [g.word for g in words.grammars],
@@ -149,8 +151,11 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         [c.word for c in words.components if c.own],
         lang.keywords,
     )
+    let t_lexed = avra_now_ns()
     let door = words with { door: sugar_door(lang) }
-    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
+    let spent = Cell.new(0)
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> timed_build(spent, name, lang, store, args, loc, src, door)
+    let build_unused = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
         lang.builders,
         store,
         name,
@@ -160,6 +165,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         door,
     )
     let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
+    eprintln("PL ${t_lexed - t_lex} ${avra_now_ns() - t_lexed} ${spent.get()} ${lexed.tokens.length}")
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
     // attach_docs: an orphaned doc group extends this list, and
@@ -816,4 +822,12 @@ impl Program {
 /// failed build's report says them after every file with an error.
 fn notes_of(a: Analysis) -> List<Diag> {
     if unclean(a) { [] } else { [d for d in a.diagnostics if is_note(d)] }
+}
+
+
+fn timed_build(spent: Cell<int>, name: string, lang: Language, store: SyntaxArena, args: List<Captured<Token, LangNode>>, loc: Loc?, src: SourceFile, door: BlockWords) -> Result<Captured<Token, LangNode>, string> {
+    let t = avra_now_ns()
+    let r = build_named(lang.builders, store, name, args, loc_span(loc), src.text, door)
+    spent.set(spent.get() + avra_now_ns() - t)
+    r
 }
