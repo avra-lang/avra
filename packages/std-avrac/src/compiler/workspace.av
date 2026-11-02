@@ -114,7 +114,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query, codec}
+use @std.relation.{query, codec, cycled_by}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -1005,9 +1005,14 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
 }
 
 /// A declaration's use-site warnings: each `List<Diagnostic>` annotation run, its WARNINGS
-/// kept (errors speak at the declaration).
+/// kept (errors speak at the declaration). A use inside its own run — a lift lowering back
+/// through it — reads the warnings recorded so far.
 @query
+@cycled_by(marks_standing)
 fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.warnings_of(ws.decls.decl(d)) }
+
+/// The use-site warnings recorded for `d` so far.
+fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks.get()[d.index] ?? [] }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
