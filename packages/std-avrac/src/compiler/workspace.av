@@ -15,7 +15,6 @@
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
 use core.{
-    Ids,
     CollectKind,
     CollectScope,
     Plain,
@@ -30,6 +29,7 @@ use core.{
     ExprId,
     fp,
     fp_list,
+    scope_fp,
     fp_str,
     mix_final,
     joined,
@@ -2083,7 +2083,7 @@ impl Workspace {
         let paths = self.met_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        let ids = self.decls.ids()
+        let ids = self.facts_scope(0, 0)
         namespace_of(
             self
                 .relation(Family.Namespace)
@@ -2093,8 +2093,8 @@ impl Workspace {
                     fp(
                         3,
                         [
-                            fp_list([ids.of_decl(d.index) for d in names.bound]),
-                            fp_list([ids.of_decl(d.index) for d in names.apart]),
+                            fp_list([scope_fp(ids, "DeclId", d.index) for d in names.bound]),
+                            fp_list([scope_fp(ids, "DeclId", d.index) for d in names.apart]),
                             names.clashes.length,
                         ],
                     ),
@@ -2133,7 +2133,7 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
-        let ids = self.decls.ids()
+        let ids = self.facts_scope(0, 0)
         visible_of(
             self
                 .relation(Family.Visible)
@@ -2198,7 +2198,7 @@ impl Workspace {
         let out = resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
-        let ids = self.decls.ids()
+        let ids = self.facts_scope(0, 0)
         let facts = resolved_of(
             self
                 .relation(Family.Resolved)
@@ -2404,7 +2404,7 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.facts_scope(0, 0))
         self.db.settle(k, h)
         h
     }

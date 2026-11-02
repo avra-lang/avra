@@ -345,7 +345,7 @@ impl Workspace {
 
     fn durable_unit(arg: int) -> int? {
         match self.relation(Family.LiftLowered).values.entry(arg) {
-            .Present(r) -> lowered_of(r).fingerprint_in(self.decls.ids()),
+            .Present(r) -> lowered_of(r).fingerprint_in(self.facts_scope(0, 0)),
             .Missing -> null,
         }
     }
@@ -401,12 +401,7 @@ impl Workspace {
         if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
         let x = self.decls.decl(DeclId { index: arg })
         match self.relation(Family.Resolved).values.entry(x.file.index) {
-            .Present(r) -> name_slice_fp(
-                resolved_of(r),
-                x.lo,
-                x.hi,
-                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
-            ),
+            .Present(r) -> name_slice_fp(resolved_of(r), x.lo, x.hi, self.facts_scope(x.lo, x.stmt_lo)),
             .Missing -> null,
         }
     }
