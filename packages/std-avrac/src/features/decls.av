@@ -92,6 +92,7 @@ use features.{
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation, codec}
+use @std.relation.stable.{indexed_scope}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -303,7 +304,7 @@ fn named_lit(store: SyntaxArena, e: ExprId) -> NamedLit? {
     NamedLit { label: label, arg: arg_lit(store, store.unnamed(e)) }
 }
 
-/// THE CODEC'S BYTES ARE THE DIGEST: `fingerprint` folds them, so it covers EVERY field.
+/// THE CODEC'S BYTES ARE THE DIGEST (`digest_in`), so it covers EVERY field.
 @derive(Exemplar)
 @codec
 export type DeclFacts = {
@@ -471,8 +472,11 @@ fn capture_facts(store: SyntaxArena, stmt: StmtId, kind: DeclKind, root: ExprId?
 fn told_of(f: DeclFacts, path: string) -> int {
     fp_list(
         [
-            (f with { span: null, annotations: [a with { span: null } for a in f.annotations] })
-                .fingerprint(),
+            DeclFacts
+                .digest_in(
+                    indexed_scope(),
+                    f with { span: null, annotations: [a with { span: null } for a in f.annotations] },
+                ),
             fp_str(path),
         ],
     )
