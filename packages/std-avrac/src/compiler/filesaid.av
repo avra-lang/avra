@@ -15,12 +15,15 @@ use core.{
     module_path,
     distinct,
     flatten,
+    hex,
+    unhex,
 }
 use core.debug.{db_verified_files}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
 use diagnostics.{Diag, DiagFacts, diag_facts_of}
 use @std.relation.engine.{list_cell}
+use @std.relation.{codec}
 
 use compiler.record.{KeyParts}
 use compiler.findings.{findings_read}
@@ -118,7 +121,7 @@ impl Workspace {
     fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", self.root, path]) }
 
     /// A FILE'S WARNINGS AS DATA, the row `render_facts_among` reads: its diagnostics and its
-    /// rule findings through `diag_facts_wire`, whose places cross as TOKEN places, so the row
+    /// rule findings through `DiagFacts`' codec, whose places cross as TOKEN places, so the row
     /// stands while the shape of every file it points into does (`verdict_read_stands`) and reads back
     /// against a lex of their texts now.
     fn warning_facts_row(path: string) -> string { node_key(Stored.Warn, ["facts-row", self.root, path]) }
@@ -154,6 +157,21 @@ impl Workspace {
             return null
         }
         self.file_facts_of_wire(row)
+    }
+
+    /// A file's facts as their row spells them; the places' token streams are let go after.
+    fn file_facts_wire(f: FileFacts) -> string {
+        let w = hex(f.encoded_in(self.facts_scope(0, 0)))
+        self.placed_done()
+        w
+    }
+
+    /// `file_facts_wire`'s inverse, placed in the texts as they are now; none where it does not read back.
+    fn file_facts_of_wire(raw: string) -> FileFacts? {
+        let b? = unhex(raw) else { return null }
+        let back = FileFacts.decoded_in(self.facts_scope(0, 0), b)
+        self.placed_done()
+        match back { .Ok(f) -> f, .Err(_) -> null }
     }
 
     /// A file's kept answer filed under its path with what it stood on.
@@ -495,3 +513,8 @@ fn want_word(want: Want) -> string {
 fn cheap_unsound(path: string) -> string {
     "the kept rows of `${path}` stood by their modules' stamps and moved fns where its own views say they moved — a stamp stands for a view only while every part of the view is covered by it, so one part of this file's view is not"
 }
+
+/// A file's diagnostics and its rule findings, as its facts row keeps them — `rules` none
+/// where the run that kept the row did not find them anew.
+@codec
+export type FileFacts = { warnings: List<DiagFacts>, rules: List<DiagFacts>? }

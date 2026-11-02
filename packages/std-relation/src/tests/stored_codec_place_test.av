@@ -1,0 +1,105 @@
+// A place crosses as the scope spells it: a Loc's offsets through `placed`, read back through
+// `unplaced`, refused where the scope cannot place it — never clamped. A Loc with no file is no
+// text's and keeps its offsets.
+use @std.meta.{derive}
+use @std.relation.{codec}
+use @std.relation.stable.{indexed_scope, CodecFault, Scope}
+use @std.errors.{Loc}
+
+@codec
+type Seen = { what: string, at: Loc, also: List<Loc> }
+
+/// Holds a codec'd type, written by that type's own codec.
+@codec
+type Outer = { seen: Seen, n: int }
+
+/// Places a span shifted by `by`: a text that moved under it.
+type Shifted = { by: int }
+
+impl Scope for Shifted {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { if lo < 0 { null } else { [lo, hi] } }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { [at[0] + self.by, at[1] + self.by] }
+}
+
+/// Holds no place at all.
+type Placeless = {}
+
+impl Scope for Placeless {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { null }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
+}
+
+fn seen() -> Seen {
+    Seen {
+        what: "w",
+        at: Loc { file: "a.av", lo: 4, hi: 9 },
+        also: [Loc { file: null, lo: 1, hi: 2 }],
+    }
+}
+
+fn shown(r: Result<Seen, CodecFault>) -> string {
+    match r {
+        .Ok(s) -> "${s.at.file ?? "-"} ${s.at.lo} ${s.at.hi} ${s.also[0].file ?? "-"} ${s.also[0].lo} ${s.also[0].hi}",
+        .Err(f) -> f.word(),
+    }
+}
+
+fn through(write: dyn Scope, read: dyn Scope) -> string {
+    shown(Seen.decoded_in(read, seen().encoded_in(write)))
+}
+
+fn outer_back() -> string {
+    let o = Outer { seen: seen(), n: 3 }
+    match Outer.decoded_in(Shifted { by: 1 }, o.encoded_in(indexed_scope())) {
+        .Ok(r) -> "${r.n} ${shown(.Ok(r.seen))}",
+        .Err(f) -> f.word(),
+    }
+}
+
+fn digests() -> bool {
+    let a = Outer { seen: seen(), n: 3 }
+    Outer.digest_in(indexed_scope(), a) == Outer.digest_in(indexed_scope(), a with { n: 3 }) &&
+        Outer.digest_in(indexed_scope(), a) != Outer.digest_in(indexed_scope(), a with { n: 4 }) &&
+        Outer.digest_in(indexed_scope(), a) != Outer
+            .digest_in(
+                Shifted { by: 0 },
+                a with { seen: seen() with { at: Loc { file: "a.av", lo: 5, hi: 9 } } },
+            )
+}
+
+spec "std/relation — a place crosses as the scope spells it" {
+    given "a Loc inside a codec" {
+        then "the index scope reads it back as written" { through(indexed_scope(), indexed_scope()) == "a.av 4 9 - 1 2" }
+        then "a scope whose text moved reads it where the text now holds it" {
+            through(indexed_scope(), Shifted { by: 10 }) == "a.av 14 19 - 1 2"
+        }
+        then "a place the scope cannot hold is refused, never clamped" {
+            through(Placeless {}, indexed_scope()) == "unresolved" &&
+                through(indexed_scope(), Placeless {}) == "unresolved"
+        }
+        then "a loc with no file keeps its offsets under any scope" {
+            shown(
+                Seen
+                    .decoded_in(
+                        Placeless {},
+                        (seen() with { at: Loc { file: null, lo: 7, hi: 8 } })
+                            .encoded_in(Placeless {}),
+                    ),
+            ) == "- 7 8 - 1 2"
+        }
+    }
+    given "a codec'd type inside another" {
+        then "it crosses by its own codec, places and all" { outer_back() == "3 a.av 5 10 - 1 2" }
+        then "its digest is its bytes: alike for one value, apart when a field or a place moves" { digests() }
+    }
+}
