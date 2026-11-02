@@ -1,0 +1,40 @@
+// A FIELD WHOSE TYPE WEARS `@codec` FOLDS BY ITS CODEC'S DIGEST: one derivation for its bytes,
+// its key and its fold, with its dense ids spelled as the fold's own `Ids` reach them.
+use @std.meta.{derive}
+use @std.relation.{codec}
+use @std.avrac.core.{Fingerprint, DeclId}
+use @std.relation.stable.{Scope, indexed_scope}
+
+@codec
+type Coded = { at: DeclId, n: int }
+
+@derive(Fingerprint)
+type Holder = { c: Coded, tag: string }
+
+/// Ids that fold a declaration as ten past its index.
+type Shifted = {}
+
+impl Scope for Shifted {
+    fn spelled(kind: string, index: int) -> string { if kind == "DeclId" { "${index + 10}" } else { "${index}" } }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
+}
+
+fn shifted() -> dyn Scope { Shifted {} }
+
+fn held(at: int, n: int) -> Holder { Holder { c: Coded { at: DeclId { index: at }, n: n }, tag: "t" } }
+
+spec "core/fingerprint — a codec'd field folds by its digest" {
+    given "a record holding a codec'd one" {
+        then "one value folds alike" { held(1, 2).fingerprint() == held(1, 2).fingerprint() }
+        then "the codec'd field's content moves the fold" { held(1, 2).fingerprint() != held(1, 3).fingerprint() }
+        then "its dense id folds as the ids reach it" {
+            held(1, 2).fingerprint_in(shifted()) != held(1, 2).fingerprint_in(indexed_scope()) &&
+                held(1, 2).fingerprint_in(shifted()) == held(11, 2).fingerprint_in(indexed_scope())
+        }
+    }
+}
