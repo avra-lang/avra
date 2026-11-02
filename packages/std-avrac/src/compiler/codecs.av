@@ -29,6 +29,9 @@ use core.{
     list_eq,
     opt_eq,
     side_table_of,
+    same_type as same_type_id,
+    same_decl,
+    same_expr,
 }
 use features.{
     DeclFacts,
@@ -210,7 +213,7 @@ impl Workspace {
         let i = self.decls.types.type(int)
         let b = self.decls.types.type(bool)
         let marks = [
-            SeatMark { mutable: true, settled: false },
+            written_mark,
             SeatMark { mutable: false, settled: true, unshared: true, consumed: true },
         ]
         [
@@ -781,7 +784,7 @@ fn facts_exemplars() -> List<TypeFacts> {
     let params: List<List<TypeId>?> = [[ty_at(21), ty_at(22)]]
     let marks: List<List<SeatMark>?> = [
         [
-            SeatMark { mutable: true, settled: false },
+            written_mark,
             SeatMark { mutable: false, settled: true, state: true, unshared: true, consumed: true },
         ],
     ]
@@ -866,17 +869,9 @@ fn same_facts(a: TypeFacts, b: TypeFacts) -> bool {
         same_column(
             a.collections,
             b.collections,
-            (x, y) -> opt_eq(
-                x,
-                y,
-                (p: List<ExprId>, q: List<ExprId>) -> list_eq(
-                    p,
-                    q,
-                    (e: ExprId, f: ExprId) -> e.index == f.index,
-                ),
-            ),
+            (x, y) -> opt_eq(x, y, (p: List<ExprId>, q: List<ExprId>) -> list_eq(p, q, same_expr)),
         ) &&
-        same_column(a.chosen, b.chosen, (x, y) -> opt_eq(x, y, same_decl_id)) &&
+        same_column(a.chosen, b.chosen, (x, y) -> opt_eq(x, y, same_decl)) &&
         same_column(a.dispatches, b.dispatches, (x, y) -> opt_eq(x, y, same_choice)) &&
         same_column(
             a.stages,
@@ -891,10 +886,6 @@ fn same_column<T>(a: SideTable<T>, b: SideTable<T>, eq: fn(T, T) -> bool) -> boo
     a.name == b.name && a.lo == b.lo && eq(a.seed, b.seed) && list_eq(a.cells, b.cells, eq)
 }
 
-fn same_type_id(a: TypeId, b: TypeId) -> bool { a.index == b.index }
-
-fn same_decl_id(a: DeclId, b: DeclId) -> bool { a.index == b.index }
-
 fn same_opt_type(a: TypeId?, b: TypeId?) -> bool { opt_eq(a, b, same_type_id) }
 
 fn same_type_ids(a: List<TypeId>, b: List<TypeId>) -> bool { list_eq(a, b, same_type_id) }
@@ -903,15 +894,13 @@ fn same_opt_types(a: List<TypeId>?, b: List<TypeId>?) -> bool { opt_eq(a, b, sam
 
 fn same_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool { list_eq(a, b, (x, y) -> x.codec_same(y)) }
 
-fn same_asked(a: Asked, b: Asked) -> bool { a.subject.index == b.subject.index && a.on_present == b.on_present }
+fn same_asked(a: Asked, b: Asked) -> bool { same_expr(a.subject, b.subject) && a.on_present == b.on_present }
 
 fn same_sub(a: Sub, b: Sub) -> bool {
-    same_decl_id(a.target, b.target) &&
-        same_type_ids(a.args, b.args) &&
-        same_texts(a.consts, b.consts)
+    same_decl(a.target, b.target) && same_type_ids(a.args, b.args) && same_texts(a.consts, b.consts)
 }
 
-fn same_choice(a: RunChoice, b: RunChoice) -> bool { a.seat == b.seat && list_eq(a.members, b.members, same_decl_id) }
+fn same_choice(a: RunChoice, b: RunChoice) -> bool { a.seat == b.seat && list_eq(a.members, b.members, same_decl) }
 
 // ── `use_kind_word`/`use_kind_of_word` — every variant, one character each. ──
 
@@ -1438,3 +1427,6 @@ export fn codec_pairs() -> List<CodecCheck> {
         dbrow_check(),
     ]
 }
+
+/// A seat that permits writing and promises nothing else — an exemplar mark.
+const written_mark: SeatMark = SeatMark { mutable: true, settled: false }

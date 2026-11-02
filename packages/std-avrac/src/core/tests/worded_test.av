@@ -1,0 +1,44 @@
+// `@derive(Worded)`: a payload-free enum read from its lowercased
+// variant names; a payload variant is no word's.
+use @std.avrac.core.{BinOp, CollectScope, worded_BinOp, worded_CollectScope, word_of_BinOp}
+
+spec "core/worded" {
+    given "a scope word" {
+        then "each payload-free variant is its lowercased name" {
+            worded_CollectScope("self")! is .Self &&
+                worded_CollectScope("package")! is .Package &&
+                worded_CollectScope("closure")! is .Closure
+        }
+        then "a word no variant spells is absent" {
+            worded_CollectScope("galaxy") == null
+        }
+        then "a payload variant's name is no word" {
+            worded_CollectScope("unknownscope") == null
+        }
+        then "the empty word is absent" {
+            worded_CollectScope("") == null
+        }
+        then "case matters" {
+            worded_CollectScope("Self") == null
+        }
+    }
+    given "a variant's own word" {
+        then "a marked variant is its mark's word, not its name" {
+            word_of_BinOp(BinOp.Shr) == ">>" && word_of_BinOp(BinOp.Add) == "+"
+        }
+        then "the word reads back to its variant" {
+            worded_BinOp(">>")! == BinOp.Shr && worded_BinOp("&&")! == BinOp.And
+        }
+        then "the variant's name is no word once a mark replaces it" {
+            worded_BinOp("shr") == null && worded_BinOp("add") == null
+        }
+        then "every variant's word reads back to it" {
+            BinOp.all().all((op) -> worded_BinOp(word_of_BinOp(op))! == op)
+        }
+        then "no two variants share a word" {
+            BinOp
+                .all()
+                .all((op) -> BinOp.all().filter(word_of_BinOp(it) == word_of_BinOp(op)).length == 1)
+        }
+    }
+}

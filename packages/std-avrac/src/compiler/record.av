@@ -12,10 +12,9 @@
 //! module's types exist.
 use @std.text.{parse_int}
 use @std.relation.engine.{list_cell}
+use @std.relation.stable.{indexed_scope}
 use core.{
     Record as RecordForm,
-    ChildSlot,
-    Event as ComponentEvent,
     CollectKind,
     CollectScope,
     Plain,
@@ -40,6 +39,7 @@ use core.{
     FileId,
     SeatMark,
     Span,
+    Worded,
 }
 use features.{
     implements_kind,
@@ -56,7 +56,7 @@ use features.{
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
 use compiler.host.{Host}
-use @std.meta.{code_hash}
+use @std.meta.{code_hash, derive}
 use @std.path.{relative_path}
 
 impl Workspace {
@@ -279,25 +279,8 @@ export fn read_fields(line: string) -> List<string> {
 
 /// THE SHAPE WORD — a declaration line's first column. A header line
 /// ("file"/"import"/"gathers"/"iface"/"bytes") is not a declaration and has none.
+@derive(Worded)
 enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern, Collect, State }
-
-fn shape_of(word: string) -> Shape? {
-    match word {
-        "struct" -> .Struct,
-        "boxed" -> .Boxed,
-        "enum" -> .Enum,
-        "named" -> .Named,
-        "alias" -> .Alias,
-        "const" -> .Const,
-        "aims" -> .Aims,
-        "opaque" -> .Opaque,
-        "fn" -> .Fn,
-        "extern" -> .Extern,
-        "collect" -> .Collect,
-        "state" -> .State,
-        _ -> null,
-    }
-}
 
 /// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
 /// (interface.av, the one writer). `payload` is what is left past the facts
@@ -311,7 +294,7 @@ type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool
 /// runs over a whole record, over the one row a caller already has in hand.
 fn read_row(parts: List<string>) -> Row? {
     if parts.length < 13 || nameless(parts) { return null }
-    let shape? = shape_of(parts[0]) else { return null }
+    let shape? = worded_Shape(parts[0]) else { return null }
     let ordinal? = wire_number(parts[2]) else { return null }
     let stmt? = wire_number(parts[3]) else { return null }
     let parent_at? = wire_number(parts[8]) else { return null }
@@ -346,7 +329,7 @@ impl Row {
 /// that does not.
 fn shaped_of(line: string) -> RowShape? {
     let parts = line.split("\t")
-    let shape? = shape_of(parts[0]) else { return null }
+    let shape? = worded_Shape(parts[0]) else { return null }
     RowShape { shape: shape, payload: parts.drop(1) }
 }
 
@@ -552,44 +535,10 @@ export fn facts_block(f: DeclFacts) -> string {
             head,
             doc_wire(f.doc),
             annotations_wire(f.annotations),
-            form_wire(f.form),
+            hex(f.form?.encoded_in(indexed_scope()) ?? "".bytes()),
             list_field(["${t}" for t in some_list(f.template)]),
         ],
     )
-}
-
-/// A component's record form as a `packed` record — empty for none. Every text in it is
-/// a name a declaration wrote, which carries no `~`.
-fn form_wire(r: RecordForm?) -> string {
-    let f? = r else { return "" }
-    packed(
-        [
-            list_field(f.head),
-            packed([packed([s.name, s.of, bit_word(s.gathers)]) for s in f.slots]),
-            bit_word(f.named),
-            bit_word(f.checks),
-            list_field(some_list(f.fn_field)),
-            bit_word(f.fn_optional),
-            packed([packed([e.name, list_field(e.says), bit_word(e.default)]) for e in f.events]),
-            bit_word(f.words),
-        ],
-    )
-}
-
-/// The inverse: none for the empty wire, and none for one that is not eight parts.
-fn form_of_wire(wire: string) -> RecordForm? {
-    let p = unpacked(wire)
-    if p.length != 8 { return null }
-    RecordForm {
-        head: read_list(p[0]),
-        slots: [ChildSlot { name: q[0], of: q[1], gathers: q[2] == "1" } for x in unpacked(p[1]) for q in [unpacked(x)] if q.length == 3],
-        named: p[2] == "1",
-        checks: p[3] == "1",
-        fn_field: read_list(p[4]).first(),
-        fn_optional: p[5] == "1",
-        events: [ComponentEvent { name: q[0], says: read_list(q[1]), default: q[2] == "1" } for x in unpacked(p[6]) for q in [unpacked(x)] if q.length == 3],
-        words: p[7] == "1",
-    }
 }
 
 /// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
@@ -759,11 +708,19 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
         variadic: if seat < 0 { null } else { seat },
         doc: doc_of_wire(top[1]),
         annotations: annotations_of_wire(top[2]),
-        form: if top.length > 3 { form_of_wire(top[3]) } else { null },
+        form: if top.length > 3 { form_in(top[3]) } else { null },
         template: if top.length > 4 { parse_int(read_list(top[4]).first() ?? "") } else { null },
     }
     if "${facts.fingerprint()}" != p[18] { return null }
     facts
+}
+
+/// A component's record form, read back from its codec's octets in hex — none for the
+/// empty text, or for octets this build cannot read.
+fn form_in(text: string) -> RecordForm? {
+    let octets? = unhex(text) else { return null }
+    if octets.is_empty() { return null }
+    match RecordForm.decoded_in(indexed_scope(), octets) { .Ok(f) -> f, .Err(_) -> null }
 }
 
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
@@ -2093,7 +2050,7 @@ fn wired_files(row: List<string>) -> List<string> {
 /// goes, a `dyn` box's vtable included. Null for every other line.
 fn aimed_file(row: List<string>) -> string? {
     if row.length <= 13 { return null }
-    let shape? = shape_of(row[0]) else { return null }
+    let shape? = worded_Shape(row[0]) else { return null }
     match shape { .Aims -> wire_fields(row[13], "~")[0], _ -> null }
 }
 
