@@ -2350,6 +2350,22 @@ printf '// moved\n' >> $R/abx/src/aaa.av
 AB "abx: a build from another entry" build abx
 S "abx: the binary from another entry" abx
 
+# A COMMENT THAT ADDS LINES ABOVE A WARNING MOVES THE WARNING. The verdict a comment edit
+# leaves standing is said again from the new text, so its place is the new line, never the
+# kept one.
+mkdir -p $R/abw/src
+printf '[package]\nname = "rt-abw"\nversion = "0.1.0"\n' > $R/abw/avra.toml
+printf 'fn f(mut a: int) -> int { a }\nprintln("${f(1)}")\n' > $R/abw/src/main.av
+abw_line() { ./avra check --time $R/abw 2>&1 | grep -a -o 'main.av:[0-9]*' | head -1; }
+steps=$((steps+1)); abw_first=$(abw_line)
+[ "$abw_first" = "main.av:1" ] || fail "abw: the warning's first place was '$abw_first', wanted 'main.av:1'"
+printf '// above\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
+steps=$((steps+1)); abw_second=$(abw_line)
+[ "$abw_second" = "main.av:2" ] || fail "abw: a comment added above the warning left it at '$abw_second', wanted 'main.av:2'"
+printf '// again\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
+steps=$((steps+1)); abw_third=$(abw_line)
+[ "$abw_third" = "main.av:3" ] || fail "abw: a second comment left the warning at '$abw_third', wanted 'main.av:3'"
+
 # ONE DECLARATION, ONE SPELLING. A builtin's wire names the language, never the file
 # a process happened to meet first — so a body edit under impls over builtins leaves
 # the module's interface where it was, its importer held, and the same package
