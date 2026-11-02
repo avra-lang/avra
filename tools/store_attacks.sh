@@ -248,7 +248,14 @@ say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
 # 0 store rows written by a warm check of an unchanged tree, 30,320 after one leaf of one query
 # moved and the compiler was rebuilt. The row asks for a row keyed by the code hash of the
 # query that ANSWERS it: S2 (§6.4), DB 05b's receipt — not DB 09, which is the settlement.
-fail "the families are keyed per FAMILY (sig by its producer's code hashes, every other by the compiler's print), so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
+find .avra-cache -mindepth 1 -delete
+checked recompute_seed
+export AVRA_INLINE_RUNTIME=0
+checked recompute
+unset AVRA_INLINE_RUNTIME
+agrees recompute "a second print"
+missed=$(grep -c '^Q	store	kind	get	miss	unit' $R/recompute.trace)
+[ "$missed" = 0 ] || fail "a rebuild that changed no query recomputed $missed unit rows — each family is keyed by the compiler's print, not by the code hash of the query that answers it (S2, avra-8sb5.57)"
 
 say "§6.8 another compiler, another C: a compiler whose runtime C differs reads none of the first one's module records"
 if sh tools/db06_step5_witness.sh > "$R/step5.log" 2>&1; then
