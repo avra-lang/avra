@@ -304,6 +304,25 @@ impl Workspace {
         made
     }
 
+    /// A span of `path` as the token place it stands in now; null where no token holds it.
+    fn place_of(path: string, lo: int, hi: int) -> List<int>? {
+        let tokens? = self.tokens_now(path) else { return null }
+        match anchored_among(tokens, Loc { file: path, lo: lo, hi: hi }) {
+            .In(p) -> [p.lo_token, p.lo_at, p.hi_token, p.hi_at],
+            .NoToken -> null,
+        }
+    }
+
+    /// `place_of`'s inverse against `path`'s text now: the span's offsets, or null where the
+    /// text no longer holds that place.
+    fn span_of(path: string, at: List<int>) -> List<int>? {
+        if at.length != 4 { return null }
+        let tokens? = self.tokens_now(path) else { return null }
+        let kept = TokenPlace { lo_token: at[0], lo_at: at[1], hi_token: at[2], hi_at: at[3] }
+        let l? = placed_among(tokens, Anchored.In(kept)) else { return null }
+        [l.lo, l.hi]
+    }
+
     /// The token streams a row placed against, let go: they are kept for one row alone.
     fn placed_done() {
         let none: Map<string, List<Token>> = {}

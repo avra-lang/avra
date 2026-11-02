@@ -21,7 +21,7 @@ use diagnostics.{Diag, Voices}
 use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
-use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
+use compiler.voices.{name_slice_fp}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
@@ -345,7 +345,7 @@ impl Workspace {
 
     fn durable_unit(arg: int) -> int? {
         match self.relation(Family.LiftLowered).values.entry(arg) {
-            .Present(r) -> unit_fp_in(lowered_of(r), self.decls.ids()),
+            .Present(r) -> lowered_of(r).fingerprint_in(self.decls.ids()),
             .Missing -> null,
         }
     }
@@ -576,7 +576,7 @@ impl Workspace {
         if placed.any(it == null) { return null }
         joined(
             [
-                "${type_facts_fp(facts with { voices: Voices { list: [] } }, self.decls.ids().rebased(facts.of_expr.lo), false)}",
+                "${(facts with { voices: Voices { list: [] } }).fingerprint_in(self.decls.ids().rebased(facts.of_expr.lo))}",
             ]
                 .concat([p! for p in placed]),
             "\n",
@@ -589,7 +589,7 @@ impl Workspace {
             .concat(flatten([[e.loc for e in s.edits] for s in v.suggestions]))
         let wires = [anchoring_wire(self.anchoring(l)) for l in locs]
         if wires.any(it == anchoring_wire(.Unplaceable)) { return null }
-        "${diag_fp(unplaced(v))}\t${joined(wires, ",")}"
+        "${unplaced(v).fingerprint()}\t${joined(wires, ",")}"
     }
 
     /// Typed answers standing on names, kept as saved answers and judged against what a

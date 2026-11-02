@@ -1156,7 +1156,31 @@ export fn codec_loc_past_end_refused() -> bool {
     let ws = codec_workspace()
     let _ = ws.codec_decl_exemplars()
     let past = Loc { file: "/w/src/main.av", lo: 40, hi: 41 }
-    ws.loc_of_wire(ws.loc_wire(past)) == null
+    ws.diag_back(ws.diag_bytes(placed_at(past))) == null
+}
+
+/// A diagnostic whose one frame stands at `l`.
+fn placed_at(l: Loc) -> DiagFacts {
+    DiagFacts {
+        kind: "t.placed",
+        severity: Severity.Warning,
+        primary: Frame { label: null, loc: l },
+        secondary: [],
+        cause_lines: [],
+        message: "a place",
+        help: null,
+        suggestions: [],
+    }
+}
+
+impl Workspace {
+    /// A diagnostic through its codec, under the workspace's scope.
+    fn diag_bytes(d: DiagFacts) -> Bytes { d.encoded_in(self.facts_scope(0, 0)) }
+
+    /// `diag_bytes`' inverse; none where a place no longer stands.
+    fn diag_back(b: Bytes) -> DiagFacts? {
+        match DiagFacts.decoded_in(self.facts_scope(0, 0), b) { .Ok(d) -> d, .Err(_) -> null }
+    }
 }
 
 /// A store written before held asks were names: its W2 asks row reads as unread — the file is
@@ -1426,12 +1450,12 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_raised(x, y),
         ),
         derived(
-            "codec.loc_wire/loc_of_wire",
-            ws.codec_loc_exemplars(),
+            "DiagFacts.encoded_in/decoded_in, a place of each shape",
+            [placed_at(l) for l in ws.codec_loc_exemplars()],
             ws.codec_loc_labels(),
-            (l) -> ws.loc_wire(l),
-            (b) -> ws.loc_of_wire(b),
-            same_loc,
+            (d) -> ws.diag_bytes(d),
+            (b) -> ws.diag_back(b),
+            same_diag_facts,
         ),
         derived(
             "diag_wire.file_facts_wire/file_facts_of_wire",
@@ -1493,11 +1517,11 @@ export fn codec_pairs() -> List<CodecCheck> {
             same_verdict_read,
         ),
         derived(
-            "codec.diag_facts_wire/diag_facts_of_wire",
+            "DiagFacts.encoded_in/decoded_in",
             ws.codec_diag_exemplars(),
             ws.codec_diag_labels(),
-            (d) -> ws.diag_facts_wire(d),
-            (b) -> ws.diag_facts_of_wire(b),
+            (d) -> ws.diag_bytes(d),
+            (b) -> ws.diag_back(b),
             same_diag_facts,
         ),
         derived(
