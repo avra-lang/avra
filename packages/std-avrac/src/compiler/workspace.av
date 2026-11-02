@@ -643,6 +643,7 @@ export type Workspace = {
     /// each file's clash diagnostics as `method_clashes` last settled them
     /// each module's names as their query last made them
     names_rows: Table<ModuleNames>,
+    /// each file's visible names as their query last made them
     /// each file's plain parse as its query last made it
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
@@ -843,10 +844,6 @@ fn items_verified(ws: Workspace, arg: int) -> int {
     touch(ws.items(file_at(arg)))
     ws.db.changed_at(key(Family.Items, arg))
 }
-fn visible_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.visible(file_at(arg)))
-    ws.db.changed_at(key(Family.Visible, arg))
-}
 fn resolved_verified(ws: Workspace, arg: int) -> int {
     touch(ws.resolved(file_at(arg)))
     ws.db.changed_at(key(Family.Resolved, arg))
@@ -940,7 +937,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
     match Family.all()[family] {
         .Parsed -> parsed_verified(ws, arg),
         .Items -> items_verified(ws, arg),
-        .Visible -> visible_verified(ws, arg),
         .Resolved -> resolved_verified(ws, arg),
         .Sig -> sig_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
@@ -1000,6 +996,18 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
 fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
+
+/// What a file's top level sees. A re-entry before it settles is a smaller view.
+@query
+@recursive
+export fn file_visible_made(ws: Workspace, f: FileId) -> VisibleNames { ws.visible_made(f) }
+
+/// A file's visible names with the word they say, every id by its durable name.
+export type VisibleNames = { names: Namespace, word: int }
+
+impl VisibleNames {
+    fn fingerprint() -> int { self.word }
+}
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -2074,10 +2082,11 @@ impl Workspace {
     /// visible namespace back — a re-entry is a SMALLER view, never a
     /// trap.
     fn visible(f: FileId) -> Namespace {
-        match self.relation(Family.Visible).start_recursive(f.index) {
-            .Reuse(value) -> { return visible_of(value) },
-            .Compute -> nothing(),
-        }
+        file_visible_made(self, f).names
+    }
+
+    /// A file's visible names, made with the word they say.
+    fn visible_made(f: FileId) -> VisibleNames {
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -2098,12 +2107,7 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
-        let ids = self.decls.ids()
-        visible_of(
-            self
-                .relation(Family.Visible)
-                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> visible_of(r).fingerprint_in(ids)),
-        )
+        VisibleNames { names: out, word: out.fingerprint_in(self.facts_scope(0, 0)) }
     }
 
     /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
@@ -2677,7 +2681,6 @@ export fn family_code_hash(f: Family) -> string {
     match f {
         .Parsed -> code_hash(parsed_verified) ?? "",
         .Items -> code_hash(items_verified) ?? "",
-        .Visible -> code_hash(visible_verified) ?? "",
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Sig -> code_hash(sig_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
