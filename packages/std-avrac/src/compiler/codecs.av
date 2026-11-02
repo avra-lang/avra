@@ -31,7 +31,6 @@ use core.{
 }
 use features.{
     DeclFacts,
-    AnnotationFact,
     Settled,
     MetaHeap,
     Wanted,
@@ -119,9 +118,7 @@ fn codec_one<T, W>(
 
 /// `derived`'s twin for a decoder that never answers absent — it
 /// falls back to a plain default on bad input rather than failing
-/// (`mark_of_word`, `unpacked`, `doc_of_wire`'s own `T` IS `List<string>?`
-/// already, so ITS decode answers that type directly, never a second
-/// layer of `?`). The only question left is whether the value survived.
+/// (`mark_of_word`, `unpacked`). The only question left is whether the value survived.
 fn derived_total<T, W>(
     pair: string,
     exemplars: List<T>,
@@ -518,34 +515,6 @@ fn packed_labels() -> List<string> {
     ]
 }
 
-// ── `list_field`/`read_list` — record.av's own doc: "Reserved for
-// text this build already knows carries no `~`" (a type spelling, a
-// parameter name), unlike `packed`. Exemplared inside that contract —
-// `~` is the one byte this pair never promises to survive. ──
-
-fn list_field_exemplars() -> List<List<string>> {
-    let no_strings: List<string> = []
-    [
-        no_strings,
-        [""],
-        ["a"],
-        ["a", "", "b"],
-        ["a", ""],
-        ["List<int>", "string?", "fn(int) -> bool"],
-    ]
-}
-
-fn list_field_labels() -> List<string> {
-    [
-        "empty",
-        "one empty element",
-        "one element",
-        "a middle element left empty",
-        empty_last_label,
-        "type spellings",
-    ]
-}
-
 fn same_string_list(a: List<string>, b: List<string>) -> bool {
     list_eq(a, b, (x, y) -> x == y)
 }
@@ -555,22 +524,6 @@ fn same_string_list(a: List<string>, b: List<string>) -> bool {
 fn component_name_exemplars() -> List<List<string>> { [[], [""], ["a", "b"]] }
 
 fn component_name_labels() -> List<string> { ["no names", "one empty name", "two names"] }
-
-// ── `doc_wire`/`doc_of_wire` — `List<string>?`, present vs absent. ──
-
-fn doc_wire_exemplars() -> List<List<string>?> {
-    let none: List<string>? = null
-    let no_lines: List<string> = []
-    [none, no_lines, [""], ["one line"], ["line one", ""], ["line one", "line two, with a comma"]]
-}
-
-fn doc_wire_labels() -> List<string> {
-    ["absent", "present, empty", "one empty line", "one line", "an empty last line", "two lines"]
-}
-
-fn same_opt_string_list(a: List<string>?, b: List<string>?) -> bool {
-    (a == null) == (b == null) && (a == null || same_string_list(a!, b!))
-}
 
 // ── `read_wire`/`read_of_wire` — one compile-time run's read, four cells
 // with an empty LAST one when a plain read kept no ref or print. ──
@@ -601,22 +554,6 @@ fn same_run_read(a: RunRead, b: RunRead) -> bool {
         a.ref == b.ref &&
         a.print == b.print &&
         a.outline == b.outline
-}
-
-// ── `annotations_wire`/`annotations_of_wire` — `List<AnnotationFact>`,
-// over the field's own derived exemplars. ──
-
-fn annotations_wire_exemplars() -> List<List<AnnotationFact>> {
-    let none: List<AnnotationFact> = []
-    [none, [AnnotationFact.exemplars()[0]], AnnotationFact.exemplars()]
-}
-
-fn annotations_wire_labels() -> List<string> {
-    ["empty", "one", "every exemplar"]
-}
-
-fn same_annotation_list(a: List<AnnotationFact>, b: List<AnnotationFact>) -> bool {
-    list_eq(a, b, (x, y) -> x.codec_same(y))
 }
 
 // ── `kind_word`/`kind_of_word` — a record line's "kind" column, for
@@ -1257,22 +1194,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             mark_of_word,
             (x, y) -> x.codec_same(y),
         ),
-        derived_total(
-            "record.annotation_wire/annotation_of_wire",
-            AnnotationFact.exemplars(),
-            AnnotationFact.exemplar_labels(),
-            annotation_wire,
-            annotation_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "record.facts_block/facts_unblocked",
-            DeclFacts.exemplars(),
-            DeclFacts.exemplar_labels(),
-            facts_block,
-            facts_unblocked,
-            (x, y) -> x.codec_same(y),
-        ),
         derived(
             "settlement_wire.settled_wire/settled_from_wire",
             Settled.exemplars(),
@@ -1297,22 +1218,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             unpacked,
             same_string_list,
         ),
-        derived_total(
-            "record.list_field/read_list",
-            list_field_exemplars(),
-            list_field_labels(),
-            list_field,
-            read_list,
-            same_string_list,
-        ),
-        derived_total(
-            "record.doc_wire/doc_of_wire",
-            doc_wire_exemplars(),
-            doc_wire_labels(),
-            doc_wire,
-            doc_of_wire,
-            same_opt_string_list,
-        ),
         derived(
             "record.read_wire/read_of_wire",
             read_wire_exemplars(),
@@ -1320,14 +1225,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             read_wire,
             read_of_wire,
             same_run_read,
-        ),
-        derived_total(
-            "record.annotations_wire/annotations_of_wire",
-            annotations_wire_exemplars(),
-            annotations_wire_labels(),
-            annotations_wire,
-            annotations_of_wire,
-            same_annotation_list,
         ),
         derived_total(
             "interface.type_wire/interface_type",
