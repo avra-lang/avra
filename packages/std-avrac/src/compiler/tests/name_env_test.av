@@ -1,0 +1,64 @@
+// A MODULE'S NAME ENVIRONMENT IS A VALUE: two join with each name's files once, in order;
+// filed into the program's environment, a bucket reader's listing names them; and it crosses
+// its codec whole.
+use compiler.{NameEnv, new_name_envs}
+use features.{ExternNote, Listed}
+use @std.relation.stable.{indexed_scope}
+
+fn one() -> NameEnv {
+    NameEnv {
+        names: {"f": ["a.av"]},
+        words: {"page": ["a.av"]},
+        marks: {},
+        externs: [ExternNote { module: "m", path: "a.av", name: "c_f", hosted: true }],
+        implementors: ["a.av"],
+    }
+}
+
+fn two() -> NameEnv {
+    NameEnv {
+        names: {"f": ["b.av", "a.av"], "g": ["b.av"]},
+        words: {},
+        marks: {"derive": ["b.av"]},
+        externs: [ExternNote { module: "m", path: "b.av", name: "c_g", hosted: false }],
+        implementors: ["a.av", "b.av"],
+    }
+}
+
+fn listed_after_noting() -> string {
+    let envs = new_name_envs()
+    envs.noted(one())
+    envs.noted(two())
+    [
+        envs.listed(Listed.Name("f")).join(","),
+        envs.listed(Listed.Mark("derive")).join(","),
+        envs.listed(Listed.Extern("c_g")).join(","),
+        envs.listed(Listed.Hosted).join(","),
+    ]
+        .join(" | ")
+}
+
+fn crossed() -> bool {
+    let e = one().joined(two())
+    match NameEnv.decoded_in(indexed_scope(), e.encoded_in(indexed_scope())) {
+        .Ok(back) -> back.names.get("f")!.join(",") == "a.av,b.av" &&
+            back.externs.length == 2 &&
+            back.implementors.join(",") == "a.av,b.av",
+        .Err(_) -> false,
+    }
+}
+
+spec "compiler/name_env — a module's names as a value" {
+    given "two environments joined" {
+        then "each name keeps its files once, the first's first" {
+            one().joined(two()).names.get("f")!.join(",") == "a.av,b.av" &&
+                one().joined(two()).names.get("g")!.join(",") == "b.av"
+        }
+    }
+    given "both filed into the program's" {
+        then "a listing names what each filed" { listed_after_noting() == "a.av,b.av | b.av | b.av | a.av" }
+    }
+    given "the codec" {
+        then "a joined environment reads back whole" { crossed() }
+    }
+}
