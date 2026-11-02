@@ -193,7 +193,7 @@ export fn sealed_whole(pack: Pack) -> bool {
     let standing = standing_slots(pack, digests)
     let fresh = [d for d in digests if !pack.slots.get().has(d) && value_of(pack, d) != null]
     let live = sum_of([p.len for p in standing]) +
-        sum_of([(value_of(pack, d) ?? "").bytes().length for d in fresh])
+        sum_of([value_of(pack, d)?.length ?? 0 for d in fresh])
     let rewrite = pack.val_rev.get() < 1 || size > 2 * live + VAL_SLACK
     let val_rev = if rewrite { rev } else { pack.val_rev.get() }
     let laid = if rewrite { digests } else { fresh }
@@ -319,8 +319,7 @@ fn lay(pack: Pack, path: string, laid: List<string>, from: int) -> List<Placed>?
     mut held = 0
     mut at = from
     for d in laid {
-        let value? = value_of(pack, d) else { continue }
-        let bytes = value.bytes()
+        let bytes? = value_of(pack, d) else { continue }
         placed.push(Placed { digest: d, at: at, len: bytes.length })
         batch.push(bytes)
         held = held + bytes.length

@@ -46,28 +46,31 @@ fn cas_dir() -> string? {
 
 fn blob_at(dir: string, digest: string) -> string { joined_path(joined_path(dir, digest.substring(0, 2)), digest) }
 
-/// Whether a stored value is a reference to a blob.
-export fn cas_is_ref(stored: string) -> bool { stored.starts_with(cas_prefix()) }
-
 /// The digest a reference names.
 export fn cas_digest_of(stored: string) -> string { stored.substring(cas_prefix().length, stored.length) }
 
 /// The reference to a value's blob, minted from its content alone: the same value is the
 /// same reference wherever it is written.
-export fn cas_ref_of(value: string) -> string { cas_prefix() + digest_of_octets(value.bytes()) }
+export fn cas_ref_of(value: string) -> string { cas_ref_octets(value.bytes()) }
+
+/// `cas_ref_of` over octets.
+fn cas_ref_octets(value: Bytes) -> string { cas_prefix() + digest_of_octets(value) }
 
 /// Whether a value belongs in the shared store rather than a store's own frames.
-export fn cas_big(value: string) -> bool { value.length > CAS_CUT }
+export fn cas_big(value: string) -> bool { value.bytes().length > CAS_CUT }
 
 /// A value's blob put in the shared store, once. False when there is no store to put it in.
-export fn cas_blob(value: string) -> bool {
+export fn cas_blob(value: string) -> bool { cas_blob_octets(value.bytes()) }
+
+/// `cas_blob` over octets.
+fn cas_blob_octets(value: Bytes) -> bool {
     let dir? = cas_dir() else { return false }
-    let digest = digest_of_octets(value.bytes())
+    let digest = digest_of_octets(value)
     let at = blob_at(dir, digest)
     // LICENSED input.store_io: the shared store's blob, asked whether it stands before it is written
     if exists(at) { return true }
     match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return false } }
-    match write_bytes(at, value.bytes()) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    match write_bytes(at, value) { .Ok(_) -> {}, .Err(_) -> { return false } }
     if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
     true
 }
@@ -75,16 +78,23 @@ export fn cas_blob(value: string) -> bool {
 /// The reference a value is stored as when it belongs in the shared store: the blob put
 /// there once, and `store_root` registered as one of its readers. Absent when the value
 /// stays in the store's own frames — small, or no shared store to put it in.
-export fn cas_put(value: string, store_root: string) -> string? {
-    if !cas_big(value) && !cas_is_ref(value) { return null }
-    if !cas_blob(value) { return null }
+export fn cas_put_octets(value: Bytes, store_root: string) -> string? {
+    if value.length <= CAS_CUT && cas_ref_in(value) == null { return null }
+    if !cas_blob_octets(value) { return null }
     cas_register(store_root)
-    cas_ref_of(value)
+    cas_ref_octets(value)
+}
+
+/// The reference a stored value IS, absent when it is a value.
+export fn cas_ref_in(stored: Bytes) -> string? {
+    let p = cas_prefix().bytes()
+    if stored.length < p.length || stored.slice(0, p.length).text() != cas_prefix() { return null }
+    stored.text()
 }
 
 /// Registers a store root as a reader of the shared store, when a value it holds names a blob.
-export fn cas_register_if_named(stored: string, store_root: string) {
-    if stored.contains(cas_prefix()) { cas_register(store_root) }
+export fn cas_register_if_named_octets(stored: Bytes, store_root: string) {
+    if stored.index_of(cas_prefix().bytes(), 0) >= 0 { cas_register(store_root) }
 }
 
 fn cas_register(store_root: string) {
@@ -93,14 +103,28 @@ fn cas_register(store_root: string) {
 }
 
 /// The digests of every blob a stored value names, whole or inside its frames.
-export fn cas_named_in(stored: string) -> List<string> {
+export fn cas_named_in(stored: Bytes) -> List<string> {
+    let p = cas_prefix().bytes()
     let width = digest_of_octets("".bytes()).length
-    [piece.substring(0, width) for piece in stored.split(cas_prefix()).drop(1) if piece.length >= width]
+    mut out: List<string> = []
+    mut at = stored.index_of(p, 0)
+    while at >= 0 && at + p.length + width <= stored.length {
+        let d = stored.slice(at + p.length, at + p.length + width).text()
+        if d != null { out.push(d!) }
+        at = stored.index_of(p, at + p.length)
+    }
+    out
 }
 
 /// The value a reference names, checked against its digest: absent when the blob is missing
 /// or damaged, and a damaged one is removed so the next writer puts it back.
 export fn cas_value(stored: string) -> string? {
+    let v? = cas_value_octets(stored) else { return null }
+    v.text()
+}
+
+/// `cas_value` as the octets the blob holds.
+export fn cas_value_octets(stored: string) -> Bytes? {
     let dir? = cas_dir() else { return null }
     let digest = cas_digest_of(stored)
     let at = blob_at(dir, digest)
@@ -108,12 +132,11 @@ export fn cas_value(stored: string) -> string? {
     let o? = match open_beneath(dir_of(at), digest) { .Ok(o) -> o, .Err(_) -> null } else { return null }
     let raw = match o.span(0, o.size) { .Ok(b) -> b, .Err(_) -> "".bytes() }
     o.close()
-    let v? = raw.text() else { return damaged(at) }
-    if digest_of_octets(v.bytes()) != digest { return damaged(at) }
-    v
+    if digest_of_octets(raw) != digest { return damaged(at) }
+    raw
 }
 
-fn damaged(at: string) -> string? {
+fn damaged(at: string) -> Bytes? {
     let _ = remove(at)
     null
 }

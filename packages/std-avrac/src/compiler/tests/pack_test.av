@@ -3,6 +3,7 @@
 // names another compiler's print is read all the same — a row's stamp, which is part
 // of its family's name, says who may address it.
 use @std.time.{stamp}
+use core.{hex}
 use @std.io.{list_dir, remove, read_bytes, write_bytes}
 use @std.path.{joined_path, file_name}
 use compiler.store.{
@@ -11,6 +12,8 @@ use compiler.store.{
     pack_put,
     pack_has,
     pack_get,
+    pack_get_octets,
+    pack_put_octets,
     pack_suspects,
     pack_readers,
     pack_reads,
@@ -305,6 +308,21 @@ spec "store/pack — segments, commit markers, the two tiers" {
                 file_name(latest_body("${root}/store") ?? ""),
             ) ?? 0
             w.sealed.get().length == 1 && bytes > 0 && bytes / 256 < 250
+        }
+    }
+    given "a row kept as octets that spell no text" {
+        then "reads back as those octets, from a segment and from a sealed body, and never as text" {
+            let root = pack_root("octets")
+            let raw = [0, 255, 128, 10].bytes()!
+            let w = pack_at(root, "print-one")
+            pack_put_octets(w, "answer", "k", raw, [])
+            let live = hex(pack_get_octets(pack_at(root, "print-one"), "answer", "k") ?? "".bytes())
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            live == "00ff800a" &&
+                hex(pack_get_octets(r, "answer", "k") ?? "".bytes()) == "00ff800a" &&
+                pack_get(r, "answer", "k") == null
         }
     }
 }

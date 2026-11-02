@@ -153,7 +153,7 @@ export type Pack = {
     pending: Cell<Map<string, bool>>,
     withdrawn: Cell<Map<string, bool>>,
     /// Values this process holds in memory: its own writes and segments.
-    content: Cell<Map<string, string>>,
+    content: Cell<Map<string, Bytes>>,
     /// Values the runs hold, read from their `.val` on demand.
     slots: Cell<Map<string, ValueSlot>>,
     /// The runs, newest first, open and lazy, whose rows a lookup decodes on demand, and
@@ -306,11 +306,11 @@ fn head_bytes(print: string) -> Bytes {
     w.bytes()
 }
 
-fn content_body(digest: string, value: string) -> Bytes {
+fn content_body(digest: string, value: Bytes) -> Bytes {
     let w = writer()
     w.int(CONTENT_TAG)
     w.text(digest)
-    w.text(value)
+    w.octets(value)
     w.bytes()
 }
 
@@ -425,7 +425,7 @@ fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, Claim>>, writer: st
     let tag? = ok(r.int()) else { return }
     if tag == CONTENT_TAG {
         let digest? = ok(r.text()) else { return }
-        let value? = ok(r.text()) else { return }
+        let value? = ok(r.octets()) else { return }
         pack.content.put(digest, value)
         return
     }
@@ -852,10 +852,17 @@ fn body_mtime_s(dir: string, name: string) -> int? {
 /// A row is present only when its value can be read back: a record whose value is
 /// missing or damaged is absent, so `has` and `get` never disagree.
 export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = false) -> bool {
-    pack_get(pack, family, key, read_only) != null
+    pack_get_octets(pack, family, key, read_only) != null
 }
 
+/// A row's value as text: absent when it is not text.
 export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
+    let found? = pack_get_octets(pack, family, key, read_only) else { return null }
+    found.text()
+}
+
+/// A row's value as the octets it was kept as.
+export fn pack_get_octets(pack: Pack, family: string, key: string, read_only: bool = false) -> Bytes? {
     let found = pack_found(pack, family, key, read_only)
     let t = pack.traffic.get()
     pack
@@ -870,13 +877,14 @@ fn lookup_line(hit: bool, family: string) -> string {
     "Q\tstore\t${if hit { "hit" } else { "miss" }}\t${family.split("@").first() ?? family}\n"
 }
 
-fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> string? {
+fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> Bytes? {
     opened_at(pack, read_only)
     let at = record_key(family, key)
     if withdrawn(pack, at) { return null }
     let held? = record_of(pack, at) else { return null }
     let stored? = content_of(pack, held.digest) else { return null }
-    if cas_is_ref(stored) { cas_value(stored) } else { stored }
+    let named? = cas_ref_in(stored) else { return stored }
+    cas_value_octets(named)
 }
 
 /// The reads a row was kept with, absent for a row not present or whose
@@ -895,7 +903,8 @@ export fn pack_reads(pack: Pack, family: string, key: string, inspect: bool) -> 
 export fn pack_get_rev(pack: Pack, rev: int, family: string, key: string) -> string? {
     if !body_scan_rev(pack, rev) { return null }
     pack.opened.set(true)
-    pack_found(pack, family, key, true)
+    let found? = pack_found(pack, family, key, true) else { return null }
+    found.text()
 }
 
 /// The rows a sealed revision holds, in body order — what `explain` reads to
@@ -908,14 +917,14 @@ export fn pack_rows_rev(pack: Pack, rev: int) -> List<Held> {
 
 /// A value by its digest without keeping it: held in memory, else read from the
 /// sealed body.
-fn value_of(pack: Pack, digest: string) -> string? {
+fn value_of(pack: Pack, digest: string) -> Bytes? {
     let here? = pack.content.get().get(digest) else { return spilled(pack, digest) }
     here
 }
 
 /// A value by its digest: held in memory, else read from the sealed body and
 /// kept in memory, so a value is read and checked once.
-fn content_of(pack: Pack, digest: string) -> string? {
+fn content_of(pack: Pack, digest: string) -> Bytes? {
     let here? = pack.content.get().get(digest) else {
         let v? = spilled(pack, digest) else { return null }
         pack.content.put(digest, v)
@@ -926,16 +935,15 @@ fn content_of(pack: Pack, digest: string) -> string? {
 
 /// A sealed value: `get` seeks its slot in the newest body's `.val` and checks
 /// the bytes against the digest, so a missing or damaged value answers absent.
-fn spilled(pack: Pack, digest: string) -> string? {
+fn spilled(pack: Pack, digest: string) -> Bytes? {
     let slot? = pack.slots.get().get(digest) ?? sealed_slot(pack, digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
     let o? = value_file(pack) else { return null }
     let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    let v? = raw.text() else { return null }
-    if content_digest(v) != digest { return null }
+    if digest_of_octets(raw) != digest { return null }
     let t = pack.traffic.get()
     pack.traffic.set(t with { values: t.values + 1, bytes: t.bytes + slot.len })
-    v
+    raw
 }
 
 /// The value file for the open revision, opened once and kept: a value is a seek and a read,
@@ -1022,13 +1030,19 @@ fn kill_at_commit() {
     if raw == "commit" { avra_process_exit(137) }
 }
 
+/// A text row kept: its octets.
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
+    pack_put_octets(pack, family, key, value.bytes(), read)
+}
+
+/// A row kept as its octets, whatever they spell.
+export fn pack_put_octets(pack: Pack, family: string, key: string, value: Bytes, read: List<string>) {
     opened_at(pack, false)
     pack.withdrawn.put(record_key(family, key), false)
     // a value too big for the frames is stored as a reference to the shared blob
-    let stored = cas_put(value, dir_of(pack.dir)) ?? value
-    cas_register_if_named(stored, dir_of(pack.dir))
-    let digest = content_digest(stored)
+    let stored = cas_put_octets(value, dir_of(pack.dir))?.bytes() ?? value
+    cas_register_if_named_octets(stored, dir_of(pack.dir))
+    let digest = digest_of_octets(stored)
     if content_of(pack, digest) == null {
         append(pack, content_body(digest, stored))
         pack.content.put(digest, stored)
