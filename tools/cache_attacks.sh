@@ -1079,6 +1079,28 @@ steps=$((steps+1)); st_got=$($R/st/src/main 2>&1)
 [ "$st_got" = "N=102" ] || fail "st: the kept answer stood: printed '$st_got', wanted 'N=102'"
 fi
 
+if section abw; then
+# A COMMENT THAT ADDS LINES ABOVE A WARNING MOVES THE WARNING, AND THE CHECK THAT SAYS SO IS
+# THE KEPT VERDICT. The verdict a comment edit leaves standing is said again from the new
+# text, so its place is the new line, never the kept one; and each such check is a cache
+# hit, or the case would be testing a fresh derive.
+mkdir -p $R/abw/src
+printf '[package]\nname = "rt-abw"\nversion = "0.1.0"\n' > $R/abw/avra.toml
+printf 'fn f(mut a: int) -> int { a }\nprintln("${f(1)}")\n' > $R/abw/src/main.av
+AW() { # AW <label> <the line the warning is reported at> <hit|miss>
+    steps=$((steps+1)); holds=$((holds+1)); aw_out=$(./avra check --time $R/abw 2>&1)
+    aw_line=$(printf '%s\n' "$aw_out" | grep -a -o 'main.av:[0-9]*' | head -1)
+    [ "$aw_line" = "main.av:$2" ] || fail "$1: the warning was reported at '$aw_line', wanted 'main.av:$2'"
+    case "$aw_out" in *"cache hit"*) ;; *) [ "$3" = miss ] || fail "$1: the check was not a cache hit: $(printf '%s' "$aw_out" | grep -a '^time:' | cut -c1-200)" ;; esac
+}
+AW "abw: cold" 1 miss
+AW "abw: unchanged" 1 hit
+printf '// above\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
+AW "abw: a comment added above the warning" 2 hit
+printf '// again\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
+AW "abw: a second comment" 3 hit
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
@@ -2349,22 +2371,6 @@ AB "abx: a check from another entry" check abx
 printf '// moved\n' >> $R/abx/src/aaa.av
 AB "abx: a build from another entry" build abx
 S "abx: the binary from another entry" abx
-
-# A COMMENT THAT ADDS LINES ABOVE A WARNING MOVES THE WARNING. The verdict a comment edit
-# leaves standing is said again from the new text, so its place is the new line, never the
-# kept one.
-mkdir -p $R/abw/src
-printf '[package]\nname = "rt-abw"\nversion = "0.1.0"\n' > $R/abw/avra.toml
-printf 'fn f(mut a: int) -> int { a }\nprintln("${f(1)}")\n' > $R/abw/src/main.av
-abw_line() { ./avra check --time $R/abw 2>&1 | grep -a -o 'main.av:[0-9]*' | head -1; }
-steps=$((steps+1)); abw_first=$(abw_line)
-[ "$abw_first" = "main.av:1" ] || fail "abw: the warning's first place was '$abw_first', wanted 'main.av:1'"
-printf '// above\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
-steps=$((steps+1)); abw_second=$(abw_line)
-[ "$abw_second" = "main.av:2" ] || fail "abw: a comment added above the warning left it at '$abw_second', wanted 'main.av:2'"
-printf '// again\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
-steps=$((steps+1)); abw_third=$(abw_line)
-[ "$abw_third" = "main.av:3" ] || fail "abw: a second comment left the warning at '$abw_third', wanted 'main.av:3'"
 
 # ONE DECLARATION, ONE SPELLING. A builtin's wire names the language, never the file
 # a process happened to meet first — so a body edit under impls over builtins leaves
