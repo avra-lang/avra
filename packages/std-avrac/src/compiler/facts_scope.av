@@ -63,7 +63,7 @@ impl Scope for FactsScope {
         match k {
             .Decl -> if self.minting { self.ws.decl_from_ref(text)?.index } else { self.ws.decl_standing(text)?.index },
             .Type -> self.ws.type_from_wire(text)?.index,
-            .File -> self.ws.file_from_ref(text)?.index,
+            .File -> self.ws.decls.known_file_id(text)?.index,
             .Expr -> counted_from(text, self.expr_base),
             .Stmt -> counted_from(text, self.stmt_base),
         }
@@ -103,6 +103,14 @@ impl Workspace {
         if raw == "" { return null }
         let wd? = self.decls.wire_decl(raw.split("~"), 0) else { return null }
         wd.id
+    }
+
+    /// `decl_from_ref` that only LOOKS UP: a declaration of a file whose rows already stand; none
+    /// for one only a mint would answer, so an answer naming it is no answer to restore.
+    fn decl_standing(raw: string) -> DeclId? {
+        let f = self.decls.known_file_id(raw.split("~").first() ?? "")
+        if f != null && self.decls.home_stand(f) == 0 { return null }
+        self.decl_from_ref(raw)
     }
 
     /// A declaration's durable name for a query keyed by it: its wire.
