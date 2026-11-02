@@ -12,7 +12,6 @@ who=package-swap-attack
 T=build/aside/ps.$$; mkdir -p $T
 [ -e "$R" ] && mv "$R" $T/package-swap
 mkdir -p $R/lib/src $R/app/src
-mv .avra-cache $T/cache 2>/dev/null
 cat > $R/lib/avra.toml <<'TOML'
 [package]
 name = "@rt/swap"
