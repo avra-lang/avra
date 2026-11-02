@@ -195,7 +195,8 @@ fi
 
 # ── §6.8 another compiler ──
 # A compiler whose print differs (AVRA_INLINE_RUNTIME=0 moves the print alone) reads none
-# of the first one's rows, in any family, and answers as a cold compute does. A segment
+# of the first one's rows, in any family: it hits only what it wrote itself, as a cold
+# check does, and answers as a cold compute does. A segment
 # written under another pack FORMAT is never read, and the check recomputes.
 say "§6.8 another compiler: none of the first one's rows are read, and the answer is the cold one"
 rm -rf .avra-cache
@@ -204,7 +205,7 @@ export AVRA_INLINE_RUNTIME=0
 checked share
 unset AVRA_INLINE_RUNTIME
 agrees share "a second print"
-[ "$(grep -ac '^Q	store	kind	get	hit' $R/share.trace)" = 0 ] || fail "a row crossed prints"
+[ "$(grep -ac '^Q	store	kind	get	hit' $R/share.trace)" = "$(grep -ac '^Q	store	kind	get	hit' $R/share_seed.trace)" ] || fail "a row crossed prints: the second print hit more than a cold check hits"
 
 say "§6.8 another compiler, another format: a segment written under another pack format is never read, and the check recomputes"
 rm -rf .avra-cache
