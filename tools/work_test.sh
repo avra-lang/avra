@@ -205,7 +205,7 @@ wait
 check "$(echo $(holder "$scratch/avra-after") $(holder "$scratch/avra-race"))" "A" "work bind: of two lanes binding at once, one holds the Sprite" "$scratch/out.1"
 
 # ══ RUN: a lane with no Sprite is told the one command ════════════════
-(cd "$scratch/avra-race" && rm -f "$(git rev-parse --absolute-git-dir)/avra-sprite" && sh "$work" run true) > "$scratch/out" 2>&1
+(cd "$scratch/avra-race" && rm -f "$(git rev-parse --absolute-git-dir)/avra-sprite" && sh "$work" run --sprite true) > "$scratch/out" 2>&1
 check "$? $(grep -c 'tools/work bind' "$scratch/out")" "1 1" "work run: a worktree with no Sprite is refused, with the command that binds one" "$scratch/out"
 
 # ══ BUSY IS NOT UNREACHABLE, and a held Sprite is its lane's ══════════
@@ -342,12 +342,16 @@ done
 check "$(cat "$scratch/helpfail" 2>/dev/null | head -n 3 | tr '\n' ' ')|$(cat "$SPRITE_LOG" "$GH_LOG" | wc -l | tr -d ' ')|$lane|$(($(git -C "$main" worktree list | wc -l) - before))" "|0|stands|0" "work <verb> -h/--help/help: one usage line, exit 0, and no Sprite, no GitHub, no worktree is touched" "$scratch/helpfail"
 for h in "" -h --help help; do sh "$work" $h > "$scratch/out.$total.$h" 2>&1 || echo "bare '$h' failed" >> "$scratch/helpfail"; done
 check "$(cat "$scratch/helpfail" 2>/dev/null | wc -l | tr -d ' ') $(grep -c 'sh tools/work' "$scratch/out.$total.")" "0 7" "work, bare or asked for help: the seven verbs, exit 0" "$scratch/helpfail"
-sh "$work" run --verbose true > "$scratch/out" 2>&1
+sh "$work" run --sprite --verbose true > "$scratch/out" 2>&1
 check "$? $(grep -c 'has no flag .--verbose' "$scratch/out") $(grep -c '^usage: sh tools/work run' "$scratch/out") $(cat "$SPRITE_LOG" | wc -l | tr -d ' ')" "64 1 1 0" "work run: a flag it does not know is refused with the usage and 64, and nothing runs" "$scratch/out"
-sh "$work" run --for soon true > "$scratch/out" 2>&1
+sh "$work" run --sprite --for soon true > "$scratch/out" 2>&1
 st=$?
-sh "$work" run > "$scratch/out2" 2>&1
+sh "$work" run --sprite > "$scratch/out2" 2>&1
 check "$st $? $(cat "$SPRITE_LOG" | wc -l | tr -d ' ')" "64 64 0" "work run: a --for that is no number, and no command at all, are refused the same way" "$scratch/out"
+sh "$work" run --verbose true > "$scratch/out" 2>&1
+st=$?
+sh "$work" run --for soon true > "$scratch/out2" 2>&1
+check "$st $? $(grep -c 'has no flag .--verbose' "$scratch/out") $(git ls-remote --heads origin 'run/*' 2>/dev/null | wc -l | tr -d ' ')" "64 64 1 0" "work run (GitHub): a flag it does not know, or a --for that is no number, is refused with 64 before anything is pushed" "$scratch/out"
 sh "$work" frobnicate > "$scratch/out" 2>&1
 check "$? $(grep -c 'no verb .frobnicate' "$scratch/out")" "64 1" "work: an unknown verb is named, with the usage and 64" "$scratch/out"
 unset SPRITE_LOG
@@ -360,7 +364,7 @@ cd "$scratch/avra-after" || exit 1
 (sh "$work" bind A) > /dev/null 2>&1
 # `with VAR=value… -- <args>` is `ran` under those variables, and only it.
 with() { (while [ "$1" != -- ]; do export "$1"; shift; done; shift; ran "$@"); }
-ran() { PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run "$@" > "$scratch/out" 2> "$scratch/err"; }
+ran() { PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run --sprite "$@" > "$scratch/out" 2> "$scratch/err"; }
 scene() { rm -f "$scratch"/fake/*; printf 'one\ntwo\nthree\n' > "$scratch/fake/out"; echo "$1" > "$scratch/fake/status"; }
 
 scene 7; echo 1 > "$scratch/fake/ending"; echo 6 > "$scratch/fake/cut"
@@ -417,7 +421,7 @@ check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c '^attach' "$scratch/fake/ca
 # background job has INT ignored, so the client is started with it restored.
 signalled() {
     scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
-    PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
+    PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' sh "$work" run --sprite true > "$scratch/out" 2> "$scratch/err" &
     job=$!
     i=0; while [ "$i" -lt 50 ] && ! grep -q '^attach' "$scratch/fake/calls" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
     kill -"$1" "$job"; wait "$job"
@@ -585,43 +589,43 @@ STUB
     # tree's, and skips when it is the same.
     phash() { (here="$main/tools" && . "$here/sprite-lib.sh" && provision_hash); }
     stamp="$AVRA_SPRITE_HOME/.avra-provisioned"
-    timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
+    timeout 90 sh "$work" run --sprite true > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep -c 'provisioning again' "$scratch/err")|$(cat "$stamp" 2>/dev/null)" "0|1|$(phash)" \
         "provision hash: a Sprite with no record provisions again before the command, and records the tree's hash" "$scratch/err"
-    timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
+    timeout 90 sh "$work" run --sprite true > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep -c 'provisioning again' "$scratch/err")" "0|0" \
         "provision hash: a Sprite whose record is the tree's skips provisioning" "$scratch/err"
     old=$(phash)
     echo "# changed" >> "$main/tools/sprite-provision.sh"
-    timeout 90 sh "$work" run true > "$scratch/out" 2> "$scratch/err"
+    timeout 90 sh "$work" run --sprite true > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep -c "provisioned from $old" "$scratch/err")|$([ "$(cat "$stamp")" = "$(phash)" ] && [ "$(phash)" != "$old" ] && echo moved)" "0|1|moved" \
         "provision hash: a changed provisioning script is provisioned from again, and the record moves" "$scratch/err"
     find "$main/tools" -name sprite-provision.sh -delete
 
     echo 3 > "$E2E/drop"
-    timeout 90 sh "$work" run "$lines; exit 7" > "$scratch/out" 2> "$scratch/err"
+    timeout 90 sh "$work" run --sprite "$lines; exit 7" > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(grep -c '^work: CONNECTION — dropped (1 so far' "$scratch/err")|$(grep -c '^work: COMMAND — exit 7' "$scratch/err")|$(quiet 10)" "7|$want|1|1|0" \
         "end to end: a connection killed mid-run is followed again — every line once and in order, the command's own status, no process left" "$scratch/err"
 
     echo 1 > "$E2E/drop"
-    timeout 90 sh "$work" run 'echo only; exit 5' > "$scratch/out" 2> "$scratch/err"
+    timeout 90 sh "$work" run --sprite 'echo only; exit 5' > "$scratch/out" 2> "$scratch/err"
     check "$?|$(grep -c '^only$' "$scratch/out")|$(quiet 10)" "5|1|0" "end to end: a connection that dropped after the command ended still delivers its output and its status" "$scratch/err"
 
     # The follower killed outright: the run goes on, a second run is BUSY, attach has it whole.
-    setsid timeout 90 sh "$work" run "$lines; exit 9" > "$scratch/out" 2> "$scratch/err" &
+    setsid timeout 90 sh "$work" run --sprite "$lines; exit 9" > "$scratch/out" 2> "$scratch/err" &
     job=$!
     i=0; while [ "$i" -lt 30 ] && ! grep -q '^line 2' "$scratch/out" 2>/dev/null; do sleep 1; i=$((i + 1)); done
     kill -KILL "-$job" 2>/dev/null
     wait "$job" 2>/dev/null
     sleep 1
     going=$(marked)
-    timeout 60 sh "$work" run true > "$scratch/out2" 2> "$scratch/busy"
+    timeout 60 sh "$work" run --sprite true > "$scratch/out2" 2> "$scratch/busy"
     busy=$?
     timeout 90 sh "$work" attach > "$scratch/out" 2> "$scratch/err"
     check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — .* is live on L with nobody here following it' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
         "end to end: with its follower killed outright the run goes on, a second run is BUSY, and attach has every line and the status" "$scratch/err"
 
-    timeout 90 sh "$work" run 'setsid sleep 4260 & sleep 4261' > "$scratch/out" 2> "$scratch/err" &
+    timeout 90 sh "$work" run --sprite 'setsid sleep 4260 & sleep 4261' > "$scratch/out" 2> "$scratch/err" &
     job=$!
     i=0; while [ "$i" -lt 30 ] && [ "$(pgrep -fc '^sleep 426[01]$')" != 2 ]; do sleep 1; i=$((i + 1)); done
     sh "$work" stop > "$scratch/stop" 2>&1
