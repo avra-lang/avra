@@ -98,18 +98,14 @@ impl Workspace {
         [bit_at(s.own, i) || s.edges.any((f: Flow) -> f.from == i && self.flows_into(f)) for i in 0..self.decls.seat_count(d)]
     }
 
-    /// A declaration's written seats as the fixpoint holds them, solved first. None written
-    /// for a declaration it holds no member for, every seat for a held one (its body is not
-    /// here to say), and null where the pass may not run — an absence of a finding.
+    /// A declaration's written seats as the fixpoint holds them, solved first; a held or
+    /// other non-member's as its interface recorded them, and null where the pass may not
+    /// run — an absence of a finding.
     fn writes_ensured(d: DeclId) -> List<bool>? {
         if self.db.family_active(Family.Resolved.ordinal) { return null }
-        let x = self.decls.decl(d)
-        if seated(x) { let _ = self.writes_of(d) }
-        self.writes_fixpoint.answer_at(d.index) ?? self.unsolved_writes(x)
-    }
-
-    fn unsolved_writes(x: Decl) -> List<bool> {
-        filled(self.decls.seat_count(x.id), seated(x) && self.is_held(x.file))
+        if !self.writes_member(d) { return self.decls.held_written(d) }
+        let _ = self.writes_of(d)
+        self.writes_fixpoint.answer_at(d.index) ?? self.decls.held_written(d)
     }
 
     /// Whether the seat a flow fills is written: the receiver by its declared word too.
@@ -119,9 +115,9 @@ impl Workspace {
     }
 
     /// What the fixpoint says of a callee's seats: a member's as they stand, any other
-    /// declaration's as unsolved.
+    /// declaration's as its interface recorded them.
     fn writes_read(c: DeclId) -> List<bool> {
-        if self.writes_member(c) { self.writes_fixpoint.value_at(c.index) } else { self.unsolved_writes(self.decls.decl(c)) }
+        if self.writes_member(c) { self.writes_fixpoint.value_at(c.index) } else { self.decls.held_written(c) }
     }
 
     /// The scratch frame a walk's own reads land in, minted once into `family`: a read made

@@ -805,9 +805,12 @@ export type Decls = {
     // — asked through the armed hook
     seat_marks: Cell<List<List<SeatMark>>>,
     declared_writes: Cell<List<bool>>,
+    /// A held fn's written seats as its interface recorded them, dense by DeclId.
+    written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> List<bool>?>,
     // the workspace's cancel hook: a record-carrying declaration's reach
     // read by name, so a reader stands on that decl's answer alone
+    cancels: Table<CancelReach>,
     ensure_cancels: Cell<fn(DeclId) -> CancelReach?>,
     // WHICH SEATS THE BODY CONSUMES (R3) — the workspace's answer per
     // declaration. No fixpoint: unlike the written seats, a seat's
@@ -992,6 +995,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
     let no_children: List<Cell<List<DeclId>>> = []
     let no_methods: List<Cell<List<DeclId>>> = []
     let no_impls: List<Cell<List<DeclId>>> = []
+    let no_written_seats: List<Cell<List<bool>>> = []
     let db = durable_db(durable)
     let d = Decls {
         types: new_type_registry(),
@@ -1071,7 +1075,9 @@ export fn new_decls_under(durable: Durable) -> Decls {
         answers: Cell.new(no_targets),
         seat_marks: Cell.new(no_seat_marks),
         declared_writes: Cell.new(no_declared_writes),
+        written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_writes),
+        cancels: new_table(),
         ensure_cancels: Cell.new(no_cancel),
         ensure_failures: Cell.new(no_failures_ensure),
         schedulers: Cell.new(false),
@@ -2405,6 +2411,7 @@ impl Decls {
     /// 0 is its receiver and is never declared here.
     fn record_seats(d: DeclId, marks: List<SeatMark>) {
         self.seat_marks.set_at(d.index, marks)
+        self.written_seats.set_at(d.index, Cell.new(filled(marks.length, false)))
     }
 
     /// How many seats a declaration has — the receiver's included.
@@ -2460,10 +2467,21 @@ impl Decls {
         self.declared_writes.get()[d.index]
     }
 
+    /// A held fn's seat `i` found written, recorded from its interface.
+    fn record_seat_written(d: DeclId, i: int) {
+        if i < self.written_seats.get()[d.index].get().length { self.written_seats.get()[d.index].set_at(i, true) }
+    }
+
+    /// The seats a held fn's interface recorded written, none where it recorded none.
+    fn held_written(d: DeclId) -> List<bool> { self.written_seats.get()[d.index].get() }
+
+    /// What a call to `d` may reach, recorded from a held fn's interface.
+    fn record_cancel(d: DeclId, r: CancelReach) { self.cancels.keep(d.index, r) }
+
     /// What a call to `d` may reach, as the workspace's fixpoint holds it — null where
     /// nothing has said. A reader asks through the hook, so it stands on the declaration's
     /// own `CancelBits` answer.
-    fn cancel_bits(d: DeclId) -> CancelReach? { (self.ensure_cancels.get())(d) }
+    fn cancel_bits(d: DeclId) -> CancelReach? { (self.ensure_cancels.get())(d) ?? self.cancels.at(d.index) }
 
     /// The workspace arms the cancel hook once.
     fn arm_cancels(ensure: fn(DeclId) -> CancelReach?) {
