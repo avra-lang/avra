@@ -2643,6 +2643,22 @@ printf 'use k.{seq}\n/// uno\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/
 gm_step "the member's doc edited" "z uno 1"
 rm -rf $gm
 
+if section mc; then
+# A MODULE'S FILES ARE ASKED OF THE PACKAGES ADMITTED, NEVER OF THEIR COUNT. Toolchain
+# packages are admitted as `use` lines reach them, so one count names different packages
+# once the lines swap. `mc` reaches `@std.text` then `@std.cli` and is kept; the lines
+# then swap and the file instances a `@std.cli` component, which parses only if the
+# module's files are listed under the set the second order admitted.
+mkdir -p $R/mc/src
+printf '[package]\nname = "rt-mc"\nversion = "0.1.0"\n' > $R/mc/avra.toml
+printf 'use @std.text.{from_codepoint}\nuse @std.cli.{command, Runnable, CliResult}\ntype T = {}\nimpl Runnable for T {\n    fn run(args: CliResult) -> int { 0 }\n}\nprintln("${from_codepoint(65)}")\n' > $R/mc/src/main.av
+steps=$((steps+1)); mc_out=$(./avra check $R/mc 2>&1 | unwatched | grep -a "^error" | head -2 | tr '\n' ' ')
+[ -z "$mc_out" ] || fail "mc: the first order did not check clean: $mc_out"
+printf 'use @std.cli.{command, Runnable, CliResult}\nuse @std.text.{from_codepoint}\ntype T = {}\nimpl Runnable for T {\n    fn run(args: CliResult) -> int { 0 }\n}\ncommand hello {\n    description: "x"\n    run: T {}\n}\nprintln("${from_codepoint(65)}")\n' > $R/mc/src/main.av
+steps=$((steps+1)); mc_out=$(./avra check $R/mc 2>&1 | unwatched | grep -a "^error" | head -2 | tr '\n' ' ')
+[ -z "$mc_out" ] || fail "mc: the swapped order did not check clean (a kept module listing named another set of packages): $mc_out"
+fi
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for

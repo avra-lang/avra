@@ -32,7 +32,7 @@ impl Workspace {
     /// The module a file belongs to: its directory under its package's
     /// source root, `.`-joined — "" for a file at the root package's
     /// source root, `@scope.name.a` for a dependency's.
-    fn module_of(path: string) -> string { module_at(self, self.packages().length, path) }
+    fn module_of(path: string) -> string { module_at(self, self.admitted_keys(), path) }
 
     /// `module_of`, as the path it names.
     fn module_path_of(path: string) -> ModulePath { module_path(self.module_of(path).split(".")) }
@@ -53,7 +53,7 @@ impl Workspace {
     /// the one file, else nothing (the module does not exist). A
     /// directory holding its own `avra.toml` is a package, never a
     /// module of the one above it.
-    fn module_files(m: ModulePath) -> List<string> { module_listed(self, self.packages().length, m.text()) }
+    fn module_files(m: ModulePath) -> List<string> { module_listed(self, self.admitted_keys(), m.text()) }
 
     /// The files of `m` the program MET, in listing order — the files it registered.
     fn met_files(m: ModulePath) -> List<string> {
@@ -598,13 +598,14 @@ fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
     [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
 }
 
-/// A file's module, asked for ONE count of admitted packages: packages are admitted as `use`
-/// lines reach them, and one admitted later answers for files it holds.
+/// A file's module, asked of ONE set of admitted packages: packages are admitted as `use`
+/// lines reach them, and one admitted later answers for files it holds. The set is its keys in
+/// admission order, never their count — a count names different packages in another process.
 @query
-fn module_at(ws: Workspace, _admitted: int, path: string) -> string { ws.module_named(path) }
+fn module_at(ws: Workspace, _admitted: string, path: string) -> string { ws.module_named(path) }
 
-/// A module's files, through the host's listing, asked for one count of admitted packages.
+/// A module's files, through the host's listing, asked of one set of admitted packages.
 @query
-fn module_listed(ws: Workspace, _admitted: int, module: string) -> List<string> {
+fn module_listed(ws: Workspace, _admitted: string, module: string) -> List<string> {
     ws.listed_files(module_path(module.split(".")))
 }
