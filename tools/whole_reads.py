@@ -23,12 +23,12 @@ A new whole verb is added to VERBS here, so the door cannot grow a side entry.
 `Family.all()` (a collect enum, no argument) and the filesystem walk
 `ws.all_files(dir)` (an argument) are not these verbs.
 """
-import glob
 import os
 import re
 import sys
 
 import licence_families
+import avsrc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
@@ -43,11 +43,7 @@ LICENSE = re.compile(r"//\s*LICENSED\s+" + licence_families.id_pattern("whole.")
 
 
 def source_files(root):
-    for scope in SCOPE:
-        for path in sorted(glob.glob(os.path.join(root, scope, "**", "*.av"), recursive=True)):
-            rel = os.path.relpath(path, root)
-            if "/tests/" not in rel:
-                yield rel
+    return avsrc.av_files(SCOPE, root)
 
 
 def sites(rel, text):

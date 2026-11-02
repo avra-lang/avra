@@ -33,7 +33,7 @@ use stable.{
     CodecFault,
     encoded_with,
     decoded_with,
-    spelled_with,
+    int_spelled,
     written_list,
     read_list,
 }
@@ -1097,7 +1097,7 @@ impl AnswersUnder<V> {
             let known = self.ints.get()
             if n < known.length && known[n] >= 0 { return known[n] }
         }
-        let made = self.arg(spelled_with([(w: Writer) -> w.int(n)]))
+        let made = self.arg(int_spelled(n))
         if inside { self.remember_int(n, made) }
         while self.numbers.get().length <= made { self.numbers.push(-1) }
         self.numbers.set_at(made, n)
@@ -1137,7 +1137,8 @@ impl AnswersUnder<V> {
         if n < 0 { null } else { n }
     }
 
-    /// Call `arg`'s settled hash, the call asked by its number first when it never settled.
+    /// Call `arg`'s settled hash, the call asked by its number first when it never settled —
+    /// heard by no open frame, since a leaf's judge reads the call and no reader of it does.
     fn hash_asked(arg: int) -> int? {
         let key = self.memo.query_key(arg)
         let held = self.memo.kernel.value_hash_of(key)
@@ -1145,7 +1146,7 @@ impl AnswersUnder<V> {
         let names? = self.named.get() else { return null }
         let n? = self.number_at(arg) else { return null }
         let ask = names.ask
-        ask(n)
+        self.memo.kernel.unheard(() -> ask(n))
         self.memo.kernel.value_hash_of(key)
     }
 

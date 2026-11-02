@@ -32,6 +32,8 @@ use core.{
 }
 use compiler.families.{Family}
 use features.{
+    BlockWords,
+    DeclFacts,
     Unsettled,
     Settlement,
     MetaVal,
@@ -54,7 +56,8 @@ use features.{
     SeatValue,
 }
 use core.{Instanced, ComponentWord, Instancing}
-use features.{no_kind, default_mark}
+use features.{no_kind}
+use core.{default_mark}
 use @std.meta.{
     Node,
     Field as MetaField,
@@ -66,19 +69,7 @@ use @std.meta.{
     Annotation as MetaAnnotation,
     Code as MetaCode,
 }
-use core.{
-    StmtId,
-    Stmt,
-    Arm,
-    HoleKind,
-    Inits,
-    Unplaced,
-    is_name_cont,
-    digest_of,
-    new_node_store,
-    Ids,
-    indexed_ids,
-}
+use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of, Ids, indexed_ids}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at, unread_behind}
@@ -724,18 +715,11 @@ fn module_block_rows(ws: Workspace, m: ModulePath) -> List<Row>? {
     let store = ws.opened_store()
     let iface? = ws.db.sig(store, ws.record_key(m)) else { return null }
     let rec? = ws.record_bodies().body(store, m.text(), iface) else { return null }
-    let rows = [r! for line in rec.split("\n") for r in [read_row(read_fields(line))] if r != null]
+    let lines = rec.split("\n")
+    let rows = [r! for line in lines for r in [read_row(read_fields(line))] if r != null]
+    for f in [l.split("\t") for l in lines if l.starts_with("file\t")] { ws.records.block_digests.put(f[1], f[2]) }
     ws.records.block_rows.put(m.text(), rows)
     rows
-}
-
-/// The exported instances a module's record marks, each with the component word it
-/// instances — read off `facts.word`, a block name whose form is no part of the
-/// record. Null when the record is absent, so a cold tree still parses.
-// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn module_block_instances(ws: Workspace, m: ModulePath) -> List<Instanced>? {
-    let rows? = module_block_rows(ws, m) else { return null }
-    flatten([record_instance(r) for r in rows])
 }
 
 fn record_instance(r: Row) -> List<Instanced> {
@@ -746,13 +730,66 @@ fn record_instance(r: Row) -> List<Instanced> {
     [Instanced { name: r.name, declared: w }]
 }
 
-/// Whether a module's record marks a block name whose FORM must be read from a parse
-/// — a named grammar, or a record that is a component. An absent record answers true,
-/// since nothing but a parse can say.
+/// Every block word a file's record says — the record of the module that HOLDS it, which a
+/// `use` naming the file itself as a module does not spell: its exported
+/// instances, its components whose form is a record, and each whose form is nodes as
+/// its declaration re-read alone. None when there is no record, for a file it names no
+/// row of or read at another text than the file holds now, when the file declares a
+/// named grammar, or when a declaration re-read alone is not the one the record names
+/// — only the file's parse can say those.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn module_has_forms(ws: Workspace, m: ModulePath) -> bool {
-    let rows? = module_block_rows(ws, m) else { return true }
-    rows.any((r) -> r.kind == "syntax" || facts_unblocked(r.facts)?.is_component ?? false)
+fn recorded_words(ws: Workspace, path: string) -> BlockWords? {
+    let known = ws.records.recorded.get().get(path) ?? Recorded.Unasked
+    match known {
+        .Said(words) -> words,
+        .Unsaid -> null,
+        .Unasked -> {
+            let made = recorded_now(ws, path)
+            ws
+                .records
+                .recorded
+                .put(path, if made == null { Recorded.Unsaid } else { Recorded.Said(made!) })
+            made
+        },
+    }
+}
+
+/// `recorded_words`, asked of the record and the file's text.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn recorded_now(ws: Workspace, path: string) -> BlockWords? {
+    let all? = module_block_rows(ws, ws.module_path_of(path)) else { return null }
+    if ws.records.block_digests.get().get(path) != ws.text_digest(path) { return null }
+    let rows = [r for r in all if r.path == path && r.exported]
+    if rows.is_empty() || rows.any(it.kind == "syntax") { return null }
+    let facts = flatten([some_list(facts_unblocked(r.facts)) for r in rows])
+    if facts.length != rows.length { return null }
+    let nodes = [f for f in facts if f.is_component && f.form == null]
+    if nodes.any(it.template == null || it.span == null) { return null }
+    let read? = ws.read_alone(path, [f.span! for f in nodes], [f.template! for f in nodes]) else { return null }
+    BlockWords {
+        components: flatten([record_word(r, facts[j]) for j, r in rows]).concat(read),
+        instances: flatten([record_instance(r) for r in rows]),
+    }
+}
+
+/// An exported component whose form is its record, as an importing file's block word.
+fn record_word(r: Row, f: DeclFacts) -> List<ComponentWord> {
+    let form? = f.form else { return [] }
+    [
+        ComponentWord {
+            word: r.name,
+            declared: r.name,
+            form: Instancing.Record(form),
+            origin: r.path,
+        },
+    ]
+}
+
+/// What a provider file's record says of its block words, once asked in a build.
+enum Recorded {
+    Unasked
+    Said(words: BlockWords)
+    Unsaid
 }
 
 /// A LEX-LEVEL PRE-FILTER, never a parse: the compiler's OWN source
@@ -805,14 +842,7 @@ fn exported_in(db: RelDb, path: string) -> List<string> { text_scan_of(db, path)
 /// A component word known by its name alone: its instance parses as
 /// one and stands as a hole.
 fn unread_word(name: string, origin: string) -> ComponentWord {
-    ComponentWord {
-        word: name,
-        declared: name,
-        form: Instancing.Unread,
-        store: new_node_store(origin),
-        origin: origin,
-        own: true,
-    }
+    ComponentWord { word: name, declared: name, form: Instancing.Unread, origin: origin, own: true }
 }
 
 /// What a file exports as components: a held file's record says; a file this attempt reads,

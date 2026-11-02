@@ -10,16 +10,16 @@
 # must pass as the cold build of the same edit does. The file is restored on
 # every exit. It CLEARS the store, as the attacks beside it do.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 . tools/lib/failed_tail.sh
 W=packages/std-ui/src/web/web.av
 T=packages/std-ui/src/tests/instance_page
 AVRA=${AVRA:-./avra}
-R=build/host-fn-edit-attack; fails=0
+R=build/host-fn-edit-attack
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
 proved() { # proved <label>: the program test, through the store
     $AVRA test $T > $R/out 2>&1; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out; return 1; }
+    [ $st -eq 0 ] || { fail "$1: status $st"; failed_tail $R/out; return 1; }
 }
 if [ "${1:-}" = "--self-test" ]; then
     # a forced failure must carry its stdout refusal and its stderr trap, and no more than 20 lines
@@ -50,7 +50,7 @@ edit() { # edit <label> <sed script>: from the original, one edit shape
         comment) echo "// edited" >> $W ;;
         *) sed "$2" $R/web.orig > $W ;;
     esac
-    cmp -s $R/web.orig $W && { fails=$((fails+1)); echo "FAIL  $1: the edit changed nothing"; return 1; }
+    cmp -s $R/web.orig $W && { fail "$1: the edit changed nothing"; return 1; }
     return 0
 }
 find .avra-cache -type f -delete 2>/dev/null
@@ -64,7 +64,6 @@ for shape in "a comment line|comment" \
     edit "$label" "$script" || continue
     steps=$((steps + 1))
     proved "$label, built warm"
-    grep -l '^; ModuleID' .avra-cache/obj/*.o > /dev/null 2>&1 && { fails=$((fails+1)); echo "FAIL  $label: a wrecked module's text stands in the store as an object"; }
+    grep -l '^; ModuleID' .avra-cache/obj/*.o > /dev/null 2>&1 && fail "$label: a wrecked module's text stands in the store as an object"
 done
-echo "host-fn-edit-attack: $steps edit shapes of @std/ui's host-fn file built warm, $fails failed"
-[ "$fails" -eq 0 ]
+verdict "host-fn-edit-attack" "$steps edit shapes of @std/ui's host-fn file built warm"
