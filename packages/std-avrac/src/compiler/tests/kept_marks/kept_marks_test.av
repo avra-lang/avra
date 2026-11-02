@@ -1,0 +1,69 @@
+// A derive's kept output is a function of everything it reads from the
+// crossed type — a field mark's arguments included. A warm edit of ONE
+// argument must give the output a cold build of the edited text gives.
+use @std.avrac.testing.{provided_workspace}
+use compiler.{Workspace}
+
+fn provider() -> string {
+    [
+        "use @std.meta.{Type, Directive, Mark, Field, literal}",
+        "export trait Shape {",
+        "    static fn marks(t: Type) -> List<string> { [\"m\"] }",
+        "    static fn derive(t: Type) -> List<Directive> {",
+        "        let said = t.fields.map(said_field(it)).join(\" \")",
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { fn made_row() -> string { \${literal(said)} } } }]",
+        "    }",
+        "}",
+        "fn said_field(f: Field) -> string { f.marks.map(said_mark(it)).join(\";\") }",
+        "fn said_mark(m: Mark) -> string { m.args.join(\",\") + \"|\" + m.named.map(it.label + \"=\" + it.value).join(\",\") }",
+    ]
+        .join("\n") + "\n"
+}
+
+fn main_text(mark: string) -> string {
+    "use @std.meta.{derive}\nuse @x.c.{Shape}\n@derive(Shape)\ntype Row = { ${mark} a: int }\n"
+}
+
+/// The same, over a component's event seat.
+fn event_text(mark: string) -> string {
+    "use @std.meta.{derive}\nuse @x.c.{Shape}\n@derive(Shape)\ncomponent dlg() {\n    ${mark} on dismiss\n}\n"
+}
+
+const main_path: string = "/w/src/main.av"
+
+/// The expansion `ws` shows for the main file.
+fn shown(ws: Workspace) -> string { ws.program(main_path).expanded_source(ws.file_id(main_path)) }
+
+/// A workspace expanded once on `before`, edited to `after`, expanded again.
+fn warm(before: string, after: string) -> string {
+    let ws = provided_workspace(before, provider())
+    let _ = shown(ws)
+    ws.host.write(main_path, after)
+    let _ = ws.world_moved()
+    shown(ws)
+}
+
+/// A workspace that only ever saw `text`.
+fn cold(text: string) -> string { shown(provided_workspace(text, provider())) }
+
+spec "compiler/lifted — a derive re-runs when a field mark's arguments change" {
+    given "one mark argument edited" {
+        then "a named argument's value reaches the warm output" {
+            warm(main_text("@m(terminal: .Escape)"), main_text("@m(terminal: .Enter)")) == cold(main_text("@m(terminal: .Enter)"))
+        }
+        then "a named argument added reaches the warm output" {
+            warm(main_text("@m(web: .Click)"), main_text("@m(web: .Click, terminal: .Escape)")) == cold(main_text("@m(web: .Click, terminal: .Escape)"))
+        }
+        then "a positional argument's value reaches the warm output" {
+            warm(main_text("@m(1)"), main_text("@m(2)")) == cold(main_text("@m(2)"))
+        }
+    }
+    given "an event seat's mark edited" {
+        then "a named argument added reaches the warm output" {
+            warm(event_text("@m(web: .Cancel)"), event_text("@m(web: .Cancel, terminal: .Escape)")) == cold(event_text("@m(web: .Cancel, terminal: .Escape)"))
+        }
+        then "the output names the argument at all" {
+            cold(event_text("@m(web: .Cancel, terminal: .Escape)")).contains("terminal=Escape")
+        }
+    }
+}
