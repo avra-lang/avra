@@ -3214,6 +3214,14 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A bound on a type's own parameter
+
+`type SideTable<K: Dense, V>` is "expected `=`": a bound lands on a free fn's parameters only. So a
+side table cannot say what its window is over in its type — its methods could not read a generic
+`K`'s index — and says it in a value instead (`window: Window`, an enum of the dense ids it may run
+over; core/side_table.av). The want: a bound on a type's (and an impl's) own parameter, so the
+window's id kind is the type's, and a fifth window kind is a type argument rather than a variant.
+
 ### An optional chain reaches through a following method
 
 `t?.xs.any(it == 1)` stops the chain at the `?.`: the method is asked of `List<int>?` and refused
