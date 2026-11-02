@@ -26,7 +26,18 @@
 //! held rows is let go with its last holder.
 //!
 use rows.{Rows, named_rows, Stamp, INT_CAP}
-use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table, edge_of, list_cell}
+use engine.{
+    Kernel,
+    Key,
+    new_kernel,
+    Relation,
+    new_memo,
+    Table,
+    new_table,
+    edge_of,
+    list_cell,
+    map_cell,
+}
 use stable.{
     Writer,
     Reader,
@@ -79,6 +90,9 @@ export type Db = {
     written: Cell<int>,
     /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
     cap: Cell<int>,
+    /// Each named read's key at `keys_at`, by its identity: the cell a read of it records.
+    keys_known: Cell<Map<string, Key>>,
+    keys_at: Cell<int>,
 }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
@@ -164,6 +178,9 @@ export type AnswerRef = {
     /// Whether a reader of one of these answers stands on the answer itself, by its name and
     /// digest, rather than on what it read: a query's, whose key is a name another process reads.
     by_answer: bool = false,
+    /// The family whose cell a read of these answers records, for answers no cell of their own
+    /// settles: the cell that notes them as its leaves. -1 for answers recorded as themselves.
+    noted_by: int = -1,
 }
 
 impl AnswerRef {
@@ -171,6 +188,9 @@ impl AnswerRef {
         let f = self.family
         f()
     }
+
+    /// The family a read of one of these answers records.
+    fn recorded_family() -> int { if self.noted_by >= 0 { self.noted_by } else { self.family_now() } }
 
     fn spelled_at(arg: int) -> string? {
         let f = self.spelled
@@ -274,6 +294,8 @@ fn made(durable: Durable) -> Db {
         names: names,
         asking: asking,
         cap: Cell.new(0),
+        keys_known: map_cell(),
+        keys_at: Cell.new(0 - 1),
         written: Cell.new(0),
     }
 }
@@ -662,9 +684,29 @@ impl Db {
     }
 
     fn read_input_leaf(kernel: Kernel, name: string, spelled: string) {
-        let owner? = self.answer_named(name) else { return }
-        let arg? = owner.arg_of(spelled) else { return }
-        kernel.record_at(owner.family_now(), arg)
+        let k? = self.input_key(name, spelled) else { return }
+        kernel.record_at(k.family, k.arg)
+    }
+
+    /// The cell a read of the answer `spelled` of `name` records, resolved once a revision; none
+    /// for one no family here records — not kept, since a declaration minted later may name it.
+    fn input_key(name: string, spelled: string) -> Key? {
+        let rev = self.kernel.get()?.revision() ?? 0 - 1
+        if rev != self.keys_at.get() {
+            let none: Map<string, Key> = {}
+            self.keys_known.set(none)
+            self.keys_at.set(rev)
+        }
+        let id = "${name}\t${spelled}"
+        let known = self.keys_known.get().get(id)
+        if known != null { return known }
+        let owner? = self.answer_named(name) else { return null }
+        let family = owner.recorded_family()
+        if family < 0 { return null }
+        let arg? = owner.arg_of(spelled) else { return null }
+        let made = Key { family: family, arg: arg }
+        self.keys_known.put(id, made)
+        made
     }
 
     /// A query or input asked here, as a saved answer may name it.
