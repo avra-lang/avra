@@ -131,7 +131,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.settle_hash(ordinal, arg),
         }
     }
 
@@ -189,7 +189,27 @@ impl Workspace {
     fn settle_arg(spelled: string) -> int? {
         let ws = self
         self
-            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled)
+            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled) ?? self
+            .own_settle_arg(spelled)
+    }
+
+    /// A const's own settlement — asked under no seats — named before this run asked it: its
+    /// name is the const's wire alone, so the ask is minted from the declaration.
+    fn own_settle_arg(spelled: string) -> int? {
+        if !spelled.ends_with("#") { return null }
+        let d? = self.decl_from_ref(spelled.substring(0, spelled.length - 1)) else { return null }
+        let x = self.decls.decl(d)
+        self.settle_id(x.file, SettleRoot.Const(x.stmt), [])
+    }
+
+    /// A settlement's hash as this run answers it: settled when nothing asked it yet.
+    fn settle_hash(ordinal: int, arg: int) -> int? {
+        let k = key_at(ordinal, arg)
+        let held = self.db.kernel.hash_forced(k)
+        if held != null || arg < 0 || arg >= self.settle_asks.get().length { return held }
+        let ask = self.settle_asks.get()[arg]
+        let _ = self.settled_replay(ask.file, ask.root, ask.seats)
+        self.db.kernel.hash_forced(k)
     }
 
     /// A lifted unit's name: its file, its declaration and its symbol; an expression unit, the
