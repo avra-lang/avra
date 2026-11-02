@@ -1,0 +1,63 @@
+// A durable id homes by its file's package and path within it, so two packages that each
+// hold the same relative path spell two different ids, and each reads back to its own file.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId}
+
+fn files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/other\" = { path = \"vendor/other\" }\n",
+        "/w/src/main.av": "use @acme.other.shared.{f as g}\nuse shared.{f}\nf() + g()\n",
+        "/w/src/shared.av": "export fn f() -> int {\n    1\n}\n",
+        "/w/vendor/other/avra.toml": "[package]\nname = \"@acme/other\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/other/src/shared.av": "export fn f() -> int {\n    2\n}\n",
+    }
+}
+
+fn names() -> List<string> {
+    [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/src/shared.av",
+        "/w/vendor/other/avra.toml",
+        "/w/vendor/other/src/shared.av",
+    ]
+}
+
+fn workspace() -> Workspace {
+    test_workspace(memory_host(files(), names()), "/w")
+}
+
+/// The `f` the file at `path` declares.
+fn f_in(ws: Workspace, path: string) -> DeclId {
+    ws.items(ws.file_id(path)).find((d) -> ws.decls.decl(d).name == "f")!
+}
+
+spec "compiler/interface — a file's durable name is its package and its path within it" {
+    given "two packages that each hold src/shared.av" {
+        then "the two files are named apart" {
+            let ws = workspace()
+            ws.decls.file(ws.file_id("/w/src/shared.av")).name != ws.decls.file(ws.file_id("/w/vendor/other/src/shared.av")).name
+        }
+        then "the name carries the package and no part of where the tree stands" {
+            let ws = workspace()
+            ws.decls.file(ws.file_id("/w/vendor/other/src/shared.av")).name == "@acme/other:src/shared.av"
+        }
+        then "their declarations are spelled apart" {
+            let ws = workspace()
+            ws.decl_ref(f_in(ws, "/w/src/shared.av")) != ws.decl_ref(f_in(ws, "/w/vendor/other/src/shared.av"))
+        }
+        then "a spelling reads back to the declaration of its own package" {
+            let ws = workspace()
+            let mine = f_in(ws, "/w/src/shared.av")
+            let theirs = f_in(ws, "/w/vendor/other/src/shared.av")
+            ws.decl_from_ref(ws.decl_ref(mine))!.index == mine.index &&
+                ws.decl_from_ref(ws.decl_ref(theirs))!.index == theirs.index
+        }
+        then "no spelling carries the tree's path" {
+            let ws = workspace()
+            !ws.decl_ref(f_in(ws, "/w/vendor/other/src/shared.av")).contains("/w/")
+        }
+    }
+}
