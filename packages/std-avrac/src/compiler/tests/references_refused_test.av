@@ -99,18 +99,13 @@ spec "compiler/references — asked while a resolve is in flight" {
             heard.get().is_empty() &&
             ws.decls.refs_of(a).length == 1
     }
-    then "a seat's consumption is not inferred and not recorded; asked again once the references stand, it is inferred" {
+    then "a seat's consumption is not inferred while the references are refused; asked again once they stand, it is" {
         let ws = refs_refused_workspace()
         let keep = Decl.by_name(ws.decls.rows_db.get(), "keep").first()!.id
         let resolving = refs_refused_resolving()
         ws.db.kernel.begin(resolving)
         let during = ws.computed_consumed(keep)
-        let unrecorded = ws.decls.consumed.get()[keep.index] == null
         ws.db.kernel.settle(resolving, 0)
-        let after = ws.computed_consumed(keep)
-        !during.any(it) &&
-            unrecorded &&
-            ws.decls.consumed.get()[keep.index] != null &&
-            after.any(it)
+        !during.any(it) && ws.computed_consumed(keep).any(it)
     }
 }

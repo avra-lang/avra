@@ -23,7 +23,8 @@
 //! answer's own fold would read more than the readers do.
 //! `@recursive` lets a call re-entered before it settles compute again,
 //! a smaller view, where a plain query answers the cycle with the value
-//! it last held. A body that cannot finish its answer says so with
+//! it last held — or, under `@cycled_by(f)`, with what `f` says stands for
+//! the call while its run is open. A body that cannot finish its answer says so with
 //! `db.unkept()`: the answer reaches its asker and no cell holds it.
 //!
 //!     @query
@@ -295,6 +296,17 @@ export fn digested_by(f: Fn, by: Fn) -> List<Diagnostic> {
 /// `@recursive`: a call re-entered before it settles computes again — the smaller view.
 export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "recursive")] } }
 
+/// `@cycled_by(f)`: what a call re-entered before it settles answers — the query's own
+/// seats in, its answer out.
+export fn cycled_by(f: Fn, by: Fn) -> List<Diagnostic> {
+    if !queried(f) { return [mark_alone(f, "cycled_by")] }
+    if f.annotations.any((a: Annotation) -> a.name == "recursive") { return [cycle_twice(f)] }
+    let same = by.params.length == f.params.length &&
+        [p.ty == f.params[i].ty for i, p in by.params].all(it)
+    if !same || by.answer != f.answer { return [cycle_shape(f, by)] }
+    []
+}
+
 /// Whether a fn is a query.
 fn queried(f: Fn) -> bool { f.annotations.any((a: Annotation) -> a.name == "query" || a.name == "over") }
 
@@ -310,9 +322,14 @@ fn digest_code(f: Fn) -> Code {
     name(by)
 }
 
-/// How a call opens: a recursive query computes again on re-entry.
+/// How a call opens: a recursive query computes again on re-entry, a cycled one answers
+/// what its mark names.
 fn opened(f: Fn) -> Code {
-    if f.annotations.any((a: Annotation) -> a.name == "recursive") { quote { held.memo.start_recursive(arg) } } else { quote { held.memo.start(arg) } }
+    if f.annotations.any((a: Annotation) -> a.name == "recursive") { return quote { held.memo.start_recursive(arg) } }
+    let mark? = f.annotations.find((a: Annotation) -> a.name == "cycled_by") else { return quote { held.memo.start(arg) } }
+    let args = [name(p.name) for p in f.params]
+    let by = mark.args.first() ?? ""
+    quote { held.memo.start_cycled(arg, () -> ${by}(${..args})) }
 }
 
 /// THE DURABILITY LAW: an answer outlives the process exactly when every read it makes is
@@ -532,6 +549,24 @@ fn digest_shape(f: Fn, by: Fn) -> Diagnostic {
         by.at ?? f.at,
         "`${by.name}` digests `${f.name}`'s answer, so it takes one `${f.answer}` and answers an `int`",
         "write `fn ${by.name}(v: ${f.answer}) -> int`",
+    )
+}
+
+fn cycle_shape(f: Fn, by: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_cycle",
+        by.at ?? f.at,
+        "`${by.name}` answers `${f.name}` re-entered, so it takes `${f.name}`'s seats and answers `${f.answer}`",
+        "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}) -> ${f.answer}`",
+    )
+}
+
+fn cycle_twice(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_cycle_recursive",
+        f.at,
+        "`${f.name}` computes again on re-entry under `@recursive`, so nothing answers its cycle",
+        "keep one: `@recursive` for a smaller view, `@cycled_by` for what stands",
     )
 }
 

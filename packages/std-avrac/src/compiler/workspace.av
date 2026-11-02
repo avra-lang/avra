@@ -114,7 +114,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query}
+use @std.relation.{query, cycled_by}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -293,8 +293,6 @@ type Hold = {
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
-    /// How many use-site warning queries are open: a whole-program pass never runs under one.
-    marking: Cell<int>,
     read_files: Cell<List<ReadFile>>,
     /// The modules this attempt loaded for real: a file in one was read, so it is not held.
     loaded_turn: Cell<Map<string, bool>>,
@@ -409,7 +407,6 @@ fn new_hold() -> Hold {
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
-        marking: Cell.new(0),
         read_files: Cell.new(no_read_files),
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
@@ -587,8 +584,6 @@ export type Workspace = {
     externs: Table<ExternNames>,
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
-    /// each file's clash diagnostics as `method_clashes` last settled them
-    method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
     /// than scanning the whole table on every ask.
@@ -949,14 +944,14 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
 }
 
 /// A declaration's use-site warnings: each `List<Diagnostic>` annotation run, its WARNINGS
-/// kept (errors speak at the declaration).
+/// kept (errors speak at the declaration). A use inside its own run — a lift lowering back
+/// through it — reads the warnings recorded so far.
 @query
-fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
-    ws.hold.marking.set(ws.hold.marking.get() + 1)
-    let out = ws.warnings_of(ws.decls.decl(d))
-    ws.hold.marking.set(ws.hold.marking.get() - 1)
-    out
-}
+@cycled_by(marks_standing)
+fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.warnings_of(ws.decls.decl(d)) }
+
+/// The use-site warnings recorded for `d` so far.
+fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks.get()[d.index] ?? [] }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1068,7 +1063,6 @@ fn built(
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
-        method_diag_rows: new_table<List<Diag>>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
@@ -1142,11 +1136,11 @@ fn built(
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured(d))
     ws.decls.arm_cancels((d: DeclId) -> ws.cancel_ensured(d))
-    ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
+    ws.decls.arm_consumed((d: DeclId) -> ws.consumed_of(d))
     ws.decls.arm_references(() -> ws.refs_ensured())
     ws.decls.arm_held_refs((d: DeclId) -> ws.held_refs_to(d))
     ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
-    ws.decls.arm_failures(() -> ws.failures_ensured())
+    ws.decls.arm_failures((d: DeclId) -> ws.inferred_of(d))
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
         d: DeclId,
@@ -1304,13 +1298,12 @@ impl Workspace {
     }
 
     /// Runs the cancel pass and says so, or says it cannot: a whole-program pass never
-    /// runs inside a resolve, while a marks query is computing, or while a compile-time
-    /// body is lowering — it surveys every member's typed facts, and a lift that reads
-    /// a mark would otherwise re-enter it. Only a kind a call can enter is asked, so a
+    /// runs inside a resolve, or while a compile-time body is lowering — it surveys every
+    /// member's typed facts, and a lift that reads a mark would otherwise re-enter it. Only a kind a call can enter is asked, so a
     /// record or a type pulls nothing.
     fn cancel_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        if self.comptime_active() || self.hold.marking.get() > 0 { return false }
+        if self.comptime_active() { return false }
         if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
     }
@@ -1328,10 +1321,6 @@ impl Workspace {
         if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
         let _ = read_found(self, d)
         true
-    }
-
-    fn failures_ensured() {
-        let _ = self.failures()
     }
 
     fn marks_ensured(d: DeclId) {
