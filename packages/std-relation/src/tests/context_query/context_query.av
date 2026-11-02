@@ -3,8 +3,9 @@
 // while what it read stands, run again once an input it read moves, and never
 // kept for a later process; the same query over the Db alone with a stable key
 // is kept, and so is one over a context whose scope names its dense key:
-// restored in a later process, never run.
-use @std.relation.{query, input}
+// restored in a later process, never run — under the context's scope, or
+// under the window `@scoped_by` makes of the call's own seats.
+use @std.relation.{query, input, scoped_by}
 use @std.relation.db.{Db, Durable, durable_db}
 use @std.relation.stable.{Scope}
 use @std.meta.{dense}
@@ -97,6 +98,33 @@ fn tagged(p: Pricer, item: Item) -> Tag {
     Tag { item: item, at: base(p.db, "p"), near: [Item { index: item.index + 1 }] }
 }
 
+/// A scope that names an item by its distance from a base: a call's own window.
+type Window = { base: int }
+
+impl Scope for Window {
+    fn spelled(_kind: string, index: int) -> string { "+${index - self.base}" }
+
+    fn unspelled(_kind: string, text: string) -> int? {
+        if !text.starts_with("+") { return null }
+        let n? = parse_int(text.substring(1, text.length)) else { return null }
+        n + self.base
+    }
+}
+
+/// The window an item's neighbours cross under: counted from the item itself.
+fn item_window(_p: Pricer, item: Item) -> dyn Scope { Window { base: item.index } }
+
+@query
+@scoped_by(item_window)
+fn neighbours(p: Pricer, item: Item) -> Tag {
+    counted()
+    Tag {
+        item: item,
+        at: base(p.db, "p"),
+        near: [Item { index: item.index + 1 }, Item { index: item.index + 2 }],
+    }
+}
+
 @query
 fn plain(db: Db, k: string) -> int {
     counted()
@@ -134,7 +162,13 @@ fn main_run() -> string {
     let tag_restored = computes().get() == before_tag &&
         tag_again.item.index == 9 &&
         tag_again.near[0].index == 10
-    "${first} ${again} ${reused} | ${moved} ${ran} | ${p} kept ${kept().get()} | ${fresh} ${read_back} ${computes().get()} | ${price} ${priced_ran} ${price_again} ${restored} ${tag.at} ${tag_restored} kept ${kept().get()}"
+    let near = neighbours(Pricer { db: later }, Item { index: 20 })
+    let before_near = computes().get()
+    let near_again = neighbours(Pricer { db: third }, Item { index: 20 })
+    let near_restored = computes().get() == before_near &&
+        near_again.near[1].index == 22 &&
+        near.near[0].index == 21
+    "${first} ${again} ${reused} | ${moved} ${ran} | ${p} kept ${kept().get()} | ${fresh} ${read_back} ${computes().get()} | ${price} ${priced_ran} ${price_again} ${restored} ${tag.at} ${tag_restored} ${near_restored} kept ${kept().get()}"
 }
 
 main_run()

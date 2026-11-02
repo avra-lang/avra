@@ -21,7 +21,9 @@
 //! Marks shape a query's cell. `@digested_by(f)` names the fn its
 //! answer is digested by — what its readers cut off on — where the
 //! answer's own fold would read more than the readers do; under
-//! `@digested_with(f)` that fn is handed the call's seats first.
+//! `@digested_with(f)` that fn is handed the call's seats first; under
+//! `@scoped_by(f)` the call's dense ids cross under the scope `f` makes of
+//! its seats, where the context's `query_scope()` is not it.
 //! `@recursive` lets a call re-entered before it settles compute again,
 //! a smaller view, where a plain query answers the cycle with the value
 //! it last held. A body that cannot finish its answer says so with
@@ -98,7 +100,8 @@ fn named_seats(f: Fn) -> Code {
 /// The context's one scope, bound where a scoped query's code spells an id.
 fn scope_bound(f: Fn) -> List<Stmts> {
     if !scoped(f) { return [] }
-    [scope_let(name(f.params[0].name))]
+    let by? = mark_word(f, "scoped_by") else { return [scope_let(quote { ${name(f.params[0].name)}.query_scope() })] }
+    [scope_let(quote { ${by}(..${[name(p.name) for p in f.params]}) })]
 }
 
 /// `@query`: the wrapper and the query's contract, from one reading.
@@ -315,6 +318,14 @@ export fn digested_with(f: Fn, by: Fn) -> List<Diagnostic> {
     let want = f.params.length + 1
     if by.params.length != want || by.params[want - 1].ty != f.answer || by.answer != "int" { return [digest_with_shape(f, by)] }
     if !queried(f) { return [mark_alone(f, "digested_with")] }
+    []
+}
+
+/// `@scoped_by(f)`: the scope a call's dense ids cross under, made from the call's own seats —
+/// a body's window, say — where the context's one `query_scope()` is not it.
+export fn scoped_by(f: Fn, by: Fn) -> List<Diagnostic> {
+    if by.params.length != f.params.length || by.answer != "dyn Scope" { return [scope_shape(f, by)] }
+    if !queried(f) { return [mark_alone(f, "scoped_by")] }
     []
 }
 
@@ -659,6 +670,15 @@ fn digest_with_shape(f: Fn, by: Fn) -> Diagnostic {
         by.at ?? f.at,
         "`${by.name}` digests `${f.name}`'s answer with its seats, so it takes `${f.name}`'s seats, then one `${f.answer}`, and answers an `int`",
         "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}, v: ${f.answer}) -> int`",
+    )
+}
+
+fn scope_shape(f: Fn, by: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_scope",
+        by.at ?? f.at,
+        "`${by.name}` makes the scope `${f.name}`'s call crosses under, so it takes `${f.name}`'s seats and answers a `dyn Scope`",
+        "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}) -> dyn Scope`",
     )
 }
 
