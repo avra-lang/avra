@@ -8,7 +8,10 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use @std.io.{env}
+use @std.io.{env, read_text}
+use @std.time.{now_ns}
+use @std.text.{parse_int}
+use @std.relation.engine.{shards_of}
 use @std.errors.{Frame}
 use @std.text.{text_before}
 use core.{
@@ -436,6 +439,43 @@ export fn lower_unit(
     }
 }
 
+extern fn avra_cores_group(n: int) -> int
+extern fn avra_cores_fork(g: int, serving: int) -> int
+extern fn avra_cores_end_fd(g: int, core: int) -> int
+extern fn avra_cores_heard(g: int, core: int) -> int
+extern fn avra_cores_leave(g: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_result(g: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+fn rss_kb() -> string {
+    let t = match read_text("/proc/self/status") { .Ok(x) -> x, .Err(_) -> "" }
+    let hwm = [l for l in t.split("\n") if l.starts_with("VmHWM") || l.starts_with("VmRSS")]
+    hwm.join(" ").replace("  ", " ")
+}
+
+fn par_probe(wants: List<Wanted>, unit_of: fn(Wanted) -> Unit, cost_of: fn(Wanted) -> int) {
+    let n = parse_int(env("AVRA_PAR") ?? "0") ?? 0
+    if n < 1 { return }
+    eprintln("par parent before: ${rss_kb()} wants=${wants.length}")
+    let t0 = now_ns()
+    let shards = shards_of([cost_of(w) for w in wants], n)
+    eprintln("par shards ${[s.length for s in shards]}")
+    let g = avra_cores_group(n)
+    let k = avra_cores_fork(g, 2)
+    if k < n {
+        mut done = 0
+        for j in shards[k] {
+            let _ = unit_of(wants[j])
+            done = done + 1
+        }
+        eprintln("par worker ${k} units=${done} ms=${(now_ns() - t0) / 1000000} ${rss_kb()}")
+        let _ = avra_cores_leave(g, k, 0, 0)
+    }
+    for i in 0..n { while avra_cores_heard(g, i) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(g, i), 0, -1) } }
+    let _ = avra_cores_result(g)
+    eprintln("par parent joined ms=${(now_ns() - t0) / 1000000} ${rss_kb()}")
+}
+
 impl Decls {
     /// The whole program as IR: the entry's main and every body it
     /// reaches, transitively — each unit through `unit_of`, which the
@@ -450,6 +490,12 @@ impl Decls {
     /// lowers it even when nothing inside calls it. An `export` is a
     /// module's visibility and roots nothing. `hashed` says whether the
     /// program's code hashes are owed: unowed, no held code is read for them.
+    fn unit_cost(w: Wanted) -> int {
+        let d? = w.decl else { return 1 }
+        let sp? = self.decl_span(d) else { return 1 }
+        sp.hi - sp.lo
+    }
+
     fn union(
         files: List<Analysis>,
         entry: int?,
@@ -500,6 +546,7 @@ impl Decls {
             statics = mu.statics
             hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
+        par_probe(wants, unit_of, (w: Wanted) -> self.unit_cost(w))
         let d = drained(
             wants.concat(held_asks.read),
             held_asks,
