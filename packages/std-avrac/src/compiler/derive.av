@@ -13,7 +13,6 @@ use core.{
     some_list,
     joined,
     sorted_texts,
-    sorted_by,
     digest_of,
     module_path,
     ModulePath,
@@ -27,9 +26,8 @@ use core.{
     DeclId,
     TypeId,
 }
-use features.{SettleRoot, Wanted, Analysed, FileInfo}
+use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
-use @std.text.{text_before}
 use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
@@ -1181,24 +1179,14 @@ impl Workspace {
     /// never mint order, which a hold reorders — null when a file's facts no longer
     /// place. A file the table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
-        let read = [a.view.file for a in p.files]
-        for a in p.files { self.keep_file_key(store, a.view.source.file) }
-        let saying = [fi for fi in self.decls.all_files() if read.any(same_file(it, fi.id)) || self.is_held(fi.id)]
-        let rooted = sorted_by(
-            saying,
-            (a: FileInfo, b: FileInfo) -> self.said_before(a.path, b.path),
-        )
-        let said = [self.said_now(fi.id, want) for fi in rooted]
+        let read = [a.view.source.file for a in p.files]
+        for path in read { self.keep_file_key(store, path) }
+        let saying = distinct(read.concat(held_paths(self)))
+        let rooted = sorted_texts([path for path in saying if self.holder_of_path(path) == 0])
+            .concat(sorted_texts([path for path in saying if self.holder_of_path(path) != 0]))
+        let said = [self.said_now(path, want) for path in rooted]
         if said.any(it == null) { return null }
         [s! for s in said]
-    }
-
-    /// The root package's files first, then by path.
-    fn said_before(a: string, b: string) -> bool {
-        let ra = self.holder_of_path(a) == 0
-        let rb = self.holder_of_path(b) == 0
-        if ra != rb { return ra }
-        text_before(a, b)
     }
 
     /// A read file's key parts: its own under its path, the modules it sees

@@ -1,20 +1,29 @@
 //! The collected `Family`: the markers in compiler/families are its
 //! variant set, gathered BY NAME (`it.name`), so a family is keyed by
-//! its name and declaration order is free.
+//! its name and declaration order is free. Nothing here lists the
+//! families: the set is the markers', and a test that spelled it would
+//! move with every family a lane adds.
 use compiler.families.{Family}
 use core.{sorted_texts}
 
+/// The families' names in the order the enum answers them.
+fn names() -> List<string> { [f.name for f in Family.all()] }
+
 spec "family declarations reflect as a collected enum" {
     given "the declared families" {
-        then "are minted as variants in name order, each at its place" {
-            let names = [f.name for f in Family.all()]
-            names.join(",") == sorted_texts(names).join(",") &&
-                [f.ordinal == i for i, f in Family.all()].all(it)
+        then "are minted as variants in name order, each once" {
+            let ns = names()
+            !ns.is_empty() &&
+                ns.join(",") == sorted_texts(ns).join(",") &&
+                [j for j in 1..ns.length if ns[j - 1] == ns[j]].is_empty()
         }
         then "each answers the word it was declared with" {
-            Family.Input.name == "Input" &&
-                Family.CancelBits.name == "CancelBits" &&
-                Family.Items.name == "Items"
+            Family.Items.name == "Items" &&
+                Family.Input.name == "Input" &&
+                Family.CancelBits.name == "CancelBits"
+        }
+        then "each variant's ordinal is its place in that order" {
+            [j for j, f in Family.all() if f.ordinal != j].is_empty()
         }
     }
 }
