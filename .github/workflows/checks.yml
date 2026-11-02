@@ -36,8 +36,10 @@ on:
   # A QUEUE'S EVENT IS STILL ACCEPTED, so a repo that re-enables one needs no
   # edit here.
   merge_group:
+  # A BASE BRANCH is listed here too: its push climbs its ladder and publishes the compiler, so a
+  # lane cut from it has a builder (tools/work reads this list).
   push:
-    branches: [main]
+    branches: [main, hd-clean, hd-gate]
   workflow_dispatch:
     inputs:
       only:
@@ -433,7 +435,8 @@ jobs:
   # never overwrites one.
   publish-compiler:
     needs: [prepare, test]
-    if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
+    # a base branch publishes once its prepare built the compiler; main waits for the proof
+    if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && (needs.test.result == 'success' || (github.ref != 'refs/heads/main' && needs.prepare.result == 'success'))
     runs-on: ubuntu-latest
     # the tools build links the runtime library and package objects, made here
     container: *ci-image
