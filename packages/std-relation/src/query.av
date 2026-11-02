@@ -83,7 +83,9 @@ fn answer_owner(f: Fn) -> Owner { own_of(f.answer) with { scoped: scoped(f) } }
 /// Whether a query's dense ids cross through its context's scope — its key's and its answer's,
 /// spelled for the key, the digest and the record alike.
 fn scoped(f: Fn) -> bool {
-    !is_db(f.params[0].kind) && (keyed_densely(f) || holds_dense(f.answers, named_shape))
+    !is_db(f.params[0].kind) &&
+        (f.params.slice(1, f.params.length).any(holds_dense(it.kind, named_shape)) ||
+            holds_dense(f.answers, named_shape))
 }
 
 /// Whether every dense seat of a call has a name past the process — a scope may name an id
@@ -265,7 +267,7 @@ fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], p
 export fn query_problems(f: Fn) -> List<Diagnostic> {
     let first? = f.params.first() else { return [no_db(f)] }
     if !seated(first.kind) { return [no_db(f)] }
-    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind)]
+    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind, !is_db(first.kind))]
     let answer = if carried(f.answers, in_process) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
     let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
@@ -281,8 +283,11 @@ fn db_code(f: Fn) -> Code {
     if is_db(f.params[0].kind) { first } else { quote { ${first}.query_db() } }
 }
 
-/// Whether an argument can name a call: a stable encoding, or a dense id the process spells.
-fn asked_by(k: Kind) -> bool { carried(k, named_shape) || dense_field(k) != null }
+/// Whether an argument can name a call: a stable encoding, a dense id the process spells, or —
+/// through a context, whose scope spells ids — a value holding dense ids.
+fn asked_by(k: Kind, ctx: bool) -> bool {
+    carried(k, named_shape) || dense_field(k) != null || ctx && carried(k, in_process)
+}
 
 /// A dense id's one field, none for any other kind.
 fn dense_field(k: Kind) -> string? {
@@ -368,7 +373,7 @@ fn saved(f: Fn) -> bool {
     f
             .params
             .slice(1, f.params.length)
-            .all((p: Param) -> carried(p.kind, named_shape) || ctx && dense_field(p.kind) != null) &&
+            .all((p: Param) -> carried(p.kind, if ctx { in_process } else { named_shape })) &&
         decodable_with(f.answers, ctx)
 }
 
