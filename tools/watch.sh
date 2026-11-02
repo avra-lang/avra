@@ -11,7 +11,7 @@
 # HEAVY STEPS ARE ADMITTED BY MEMORY, MACHINE-WIDE: the lock is a
 # set of slot directories in /tmp, so every worktree and every
 # session queues on the same ones; a second step starts only while
-# the machine has AVRA_SLOT_MB (2500) available beyond what the
+# the machine has AVRA_SLOT_MB (3500, the measured peak of a cli or compiler-package check) available beyond what the
 # steps still ramping are owed, AVRA_BUILD_SLOTS=<n> fixes the count. A waiting step says who holds it. The lock dies with the
 # step, however the step dies. `./avra` takes this lock ITSELF for
 # any package-scale run, so no path around it exists; a step that
@@ -342,7 +342,7 @@ fi
 # defined with the tree walkers above; the tree walkers key on that
 # pgid, never on a ppid chain.
 slots="${AVRA_BUILD_SLOTS:-}"
-slot_mb="${AVRA_SLOT_MB:-2500}"
+slot_mb="${AVRA_SLOT_MB:-3500}"
 slots_max="${AVRA_SLOTS_MAX:-8}"
 ramp_s="${AVRA_RAMP_S:-30}"
 lock="${AVRA_BUILD_LOCK:-/tmp/avra-build.lock}"
