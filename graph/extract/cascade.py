@@ -678,6 +678,10 @@ class Cascade:
                 log(f"known name {held!r} is {name!r}")
                 field["value"] = name
                 rec["model"] = kind
+                # an identity proposal is derived from the model's declared paths and points at
+                # the very field it names, so a settled record states them again
+                rec["identities"] = []
+                self.identities(rec)
 
     def entity_pass(self):
         labels = self.plan.entity_labels()
