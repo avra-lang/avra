@@ -664,6 +664,9 @@ export type Decls = {
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
     audit_hook: Cell<fn(Bypassed) -> void>,
+    /// What a read that skipped the Kernel stands on: the workspace records the cells that cover
+    /// it; with none armed the read is unheard, and a query that made it is never kept.
+    cover_hook: Cell<fn(Bypassed) -> void>,
     /// A DECLARATION ROW'S READ RECORDS ITS NAME'S BUCKET: reading a declaration of a
     /// file settled below records the `Named` cell its name files under (a held file's
     /// module record) in the open query — once per query, by the Kernel's own stamp. A
@@ -938,6 +941,9 @@ export enum Listed { Name(name: string), Word(word: string), Mark(mark: string),
 
 fn no_audit(_r: Bypassed) {}
 
+/// A read nothing covers: unheard.
+fn uncovered(_r: Bypassed) { unheard_read() }
+
 /// Whether a scope gathers from every file of the owner's package.
 export fn admits_package(scope: CollectScope) -> bool {
     match scope { .Package -> true, .Self or .Closure or .UnknownScope(_) -> false }
@@ -1011,6 +1017,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
+        cover_hook: Cell.new(uncovered),
         record_kernel: new_kernel(),
         rows_db: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
@@ -1169,7 +1176,7 @@ impl Decls {
     fn decl(d: DeclId) -> Decl {
         let x = self.decl_cells.get()[d.index] ?? self.removed(d)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
-        if x.standing == 0 { unheard_read() }
+        if x.standing == 0 && x.home != null { self.covered(Bypassed.Decl(d)) }
         self.row_read(x)
         x
     }
@@ -1257,8 +1264,14 @@ impl Decls {
     /// then stands on something its record cannot name.
     fn bypassed(r: Bypassed) {
         if audit_build && self.auditing.get() { self.audited(r) }
-        unheard_read()
+        self.covered(r)
     }
+
+    /// A read that skipped the Kernel, recorded as the cells that cover it.
+    fn covered(r: Bypassed) { (self.cover_hook.get())(r) }
+
+    /// The workspace arms the cover once: the cells each bypassed read stands on.
+    fn arm_cover(hook: fn(Bypassed) -> void) { self.cover_hook.set(hook) }
 
     /// The workspace arms the audit once, when `AVRA_DEP_AUDIT` asks.
     fn arm_audit(hook: fn(Bypassed) -> void) {
@@ -2040,6 +2053,7 @@ impl Decls {
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
+        self.cover_hook.set(uncovered)
         self.types.disarm_declare()
         self.rows_db.get().close_saying(voice)
     }
