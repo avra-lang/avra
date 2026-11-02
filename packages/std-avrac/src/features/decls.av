@@ -31,6 +31,7 @@ use core.{
     FnParts,
     spelled,
     fp_str,
+    digest_of_octets,
     same_type,
     module_symbol,
     filled,
@@ -92,6 +93,7 @@ use features.{
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation, codec}
+use @std.relation.stable.{Writer, encoded_with, indexed_scope}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -303,9 +305,7 @@ fn named_lit(store: SyntaxArena, e: ExprId) -> NamedLit? {
     NamedLit { label: label, arg: arg_lit(store, store.unnamed(e)) }
 }
 
-/// THE FINGERPRINT IS THE CODEC'S CHECKSUM: the derived fold covers EVERY field, so the
-/// record carries it and the decoder recomputes it — a field added and not encoded makes
-/// the two disagree and the module refuses to hold, instead of silently decoding a default.
+/// THE CODEC'S BYTES ARE THE DIGEST: `fingerprint` folds them, so it covers EVERY field.
 @derive(Exemplar)
 @codec
 export type DeclFacts = {
@@ -395,6 +395,18 @@ impl DeclFacts {
             mut_seats: [],
             trait_args: [],
         }
+    }
+
+    /// The fold of the codec's bytes.
+    fn fingerprint() -> int {
+        fp_str(
+            digest_of_octets(
+                encoded_with(
+                    self,
+                    (w: Writer, v: DeclFacts) -> DeclFacts.written_by(w, indexed_scope(), v),
+                ),
+            ),
+        )
     }
 }
 
