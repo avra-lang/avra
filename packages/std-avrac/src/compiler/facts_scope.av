@@ -1,7 +1,8 @@
 //! THE SCOPE A COMPILER VALUE CROSSES UNDER — a declaration, a type and a file by their
 //! durable names, an expression and a statement by their offset from the window it was made
 //! over, and a place in a text as the token place it stands in.
-use core.{DeclId, TypeId, FileId}
+use core.{DeclId, TypeId, FileId, hex, unhex, wire_fields}
+use features.{Wanted, Wants, Sub}
 use compiler.{Workspace}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
@@ -77,3 +78,61 @@ impl Workspace {
         FactsScope { ws: self, expr_base: lo, stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo } }
     }
 }
+
+impl Workspace {
+    /// A declaration's durable name; empty for none.
+    fn decl_ref(d: DeclId?) -> string {
+        if d == null { return "" }
+        self.decls.decl_wire(d!)
+    }
+
+    /// `decl_ref`'s inverse — the whole field is a wire, since a ref is never nested inside
+    /// a wider tilde stream the way a type's own is.
+    fn decl_from_ref(raw: string) -> DeclId? {
+        if raw == "" { return null }
+        let wd? = self.decls.wire_decl(raw.split("~"), 0) else { return null }
+        wd.id
+    }
+
+    /// A declaration's durable name for a query keyed by it: its wire.
+    fn decl_id_spelled(d: DeclId) -> string? { self.decl_ref(d) }
+
+    /// The declaration a durable name names in this process, none for one gone.
+    fn decl_id_numbered(spelled: string) -> DeclId? { self.decl_from_ref(spelled) }
+
+    /// A file's durable name for a query keyed by it: its path.
+    fn file_id_spelled(f: FileId) -> string? { self.decls.file(f).path }
+
+    /// The file a path names in this process, none for one this process never met.
+    fn file_id_numbered(spelled: string) -> FileId? { self.decls.known_file_id(spelled) }
+
+    fn file_ref(f: FileId) -> string { self.decls.file(f).path }
+
+    fn type_ref(t: TypeId) -> string { self.decls.type_wire(t) }
+
+    /// `type_ref`'s inverse: split the `~`-joined words, read the primitive at 0, and
+    /// require it to consume them all.
+    fn type_from_wire(raw: string) -> TypeId? {
+        if !raw.starts_with("^") { return null }
+        let words = wire_fields(raw.substring(1, raw.length), "~")
+        let d = self.decls.read_type_wire(words, 0)
+        if d == null || d!.next != words.length { return null }
+        d!.id
+    }
+
+    /// A run of wants as a row keeps it: its codec's octets, spelled.
+    fn wants_text(xs: List<Wanted>) -> string { hex(Wants { list: xs }.encoded_in(self.facts_scope(0, 0))) }
+
+    /// `wants_text` read back; none for a text it did not write or a declaration gone.
+    fn wants_of_text(raw: string) -> List<Wanted>? {
+        let octets? = unhex(raw) else { return null }
+        match Wants.decoded_in(self.facts_scope(0, 0), octets) { .Ok(w) -> w.list, .Err(_) -> null }
+    }
+
+    /// A call's instantiation as a key spells it; empty for none.
+    fn sub_text(sub: Sub?) -> string {
+        let s? = sub else { return "" }
+        hex(s.encoded_in(self.facts_scope(0, 0)))
+    }
+}
+

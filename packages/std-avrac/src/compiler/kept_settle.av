@@ -37,8 +37,21 @@ use core.{
     some_list,
     joined,
     sorted_texts,
+    hex,
+    unhex,
 }
-use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets, TypeFacts, Decl}
+use features.{
+    Unsettled,
+    Settled,
+    Settlement,
+    Wanted,
+    SettleRoot,
+    SeatValue,
+    Budgets,
+    TypeFacts,
+    Decl,
+}
+use @std.relation.stable.{indexed_scope}
 use compiler.backend.{reaches_world}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.work.{work_spell_lookup}
@@ -202,7 +215,7 @@ impl Workspace {
             unit: true,
             path: path,
             bodies: [b.name for b in u.bodies],
-            wire: if w.decl != null && w.root == null { self.wanted_list_wire([w]) } else { "" },
+            wire: if w.decl != null && w.root == null { self.wants_text([w]) } else { "" },
             read: if d == null { null } else { self.collect_read(d!) },
         }
     }
@@ -242,8 +255,8 @@ impl Workspace {
         let store? = self.store.get() else { return }
         if frame.any(it.line == "x") { return }
         let value: string? = match r {
-            .Ok(v) -> kept_wire(v),
-            .Err(why) -> if why.structural() { reach_wire(why.words()) } else { null },
+            .Ok(v) -> kept_text(Settlement.Held(v)),
+            .Err(why) -> if why.structural() { kept_text(Settlement.Refused(Unsettled.Reach(why.words()))) } else { null },
         }
         if value == null { return }
         let ran = match r { .Ok(v) -> v.ran, .Err(_) -> [] }
@@ -286,10 +299,8 @@ impl Workspace {
         let read = [r! for r in decoded]
         self.read_by(self.decls.file(f).path, read)
         self.hold.settle_reads.put(id, read)
-        let v = settled_from_wire(value)
-        if v != null { return .Ok(v!) }
-        let words? = reach_from_wire(value) else { return null }
-        .Err(Unsettled.Reach(words))
+        let kept? = settlement_of_text(value) else { return null }
+        match kept { .Held(v) -> .Ok(v), .Refused(why) -> .Err(why) }
     }
 
     /// The named types a const's own expressions carry: the typer resolved them when the file
@@ -361,7 +372,7 @@ impl Workspace {
         if self.is_held(self.decls.decl(d).file) { return false }
         if "${self.syntax(d)}" == r[4] { return true }
         if r[6] == "1" { return false }
-        let wanted? = self.wanted_list_from_wire(joined(r.slice(7, r.length), "\t")) else { return false }
+        let wanted? = self.wants_of_text(joined(r.slice(7, r.length), "\t")) else { return false }
         wanted.length == 1 &&
             self.unit_shape(self.lowered_for_eval(self.spec_id(wanted[0]))) == r[5]
     }
@@ -776,12 +787,12 @@ impl Workspace {
     /// lowered, as the wire a held file's asks are kept in, and whether each
     /// body reaches the world — what a structural verdict reads, and no literal.
     fn unit_shape(u: Unit) -> string {
-        "${fp(308, [fp_str(self.wanted_list_wire(u.wants)), fp_list([if reaches_world(b, true) { 1 } else { 0 } for b in u.bodies])])}"
+        "${fp(308, [fp_str(self.wants_text(u.wants)), fp_list([if reaches_world(b, true) { 1 } else { 0 } for b in u.bodies])])}"
     }
 
     /// The declaration whose range holds a root-only unit's expression.
     fn root_decl(w: Wanted) -> DeclId? {
-        let root? = w.root else { return null }
+        let root? = self.decls.root_of(w) else { return null }
         [d for d in self.decls.decls_of_file(w.file) if self.decls.decl(d).lo <= root.index && root.index < self.decls.decl(d).hi]
             .first()
     }
@@ -921,4 +932,17 @@ fn settles(k: DeclKind) -> bool {
 /// A verdict as one number: a value's own fingerprint, a refusal's words.
 fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
     match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
+}
+
+/// A settlement as a line keeps it: its codec's octets, spelled — a value without the runs it
+/// took, which are the run's own.
+fn kept_text(s: Settlement) -> string {
+    let kept = match s { .Held(v) -> Settlement.Held(v with { ran: [] }), .Refused(why) -> s }
+    hex(kept.encoded_in(indexed_scope()))
+}
+
+/// `kept_text` read back; none for a line it did not write.
+fn settlement_of_text(raw: string) -> Settlement? {
+    let octets? = unhex(raw) else { return null }
+    match Settlement.decoded_in(indexed_scope(), octets) { .Ok(s) -> s, .Err(_) -> null }
 }
