@@ -3,19 +3,42 @@
 // names another compiler's print is read all the same — a row's stamp, which is part
 // of its family's name, says who may address it.
 use @std.time.{stamp}
+use core.{hex}
 use @std.io.{list_dir, remove, read_bytes, write_bytes}
-use @std.path.{joined_path}
+use @std.path.{joined_path, file_name}
 use compiler.store.{
     Pack,
     pack_at,
     pack_put,
     pack_has,
     pack_get,
+    pack_get_octets,
+    pack_put_octets,
     pack_suspects,
     pack_readers,
+    pack_reads,
     pack_traffic,
     seal,
     val_path,
+    content_digest,
+    store_file_bytes,
+    sealed_whole,
+    latest_body,
+}
+
+/// `n` rows as a family writes them: a long stamped family, digest keys, and each row reading
+/// its own input and one shared input at their digests; sealed, with the segments gone.
+fn digest_rows(name: string, n: int) -> string {
+    let root = pack_root(name)
+    let fam = "unit@own ${content_digest("print")}"
+    let w = pack_at(root, "print-one")
+    for i in 0..n {
+        let reads = ["${content_digest("d${i}")} input-${i}.av", "${content_digest("s")} shared.av"]
+        let _ = pack_put(w, fam, content_digest("k${i}"), "v${i}", reads)
+    }
+    let _ = seal(w)
+    segments_gone(root)
+    root
 }
 
 /// One store directory per case, so no case reads another's segments.
@@ -263,6 +286,43 @@ spec "store/pack — segments, commit markers, the two tiers" {
             pack_get(r, "unit", "k3") == "new3" &&
                 pack_get(r, "unit", "k40") == "v40" &&
                 run_counts(r) == "64"
+        }
+    }
+    given "rows keyed and read by whole digests, the shape every family writes" {
+        then "read back whole: key, value and every read" {
+            let root = digest_rows("digests", 64)
+            let r = pack_at(root, "print-one")
+            let fam = "unit@own ${content_digest("print")}"
+            pack_get(r, fam, content_digest("k7")) == "v7" &&
+                (pack_reads(r, fam, content_digest("k7"), true) ?? []).join(",") == "${content_digest("d7")} input-7.av,${content_digest("s")} shared.av" &&
+                pack_suspects(r, ["input-7.av"], pack_readers(r)).length == 1 &&
+                pack_suspects(r, ["shared.av"], pack_readers(r)).length == 64
+        }
+        then "cost what they say: a row's family, key and digest are octets, never spellings" {
+            let root = digest_rows("digest-size", 256)
+            let w = pack_at(root, "print-one")
+            let _ = pack_has(w, "unit", "none")
+            let _ = sealed_whole(w)
+            let bytes = store_file_bytes(
+                "${root}/store",
+                file_name(latest_body("${root}/store") ?? ""),
+            ) ?? 0
+            w.sealed.get().length == 1 && bytes > 0 && bytes / 256 < 250
+        }
+    }
+    given "a row kept as octets that spell no text" {
+        then "reads back as those octets, from a segment and from a sealed body, and never as text" {
+            let root = pack_root("octets")
+            let raw = [0, 255, 128, 10].bytes()!
+            let w = pack_at(root, "print-one")
+            pack_put_octets(w, "answer", "k", raw, [])
+            let live = hex(pack_get_octets(pack_at(root, "print-one"), "answer", "k") ?? "".bytes())
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            live == "00ff800a" &&
+                hex(pack_get_octets(r, "answer", "k") ?? "".bytes()) == "00ff800a" &&
+                pack_get(r, "answer", "k") == null
         }
     }
 }

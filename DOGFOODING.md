@@ -850,6 +850,18 @@ tree path (`from_json` then `T.decode`), which answers every refusal
 the direct reader meets. Smell: a fast path carrying its own error
 enum that mirrors the slow path's.
 
+## An id is not a count
+
+`Reader.count()` reads a LENGTH, so it refuses any value larger than the
+bytes left to read — the bound that keeps a corrupt length from
+allocating. An id, an ordinal or a table place is no length: read it with
+`varint()` and bound it against its table. Written as `count`, an id
+reads back whole only while it is smaller than what follows it, so the
+first rows of a test pass and every later one decodes as absent (the
+store body's family and read-set ids). No rule: a length and an id are
+both an `int` at the site; the writer's word names which it is — `count`
+for a length, `varint` for anything else.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

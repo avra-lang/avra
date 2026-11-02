@@ -7,7 +7,6 @@
 use @std.relation.{input}
 use @std.relation.db.{Db as RelDb, Durable}
 use compiler.store.{Store, Stored, node_key}
-use core.digest.{hex, unhex}
 use core.{joined}
 
 /// A source file's text as a query reads it. The workspace stages every text a
@@ -66,11 +65,10 @@ fn answer_key(query: string, args: int) -> string { node_key(Stored.Answer, [que
 
 fn kept_answer(slot: Cell<Store?>, query: string, args: int) -> Bytes? {
     let store? = slot.get() else { return null }
-    let text? = store.get(Stored.Answer, answer_key(query, args)) else { return null }
-    unhex(text)
+    store.get_octets(Stored.Answer, answer_key(query, args))
 }
 
 fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
     let store? = slot.get() else { return }
-    let _ = store.keep(Stored.Answer, answer_key(query, args), hex(record), [])
+    let _ = store.keep_octets(Stored.Answer, answer_key(query, args), record, [])
 }

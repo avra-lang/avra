@@ -81,7 +81,7 @@ impl Stored {
 /// check does and leaves the store exactly as it found it (P7).
 export enum Keeping {
     Disk
-    Aside(Cell<Map<string, string>>)
+    Aside(Cell<Map<string, Bytes>>)
 }
 
 /// THE STORE — one root, the packed index, and where its writes land.
@@ -300,60 +300,71 @@ impl Store {
     }
 
     /// The row this process set aside under a key — none on a store that keeps to disk.
-    fn aside_row(family: Stored, key: string) -> string? {
+    fn aside_row(family: Stored, key: string) -> Bytes? {
         match self.keeping {
             .Disk -> null,
             .Aside(rows) -> rows.get().get(self.aside_key(family, key)),
         }
     }
 
-    /// The bytes a key names, or nothing when the row is not committed.
+    /// The text a key names, or nothing when the row is not committed or is not text.
     fn get(family: Stored, key: string) -> string? {
+        let found? = self.get_octets(family, key) else { return null }
+        found.text()
+    }
+
+    /// The octets a key names, or nothing when the row is not committed.
+    fn get_octets(family: Stored, key: string) -> Bytes? {
         let found = self.read_row(family, key)
         if traced() { qtrace(kind_line("get", found != null, family, key)) }
         found
     }
 
-    fn read_row(family: Stored, key: string) -> string? {
+    fn read_row(family: Stored, key: string) -> Bytes? {
         let aside = self.aside_row(family, key)
         if aside != null { return aside }
         if family.file_family() {
             self.read_disk(family, key)
         } else {
-            pack_get(self.pack, self.packed(family), key, inspects(self.keeping))
+            pack_get_octets(self.pack, self.packed(family), key, inspects(self.keeping))
         }
     }
 
-    fn read_disk(family: Stored, key: string) -> string? {
+    fn read_disk(family: Stored, key: string) -> Bytes? {
         if !self.on_disk(family, key) { return null }
         // LICENSED input.store_io: the store's own kept row, read to answer it
-        match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(_) -> null }
+        match read_bytes(self.path(family, key)) { .Ok(b) -> b, .Err(_) -> null }
     }
 
-    /// REMEMBER A ROW — on disk, or set aside where the store keeps none.
-    fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+    /// REMEMBER A TEXT ROW: its octets.
+    fn keep(family: Stored, key: string, text: string, read: List<string>) -> bool {
+        self.keep_octets(family, key, text.bytes(), read)
+    }
+
+    /// REMEMBER A ROW AS ITS OCTETS — on disk, or set aside where the store keeps none.
+    fn keep_octets(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         match self.keeping {
             .Disk -> self.disk_kept(family, key, bytes, read),
             .Aside(rows) -> {
                 rows.put(self.aside_key(family, key), bytes)
-                rows.put(self.reads_key(family, key), joined(read, "\n"))
+                rows.put(self.reads_key(family, key), joined(read, "\n").bytes())
                 true
             },
         }
     }
 
-    fn disk_kept(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+    fn disk_kept(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         if family.file_family() { return self.written(family, key, bytes, read) }
-        pack_put(self.pack, self.packed(family), key, bytes, read)
+        pack_put_octets(self.pack, self.packed(family), key, bytes, read)
         true
     }
 
     /// A file row on disk: the DATA first, then the EDGES, so the second write is what
     /// makes the row visible and a crash between them leaves nothing rather than half.
-    fn written(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+    fn written(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
         if !self.uncommit(family, key) { return false }
-        match write_text(self.path(family, key), bytes) {
+        match write_bytes(self.path(family, key), bytes) {
             .Ok(_) -> {},
             .Err(_) -> { return false },
         }
@@ -432,9 +443,14 @@ impl Store {
 
     /// An aside row's reads, kept beside its bytes.
     fn aside_reads(family: Stored, key: string) -> string {
+        let kept? = self.aside_reads_octets(family, key) else { return "" }
+        kept.text() ?? ""
+    }
+
+    fn aside_reads_octets(family: Stored, key: string) -> Bytes? {
         match self.keeping {
-            .Aside(rows) -> rows.get().get(self.reads_key(family, key)) ?? "",
-            .Disk -> "",
+            .Aside(rows) -> rows.get().get(self.reads_key(family, key)),
+            .Disk -> null,
         }
     }
 
