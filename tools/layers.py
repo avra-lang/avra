@@ -23,7 +23,7 @@ refused, in every package.
 
     python3 tools/layers.py          # refuses, naming each `use` that climbs
 """
-import glob
+import avsrc
 import re
 import sys
 
@@ -75,7 +75,7 @@ def by_id_calls(path, text):
 
 def by_id_writers():
     found, read = [], 0
-    for path in sorted(glob.glob("packages/*/src/**/*.av", recursive=True)):
+    for path in avsrc.av_files(["packages/*/src"], tests=True):
         read += 1
         found.extend(f"{path}: {w}" for w in by_id_calls(path, open(path, encoding="utf-8").read()))
     return found, read
@@ -83,14 +83,14 @@ def by_id_writers():
 
 def climbs():
     found, read = [], 0
-    for path in sorted(glob.glob("packages/std-avrac/src/**/*.av", recursive=True)):
+    for path in avsrc.av_files(["packages/std-avrac/src"]):
         own = path.split("/")[3]
-        if own not in ORDER or "/tests/" in path:
+        if own not in ORDER:
             continue
         read += 1
         for named, target in climbing(own, open(path, encoding="utf-8").read()):
             found.append(f"{path}: `{own}` names `{named}` — `use {target}`")
-    for path in sorted(glob.glob("packages/std-relation/src/**/*.av", recursive=True)):
+    for path in avsrc.av_files(["packages/std-relation/src"], tests=True):
         read += 1
         text = open(path, encoding="utf-8").read()
         found.extend(f"{path}: {w}" for w in outside(text, "/src/engine/" in path, "/tests/" in path))

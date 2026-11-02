@@ -15,6 +15,8 @@
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
 use core.{
+    UseParts,
+    StmtId,
     DeclId,
     SeatMark,
     TypeId,
@@ -1085,6 +1087,39 @@ fn verdict_read_exemplars() -> List<VerdictRead> {
     ]
 }
 
+/// A file's use lines: none, an item, an alias between plain items, a whole module, two lines.
+fn uses_exemplars() -> List<List<UseParts>> {
+    let at = StmtId { index: 0 }
+    [
+        [],
+        [UseParts { path: ["a"], items: ["x"], aliases: [""], stmt: at }],
+        [
+            UseParts {
+                path: ["@std", "text"],
+                items: ["x", "y", "z"],
+                aliases: ["", "w", ""],
+                stmt: at,
+            },
+        ],
+        [UseParts { path: ["a", "b"], items: [], aliases: [], stmt: at }],
+        [
+            UseParts { path: ["a"], items: ["x"], aliases: ["v"], stmt: at },
+            UseParts { path: ["b", "c"], items: ["y"], aliases: [""], stmt: at },
+        ],
+    ]
+}
+
+/// Two use lists alike in what each line names and binds.
+fn same_uses(a: List<UseParts>, b: List<UseParts>) -> bool {
+    a.length == b.length && [j for j, u in a if !same_use(u, b[j])].is_empty()
+}
+
+fn same_use(a: UseParts, b: UseParts) -> bool {
+    list_eq(a.path, b.path, (x: string, y: string) -> x == y) &&
+        list_eq(a.items, b.items, (x: string, y: string) -> x == y) &&
+        [j for j, _x in a.items if a.bound_as(j) != b.bound_as(j)].is_empty()
+}
+
 fn same_verdict_read(a: VerdictRead, b: VerdictRead) -> bool {
     match a {
         .Compiler -> b is .Compiler,
@@ -1440,6 +1475,14 @@ export fn codec_pairs() -> List<CodecCheck> {
             verdict_wire,
             verdict_of_wire,
             same_check_said,
+        ),
+        derived(
+            "uses_kept.uses_wire/uses_of_wire",
+            uses_exemplars(),
+            ["none", "one item", "aliased", "a module whole", "two lines"],
+            uses_wire,
+            uses_of_wire,
+            same_uses,
         ),
         derived(
             "verdict.verdict_read_word/verdict_read_of_word",

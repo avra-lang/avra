@@ -8,7 +8,7 @@
 # NOT ENOUGH FOR THE SECOND HALF: it lowers to an inline constant, never a `$lit` global,
 # so the static half would exercise nothing — a list spells a laid-out static.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
 R=build/durable-symbol-attack

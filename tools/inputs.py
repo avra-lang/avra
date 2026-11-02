@@ -36,12 +36,12 @@ evaluator, timing, a debug flag) and takes it out. The file only falls:
     python3 tools/inputs.py --accept   # prunes what a move made gone
 """
 import collections
-import glob
 import os
 import re
 import sys
 
 import licence_families
+import avsrc
 
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
 # The door is the FILES that define the input verbs and the disk's
@@ -308,21 +308,8 @@ def valued(pkg, name):
 def body_from(text, at):
     """A fn's text from its `fn` to the brace that closes it, by nesting —
     a one-line fn ends on its own line."""
-    depth, i, quoted = 0, at, False
-    while i < len(text):
-        c = text[i]
-        if c == "\\":
-            i += 1
-        elif c == '"':
-            quoted = not quoted
-        elif not quoted and c == "{":
-            depth += 1
-        elif not quoted and c == "}":
-            depth -= 1
-            if depth == 0:
-                return text[at:i + 1]
-        i += 1
-    return text[at:]
+    end = avsrc.braced_end(text, at)
+    return text[at:] if end is None else text[at:end + 1]
 
 
 FREE_FN = re.compile(r"^(?:export\s+)?(?:mut\s+|once\s+)?fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
@@ -392,13 +379,11 @@ def scope_sites(texts):
 
 
 def scope_files():
-    return sorted(f for root in SCOPE for f in glob.glob(root + "/**/*.av", recursive=True)
-                  if "/tests/" not in f)
+    return avsrc.av_files(SCOPE)
 
 
 def package_sources(pkg):
-    return [(f, open(f).read()) for f in sorted(glob.glob(f"packages/std-{pkg}/src/**/*.av", recursive=True))
-            if "/tests/" not in f]
+    return [(f, open(f).read()) for f in avsrc.av_files([f"packages/std-{pkg}/src"])]
 
 
 def baseline():

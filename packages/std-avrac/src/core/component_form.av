@@ -1,0 +1,89 @@
+//! A component's RECORD FORM, read off its declaration: what an instance
+//! that is a literal of the record needs to know. It is plain data, so a
+//! held provider says it in its record and its file is never parsed for it.
+use core.{
+    SyntaxArena,
+    ComponentParts,
+    FnParts,
+    Param,
+    TypeRef,
+    Record,
+    ChildSlot,
+    Event,
+    flatten,
+    some_list,
+}
+
+/// The mark that makes an event the one bare statements in an instance fill.
+export const default_mark: string = "default"
+
+/// The record an instance of the component is a literal of — absent for one
+/// that expands, whose instance is its template copied in place.
+export fn record_form(store: SyntaxArena, c: ComponentParts) -> Record? {
+    if expand_of(store, c) != null { return null }
+    record_of(store, c)
+}
+
+/// A component read as a record: its head in order, the `List` fields
+/// its instance's statements may fill, its one fn field — an event's
+/// handler is heard, never a body — and its events.
+export fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
+    let fields = c.fields()
+    let arrow_fields = [p for p in fields if p.ty?.arrow ?? false]
+    Record {
+        head: [p.name.of for p in c.head],
+        slots: [ChildSlot {
+            name: p.name.of,
+            of: element_name(p),
+            gathers: !declares_component(store, element_name(p)),
+        } for p in fields if lists(p)],
+        named: fields.any(it.name.of == "name"),
+        checks: member(store, c, "check") != null,
+        fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.of } else { null },
+        fn_optional: arrow_fields.length == 1 && answers_nullable(arrow_fields[0].ty),
+        events: [Event {
+            name: e.name,
+            says: [s.name.of for s in e.says],
+            default: e.holder.marks.any(it.name == default_mark),
+        } for e in c.events()],
+        words: fields.any(says_words(it)),
+    }
+}
+
+/// Whether a field is spelled with the type `Words`. The builder runs before
+/// types resolve, so this is only a HINT that the component may take a
+/// closure that says its text again, so the instance mints one beside it; the
+/// lowering fills a slot only when its resolved type is `@std/meta`'s own.
+fn says_words(p: Param) -> bool { p.ty?.name == "Words" }
+
+/// A written fn type's own answer reads as nullable: the `?` an arms
+/// body's implicit `_ -> null` tail answers to.
+fn answers_nullable(ty: TypeRef?) -> bool {
+    ty?.answer?.optional ?? false
+}
+
+/// Whether the file declares a component by this name — a list of its
+/// records takes that component's instances alone.
+fn declares_component(store: SyntaxArena, name: string) -> bool {
+    store.stmt_ids().any((s) -> store.component_parts(s)?.name == name)
+}
+
+/// The name a `List` field's elements are written with.
+fn element_name(p: Param) -> string {
+    p.ty?.applied?.first()?.name ?? ""
+}
+
+fn lists(p: Param) -> bool {
+    p.ty?.name == "List"
+}
+
+/// A component's `expand`, when it declares one.
+export fn expand_of(store: SyntaxArena, c: ComponentParts) -> FnParts? {
+    member(store, c, "expand")
+}
+
+/// A component's method of this name, when it declares one.
+export fn member(store: SyntaxArena, c: ComponentParts, name: string) -> FnParts? {
+    flatten([some_list(store.fn_parts(m)) for m in c.fns]).find(it.name == name)
+}
+

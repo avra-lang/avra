@@ -5,10 +5,10 @@
 # Each caller is its own module, so `explain <file> --why` says whether that module's
 # answer was recomputed (read) or stood (held).
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
-R=build/cancel-bits-attack; fails=0; steps=0
+R=build/cancel-bits-attack
 T=build/aside/cba.$$; mkdir -p "$T"
 [ -e "$R" ] && mv "$R" "$T/cba"
 P=$R/cb
@@ -31,7 +31,7 @@ inspected() {
 says() { # says <label> <a line the answer holds> <the answer>
     steps=$((steps + 1))
     printf '%s\n' "$3" | grep -qF -- "$2" ||
-        { fails=$((fails + 1)); echo "FAIL  $1: never said '$2': $(printf '%s\n' "$3" | head -3 | tr '\n' ' ')"; }
+        { fail "$1: never said '$2': $(printf '%s\n' "$3" | head -3 | tr '\n' ' ')"; }
 }
 kept() { $A check "$P" >/dev/null 2>&1; }
 

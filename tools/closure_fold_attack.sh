@@ -8,8 +8,8 @@
 # never serve one program the count another gathered. The library checked
 # alone folds its own closure and says nothing.
 set -u
-cd "$(dirname "$0")/.."
-T=$(pwd); B=build/closure-fold-attack; fails=0; steps=0
+. "$(dirname "$0")/lib/attack.sh"
+T=$(pwd); B=build/closure-fold-attack
 AVRA=${AVRA_BIN:-$T/build/avra}
 [ -d "$B" ] && find "$B" -depth -delete
 mkdir -p $B/lib/src/other $B/a/src $B/b/src
@@ -79,11 +79,11 @@ AV
 S() { # S <program> <want output>: built and run natively, then run by the evaluator
     steps=$((steps+1))
     $AVRA build $B/$1/src/main.av > $B/out 2> $B/err; st=$?
-    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $1: did not build (status $st)"; tail -5 $B/err; return; fi
+    if [ $st -ne 0 ]; then fail "$1: did not build (status $st)"; tail -5 $B/err; return; fi
     got=$($B/$1/src/main 2>&1)
-    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  program $1 printed '$got' natively, wanted '$2'"; }
+    [ "$got" = "$2" ] || fail "program $1 printed '$got' natively, wanted '$2'"
     ran=$($AVRA run $B/$1 2>&1 | grep -v '^watch:')
-    [ "$ran" = "$2" ] || { fails=$((fails+1)); echo "FAIL  program $1 printed '$ran' evaluated, wanted '$2'"; }
+    [ "$ran" = "$2" ] || fail "program $1 printed '$ran' evaluated, wanted '$2'"
 }
 S b "[knob] 1 10 101";              S a "[] 0 0"
 S b "[knob] 1 10 101";              S a "[] 0 0"
@@ -91,7 +91,6 @@ printf '\n@seat\nexport const lamp: Row = Row { owner: "lamp" }\n' >> $B/b/src/m
 S b "[knob,lamp] 2 20 102";         S a "[] 0 0"
 S b "[knob,lamp] 2 20 102"
 steps=$((steps+1))
-$AVRA check $B/lib > $B/out 2>&1 || { fails=$((fails+1)); echo "FAIL  the library alone did not check clean"; tail -5 $B/out; }
-grep -qE '(error|warning)\[' $B/out && { fails=$((fails+1)); echo "FAIL  the library alone spoke:"; head -5 $B/out; }
-echo "closure-fold-attack: $steps steps through one store, $fails failed"
-[ "$fails" -eq 0 ]
+$AVRA check $B/lib > $B/out 2>&1 || { fail "the library alone did not check clean"; tail -5 $B/out; }
+grep -qE '(error|warning)\[' $B/out && { fail "the library alone spoke:"; head -5 $B/out; }
+verdict "closure-fold-attack" "$steps steps through one store"
