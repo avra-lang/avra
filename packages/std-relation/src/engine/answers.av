@@ -85,6 +85,18 @@ impl Relation {
         }
     }
 
+    /// `start`, with the answer a re-entered call gets made by `cycled` instead of read back.
+    fn start_cycled(arg: int, cycled: fn() -> T) -> MemoStart<T> {
+        match self.ask(arg) {
+            .Reuse(value) -> MemoStart.Reuse(value),
+            .Cycle -> MemoStart.Reuse(cycled()),
+            .Compute -> {
+                self.kernel.begin(self.query_key(arg))
+                MemoStart.Compute
+            },
+        }
+    }
+
     /// Open a query whose computation deliberately makes progress on
     /// re-entry. Lowering uses this while its annotation is hidden by
     /// the recursive view; that smaller view is the cycle answer.

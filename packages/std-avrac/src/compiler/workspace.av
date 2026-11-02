@@ -251,9 +251,6 @@ type Followed = { reads: List<RunRead>, gen: int }
 /// makes the standing stale.
 type ViewStand = { files: int, asks: int, stands: bool }
 
-/// The name buckets one answer's run read, held for the group cell that stands for them.
-type Group = { owner: int, id: int, buckets: List<int> }
-
 /// THE NAME ENVIRONMENTS, as the modules' kept producers file them: the files declaring under
 /// each declaration name, component word and annotation mark; every extern; and the files
 /// declaring a kind that implements a trait for a type. A bucket reader mints the unread files
@@ -390,11 +387,6 @@ type Hold = {
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
-    /// The family a frame's gathered name reads stand under as one read, the groups minted
-    /// for it, and each group's place by its owner's family and id.
-    closure: Cell<int>,
-    groups: Cell<List<Group>>,
-    group_index: Cell<Map<string, int>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
     /// Whether this entry was derived on this store before.
@@ -494,9 +486,6 @@ fn new_hold() -> Hold {
         gathered: list_cell(),
         lowering: list_cell(),
         unit_asks: map_cell(),
-        closure: Cell.new(0 - 1),
-        groups: list_cell(),
-        group_index: map_cell(),
         owners: map_cell(),
         serving: Cell.new(false),
         warm: Cell.new(false),
@@ -660,6 +649,8 @@ export type Workspace = {
     lift_asks: Cell<List<LiftAsk>>,
     /// `lift_asks`' own name -> index (`lifted`'s interning).
     lift_asks_index: Cell<Map<string, int>>,
+    /// How many settlements have run: a read that sees it unmoved was answered from a cell.
+    settle_runs: Cell<int>,
     settle_asks: Cell<List<SettleAsk>>,
     /// `settle_asks`' own name -> index (`settle_id`'s interning).
     settle_asks_index: Cell<Map<string, int>>,
@@ -717,6 +708,7 @@ type LiftAsk = { name: string, decl: DeclId, file: FileId, stmt: StmtId, call: E
 
 /// A const site's stable inputs. The dense list position is the
 /// `Settled` family's key; its initializer is read inside the query.
+@codec
 type SettleAsk = { file: FileId, root: SettleRoot, name: string, seats: List<SeatValue> }
 
 /// The const a settlement is for — none for an expression's.
@@ -887,10 +879,6 @@ fn analysis_verified(ws: Workspace, arg: int) -> int {
     touch(ws.analysis(file_at(arg)))
     ws.db.changed_at(key(Family.Analysis, arg))
 }
-fn settled_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.settled_at(arg))
-    ws.db.changed_at(key(Family.Settled, arg))
-}
 fn lowered_verified(ws: Workspace, arg: int) -> int {
     touch(ws.lowered(arg))
     ws.db.changed_at(key(Family.Lowered, arg))
@@ -981,7 +969,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .ConstTyped -> const_typed_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
         .Analysis -> analysis_verified(ws, arg),
-        .Settled -> settled_verified(ws, arg),
         .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
@@ -1127,6 +1114,7 @@ fn built(
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
         lift_asks_index: Cell.new(no_lift_index),
+        settle_runs: Cell.new(0),
         settle_asks: Cell.new(no_settles),
         settle_asks_index: Cell.new(no_settle_index),
         records: new_records(),
@@ -1170,7 +1158,6 @@ fn built(
         if ws.db.family() != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         ws.db.kernel.named(f.ordinal, f.name)
     }
-    ws.hold.closure.set(ws.db.kernel.hashed_family((group: int) -> ws.group_print(group)))
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
@@ -2686,7 +2673,6 @@ export fn family_code_hash(f: Family) -> string {
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",
         .Analysis -> code_hash(analysis_verified) ?? "",
-        .Settled -> code_hash(settled_verified) ?? "",
         .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
