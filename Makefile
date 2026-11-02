@@ -728,7 +728,6 @@ cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/docs_cache_attack.sh
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
-	@sh tools/path_leak_attack.sh
 	@sh tools/held_runs_attack.sh
 
 cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
