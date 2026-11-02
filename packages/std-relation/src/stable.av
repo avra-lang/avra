@@ -8,6 +8,8 @@
 //! step — a mix only at the end keeps every collision a linear fold made
 //! on the way.
 
+use @std.errors.{Loc}
+
 /// splitmix64's finalizer: a nonlinear 64-bit mix.
 export fn mix(x: int) -> int {
     let a = (x ^ shifted(x, 30)).wrapping_mul(-4658895280553007687)
@@ -110,10 +112,18 @@ fn flag(v: bool) -> int {
 /// hands in: a spelling of the id — a durable name for a declaration, an offset from a
 /// window's base for an expression — and an inverse that answers absent for a spelling it
 /// does not hold. `kind` is the id type's own name.
+///
+/// A PLACE IN A TEXT crosses the same way: an offset means nothing once the text above it
+/// moves, so the scope spells a span of `file` as it chooses (a token place), absent where
+/// it cannot, and reads one back to its offsets, absent where the text no longer holds it.
 export trait Scope {
     fn spelled(kind: string, index: int) -> string
 
     fn unspelled(kind: string, text: string) -> int?
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>?
+
+    fn unplaced(file: string, at: List<int>) -> List<int>?
 }
 
 /// The scope that spells an id by its index, which only the process that wrote it reads back.
@@ -121,6 +131,10 @@ export type Indexed = {}
 
 impl Scope for Indexed {
     fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { if at.length == 2 { at } else { null } }
 
     fn unspelled(kind: string, text: string) -> int? {
         if text.is_empty() || text.length > 18 { return null }
@@ -150,6 +164,22 @@ export fn writer() -> Writer {
 /// travels with the call, never with the writer, so a writer costs no box.
 export fn written_dense(w: Writer, scope: dyn Scope, kind: string, index: int) {
     w.text(scope.spelled(kind, index))
+}
+
+/// A place written: its file, then the span as `scope` spells it — absent where it cannot.
+/// A place with no file is no text's, so it keeps its offsets.
+export fn written_place(w: Writer, scope: dyn Scope, l: Loc) {
+    let file? = l.file else {
+        w.present(false)
+        w.int(l.lo)
+        w.int(l.hi)
+        return
+    }
+    w.present(true)
+    w.text(file)
+    let at = scope.placed(file, l.lo, l.hi)
+    w.present(at != null)
+    if at != null { written_list(w, at!, (w: Writer, n: int) -> w.int(n)) }
 }
 
 impl Writer {
@@ -291,7 +321,7 @@ export enum CodecFault {
     OtherArguments
     /// a record written under another shape than the type's own
     OtherShape
-    /// a dense id whose spelling the scope does not hold
+    /// a dense id's spelling or a place the scope does not hold
     Unresolved
 }
 
@@ -407,6 +437,22 @@ export fn dense_read<T>(r: Reader, scope: dyn Scope, kind: string, make: fn(int)
     let spelling = r.text()?
     let index? = scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
     .Ok(make(index))
+}
+
+/// A place read back through the scope: a span the scope cannot place, or no longer holds,
+/// is refused — never clamped to where it never pointed.
+export fn place_read(r: Reader, scope: dyn Scope) -> Result<Loc, CodecFault> {
+    if !r.present()? {
+        let lo = r.int()?
+        return Loc { file: null, lo: lo, hi: r.int()? }
+    }
+    let file = r.text()?
+    if !r.present()? { fail CodecFault.Unresolved }
+    let n = r.count()?
+    let at = [r.int()? for _k in 0..n]
+    let span? = scope.unplaced(file, at) else { fail CodecFault.Unresolved }
+    if span.length != 2 { fail CodecFault.Unresolved }
+    Loc { file: file, lo: span[0], hi: span[1] }
 }
 
 /// A tagged enum's variant, read back by its place among the names.
