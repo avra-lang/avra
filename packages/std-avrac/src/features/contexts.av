@@ -139,9 +139,8 @@ impl Decls {
     fn decl_type_of(mut voices: Voices, error_type: TypeId, read_at: Loc?, d: DeclId) -> TypeId {
         let x = self.decl(d)
         if x.kind is .Const || x.kind is .Collect { return self.declared_const_type(voices, error_type, d) }
-        let shown = self.named_by(d) ?? d
-        let tname: string? = self.type_name(shown)
-        if tname != null { return self.types.intern(Type.TypeName(shown, tname!)) }
+        let named: TypeId? = self.type_name_type(d)
+        if named != null { return named! }
         if !self.tparams(d).is_empty() {
             voices.speak(self.not_a_value(d))
             return error_type
@@ -172,6 +171,15 @@ impl Decls {
         if !self.tparams(d).is_empty() { return null }
         let sig? = self.sig(d)?.fn_sig() else { return null }
         self.types.known(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
+    }
+
+    /// A type's name read as a value — its `TypeName`, the same in
+    /// every pass whatever has been typed so far — or null for a
+    /// declaration that names no type.
+    fn type_name_type(d: DeclId) -> TypeId? {
+        let shown = self.named_by(d) ?? d
+        let tname? = self.type_name(shown) else { return null }
+        self.types.intern(Type.TypeName(shown, tname))
     }
 }
 
