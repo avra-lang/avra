@@ -47,6 +47,7 @@ use core.{
 }
 use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
+use features.{Bypassed}
 use features.{
     ExternNote,
     Bypassed,
@@ -1172,7 +1173,6 @@ fn built(
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
-    ws.decls.arm_door((r: Bypassed) -> ws.door_read(r))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
     ws
         .decls
@@ -1213,6 +1213,7 @@ fn built(
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
     ws.arm_audit()
+    ws.decls.arm_cover((r: Bypassed) -> ws.door_read(r))
     ws.stage_language()
     ws.load_packages(src)
     ws
@@ -2345,6 +2346,26 @@ impl Workspace {
         out
     }
 
+    /// A raw read of the table, recorded as the read it is: a file's store is its parse, a
+    /// declaration's facts its syntax — and either, in a file held from its record, that
+    /// file's rows. Every other read is recorded as the cells that cover it.
+    fn door_read(r: Bypassed) {
+        match r {
+            .Store(f) -> {
+                if self.is_held(f) {
+                    self.decls.rows_read(f)
+                } else if !self.hold.ranged.get().contains(f.index) {
+                    let _ = self.parsed(f)
+                }
+            },
+            .Facts(d) -> {
+                let f = self.decls.decl(d).file
+                if self.is_held(f) { self.decls.rows_read(f) } else { let _ = self.syntax(d) }
+            },
+            .Decl(_) or .SigSoFar(_) or .Methods(_) or .Written(_) or .Errors(_) -> self.cover_read(r),
+        }
+    }
+
     /// A declaration's own syntax, DECLARATION-GRAIN (COMPILER DB
     /// townhall §6.11): the fold of its expr/stmt range's fingerprints.
     /// Depends on the file's `Parsed` alone, so an edit ANYWHERE in the
@@ -2358,28 +2379,6 @@ impl Workspace {
     /// signed or lowered under) never calls this for itself: reading
     /// the nodes it is itself the pass for is its computation, not a
     /// Db read.
-    /// A raw read of the table, recorded as the read it is: a file's store is its parse, a
-    /// declaration's facts its syntax — and either, in a file held from its record, that
-    /// file's rows. False for a read no query names.
-    fn door_read(r: Bypassed) -> bool {
-        match r {
-            .Store(f) -> {
-                if self.is_held(f) {
-                    self.decls.rows_read(f)
-                } else if !self.hold.ranged.get().contains(f.index) {
-                    let _ = self.parsed(f)
-                }
-                true
-            },
-            .Facts(d) -> {
-                let f = self.decls.decl(d).file
-                if self.is_held(f) { self.decls.rows_read(f) } else { let _ = self.syntax(d) }
-                true
-            },
-            .Decl(_) or .SigSoFar(_) or .Methods(_) or .Written(_) or .Errors(_) -> false,
-        }
-    }
-
     fn syntax(d: DeclId) -> int {
         let k = key(Family.Syntax, d.index)
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
