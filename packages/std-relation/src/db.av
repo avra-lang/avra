@@ -32,6 +32,9 @@ use engine.{
     new_kernel,
     Relation,
     new_memo,
+    Fixpoint,
+    new_fixpoint,
+    spoken as fixpoint_spoken,
     Table,
     new_table,
     edge_of,
@@ -884,6 +887,10 @@ type AnswersUnder<V> = {
     /// Each int-keyed call's number, by its arg.
     numbers: Cell<List<int>>,
     named: Cell<DenseNames?>,
+    /// A fixpoint query's group solver over this family, made by its first call.
+    fixed: Cell<List<Fixpoint<V>>>,
+    /// Each fixpoint member's own body, by its arg: what its group's solve steps.
+    bodies: Table<fn() -> V>,
 }
 
 /// How a query keyed by one dense number names its calls past the process: the number's
@@ -987,6 +994,8 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnde
         dense: dense,
         numbers: list_cell(),
         named: Cell.new(none),
+        fixed: list_cell(),
+        bodies: new_table(),
     }
 }
 
@@ -1043,6 +1052,12 @@ fn read_leaf(r: Reader) -> Result<Leaf, CodecFault> {
 
 /// A call verified: asked again when it is a query's, then the revision
 /// its cell last changed at.
+/// A fixpoint member's own body run: every member a solve steps was asked, so its body is kept.
+fn run_body<V>(bodies: Table<fn() -> V>, arg: int) -> V {
+    let body = bodies.at(arg)!
+    body()
+}
+
 fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
     let h? = held else { return 0 }
     match h.again.entry(arg) {
@@ -1180,6 +1195,37 @@ impl AnswersUnder<V> {
         let ask = names.ask
         self.memo.kernel.unheard(() -> ask(n))
         self.memo.kernel.value_hash_of(key)
+    }
+
+    /// A FIXPOINT QUERY'S CALL: a member of the group its reads make, the group solved from
+    /// `bottom` under `join` on this family until no member grows. A join that breaks a lattice
+    /// law traps in the law's own words.
+    fn solved(
+        arg: int,
+        body: fn() -> V,
+        again: fn() -> V,
+        bottom: V,
+        join: fn(V, V) -> V,
+        digest: fn(V) -> int,
+    ) -> V {
+        self.again.keep(arg, again)
+        self.bodies.keep(arg, body)
+        let made = self.fixed.get().first() ?? self.fixpoint_made(bottom, join, digest)
+        let bodies = self.bodies
+        match made.asked(arg, (a: int) -> run_body(bodies, a)) {
+            .Ok(value) -> value,
+            .Err(r) -> {
+                trapped(fixpoint_spoken(r))
+                bottom
+            },
+        }
+    }
+
+    /// This family's group solver, made once.
+    fn fixpoint_made(bottom: V, join: fn(V, V) -> V, digest: fn(V) -> int) -> Fixpoint<V> {
+        let made = new_fixpoint<V>(self.memo.kernel, self.memo.family, bottom, join, digest)
+        self.fixed.push(made)
+        made
     }
 
     fn remember_int(n: int, made: int) {

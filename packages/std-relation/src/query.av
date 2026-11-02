@@ -24,7 +24,9 @@
 //! `@recursive` lets a call re-entered before it settles compute again,
 //! a smaller view, where a plain query answers the cycle with the value
 //! it last held — or, under `@cycled_by(f)`, with what `f` says stands for
-//! the call while its run is open. A body that cannot finish its answer says so with
+//! the call while its run is open. `@fixpoint(bottom, join)` solves the
+//! whole group a cycle makes instead: from `bottom()`, joined until no
+//! member grows, and solved again from bottom when any member's read moves. A body that cannot finish its answer says so with
 //! `db.unkept()`: the answer reaches its asker and no cell holds it.
 //!
 //!     @query
@@ -307,6 +309,24 @@ export fn cycled_by(f: Fn, by: Fn) -> List<Diagnostic> {
     []
 }
 
+/// `@fixpoint(bottom, join)`: a call re-entered before it settles answers the value its group
+/// holds now, and the group is solved from `bottom()` under `join` until no member grows —
+/// every member's seats in, its answer out.
+export fn fixpoint(f: Fn, bottom: Fn, join: Fn) -> List<Diagnostic> {
+    if !queried(f) { return [mark_alone(f, "fixpoint")] }
+    if f.annotations.any((a: Annotation) -> a.name == "recursive" || a.name == "cycled_by") { return [fixpoint_twice(f)] }
+    if !bottom.params.is_empty() || bottom.answer != f.answer { return [bottom_shape(f, bottom)] }
+    let joins = join.params.length == 2 && join.params.all((p: Param) -> p.ty == f.answer)
+    if !joins || join.answer != f.answer { return [join_shape(f, join)] }
+    []
+}
+
+/// The `@fixpoint` mark's two fns, when the query wears it.
+fn fixpoint_words(f: Fn) -> List<string>? {
+    let mark? = f.annotations.find((a: Annotation) -> a.name == "fixpoint") else { return null }
+    if mark.args.length == 2 { mark.args } else { null }
+}
+
 /// Whether a fn is a query.
 fn queried(f: Fn) -> bool { f.annotations.any((a: Annotation) -> a.name == "query" || a.name == "over") }
 
@@ -391,6 +411,19 @@ fn wrapper(f: Fn) -> Decls {
     let db = db_code(f)
     let body = quote { () -> ${wrapped(f)}(${..args}) }
     let again = quote { () -> ${f.name}(${..args}) }
+    let words = fixpoint_words(f)
+    if words != null {
+        let bottom = words![0]
+        let join = name(words![1])
+        return quote {
+            fn ${f.name}(..${seats}) -> ${f.answer} {
+                let held = ${kept_name(f)}().under(${db})
+                ${named_by(f)}
+                let arg = ${arg_code(f)}
+                held.solved(arg, ${body}, ${again}, ${bottom}(), ${join}, ${digest_code(f)})
+            }
+        }
+    }
     if saved(f) {
         let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: spelled_hash(${literal(f.name)}, spelled), write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
         return quote {
@@ -558,6 +591,33 @@ fn cycle_shape(f: Fn, by: Fn) -> Diagnostic {
         by.at ?? f.at,
         "`${by.name}` answers `${f.name}` re-entered, so it takes `${f.name}`'s seats and answers `${f.answer}`",
         "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}) -> ${f.answer}`",
+    )
+}
+
+fn bottom_shape(f: Fn, bottom: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_cycle",
+        bottom.at ?? f.at,
+        "`${bottom.name}` is `${f.name}`'s bottom, so it takes nothing and answers a `${f.answer}`",
+        "declare it `fn ${bottom.name}() -> ${f.answer}`",
+    )
+}
+
+fn join_shape(f: Fn, join: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_cycle",
+        join.at ?? f.at,
+        "`${join.name}` joins `${f.name}`'s answers, so it takes two `${f.answer}` and answers one",
+        "declare it `fn ${join.name}(a: ${f.answer}, b: ${f.answer}) -> ${f.answer}`",
+    )
+}
+
+fn fixpoint_twice(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_cycle",
+        f.at,
+        "`${f.name}` answers its cycle by its group's fixpoint, so it wears no other cycle mark",
+        "keep one: `@fixpoint` to solve the group, `@recursive` or `@cycled_by` to answer one call",
     )
 }
 
