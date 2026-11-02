@@ -1,0 +1,60 @@
+// proves: a `@query` answering a List of a `@codec` record is a query — the stable-answer law
+// takes the record whole by its own codec — and its answer is digested by the codec's bytes
+// (`digest_in`) and kept: a later process reads it back without running the body, and an
+// answer that moves under a read that moved runs again
+use @std.relation.{codec, query, input}
+use @std.relation.db.{Db, Durable, durable_db}
+
+/// One line of a file's survey, as its own codec writes it.
+@codec
+type Line = { at: int, words: List<string>, case: Case? }
+
+/// A case a line calls, nested inside the line.
+@codec
+type Case = { name: string, args: List<int> }
+
+once fn disk() -> Cell<Map<string, Bytes>> { Cell.new({}) }
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+fn read_record(query: string, args: int) -> Bytes? { disk().get().get("${query}\t${args}") }
+
+fn keep_record(query: string, args: int, record: Bytes) { disk().put("${query}\t${args}", record) }
+
+fn process() -> Db { durable_db(Durable { answer: read_record, keep: keep_record }) }
+
+@input
+fn text(_db: Db, _path: string) -> string { "" }
+
+@query
+fn lines_of(db: Db, path: string) -> List<Line> {
+    let c = computes()
+    c.set(c.get() + 1)
+    [Line {
+        at: i,
+        words: l.split(" "),
+        case: if l.starts_with("call ") { Case { name: l, args: [i, i * 2] } } else { null },
+    } for i, l in text(db, path).split("\n")]
+}
+
+fn shown(ls: List<Line>) -> string {
+    ["${l.at}:${l.words.join("+")}:${l.case?.name ?? "-"}:${(l.case?.args ?? []).length}" for l in ls]
+        .join(",")
+}
+
+fn main_run() -> string {
+    let first = process()
+    set_text(first, "a.av", "let x\ncall f")
+    let a = shown(lines_of(first, "a.av"))
+    let later = process()
+    set_text(later, "a.av", "let x\ncall f")
+    let before = computes().get()
+    let b = shown(lines_of(later, "a.av"))
+    let restored = computes().get() == before
+    let edited = process()
+    set_text(edited, "a.av", "let y")
+    let c = shown(lines_of(edited, "a.av"))
+    "${a} | ${b} ${restored} | ${c} ${computes().get()}"
+}
+
+main_run()

@@ -59,6 +59,7 @@ use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames, named_spelling
 use engine.{Key}
 use stable.{
     stable_hasher,
+    indexed_scope,
     text_hash,
     hashed_opt,
     hashed_list,
@@ -78,7 +79,14 @@ use stable.{
 }
 
 /// What a query's answer codec calls its helpers on: the answer's own name, every record inline.
-fn answer_owner(f: Fn) -> Owner { own_of(f.answer) with { scoped: scoped(f) } }
+fn answer_owner(f: Fn) -> Owner { own_of(f.answer) with { scoped: scoped(f), coded: coded(f) } }
+
+/// The `@codec` types a query's seats and answer reach: each crosses by its own codec under the
+/// bound scope.
+fn coded(f: Fn) -> List<string> {
+    [c for p in f.params.slice(1, f.params.length) for c in coded_in(p.kind)]
+        .concat(coded_in(f.answers))
+}
 
 /// Whether a query's dense ids cross through its context's scope — its key's and its answer's,
 /// spelled for the key, the digest and the record alike.
@@ -101,7 +109,10 @@ fn named_seats(f: Fn) -> Code {
 
 /// The context's one scope, bound where a scoped query's code spells an id.
 fn scope_bound(f: Fn) -> List<Stmts> {
-    if !scoped(f) { return [] }
+    if !scoped(f) {
+        if coded(f).is_empty() { return [] }
+        return [scope_let(quote { indexed_scope() })]
+    }
     let by? = mark_word(f, "scoped_by") else { return [scope_let(quote { ${name(f.params[0].name)}.query_scope() })] }
     [scope_let(quote { ${by}(..${[name(p.name) for p in f.params]}) })]
 }
