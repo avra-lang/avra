@@ -40,7 +40,9 @@ use @std.meta.{
     name,
     as_code,
     int_node,
+    type_named,
 }
+use @std.relation.stable.{indexed_scope}
 
 // ── The field-mark registry. `@local` is this process's own: no child,
 // out of identity, its value stays on the node. `@facet(table)` leaves
@@ -240,7 +242,7 @@ fn listed(head: Code, rest: List<Code>) -> Code {
 
 /// How a fold reaches a named value: `own` folds it by its own method, `held` folds a
 /// generic record of one parameter, handed the fold of what it holds.
-type Folds = { own: fn(Code) -> Code, held: fn(Code, Code) -> Code }
+type Folds = { own: fn(Code) -> Code, held: fn(Code, Code) -> Code, coded: fn(Code, string) -> Code }
 
 impl Folds {
     fn own_of(e: Code) -> Code {
@@ -252,11 +254,20 @@ impl Folds {
         let f = self.held
         f(e, cell)
     }
+
+    fn coded_of(e: Code, n: string) -> Code {
+        let f = self.coded
+        f(e, n)
+    }
 }
 
 /// A fold whose every named value goes to `leaf`.
 fn leaf_folds(leaf: fn(Code) -> Code) -> Folds {
-    Folds { own: leaf, held: (e: Code, _cell: Code) -> leaf(e) }
+    Folds {
+        own: leaf,
+        held: (e: Code, _cell: Code) -> leaf(e),
+        coded: (e: Code, _n: string) -> leaf(e),
+    }
 }
 
 /// A named value folds by its own `fingerprint()`.
@@ -264,6 +275,7 @@ fn plain_folds() -> Folds {
     Folds {
         own: (e: Code) -> quote { ${e}.fingerprint() },
         held: (e: Code, cell: Code) -> quote { ${e}.fingerprint_with(${cell}) },
+        coded: (e: Code, n: string) -> quote { ${name(n)}.digest_in(indexed_scope(), ${e}) },
     }
 }
 
@@ -273,6 +285,7 @@ fn id_folds() -> Folds {
     Folds {
         own: (e: Code) -> quote { ${e}.fingerprint_in(ids) },
         held: (e: Code, cell: Code) -> quote { ${e}.fingerprint_with_in(ids, ${cell}) },
+        coded: (e: Code, n: string) -> quote { ${name(n)}.digest_in(ids.as_scope(), ${e}) },
     }
 }
 
@@ -289,9 +302,16 @@ fn folded(k: Kind, e: Code, leaf: Folds) -> Code {
         .Opt(inner) -> optional(inner, e, leaf),
         .Result(ok, err) -> answered(ok, err, e, leaf),
         .Map(_, value) -> quote { fp_list([${mixed(quote { fp_str(key) }, [folded(value, quote { held }, leaf)])} for key, held in ${e}]) },
-        .Named(_, args) -> generic(args, e, leaf),
+        .Named(n, args) -> if args.is_empty() && wears_codec(n) { leaf.coded_of(e, n) } else { generic(args, e, leaf) },
         .Float or .Ptr or .Void or .Cell(_) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> leaf.own_of(e),
     }
+}
+
+/// A TYPE THAT WEARS `@codec` folds by its codec's digest — one derivation for its bytes, its
+/// key and its fold alike.
+fn wears_codec(n: string) -> bool {
+    let t? = type_named(n) else { return false }
+    t.annotations.any(it.name == "codec")
 }
 
 /// A GENERIC RECORD OF ONE PARAMETER folds through its own `fingerprint_with`, handed the

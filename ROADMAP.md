@@ -3214,6 +3214,15 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### An optional chain reaches through a following method
+
+`t?.xs.any(it == 1)` stops the chain at the `?.`: the method is asked of `List<int>?` and refused
+("`.any(…)` calls a method, and `List<int>?` has none"). Inside a derive's compile-time run the same
+shape typed past that law and failed only when lowered, as a defect naming fingerprint.av's own
+expression — every `@derive(Fingerprint)` in the module went with it. The want: a chain after `?.`
+answers absent whole, so `type_named(n)?.annotations.any(it.name == "codec") ?? false` is one line
+(core/fingerprint.av's `wears_codec`, written as a `let t? = … else` today).
+
 ### Interim record — an event is fired in two statements
 
 A component fires its own declared event by unwrapping the nullable
