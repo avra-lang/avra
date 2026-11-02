@@ -138,7 +138,7 @@ const stored_marks: List<string> = ["local"]
 /// `@derive(Codec)`'s generator — see `codec`.
 export trait Codec {
     static fn derive(t: Type) -> List<Directive> {
-        [Directive { twin: "", name: t.name, at: t.at, source: stored_generated(t) }]
+        stored_made(stored(t))
     }
 
     static fn marks(t: Type) -> List<string> { stored_marks }
@@ -151,7 +151,8 @@ export trait Codec {
 /// the argument, and a `@local` field is no part of the wire and is rebuilt from its declared
 /// default. A field with no wire form is refused, named.
 export fn codec(t: Type) -> Declared {
-    Declared { made: Codec.derive(t), problems: stored_problems(t) }
+    let s = stored(t)
+    Declared { made: stored_made(s), problems: s.problems }
 }
 
 /// `@arena` beside `@relation` — the row lives at an existing `Arena<T>`'s
@@ -437,7 +438,20 @@ fn record_answer(k: Kind) -> bool {
 /// and every stored type writes and reads each record by a helper, so a lambda can read one back.
 /// Who a codec's helpers are `static` on, and what they carry: `ordinal` writes a variant by
 /// its place, `scoped` reads dense ids through the scope its caller hands in.
-type Owner = { name: string, all: bool, ordinal: bool, scoped: bool }
+type Owner = { name: string, all: bool, ordinal: bool, scoped: bool, shapes: Map<string, NamedShape>, ids: Map<string, string> }
+
+impl Owner {
+    /// A named kind's shape at its arguments — what the owner already read, or a fresh reading.
+    fn shape(n: string, args: List<Kind>) -> NamedShape {
+        self.shapes.get(Kind.Named(n, args).spelled()) ?? instance_shape(n, args)
+    }
+
+    /// The name a helper of `spelled` is written under.
+    fn id_of(spelled: string) -> string { self.ids.get(spelled) ?? helper_id(spelled) }
+
+    /// Whether a kind's subtree is written by a helper of this owner's.
+    fn needs(k: Kind) -> bool { kind_needs_in(k, [], self.all, self.shapes) }
+}
 
 fn row_owner(t: Type) -> Owner {
     Owner {
@@ -445,6 +459,8 @@ fn row_owner(t: Type) -> Owner {
         all: stable(t).any((f: Field) -> kind_needs(f.kind, [], true)),
         ordinal: false,
         scoped: false,
+        shapes: {},
+        ids: {},
     }
 }
 
@@ -455,17 +471,20 @@ fn uses_helpers(t: Type) -> bool { row_owner(t).all }
 
 /// Whether a kind's subtree needs a generated helper: it reaches a payload
 /// enum, or a record reachable from itself.
-fn kind_needs(k: Kind, seen: List<string>, all: bool) -> bool {
+fn kind_needs(k: Kind, seen: List<string>, all: bool) -> bool { kind_needs_in(k, seen, all, {}) }
+
+/// `kind_needs` over the shapes already read, a name they do not hold read afresh.
+fn kind_needs_in(k: Kind, seen: List<string>, all: bool, shapes: Map<string, NamedShape>) -> bool {
     match k {
-        .Opt(inner) -> kind_needs(inner, seen, all),
-        .List(elem) -> kind_needs(elem, seen, all),
-        .Map(_, value) -> kind_needs(value, seen, all),
-        .Named(n, args) -> match instance_shape(n, args) {
+        .Opt(inner) -> kind_needs_in(inner, seen, all, shapes),
+        .List(elem) -> kind_needs_in(elem, seen, all, shapes),
+        .Map(_, value) -> kind_needs_in(value, seen, all, shapes),
+        .Named(n, args) -> match shapes.get(k.spelled()) ?? instance_shape(n, args) {
             .Payload(_) -> true,
             .Record(fs) -> if all || seen.contains(n) {
                 true
             } else {
-                columns(fs).any((f: Field) -> kind_needs(f.kind, seen.concat([n]), all))
+                columns(fs).any((f: Field) -> kind_needs_in(f.kind, seen.concat([n]), all, shapes))
             },
             .Tagged(_) or .Dense(_) or .Over(_) or .Plain -> false,
         },
@@ -1164,10 +1183,10 @@ fn hashed(acc: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Str -> quote { ${acc}.text(${e}) },
         .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem, owner)}) },
-        .Named(n, args) -> if kind_needs(k, [], owner.all) {
-            quote { ${name(owner.name)}.hash_${helper_id(k.spelled())}(${acc}, ${e}) }
+        .Named(n, args) -> if owner.needs(k) {
+            quote { ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(${acc}, ${e}) }
         } else {
-            match instance_shape(n, args) {
+            match owner.shape(n, args) {
                 .Record(fs) -> folded_record(acc, e, fs, owner),
                 .Over(shape) -> hashed(acc, quote { ${e}.of }, shape, owner),
                 .Tagged(_) -> quote { ${acc}.text(${tag_of(e, k)}) },
@@ -1196,10 +1215,10 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
         .Str -> quote { (h: StableHasher, v: string) -> h.text(v) },
         .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem, owner)}) },
-        .Named(n, args) -> if kind_needs(k, [], owner.all) {
-            quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${helper_id(k.spelled())}(h, v) }
+        .Named(n, args) -> if owner.needs(k) {
+            quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(h, v) }
         } else {
-            match instance_shape(n, args) {
+            match owner.shape(n, args) {
                 .Record(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs, owner)} },
                 .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape, owner)} },
                 .Tagged(_) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
@@ -1304,10 +1323,10 @@ fn read_value(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { read_opt(rd, ${read_each(inner, owner)})? },
         .List(elem) -> quote { read_list(rd, ${read_each(elem, owner)})? },
         .Map(_, value) -> quote { read_map(rd, ${read_each(value, owner)})? },
-        .Named(n, args) -> if kind_needs(k, [], owner.all) {
+        .Named(n, args) -> if owner.needs(k) {
             quote { ${read_helper(quote { rd }, k.spelled(), owner)}? }
         } else {
-            match instance_shape(n, args) {
+            match owner.shape(n, args) {
                 .Dense(field) -> quote { ${read_dense_at(quote { rd }, n, field, owner)}? },
                 .Tagged(_) -> quote { ${tag_reader(quote { rd }, k, owner)}? },
                 .Record(fs) -> record_read(n, fs, owner),
@@ -1321,7 +1340,7 @@ fn read_value(k: Kind, owner: Owner) -> Code {
 
 /// The owner a record's own reader calls its helper fns on: the answer's
 /// type, every record inline.
-fn own_of(answer: string) -> Owner { Owner { name: answer, all: false, ordinal: false, scoped: false } }
+fn own_of(answer: string) -> Owner { Owner { name: answer, all: false, ordinal: false, scoped: false, shapes: {}, ids: {} } }
 
 /// A record's reader, bound where its answer is kept. The binding is built
 /// beside `read_value` because a spliced reader resolves `rd` where its
@@ -1352,10 +1371,10 @@ fn read_each(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner, owner)}) },
         .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem, owner)}) },
         .Map(_, value) -> quote { (r: Reader) -> read_map(r, ${read_each(value, owner)}) },
-        .Named(n, args) -> if kind_needs(k, [], owner.all) {
+        .Named(n, args) -> if owner.needs(k) {
             quote { (r: Reader) -> ${read_helper(quote { r }, k.spelled(), owner)} }
         } else {
-            match instance_shape(n, args) {
+            match owner.shape(n, args) {
                 .Dense(field) -> quote { (r: Reader) -> ${read_dense_at(quote { r }, n, field, owner)} },
                 .Tagged(_) -> quote { (r: Reader) -> ${tag_reader(quote { r }, k, owner)} },
                 .Over(shape) -> quote { (r: Reader) -> read_over(r, ${read_each(shape, owner)}, (x: ${shape.spelled()}) -> ${n}(x)) },
@@ -1375,10 +1394,10 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner, owner)}) },
         .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { written_map(${w}, ${e}, ${write_each(value, owner)}) },
-        .Named(n, args) -> if kind_needs(k, [], owner.all) {
+        .Named(n, args) -> if owner.needs(k) {
             write_helper(w, k.spelled(), e, owner)
         } else {
-            match instance_shape(n, args) {
+            match owner.shape(n, args) {
                 .Record(fs) -> {
                     let writers = column_writers(k.spelled(), fs, owner)
                     quote { written_all(${w}, ${e}, [${..writers}]) }
@@ -1396,17 +1415,17 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
 /// A helper call: the owner's own `static`, handed the scope when its codec reads dense ids.
 fn write_helper(w: Code, spelled: string, e: Code, owner: Owner) -> Code {
     if owner.scoped {
-        return quote { ${name(owner.name)}.write_${helper_id(spelled)}(${w}, scope, ${e}) }
+        return quote { ${name(owner.name)}.write_${owner.id_of(spelled)}(${w}, scope, ${e}) }
     }
-    quote { ${name(owner.name)}.write_${helper_id(spelled)}(${w}, ${e}) }
+    quote { ${name(owner.name)}.write_${owner.id_of(spelled)}(${w}, ${e}) }
 }
 
 /// The same call on the read side, its `?` left to the seat that takes the value.
 fn read_helper(r: Code, spelled: string, owner: Owner) -> Code {
     if owner.scoped {
-        return quote { ${name(owner.name)}.read_${helper_id(spelled)}(${r}, scope) }
+        return quote { ${name(owner.name)}.read_${owner.id_of(spelled)}(${r}, scope) }
     }
-    quote { ${name(owner.name)}.read_${helper_id(spelled)}(${r}) }
+    quote { ${name(owner.name)}.read_${owner.id_of(spelled)}(${r}) }
 }
 
 /// A dense id written as `scope` spells it, and read back through the same. A relation's
@@ -1435,10 +1454,10 @@ fn write_each(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner, owner)}) },
         .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { (w: Writer, v: ${k.spelled()}) -> written_map(w, v, ${write_each(value, owner)}) },
-        .Named(n, args) -> if kind_needs(k, [], owner.all) {
+        .Named(n, args) -> if owner.needs(k) {
             quote { (w: Writer, v: ${k.spelled()}) -> ${write_helper(quote { w }, k.spelled(), quote { v }, owner)} }
         } else {
-            match instance_shape(n, args) {
+            match owner.shape(n, args) {
                 .Record(fs) -> {
                     let writers = column_writers(k.spelled(), fs, owner)
                     quote { (w: Writer, v: ${k.spelled()}) -> written_all(w, v, [${..writers}]) }
@@ -1469,39 +1488,40 @@ fn helper_id(spelled: string) -> string {
 /// Every kind reachable from a set of columns that needs a helper — a record or a payload
 /// enum, each instance of a generic once — in reach order, `seeded` ones counted as met.
 fn helper_types(columns: List<Field>, seeded: List<Kind>) -> List<Kind> {
-    mut all = seeded
-    for f in columns { all = collect_kinds(f.kind, all) }
-    all
+    mut all: Map<string, Kind> = {}
+    for k in seeded { all.set(k.spelled(), k) }
+    for f in columns { collect_kinds(f.kind, all) }
+    all.values()
 }
 
 /// Every kind reachable in a kind's subtree, in reach order, each spelling once.
-fn collect_kinds(k: Kind, acc: List<Kind>) -> List<Kind> {
+fn collect_kinds(k: Kind, mut acc: Map<string, Kind>) {
+    let spelled = named_spelled(k)
+    if spelled != null {
+        if acc.has(spelled!) { return }
+        acc.set(spelled!, k)
+    }
+    for inner in kinds_within(k) { collect_kinds(inner, acc) }
+}
+
+/// A named kind's spelling; null for any other kind.
+fn named_spelled(k: Kind) -> string? {
+    match k { .Named(_, _) -> k.spelled(), rest -> null }
+}
+
+/// The kinds one step inside a kind: an option's, a list's, a map's value, a named type's fields.
+fn kinds_within(k: Kind) -> List<Kind> {
     match k {
-        .Opt(inner) -> collect_kinds(inner, acc),
-        .List(elem) -> collect_kinds(elem, acc),
-        .Map(_, value) -> collect_kinds(value, acc),
-        .Named(n, args) -> {
-            let spelled = k.spelled()
-            if acc.any((m: Kind) -> m.spelled() == spelled) { return acc }
-            let next = acc.concat([k])
-            match instance_shape(n, args) {
-                .Record(fs) -> {
-                    mut out = next
-                    for f in columns(fs) { out = collect_kinds(f.kind, out) }
-                    out
-                },
-                .Payload(vs) -> {
-                    mut out = next
-                    for v in vs {
-                        for f in v.fields { out = collect_kinds(f.kind, out) }
-                    }
-                    out
-                },
-                .Over(shape) -> collect_kinds(shape, next),
-                .Tagged(_) or .Dense(_) or .Plain -> next,
-            }
+        .Opt(inner) -> [inner],
+        .List(elem) -> [elem],
+        .Map(_, value) -> [value],
+        .Named(n, args) -> match instance_shape(n, args) {
+            .Record(fs) -> [f.kind for f in columns(fs)],
+            .Payload(vs) -> [f.kind for v in vs for f in v.fields],
+            .Over(shape) -> [shape],
+            .Tagged(_) or .Dense(_) or .Plain -> [],
         },
-        rest -> acc,
+        rest -> [],
     }
 }
 
@@ -1519,14 +1539,53 @@ fn stored_fields(t: Type) -> List<Field> {
 /// The fields the wire carries: all but the `@local` ones.
 fn stored_wire(t: Type) -> List<Field> { [f for f in stored_fields(t) if !marked(f, "local")] }
 
-/// A stored type's helpers are the type's own, and every record is one.
-fn stored_owner(t: Type) -> Owner {
-    Owner { name: t.name, all: true, ordinal: true, scoped: stored_scoped(t) }
+/// One reading of a stored type — its wire, its helpers' owner and its problems — asked once,
+/// so a generator's cost is one walk of the declaration, never one per field.
+type Stored = { t: Type, wire: List<Field>, reached: List<Kind>, owner: Owner, problems: List<Diagnostic> }
+
+/// The shape of every named kind a stored type reaches, each read once; the type answers
+/// for itself.
+fn reached_shapes(t: Type, reached: List<Kind>) -> Map<string, NamedShape> {
+    mut shapes: Map<string, NamedShape> = {}
+    for k in reached {
+        let shape = match k {
+            .Named(n, args) -> if n == t.name { shape_of(t) } else { instance_shape(n, args) },
+            rest -> NamedShape.Plain,
+        }
+        shapes.set(k.spelled(), shape)
+    }
+    shapes
 }
 
-/// Whether a stored type's wire reaches a dense id: the one case whose codec carries a scope.
-/// A dense id crosses a process as its owner spells it, so every helper on the way needs it.
-fn stored_scoped(t: Type) -> bool { stored_wire(t).any((f: Field) -> dense_in_wire(f.kind, [])) }
+/// Each reached name's helper name, spelled once.
+fn helper_ids(shapes: Map<string, NamedShape>) -> Map<string, string> {
+    mut ids: Map<string, string> = {}
+    for n, _shape in shapes { ids.set(n, helper_id(n)) }
+    ids
+}
+
+/// A stored type's helpers are the type's own, and every record is one. Its wire is scoped
+/// when it reaches a dense id: a dense id crosses a process as its owner spells it, so every
+/// helper on the way needs the scope.
+fn stored(t: Type) -> Stored {
+    let wire = stored_wire(t)
+    let reached = helper_types(wire, [Kind.Named(t.name, [])])
+    let shapes = reached_shapes(t, reached)
+    Stored {
+        t: t,
+        wire: wire,
+        reached: reached,
+        owner: Owner {
+            name: t.name,
+            all: true,
+            ordinal: true,
+            scoped: wire.any((f: Field) -> dense_in_wire(f.kind, [])),
+            shapes: shapes,
+            ids: helper_ids(shapes),
+        },
+        problems: problems_of(t, shapes),
+    }
+}
 
 fn dense_in_wire(k: Kind, seen: List<string>) -> bool {
     match k {
@@ -1557,10 +1616,9 @@ fn stored_type(t: Type, n: string) -> Type? { if n == t.name { t } else { type_n
 
 /// The helpers a stored type writes and reads by: every record and payload enum it reaches,
 /// itself among them when it is an enum.
-fn stored_helpers(t: Type) -> List<Decls> {
-    let seeded: List<Kind> = if t.variants.is_empty() { [] } else { [Kind.Named(t.name, [])] }
-    let hashing = !stored_scoped(t)
-    [d for k in helper_types(stored_wire(t), seeded) for d in helper_members(t, k, stored_owner(t), hashing)]
+fn stored_helpers(s: Stored) -> List<Decls> {
+    let helpers = if s.t.variants.is_empty() { helper_types(s.wire, []) } else { s.reached }
+    [d for k in helpers for d in helper_members(s.t, k, s.owner, !s.owner.scoped)]
 }
 
 /// Whether a declaration carries its own codec — `@codec` gives a record or an enum the write,
@@ -1598,11 +1656,11 @@ const stored_format: int = 2
 
 /// A stored type's fingerprint, folded at derive time: its own declaration and every type it
 /// reaches, so a type that moves under a reached one moves too.
-fn stored_shape(t: Type) -> int {
-    mut h = stable_hasher(text_hash(stable_name(t))).int(stored_format)
-    for k in helper_types(stored_wire(t), [Kind.Named(t.name, [])]) {
+fn stored_shape(s: Stored) -> int {
+    mut h = stable_hasher(text_hash(stable_name(s.t))).int(stored_format)
+    for k in s.reached {
         h = h.text(k.spelled())
-        let ty? = stored_type_of(t, k) else { continue }
+        let ty? = stored_type_of(s.t, k) else { continue }
         h = h.text(described(ty))
     }
     h.finish()
@@ -1622,27 +1680,33 @@ fn described(ty: Type) -> string {
     "${ty.name}{${fs}}|${vs}"
 }
 
-fn stored_generated(t: Type) -> Decls {
-    if !stored_problems(t).is_empty() { return quote { impl ${t} { } } }
-    let shape = stored_shape(t)
+/// What a stored type's codec generates, from one reading of it.
+fn stored_made(s: Stored) -> List<Directive> {
+    [Directive { twin: "", name: s.t.name, at: s.t.at, source: stored_generated(s) }]
+}
+
+fn stored_generated(s: Stored) -> Decls {
+    let t = s.t
+    if !s.problems.is_empty() { return quote { impl ${t} { } } }
+    let shape = stored_shape(s)
     let w = "w"
     quote {
         impl ${t} {
-            ${stored_helpers(t)}
+            ${stored_helpers(s)}
 
             static fn codec_shape() -> int { ${shape} }
 
             fn encoded_in(scope: dyn Scope) -> Bytes {
                 let ${w} = writer()
                 ${name(w)}.fixed(${shape})
-                ${stored_write(t)}
+                ${stored_write(s)}
                 ${name(w)}.bytes()
             }
 
             static fn decoded_in(scope: dyn Scope, b: Bytes) -> Result<${t}, CodecFault> {
                 let rd = reader(b)
                 if rd.fixed()? != ${shape} { fail CodecFault.OtherShape }
-                let v = ${stored_read(t)}
+                let v = ${stored_read(s)}
                 if !rd.done() { fail CodecFault.Trailing }
                 v
             }
@@ -1652,19 +1716,19 @@ fn stored_generated(t: Type) -> Decls {
 
 /// The statements that write `self`: a payload enum through its own helper, a payload-free
 /// one as the tag a column of its kind is, a record column by column.
-fn stored_write(t: Type) -> List<Code> {
-    if carries_payload(t) {
-        return [write_helper(name("w"), t.name, quote { self }, stored_owner(t))]
-    }
-    if !t.variants.is_empty() { return [written(name("w"), quote { self }, Kind.Named(t.name, []), stored_owner(t))] }
-    [written(name("w"), quote { self.${f.name} }, f.kind, stored_owner(t)) for f in stored_wire(t)]
+fn stored_write(s: Stored) -> List<Code> {
+    let t = s.t
+    if carries_payload(t) { return [write_helper(name("w"), t.name, quote { self }, s.owner)] }
+    if !t.variants.is_empty() { return [written(name("w"), quote { self }, Kind.Named(t.name, []), s.owner)] }
+    [written(name("w"), quote { self.${f.name} }, f.kind, s.owner) for f in s.wire]
 }
 
 /// The expression that reads one back.
-fn stored_read(t: Type) -> Code {
-    if carries_payload(t) { return quote { ${read_helper(quote { rd }, t.name, stored_owner(t))}? } }
-    if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), stored_owner(t)) }
-    let inits = [quote { W { ${f.name}: ${field_value(f, stored_owner(t))} } } for f in t.fields]
+fn stored_read(s: Stored) -> Code {
+    let t = s.t
+    if carries_payload(t) { return quote { ${read_helper(quote { rd }, t.name, s.owner)}? } }
+    if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), s.owner) }
+    let inits = [quote { W { ${f.name}: ${field_value(f, s.owner)} } } for f in t.fields]
     quote { ${t} { ..${inits} } }
 }
 
@@ -1683,42 +1747,55 @@ fn field_value(f: Field, owner: Owner) -> Code {
 fn restorable(f: Field) -> bool { !marked(f, "local") || f.default != null }
 
 /// Every way a declaration breaks the stored law, each spoken at the field that breaks it.
-export fn stored_problems(t: Type) -> List<Diagnostic> {
+export fn stored_problems(t: Type) -> List<Diagnostic> { stored(t).problems }
+
+/// The stored law over one reading: a field is spoken when its kind has no wire form.
+fn problems_of(t: Type, shapes: Map<string, NamedShape>) -> List<Diagnostic> {
     if t.module.is_empty() { return [no_module(t)] }
-    let unfit = [stored_unfit(t, f) for f in stored_fields(t) if !marked(f, "local") && !storable(f.kind)]
+    let fit = fit_names(shapes)
+    let unfit = [stored_unfit(t, f) for f in stored_fields(t) if !marked(f, "local") && !kind_fits(f.kind, fit)]
     let defaultless = [stored_defaultless(t, f) for f in stored_fields(t) if marked(f, "local") && f.default == null]
     unfit.concat(defaultless)
 }
 
-/// Whether a kind has a wire form: what `@relation` carries, a typed id, a generic record of
-/// one parameter, and records and payload enums that reach themselves.
-fn storable(k: Kind) -> bool { storable_under(k, []) }
+/// Which reached names have a wire form, each assumed to until its own fields say otherwise —
+/// so a type that reaches itself reads as its fields do, and each name is judged once.
+fn fit_names(shapes: Map<string, NamedShape>) -> Map<string, bool> {
+    mut fit: Map<string, bool> = {}
+    for n, _shape in shapes { fit.set(n, true) }
+    mut moved = true
+    while moved {
+        moved = false
+        for n, shape in shapes {
+            if fit.get(n) ?? false && !shape_fits(shape, fit) {
+                fit.set(n, false)
+                moved = true
+            }
+        }
+    }
+    fit
+}
 
-fn storable_under(k: Kind, seen: List<string>) -> bool {
-    match k {
-        .Int or .Bool or .Str -> true,
-        .Opt(inner) -> storable_under(inner, seen),
-        .List(elem) -> storable_under(elem, seen),
-        .Map(key, value) -> key.spelled() == "string" && storable_under(value, seen),
-        .Named(n, args) -> storable_name(n, args, k.spelled(), seen),
-        .Float or .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+/// Whether a declared shape has a wire form, its reached names answered by `fit`: what
+/// `@relation` carries, a typed id, a generic record of one parameter, records and payload enums.
+fn shape_fits(shape: NamedShape, fit: Map<string, bool>) -> bool {
+    match shape {
+        .Tagged(_) or .Dense(_) -> true,
+        .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> kind_fits(f.kind, fit))),
+        .Record(fs) -> fs.all((f: Field) -> restorable(f) && (marked(f, "local") || kind_fits(f.kind, fit))),
+        .Over(inner) -> kind_fits(inner, fit),
+        .Plain -> false,
     }
 }
 
-/// A declared name's wire form at its arguments, a spelling met again on the way answering true.
-fn storable_name(n: string, args: List<Kind>, spelled: string, seen: List<string>) -> bool {
-    if seen.contains(spelled) { return true }
-    let inside = seen.concat([spelled])
-    match instance_shape(n, args) {
-        .Tagged(_) or .Dense(_) -> true,
-        .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> storable_under(f.kind, inside))),
-        .Record(fs) -> fs
-            .all(
-                (f: Field) -> restorable(f) &&
-                    (marked(f, "local") || storable_under(f.kind, inside)),
-            ),
-        .Over(shape) -> storable_under(shape, inside),
-        .Plain -> false,
+fn kind_fits(k: Kind, fit: Map<string, bool>) -> bool {
+    match k {
+        .Int or .Bool or .Str -> true,
+        .Opt(inner) -> kind_fits(inner, fit),
+        .List(elem) -> kind_fits(elem, fit),
+        .Map(key, value) -> key.spelled() == "string" && kind_fits(value, fit),
+        .Named(_, _) -> fit.get(k.spelled()) ?? false,
+        .Float or .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
 
@@ -1727,10 +1804,10 @@ fn storable_name(n: string, args: List<Kind>, spelled: string, seen: List<string
 /// the owner's own declaration.
 fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> {
     let n = k.spelled()
-    let id = helper_id(n)
+    let id = owner.id_of(n)
     let base = match k { .Named(b, _) -> b, rest -> n }
     let shape = match k {
-        .Named(b, args) -> if n == t.name { shape_of(t) } else { instance_shape(b, args) },
+        .Named(b, args) -> if n == t.name { shape_of(t) } else { owner.shape(b, args) },
         rest -> NamedShape.Plain,
     }
     match shape {
