@@ -153,11 +153,12 @@ export fn indexed_scope() -> dyn Scope { Indexed {} }
 
 /// A record under construction, as octets. An IDENTITY: every holder
 /// of a writer writes the one record, so no seat needs `mut`.
-export type Writer = { out: Cell<List<int>> }
+export type Writer = { out: Cell<List<int>>, chunks: Cell<List<Bytes>> }
 
 export fn writer() -> Writer {
     let out: Cell<List<int>> = Cell.new([])
-    Writer { out: out }
+    let chunks: Cell<List<Bytes>> = Cell.new([])
+    Writer { out: out, chunks: chunks }
 }
 
 /// A dense id written: the type named `kind`, as `scope` spells it. The scope
@@ -181,6 +182,9 @@ export fn written_place(w: Writer, scope: dyn Scope, l: Loc) {
     w.present(at != null)
     if at != null { written_list(w, at!, (w: Writer, n: int) -> w.int(n)) }
 }
+
+/// The length from which a counted run of octets is kept as a chunk of its own.
+const CHUNK: int = 32
 
 impl Writer {
     fn byte(v: int) { self.out.push(v & 255) }
@@ -212,17 +216,36 @@ impl Writer {
 
     fn text(s: string) { self.octets(s.bytes()) }
 
-    /// A dense id of the type named `kind`, as its scope spells it.
+    /// A run of octets, counted: a long one joins the record as one chunk, a short one a byte at a time.
     fn octets(b: Bytes) {
         self.count(b.length)
-        for i in 0..b.length { self.byte(b.at(i)) }
+        if b.length < CHUNK {
+            for i in 0..b.length { self.byte(b.at(i)) }
+            return
+        }
+        self.settle_pending()
+        self.chunks.push(b)
     }
 
-    fn bytes() -> Bytes { self.out.get().bytes()! }
+    /// The single octets written since the last chunk, closed into one.
+    fn settle_pending() {
+        let pending = self.out.get()
+        if pending.is_empty() { return }
+        self.chunks.push(pending.bytes() ?? "".bytes())
+        self.out.set([])
+    }
+
+    fn bytes() -> Bytes {
+        self.settle_pending()
+        self.chunks.get().bytes()
+    }
 
     /// The octets as text no other octets spell: what a record is
     /// interned by.
-    fn spelled() -> string { ["${octet}" for octet in self.out.get()].join(".") }
+    fn spelled() -> string {
+        let all = self.bytes()
+        ["${all.at(i)}" for i in 0..all.length].join(".")
+    }
 }
 
 /// A text argument spelled for a call's key: its length, then itself — no other text spells
