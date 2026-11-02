@@ -808,9 +808,9 @@ follow_github() {
     done
 }
 
-# github_status <run>: prints the command's output and sets `st` to its status; a run that never
-# reached the command prints its failed step's tail on stderr and sets 70, or 143 when nothing
-# failed (cancelled).
+# github_status <run>: prints the command's output and sets `st` to its status. With no status line
+# (a run that never reached the command, or a log GitHub cut short) the steps' verdicts decide: the
+# command failed 1, it passed 0, another step failed 70 (its tail on stderr), nothing failed 143.
 github_status() {
     log=$($gh_ run view "$1" --log 2>/dev/null) || log=
     printf '%s\n' "$log" | awk -F '\t' '$2 == "command" { sub(/^[^ ]* /, "", $3); if (said && $3 !~ /^##\[/) print $3; if ($3 ~ /^##\[endgroup\]/) said = 1 }' | grep -v '^lane-run: status ' || :
@@ -818,7 +818,12 @@ github_status() {
     if [ -z "$st" ]; then
         failed=$($gh_ run view "$1" --json jobs -q '[.jobs[0].steps[]? | select(.conclusion == "failure") | .name][0] // ""' 2>/dev/null || :)
         printf '%s\n' "$log" | awk -F '\t' -v s="$failed" '$2 == s { sub(/^[^ ]* /, "", $3); print $3 }' | tail -n 40 >&2
-        if [ -n "$failed" ]; then st=70; else st=143; fi
+        # a log GitHub cut short still has the step's verdict: the command passed or failed
+        case $failed in
+            command) st=1 ;;
+            "") if [ "$($gh_ run view "$1" --json conclusion -q .conclusion 2>/dev/null)" = success ]; then st=0; else st=143; fi ;;
+            *) st=70 ;;
+        esac
     fi
 }
 
