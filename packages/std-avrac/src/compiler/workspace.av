@@ -634,11 +634,9 @@ export type Workspace = {
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
     /// each file's clash diagnostics as `method_clashes` last settled them
-    method_diag_rows: Table<List<Diag>>,
     /// each module's names as their query last made them
     names_rows: Table<ModuleNames>,
     /// each file's plain parse as its query last made it
-    plain_rows: Table<Parsed>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
     /// than scanning the whole table on every ask.
@@ -991,7 +989,7 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
-fn plain_made(ws: Workspace, f: FileId) -> int { ws.plain_make(f) }
+fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 /// WHAT A FILE'S PARSE DECLARES: the lines every admission of the file mints from.
@@ -1117,9 +1115,7 @@ fn built(
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
-        method_diag_rows: new_table<List<Diag>>(),
         names_rows: new_table<ModuleNames>(),
-        plain_rows: new_table<Parsed>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
@@ -1622,17 +1618,7 @@ impl Workspace {
     /// owns that name for its own coarser span, over the SAME work;
     /// sharing the name would sum a span and its own subset into one
     /// double-counted total.
-    fn plain_parsed(f: FileId) -> Parsed {
-        let _ = plain_made(self, f)
-        self.plain_rows.at(f.index)!
-    }
-
-    /// A file's plain parse, made and kept beside the cell; the word is its structure's hash.
-    fn plain_make(f: FileId) -> int {
-        let p = self.clocked_parse(f)
-        self.plain_rows.keep(f.index, p)
-        program_hash(p)
-    }
+    fn plain_parsed(f: FileId) -> Parsed { plain_made(self, f) }
 
     fn clocked_parse(f: FileId) -> Parsed {
         let t0 = self.clock()
@@ -2654,6 +2640,11 @@ fn module_at(arg: int) -> ModuleId { ModuleId { index: arg } }
 fn decl_at_arg(arg: int) -> DeclId { DeclId { index: arg } }
 
 /// A program's fingerprint — the fold of its statements'.
+impl Parsed {
+    /// A parse folded by its structure: what an in-process answer of one digests by.
+    fn fingerprint() -> int { program_hash(self) }
+}
+
 fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }
