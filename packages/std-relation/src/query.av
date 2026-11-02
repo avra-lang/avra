@@ -266,11 +266,21 @@ fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], p
 export fn query_problems(f: Fn) -> List<Diagnostic> {
     let first? = f.params.first() else { return [no_db(f)] }
     if !seated(first.kind) { return [no_db(f)] }
-    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind)]
-    let answer = if carried(f.answers, in_process) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
+    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind) && !coded(p.kind)]
+    let answer = if carried(f.answers, in_process) || coded(f.answers) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
     let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
     codec_problems(f)
+}
+
+/// Whether a kind is a type that wears `@codec`: it crosses by its codec, whatever its fields hold.
+fn coded(k: Kind) -> bool {
+    match k {
+        .Named(n, _) -> wears_codec(n),
+        .Opt(inner) -> coded(inner),
+        .List(elem) -> coded(elem),
+        rest -> false,
+    }
 }
 
 /// A query's first seat: the `Db`, or a context that answers one through `query_db()`.

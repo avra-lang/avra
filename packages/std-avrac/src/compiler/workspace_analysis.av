@@ -117,8 +117,10 @@ fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
     out
 }
 
-/// The scope a body's ids cross under: offsets from its own window.
+/// The scope a body's ids cross under: offsets from its own window as it stands now, so
+/// its range is placed before it is read.
 fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
+    let _ = ws.placed(d)
     let x = ws.decls.decl(d)
     ws.facts_scope(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo })
 }
@@ -129,15 +131,15 @@ fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
 @cycled_by(settle_cycle)
 fn settled_ask(ws: Workspace, c: SettleAsk) -> Settlement {
     let r = ws.settle_result(c)
-    match r {
-        .Ok(value) -> {
-            for path in value.embeds {
-                let _ = ws.embedded(path, EmbedKind.Octets)
-            }
-        },
-        .Err(_) -> {},
+    for path in embeds_of(r) {
+        let _ = ws.embedded(path, EmbedKind.Octets)
     }
     match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
+}
+
+/// The files a settlement's run embedded.
+fn embeds_of(r: Result<Settled, Unsettled>) -> List<string> {
+    match r { .Ok(value) -> value.embeds, .Err(_) -> [] }
 }
 
 /// What a settlement asking for its own value is answered: the cycle, said once.
