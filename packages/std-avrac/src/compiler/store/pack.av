@@ -768,11 +768,27 @@ fn prune_bodies(dir: string, limits: StoreLimits) -> List<int> {
     let names = sorted_by(all_body_names(dir), rev_before)
     let roots = roots_of(dir, names)
     let window = if limits.revisions > 0 && names.length > limits.revisions { names.slice(names.length - limits.revisions, names.length) } else { names }
-    let heads = [n for n in window if !aged(dir, n, limits)]
+    let heads = within_bodies(dir, [n for n in window if !aged(dir, n, limits)], limits)
     let doomed = unreachable(dir, names, roots, heads)
     for n in doomed { drop_body(dir, n) }
     drop_unreferenced_values(dir)
     [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, roots, heads, limits))]
+}
+
+/// The newest heads whose chains together stand on at most `revisions` bodies — the
+/// window bounds what the history occupies — the newest head always kept.
+fn within_bodies(dir: string, heads: List<string>, limits: StoreLimits) -> List<string> {
+    if limits.revisions <= 0 { return heads }
+    mut held: Map<string, bool> = {}
+    mut kept: List<string> = []
+    for h in reversed(heads) {
+        let chain = chain_names(dir, h)
+        let fresh = [n for n in chain if !held.has(n)]
+        if !kept.is_empty() && held.keys().length + fresh.length > limits.revisions { break }
+        for n in fresh { held.set(n, true) }
+        kept.push(h)
+    }
+    reversed(kept)
 }
 
 /// The newest whole chain: the bodies an open reads.
