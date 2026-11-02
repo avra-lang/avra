@@ -5,12 +5,14 @@
 # imports it; program B declares a member in its ENTRY file, program A none.
 # Each program must read its own members, whichever built first and however
 # often: a held library must never serve one program the set another gathered.
+# Program C declares its member in a second file and edits that file's CONTENT
+# between builds, the member's name unchanged: the row must follow the edit.
 set -u
 cd "$(dirname "$0")/.."
 T=$(pwd); B=build/closure-gather-attack; fails=0; steps=0
 AVRA=${AVRA_BIN:-$T/build/avra}
 [ -d "$B" ] && find "$B" -depth -delete
-mkdir -p $B/lib/src $B/a/src $B/b/src
+mkdir -p $B/lib/src $B/a/src $B/b/src $B/c/src
 # a store stands at the nearest checkout root ABOVE a package, so the fixtures'
 # directory is marked as one: their store is their own, cold here, never the tree's
 : > $B/.git
@@ -35,7 +37,7 @@ export collect rows: List<Gathered> = @seat in closure as Gathered { row: it } b
 
 export fn owners() -> string { [g.row.owner for g in rows].join(",") }
 AV
-for p in a b; do
+for p in a b c; do
     cat > $B/$p/avra.toml <<TOML
 [package]
 name = "prog_$p"
@@ -59,7 +61,21 @@ export const knob: Row = Row { owner: "knob" }
 
 println("[${owners()}]")
 AV
-S() { # S <program> <want output>
+cat > $B/c/src/main.av <<'AV'
+use @t.libx.{owners}
+use knob.{knob}
+
+println("[${owners()}]")
+AV
+member() { # member <owner>
+    cat > $B/c/src/knob.av <<AV
+use @t.libx.{Row, seat}
+
+@seat
+export const knob: Row = Row { owner: "$1" }
+AV
+}
+S() { # S <program> <want output> <program> <want output>
     steps=$((steps+1))
     $AVRA build $B/$1/src/main.av > $B/out 2> $B/err; st=$?
     if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $1: did not build (status $st)"; tail -5 $B/err; return; fi
@@ -68,5 +84,8 @@ S() { # S <program> <want output>
 }
 S a "[]";       S b "[knob]"
 S a "[]";       S b "[knob]"
+member one;     S c "[one]"
+member two;     S c "[two]"
+member one;     S c "[one]"
 echo "closure-gather-attack: $steps builds through one store, $fails failed"
 [ "$fails" -eq 0 ]
