@@ -461,7 +461,7 @@ fn capture_facts(store: SyntaxArena, stmt: StmtId, kind: DeclKind, root: ExprId?
         },
         doc: if owns { store.doc_comment(stmt) } else { null },
         annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(stmt)] } else { [] },
-        mut_seats: if readable { sealed_names(store, x) } else { [] },
+        mut_seats: if readable { sealed_names(store, stmt, kind) } else { [] },
         trait_args: if readable && kind is .Impl { [spelled(a) for a in store.trait_args_of(stmt)] } else { [] },
         hosted: readable && kind is .Fn && store.is_host_fn(stmt),
         variadic: if owns { [j for j, p in store.fn_parts(stmt)?.params ?? [] if p.is_rest()].first() } else { null },
@@ -488,10 +488,10 @@ fn mut_seat_names(store: SyntaxArena, s: StmtId) -> List<string> {
 /// The record names a declaration may seal boxed, so a read of their flatness
 /// signs it first: a fn's `mut` seats, and an impl's target when a method may
 /// write through `self` — a superset of the impl law's own judgement, never less.
-fn sealed_names(store: SyntaxArena, x: Decl) -> List<string> {
-    match x.kind {
-        .Fn -> mut_seat_names(store, x.stmt),
-        .Impl -> if impl_may_seal(store, x.stmt) { some_list(store.impl_parts(x.stmt)?.target) } else { [] },
+fn sealed_names(store: SyntaxArena, stmt: StmtId, kind: DeclKind) -> List<string> {
+    match kind {
+        .Fn -> mut_seat_names(store, stmt),
+        .Impl -> if impl_may_seal(store, stmt) { some_list(store.impl_parts(stmt)?.target) } else { [] },
         .Record or .Named or .Alias or .Enum or .Method or .Default or .Case or .CollectEnum or .Const or .Collect or .State or .Trait or .Syntax or .Main or .Builtin -> [],
     }
 }
