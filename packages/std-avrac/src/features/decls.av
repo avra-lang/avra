@@ -64,12 +64,11 @@ use core.{
     wreck,
     Mark,
     CollectKind,
-    db_verified,
     quoted_text,
 }
 use @std.relation.db.{Db, Durable, durable_db, transient, unheard_read}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
-use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
+use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -652,6 +651,9 @@ export type Decls = {
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
     audit_hook: Cell<fn(Bypassed) -> void>,
+    /// What a read that skipped the Kernel stands on: the workspace records the cells that cover
+    /// it; with none armed the read is unheard, and a query that made it is never kept.
+    cover_hook: Cell<fn(Bypassed) -> void>,
     /// A DECLARATION ROW'S READ RECORDS ITS NAME'S BUCKET: reading a declaration of a
     /// file settled below records the `Named` cell its name files under (a held file's
     /// module record) in the open query — once per query, by the Kernel's own stamp. A
@@ -703,9 +705,9 @@ export type Decls = {
     name_buckets: Cell<List<int>>,
     /// The name each name bucket files, dense by bucket — its `Named` cell's label.
     cell_names: Cell<List<string>>,
-    /// Each declaration's and type's durable fold, dense by index; -1 until asked.
-    decl_fps: Cell<List<int>>,
-    type_fps: Cell<List<int>>,
+    /// Each declaration's and type's durable name, dense by index; empty until asked.
+    decl_names: Cell<List<string>>,
+    type_names: Cell<List<string>>,
     rows_state: Cell<List<int>>,
     /// The revision each armed relation cell last moved at, by family.
 
@@ -914,6 +916,9 @@ export enum Listed { Name(name: string), Word(word: string), Mark(mark: string),
 
 fn no_audit(_r: Bypassed) {}
 
+/// A read nothing covers: unheard.
+fn uncovered(_r: Bypassed) { unheard_read() }
+
 /// Whether a scope gathers from every file of the owner's package.
 export fn admits_package(scope: CollectScope) -> bool {
     match scope { .Package -> true, .Self or .Closure or .UnknownScope(_) -> false }
@@ -986,6 +991,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
+        cover_hook: Cell.new(uncovered),
         record_kernel: new_kernel(),
         rows_db: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
@@ -998,8 +1004,8 @@ export fn new_decls_under(durable: Durable) -> Decls {
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
-        decl_fps: list_cell(),
-        type_fps: list_cell(),
+        decl_names: list_cell(),
+        type_names: list_cell(),
         rows_state: list_cell(),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
@@ -1140,7 +1146,7 @@ impl Decls {
     fn decl(d: DeclId) -> Decl {
         let x = self.decl_cells.get()[d.index] ?? self.removed(d)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
-        if x.standing == 0 { unheard_read() }
+        if x.standing == 0 && x.home != null { self.covered(Bypassed.Decl(d)) }
         self.row_read(x)
         x
     }
@@ -1228,8 +1234,14 @@ impl Decls {
     /// then stands on something its record cannot name.
     fn bypassed(r: Bypassed) {
         if audit_build && self.auditing.get() { self.audited(r) }
-        unheard_read()
+        self.covered(r)
     }
+
+    /// A read that skipped the Kernel, recorded as the cells that cover it.
+    fn covered(r: Bypassed) { (self.cover_hook.get())(r) }
+
+    /// The workspace arms the cover once: the cells each bypassed read stands on.
+    fn arm_cover(hook: fn(Bypassed) -> void) { self.cover_hook.set(hook) }
 
     /// The workspace arms the audit once, when `AVRA_DEP_AUDIT` asks.
     fn arm_audit(hook: fn(Bypassed) -> void) {
@@ -1291,33 +1303,26 @@ impl Decls {
         self.decl_row_rows.get().members(b)
     }
 
-    /// Arena ids as a fold reaches them: by the durable name of what they index.
-    fn ids() -> Ids {
+    /// A declaration's durable name. Its wire counts same-named siblings, which are all minted
+    /// only once the file's rows settle, so a name asked earlier is spelled afresh, never remembered.
+    fn decl_spelled(d: DeclId) -> string {
         let ds = self
-        Ids {
-            decl: (i: int) -> if i < 0 { i } else { ds.decl_door(DeclId { index: i }) },
-            ty: (i: int) -> if i < 0 { i } else { ds.durable(ds.type_fps, i, () -> fp_str(ds.type_wire(TypeId { index: i }))) },
-            file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
-            expr: (i: int) -> i,
-            stmt: (i: int) -> i,
-        }
-    }
-
-    /// A declaration's durable fold. Its wire counts same-named siblings, which are all minted
-    /// only once the file's rows settle, so a fold made earlier is never remembered.
-    fn decl_door(d: DeclId) -> int {
-        let ds = self
-        let make = () -> fp_str(ds.decl_wire(d))
-        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_fps, d.index, make) }
-        if db_verified() { wreck("a declaration's durable name was asked before its file's rows settled") }
+        let make = () -> ds.decl_wire(d)
+        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_names, d.index, make) }
         make()
     }
 
-    /// `memo`'s fold at `at`, made once.
-    fn durable(memo: Cell<List<int>>, at: int, make: fn() -> int) -> int {
-        while memo.get().length <= at { memo.push(-1) }
+    /// A type's durable name.
+    fn type_spelled(t: TypeId) -> string {
+        let ds = self
+        self.durable(self.type_names, t.index, () -> ds.type_wire(t))
+    }
+
+    /// `memo`'s name at `at`, made once.
+    fn durable(memo: Cell<List<string>>, at: int, make: fn() -> string) -> string {
+        while memo.get().length <= at { memo.push("") }
         let held = memo.get()[at]
-        if held >= 0 { return held }
+        if held != "" { return held }
         let made = make()
         memo.set_at(at, made)
         made
@@ -1976,6 +1981,7 @@ impl Decls {
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
+        self.cover_hook.set(uncovered)
         self.types.disarm_declare()
         self.rows_db.get().close_saying(voice)
     }

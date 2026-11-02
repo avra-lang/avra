@@ -23,7 +23,7 @@ use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.voices.{name_slice_fp}
 use features.{SettleRoot, SeatValue, DeclSig, TypeFacts}
-use compiler.lower.{code_facts, code_facts_wire}
+use compiler.lower.{code_facts}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
@@ -42,9 +42,22 @@ impl Workspace {
         }
     }
 
+    /// A unit's lowering, named by nothing: a reader stands on what the lowering read, owed when
+    /// the unit settles.
+    fn named_lowerings() -> AnswerRef {
+        let ordinal = Family.Lowered.ordinal
+        AnswerRef {
+            name: "Lowered",
+            family: () -> ordinal,
+            spelled: (_arg: int) -> null,
+            arg: (_spelled: string) -> null,
+            hash: (_arg: int) -> null,
+        }
+    }
+
     /// The impl sets, spelled by their type: a set is the blocks aimed at it and their members, so
-    /// an impl joining or leaving, or a method added to a block that already stood, moves it. No
-    /// kernel key carries it.
+    /// an impl joining or leaving, or a method added to a block that already stood, moves it. Read,
+    /// it records the type's method table, whose cell notes it.
     fn named_impl_sets() -> AnswerRef {
         let ws = self
         AnswerRef {
@@ -53,6 +66,7 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
+            noted_by: Family.Methods.ordinal,
         }
     }
 
@@ -115,7 +129,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.settle_hash(ordinal, arg),
         }
     }
 
@@ -173,7 +187,27 @@ impl Workspace {
     fn settle_arg(spelled: string) -> int? {
         let ws = self
         self
-            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled)
+            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled) ?? self
+            .own_settle_arg(spelled)
+    }
+
+    /// A const's own settlement — asked under no seats — named before this run asked it: its
+    /// name is the const's wire alone, so the ask is minted from the declaration.
+    fn own_settle_arg(spelled: string) -> int? {
+        if !spelled.ends_with("#") { return null }
+        let d? = self.decl_from_ref(spelled.substring(0, spelled.length - 1)) else { return null }
+        let x = self.decls.decl(d)
+        self.settle_id(x.file, SettleRoot.Const(x.stmt), [])
+    }
+
+    /// A settlement's hash as this run answers it: settled when nothing asked it yet.
+    fn settle_hash(ordinal: int, arg: int) -> int? {
+        let k = key_at(ordinal, arg)
+        let held = self.db.kernel.hash_forced(k)
+        if held != null || arg < 0 || arg >= self.settle_asks.get().length { return held }
+        let ask = self.settle_asks.get()[arg]
+        let _ = self.settled_replay(ask.file, ask.root, ask.seats)
+        self.db.kernel.hash_forced(k)
     }
 
     /// A lifted unit's name: its file, its declaration and its symbol; an expression unit, the
@@ -265,6 +299,7 @@ impl Workspace {
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_sigs())
         rdb.answer_known(self.named_impl_sets())
+        rdb.answer_known(self.named_lowerings())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         let ws = self
         rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
@@ -313,7 +348,7 @@ impl Workspace {
 
     fn durable_unit(arg: int) -> int? {
         match self.relation(Family.LiftLowered).values.entry(arg) {
-            .Present(r) -> lowered_of(r).fingerprint_in(self.decls.ids()),
+            .Present(r) -> lowered_of(r).fingerprint_in(self.facts_scope(0, 0)),
             .Missing -> null,
         }
     }
@@ -369,12 +404,7 @@ impl Workspace {
         if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
         let x = self.decls.decl(DeclId { index: arg })
         match self.relation(Family.Resolved).values.entry(x.file.index) {
-            .Present(r) -> name_slice_fp(
-                resolved_of(r),
-                x.lo,
-                x.hi,
-                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
-            ),
+            .Present(r) -> name_slice_fp(resolved_of(r), x.lo, x.hi, self.facts_scope(x.lo, x.stmt_lo)),
             .Missing -> null,
         }
     }
@@ -520,7 +550,7 @@ impl Workspace {
         joined(
             [
                 self.wants_text(u.wants),
-                code_facts_wire(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
+                self.facts_text(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
             ],
             "\n",
         )

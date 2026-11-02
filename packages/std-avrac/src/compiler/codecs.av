@@ -56,7 +56,7 @@ use @std.relation.stable.{indexed_scope}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
 use compiler.host.{memory_host}
-use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
+use compiler.lower.{CodeFacts, FactNode}
 use compiler.findings.{Finding}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
@@ -686,7 +686,7 @@ fn same_seen_list(a: List<SeenPart>, b: List<SeenPart>) -> bool { list_eq(a, b, 
 
 fn same_seen(a: SeenPart, b: SeenPart) -> bool { a.module == b.module && a.bytes_key == b.bytes_key && a.files == b.files }
 
-// ── `code_facts_wire`/`code_facts_from_wire` — a held file's code. ──
+// ── `CodeFacts`' codec — a held file's code. ──
 
 fn code_facts_exemplars() -> List<CodeFacts> {
     [
@@ -1100,11 +1100,11 @@ export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
         derived(
-            "lower.code_facts_wire/code_facts_from_wire",
+            "lower.CodeFacts/facts_text",
             code_facts_exemplars(),
             code_facts_labels(),
-            code_facts_wire,
-            code_facts_from_wire,
+            (f: CodeFacts) -> ws.facts_text(f),
+            (raw: string) -> ws.facts_of_text(raw),
             same_code_facts,
         ),
         derived(
@@ -1334,14 +1334,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             verdict_read_word,
             verdict_read_of_word,
             same_verdict_read,
-        ),
-        derived(
-            "interface.type_wire/read_type_wire",
-            ws.codec_type_exemplars(),
-            type_exemplar_labels(),
-            (t) -> ws.decls.type_wire(t),
-            (w) -> ws.type_from_wire(w),
-            (x, y) -> ws.codec_same_type_shape(x, y),
         ),
         dbrow_check(),
     ]

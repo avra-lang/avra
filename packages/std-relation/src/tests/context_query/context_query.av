@@ -4,7 +4,8 @@
 // kept for a later process; the same query over the Db alone with a stable key
 // is kept, and so is one over a context whose scope names its dense key:
 // restored in a later process, never run — under the context's scope, or
-// under the window `@scoped_by` makes of the call's own seats.
+// under the window `@scoped_by` makes of the call's own seats; a key that
+// holds a dense id crosses through the scope too.
 use @std.relation.{query, input, scoped_by}
 use @std.relation.db.{Db, Durable, durable_db}
 use @std.relation.stable.{Scope}
@@ -31,6 +32,10 @@ impl Scope for Nameless {
     fn spelled(_kind: string, _index: int) -> string { "" }
 
     fn unspelled(_kind: string, _text: string) -> int? { null }
+
+    fn placed(_file: string, _lo: int, _hi: int) -> List<int>? { null }
+
+    fn unplaced(_file: string, _at: List<int>) -> List<int>? { null }
 }
 
 /// A context whose scope names every item, so its calls are kept past the process.
@@ -52,6 +57,10 @@ impl Scope for Named {
         if !text.starts_with("item ") { return null }
         parse_int(text.substring(5, text.length))
     }
+
+    fn placed(_file: string, _lo: int, _hi: int) -> List<int>? { null }
+
+    fn unplaced(_file: string, _at: List<int>) -> List<int>? { null }
 }
 
 once fn disk() -> Cell<Map<string, Bytes>> { Cell.new({}) }
@@ -75,7 +84,7 @@ fn keep_record(query: string, args: int, record: Bytes) {
 fn process() -> Db { durable_db(Durable { answer: read_record, keep: keep_record }) }
 
 @input
-fn base(_db: Db, at: string) -> int { 0 }
+fn base(_db: Db, _at: string) -> int { 0 }
 
 @query
 fn weighed(s: Shelf, item: Item) -> int {
@@ -109,6 +118,10 @@ impl Scope for Window {
         let n? = parse_int(text.substring(1, text.length)) else { return null }
         n + self.base
     }
+
+    fn placed(_file: string, _lo: int, _hi: int) -> List<int>? { null }
+
+    fn unplaced(_file: string, _at: List<int>) -> List<int>? { null }
 }
 
 /// The window an item's neighbours cross under: counted from the item itself.
@@ -123,6 +136,15 @@ fn neighbours(p: Pricer, item: Item) -> Tag {
         at: base(p.db, "p"),
         near: [Item { index: item.index + 1 }, Item { index: item.index + 2 }],
     }
+}
+
+/// A key holding a dense id: spelled through the context's scope.
+type Pick = { item: Item, times: int }
+
+@query
+fn picked(p: Pricer, k: Pick) -> int {
+    counted()
+    base(p.db, "p") * k.times + k.item.index
 }
 
 @query
@@ -168,7 +190,11 @@ fn main_run() -> string {
     let near_restored = computes().get() == before_near &&
         near_again.near[1].index == 22 &&
         near.near[0].index == 21
-    "${first} ${again} ${reused} | ${moved} ${ran} | ${p} kept ${kept().get()} | ${fresh} ${read_back} ${computes().get()} | ${price} ${priced_ran} ${price_again} ${restored} ${tag.at} ${tag_restored} ${near_restored} kept ${kept().get()}"
+    let pick = picked(Pricer { db: later }, Pick { item: Item { index: 3 }, times: 7 })
+    let before_pick = computes().get()
+    let pick_again = picked(Pricer { db: third }, Pick { item: Item { index: 3 }, times: 7 })
+    let pick_restored = computes().get() == before_pick && pick_again == pick
+    "${first} ${again} ${reused} | ${moved} ${ran} | ${p} kept ${kept().get()} | ${fresh} ${read_back} ${computes().get()} | ${price} ${priced_ran} ${price_again} ${restored} ${tag.at} ${tag_restored} ${near_restored} ${pick} ${pick_restored} kept ${kept().get()}"
 }
 
 main_run()

@@ -4,6 +4,7 @@
 use core.{DeclId, TypeId, FileId, hex, unhex, wire_fields}
 use features.{Wanted, Wants, Sub}
 use compiler.{Workspace}
+use compiler.lower.{CodeFacts}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
 
@@ -35,8 +36,9 @@ fn counted_from(text: string, base: int) -> int? {
     n + base
 }
 
-/// A workspace and the two window starts a body's ids are offset from.
-type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int }
+/// A workspace and the two window starts a body's ids are offset from, and whether reading an id
+/// back may mint its declaration — a query's restore never does (a mint there is a side write).
+type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int, minting: bool }
 
 impl Scope for FactsScope {
     fn spelled(kind: string, index: int) -> string {
@@ -45,9 +47,9 @@ impl Scope for FactsScope {
             return ""
         }
         match k {
-            .Decl -> self.ws.decl_ref(DeclId { index: index }),
-            .Type -> self.ws.type_ref(TypeId { index: index }),
-            .File -> self.ws.file_ref(FileId { index: index }),
+            .Decl -> if index < 0 { "${index}" } else { self.ws.decls.decl_spelled(DeclId { index: index }) },
+            .Type -> if index < 0 { "${index}" } else { self.ws.decls.type_spelled(TypeId { index: index }) },
+            .File -> if index < 0 { "${index}" } else { self.ws.file_ref(FileId { index: index }) },
             .Expr -> "${index - self.expr_base}",
             .Stmt -> "${index - self.stmt_base}",
         }
@@ -60,9 +62,9 @@ impl Scope for FactsScope {
     fn unspelled(kind: string, text: string) -> int? {
         let k? = id_kind(kind) else { return null }
         match k {
-            .Decl -> self.ws.decl_from_ref(text)?.index,
+            .Decl -> if self.minting { self.ws.decl_from_ref(text)?.index } else { self.ws.decl_standing(text)?.index },
             .Type -> self.ws.type_from_wire(text)?.index,
-            .File -> self.ws.decls.known_file_id(text)?.index,
+            .File -> self.ws.decls.known_file_named(text)?.index,
             .Expr -> counted_from(text, self.expr_base),
             .Stmt -> counted_from(text, self.stmt_base),
         }
@@ -75,12 +77,18 @@ impl Workspace {
     /// whole file's, exactly as `new_type_facts` reads it. One rule, applied on both sides, is
     /// what makes a written offset and a read one the same offset.
     fn facts_scope(lo: int, stmt_lo: int) -> dyn Scope {
-        FactsScope { ws: self, expr_base: lo, stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo } }
+        FactsScope {
+            ws: self,
+            expr_base: lo,
+            stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo },
+            minting: true,
+        }
     }
 
     /// The ONE scope a query over the workspace names its dense ids through — its keys, its
-    /// digests and its records: an expression or a statement by its index in its file.
-    fn query_scope() -> dyn Scope { self.facts_scope(0, 0) }
+    /// digests and its records: every id by its durable name, an expression or a statement by
+    /// its index in its file.
+    fn query_scope() -> dyn Scope { FactsScope { ws: self, expr_base: 0, stmt_base: 0, minting: false } }
 }
 
 impl Workspace {
@@ -98,19 +106,27 @@ impl Workspace {
         wd.id
     }
 
+    /// `decl_from_ref` that only LOOKS UP: a declaration of a file whose rows already stand; none
+    /// for one only a mint would answer, so an answer naming it is no answer to restore.
+    fn decl_standing(raw: string) -> DeclId? {
+        let f = self.decls.known_file_named(raw.split("~").first() ?? "")
+        if f != null && self.decls.home_stand(f) == 0 { return null }
+        self.decl_from_ref(raw)
+    }
+
     /// A declaration's durable name for a query keyed by it: its wire.
     fn decl_id_spelled(d: DeclId) -> string? { self.decl_ref(d) }
 
     /// The declaration a durable name names in this process, none for one gone.
     fn decl_id_numbered(spelled: string) -> DeclId? { self.decl_from_ref(spelled) }
 
-    /// A file's durable name for a query keyed by it: its path.
-    fn file_id_spelled(f: FileId) -> string? { self.decls.file(f).path }
+    /// A file's durable name for a query keyed by it: its package and its path within it.
+    fn file_id_spelled(f: FileId) -> string? { self.decls.file(f).name }
 
-    /// The file a path names in this process, none for one this process never met.
-    fn file_id_numbered(spelled: string) -> FileId? { self.decls.known_file_id(spelled) }
+    /// The file a name names in this process, none for one this process never met.
+    fn file_id_numbered(spelled: string) -> FileId? { self.decls.known_file_named(spelled) }
 
-    fn file_ref(f: FileId) -> string { self.decls.file(f).path }
+    fn file_ref(f: FileId) -> string { self.decls.file(f).name }
 
     fn type_ref(t: TypeId) -> string { self.decls.type_wire(t) }
 
@@ -131,6 +147,15 @@ impl Workspace {
     fn wants_of_text(raw: string) -> List<Wanted>? {
         let octets? = unhex(raw) else { return null }
         match Wants.decoded_in(self.facts_scope(0, 0), octets) { .Ok(w) -> w.list, .Err(_) -> null }
+    }
+
+    /// A file's code as a row keeps it: its codec's octets, spelled.
+    fn facts_text(f: CodeFacts) -> string { hex(f.encoded_in(self.facts_scope(0, 0))) }
+
+    /// `facts_text` read back; none for a text it did not write.
+    fn facts_of_text(raw: string) -> CodeFacts? {
+        let octets? = unhex(raw) else { return null }
+        match CodeFacts.decoded_in(self.facts_scope(0, 0), octets) { .Ok(f) -> f, .Err(_) -> null }
     }
 
     /// A call's instantiation as a key spells it; empty for none.

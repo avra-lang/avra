@@ -60,6 +60,7 @@ use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames, named_spelling
 use engine.{Key}
 use stable.{
     stable_hasher,
+    indexed_scope,
     text_hash,
     hashed_opt,
     hashed_list,
@@ -79,13 +80,21 @@ use stable.{
 }
 
 /// What a query's answer codec calls its helpers on: the answer's own name, every record inline.
-fn answer_owner(f: Fn) -> Owner { own_of(f.answer) with { scoped: scoped(f), coded: coded_names(f) } }
+fn answer_owner(f: Fn) -> Owner { own_of(f.answer) with { scoped: scoped(f), coded: coded(f) } }
+
+/// The `@codec` types a query's seats and answer reach: each crosses by its own codec under the
+/// bound scope.
+fn coded(f: Fn) -> List<string> {
+    [c for p in f.params.slice(1, f.params.length) for c in coded_in(p.kind)]
+        .concat(coded_in(f.answers))
+}
 
 /// Whether a query's dense ids cross through its context's scope — its key's and its answer's,
 /// spelled for the key, the digest and the record alike.
 fn scoped(f: Fn) -> bool {
     !is_db(f.params[0].kind) &&
-        (keyed_densely(f) || holds_dense(f.answers, named_shape) || !coded_names(f).is_empty())
+        (f.params.slice(1, f.params.length).any(holds_dense(it.kind, named_shape)) ||
+            holds_dense(f.answers, named_shape))
 }
 
 /// Whether every dense seat of a call has a name past the process — a scope may name an id
@@ -101,7 +110,10 @@ fn named_seats(f: Fn) -> Code {
 
 /// The context's one scope, bound where a scoped query's code spells an id.
 fn scope_bound(f: Fn) -> List<Stmts> {
-    if !scoped(f) { return [] }
+    if !scoped(f) {
+        if coded(f).is_empty() { return [] }
+        return [scope_let(quote { indexed_scope() })]
+    }
     let by? = mark_word(f, "scoped_by") else { return [scope_let(quote { ${name(f.params[0].name)}.query_scope() })] }
     [scope_let(quote { ${by}(..${[name(p.name) for p in f.params]}) })]
 }
@@ -169,7 +181,7 @@ fn named_by(f: Fn) -> List<Stmts> {
 /// PINS A LAMBDA'S ANSWER where a seat does not, and a `?` inside an
 /// inferred answer has no door to carry its failure through.
 fn answer_reader(f: Fn) -> List<Stmts> {
-    if !record_answer(f.answers, scoped(f)) { return [] }
+    if !record_answer(f.answers, scoped(f)) || answer_owner(f).codes(f.answers) { return [] }
     match f.answers {
         .Named(ty, _) -> match named_shape(ty) {
             .Record(fs) -> record_reader_let(reader_name(f), ty, f.answer, fs, answer_owner(f)),
@@ -182,7 +194,7 @@ fn answer_reader(f: Fn) -> List<Stmts> {
 /// The answer read back: a record's own binding, every other kind's
 /// lambda.
 fn answer_read(f: Fn) -> Code {
-    if !record_answer(f.answers, scoped(f)) { return read_each(f.answers, answer_owner(f)) }
+    if !record_answer(f.answers, scoped(f)) || answer_owner(f).codes(f.answers) { return read_each(f.answers, answer_owner(f)) }
     name(reader_name(f))
 }
 
@@ -267,35 +279,11 @@ fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], p
 export fn query_problems(f: Fn) -> List<Diagnostic> {
     let first? = f.params.first() else { return [no_db(f)] }
     if !seated(first.kind) { return [no_db(f)] }
-    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind) && !coded(p.kind)]
-    let answer = if carried(f.answers, in_process) || coded(f.answers) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
+    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind, !is_db(first.kind))]
+    let answer = if carried(f.answers, in_process) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
     let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
     codec_problems(f)
-}
-
-/// The `@codec` type a kind is or wraps: it crosses by its codec, whatever its fields hold.
-fn coded_kind(k: Kind) -> Kind? {
-    match k {
-        .Named(n, _) -> if wears_codec(n) { k } else { null },
-        .Opt(inner) -> coded_kind(inner),
-        .List(elem) -> coded_kind(elem),
-        rest -> null,
-    }
-}
-
-fn coded(k: Kind) -> bool { coded_kind(k) != null }
-
-/// The spellings of the `@codec` types a call's seats and answer cross by.
-fn coded_names(f: Fn) -> List<string> {
-    let kinds = [coded_kind(f.answers)]
-        .concat([coded_kind(p.kind) for p in f.params.slice(1, f.params.length)])
-    [c!.spelled() for c in kinds if c != null]
-}
-
-/// A kind's name, when it is itself a `@codec` type.
-fn own_codec(k: Kind) -> string? {
-    match k { .Named(n, _) -> if wears_codec(n) { n } else { null }, rest -> null }
 }
 
 /// A query's first seat: the `Db`, or a context that answers one through `query_db()`.
@@ -307,8 +295,11 @@ fn db_code(f: Fn) -> Code {
     if is_db(f.params[0].kind) { first } else { quote { ${first}.query_db() } }
 }
 
-/// Whether an argument can name a call: a stable encoding, or a dense id the process spells.
-fn asked_by(k: Kind) -> bool { carried(k, named_shape) || dense_field(k) != null }
+/// Whether an argument can name a call: a stable encoding, a dense id the process spells, or —
+/// through a context, whose scope spells ids — a value holding dense ids.
+fn asked_by(k: Kind, ctx: bool) -> bool {
+    carried(k, named_shape) || dense_field(k) != null || ctx && carried(k, in_process)
+}
 
 /// A dense id's one field, none for any other kind.
 fn dense_field(k: Kind) -> string? {
@@ -410,7 +401,7 @@ fn saved(f: Fn) -> bool {
     f
             .params
             .slice(1, f.params.length)
-            .all((p: Param) -> carried(p.kind, named_shape) || ctx && dense_field(p.kind) != null) &&
+            .all((p: Param) -> carried(p.kind, if ctx { in_process } else { named_shape })) &&
         decodable_with(f.answers, ctx)
 }
 
@@ -624,11 +615,6 @@ fn lone_number(f: Fn) -> Code? {
 
 /// The answer's own stable hash, one value folded alone.
 export fn answer_hash(f: Fn) -> Code {
-    let own? = own_codec(f.answers) else { return answer_folded(f) }
-    coded_digest(own, f.answer)
-}
-
-fn answer_folded(f: Fn) -> Code {
     quote { (v: ${f.answer}) -> ${hashed(quote { stable_hasher(0) }, quote { v }, f.answers, answer_owner(f))}.finish() }
 }
 
