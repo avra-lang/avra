@@ -6241,7 +6241,21 @@ help: an `int` is 64 bits, so a wider shift has no answer to give
 
 a run of bitwise operators uses one operator
 
-No witness yet.
+```avra
+let a = 1
+let b = 2
+a | b & 3
+```
+
+```
+error[type.mixed_bitwise]: `|` and `&` in one expression have no agreed order
+  ╭─[witness.av:3:1]
+3 │ a | b & 3
+  · ┬
+  · ╰── two bitwise operators in one run
+──╯
+help: write parentheses to say which binds first — `(a | b) & c`
+```
 
 ## parse.leading_pipe
 
