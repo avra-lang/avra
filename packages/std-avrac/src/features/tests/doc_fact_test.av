@@ -6,12 +6,52 @@
 // the column alone; the renderer still reads `doc_of`/`annotations_of`
 // (decl_facts_test.av) until the second slice moves it inside the query.
 use @std.avrac.compiler.{analyze_source, Analysis}
-use @std.avrac.features.{DocFact, Decl, new_decls, DeclFacts, AnnotationFact}
+use @std.avrac.features.{DocFact, Decl, Decls, new_decls, DeclFacts, AnnotationFact}
 use @std.avrac.core.{DeclId, FileId, DeclKind, no_stmt}
+use @std.avrac.query.{Kernel, Key}
 
 fn doc_fact_of(a: Analysis, name: string) -> DocFact? {
     let d = decl_named(a, name)
     DocFact.get(a.view.decls.doc_facts.get(), d.index)
+}
+
+/// Bare facts carrying only `doc` — every other field is irrelevant to
+/// the end-to-end witness below.
+fn facts_with(doc: string) -> DeclFacts {
+    DeclFacts {
+        external: false,
+        stat: true,
+        is_grammar: false,
+        is_component: false,
+        span: null,
+        tparams: [],
+        bounds: [],
+        seats: [],
+        host: [],
+        annotated: false,
+        of: "",
+        doc: [doc],
+        annotations: [],
+    }
+}
+
+/// A kernel query reading one declaration's DocFact through the REAL
+/// bridge (`decls.decl_rows`/`decls.record_kernel`, the same door a
+/// compiler pass reads through) — its own runs counted so reuse is
+/// observable, same shape as `kernel_relation_hooks_test.av`'s
+/// `read_facts`.
+fn query_doc(decls: Decls, outer: Key, d: DeclId, runs: Cell<int>) -> int {
+    let kernel = decls.record_kernel
+    match kernel.ask(outer) {
+        .Compute -> {
+            kernel.begin(outer)
+            let _ = DocFact.get_db(decls.decl_rows.get(), decls.doc_facts, decls.doc_facts_side, d.index)
+            runs.set(runs.get() + 1)
+            kernel.settle(outer, runs.get())
+            runs.get()
+        },
+        rest -> runs.get(),
+    }
 }
 
 spec "DocFact — a declaration's doc and annotations, as a @side column" {
@@ -61,5 +101,36 @@ spec "DocFact — a declaration's doc and annotations, as a @side column" {
                 row.annotations.length == 1 &&
                 row.annotations[0].name == "kept"
         }
+    }
+}
+
+spec "DocFact — rendering inside the query, through the REAL kernel (avra-8sb5.57.9.7)" {
+    then "an edit to decl A's doc reruns only the query that read A's slot" {
+        mut decls = new_decls()
+        let f: FileId = decls.file_id("/w/src/lib.av", "lib", false)
+        let a: DeclId = decls.mint("w::lib::A", f, no_stmt, "A", DeclKind.Const, true, "", null, false, null)
+        let b: DeclId = decls.mint("w::lib::B", f, no_stmt, "B", DeclKind.Const, true, "", null, false, null)
+        decls.adopt_facts(a, facts_with("doc for A, version 1"))
+        decls.adopt_facts(b, facts_with("doc for B, version 1"))
+        let kernel = decls.record_kernel
+        let query_a = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        let query_b = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        // A fresh key's own first set_input settles at the current
+        // revision rather than advancing it — seed one before the first
+        // ask, so the later bump below has a prior to move away from.
+        kernel.set_input(bump, 0)
+        let runs_a: Cell<int> = Cell.new(0)
+        let runs_b: Cell<int> = Cell.new(0)
+        let a1 = query_doc(decls, query_a, a, runs_a)
+        let b1 = query_doc(decls, query_b, b, runs_b)
+        // The revision that advances here is exactly what a real file
+        // edit triggers in a live compile, before the re-derive that
+        // calls adopt_facts/face with the new text.
+        kernel.set_input(bump, 1)
+        decls.adopt_facts(a, facts_with("doc for A, version 2"))
+        let a2 = query_doc(decls, query_a, a, runs_a)
+        let b2 = query_doc(decls, query_b, b, runs_b)
+        a1 == 1 && b1 == 1 && a2 == 2 && b2 == 1
     }
 }
