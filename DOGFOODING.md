@@ -120,7 +120,7 @@ a bullet here.
 - compiler.bits_of_defaulted `(e).bits_of() ?? default` — a protocol read's absence is a defect (`cx.lower_defect`), never a plausible default (the `bool_of_defaulted` family).
 - compiler.bool_of_defaulted A payload the value-protocol dispatch GUARANTEES, papered over with a `??` default — absence here is a DEFECT the caller should speak (`cx.lower_defect(e, ...)`), never a plausible fallback. All six of core/protocol.av's projections (`bool_of`, `text_of`, `int_of`, `bits_of`, `elems_of`, `entries_of`) are the same shape.
 - compiler.bracket_ritual A `push` held open across a stretch of work until a later `pop` on the same name — a bracket fn taking a thunk owns the pop on every path out, not just the one written.
-- compiler.bypass_outside_bracket A HOOK-FREE TABLE READ (features/bypass.av's `Bypassed`) called from outside its own bracket, or the method table's own CELL read past every wrapper's name. `sig_so_far`, `seat_written_so_far` and `inferred_errors_so_far` answer a fixpoint's table AS IT STANDS, mid-computation, and `registered_methods` a type's method table the same way — none of the four records a dependency, so each is safe only from inside the member that IS the computation trusted to see the table that way. THE CALLEE'S OWN NAME is held open (`${name}`, a text seat, never a held code position) so the four verbs are ONE arm sharing ONE bracket-lookup, over the one call shape a bypass takes whatever its arity — gating a NAMED wrapper alone would still leave `self.methods.get()` itself open to a new site reading it inline, so that raw field-then-`.get()` shape is a second arm over the SAME "methods" bracket. The declaration relation's two pinned handles (`decl_cells`, `decl_row_rows`) are that shape too, over the "decls" bracket: only `Decls`' own readers see its rows unrecorded.
+- compiler.bypass_outside_bracket A HOOK-FREE TABLE READ (features/bypass.av's `Bypassed`) called from outside its own bracket, or the method table's own CELL read past every wrapper's name. `sig_so_far` and `seat_written_so_far` answer a fixpoint's table AS IT STANDS, mid-computation, and `registered_methods` a type's method table the same way — none of the three records a dependency, so each is safe only from inside the member that IS the computation trusted to see the table that way. THE CALLEE'S OWN NAME is held open (`${name}`, a text seat, never a held code position) so the three verbs are ONE arm sharing ONE bracket-lookup, over the one call shape a bypass takes whatever its arity — gating a NAMED wrapper alone would still leave `self.methods.get()` itself open to a new site reading it inline, so that raw field-then-`.get()` shape is a second arm over the SAME "methods" bracket. The declaration relation's two pinned handles (`decl_cells`, `decl_row_rows`) are that shape too, over the "decls" bracket: only `Decls`' own readers see its rows unrecorded.
 - compiler.cell_get_copy A `Cell` read out, written through, then stored back — `mut t = c.get()`, a write through `t` (`push`, `set_at`, `set`, `put`, `grow_to`, `pop`, a field write), then `c.set(t)` — copies what the cell holds on EVERY turn (spec 11.5: `get` answers a COPY). `Cell` exists to make mutation through sharing cheap, and when the loop is hot the copy is quadratic. Write in place through the cell's own verbs (`push`, `set_at`, `put`), or for a `SideTable` through core's `side_put`/`side_grow`, which DETACH the cell first (`c.set(t with { … })`) so nothing shares the box the write would copy whole. That detach is what the guard reads: a body storing the same cell with a `with` form is the in-place written shape, never this smell, and a store of any value but the very one `t` names never fires.
 - compiler.diagnostics_length_uncounted `a.diagnostics.length >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
 - compiler.diagnostics_uncounted `a.diagnostics >= 1` — a refusal test counts: one mistake, one message, so `== 1` (the `uncounted_refusal` family).
@@ -849,6 +849,18 @@ a second copy of every voice. @std/json's scans (`skip`, `string_end`,
 tree path (`from_json` then `T.decode`), which answers every refusal
 the direct reader meets. Smell: a fast path carrying its own error
 enum that mirrors the slow path's.
+
+## An id is not a count
+
+`Reader.count()` reads a LENGTH, so it refuses any value larger than the
+bytes left to read — the bound that keeps a corrupt length from
+allocating. An id, an ordinal or a table place is no length: read it with
+`varint()` and bound it against its table. Written as `count`, an id
+reads back whole only while it is smaller than what follows it, so the
+first rows of a test pass and every later one decodes as absent (the
+store body's family and read-set ids). No rule: a length and an id are
+both an `int` at the site; the writer's word names which it is — `count`
+for a length, `varint` for anything else.
 
 ## Lowering: MINT IN EMISSION ORDER
 

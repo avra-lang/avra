@@ -2,7 +2,7 @@
 # The whole path from new work to main:
 #
 #   sh tools/work new <name>   a worktree ../avra-<name> off main, and its Sprite
-#   sh tools/work run <cmd>    run it on this lane's Sprite, streamed, its exit status
+#   sh tools/work run <cmd>    run it on a GitHub runner (--sprite: this lane's Sprite), its exit status
 #   sh tools/work test         what this branch touches, on this lane's Sprite
 #   sh tools/work land         push, PR, arm auto-merge — no Sprite involved
 #   sh tools/work status       PRs and their merge state; each lane and its Sprite
@@ -333,13 +333,29 @@ ladder_ship() {
     echo "$ls_key:$ls_plan"
 }
 # The compiler to stand as a lane's builder, matched by COMPILER KEY, never by commit: `<key> exact` when
-# a compiler is published for the key of the tree's merge-base with origin/main (a commit that moved no
+# a compiler is published for the key of the tree's base point (`base_point`: main or a base branch) (a commit that moved no
 # compiler source shares its parent's key), else `<key> ancestor <n>` for the nearest published key
 # among its first-parent ancestors (n commits back, at most AVRA_BUILDER_BACK, 40), else nothing.
+# THE BASES: the branches whose pushes publish their compiler (the push branches of .github/workflows/checks.yml).
+bases() {
+    awk '/^  push:/ { on = 1 } on && /branches:/ { gsub(/.*\[|\].*|,/, " "); print; exit }' .github/workflows/checks.yml 2>/dev/null | tr ' ' '\n' | grep -v '^main$' | grep . || :
+}
+# Where this tree leaves the line it was cut from: the nearest merge-base with main or a base, the
+# one fewest commits behind HEAD. A lane off a base stands on that base's published compiler.
+base_point() {
+    best=
+    bestn=
+    for ref in origin/main $(for b in $(bases); do echo "origin/$b"; done); do
+        c=$(git merge-base HEAD "$ref" 2>/dev/null) || continue
+        n=$(git rev-list --count "$c..HEAD")
+        if [ -z "$best" ] || [ "$n" -lt "$bestn" ]; then best=$c; bestn=$n; fi
+    done
+    [ -n "$best" ] && echo "$best"
+}
 builder_key() {
     (
         cd "$1"
-        mb=$(git merge-base HEAD origin/main 2>/dev/null) || exit 0
+        mb=$(base_point) || exit 0
         n=0
         seen=
         first=1
@@ -907,7 +923,7 @@ run() {
             "") echo "work: no compiler is published for the merge-base or its recent ancestors — the run takes the tree's own route" >&2 ;;
             *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
             *)
-                mb=$(git -C "$tree" merge-base HEAD origin/main)
+                mb=$(cd "$tree" && base_point)
                 mbk=$(cd "$tree" && python3 tools/compiler_release.py key-of "$mb")
                 route="builderold:${bk%% *}:$mbk"
                 echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2
@@ -1309,7 +1325,7 @@ wait_landed() {
 usage() {
     case ${1:-} in
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
-        run) echo "usage: sh tools/work run [--builder] [--for <minutes>] [--browser] <cmd…>   — run it on this lane's Sprite (--builder keeps the merge-base's published compiler as the standing one, never building this tree's, so an edit loop's store stays warm — \`make try\` asks for it itself; --browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
+        run) echo "usage: sh tools/work run [--sprite] [--builder] [--for <minutes>] [--browser] <cmd…>   — run it on a GitHub runner over this worktree as it stands, uncommitted files included (.github/workflows/lane-run.yml), and answer its status; --sprite runs it on this lane's Sprite instead (--builder keeps the merge-base's published compiler as the standing one, never building this tree's, so an edit loop's store stays warm — \`make try\` asks for it itself; --browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
         land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;

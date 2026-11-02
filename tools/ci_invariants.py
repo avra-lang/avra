@@ -74,6 +74,18 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAKEFILE = os.path.join(ROOT, "Makefile")
 CHECKS = os.path.join(ROOT, ".github", "workflows", "checks.yml")
+# THE COMPILER'S STEPS: prepare and a lane's run both call this one action.
+COMPILER_ACTION = os.path.join(ROOT, ".github", "actions", "compiler", "action.yml")
+
+
+def compiler_action(text=None):
+    """The compiler action's text: `text` when a test hands one, else the tree's."""
+    return text if text is not None else open(COMPILER_ACTION, encoding="utf-8").read()
+
+
+def prepare_calls_compiler(prepare):
+    """Whether `prepare` takes its compiler from the action, handing it the plan's full flag."""
+    return "uses: ./.github/actions/compiler" in prepare and "full: ${{ steps.plan.outputs.full }}" in prepare
 
 ALL_EVENTS = {"pull_request", "merge_group", "push", "workflow_dispatch"}
 
@@ -203,10 +215,13 @@ def step_if(item):
 
 
 # ── the checks (pure; the fixtures prove them) ───────────────────────────
-def check_release_order(jobs):
+def check_release_order(jobs, action_text=None):
     """The prepare job fetches the release compiler BEFORE building, and
-    builds only where the fetch missed. Answers (refusals, words)."""
+    builds only where the fetch missed — in its own steps, or in the compiler
+    action it calls. Answers (refusals, words)."""
     prepare = jobs.get("prepare", "")
+    if prepare_calls_compiler(prepare):
+        prepare = "\n".join("  " + line for line in compiler_action(action_text).splitlines())
     steps = parse_steps(prepare)
     fetch = next((i for i, s in enumerate(steps) if "compiler_release.py fetch" in s), None)
     build = next((i for i, s in enumerate(steps) if any(m in s for m in ("make -s avra", "make -s bootstrap", "make -s compiler"))), None)
@@ -306,7 +321,7 @@ def check_run_mode(workflow_text):
         refusals.append("`prepare` does not read the PR's mode through tools/avra_tools.sh pr_mode")
     if "github.event.pull_request.draft" in plan:
         refusals.append("`prepare` decides the run mode from the event payload's draft flag")
-    if "compiler_source: ${{ steps.release.outputs.source }}" not in plan:
+    if "compiler_source: ${{ steps.compiler.outputs.source }}" not in plan:
         refusals.append("`prepare` does not expose the compiler's source")
     gate = jobs.get("gate", "")
     if "needs.prepare.outputs.compiler_source == 'latest'" not in gate:
@@ -352,15 +367,18 @@ def check_hold_label(auto_merge_text):
     if "github.event.pull_request.labels" in auto_merge_text:
         bad.append("auto-merge.yml judges labels from the event payload, which a later label misses")
     return bad, ([] if bad else ["hold-label: auto-merge reads the label fresh, reruns on `labeled`, and disarms"])
-def check_ladder(workflow_text, make_text=None, others=None):
+def check_ladder(workflow_text, make_text=None, others=None, action_text=None):
     """A run's rungs reach the compiler step, and the seed check speaks when they do: `prepare` reads the
     rungs, the compiler step builds them through tools/ladder.sh before HEAD, and `seed-check` says it
     skipped (spoken), never silently. Answers (refusals, words)."""
     jobs = parse_jobs(workflow_text)
+    action = compiler_action(action_text)
     bad = []
-    if "steps.rungs.outputs.list" not in jobs.get("prepare", "") or "tools/rungs.sh" not in jobs.get("prepare", ""):
-        bad.append("`prepare` does not read the run's rungs (tools/rungs.sh)")
-    comp = re.search(r"name: compiler\n        id: compiler\n.*?(?=\n      - |\n  [a-z])", jobs.get("prepare", ""), re.S)
+    if not prepare_calls_compiler(jobs.get("prepare", "")):
+        bad.append("`prepare` does not take its compiler from .github/actions/compiler")
+    if "steps.rungs.outputs.list" not in action or "tools/rungs.sh" not in action:
+        bad.append("the compiler action does not read the run's rungs (tools/rungs.sh)")
+    comp = re.search(r"name: compiler\n      id: compiler\n.*?(?=\n    - |\Z)", action, re.S)
     if not comp or not re.search(r"make -s compiler RUNGS=", comp.group(0)):
         bad.append("the compiler step does not hand the run's rungs to `make compiler RUNGS=…`")
     if make_text is not None and "tools/ladder.sh" not in make_targets(make_text).get("compiler", ""):
@@ -380,9 +398,10 @@ def check_ladder(workflow_text, make_text=None, others=None):
     return bad, ([] if bad else ["ladder: rungs are read, built through tools/ladder.sh before HEAD, and the seed check says it skipped"])
 
 
-def check_light_draft(workflow_text):
-    """Every heavy leg `test` owes is gated on the full flag, and `test`
-    refuses a light run. Answers (refusals, words)."""
+def check_light_draft(workflow_text, action_text=None):
+    """Every heavy leg `test` owes is gated on the full flag, `prepare`'s
+    compiler builds only on a full run, and `test` refuses a light run.
+    Answers (refusals, words)."""
     jobs = parse_jobs(workflow_text)
     owed = re.search(r"^    needs:\s*\[(.*?)\]", jobs.get("test", ""), re.M)
     if not owed:
@@ -396,8 +415,8 @@ def check_light_draft(workflow_text):
         cond = re.search(r"^    if:\s*(.+)$", jobs.get(leg, ""), re.M)
         if not cond or "needs.prepare.outputs.full" not in cond.group(1):
             refusals.append("`%s` is owed by `test` but is not gated on `needs.prepare.outputs.full`" % leg)
-    compiler = re.search(r"^      - if: (.+)\n        name: compiler$", jobs.get("prepare", ""), re.M)
-    if not compiler or "steps.plan.outputs.full == '1'" not in compiler.group(1):
+    compiler = re.search(r"^    - if: (.+)\n      name: compiler$", compiler_action(action_text), re.M)
+    if not prepare_calls_compiler(jobs.get("prepare", "")) or not compiler or "inputs.full == '1'" not in compiler.group(1):
         refusals.append("`prepare` builds a compiler on a light run the published one could serve")
     if "needs.prepare.outputs.full == '0'" not in jobs.get("test", ""):
         refusals.append("`test` does not refuse a light draft's run")
@@ -766,6 +785,12 @@ jobs:
 """
     assert any("release asset" in r for r in check_release_order(parse_jobs(nofetch))[0]), \
         check_release_order(parse_jobs(nofetch))
+    # a prepare that calls the compiler action is held to the action's steps
+    real_jobs = parse_jobs(open(CHECKS, encoding="utf-8").read())
+    assert check_release_order(real_jobs)[0] == [], check_release_order(real_jobs)
+    unfetched = compiler_action().replace("compiler_release.py fetch", "compiler_release.py skip")
+    assert any("release asset" in r for r in check_release_order(real_jobs, unfetched)[0]), \
+        check_release_order(real_jobs, unfetched)
 
     # ── keeper coverage ──
     make = """KEEPERS_ALONE = runtime-tests
@@ -879,12 +904,14 @@ rt-header:
     assert any("never disarms" in x for x in check_hold_label(am.replace("--disable-auto", ""))[0])
     assert any("payload" in x for x in check_hold_label(am + "\n# ${{ github.event.pull_request.labels }}")[0])
     assert check_ladder(real)[0] == [], check_ladder(real)
-    assert any("RUNGS" in x for x in check_ladder(real.replace("make -s compiler RUNGS=", "make -s compiler X="))[0])
+    action = compiler_action()
+    assert any("RUNGS" in x for x in check_ladder(real, None, None, action.replace("make -s compiler RUNGS=", "make -s compiler X="))[0])
     real_make = open(MAKEFILE, encoding="utf-8").read()
     assert any("ladder.sh" in x for x in check_ladder(real, real_make.replace("tools/ladder.sh", "tools/other.sh"))[0])
     assert any("o.yml:1" in x for x in check_ladder(real, None, {"o.yml": "        run: make -s compiler\n"})[0])
     assert any("seed-check" in x for x in check_ladder(real.replace("SKIPPED, SPOKEN", "skipped"))[0])
-    assert any("rungs" in x for x in check_ladder(real.replace("tools/rungs.sh", "tools/none.sh"))[0])
+    assert any("rungs" in x for x in check_ladder(real, None, None, action.replace("tools/rungs.sh", "tools/none.sh"))[0])
+    assert any(".github/actions/compiler" in x for x in check_ladder(real.replace("uses: ./.github/actions/compiler", "uses: ./elsewhere"))[0])
     ungated = real.replace("    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'",
                            "    if: needs.prepare.outputs.cache == '1'")
     assert ungated != real
@@ -893,9 +920,12 @@ rt-header:
     assert any("does not refuse" in x for x in check_light_draft(silent)[0]), check_light_draft(silent)
 
     # a light run that builds a compiler the published one could serve is refused
-    built = real.replace(" && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')", "")
-    assert built != real
-    assert any("builds a compiler" in x for x in check_light_draft(built)[0]), check_light_draft(built)
+    built = action.replace(" && (inputs.full == '1' || steps.release.outputs.source == 'none')", "")
+    assert built != action
+    assert any("builds a compiler" in x for x in check_light_draft(real, built)[0]), check_light_draft(real, built)
+    unhanded = real.replace("full: ${{ steps.plan.outputs.full }}", "full: '1'")
+    assert unhanded != real
+    assert any("builds a compiler" in x for x in check_light_draft(unhanded)[0]), check_light_draft(unhanded)
 
     real_wf = open(CHECKS, encoding="utf-8").read()
     assert check_run_mode(real_wf)[0] == [], check_run_mode(real_wf)

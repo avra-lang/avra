@@ -674,7 +674,7 @@ auto-merge (§0). None of these is a command to run.
 | command | what it does |
 |---|---|
 | `sh tools/work new <name>` | a worktree `../avra-<name>` off `main`, and its Sprite |
-| `sh tools/work run <cmd>` | run `<cmd>` on this lane's Sprite, followed to its status |
+| `sh tools/work run <cmd>` | run `<cmd>` on a GitHub runner over the worktree as it stands (`--sprite`: this lane's Sprite), followed to its status |
 | `sh tools/work run --for <minutes> <cmd>` | the same, with a raised bound |
 | `sh tools/work test` | what this branch touches, on this lane's Sprite |
 | `sh tools/work land` | rebase, fmt-check, push, open PR, mark ready, strip a `DO NOT MERGE` title, arm auto-merge |

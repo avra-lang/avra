@@ -72,7 +72,8 @@ agrees() { cmp -s $R/oracle.out $R/$1.out || { fail "$2: the answer differs from
 # THE STORE, under `.avra-cache/` — one directory, not one per compiler.
 the_store() { echo .avra-cache/store; }
 segment() { ls "$(the_store)"/seg-*.log 2>/dev/null | head -1; }
-body() { ls "$(the_store)"/body-*.pack 2>/dev/null | head -1; }
+# the newest body: the head of the chain an open reads
+body() { ls "$(the_store)"/body-*.pack 2>/dev/null | awk -F'body-' '{ print $2 + 0, $0 }' | sort -n | tail -1 | cut -d' ' -f2; }
 
 # THE ORACLE: a cold check, then the store set aside so nothing else reads it.
 checked oracle
@@ -181,7 +182,10 @@ else
 import sys
 p = sys.argv[1]
 b = bytearray(open(p, "rb").read())
-b[len(b) // 2] ^= 0x01
+# rows are read lazily and each held to its own check, so damage is seen where a row is
+# read: every third octet from an eighth in (the index and the rows) is flipped
+for i in range(len(b) // 8, len(b), 3):
+    b[i] ^= 0x01
 open(p, "wb").write(bytes(b))
 PY
     checked flip_mid
