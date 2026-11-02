@@ -21,7 +21,9 @@
 //! Marks shape a query's cell. An answer is digested by its type: a
 //! codec's bytes (a `@local` field is no part of them, which is how a
 //! reader is cut off on less than the whole answer), else, for an answer
-//! that stays in the process, the type's own `fingerprint()`.
+//! that stays in the process, the type's own `fingerprint()`. Under
+//! `@scoped_by(f)` the call's dense ids cross under the scope `f` makes of
+//! its seats, where the context's `query_scope()` is not it.
 //! `@recursive` lets a call re-entered before it settles compute again,
 //! a smaller view, where a plain query answers the cycle with the value
 //! it last held — or, under `@cycled_by(f)`, with what `f` says stands for
@@ -56,10 +58,11 @@ use @std.meta.{
     refuse_as_at,
     code_hash,
 }
-use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames}
-use @std.text.{ascii_lower}
+use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames, named_spelling}
+use engine.{Key}
 use stable.{
     stable_hasher,
+    indexed_scope,
     text_hash,
     hashed_opt,
     hashed_list,
@@ -78,7 +81,47 @@ use stable.{
 }
 
 /// What a query's answer codec calls its helpers on: the answer's own name, every record inline.
-fn answer_owner(f: Fn) -> Owner { own_of(f.answer) }
+fn answer_owner(f: Fn) -> Owner { own_of(f.answer) with { scoped: scoped(f), coded: coded(f) } }
+
+/// The `@codec` types a query's seats and answer reach: each crosses by its own codec under the
+/// bound scope.
+fn coded(f: Fn) -> List<string> {
+    [c for p in f.params.slice(1, f.params.length) for c in coded_in(p.kind)]
+        .concat(coded_in(f.answers))
+}
+
+/// Whether a query's dense ids cross through its context's scope — its key's and its answer's,
+/// spelled for the key, the digest and the record alike. A `@codec` type's codec asks the scope
+/// for every dense id it holds, whatever this view can see of its fields, so a context query that
+/// crosses one is scoped too.
+fn scoped(f: Fn) -> bool {
+    !is_db(f.params[0].kind) &&
+        (f.params.slice(1, f.params.length).any(holds_dense(it.kind, named_shape)) ||
+            holds_dense(f.answers, named_shape) ||
+            !coded(f).is_empty())
+}
+
+/// Whether every dense seat of a call has a name past the process — a scope may name an id
+/// nothing, and a call keyed by one stays in the process.
+fn named_seats(f: Fn) -> Code {
+    mut all: Code = quote { true }
+    for p in f.params.slice(1, f.params.length) {
+        let field? = dense_field(p.kind) else { continue }
+        all = quote { ${all} && ${spelled_somehow(p.ty, quote { ${name(p.name)}.${field} })} }
+    }
+    all
+}
+
+/// The context's one scope, bound where a scoped query's code spells an id. A `Db` has no scope,
+/// so a query over the Db alone spells a coded type's ids by their numbers.
+fn scope_bound(f: Fn) -> List<Stmts> {
+    if !scoped(f) {
+        if coded(f).is_empty() { return [] }
+        return [scope_let(quote { indexed_scope() })]
+    }
+    let by? = mark_word(f, "scoped_by") else { return [scope_let(quote { ${name(f.params[0].name)}.query_scope() })] }
+    [scope_let(quote { ${by}(..${[name(p.name) for p in f.params]}) })]
+}
 
 /// `@query`: the wrapper and the query's contract, from one reading.
 export fn query(f: Fn) -> Declared {
@@ -89,7 +132,11 @@ export fn query(f: Fn) -> Declared {
         made: [
             Directive { twin: "", name: kept, at: f.at, source: kept_source(f, kept) },
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
-        ],
+            Directive { twin: "", name: key_name(f), at: f.at, source: key_door(f) },
+            Directive { twin: "", name: "${f.name}_dropped", at: f.at, source: dropped_door(f) },
+        ]
+            .concat(held_door(f))
+            .concat(seat_door(f)),
         problems: [],
     }
 }
@@ -108,23 +155,23 @@ fn kept_source(f: Fn, kept: string) -> Decls {
 fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_field(it.kind) != null) }
 
 /// A DENSE KEY NAMED PAST THE PROCESS: a query of one dense seat, asked through a context,
-/// names its calls by the context's own speller for that seat's type —
-/// `<type>_spelled(id) -> string?` and `<type>_numbered(spelled) -> <type>?` — set by its first
-/// call. A missing speller is the ordinary refusal at the generated site.
+/// names its calls by the context's ONE speller, its `query_scope()` (stable.av's `Scope`) —
+/// the scope a codec writes dense ids through — set by its first call. A context with no
+/// scope is the ordinary refusal at the generated site; a scope that spells an id empty names
+/// that call nothing, so it stays in the process.
 fn named_by(f: Fn) -> List<Stmts> {
     if f.params.length != 2 || is_db(f.params[0].kind) { return [] }
     let seat = f.params[1]
     let field? = dense_field(seat.kind) else { return [] }
     let ctx = name(f.params[0].name)
-    let stem = snake_of(seat.ty)
     let id = quote { ${seat.ty} { ..${[quote { W { ${field}: n } }]} } }
     [
         quote {
             if !held.durably_named() {
                 held.durable_by(
                     DenseNames {
-                        spell: (n: int) -> ${ctx}.${"${stem}_spelled"}(${id}),
-                        number: (s: string) -> ${ctx}.${"${stem}_numbered"}(s)?.${field},
+                        spell: (n: int) -> named_spelling(${ctx}.query_scope().spelled(${literal(seat.ty)}, n)),
+                        number: (s: string) -> ${ctx}.query_scope().unspelled(${literal(seat.ty)}, s),
                         ask: (n: int) -> {
                             let _ = ${f.name}(${ctx}, ${id})
                         },
@@ -135,25 +182,14 @@ fn named_by(f: Fn) -> List<Stmts> {
     ]
 }
 
-/// A type's name in snake case: `DeclId` is `decl_id`.
-fn snake_of(ty: string) -> string {
-    mut out = ""
-    for j in 0..ty.length {
-        let c = ty.substring(j, j + 1)
-        let lower = ascii_lower(c)
-        out = if j > 0 && lower != c { "${out}_${lower}" } else { "${out}${lower}" }
-    }
-    out
-}
-
 /// The reader a record answer needs, bound beside the call: a TYPED LET
 /// PINS A LAMBDA'S ANSWER where a seat does not, and a `?` inside an
 /// inferred answer has no door to carry its failure through.
 fn answer_reader(f: Fn) -> List<Stmts> {
-    if !record_answer(f.answers) { return [] }
+    if !record_answer(f.answers, scoped(f)) || answer_owner(f).codes(f.answers) { return [] }
     match f.answers {
         .Named(ty, _) -> match named_shape(ty) {
-            .Record(fs) -> record_reader_let(reader_name(f), ty, f.answer, fs),
+            .Record(fs) -> record_reader_let(reader_name(f), ty, f.answer, fs, answer_owner(f)),
             rest -> [],
         },
         rest -> [],
@@ -163,7 +199,7 @@ fn answer_reader(f: Fn) -> List<Stmts> {
 /// The answer read back: a record's own binding, every other kind's
 /// lambda.
 fn answer_read(f: Fn) -> Code {
-    if !record_answer(f.answers) { return read_each(f.answers, answer_owner(f)) }
+    if !record_answer(f.answers, scoped(f)) || answer_owner(f).codes(f.answers) { return read_each(f.answers, answer_owner(f)) }
     name(reader_name(f))
 }
 
@@ -248,7 +284,7 @@ fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], p
 export fn query_problems(f: Fn) -> List<Diagnostic> {
     let first? = f.params.first() else { return [no_db(f)] }
     if !seated(first.kind) { return [no_db(f)] }
-    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind)]
+    let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind, !is_db(first.kind))]
     let answer = if folds_stably(f) || named_answer(f) { [] } else { [answer_not_carried(f)] }
     let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
@@ -264,8 +300,11 @@ fn db_code(f: Fn) -> Code {
     if is_db(f.params[0].kind) { first } else { quote { ${first}.query_db() } }
 }
 
-/// Whether an argument can name a call: a stable encoding, or a dense id the process spells.
-fn asked_by(k: Kind) -> bool { carried(k, named_shape) || dense_field(k) != null }
+/// Whether an argument can name a call: a stable encoding, a dense id the process spells, or —
+/// through a context, whose scope spells ids — a value holding dense ids.
+fn asked_by(k: Kind, ctx: bool) -> bool {
+    carried(k, named_shape) || dense_field(k) != null || ctx && carried(k, in_process)
+}
 
 /// A dense id's one field, none for any other kind.
 fn dense_field(k: Kind) -> string? {
@@ -286,6 +325,14 @@ fn numbered(p: Param) -> Code? {
 fn in_process(n: string) -> NamedShape {
     let shape = named_shape(n)
     match shape { .Dense(_) -> NamedShape.Tagged([]), rest -> shape }
+}
+
+/// `@scoped_by(f)`: the scope a call's dense ids cross under, made from the call's own seats —
+/// a body's window, say — where the context's one `query_scope()` is not it.
+export fn scoped_by(f: Fn, by: Fn) -> List<Diagnostic> {
+    if by.params.length != f.params.length || by.answer != "dyn Scope" { return [scope_shape(f, by)] }
+    if !queried(f) { return [mark_alone(f, "scoped_by")] }
+    []
 }
 
 /// `@recursive`: a call re-entered before it settles computes again — the smaller view.
@@ -323,6 +370,12 @@ fn fixpoint_words(f: Fn) -> List<string>? {
 /// Whether a fn is a query.
 fn queried(f: Fn) -> bool { f.annotations.any((a: Annotation) -> a.name == "query" || a.name == "over") }
 
+/// A mark's one word, when the fn wears the mark.
+fn mark_word(f: Fn, mark: string) -> string? {
+    let found? = f.annotations.find((a: Annotation) -> a.name == mark) else { return null }
+    found.args.first()
+}
+
 /// The answer's digest, picked by its type: an answer the stable encoding folds (every answer
 /// that is saved is one, and its codec's bytes are the digest) digests by that fold; an answer
 /// no encoding folds can only stay in the process, and digests by the type's own `fingerprint()`.
@@ -349,11 +402,17 @@ fn opened(f: Fn) -> Code {
 
 /// THE DURABILITY LAW: an answer outlives the process exactly when every read it makes is
 /// recorded and its key names the same call in the next one — the `Db` alone as its first
-/// seat, every argument a stable encoding, an answer that reads back. Nothing declares it.
+/// seat, every argument a stable encoding, an answer that reads back. Nothing declares it. A
+/// context's call is named past the process only by its scope, so a context query whose seats
+/// and answer are plain numbers and text names nothing of the context and stays in the process.
 fn saved(f: Fn) -> bool {
-    is_db(f.params[0].kind) &&
-        f.params.slice(1, f.params.length).all((p: Param) -> carried(p.kind, named_shape)) &&
-        decodable(f.answers)
+    let ctx = !is_db(f.params[0].kind)
+    (!ctx || scoped(f) || !coded(f).is_empty()) &&
+        f
+            .params
+            .slice(1, f.params.length)
+            .all((p: Param) -> carried(p.kind, if ctx { in_process } else { named_shape })) &&
+        decodable_with(f.answers, ctx)
 }
 
 /// A record and a payload enum are called by name on the way through a query — hashed for the
@@ -395,6 +454,82 @@ fn is_db(k: Kind) -> bool {
 /// A nullable list is not one: the rows are never absent.
 fn is_list(k: Kind) -> bool { match k { .List(_) -> true, rest -> false } }
 
+/// The door to a call's kernel cell: `<name>_key(…)` interns the call and answers its key,
+/// reading and recording nothing — what asks whether a call is open, and what an audit names.
+fn key_door(f: Fn) -> Decls {
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    quote {
+        fn ${key_name(f)}(..${seats}) -> Key {
+            let held = ${kept_name(f)}().under(${db_code(f)})
+${scope_bound(f)}
+            ${named_by(f)}
+            held.memo.query_key(${arg_code(f)})
+        }
+    }
+}
+
+fn key_name(f: Fn) -> string { "${f.name}_key" }
+
+/// `<name>_held(…)`: the answer a call holds, none when it holds none — computing and recording
+/// nothing. A nullable answer has no door: its absence and an absent answer would be one null.
+fn held_door(f: Fn) -> List<Directive> {
+    if f.answers is .Opt(_) { return [] }
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    [
+        Directive {
+            twin: "",
+            name: "${f.name}_held",
+            at: f.at,
+            source: quote {
+                fn ${"${f.name}_held"}(..${seats}) -> ${f.answer}? {
+                    let held = ${kept_name(f)}().under(${db_code(f)})
+${scope_bound(f)}
+                    held.peeked(${arg_code(f)})
+                }
+            },
+        },
+    ]
+}
+
+/// `<name>_dropped(ctx)`: every answer, cell and re-ask of the query under the context's Db let
+/// go — what a one-shot owner does to end the closures that capture it.
+fn dropped_door(f: Fn) -> Decls {
+    let first = f.params[0]
+    quote {
+        fn ${"${f.name}_dropped"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }]}) {
+            ${kept_name(f)}().under(${db_code(f)}).dropped()
+        }
+    }
+}
+
+/// `<name>_seat_of(ctx, k)`: the one seat a key of this query was asked with, none for another
+/// query's key — only for a query of one number seat.
+fn seat_door(f: Fn) -> List<Directive> {
+    if f.params.length != 2 { return [] }
+    let seat = f.params[1]
+    let first = f.params[0]
+    let made = if seat.kind is .Int {
+        quote { n }
+    } else {
+        let field? = dense_field(seat.kind) else { return [] }
+        quote { ${seat.ty} { ..${[quote { W { ${field}: n } }]} } }
+    }
+    [
+        Directive {
+            twin: "",
+            name: "${f.name}_seat_of",
+            at: f.at,
+            source: quote {
+                fn ${"${f.name}_seat_of"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }, quote { fn _(k: Key) {} }]}) -> ${seat.ty}? {
+                    let seat: fn(int) -> ${seat.ty} = (n: int) -> ${made}
+                    let found? = ${kept_name(f)}().under(${db_code(f)}).number_of(k) else { return null }
+                    seat(found)
+                }
+            },
+        },
+    ]
+}
+
 /// The fn holding a query's kept answers.
 fn kept_name(f: Fn) -> string { "${f.name}_answers" }
 
@@ -420,10 +555,11 @@ fn wrapper(f: Fn) -> Decls {
         }
     }
     if saved(f) {
-        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
+        let record = quote { KeptRecord { query: if ${named_seats(f)} { code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})) } else { null }, write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
+                ${scope_bound(f)}
                 ${named_by(f)}
                 let arg = ${arg_code(f)}
                 match ${opened(f)} {
@@ -440,6 +576,7 @@ fn wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
             let held = ${kept_name(f)}().under(${db})
+            ${scope_bound(f)}
             ${named_by(f)}
             let arg = ${arg_code(f)}
             match ${opened(f)} {
@@ -456,7 +593,7 @@ fn wrapper(f: Fn) -> Decls {
 export fn args_spelled(f: Fn) -> Code {
     let seats = f.params.slice(1, f.params.length)
     if seats.length == 1 && seats[0].kind is .Str { return name(seats[0].name) }
-    let plain = [plain_spelled(p) for p in seats]
+    let plain = [plain_spelled(p, scoped(f)) for p in seats]
     if !plain.any(it == null) { return joined_spelling([p! for p in plain]) }
     let writes = [quote { (w: Writer) -> ${seat_written(p, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
@@ -464,10 +601,11 @@ export fn args_spelled(f: Fn) -> Code {
 
 /// A seat spelled straight, never through the codec: a text escaped — a lone text seat as
 /// itself, which nothing beside it can run into — a number as itself. None for any other kind,
-/// which the codec spells.
-fn plain_spelled(p: Param) -> Code? {
+/// and for a dense id under a scope, which the codec spells (through the scope).
+fn plain_spelled(p: Param, scoped: bool) -> Code? {
     if p.kind is .Str { return quote { text_spelled(${name(p.name)}) } }
     let n? = numbered(p) else { return null }
+    if scoped && dense_field(p.kind) != null { return null }
     quote { int_spelled(${n}) }
 }
 
@@ -481,6 +619,7 @@ fn joined_spelling(parts: List<Code>) -> Code {
 /// One seat written: a number as its number, any other kind through the codec.
 fn seat_written(p: Param, owner: Owner) -> Code {
     let n? = numbered(p) else { return written(quote { w }, name(p.name), p.kind, owner) }
+    if owner.scoped && dense_field(p.kind) != null { return written(quote { w }, name(p.name), p.kind, owner) }
     quote { w.int(${n}) }
 }
 
@@ -569,6 +708,15 @@ fn over_rows(f: Fn) -> Diagnostic {
         f.at,
         "a listing collects the rows its producers own, so `${f.name}` answers a plain `List<R>`, this is `${f.answer}`",
         "answer `List<R>` — the rows its key owns",
+    )
+}
+
+fn scope_shape(f: Fn, by: Fn) -> Diagnostic {
+    refuse_as_at(
+        "query_scope",
+        by.at ?? f.at,
+        "`${by.name}` makes the scope `${f.name}`'s call crosses under, so it takes `${f.name}`'s seats and answers a `dyn Scope`",
+        "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}) -> dyn Scope`",
     )
 }
 
