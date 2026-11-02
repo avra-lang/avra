@@ -48,7 +48,7 @@ use compiler.store.mapped.{
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
-const BODY_VERSION: int = 7
+const BODY_VERSION: int = 8
 
 /// An index line: a newline, the action key's leading hex digits, the row's offset and length.
 const KEY_HEX: int = 32
@@ -424,9 +424,10 @@ fn row_bytes(h: Held, set_id: int) -> Bytes {
     framed(w.bytes())
 }
 
-/// Where each referenced value stands in the `.val`: one line a digest.
+/// Where each referenced value stands in the `.val`: one line a digest, sorted by digest so a
+/// lookup bisects.
 fn slot_bytes(placed: List<Placed>) -> Bytes {
-    ["\n${p.digest}${padded(p.at, OFFSET_WIDTH)}${padded(p.len, LENGTH_WIDTH)}" for p in placed]
+    ["\n${p.digest}${padded(p.at, OFFSET_WIDTH)}${padded(p.len, LENGTH_WIDTH)}" for p in sorted_by(placed, (a: Placed, b: Placed) -> text_before(a.digest, b.digest))]
         .join("")
         .bytes()
 }
@@ -503,8 +504,6 @@ export type Sealed = {
     rows: Place,
     /// The slot section, read once by the first value that asks where it stands.
     slot_table: Cell<List<Bytes>>,
-    /// Each slot line's ordinal by its digest, built once with the section.
-    slot_index: Cell<List<Map<string, int>>>,
 }
 
 /// The record keys of the sealed rows that read any of `moved`, from the body's reverse
@@ -644,20 +643,20 @@ export fn sealed_slot(pack: Pack, digest: string) -> ValueSlot? {
 
 fn run_slot(s: Sealed, digest: string) -> ValueSlot? {
     let slot_lines? = slot_table_of(s) else { return null }
-    let k? = slot_ordinals(s, slot_lines).get(digest) else { return null }
-    slot_at(slot_lines, k)
+    mut lo = 0
+    mut hi = slot_lines.length / SLOT_LINE
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let at = slot_digest_at(slot_lines, mid)
+        if at == digest { return slot_at(slot_lines, mid) }
+        if text_before(at, digest) { lo = mid + 1 } else { hi = mid }
+    }
+    null
 }
 
-/// The slot section's ordinals by digest, read once per run.
-fn slot_ordinals(s: Sealed, slot_lines: Bytes) -> Map<string, int> {
-    let known = s.slot_index.get().first()
-    if known != null { return known! }
-    mut by: Map<string, int> = {}
-    for k in 0..slot_lines.length / SLOT_LINE {
-        by.set(slot_lines.slice(k * SLOT_LINE + 1, k * SLOT_LINE + 1 + DIGEST_HEX).text() ?? "", k)
-    }
-    s.slot_index.set([by])
-    by
+/// The digest the slot section's line `k` names.
+fn slot_digest_at(slot_lines: Bytes, k: int) -> string {
+    slot_lines.slice(k * SLOT_LINE + 1, k * SLOT_LINE + 1 + DIGEST_HEX).text() ?? ""
 }
 
 fn slot_table_of(s: Sealed) -> Bytes? {
@@ -848,7 +847,6 @@ fn sealed_from(m: Mapped, payload: Bytes, base: int) -> Sealed? {
         reverse: places[4],
         rows: places[5],
         slot_table: list_cell(),
-        slot_index: list_cell(),
     }
 }
 
