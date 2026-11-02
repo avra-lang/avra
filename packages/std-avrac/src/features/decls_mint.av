@@ -164,9 +164,9 @@ impl Decls {
     /// store given to the declaration that owns it.
     fn admitted(f: FileId, store: SyntaxArena, lines: List<ItemLine>) -> List<DeclId> {
         self.stores.set_at(f.index, store)
-        let top = self.mint_lines(f, lines, store.stmts.count())
+        let ids = self.mint_lines(f, lines, store.stmts.count())
         self.range_bodies(f, store, self.mains.get()[f.index]!)
-        top
+        [ids[j] for j, l in lines if l.item]
     }
 
     /// WHAT A FILE'S PARSE DECLARES, in mint order: each top-level declaration, then its
@@ -354,7 +354,7 @@ impl Decls {
                             0 - 1,
                             null,
                             false,
-                        ) with { inside: around },
+                        ) with { enclosing: enclosing_text(out, around) },
                     )
             }
         }
@@ -365,23 +365,21 @@ impl Decls {
     /// that is this file's.
     fn owns_line(f: FileId, l: ItemLine) -> bool {
         !(l.kind is .Main) &&
-            l.inside < 0 &&
+            l.enclosing.is_empty() &&
             l.facts.span != null &&
             self.spanned_stmt_of(f, StmtId { index: l.stmt }) == null
     }
 
-    /// A FILE'S DECLARATIONS MINTED FROM ITS LINES, in their order: each parent and owner
-    /// stands before what it holds, so an index names an id already minted. The file's rows
+    /// A FILE'S DECLARATIONS MINTED FROM ITS LINES, in their order, then each adopted by the
+    /// parent its line names. The file's rows
     /// are then exactly these: what it held before and did not mint again is removed in one
-    /// step. Answers the top-level ids, in order.
+    /// step. Answers each line's id.
     fn mint_lines(f: FileId, lines: List<ItemLine>, stmts: int) -> List<DeclId> {
         let before = self.decls_so_far(f)
         let _ = self.counted.get().opened(f, "")
         mut ids: List<DeclId> = []
         mut by_stmt = side_table("decl_ids", 0, stmts, DeclAt { decl: null })
         for l in lines {
-            let parent: DeclId? = if l.parent < 0 { null } else { ids[l.parent] }
-            let enclosing = if l.inside < 0 { "" } else { self.within_text(ids[l.inside]) }
             let root: ExprId? = if l.root < 0 { null } else { ExprId { index: l.root } }
             let d = self
                 .mint_faced(
@@ -391,10 +389,10 @@ impl Decls {
                     l.kind,
                     l.exported,
                     l.owner,
-                    parent,
-                    enclosing,
+                    null,
+                    l.enclosing,
                     root,
-                    "",
+                    l.maker,
                     l.facts,
                 )
             ids.push(d)
@@ -405,10 +403,15 @@ impl Decls {
                 by_stmt.set(l.stmt, DeclAt { decl: d })
             }
         }
+        // A PARENT IS A LINK, set once every line stands: a kept file orders a generated
+        // member before its impl.
+        for j, l in lines {
+            if l.parent >= 0 { self.adopt(ids[j], ids[l.parent]) }
+        }
         self.decl_ids.set_at(f.index, Cell.new(by_stmt))
         self.file_keeps(f, [d.index for d in ids])
         self.forget([d for d in before if self.row_at(d.index) == null])
-        [ids[j] for j, l in lines if l.item]
+        ids
     }
 
     /// A FILE WITHDRAWN FROM THE TABLE — a deleted file, or one whose
@@ -1292,10 +1295,10 @@ impl Decls {
 
 /// Whether a declaration of this kind is the one its statement
 /// declares — a default rides its owner's statement.
-/// ONE DECLARATION A FILE'S PARSE ADMITS, as minting needs it: its statement, name and
-/// kind, whether it is exported, its owner's name, its parent and the owner it is nested in
-/// (each an index into the same lines, or -1), its body's root (-1 for none), whether it is
-/// a top-level item, and its facts.
+/// ONE DECLARATION A FILE ADMITS, as minting needs it: its statement, name and kind,
+/// whether it is exported, its owner's name, its parent (an index into the same lines, or
+/// -1), the key of what it is nested in, its body's root (-1 for none), whether it is a
+/// top-level item, its facts, and what generated it.
 export type ItemLine = {
     stmt: int,
     name: string,
@@ -1303,10 +1306,11 @@ export type ItemLine = {
     exported: bool,
     owner: string,
     parent: int,
-    inside: int,
+    enclosing: string,
     root: int,
     item: bool,
     facts: DeclFacts,
+    maker: string,
 }
 
 /// One line of an admission, its facts captured from its parse.
@@ -1328,11 +1332,30 @@ fn item_line(
         exported: exported,
         owner: owner,
         parent: parent,
-        inside: 0 - 1,
+        enclosing: "",
         root: root?.index ?? 0 - 1,
         item: item,
         facts: capture_facts(store, s, kind, root),
+        maker: "",
     }
+}
+
+/// What a declaration nested in line `j` names as its encloser: that line's key, its path
+/// left out, its place among the lines before it of one name, kind, owner, maker and
+/// encloser counted as minting counts it.
+fn enclosing_text(lines: List<ItemLine>, j: int) -> string {
+    let l = lines[j]
+    let place = lines.slice(0, j).filter(same_group(it, l)).length
+    decl_key_text("", l.name, l.kind, l.owner, l.maker, l.enclosing, place)
+}
+
+/// Whether two lines share the group a declaration's place is counted in.
+fn same_group(a: ItemLine, b: ItemLine) -> bool {
+    a.name == b.name &&
+        a.kind == b.kind &&
+        a.owner == b.owner &&
+        a.maker == b.maker &&
+        a.enclosing == b.enclosing
 }
 
 /// Each default a record's fields or a fn's seats carry, a line under its owner: named by
