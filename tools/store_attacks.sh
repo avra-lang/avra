@@ -194,20 +194,18 @@ PY
 fi
 
 # ── §6.8 another compiler ──
-# Two cases. A compiler whose print differs while its module-record producer, its codec and
-# the toolchain do not (AVRA_INLINE_RUNTIME=0 moves the print alone) READS the first one's
-# module records and answers as a cold compute does. A segment written under another pack
-# FORMAT is never read, and the check recomputes. A producer, codec or toolchain part that
-# moved is pinned where the stamp is folded (compiler/tests/store_test.av).
-say "§6.8 another compiler, same producer: its module records are read, and the answer is the cold one"
+# A compiler whose print differs (AVRA_INLINE_RUNTIME=0 moves the print alone) reads none
+# of the first one's rows, in any family: it hits only what it wrote itself, as a cold
+# check does, and answers as a cold compute does. A segment
+# written under another pack FORMAT is never read, and the check recomputes.
+say "§6.8 another compiler: none of the first one's rows are read, and the answer is the cold one"
 rm -rf .avra-cache
 checked share_seed
 export AVRA_INLINE_RUNTIME=0
 checked share
 unset AVRA_INLINE_RUNTIME
-agrees share "a second print with the same producer"
-[ "$(grep -c '^Q	store	hit	sig' $R/share.trace)" -ge 1 ] || fail "the second compiler read none of the first one's module records"
-[ "$(grep -c '^Q	store	hit	unit' $R/share.trace)" -le "$(grep -c '^Q	store	hit	unit' $R/share_seed.trace)" ] || fail "a compiler-keyed row crossed prints"
+agrees share "a second print"
+[ "$(grep -ac '^Q	store	kind	get	hit' $R/share.trace)" = "$(grep -ac '^Q	store	kind	get	hit' $R/share_seed.trace)" ] || fail "a row crossed prints: the second print hit more than a cold check hits"
 
 say "§6.8 another compiler, another format: a segment written under another pack format is never read, and the check recomputes"
 rm -rf .avra-cache
@@ -242,13 +240,12 @@ agrees foreign "a foreign format"
 [ "$(grep -c '^Q	attempt' $R/foreign.trace)" -gt 0 ] || fail "a store of another format was read as a hit"
 
 say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
-# `stamp_of` gives each family ONE stamp: sig stands under its producer's code hashes, every
-# other family under the compiler's own print (`own ${print}`). So a rebuild that moved one
-# leaf re-keys every row of every other family at once — measured by tools/db06_step6_rebuild.sh:
+# Every family stands under the compiler's own print (`own ${print}`). So a rebuild that
+# moved one leaf re-keys every row at once — measured by tools/db06_step6_rebuild.sh:
 # 0 store rows written by a warm check of an unchanged tree, 30,320 after one leaf of one query
 # moved and the compiler was rebuilt. The row asks for a row keyed by the code hash of the
 # query that ANSWERS it: S2 (§6.4), DB 05b's receipt — not DB 09, which is the settlement.
-fail "the families are keyed per FAMILY (sig by its producer's code hashes, every other by the compiler's print), so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
+fail "every family is keyed by the compiler's print, so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
 
 say "§6.8 another compiler, another C: a compiler whose runtime C differs reads none of the first one's module records"
 if sh tools/db06_step5_witness.sh > "$R/step5.log" 2>&1; then
