@@ -9,7 +9,10 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENTRY = "cascade.py"
-LOGGING_ONLY = {"CASCADE_TRACE", "CASCADE_DECISIONS"}
+LOGGING_ONLY = {"CASCADE_TRACE", "CASCADE_DECISIONS", "CASCADE_CANDIDATES"}
+# An env var that NAMES A REQUEST'S INPUT decides no code's bytes: the candidates file is
+# different for every source, so an identity that folded it in would refuse every client that
+# carried one.
 # Programs the service imports to answer planner ops. An extraction never calls
 # them, so their code decides no extraction's bytes and stays out of the identity.
 SERVES_PLANNER_ONLY = {"planning_ops"}
@@ -52,7 +55,8 @@ def identity():
         "models": {"encoder": pins.ENCODER, "scorer": pins.SCORER},
         "params": digest(open(params, "rb").read()),
         "bounds": digest(open(os.path.join(HERE, "service_parameters.json"), "rb").read()),
-        "env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("CASCADE_") and k not in LOGGING_ONLY},
+        "env": {k: v for k, v in sorted(os.environ.items())
+                if k.startswith("CASCADE_") and k not in LOGGING_ONLY},
         "code": {n: digest(open(os.path.join(HERE, n + ".py"), "rb").read()) for n in closure()},
     }
 
