@@ -1,0 +1,186 @@
+# THE COMPILER FOR THIS TREE, taken or built: the one definition checks.yml's prepare and a lane's
+# run (lane-run.yml) both stand on. Keyed by the compiler's own source (tools/compiler_paths.sh); a
+# `Rung:` tree climbs its ladder. Saving is the caller's: what it keeps, and when, differs by caller.
+# A composite step takes no timeout: the caller bounds the whole action.
+name: compiler
+description: The tree's compiler at build/avra, restored, fetched or built.
+inputs:
+  key:
+    description: the tree's compiler key (`avrac-<compiler_paths --key>`)
+    required: true
+  cache-key:
+    description: the cache key to restore under; the tree's key when empty
+    default: ""
+  restore-keys:
+    description: prefixes a miss falls back to, newest first
+    default: |
+      avrac-
+      avra-
+  full:
+    description: "'1' builds when the published compiler is not this tree's; otherwise a light run takes it"
+    default: "1"
+  main:
+    description: "'1' on main's own run, which replays the landed PR's ladder"
+    default: "0"
+  keep-rungs:
+    description: "'true' keeps a built ladder product for the next push"
+    default: "false"
+outputs:
+  hit:
+    description: "'true' when the restored or fetched compiler is this tree's own"
+    value: ${{ steps.restored.outputs.hit == 'true' || steps.release.outputs.hit == 'true' }}
+  source:
+    description: where the build started from (exact, latest, none), empty on a cache hit
+    value: ${{ steps.release.outputs.source }}
+  rungs:
+    description: this run's rung commits
+    value: ${{ steps.rungs.outputs.list }}
+runs:
+  using: composite
+  steps:
+    # THE RUNGS OF THIS RUN: commits carrying a `Rung: <why>` trailer (tools/rungs.sh). A tree reads
+    # them off its own commits; main's own run, whose squash dropped them, reads the landed PR's
+    # head ref (`(#N)` in the title, refs/pull/N/head stays fetchable) so it replays the same
+    # ladder. A row and its first reader ride ONE landing as two commits; each rung is built by the
+    # product of the one before (tools/ladder.sh), never by a compiler that cannot read it.
+    - id: rungs
+      name: rungs
+      shell: sh
+      run: |
+        list=""
+        if [ "${{ inputs.main }}" = 1 ] && [ "${{ github.event_name }}" = push ]; then
+          n=$(git log -1 --format=%s | sed -n 's/.*(#\([0-9][0-9]*\))$/\1/p')
+          [ -z "$n" ] || list=$(sh tools/rungs.sh --pr "$n" 2>/dev/null | tr '\n' ' ') || list=""
+        else
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
+          git fetch -q --unshallow origin main "$head" 2>/dev/null || git fetch -q origin main "$head" 2>/dev/null || :
+          base=$(git merge-base origin/main "$head" 2>/dev/null || :)
+          [ -z "$base" ] || list=$(sh tools/rungs.sh "$base" "$head" | tr '\n' ' ')
+        fi
+        echo "list=$(echo $list)" >> "$GITHUB_OUTPUT"
+        echo "key=rungs-$(printf '%s' "$list" | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+        [ -z "$list" ] || echo "rungs: $(echo $list | wc -w) rung(s) — $list"
+    # A LADDER'S PRODUCT IS CACHED PER PR: a re-push that leaves the rung commits as they were
+    # restores the last rung's compiler and builds only HEAD's two generations.
+    - if: steps.rungs.outputs.list != ''
+      uses: actions/cache/restore@v4
+      id: rungcache
+      with:
+        path: .rung-product
+        key: ${{ steps.rungs.outputs.key }}
+    # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
+    # tree whose compiler is main's takes main's binary and builds nothing.
+    # Otherwise the newest cached binary only has to BUILD this tree — one
+    # `make avra` advances one generation, so twice — and one too old to read
+    # it (new syntax, a new refusal about its own source) fails that build
+    # and the tree BOOTSTRAPS from the committed seed instead.
+    #
+    # `.avra-cache` rides with the binary: a store is one compiler's, so the
+    # restored binary reads its own store for the FIRST self-compile instead
+    # of rebuilding every module (measured: the first compile 517s -> 404s,
+    # the analysis and emit rows reused; `lower` is one program and still
+    # re-runs). The SECOND self-compile is that new compiler's own first
+    # build, so it is cold whatever this cache does.
+    - uses: actions/cache/restore@v4
+      id: cache
+      with:
+        path: |
+          build/avra
+          .avra-cache
+        key: ${{ inputs.cache-key || inputs.key }}
+        restore-keys: ${{ inputs.restore-keys }}
+    # A RESTORE IS THIS TREE'S COMPILER WHEN THE KEY IT MATCHED NAMES THE TREE'S: an exact hit, or a
+    # lane's own save of it under a run-unique key.
+    - id: restored
+      shell: sh
+      run: |
+        case "${{ steps.cache.outputs.cache-matched-key }}" in
+          *"${{ inputs.key }}"*) [ ! -x build/avra ] || echo "hit=true" >> "$GITHUB_OUTPUT" ;;
+        esac
+    # THE COMPILER, FETCHED FROM WHERE EVERY REF CAN REACH IT. A cache is
+    # ref-scoped — only the default branch's caches cross runs, so a train on
+    # its own `gh-readonly-queue/...` ref can never read what main's push
+    # saved. A release asset is not: main publishes the compiler under its own
+    # source digest, and a run whose cache missed the exact key fetches THAT
+    # instead of rebuilding. A MISS NAMES ITSELF: the fallback to a build is
+    # correct, but a silent one reports success while a long rebuild starts,
+    # so the miss is a `::warning::` carrying the fetch's own reason (an
+    # unpublished key, an unreachable API) or that the smoke run failed.
+    #
+    # A MISS FALLS BACK TO MAIN'S NEWEST COMPILER, never straight to the
+    # seed. Only a push to main publishes, so a train's or a PR's own key can
+    # never have a release; main's binary beside main's `.avra-cache` is where
+    # the incremental build starts, and the committed seed is a full cold
+    # bootstrap. A hit on the tree's OWN key needs no build at all. Both
+    # paths are smoke-run before they are trusted, so a binary built for
+    # another image falls through.
+    - if: steps.restored.outputs.hit != 'true'
+      id: release
+      name: compiler from release
+      continue-on-error: true
+      shell: sh
+      run: |
+        mkdir -p build
+        tree="${{ inputs.key }}"
+        reason=$(python3 tools/compiler_release.py fetch "$tree" build/avra 2>&1) && rc=0 || rc=$?
+        printf '%s\n' "$reason"
+        if [ "$rc" = 0 ] && build/avra --version >/dev/null 2>&1; then
+          echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo "source=exact" >> "$GITHUB_OUTPUT"
+          echo "speed compiler 0" >> speed.log
+          echo "compiler-release: HIT — the tree's own key ${tree}; no build owed"
+        elif python3 tools/compiler_release.py latest build/avra && build/avra --version >/dev/null 2>&1; then
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          echo "source=latest" >> "$GITHUB_OUTPUT"
+          echo "::warning::compiler release for ${tree} missed (${reason}); starting the build from the newest published compiler"
+        else
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          echo "source=none" >> "$GITHUB_OUTPUT"
+          build/avra --version >/dev/null 2>&1 || rm -f build/avra
+          echo "::warning::compiler release for ${tree} missed (${reason}) and no published compiler ran; building from the committed seed"
+        fi
+    # Two source generations: a cold `make avra` measured ~517 s each, so a
+    # bootstrap fits with margin; each generation and the bootstrap are
+    # bounded, so a hang dies here with its own name and an honest status.
+    # RECORDED TRIGGER: the generation bound is 1500 s and the step 50 min so a slow
+    # builder never falls back to a 22-min bootstrap; lowered back to 900 s / 35 min
+    # once main's published compiler carries the shape-key fix (cold check 158 -> 80 s)
+    # — measure prepare on three compiler-touching PRs, then --accept.
+    # A LIGHT RUN (a draft) takes the published compiler when one stands: its
+    # gate judges fmt and the idioms with it, and the full run is the proof.
+    - if: steps.restored.outputs.hit != 'true' && steps.release.outputs.hit != 'true' && (inputs.full == '1' || steps.release.outputs.source == 'none')
+      name: compiler
+      id: compiler
+      shell: sh
+      run: |
+        s=$(date +%s)
+        # THE LADDER rides `make compiler` (its RUNGS). A cached product for these rungs
+        # stands in for the ladder; a built one is kept for the next push.
+        rungs="${{ steps.rungs.outputs.list }}"
+        if [ -n "$rungs" ] && [ "${{ steps.rungcache.outputs.cache-hit }}" = true ] && [ -x .rung-product/avra ]; then
+          echo "ladder: the rung product is cached for these rungs"
+          cp .rung-product/avra build/avra
+          rungs=""
+        fi
+        # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT, and its
+        # failed generation is the expected shape here: `make compiler` falls
+        # back to the seed, a full build that forgives a compiler too old,
+        # never a source wrong.
+        # each rung is replayed on the base this tree is judged against, never on its own stale tree
+        lbase=origin/main
+        [ "${{ inputs.main }}" != 1 ] || [ "${{ github.event_name }}" != push ] || lbase=HEAD~1
+        make -s compiler RUNGS="$rungs" LADDER_BASE="$(git rev-parse "$lbase")" GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
+          || { echo "::error::the compiler did not build"; exit 1; }
+        if [ -n "$rungs" ]; then
+          mkdir -p .rung-product && cp build/avra-ladder .rung-product/avra
+          echo "built=1" >> "$GITHUB_OUTPUT"
+        fi
+        echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
+        echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
+    - if: steps.compiler.outputs.built == '1' && inputs.keep-rungs == 'true'
+      name: keep the rung product
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: .rung-product
+        key: ${{ steps.rungs.outputs.key }}
