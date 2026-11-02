@@ -4,7 +4,7 @@
 // where a plain query answers the cycle; and an answer the body leaves
 // `unkept()` reaches its asker and no cell holds it, so the next ask runs
 // again — in both engines
-use @std.relation.{query, input, digested_by, recursive}
+use @std.relation.{query, input, codec, recursive}
 use @std.relation.db.{Db, new_db}
 
 once fn runs() -> Cell<List<string>> { Cell.new([]) }
@@ -19,17 +19,34 @@ fn since(from: int) -> string { runs().get().slice(from, runs().get().length).jo
 @input
 fn width(_db: Db, _of: string) -> int { 10 }
 
-type Measure = { width: int, wide: bool }
-
-/// What a reader of a measure reads: whether it is wide.
-fn wideness(m: Measure) -> int { if m.wide { 1 } else { 0 } }
+@codec
+type Measure = { wide: bool, @local width: int = 0 }
 
 @query
-@digested_by(wideness)
 fn measure(db: Db, of: string) -> Measure {
     ran("measure")
     let w = width(db, of)
     Measure { width: w, wide: w >= 100 }
+}
+
+/// An answer that stays in the process, digested by its own `fingerprint()`: the box is not on it.
+type Bag = { box: Cell<int>, tag: int }
+
+impl Bag {
+    fn fingerprint() -> int { self.tag }
+}
+
+@query
+fn bag(db: Db, of: string) -> Bag {
+    ran("bag")
+    let w = width(db, of)
+    Bag { box: Cell.new(w), tag: if w >= 100 { 1 } else { 0 } }
+}
+
+@query
+fn bag_shown(db: Db, of: string) -> string {
+    ran("bag_shown")
+    "t${bag(db, of).tag}"
 }
 
 @query
@@ -85,7 +102,13 @@ fn main_run() -> string {
     let n3 = runs().get().length
     let h3 = halfway(db, "y")
     let h4 = halfway(db, "y")
-    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${since(n3)}]"
+    let late = since(n3)
+    let nb = runs().get().length
+    let g1 = bag_shown(db, "z")
+    set_width(db, "z", 20)
+    let g2 = bag_shown(db, "z")
+    let bagged = "${g1} ${g2} [${since(nb)}]"
+    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${late}] | ${bagged}"
 }
 
 main_run()

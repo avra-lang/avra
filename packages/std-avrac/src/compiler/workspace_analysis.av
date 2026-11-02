@@ -75,7 +75,7 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query, digested_by}
+use @std.relation.{query}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -99,10 +99,14 @@ fn diags_fingerprint(out: List<Diag>) -> int {
     fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
 }
 
-/// A file's method-table clashes; its readers stand on what they say.
+/// A file's method-table clashes, kept for its analysis; the answer is what they say, so its
+/// readers stand on that and nothing else.
 @query
-@digested_by(diags_fingerprint)
-fn method_clashes(ws: Workspace, f: FileId) -> List<Diag> { ws.file_method_clashes(f) }
+fn method_clashes(ws: Workspace, f: FileId) -> int {
+    let out = ws.file_method_clashes(f)
+    ws.method_diag_rows.keep(f.index, out)
+    diags_fingerprint(out)
+}
 
 /// Which declarations read `state` through the calls their bodies make: the read-set fixpoint
 /// over the call graph, asked after typing, so every file is resolved and a declaration a
@@ -149,7 +153,8 @@ impl Workspace {
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(Family.Resolved.ordinal) { return [] }
-        method_clashes(self, f)
+        let _ = method_clashes(self, f)
+        self.method_diag_rows.at(f.index) ?? []
     }
 
     /// The clashes spoken in file `f`. A clash is recorded at the LATER
