@@ -78,7 +78,7 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query, scoped_by, recursive, cycled_by}
+use @std.relation.{query, scoped_by, recursive, cycled_by, digested_by}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
@@ -128,7 +128,6 @@ fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
 @query
 @cycled_by(settle_cycle)
 fn settled_ask(ws: Workspace, c: SettleAsk) -> Settlement {
-    ws.settle_runs.set(ws.settle_runs.get() + 1)
     let r = ws.settle_result(c)
     match r {
         .Ok(value) -> {
@@ -143,17 +142,13 @@ fn settled_ask(ws: Workspace, c: SettleAsk) -> Settlement {
 
 /// What a settlement asking for its own value is answered: the cycle, said once.
 fn settle_cycle(ws: Workspace, c: SettleAsk) -> Settlement {
-    ws.settle_runs.set(ws.settle_runs.get() + 1)
     Settlement.Refused(Unsettled.Trap("asks for its own value while settling"))
 }
 
-/// A file's method-table clashes, kept for its analysis; the answer is what they say.
+/// A file's method-table clashes; its readers stand on what they say.
 @query
-fn method_clashes(ws: Workspace, f: FileId) -> int {
-    let out = ws.file_method_clashes(f)
-    ws.method_diag_rows.keep(f.index, out)
-    diags_fingerprint(out)
-}
+@digested_by(diags_fingerprint)
+fn method_clashes(ws: Workspace, f: FileId) -> List<Diag> { ws.file_method_clashes(f) }
 
 /// Which declarations read `state` through the calls their bodies make: the read-set fixpoint
 /// over the call graph, asked after typing, so every file is resolved and a declaration a
@@ -207,8 +202,7 @@ impl Workspace {
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(Family.Resolved.ordinal) { return [] }
-        let _ = method_clashes(self, f)
-        self.method_diag_rows.at(f.index) ?? []
+        method_clashes(self, f)
     }
 
     /// The clashes spoken in file `f`. A clash is recorded at the LATER
@@ -1066,9 +1060,10 @@ impl Workspace {
     /// A settlement as its ask's query answers it: a refusal an earlier read already spoke
     /// is silent here, so a diagnostic never repeats.
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
-        let ran = self.settle_runs.get()
-        let held = settled_ask(self, self.settle_asks.get()[id])
-        if self.settle_runs.get() == ran { return reused_settlement(held) }
+        let ask = self.settle_asks.get()[id]
+        let stood = settled_ask_held(self, ask) != null
+        let held = settled_ask(self, ask)
+        if stood { return reused_settlement(held) }
         match held { .Held(value) -> .Ok(value), .Refused(why) -> .Err(why) }
     }
 

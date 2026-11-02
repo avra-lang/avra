@@ -565,19 +565,6 @@ export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
 /// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
 /// type, so a copy of `Decls` still reads and writes the tables the
 /// workspace built.
-/// The name buckets one frame's reads touched, each once: which are marked, and the order
-/// they were first read in.
-type Gather = { seen: Cell<List<bool>>, out: Cell<List<int>> }
-
-impl Gather {
-    fn note(b: int) {
-        while self.seen.get().length <= b { self.seen.push(false) }
-        if self.seen.get()[b] { return }
-        self.seen.set_at(b, true)
-        self.out.push(b)
-    }
-}
-
 @identity
 @plain_field("rows")
 export type Decls = {
@@ -708,13 +695,6 @@ export type Decls = {
     record_items: Cell<int>,
     record_methods: Cell<int>,
     record_names: Cell<int>,
-    /// THE NAME READS A FRAME GATHERS: while a run's frame gathers, the name buckets its own
-    /// reads touch are held here and recorded as ONE read of their digest, never one each.
-    /// `gathering` is the depth of the innermost gathering frame (-1 for none); `gathered`
-    /// holds each open gather's buckets, `gather_depths` the depth each one stands at.
-    gathering: Cell<int>,
-    gather_depths: Cell<List<int>>,
-    gathered: Cell<List<Gather>>,
     /// Whether the workspace armed the recording: the rows minted before it — the
     /// language's own — are filed under their cells when it does.
     recording: Cell<bool>,
@@ -811,12 +791,10 @@ export type Decls = {
     // the workspace's cancel hook: a record-carrying declaration's reach
     // read by name, so a reader stands on that decl's answer alone
     ensure_cancels: Cell<fn(DeclId) -> bool>,
-    // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
-    // through `ensure_consumed`, the same shape as `marks` (null =
-    // unasked). No fixpoint: unlike `written_seats`, a seat's
+    // WHICH SEATS THE BODY CONSUMES (R3) — the workspace's answer per
+    // declaration. No fixpoint: unlike `written_seats`, a seat's
     // evidence is local to its own body alone.
-    consumed: Cell<List<List<bool>?>>,
-    ensure_consumed: Cell<fn(DeclId) -> void>,
+    ensure_consumed: Cell<fn(DeclId) -> List<bool>>,
     /// Whether a HELD file stood in the workspace the last time the
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
@@ -833,14 +811,8 @@ export type Decls = {
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
     mut_seat_index: Cell<Map<string, List<DeclId>>>,
-    // an inferred `Result<T, _>`'s growing error set, dense by DeclId
-    // — the error-unions Phase 2 fixpoint's own table, settled by the
-    // armed hook on first ask
-    inferred_errs: Table<List<TypeId>>,
-    // whether that fn's own walk hit a site whose type it could not
-    // structurally resolve — a refusal, never a silently missing member
-    inferred_unresolved: Table<bool>,
-    ensure_failures: Cell<fn() -> void>,
+    // an inferred `Result<T, _>`'s settled error set: the workspace's failures answer
+    ensure_failures: Cell<fn(DeclId) -> Inferred>,
     // what a call to each fn may reach — a held fn's as its interface
     // recorded it, every other as the pass found it
     cancels: Table<CancelReach>,
@@ -896,7 +868,11 @@ fn none_apart(_f: FileId) -> List<DeclId> { [] }
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_marks(d: DeclId) {}
 
-fn no_failures_ensure() {}
+/// An inferred `Result<T, _>`'s error side: the members found, and whether a site's type
+/// could not be resolved — a refusal, never a silently missing member.
+export type Inferred = { errors: List<TypeId>, unresolved: bool }
+
+fn no_failures_ensure(_d: DeclId) -> Inferred { Inferred { errors: [], unresolved: false } }
 
 /// Why an `embed` literal names no file a const may read: it stands
 /// outside the package, it names a package this one does not depend on,
@@ -998,7 +974,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
     let no_methods: List<Cell<List<DeclId>>> = []
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
-    let empty_consumed: List<List<bool>?> = []
     let db = durable_db(durable)
     let d = Decls {
         types: new_type_registry(),
@@ -1020,9 +995,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         record_names: Cell.new(0),
-        gathering: Cell.new(0 - 1),
-        gather_depths: list_cell(),
-        gathered: list_cell(),
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
@@ -1081,14 +1053,11 @@ export fn new_decls_under(durable: Durable) -> Decls {
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_answer),
         ensure_cancels: Cell.new(no_answer),
-        inferred_errs: new_table(),
-        inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
         cancels: new_table(),
         schedulers: Cell.new(false),
         shape_keys: new_table(),
-        consumed: Cell.new(empty_consumed),
-        ensure_consumed: Cell.new(no_ensure),
+        ensure_consumed: Cell.new(no_consumed),
         lifter: Cell.new(no_lifter),
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
@@ -1123,6 +1092,8 @@ fn builtin_tparams(arity: int) -> List<string> {
 fn no_ensure(d: DeclId) {}
 
 fn no_answer(_d: DeclId) -> bool { false }
+
+fn no_consumed(_d: DeclId) -> List<bool> { [] }
 
 /// A kind's word — the key's middle, and prose.
 export fn kind_word(k: DeclKind) -> string {
@@ -1274,42 +1245,8 @@ impl Decls {
         match kind { .Main -> self.rows_read(f), rest -> self.name_recorded(b) }
     }
 
-    /// A read of name bucket `b`, recorded in the open query — or held, when the frame
-    /// now open is gathering its name reads.
-    fn name_recorded(b: int) {
-        let at = self.gathering.get()
-        if at >= 0 && at == self.record_kernel.asker.open.get().length {
-            self.gathered.get().last()!.note(b)
-        } else {
-            self.record_kernel.record_at(self.record_names.get(), b)
-        }
-    }
-
-    /// The frame now open gathers its own name reads from here, until `gather_close`.
-    fn gather_open() {
-        let depth = self.record_kernel.asker.open.get().length
-        self.gather_depths.push(depth)
-        self.gathered.push(Gather { seen: list_cell(), out: list_cell() })
-        self.gathering.set(depth)
-    }
-
-    /// The name buckets the gathering frame read, each once; its reads resume recording.
-    fn gather_close() -> List<int> {
-        let held = self.gathered.get().last()!.out.get()
-        let depths = self.gather_depths.get()
-        self.gather_depths.set(depths.slice(0, depths.length - 1))
-        self.gathered.set(self.gathered.get().slice(0, depths.length - 1))
-        self.gathering.set(self.gather_depths.get().last() ?? 0 - 1)
-        held
-    }
-
-    /// What name buckets `buckets` hold together: a fold of their own hashes, read from the
-    /// rows and recorded by nobody.
-    @bracket("decls")
-    fn buckets_print(buckets: List<int>) -> int {
-        let rows = self.decl_row_rows.get()
-        fp_list([rows.bucket_hash(b) for b in buckets])
-    }
+    /// A read of name bucket `b`, recorded in the open query.
+    fn name_recorded(b: int) { self.record_kernel.record_at(self.record_names.get(), b) }
 
     /// A read of one row records what the row is a function of in the open query: its
     /// name's bucket once its file's rows stand, settled or minted from what a read kept;
@@ -2029,7 +1966,7 @@ impl Decls {
     fn let_go(voice: string) {
         self.disarm()
         self.ensure_target.set(no_ensure)
-        self.ensure_consumed.set(no_ensure)
+        self.ensure_consumed.set(no_consumed)
         self.ensure_listed.set(no_listing)
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
@@ -2516,26 +2453,6 @@ impl Decls {
         }
     }
 
-    /// A `_`-declared fn's growing error set, as the fixpoint found it
-    /// so far — deduped by type identity, the pass's own read, hook-free.
-    fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
-        self.bypassed(Bypassed.Errors(d))
-        self.inferred_errs.at(d.index) ?? []
-    }
-
-    /// One contribution recorded, unless already present.
-    @bracket("fail_summary")
-    fn record_inferred_error(d: DeclId, ty: TypeId) {
-        let cur = self.inferred_errors_so_far(d)
-        if !cur.any(same_type(it, ty)) { self.inferred_errs.keep(d.index, cur.concat([ty])) }
-    }
-
-    /// Whether `d`'s own walk hit a site it could not structurally
-    /// resolve — a real refusal of `_`, never a silently missing member.
-    fn inferred_is_unresolved(d: DeclId) -> bool {
-        self.inferred_unresolved.at(d.index) ?? false
-    }
-
     /// What a call to `d` may reach, recorded.
     fn record_cancel(d: DeclId, r: CancelReach) {
         self.cancels.keep(d.index, r)
@@ -2564,29 +2481,8 @@ impl Decls {
 
     fn links_scheduler() -> bool { self.schedulers.get() }
 
-    fn mark_inferred_unresolved(d: DeclId) {
-        self.inferred_unresolved.keep(d.index, true)
-    }
-
-    /// The pass starts over: every `_`-declared fn's set falls, and
-    /// the fixpoint re-earns it. Held files are exempt for the same
-    /// reason `clear_written` exempts them: a held fn's union rode its
-    /// interface, never this pass.
-    fn clear_inferred() {
-        for x in self.unheld_decls() {
-            self.inferred_errs.keep(x.id.index, [])
-            self.inferred_unresolved.keep(x.id.index, false)
-        }
-    }
-
-    /// A `_`-declared fn's SETTLED error set — asking IS the query:
-    /// the hook runs the whole-program fixpoint once, and this table
-    /// holds every fn's answer after.
-    @bracket("fail_summary")
-    fn inferred_errors(d: DeclId) -> List<TypeId> {
-        (self.ensure_failures.get())()
-        self.inferred_errors_so_far(d)
-    }
+    /// A `_`-declared fn's SETTLED error set — the workspace's failures answer.
+    fn inferred(d: DeclId) -> Inferred { (self.ensure_failures.get())(d) }
 
     /// Whether a method WRITES its receiver: declared, or found by the receivers pass.
     /// Asking IS the query: the hook runs the pass and records the dependency. Where the
@@ -2619,32 +2515,16 @@ impl Decls {
         self.ensure_writes.set(ensure)
     }
 
-    /// The consumes pass's own record — one seat's evidence, once
-    /// computed.
-    fn record_consumed(d: DeclId, bits: List<bool>) {
-        self.consumed.set_at(d.index, bits)
-    }
-
-    /// Whether the pass has recorded `d`'s bits.
-    fn consumed_known(d: DeclId) -> bool { self.consumed.get()[d.index] != null }
-
-    /// The bits recorded for `d`, none where unrecorded.
-    fn consumed_bits(d: DeclId) -> List<bool> {
-        let row: List<bool>? = self.consumed.get()[d.index]
-        row ?? []
-    }
-
     /// Whether the body infers seat `i` CONSUMED — asking runs the
     /// pass; a held (precompiled) declaration answers false, since
     /// nothing here re-infers from a body it never stored.
     fn consumed_seat(d: DeclId, i: int) -> bool {
-        (self.ensure_consumed.get())(d)
-        let row: List<bool>? = self.consumed.get()[d.index]
-        row != null && i < row!.length && row![i]
+        let row = (self.ensure_consumed.get())(d)
+        i < row.length && row[i]
     }
 
     /// The workspace arms the consumes hook once.
-    fn arm_consumed(ensure: fn(DeclId) -> void) {
+    fn arm_consumed(ensure: fn(DeclId) -> List<bool>) {
         self.ensure_consumed.set(ensure)
     }
 
@@ -2728,7 +2608,7 @@ impl Decls {
     fn arm_held_refs(held: fn(DeclId) -> List<Ref>) { self.ensure_held_refs.set(held) }
 
     /// The workspace arms the failures hook once.
-    fn arm_failures(ensure: fn() -> void) {
+    fn arm_failures(ensure: fn(DeclId) -> Inferred) {
         self.ensure_failures.set(ensure)
     }
 
