@@ -1,0 +1,50 @@
+use @std.relation.{query}
+use @std.relation.db.{Db, new_db}
+use @std.time.{now_ns}
+
+@query
+fn width(db: Db, k: string) -> int { k.length }
+
+@query
+fn twice(db: Db, n: int) -> int { n * 2 }
+
+/// Every key asked `rounds` times, inside one outer query so each reuse records its edge.
+@query
+fn by_text(db: Db, rounds: int) -> int {
+    mut s = 0
+    for _r in 0..rounds { for k in keys() { s = s + width(db, k) } }
+    s
+}
+
+@query
+fn by_number(db: Db, rounds: int) -> int {
+    mut s = 0
+    for _r in 0..rounds { for i in 0..100 { s = s + twice(db, i) } }
+    s
+}
+
+fn keys() -> List<string> { ["packages/std-avrac/src/compiler/k${i}.av" for i in 0..100] }
+
+fn by_map(rounds: int) -> int {
+    mut m: Map<string, int> = {}
+    for k in keys() { m.set(k, k.length) }
+    mut s = 0
+    for _r in 0..rounds { for k in keys() { s = s + (m.get(k) ?? 0) } }
+    s
+}
+
+let rounds = 2000
+let asks = rounds * 100
+let db = new_db()
+let _ = by_text(db, 1)
+let _ = by_number(db, 1)
+let t0 = now_ns()
+let a = by_text(db, rounds)
+let t1 = now_ns()
+let b = by_number(db, rounds)
+let t2 = now_ns()
+let c = by_map(rounds)
+let t3 = now_ns()
+println("text key: ${(t1 - t0) / asks} ns/ask (${a})")
+println("int key: ${(t2 - t1) / asks} ns/ask (${b})")
+println("map get: ${(t3 - t2) / asks} ns/get (${c})")

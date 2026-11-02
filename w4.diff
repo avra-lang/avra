@@ -1,0 +1,536 @@
+diff --git a/packages/std-avrac/src/compiler/dep_audit.av b/packages/std-avrac/src/compiler/dep_audit.av
+index 42fcec8e..0fd583b0 100644
+--- a/packages/std-avrac/src/compiler/dep_audit.av
++++ b/packages/std-avrac/src/compiler/dep_audit.av
+@@ -74,7 +74,7 @@ impl Workspace {
+     /// nothing to read.
+     fn audit_exempt(r: Bypassed) -> bool {
+         match r {
+-            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> self.decls.is_builtin(d) || !self.audit_known(self.decls.raw_decl(d).file),
++            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) -> self.decls.is_builtin(d) || !self.audit_known(self.decls.raw_decl(d).file),
+             .Store(f) -> !self.audit_known(f),
+         }
+     }
+@@ -94,7 +94,6 @@ impl Workspace {
+             .Methods(d) -> [key(Family.Methods, d.index)],
+             .Store(f) -> self.file_covers(f, false),
+             .Written(d) -> [key(Family.Writes, d.index)],
+-            .Errors(_) -> [key(Family.Failures, 0)],
+         }
+     }
+ 
+@@ -112,7 +111,7 @@ impl Workspace {
+     /// The read as the report says it: the verb, the file it read in, the declaration.
+     fn audit_note(r: Bypassed) -> string {
+         match r {
+-            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> "${bypass_word(r)}\t${self.decl_home(d)}\t${self.decls.raw_decl(d).name}",
++            .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) -> "${bypass_word(r)}\t${self.decl_home(d)}\t${self.decls.raw_decl(d).name}",
+             .Store(f) -> "${bypass_word(r)}\t${self.decls.file(f).path}\t-",
+         }
+     }
+diff --git a/packages/std-avrac/src/compiler/failures.av b/packages/std-avrac/src/compiler/failures.av
+index 14ff283c..b9623059 100644
+--- a/packages/std-avrac/src/compiler/failures.av
++++ b/packages/std-avrac/src/compiler/failures.av
+@@ -41,7 +41,7 @@ use core.{
+     same_type as same_type_id,
+     touch,
+ }
+-use features.{Decls, Decl, TypeCx, bound_decl_of}
++use features.{Decls, Decl, TypeCx, bound_decl_of, Inferred}
+ use @std.meta.{bracket}
+ use @std.relation.{relation}
+ use compiler.families.{Family}
+@@ -63,12 +63,6 @@ export fn result_infers(ret: TypeRef) -> bool {
+     ret.name == "Result" && ret.applied.length == 2 && is_bare_underscore(ret.applied[1])
+ }
+ 
+-/// One `_`-declared fn's own evidence: the error types its direct
+-/// `fail`/`?` sites raise, and the OTHER `_`-declared fns whose own
+-/// (still-settling) set flows in through a `?` — and every `ErrorSite`
+-/// its body holds, for the survey to file.
+-type FailSummary = { direct: List<TypeId>, calls: List<DeclId>, sites: List<ErrorSite> }
+-
+ /// A fail/propagate site's contribution, once its value is asked:
+ /// a concrete type, an edge into another pending fn's set, or
+ /// UNRESOLVED — the structural walk cannot tell, and `_` refuses
+@@ -108,6 +102,8 @@ export type ErrorSite = {
+     @local @index callee: DeclId?,
+     @local enclosing: ExprId?,
+     @local errors: List<TypeId>,
++    /// the structural walk could not tell this site's type
++    unresolved: bool,
+ }
+ 
+ /// One inferring fn's settled error set, written by the fixpoint's
+@@ -233,8 +229,8 @@ impl FailSurvey {
+     /// interface at mint, never touched by this attempt: a held `_`-
+     /// declared callee's union rode its interface, so its resolved
+     /// `Result<_, E>` is read directly, the same as any settled type.
+-    /// Without this, `inferred_errors_so_far(d)` for a held `d` answers
+-    /// the empty table this attempt never filled, and a caller's own
++    /// Without this, the raised set of a held `d` answers the empty set
++    /// this attempt never solved, and a caller's own
+     /// inferred set silently loses every error that flowed through it.
+     fn via_callee(d: DeclId) -> SiteType {
+         if self.dt.decls.declared_result_hole(d) && !self.dt.ws.is_held(self.dt.decls.decl(d).file) {
+@@ -352,9 +348,7 @@ fn smallest_owner(owners: List<ArmOwner>) -> ArmOwner {
+     best
+ }
+ 
+-/// M6 PREP: every `ErrorSite` one fn's body contains — the walk
+-/// `fail_summary` already runs, reshaped as rows instead of a single
+-/// folded `FailSummary`. `fail_sites`/`propagate_sites` already find a
++/// Every `ErrorSite` one fn's body contains. `fail_sites`/`propagate_sites` find a
+ /// site at any nesting depth (they are index-range scans, blind to AST
+ /// shape), so tagging each with `innermost_catch` is the whole of
+ /// `within` — no separate arm walk, and so no double count either.
+@@ -380,6 +374,7 @@ fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId, enclosing: ExprId?) ->
+         callee: edge_callee(c),
+         enclosing: enclosing,
+         errors: some_list(direct_ty(c)),
++        unresolved: is_unresolved(c),
+     }
+ }
+ 
+@@ -392,6 +387,7 @@ fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId, encl
+         callee: edge_callee(c),
+         enclosing: enclosing,
+         errors: some_list(direct_ty(c)),
++        unresolved: is_unresolved(c),
+     }
+ }
+ 
+@@ -423,6 +419,7 @@ fn catch_error_site(
+                 callee: contribution_callee(contribution),
+                 enclosing: enclosing,
+                 errors: contribution_errors(contribution),
++                unresolved: contribution != null && is_unresolved(contribution!),
+             }
+         },
+         rest -> ErrorSite {
+@@ -432,6 +429,7 @@ fn catch_error_site(
+             callee: null,
+             enclosing: enclosing,
+             errors: [],
++            unresolved: false,
+         },
+     }
+ }
+@@ -464,35 +462,23 @@ impl Workspace {
+         if !(self.db.ask(k) is .Compute) { return 0 }
+         self.db.begin(k)
+         let fns = [x.id for x in self.decls.unheld_decls() if self.decls.inferring(x)]
+-        self.decls.clear_inferred()
+-        let sums = self.surveyed(fns)
+-        self.decls.settle_failures(fns, sums)
++        let _ = self.surveyed(fns)
+         self.solve_raised(fns)
+-        self
+-            .db
+-            .settle(
+-                k,
+-                fp(
+-                    21,
+-                    [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns],
+-                ),
+-            )
++        self.db.settle(k, fp(21, [raised_fp(self.raised_fixpoint.value_at(d.index)) for d in fns]))
+         fns.length
+     }
+ 
+-    /// Every fn's summary, the sites they hold filed as the survey's rows
+-    /// in one step: the last survey's rows these do not name are removed,
+-    /// and the solve reads them whole.
+-    fn surveyed(fns: List<DeclId>) -> List<FailSummary> {
+-        let sums = [self.fail_summary(d) for d in fns]
+-        let _ = ErrorSite
+-            .replaced(self.decls.rows_db.get(), "survey", flatten([s.sites for s in sums]))
+-        sums
++    /// Every fn's sites filed as the survey's rows in one step: the last survey's rows these
++    /// do not name are removed, and the solve reads them whole.
++    fn surveyed(fns: List<DeclId>) -> List<ErrorSite> {
++        let sites = flatten([self.fail_sites_of(d) for d in fns])
++        let _ = ErrorSite.replaced(self.decls.rows_db.get(), "survey", sites)
++        sites
+     }
+ 
+     /// `Decls.seats`' hook: types one fn's own parameters, standalone, through
+     /// a signing context built for it alone — never the answer, so a caller
+-    /// mid this same fixpoint (fail_summary asking for ITS OWN seats) never
++    /// mid this same fixpoint (`fail_sites_of` asking for ITS OWN seats) never
+     /// recurses into the answer it is busy computing. A held fn's parameters
+     /// come from its record, never a parse it does not have.
+     fn seats_ensured(d: DeclId) {
+@@ -550,9 +536,9 @@ impl Workspace {
+     /// One fn's own evidence, read from its resolved body and the
+     /// declarations its expressions name — never from another
+     /// `_`-declared fn's `sig()` (FailSurvey.via_callee's guard).
+-    fn fail_summary(d: DeclId) -> FailSummary {
++    fn fail_sites_of(d: DeclId) -> List<ErrorSite> {
+         let x = self.decls.decl(d)
+-        if x.root == null { return FailSummary { direct: [], calls: [], sites: [] } }
++        if x.root == null { return [] }
+         let receiver: TypeId? = self.receiver_type(x)
+         // `decls.seats`, never `sig`/`sig_so_far`: `d`'s own ANSWER is what
+         // this fixpoint is computing, so asking `sig(d)` here would recurse
+@@ -578,17 +564,7 @@ impl Workspace {
+                 seats: seats,
+             },
+         }
+-        let fails = [fail_contribution(fs, v) for v in fail_sites(store, x.body())]
+-        let props = flatten(
+-            [some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.body())],
+-        )
+-        let all = fails.concat(props)
+-        if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
+-        FailSummary {
+-            direct: flatten([some_list(direct_ty(c)) for c in all]),
+-            calls: flatten([some_list(edge_callee(c)) for c in all]),
+-            sites: built_error_sites(fs, self.decls, d, store, x.body()),
+-        }
++        built_error_sites(fs, self.decls, d, store, x.body())
+     }
+ 
+     /// M6 PREP: one member's raw contribution to the raised-set
+@@ -614,7 +590,6 @@ impl Workspace {
+     /// The raised-set fixpoint over `ErrorSite`, its settled sets filed
+     /// as the solve's rows in one step once it ends: the last solve's
+     /// rows these do not name are removed.
+-    /// Beside `Decls`' own Kleene loop, which typing reads.
+     fn solve_raised(fns: List<DeclId>) {
+         let solved = self
+             .raised_fixpoint
+@@ -638,6 +613,17 @@ impl Workspace {
+         Raised.by_owner(self.decls.rows_db.get(), d).first()?.errors ?? []
+     }
+ 
++    /// What typing reads of an inferring fn: its raised set, and whether a `fail` or `?`
++    /// site's type could not be told.
++    fn inferred_of(d: DeclId) -> Inferred {
++        Inferred {
++            errors: self.raised_by(d),
++            unresolved: ErrorSite
++                .by_owner(self.decls.rows_db.get(), d)
++                .any(it.unresolved && !(it.how is .Catch)),
++        }
++    }
++
+     /// Every site whose `callee` is `f` — the reverse edge `chain`
+     /// walks up through.
+     fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.decls.rows_db.get(), f) }
+@@ -698,27 +684,4 @@ impl Decls {
+     fn inferring(x: Decl) -> bool {
+         seated(x) && self.declared_result_hole(x.id)
+     }
+-
+-    /// Kleene iteration over SETS: a fn's inferred error type is a
+-    /// member of its own direct raises, or of any callee's set it
+-    /// flows from — until no set grows. Same proof receivers.av's
+-    /// `scc_fixpoint` already states, for a growing set under union
+-    /// rather than a growing set of true bits under OR.
+-    fn settle_failures(fns: List<DeclId>, sums: List<FailSummary>) {
+-        mut changed = true
+-        while changed {
+-            changed = false
+-            for j, d in fns {
+-                if self.settle_fail_one(d, sums[j]) { changed = true }
+-            }
+-        }
+-    }
+-
+-    @bracket("fail_summary")
+-    fn settle_fail_one(d: DeclId, s: FailSummary) -> bool {
+-        let before = self.inferred_errors_so_far(d).length
+-        for ty in s.direct { self.record_inferred_error(d, ty) }
+-        for g in s.calls { for ty in self.inferred_errors_so_far(g) { self.record_inferred_error(d, ty) } }
+-        self.inferred_errors_so_far(d).length != before
+-    }
+ }
+diff --git a/packages/std-avrac/src/compiler/idioms.av b/packages/std-avrac/src/compiler/idioms.av
+index d83fcd63..b47ae15a 100644
+--- a/packages/std-avrac/src/compiler/idioms.av
++++ b/packages/std-avrac/src/compiler/idioms.av
+@@ -1533,13 +1533,13 @@ fn repeated_projection_found(a: Code) -> Fix {
+ 
+ /// A HOOK-FREE TABLE READ (features/bypass.av's `Bypassed`) called from
+ /// outside its own bracket, or the method table's own CELL read past
+-/// every wrapper's name. `sig_so_far`, `seat_written_so_far` and
+-/// `inferred_errors_so_far` answer a fixpoint's table AS IT STANDS,
+-/// mid-computation, and `registered_methods` a type's method table the
+-/// same way — none of the four records a dependency, so each is safe
++/// every wrapper's name. `sig_so_far` and `seat_written_so_far` answer a
++/// fixpoint's table AS IT STANDS, mid-computation, and
++/// `registered_methods` a type's method table the same way — none of the
++/// three records a dependency, so each is safe
+ /// only from inside the member that IS the computation trusted to see
+ /// the table that way. THE CALLEE'S OWN NAME is held open (`${name}`,
+-/// a text seat, never a held code position) so the four verbs are ONE
++/// a text seat, never a held code position) so the three verbs are ONE
+ /// arm sharing ONE bracket-lookup, over the one call shape a bypass
+ /// takes whatever its arity — gating a NAMED wrapper alone would still
+ /// leave `self.methods.get()` itself open to a new site reading it
+@@ -1550,11 +1550,11 @@ fn repeated_projection_found(a: Code) -> Fix {
+ ///
+ /// NO REWRITE: the fix is either routing the read through the table's
+ /// own recording accessor (`sig`, `writes_receiver`/`declares_writing`,
+-/// `inferred_errors`, `declared_methods`, `methods_of`) or marking the
++/// `inferred`, `declared_methods`, `methods_of`) or marking the
+ /// caller `@bracket(...)` — a judgement call about which is right for
+ /// THIS caller, which this pattern's one bound call cannot make.
+ @keeps("x.sig(d)")
+-@keeps("x.inferred_errors(d)")
++@keeps("x.inferred(d)")
+ @keeps("x.declared_methods(target)")
+ @keeps("x.writes_receiver(d)")
+ @keeps("x.methods_of(target)")
+@@ -1573,7 +1573,7 @@ export rule bypass_outside_bracket {
+ /// is read).
+ fn covered_bracket(name: string) -> string? {
+     match name {
+-        "sig_so_far" or "inferred_errors_so_far" -> "fail_summary",
++        "sig_so_far" -> "fail_summary",
+         "seat_written_so_far" -> "receivers",
+         "registered_methods" -> "methods",
+         rest -> null,
+diff --git a/packages/std-avrac/src/compiler/tests/bypass_outside_bracket_test.av b/packages/std-avrac/src/compiler/tests/bypass_outside_bracket_test.av
+index 8a7f1e24..63d71684 100644
+--- a/packages/std-avrac/src/compiler/tests/bypass_outside_bracket_test.av
++++ b/packages/std-avrac/src/compiler/tests/bypass_outside_bracket_test.av
+@@ -1,5 +1,5 @@
+ // `compiler.bypass_outside_bracket`: a hook-free verb (`sig_so_far`,
+-// `seat_written_so_far`, `inferred_errors_so_far`, `registered_methods`)
++// `seat_written_so_far`, `registered_methods`)
+ // called from a member not wearing that verb's `@bracket(name)`, or the
+ // method table's raw `.methods.get()` cell read the same way. Packaged
+ // rather than a lone source, since a lone source cannot import
+@@ -17,7 +17,6 @@ const bracket_test_decl: string = "type Decls = { n: int, methods: int }\n" +
+     "impl Decls {\n" +
+     "    fn sig_so_far(d: int) -> int { d }\n" +
+     "    fn seat_written_so_far(d: int, i: int) -> bool { true }\n" +
+-    "    fn inferred_errors_so_far(d: int) -> int { d }\n" +
+     "    fn registered_methods(target: int) -> int { target }\n" +
+     "    fn methods_of(target: int) -> int { target }\n" +
+     "}\n"
+@@ -57,14 +56,6 @@ spec "compiler/idioms (bypass_outside_bracket)" {
+                     "}\n1",
+             )
+         }
+-        then "inferred_errors_so_far is clean" {
+-            !bracket_fires(
+-                "impl Decls {\n" +
+-                    "    @bracket(\"fail_summary\")\n" +
+-                    "    fn caller(x: Decls, d: int) -> int { x.inferred_errors_so_far(d) }\n" +
+-                    "}\n1",
+-            )
+-        }
+         then "registered_methods is clean" {
+             !bracket_fires(
+                 "impl Decls {\n" +
+diff --git a/packages/std-avrac/src/compiler/typing/declare.av b/packages/std-avrac/src/compiler/typing/declare.av
+index d3ec4fc1..de67b5d0 100644
+--- a/packages/std-avrac/src/compiler/typing/declare.av
++++ b/packages/std-avrac/src/compiler/typing/declare.av
+@@ -587,10 +587,10 @@ impl TypeCx {
+         let ok = self.written_by(self.view.spanned_of_stmt(s), self.stmt_loc(s), ret.applied[0])
+         if self.view.types.shape_of(ok) is .Error { return ok }
+         let d = self.decl_of(s)
+-        let members = self.view.decls.inferred_errors(d)
+-        if self.view.decls.inferred_is_unresolved(d) { return self.inferred_site_unresolved(s) }
+-        if members.is_empty() { return self.no_inferred_failures(s) }
+-        let err = self.view.types.union_of(members)
++        let found = self.view.decls.inferred(d)
++        if found.unresolved { return self.inferred_site_unresolved(s) }
++        if found.errors.is_empty() { return self.no_inferred_failures(s) }
++        let err = self.view.types.union_of(found.errors)
+         self.view.types.type(Result<ok, err>)
+     }
+ 
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index 30227b1b..abbe3f8a 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -1143,7 +1143,7 @@ fn built(
+     ws.decls.arm_references(() -> ws.refs_ensured())
+     ws.decls.arm_held_refs((d: DeclId) -> ws.held_refs_to(d))
+     ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
+-    ws.decls.arm_failures(() -> ws.failures_ensured())
++    ws.decls.arm_failures((d: DeclId) -> ws.inferred_of(d))
+     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
+     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
+         d: DeclId,
+@@ -1327,10 +1327,6 @@ impl Workspace {
+         true
+     }
+ 
+-    fn failures_ensured() {
+-        let _ = self.failures()
+-    }
+-
+     fn marks_ensured(d: DeclId) {
+         let _ = self.computed_marks(d)
+     }
+diff --git a/packages/std-avrac/src/features/bypass.av b/packages/std-avrac/src/features/bypass.av
+index d8b58a44..c1f0a16f 100644
+--- a/packages/std-avrac/src/features/bypass.av
++++ b/packages/std-avrac/src/features/bypass.av
+@@ -18,8 +18,6 @@ export enum Bypassed {
+     Methods(d: DeclId)
+     /// Whether a pass found a seat written, as it stands.
+     Written(d: DeclId)
+-    /// A `_`-declared fn's error set as the fixpoint found it so far.
+-    Errors(d: DeclId)
+ }
+ 
+ /// The verb a read is reported under.
+@@ -31,7 +29,6 @@ export fn bypass_word(r: Bypassed) -> string {
+         .Facts(_) -> "facts_of",
+         .Methods(_) -> "methods_of",
+         .Written(_) -> "written_so_far",
+-        .Errors(_) -> "inferred_errors_so_far",
+     }
+ }
+ 
+@@ -41,7 +38,7 @@ export fn bypass_word(r: Bypassed) -> string {
+ export const audit_build: bool = false
+ 
+ /// How many verbs a reader tells apart: `bypass_ordinal`'s range.
+-export const bypass_verbs: int = 7
++export const bypass_verbs: int = 6
+ 
+ /// A read as two dense numbers — its verb and its subject — for a kernel that only
+ /// counts. `bypassed_at` is the inverse; both spell every variant.
+@@ -53,13 +50,12 @@ export fn bypass_ordinal(r: Bypassed) -> int {
+         .Facts(_) -> 3,
+         .Methods(_) -> 4,
+         .Written(_) -> 5,
+-        .Errors(_) -> 6,
+     }
+ }
+ 
+ export fn bypass_subject(r: Bypassed) -> int {
+     match r {
+-        .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) or .Errors(d) -> d.index,
++        .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) -> d.index,
+         .Store(f) -> f.index,
+     }
+ }
+@@ -72,7 +68,6 @@ export fn bypassed_at(verb: int, subject: int) -> Bypassed {
+         3 -> Bypassed.Facts(DeclId { index: subject }),
+         4 -> Bypassed.Methods(DeclId { index: subject }),
+         5 -> Bypassed.Written(DeclId { index: subject }),
+-        6 -> Bypassed.Errors(DeclId { index: subject }),
+         other -> {
+             avra_trap(
+                 "defect: no read numbered ${other} — bypass_ordinal and bypassed_at must list the same set",
+diff --git a/packages/std-avrac/src/features/decls.av b/packages/std-avrac/src/features/decls.av
+index 1e6d953c..29b287ee 100644
+--- a/packages/std-avrac/src/features/decls.av
++++ b/packages/std-avrac/src/features/decls.av
+@@ -831,14 +831,8 @@ export type Decls = {
+     /// write it, kept by `face` as every declaration's facts land, so it covers
+     /// a module minted after the first ask as well as one parsed before it.
+     mut_seat_index: Cell<Map<string, List<DeclId>>>,
+-    // an inferred `Result<T, _>`'s growing error set, dense by DeclId
+-    // — the error-unions Phase 2 fixpoint's own table, settled by the
+-    // armed hook on first ask
+-    inferred_errs: Table<List<TypeId>>,
+-    // whether that fn's own walk hit a site whose type it could not
+-    // structurally resolve — a refusal, never a silently missing member
+-    inferred_unresolved: Table<bool>,
+-    ensure_failures: Cell<fn() -> void>,
++    // an inferred `Result<T, _>`'s settled error set: the workspace's failures answer
++    ensure_failures: Cell<fn(DeclId) -> Inferred>,
+     // what a call to each fn may reach — a held fn's as its interface
+     // recorded it, every other as the pass found it
+     cancels: Table<CancelReach>,
+@@ -894,7 +888,11 @@ fn none_apart(_f: FileId) -> List<DeclId> { [] }
+ // LICENSED fns.dead_parameter: the hook's contract carries the declaration
+ fn no_marks(d: DeclId) {}
+ 
+-fn no_failures_ensure() {}
++/// An inferred `Result<T, _>`'s error side: the members found, and whether a site's type
++/// could not be resolved — a refusal, never a silently missing member.
++export type Inferred = { errors: List<TypeId>, unresolved: bool }
++
++fn no_failures_ensure(_d: DeclId) -> Inferred { Inferred { errors: [], unresolved: false } }
+ 
+ /// Why an `embed` literal names no file a const may read: it stands
+ /// outside the package, it names a package this one does not depend on,
+@@ -1077,8 +1075,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
+         written_seats: Cell.new(no_written_seats),
+         ensure_writes: Cell.new(no_answer),
+         ensure_cancels: Cell.new(no_answer),
+-        inferred_errs: new_table(),
+-        inferred_unresolved: new_table(),
+         ensure_failures: Cell.new(no_failures_ensure),
+         cancels: new_table(),
+         schedulers: Cell.new(false),
+@@ -2508,26 +2504,6 @@ impl Decls {
+         }
+     }
+ 
+-    /// A `_`-declared fn's growing error set, as the fixpoint found it
+-    /// so far — deduped by type identity, the pass's own read, hook-free.
+-    fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
+-        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
+-        self.inferred_errs.at(d.index) ?? []
+-    }
+-
+-    /// One contribution recorded, unless already present.
+-    @bracket("fail_summary")
+-    fn record_inferred_error(d: DeclId, ty: TypeId) {
+-        let cur = self.inferred_errors_so_far(d)
+-        if !cur.any(same_type(it, ty)) { self.inferred_errs.keep(d.index, cur.concat([ty])) }
+-    }
+-
+-    /// Whether `d`'s own walk hit a site it could not structurally
+-    /// resolve — a real refusal of `_`, never a silently missing member.
+-    fn inferred_is_unresolved(d: DeclId) -> bool {
+-        self.inferred_unresolved.at(d.index) ?? false
+-    }
+-
+     /// What a call to `d` may reach, recorded.
+     fn record_cancel(d: DeclId, r: CancelReach) {
+         self.cancels.keep(d.index, r)
+@@ -2556,29 +2532,8 @@ impl Decls {
+ 
+     fn links_scheduler() -> bool { self.schedulers.get() }
+ 
+-    fn mark_inferred_unresolved(d: DeclId) {
+-        self.inferred_unresolved.keep(d.index, true)
+-    }
+-
+-    /// The pass starts over: every `_`-declared fn's set falls, and
+-    /// the fixpoint re-earns it. Held files are exempt for the same
+-    /// reason `clear_written` exempts them: a held fn's union rode its
+-    /// interface, never this pass.
+-    fn clear_inferred() {
+-        for x in self.unheld_decls() {
+-            self.inferred_errs.keep(x.id.index, [])
+-            self.inferred_unresolved.keep(x.id.index, false)
+-        }
+-    }
+-
+-    /// A `_`-declared fn's SETTLED error set — asking IS the query:
+-    /// the hook runs the whole-program fixpoint once, and this table
+-    /// holds every fn's answer after.
+-    @bracket("fail_summary")
+-    fn inferred_errors(d: DeclId) -> List<TypeId> {
+-        (self.ensure_failures.get())()
+-        self.inferred_errors_so_far(d)
+-    }
++    /// A `_`-declared fn's SETTLED error set — the workspace's failures answer.
++    fn inferred(d: DeclId) -> Inferred { (self.ensure_failures.get())(d) }
+ 
+     /// Whether a method WRITES its receiver: declared, or found by the receivers pass.
+     /// Asking IS the query: the hook runs the pass and records the dependency. Where the
+@@ -2704,7 +2659,7 @@ impl Decls {
+     fn arm_held_refs(held: fn(DeclId) -> List<Ref>) { self.ensure_held_refs.set(held) }
+ 
+     /// The workspace arms the failures hook once.
+-    fn arm_failures(ensure: fn() -> void) {
++    fn arm_failures(ensure: fn(DeclId) -> Inferred) {
+         self.ensure_failures.set(ensure)
+     }
+ 

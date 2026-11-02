@@ -1,0 +1,182 @@
+diff --git a/packages/std-avrac/src/compiler/build.av b/packages/std-avrac/src/compiler/build.av
+index bbc6031b..9d980350 100644
+--- a/packages/std-avrac/src/compiler/build.av
++++ b/packages/std-avrac/src/compiler/build.av
+@@ -23,6 +23,7 @@ use core.{
+     traced,
+ }
+ use features.{Wanted}
++use @std.relation.{query}
+ use @std.path.{joined_path, relative_path, dir_of}
+ use @std.io.{read_bytes, make_dirs, remove}
+ use @std.text.{parse_int, from_codepoint}
+@@ -611,17 +612,8 @@ impl Workspace {
+     /// and nothing here keeps a memo across the one key this answers.
+     fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
+ 
+-    /// A file's text as one digest, through its Text input: kept per read of
+-    /// that input, so a turn that reads the file again digests the text it read.
+-    fn text_digest(path: string) -> string {
+-        let octets = self.listed_octets(path)
+-        let at = "${self.octets_word(path)}\t${path}"
+-        let known: string? = self.keys.text_digests.get().get(at)
+-        if known != null { return known! }
+-        let made = "${octets.length}.${digest_of_octets(octets)}"
+-        self.keys.text_digests.put(at, made)
+-        made
+-    }
++    /// A file's text as one digest, through its Text input.
++    fn text_digest(path: string) -> string { text_digest_of(self, path) }
+ 
+     /// Whether a body's home cannot emit it: the home is held, so its object
+     /// is the store's.
+@@ -1103,3 +1095,11 @@ fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
+     // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
+     avra_spawn_status(tool, words) == 0
+ }
++
++/// A file's text as one digest, its octets read through the door: asked again only when the
++/// file's bytes move.
++@query
++fn text_digest_of(ws: Workspace, path: string) -> string {
++    let octets = ws.listed_octets(path)
++    "${octets.length}.${digest_of_octets(octets)}"
++}
+diff --git a/packages/std-avrac/src/compiler/db.av b/packages/std-avrac/src/compiler/db.av
+index 340d7e28..6028c92d 100644
+--- a/packages/std-avrac/src/compiler/db.av
++++ b/packages/std-avrac/src/compiler/db.av
+@@ -152,7 +152,7 @@ extern fn avra_trap(message: string)
+ /// raw kernel verbs directly over a side-effecting whole-program pass,
+ /// never a typed value cache.
+ ///
+-/// `Workspace`'s OTHER caches (`Keys`, `module_names_of`/`files_of`/
++/// `Workspace`'s OTHER caches (`Keys`,
+ /// `import_lists`, `externs`, `asks`/`lift_asks`/
+ /// `settle_asks`) stay there too, and not because `Db` was once a
+ /// process singleton (it no longer is — see `new_db`, below) but
+diff --git a/packages/std-avrac/src/compiler/modules.av b/packages/std-avrac/src/compiler/modules.av
+index ed90294d..23fe976f 100644
+--- a/packages/std-avrac/src/compiler/modules.av
++++ b/packages/std-avrac/src/compiler/modules.av
+@@ -16,6 +16,7 @@ use core.{
+     touch,
+ }
+ use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
++use @std.relation.{query}
+ use features.{Decl, Import, nothing, table_of}
+ use diagnostics.{Diag, loc_at, is_error}
+ use @std.testing.{words}
+@@ -31,16 +32,7 @@ impl Workspace {
+     /// The module a file belongs to: its directory under its package's
+     /// source root, `.`-joined — "" for a file at the root package's
+     /// source root, `@scope.name.a` for a dependency's.
+-    fn module_of(path: string) -> string {
+-        // the answer is a walk over every package, and packages are admitted as
+-        // `use` lines reach them: it is remembered for ONE size of that table
+-        let key = "${self.packages().length}\t${path}"
+-        let known: string? = self.module_names_of.get().get(key)
+-        if known != null { return known! }
+-        let made = self.module_named(path)
+-        self.module_names_of.put(key, made)
+-        made
+-    }
++    fn module_of(path: string) -> string { module_at(self, self.packages().length, path) }
+ 
+     /// `module_of`, as the path it names.
+     fn module_path_of(path: string) -> ModulePath { module_path(self.module_of(path).split(".")) }
+@@ -61,17 +53,7 @@ impl Workspace {
+     /// the one file, else nothing (the module does not exist). A
+     /// directory holding its own `avra.toml` is a package, never a
+     /// module of the one above it.
+-    fn module_files(m: ModulePath) -> List<string> {
+-        // a listing is the host's to give, and a `use` line asks it of the same
+-        // module a hundred times: remembered for ONE size of the package table,
+-        // since a package admitted later answers for modules it holds
+-        let key = self.module_slot(m)
+-        let known: List<string>? = self.files_of.get().get(key)
+-        if known != null { return known! }
+-        let made = self.listed_files(m)
+-        self.files_of.put(key, made)
+-        made
+-    }
++    fn module_files(m: ModulePath) -> List<string> { module_listed(self, self.packages().length, m.text()) }
+ 
+     /// The files of `m` the program MET, in listing order — the files it registered.
+     fn met_files(m: ModulePath) -> List<string> {
+@@ -615,3 +597,14 @@ fn refused_line(u: UseParts, diagnostics: List<Diag>) -> Imported {
+ fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
+     [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
+ }
++
++/// A file's module, asked for ONE count of admitted packages: packages are admitted as `use`
++/// lines reach them, and one admitted later answers for files it holds.
++@query
++fn module_at(ws: Workspace, _admitted: int, path: string) -> string { ws.module_named(path) }
++
++/// A module's files, through the host's listing, asked for one count of admitted packages.
++@query
++fn module_listed(ws: Workspace, _admitted: int, module: string) -> List<string> {
++    ws.listed_files(module_path(module.split(".")))
++}
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index 6a07c2de..78c71f8a 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -158,7 +158,7 @@ type ExternNames = { decls: int, names: List<string> }
+ type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
+ 
+ @identity
+-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
++type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+ 
+ fn new_keys() -> Keys {
+     let no_bytes: Map<string, string> = {}
+@@ -169,7 +169,6 @@ fn new_keys() -> Keys {
+     let no_placed: Map<string, bool> = {}
+     let no_object: Map<string, string> = {}
+     let no_parts: Map<string, KeyParts> = {}
+-    let no_digests: Map<string, string> = {}
+     let no_staged: Map<string, int> = {}
+     let no_words: Map<string, LexWords> = {}
+     let no_placing: Map<string, List<Token>> = {}
+@@ -190,7 +189,6 @@ fn new_keys() -> Keys {
+         placed_from: Cell.new(no_placed),
+         object_keys: Cell.new(no_object),
+         object_parts: Cell.new(no_parts),
+-        text_digests: Cell.new(no_digests),
+         staged: Cell.new(no_staged),
+         lex_words: Cell.new(no_words),
+         placing: Cell.new(no_placing),
+@@ -606,12 +604,7 @@ export type Workspace = {
+     /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
+     /// store stands.
+     keys: Keys,
+-    /// A path's module, asked once: the answer walks every package.
+-    module_names_of: Cell<Map<string, string>>,
+-    /// A module's files, remembered for one size of the package table — what
+-    /// every `use` line of the program asks again.
+-    files_of: Cell<Map<string, List<string>>>,
+-    /// The same files' ids, remembered alike.
++    /// A module's files' ids, remembered for one size of the package table.
+     file_ids_of: Cell<Map<string, List<FileId>>>,
+     /// The revision each file's `Admitted` cell was last asked at, dense by FileId:
+     /// after the revision's first ask, a reader records the edge and nothing more.
+@@ -1057,8 +1050,6 @@ fn built(
+     let no_lift_index: Map<string, int> = {}
+     let no_settles: List<SettleAsk> = []
+     let no_settle_index: Map<string, int> = {}
+-    let no_module_names_of: Map<string, string> = {}
+-    let no_files_of: Map<string, List<string>> = {}
+     let no_file_ids_of: Map<string, List<FileId>> = {}
+     let no_import_lists: Map<string, List<string>> = {}
+     let no_defects: List<Diag> = []
+@@ -1086,8 +1077,6 @@ fn built(
+         settle_asks_index: Cell.new(no_settle_index),
+         records: new_records(),
+         keys: new_keys(),
+-        module_names_of: Cell.new(no_module_names_of),
+-        files_of: Cell.new(no_files_of),
+         file_ids_of: Cell.new(no_file_ids_of),
+         admission_asked: new_table<int>(),
+         reexporting: map_cell(),

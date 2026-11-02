@@ -1,0 +1,114 @@
+commit 1f5ff9ef2acf82766a3f3e067ac4ed748145b89b
+Author: Tristan Mathias <github.gqmij@simplelogin.com>
+Date:   Sat Oct 31 08:19:34 2026 -0700
+
+    relation: a query's plain arguments are spelled straight, never through the codec
+    
+    A reused ask spelled its arguments through the codec on every call — a Writer filled with
+    octets, then each octet interpolated and joined with `.` — before it could find its
+    cell, so a text-keyed ask cost ~1350 ns against a Map get's ~65. A plain argument is now
+    spelled straight: a lone text seat as itself, more seats each as its own text (a text
+    by its length and itself, a number as itself) joined by `/`, which stays unambiguous
+    because each seat's kind is fixed by the query. Any other kind keeps the codec. `int_arg`
+    spells a number the same way, so a lone-int query's interned key and the spelling it
+    records agree. The key bound now counts the text itself (key_bound: 5000 bytes, was 20006).
+    
+    Measured (Sprite, avra-try, 3 runs of 200k reused asks inside one query): a text key
+    1329–1396 -> 186–220 ns/ask; an int key 82–113 ns (unchanged); a Map get 62–89 ns. A
+    text ask is now one Map get (the key's interning) plus an int-keyed ask. The cli, cleared
+    unshared store, 5 runs, medians: warm 89 -> 92 ms, comment edit 179 -> 186 ms (noise);
+    with G1 on top 100 / 184 ms. std-relation 299/299 + 31 programs; compiler/tests 1687/1687.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+    Claude-Session: https://claude.ai/code/session_01QBqJuoi8EUrw37A8m4Qfto
+
+diff --git a/packages/std-relation/src/db.av b/packages/std-relation/src/db.av
+index 3a2ccaaf..ed411706 100644
+--- a/packages/std-relation/src/db.av
++++ b/packages/std-relation/src/db.av
+@@ -33,7 +33,7 @@ use stable.{
+     CodecFault,
+     encoded_with,
+     decoded_with,
+-    spelled_with,
++    int_spelled,
+     written_list,
+     read_list,
+ }
+@@ -1087,7 +1087,7 @@ impl AnswersUnder<V> {
+             let known = self.ints.get()
+             if n < known.length && known[n] >= 0 { return known[n] }
+         }
+-        let made = self.arg(spelled_with([(w: Writer) -> w.int(n)]))
++        let made = self.arg(int_spelled(n))
+         if inside { self.remember_int(n, made) }
+         while self.numbers.get().length <= made { self.numbers.push(-1) }
+         self.numbers.set_at(made, n)
+diff --git a/packages/std-relation/src/query.av b/packages/std-relation/src/query.av
+index 84daa0c0..5ae31d37 100644
+--- a/packages/std-relation/src/query.av
++++ b/packages/std-relation/src/query.av
+@@ -65,6 +65,8 @@ use stable.{
+     read_list,
+     tagged,
+     spelled_with,
++    text_spelled,
++    int_spelled,
+     Writer,
+     Reader,
+ }
+@@ -403,10 +405,29 @@ fn wrapper(f: Fn) -> Decls {
+ /// order through the codec, the octets spelled out. What a call's cell
+ /// is interned by — never a hash, which two calls may share.
+ export fn args_spelled(f: Fn) -> Code {
++    let seats = f.params.slice(1, f.params.length)
++    if seats.length == 1 && seats[0].kind is .Str { return name(seats[0].name) }
++    let plain = [plain_spelled(p) for p in seats]
++    if !plain.any(it == null) { return joined_spelling([p! for p in plain]) }
+     let writes = [quote { (w: Writer) -> ${seat_written(p, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
+     quote { spelled_with([${..writes}]) }
+ }
+ 
++/// A seat spelled straight, never through the codec: a text by its length and itself — a
++/// lone text seat as itself, which nothing beside it can run into — a number as itself. None for any other kind, which the codec spells.
++fn plain_spelled(p: Param) -> Code? {
++    if p.kind is .Str { return quote { text_spelled(${name(p.name)}) } }
++    let n? = numbered(p) else { return null }
++    quote { int_spelled(${n}) }
++}
++
++/// Plain seats' spellings as one key: none as empty, one alone, more joined by `/`, which no
++/// number spells and a text's own length puts past.
++fn joined_spelling(parts: List<Code>) -> Code {
++    let first? = parts.first() else { return quote { "" } }
++    parts.drop(1).fold(first, (at: Code, p: Code) -> quote { ${at} + "/" + ${p} })
++}
++
+ /// One seat written: a number as its number, any other kind through the codec.
+ fn seat_written(p: Param, owner: Owner) -> Code {
+     let n? = numbered(p) else { return written(quote { w }, name(p.name), p.kind, owner) }
+diff --git a/packages/std-relation/src/stable.av b/packages/std-relation/src/stable.av
+index 99195f81..5fa0c8ba 100644
+--- a/packages/std-relation/src/stable.av
++++ b/packages/std-relation/src/stable.av
+@@ -195,6 +195,13 @@ impl Writer {
+     fn spelled() -> string { ["${octet}" for octet in self.out.get()].join(".") }
+ }
+ 
++/// A text argument spelled for a call's key: its length, then itself — no other text spells
++/// alike, whatever it holds.
++export fn text_spelled(s: string) -> string { "${s.length}:${s}" }
++
++/// A number argument spelled for a call's key.
++export fn int_spelled(n: int) -> string { "${n}" }
++
+ /// What `parts` write, in order, spelled out.
+ export fn spelled_with(parts: List<fn(Writer) -> void>) -> string {
+     let w = writer()
+diff --git a/packages/std-relation/src/tests/key_bound/key_bound.refuses b/packages/std-relation/src/tests/key_bound/key_bound.refuses
+index 9f809b05..225e1863 100644
+--- a/packages/std-relation/src/tests/key_bound/key_bound.refuses
++++ b/packages/std-relation/src/tests/key_bound/key_bound.refuses
+@@ -1 +1 @@
+-a query's key is a name, not a text — this key is 20006 bytes, past the 4096-byte bound; read the text through an @input
++a query's key is a name, not a text — this key is 5000 bytes, past the 4096-byte bound; read the text through an @input

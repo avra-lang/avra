@@ -1,0 +1,229 @@
+diff --git a/packages/std-avrac/src/compiler/consumes.av b/packages/std-avrac/src/compiler/consumes.av
+index 03487ac9..3e80ec19 100644
+--- a/packages/std-avrac/src/compiler/consumes.av
++++ b/packages/std-avrac/src/compiler/consumes.av
+@@ -31,15 +31,12 @@ use compiler.families.{Family}
+ use @std.relation.{query}
+ 
+ impl Workspace {
+-    /// The pass: asking IS the query — the hook the workspace arms
+-    /// computes a declaration's own answer on first ask and records
+-    /// it; the table only holds.
++    /// The pass: a declaration's consumed seats, inferred from its own body.
+     fn computed_consumed(d: DeclId) -> List<bool> {
+         let x = self.decls.decl(d)
+         let n = self.decls.seat_count(d)
+-        // A compile-time run infers no consuming seat and records
+-        // nothing: the references relation settles after typing, and
+-        // an unrecorded row leaves the program's own ask to decide.
++        // A compile-time run infers no consuming seat: the references
++        // relation settles after typing.
+         if self.comptime_active() { return filled(n, false) }
+         // A HELD DECLARATION'S BODY IS READ, NEVER RE-GUESSED: the bit this
+         // scan would infer from a body this attempt does not have is
+@@ -51,17 +48,12 @@ impl Workspace {
+         // header), so the record already carries the one true answer — a
+         // held declaration's `consumed_seat` is the same value whether this
+         // attempt holds it or a different attempt does.
+-        if self.is_held(x.file) {
+-            let kept = [self.decls.declared_mark(d, j).consumed for j in 0..n]
+-            self.decls.record_consumed(d, kept)
+-            return kept
+-        }
+-        // WHERE THE REFERENCES DO NOT STAND, NOTHING IS INFERRED AND NOTHING
+-        // RECORDED: an unread relation is no finding that no one takes `d`
+-        // as a value, and a recorded bit reaches the module's own record.
+-        if x.root == null { return self.none_consumed(d, n) }
++        if self.is_held(x.file) { return [self.decls.declared_mark(d, j).consumed for j in 0..n] }
++        // WHERE THE REFERENCES DO NOT STAND, NOTHING IS INFERRED: an unread
++        // relation is no finding that no one takes `d` as a value.
++        if x.root == null { return filled(n, false) }
+         let taken? = self.taken_as_value(d) else { return filled(n, false) }
+-        if taken { return self.none_consumed(d, n) }
++        if taken { return filled(n, false) }
+         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
+         mut cx = Consumed {
+             store: self.decls.store(d),
+@@ -69,26 +61,14 @@ impl Workspace {
+             eligible: [self.eligible_seat(x, i, seats) for i in 0..n],
+             returned: filled(n, true),
+         }
+-        let out = cx.scan(x.root!)
+-        self.decls.record_consumed(d, out)
+-        out
++        cx.scan(x.root!)
+     }
+ 
+-    /// A declaration's consumed seats, asked as its own answer. Where the pass cannot settle
+-    /// one, the bits are read as the pass would infer them, recorded nowhere.
+-    fn consumed_ensured(d: DeclId) {
+-        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() {
+-            if !self.decls.consumed_known(d) { let _ = self.computed_consumed(d) }
+-            return
+-        }
+-        let _ = seats_consumed(self, d)
+-    }
+-
+-    /// No seat of `d` consumed, recorded.
+-    fn none_consumed(d: DeclId, n: int) -> List<bool> {
+-        let none = filled(n, false)
+-        self.decls.record_consumed(d, none)
+-        none
++    /// A declaration's consumed seats, asked as its own answer; inside a resolve or typing,
++    /// inferred in place.
++    fn consumed_of(d: DeclId) -> List<bool> {
++        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return self.computed_consumed(d) }
++        seats_consumed(self, d)
+     }
+ 
+     /// A seat is a candidate at all only as an ordinary BY-VALUE
+@@ -238,6 +218,4 @@ fn both(a: List<bool>, b: List<bool>) -> List<bool> { [x && b[i] for i, x in a]
+ /// A declaration's consumed seats: a reader of the bits stands on this answer, so a caller moves
+ /// only when a callee it reads has its bits move.
+ @query
+-fn seats_consumed(ws: Workspace, d: DeclId) -> List<bool> {
+-    if ws.decls.consumed_known(d) { ws.decls.consumed_bits(d) } else { ws.computed_consumed(d) }
+-}
++fn seats_consumed(ws: Workspace, d: DeclId) -> List<bool> { ws.computed_consumed(d) }
+diff --git a/packages/std-avrac/src/compiler/tests/references_refused_test.av b/packages/std-avrac/src/compiler/tests/references_refused_test.av
+index c0be71f0..f255b1af 100644
+--- a/packages/std-avrac/src/compiler/tests/references_refused_test.av
++++ b/packages/std-avrac/src/compiler/tests/references_refused_test.av
+@@ -99,18 +99,13 @@ spec "compiler/references — asked while a resolve is in flight" {
+             heard.get().is_empty() &&
+             ws.decls.refs_of(a).length == 1
+     }
+-    then "a seat's consumption is not inferred and not recorded; asked again once the references stand, it is inferred" {
++    then "a seat's consumption is not inferred while the references are refused; asked again once they stand, it is" {
+         let ws = refs_refused_workspace()
+         let keep = Decl.by_name(ws.decls.rows_db.get(), "keep").first()!.id
+         let resolving = refs_refused_resolving()
+         ws.db.kernel.begin(resolving)
+         let during = ws.computed_consumed(keep)
+-        let unrecorded = ws.decls.consumed.get()[keep.index] == null
+         ws.db.kernel.settle(resolving, 0)
+-        let after = ws.computed_consumed(keep)
+-        !during.any(it) &&
+-            unrecorded &&
+-            ws.decls.consumed.get()[keep.index] != null &&
+-            after.any(it)
++        !during.any(it) && ws.computed_consumed(keep).any(it)
+     }
+ }
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index 3c2aece1..43660474 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -1150,7 +1150,7 @@ fn built(
+     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
+     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured(d))
+     ws.decls.arm_cancels((d: DeclId) -> ws.cancel_ensured(d))
+-    ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
++    ws.decls.arm_consumed((d: DeclId) -> ws.consumed_of(d))
+     ws.decls.arm_references(() -> ws.refs_ensured())
+     ws.decls.arm_held_refs((d: DeclId) -> ws.held_refs_to(d))
+     ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
+diff --git a/packages/std-avrac/src/features/decls.av b/packages/std-avrac/src/features/decls.av
+index bf72f959..1e6d953c 100644
+--- a/packages/std-avrac/src/features/decls.av
++++ b/packages/std-avrac/src/features/decls.av
+@@ -811,12 +811,10 @@ export type Decls = {
+     // the workspace's cancel hook: a record-carrying declaration's reach
+     // read by name, so a reader stands on that decl's answer alone
+     ensure_cancels: Cell<fn(DeclId) -> bool>,
+-    // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
+-    // through `ensure_consumed`, the same shape as `marks` (null =
+-    // unasked). No fixpoint: unlike `written_seats`, a seat's
++    // WHICH SEATS THE BODY CONSUMES (R3) — the workspace's answer per
++    // declaration. No fixpoint: unlike `written_seats`, a seat's
+     // evidence is local to its own body alone.
+-    consumed: Cell<List<List<bool>?>>,
+-    ensure_consumed: Cell<fn(DeclId) -> void>,
++    ensure_consumed: Cell<fn(DeclId) -> List<bool>>,
+     /// Whether a HELD file stood in the workspace the last time the
+     /// pass ran — that file was never surveyed, so the relation
+     /// cannot answer "used nowhere" with any confidence.
+@@ -997,7 +995,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
+     let no_methods: List<Cell<List<DeclId>>> = []
+     let no_impls: List<Cell<List<DeclId>>> = []
+     let no_written_seats: List<Cell<List<bool>>> = []
+-    let empty_consumed: List<List<bool>?> = []
+     let db = durable_db(durable)
+     let d = Decls {
+         types: new_type_registry(),
+@@ -1086,8 +1083,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
+         cancels: new_table(),
+         schedulers: Cell.new(false),
+         shape_keys: new_table(),
+-        consumed: Cell.new(empty_consumed),
+-        ensure_consumed: Cell.new(no_ensure),
++        ensure_consumed: Cell.new(no_consumed),
+         lifter: Cell.new(no_lifter),
+         namespace_of: Cell.new(no_namespace),
+         apart_of: Cell.new(none_apart),
+@@ -1123,6 +1119,8 @@ fn no_ensure(d: DeclId) {}
+ 
+ fn no_answer(_d: DeclId) -> bool { false }
+ 
++fn no_consumed(_d: DeclId) -> List<bool> { [] }
++
+ /// A kind's word — the key's middle, and prose.
+ export fn kind_word(k: DeclKind) -> string {
+     match k {
+@@ -2020,7 +2018,7 @@ impl Decls {
+     fn let_go(voice: string) {
+         self.disarm()
+         self.ensure_target.set(no_ensure)
+-        self.ensure_consumed.set(no_ensure)
++        self.ensure_consumed.set(no_consumed)
+         self.ensure_listed.set(no_listing)
+         self.ensure_refs.set(no_refs_ensure)
+         self.ensure_held_refs.set(no_held_refs)
+@@ -2613,32 +2611,16 @@ impl Decls {
+         self.ensure_writes.set(ensure)
+     }
+ 
+-    /// The consumes pass's own record — one seat's evidence, once
+-    /// computed.
+-    fn record_consumed(d: DeclId, bits: List<bool>) {
+-        self.consumed.set_at(d.index, bits)
+-    }
+-
+-    /// Whether the pass has recorded `d`'s bits.
+-    fn consumed_known(d: DeclId) -> bool { self.consumed.get()[d.index] != null }
+-
+-    /// The bits recorded for `d`, none where unrecorded.
+-    fn consumed_bits(d: DeclId) -> List<bool> {
+-        let row: List<bool>? = self.consumed.get()[d.index]
+-        row ?? []
+-    }
+-
+     /// Whether the body infers seat `i` CONSUMED — asking runs the
+     /// pass; a held (precompiled) declaration answers false, since
+     /// nothing here re-infers from a body it never stored.
+     fn consumed_seat(d: DeclId, i: int) -> bool {
+-        (self.ensure_consumed.get())(d)
+-        let row: List<bool>? = self.consumed.get()[d.index]
+-        row != null && i < row!.length && row![i]
++        let row = (self.ensure_consumed.get())(d)
++        i < row.length && row[i]
+     }
+ 
+     /// The workspace arms the consumes hook once.
+-    fn arm_consumed(ensure: fn(DeclId) -> void) {
++    fn arm_consumed(ensure: fn(DeclId) -> List<bool>) {
+         self.ensure_consumed.set(ensure)
+     }
+ 
+diff --git a/packages/std-avrac/src/features/decls_mint.av b/packages/std-avrac/src/features/decls_mint.av
+index 6d99bce2..c90a9256 100644
+--- a/packages/std-avrac/src/features/decls_mint.av
++++ b/packages/std-avrac/src/features/decls_mint.av
+@@ -724,7 +724,6 @@ impl Decls {
+             self.declared_writes.push(false)
+             let no_ws: List<bool> = []
+             self.written_seats.push(Cell.new(no_ws))
+-            self.consumed.push(null)
+             let none: List<DeclId> = []
+             self.children.push(Cell.new(none))
+             let no_ms: List<DeclId> = []
