@@ -7,9 +7,10 @@
 //! ANCHORED WINDOW read — the field name always arrives, so
 //! `aligned_binds` finds the `.NAME` written in its window, or "" for
 //! the bare `it`.
-use core.{Stmt, Scoped, Plain, TypeRef, CollectKind, CollectScope, Projection, ProjField, named_ref}
+use core.{Stmt, Scoped, Plain, TypeRef, CollectKind, CollectScope, Projection, ProjField, OrderKey, OrderSpec, named_ref}
 use features.{LangNode, Builder, aligned_binds}
 use grammar.{Token, TokenKind}
+use @std.text.{parse_int}
 
 fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -25,16 +26,24 @@ fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
     let fns = b.tokens(5)?
     let iws = b.tokens(6)?
     let fps = b.tokens(7)?
-    let bws = b.tokens(8)?
-    let biws = b.tokens(9)?
-    let bks = b.tokens(10)?
-    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, k, sc, pt, fns, fps, bks, ends) }
+    let fp2s = b.tokens(8)?
+    let fidxs = b.tokens(9)?
+    let bws = b.tokens(10)?
+    let biws = b.tokens(11)?
+    let bks = b.tokens(12)?
+    let bk2s = b.tokens(13)?
+    let bidxs = b.tokens(14)?
+    let dns = b.tokens(15)?
+    let bad_it? = iws.concat(biws).find(not_word("it")) else {
+        return bad_by(b, bws, dns, n, t, k, sc, pt, fns, fps, fp2s, fidxs, bks, bk2s, bidxs, ends)
+    }
     .Err("a collect's projection reads its declaration through `it` — found `${bad_it.text}`")
 }
 
 fn bad_by(
     b: Builder,
     bws: List<Token>,
+    dns: List<Token>,
     n: Token,
     t: TypeRef,
     k: Token,
@@ -42,11 +51,36 @@ fn bad_by(
     pt: Token,
     fns: List<Token>,
     fps: List<Token>,
+    fp2s: List<Token>,
+    fidxs: List<Token>,
     bks: List<Token>,
+    bk2s: List<Token>,
+    bidxs: List<Token>,
     ends: int,
 ) -> Result<LangNode, string> {
-    let bad? = bws.find(not_word("by")) else {
-        let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
+    let bad? = bws.find(not_word("by")) else { return bad_dense(b, dns, n, t, k, sc, pt, fns, fps, fp2s, fidxs, bks, bk2s, bidxs, ends) }
+    .Err("a collect's order is declared with `by` — found `${bad.text}`")
+}
+
+fn bad_dense(
+    b: Builder,
+    dns: List<Token>,
+    n: Token,
+    t: TypeRef,
+    k: Token,
+    sc: Token,
+    pt: Token,
+    fns: List<Token>,
+    fps: List<Token>,
+    fp2s: List<Token>,
+    fidxs: List<Token>,
+    bks: List<Token>,
+    bk2s: List<Token>,
+    bidxs: List<Token>,
+    ends: int,
+) -> Result<LangNode, string> {
+    let bad? = dns.find(not_word("dense")) else {
+        let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, fp2s, fidxs, ends) }
         return b
             .make_stmt(
                 Stmt
@@ -56,11 +90,11 @@ fn bad_by(
                         kind_of(b, k),
                         scope_of(sc),
                         proj,
-                        [Plain(bk.text) for bk in bks],
+                        OrderSpec { keys: order_keys(bks, bk2s, bidxs, ends), dense: !dns.is_empty() },
                     ),
             )
     }
-    .Err("a collect's order is declared with `by` — found `${bad.text}`")
+    .Err("a collect's order is marked dense with the word `dense` — found `${bad.text}`")
 }
 
 /// `collect enum Name = kind in scope by …` — `build_collect_decl`'s
@@ -72,22 +106,58 @@ fn build_collect_enum_decl(b: Builder) -> Result<LangNode, string> {
     let bws = b.tokens(3)?
     let biws = b.tokens(4)?
     let bks = b.tokens(5)?
-    let bad_it? = biws.find(not_word("it")) else { return bad_enum_by(b, bws, n, k, sc, bks) }
+    let bk2s = b.tokens(6)?
+    let bidxs = b.tokens(7)?
+    let dns = b.tokens(8)?
+    let ends? = b.span_end() else {
+        return .Err(
+            "defect: a collect enum declaration without a span — the arena and the grammar disagree",
+        )
+    }
+    let bad_it? = biws.find(not_word("it")) else { return bad_enum_by(b, bws, dns, n, k, sc, bks, bk2s, bidxs, ends) }
     .Err("a collect enum's order reads its declaration through `it` — found `${bad_it.text}`")
 }
 
-fn bad_enum_by(b: Builder, bws: List<Token>, n: Token, k: Token, sc: Token, bks: List<Token>) -> Result<
-    LangNode,
-    string,
-> {
-    let bad? = bws.find(not_word("by")) else {
+fn bad_enum_by(
+    b: Builder,
+    bws: List<Token>,
+    dns: List<Token>,
+    n: Token,
+    k: Token,
+    sc: Token,
+    bks: List<Token>,
+    bk2s: List<Token>,
+    bidxs: List<Token>,
+    ends: int,
+) -> Result<LangNode, string> {
+    let bad? = bws.find(not_word("by")) else { return bad_enum_dense(b, dns, n, k, sc, bks, bk2s, bidxs, ends) }
+    .Err("a collect enum's order is declared with `by` — found `${bad.text}`")
+}
+
+fn bad_enum_dense(
+    b: Builder,
+    dns: List<Token>,
+    n: Token,
+    k: Token,
+    sc: Token,
+    bks: List<Token>,
+    bk2s: List<Token>,
+    bidxs: List<Token>,
+    ends: int,
+) -> Result<LangNode, string> {
+    let bad? = dns.find(not_word("dense")) else {
         return b
             .make_stmt(
                 Stmt
-                    .CollectEnum(Scoped(n.text), kind_of(b, k), scope_of(sc), [Plain(bk.text) for bk in bks]),
+                    .CollectEnum(
+                        Scoped(n.text),
+                        kind_of(b, k),
+                        scope_of(sc),
+                        OrderSpec { keys: order_keys(bks, bk2s, bidxs, ends), dense: !dns.is_empty() },
+                    ),
             )
     }
-    .Err("a collect enum's order is declared with `by` — found `${bad.text}`")
+    .Err("a collect enum's order is marked dense with the word `dense` — found `${bad.text}`")
 }
 
 fn not_word(word: string) -> fn(Token) -> bool {
@@ -115,12 +185,34 @@ fn scope_of(sc: Token) -> CollectScope {
 
 /// Each field's fill: the name always arrives, so `aligned_binds`
 /// finds the `.NAME` written in its window, or "" for the bare `it`
-/// — folded here into the empty path that means the same thing.
-fn proj_fields(fns: List<Token>, fps: List<Token>, ends: int) -> List<ProjField> {
-    let paths = aligned_binds(fns, fps, ends)
-    [ProjField { field: Plain(f.text), path: path_of(paths[j]) } for j, f in fns]
+/// — folded here into the empty path that means the same thing. A
+/// second segment and a trailing `[N]` each align the same way,
+/// independently, against the same field-name anchors.
+fn proj_fields(fns: List<Token>, fps: List<Token>, fp2s: List<Token>, fidxs: List<Token>, ends: int) -> List<
+    ProjField,
+> {
+    let p1 = aligned_binds(fns, fps, ends)
+    let p2 = aligned_binds(fns, fp2s, ends)
+    let pidx = aligned_binds(fns, fidxs, ends)
+    [ProjField { field: Plain(f.text), path: path_of(p1[j], p2[j]), index: index_of(pidx[j]) } for j, f in fns]
 }
 
-fn path_of(word: string) -> List<Plain> {
-    if word == "" { [] } else { [Plain(word)] }
+/// One `by`-key per anchor (`bk` always arrives, unlike a projection's
+/// optional field path): a second segment and an index align against
+/// it the same way `proj_fields` aligns a projection's.
+fn order_keys(bks: List<Token>, bk2s: List<Token>, bidxs: List<Token>, ends: int) -> List<OrderKey> {
+    let p2 = aligned_binds(bks, bk2s, ends)
+    let pidx = aligned_binds(bks, bidxs, ends)
+    [OrderKey { path: path_of(bk.text, p2[j]), index: index_of(pidx[j]) } for j, bk in bks]
+}
+
+fn path_of(word: string, word2: string) -> List<Plain> {
+    if word == "" { [] } else if word2 == "" { [Plain(word)] } else { [Plain(word), Plain(word2)] }
+}
+
+/// The grammar admits `[N]` only over NUMBER, so the text always
+/// parses — `?? 0` answers the arithmetic no written index can.
+fn index_of(text: string) -> int? {
+    if text == "" { return null }
+    parse_int(text) ?? 0
 }

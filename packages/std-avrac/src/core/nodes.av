@@ -196,11 +196,23 @@ export enum CollectScope {
 /// One projected field: the name it fills, and the `it` path that
 /// answers it — `[]` for the bare declaration itself, a fn value.
 /// `path` is a NAME run because the grammar may grow multi-segment
-/// paths; today it holds zero or one.
-export type ProjField = { field: Plain, path: List<Plain> }
+/// paths; today it holds zero, one or two. `index` is the trailing
+/// `[N]` on a path — `it.mark.args[0]`'s `0` — meaningful only where
+/// the path's own kind says so (`mark.args`, today).
+export type ProjField = { field: Plain, path: List<Plain>, index: int? }
 
 /// A collect's projection: the type it builds, and each field's fill.
 export type Projection = { ty: TypeRef, fields: List<ProjField> }
+
+/// One `by`-key: the path it reads and its optional trailing `[N]`
+/// index — the same shape a projection's field fills, carried apart
+/// from a field name since a `by`-key names no field of its own.
+export type OrderKey = { path: List<Plain>, index: int? }
+
+/// A collect's whole order: its keys, and whether they are DENSE — an
+/// order that is data (unique, gap-free from 0), a gap or a duplicate
+/// refused, never file order's fallback.
+export type OrderSpec = { keys: List<OrderKey>, dense: bool }
 
 /// A MODULE's identity — a directory under the root, interned. `@dense`:
 /// its int means nothing outside this process, so a relation column of
@@ -950,7 +962,7 @@ export enum Stmt {
         kind: CollectKind,
         scope: CollectScope,
         proj: Projection,
-        order: List<Plain>,
+        order: OrderSpec,
     )
     Error
     /// `name: value` inside a component instance's body — a setting of
@@ -965,7 +977,7 @@ export enum Stmt {
     /// payload-free variant per matching declaration, named by its
     /// own declaration name. `order` is the `by` list's `it.field`
     /// paths, the same currency `Collect` orders by.
-    CollectEnum(name: Scoped, kind: CollectKind, scope: CollectScope, order: List<Plain>)
+    CollectEnum(name: Scoped, kind: CollectKind, scope: CollectScope, order: OrderSpec)
     /// `break` or `continue` (`again`) — the turn of a loop ends here:
     /// the innermost loop's, or the `for` whose name `label` reads.
     /// Diverges, like `return`.
@@ -1089,14 +1101,29 @@ fn collectscope_fp(s: CollectScope) -> int {
     match s { .Self -> 1, .Package -> 2, .Closure -> 3, .UnknownScope(w) -> fp(133, [fp_str(w)]) }
 }
 
-/// One projected field: the name it fills, the path it reads.
+/// One projected field: the name it fills, the path it reads, and its
+/// optional trailing index — `it.mark.args[0]` and `it.mark.args[1]`
+/// fill one field with two different values and must fingerprint
+/// apart.
 fn projfield_fp(f: ProjField) -> int {
-    fp(134, [fp_str(f.field.of), fp_list(plain_fps(f.path))])
+    fp(134, [fp_str(f.field.of), fp_list(plain_fps(f.path)), f.index ?? -1])
 }
 
 /// A collect's whole projection: its built type, every field.
 fn projection_fp(p: Projection) -> int {
     fp(135, [type_fp(p.ty), fp_list([projfield_fp(f) for f in p.fields])])
+}
+
+/// One `by`-key: its path, its optional index -- `-1` for absent,
+/// which no written index (always >= 0) can ever mean.
+fn order_key_fp(k: OrderKey) -> int {
+    fp(138, [fp_list(plain_fps(k.path)), k.index ?? -1])
+}
+
+/// A collect's whole order: every key, and whether it is dense -- a
+/// `by` list and its `dense` word are both part of what the order IS.
+fn order_spec_fp(o: OrderSpec) -> int {
+    fp(139, [fp_list([order_key_fp(k) for k in o.keys]), flagged(o.dense)])
 }
 
 fn fp_binop(op: BinOp) -> int {
@@ -1193,7 +1220,7 @@ fn exact_collect_scope(a: CollectScope, b: CollectScope) -> bool {
 }
 
 fn exact_proj_field(a: ProjField, b: ProjField) -> bool {
-    a.field.of == b.field.of && exact_plains(a.path, b.path)
+    a.field.of == b.field.of && exact_plains(a.path, b.path) && a.index == b.index
 }
 
 fn exact_proj_fields(a: List<ProjField>, b: List<ProjField>) -> bool {
@@ -1202,6 +1229,18 @@ fn exact_proj_fields(a: List<ProjField>, b: List<ProjField>) -> bool {
 
 fn exact_projection(a: Projection, b: Projection) -> bool {
     exact_type_ref(a.ty, b.ty) && exact_proj_fields(a.fields, b.fields)
+}
+
+fn exact_order_key(a: OrderKey, b: OrderKey) -> bool {
+    exact_plains(a.path, b.path) && a.index == b.index
+}
+
+fn exact_order_keys(a: List<OrderKey>, b: List<OrderKey>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(exact_order_key(a[it], b[it]))
+}
+
+fn exact_order_spec(a: OrderSpec, b: OrderSpec) -> bool {
+    exact_order_keys(a.keys, b.keys) && a.dense == b.dense
 }
 
 fn exact_hole(a: Hole, b: Hole) -> bool {

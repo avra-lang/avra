@@ -23,7 +23,7 @@ use core.{
     joined,
     flatten,
     sorted_by,
-    tuple_before,
+    text_before,
     doc_first_paragraph,
     root_kind_of,
     SyntaxArena,
@@ -42,6 +42,8 @@ use core.{
     CollectKind,
     CollectScope,
     Plain,
+    OrderKey,
+    OrderSpec,
     DeclKind,
     body_symbol,
 }
@@ -69,7 +71,7 @@ use features.{
     MetaVal,
     new_meta_heap,
 }
-use features.collects.{generic_words, gathered_members}
+use features.collects.{generic_words, gathered_members, SortVal, order_value}
 use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
@@ -1023,9 +1025,11 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
     lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
-/// A member beside its `by` key — one text per `by` field, a TUPLE, so
-/// two different keys never read as one and a tie keeps both members.
-type SortedMember = { key: List<string>, decl: Decl }
+/// A member beside its `by` key — one typed value per `by` field, a
+/// TUPLE, so two different keys never read as one and a tie keeps
+/// both members. An int compares as an int, a string as a string —
+/// check.av's own law, already paid before lowering reads a column.
+type SortedMember = { key: List<SortVal>, decl: Decl }
 
 /// Every matching declaration, in `by` order — shared by both collect
 /// flavors (a value's rows, an enum's variants); only `Decls` is
@@ -1035,18 +1039,57 @@ export fn ordered_collect_members(
     decls: Decls,
     kind: CollectKind,
     scope: CollectScope,
-    order: List<Plain>,
+    order: OrderSpec,
     owner: FileId,
 ) -> List<Decl> {
     let found = gathered_members(decls, kind, scope, owner)
-    let keyed = [SortedMember { key: collect_sort_key(decls, order, d), decl: d } for d in found]
+    let keyed = [SortedMember { key: collect_sort_key(decls, kind, order, d), decl: d } for d in found]
     [m.decl for m in sorted_by(keyed, member_before)]
 }
 
-fn member_before(x: SortedMember, y: SortedMember) -> bool { tuple_before(x.key, y.key) }
+fn member_before(x: SortedMember, y: SortedMember) -> bool { sortval_tuple_before(x.key, y.key) }
 
-export fn collect_sort_key(decls: Decls, order: List<Plain>, d: Decl) -> List<string> {
-    [collect_field_text(decls, d, [k]) for k in order]
+/// Every `by`-key's value for `d` — a generic word reads as text
+/// (`collect_field_text`), `mark.args[N]` through the same reader
+/// check.av used to validate this column (`order_value`): check
+/// already refused an unmatched mark, an out-of-range index or a
+/// mixed-type column, so a null here never happens over a collect
+/// that passed check — the "" is the generic path's own documented
+/// silence (collect_field_text), never a fresh default.
+export fn collect_sort_key(decls: Decls, kind: CollectKind, order: OrderSpec, d: Decl) -> List<SortVal> {
+    [order_key_value(decls, kind, k, d) for k in order.keys]
+}
+
+fn order_key_value(decls: Decls, kind: CollectKind, k: OrderKey, d: Decl) -> SortVal {
+    if k.path.length == 2 && k.index != null {
+        let word? = match kind { .Annotated(w) -> w, rest -> null } else { return SortVal.SStr("") }
+        return order_value(decls, d, word, k.index!) ?? SortVal.SStr("")
+    }
+    SortVal.SStr(collect_field_text(decls, d, k.path))
+}
+
+fn sortval_before(a: SortVal, b: SortVal) -> bool {
+    match a {
+        .SInt(x) -> match b { .SInt(y) -> x < y, .SStr(_) -> false },
+        .SStr(x) -> match b { .SStr(y) -> text_before(x, y), .SInt(_) -> false },
+    }
+}
+
+fn sortval_eq(a: SortVal, b: SortVal) -> bool {
+    match a {
+        .SInt(x) -> match b { .SInt(y) -> x == y, .SStr(_) -> false },
+        .SStr(x) -> match b { .SStr(y) -> x == y, .SInt(_) -> false },
+    }
+}
+
+/// `tuple_before`'s typed twin: a tuple of `SortVal`s compares
+/// position by position, each in its own type.
+fn sortval_tuple_before(a: List<SortVal>, b: List<SortVal>) -> bool {
+    for j, x in a {
+        if j >= b.length { return false }
+        if !sortval_eq(x, b[j]) { return sortval_before(x, b[j]) }
+    }
+    a.length < b.length
 }
 
 /// One entry: its fields read by NAME off the projected type's own
@@ -1056,7 +1099,7 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
     let sig? = lo.fields_of(entry_ty) else { return lo.mint_ty(entry_ty) }
     mut byname: Map<string, Reg> = {}
     for f in p.proj.fields {
-        byname.set(f.field.of, collect_field_reg(lo, a, entry_ty, f.field.of, f.path, p.kind, d))
+        byname.set(f.field.of, collect_field_reg(lo, a, entry_ty, f.field.of, f.path, f.index, p.kind, d))
     }
     lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
 }
@@ -1065,16 +1108,17 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
 /// `@std/meta` value its seat names (`Fn`/`Type`/`Named`/`Trait`) for
 /// a bare `it` whose seat asks for one — the declaration ITSELF (a
 /// callable fn value) for a bare `it` that asks for anything else;
-/// an `.Annotated` kind's matched mark, for `it.mark`; a component's
-/// OWN field, read off its instance's built value, for a named path
-/// that is not one of the generic words; else the GENERIC text
-/// projection, const.
+/// an `.Annotated` kind's matched mark (whole, or one typed arg), for
+/// `it.mark`/`it.mark.args[N]`; a component's OWN field, read off its
+/// instance's built value, for a named path that is not one of the
+/// generic words; else the GENERIC text projection, const.
 fn collect_field_reg(
     mut lo: LowerCx,
     a: Analysis,
     entry_ty: TypeId,
     name: string,
     path: List<Plain>,
+    index: int?,
     kind: CollectKind,
     d: Decl,
 ) -> Reg {
@@ -1087,7 +1131,7 @@ fn collect_field_reg(
         return collect_fn_reg(lo, d.id, fnty)
     }
     if is_root_kind_path(path) { return int_list_box(lo, component_root_kind(a.view.decls, d)) }
-    mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(
+    mark_field_reg(lo, a, entry_ty, name, path, index, kind, d) ?? component_field_reg(
         lo,
         a,
         entry_ty,
@@ -1140,20 +1184,29 @@ export fn component_root_kind(decls: Decls, d: Decl) -> List<int> {
 /// its `name` and its literal `args`. Never the declaration's whole
 /// annotation list: `collect`'s kind already named the one that
 /// matched, and that is the one a member's own body sees again.
-fn is_mark_path(path: List<Plain>) -> bool {
-    path.length == 1 && path[0].of == "mark"
-}
-
+/// `mark.args[N]` is its sibling — one arg alone, typed by the
+/// literal's own kind, through the same reader `order_value` a `by`
+/// column reads.
 fn mark_field_reg(
     mut lo: LowerCx,
     a: Analysis,
     entry_ty: TypeId,
     name: string,
     path: List<Plain>,
+    index: int?,
     kind: CollectKind,
     d: Decl,
 ) -> Reg? {
-    if !is_mark_path(path) { return null }
+    if path.length == 1 && path[0].of == "mark" && index == null {
+        return mark_whole_reg(lo, a, entry_ty, name, kind, d)
+    }
+    if path.length == 2 && path[0].of == "mark" && path[1].of == "args" && index != null {
+        return mark_arg_reg(lo, a, kind, d, index!)
+    }
+    null
+}
+
+fn mark_whole_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, kind: CollectKind, d: Decl) -> Reg? {
     let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
     let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
         .view
@@ -1162,6 +1215,14 @@ fn mark_field_reg(
     let matched? = a.view.decls.annotations_of(d.id).find(it.name == word) else { return lo.mint_ty(field_ty) }
     let sig? = lo.fields_of(field_ty) else { return lo.mint_ty(field_ty) }
     lo.packed_struct(field_ty, [mark_part_reg(lo, matched, n) for n in sig.names])
+}
+
+/// One arg, typed by its own literal kind — never the field's
+/// declared type, which this door has no part in checking.
+fn mark_arg_reg(mut lo: LowerCx, a: Analysis, kind: CollectKind, d: Decl, index: int) -> Reg {
+    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return lo.const_str("") }
+    let v? = order_value(a.view.decls, d, word, index) else { return lo.const_str("") }
+    match v { .SInt(n) -> lo.const_int(n), .SStr(s) -> lo.const_str(s) }
 }
 
 /// `mark`'s own record, filled by field NAME — `name` the matched

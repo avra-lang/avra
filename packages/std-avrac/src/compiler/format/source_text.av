@@ -30,6 +30,8 @@ use core.{
     CollectKind,
     CollectScope,
     Projection,
+    OrderKey,
+    OrderSpec,
     quoted_text,
     spelled,
     op_symbol,
@@ -677,8 +679,8 @@ impl SourceText {
 
     /// One collect field: `name: it.path`, or `name: it` for the
     /// bare declaration — `path` empty.
-    fn collect_field(name: string, path: List<Plain>) -> string {
-        "${name}: it${if path.is_empty() { "" } else { ".${joined([p.of for p in path], ".")}" }}"
+    fn collect_field(name: string, path: List<Plain>, index: int?) -> string {
+        "${name}: it${if path.is_empty() { "" } else { ".${joined([p.of for p in path], ".")}" }}${self.index_suffix(index)}"
     }
 
     fn collect_kind_word(k: CollectKind) -> string {
@@ -1149,7 +1151,7 @@ impl SourceText {
 
     /// A collect's projection prints as a struct literal over `it`
     /// paths — empty the bare declaration — and its order as the
-    /// `it.field` list `by` named.
+    /// `it.field` list `by` named, `dense` trailing when set.
     fn collect_decl(
         exported: string,
         name: string,
@@ -1157,11 +1159,10 @@ impl SourceText {
         kind: CollectKind,
         scope: CollectScope,
         proj: Projection,
-        order: List<Plain>,
+        order: OrderSpec,
     ) -> string {
-        let fields = joined([self.collect_field(f.field.of, f.path) for f in proj.fields], ", ")
-        let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
-        "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
+        let fields = joined([self.collect_field(f.field.of, f.path, f.index) for f in proj.fields], ", ")
+        "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${self.order_by(order)}"
     }
 
     /// `collect enum Name = kind in scope by …` — `collect_decl`'s
@@ -1171,10 +1172,23 @@ impl SourceText {
         name: string,
         kind: CollectKind,
         scope: CollectScope,
-        order: List<Plain>,
+        order: OrderSpec,
     ) -> string {
-        let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
-        "${exported}collect enum ${source_name(name)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
+        "${exported}collect enum ${source_name(name)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${self.order_by(order)}"
+    }
+
+    fn order_by(order: OrderSpec) -> string {
+        if order.keys.is_empty() { return "" }
+        let keys = joined([self.order_key_word(k) for k in order.keys], ", ")
+        " by ${keys}${if order.dense { " dense" } else { "" }}"
+    }
+
+    fn order_key_word(k: OrderKey) -> string {
+        "it.${joined([p.of for p in k.path], ".")}${self.index_suffix(k.index)}"
+    }
+
+    fn index_suffix(index: int?) -> string {
+        if index == null { "" } else { "[${index!}]" }
     }
 
     /// One case's `then` line, standing alone (its group is empty).
