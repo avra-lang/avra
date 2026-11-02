@@ -224,10 +224,26 @@ impl Workspace {
         if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
     }
 
+    /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
+    /// file stands once, and its flag stands before the work does, so two files that name
+    /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each
+    /// declaration from its own row, on the ask that names it.
+    fn mint_files(paths: List<string>) {
+        let unread = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
+        if unread.is_empty() { return }
+        for path in unread {
+            if traced() { qtrace("Q\tmint\t${path}\n") }
+            self.hold.minted.put(path, true)
+        }
+        work_module_minted()
+        for path in unread { let _ = self.items(self.file_id(path)) }
+    }
+
     /// AN UNREAD FILE'S ITEMS, minted from the lines its last read kept: its declarations in
     /// kept order, adopted by their parents. Answers the top-level ids.
     fn items_minted(f: FileId) -> List<DeclId> {
         let path = self.decls.file(f).path
+        self.hold.minted.put(path, true)
         self.decls.note_rows(f, 0)
         let lines? = self.items_lines(path) else {
             self.defect("an unread file's items were not kept — ${path}")
@@ -697,6 +713,7 @@ impl Decls {
     /// the read is UNRECORDED — `wire_siblings` records the one edge its
     /// reader owes, so a name's bucket stands in for the whole file.
     fn wire_rows(f: FileId) -> List<DeclId> {
+        (self.ensure_file.get())(f)
         self.decls_so_far(f)
     }
 

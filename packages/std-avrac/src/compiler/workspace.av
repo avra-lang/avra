@@ -252,7 +252,8 @@ type Group = { owner: int, id: int, buckets: List<int> }
 
 /// THE NAME ENVIRONMENTS, as the modules' kept producers file them: the files declaring under
 /// each declaration name, component word and annotation mark; every extern; and the files
-/// declaring a kind that implements a trait for a type.
+/// declaring a kind that implements a trait for a type. A bucket reader mints the unread files
+/// listed for its value before it reads (`Workspace.minted_for`).
 @identity
 type NameEnvs = {
     names: Cell<Map<string, List<string>>>,
@@ -356,6 +357,7 @@ type Hold = {
     loaded_turn: Cell<Map<string, bool>>,
     /// Whether THIS attempt holds at all: the unheld retry holds nothing, by definition.
     holds_now: Cell<bool>,
+    minted: Cell<Map<string, bool>>,
     row_filled: Table<bool>,
     /// The files whose records' `ref` rows name each target file, by the target's path.
     refs_by_target: Cell<Map<string, List<string>>>,
@@ -442,6 +444,7 @@ fn new_hold() -> Hold {
     let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
+    let no_minted: Map<string, bool> = {}
     let no_producers: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
@@ -466,6 +469,7 @@ fn new_hold() -> Hold {
         read_files: Cell.new(no_read_files),
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
+        minted: Cell.new(no_minted),
         row_filled: new_table<bool>(),
         refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
@@ -1169,7 +1173,14 @@ fn built(
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
     ws.decls.arm_target((d: DeclId) -> ws.target_ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
-    ws.decls.arm_externs(() -> ws.envs.externs.get(), () -> ws.envs.implementors.get())
+    ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
+    ws
+        .decls
+        .arm_listed(
+            (l: Listed) -> ws.minted_for(l),
+            () -> ws.envs.externs.get(),
+            () -> ws.envs.implementors.get(),
+        )
     ws
         .decls
         .arm_embeds(
@@ -1272,14 +1283,45 @@ impl Workspace {
         if self.is_held(self.decls.decl(d).file) { self.decl_row_filled(d) }
     }
 
+    /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
+    /// parse, a held file's minted with its module the first time anything asks.
+    fn file_ensured(f: FileId) {
+        let path = self.decls.file(f).path
+        if !self.hold.holds_now.get() ||
+            self.hold.minted.get().get(path) != null ||
+            !self.is_held(f) {
+            return
+        }
+        self.minted_files([path])
+    }
+
     /// Every read source file of the package `f` stands in admitted, its tests aside. A held
-    /// file stands for its record, minted at admission.
+    /// file stands for its record: the producer doors mint it when a read wants its rows.
     fn package_admitted(f: FileId) {
         let path = self.decls.file(f).path
         let pkg? = self.packages().find((k) -> path.starts_with("${k.src}/")) else { return }
         for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p) && self.decls.held.get().get(p) == null] {
             let _ = self.items(self.file_id(p))
         }
+    }
+
+    /// THE NAME ENVIRONMENTS' DOOR: a bucket reader names what it is about to read, and the
+    /// modules of every unread file listed under it are minted first — so the row exists
+    /// before the read, and only where it is wanted.
+    fn minted_for(l: Listed) {
+        self.minted_files(self.envs.listed(l))
+    }
+
+    /// Every held file of each listed module minted, once.
+    fn minted_modules(modules: List<string>) {
+        if self.store.get() == null { return }
+        for m in modules { self.mint_files(self.module_files(module_path(segments_of(m)))) }
+    }
+
+    /// The held modules of the listed files minted whole, once: a module stands as one
+    /// namespace, so no sibling is left to mint inside a query that already read the rows.
+    fn minted_files(paths: List<string>) {
+        self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
     }
 
     /// A held declaration may need syntax-only facts that were not part of
@@ -2258,6 +2300,7 @@ impl Workspace {
         // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
+        self.minted_for(Listed.Name(self.decls.decl(target).name))
         let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
