@@ -355,17 +355,23 @@ fn carried_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) 
         .Int or .Bool or .Str -> true,
         .Opt(inner) -> carried_under(inner, shapes, seen),
         .List(elem) -> carried_under(elem, shapes, seen),
-        .Named(n, _) -> match shapes(n) {
-            .Tagged(_) -> true,
-            .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> carried_under(f.kind, shapes, seen))),
-            .Record(fs) or .Placed(fs) -> if seen.contains(n) {
-                true
-            } else {
-                columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n])))
+        .Named(n, _) -> wears_codec(n) ||
+            match shapes(n) {
+                .Tagged(_) -> true,
+                .Payload(vs) -> vs
+                    .all(
+                        (v: Variant) -> v
+                            .fields
+                            .all((f: Field) -> carried_under(f.kind, shapes, seen)),
+                    ),
+                .Record(fs) or .Placed(fs) -> if seen.contains(n) {
+                    true
+                } else {
+                    columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n])))
+                },
+                .Over(shape) -> carried_under(shape, shapes, seen),
+                .Dense(_) or .Plain -> false,
             },
-            .Over(shape) -> carried_under(shape, shapes, seen),
-            .Dense(_) or .Plain -> false,
-        },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
@@ -413,18 +419,19 @@ fn decodable_in(k: Kind, under_seq: bool, seen: List<string>, scoped: bool) -> b
         .Int or .Bool or .Str -> true,
         .Opt(inner) -> decodable_in(inner, true, seen, scoped),
         .List(elem) -> decodable_in(elem, true, seen, scoped),
-        .Named(n, _) -> match named_shape(n) {
-            .Tagged(_) -> true,
-            .Record(fs) or .Placed(fs) -> if under_seq || seen.contains(n) || fs.any((f: Field) -> marked(f, "local")) {
-                false
-            } else {
-                fs.all((f: Field) -> decodable_in(f.kind, false, seen.concat([n]), scoped))
+        .Named(n, _) -> wears_codec(n) ||
+            match named_shape(n) {
+                .Tagged(_) -> true,
+                .Record(fs) or .Placed(fs) -> if under_seq || seen.contains(n) || fs.any((f: Field) -> marked(f, "local")) {
+                    false
+                } else {
+                    fs.all((f: Field) -> decodable_in(f.kind, false, seen.concat([n]), scoped))
+                },
+                .Over(shape) -> decodable_in(shape, under_seq, seen, scoped),
+                .Payload(_) -> wears_codec(n),
+                .Dense(_) -> scoped,
+                .Plain -> false,
             },
-            .Over(shape) -> decodable_in(shape, under_seq, seen, scoped),
-            .Payload(_) -> wears_codec(n),
-            .Dense(_) -> scoped,
-            .Plain -> false,
-        },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
@@ -1226,7 +1233,9 @@ fn hashed(acc: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Str -> quote { ${acc}.text(${e}) },
         .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem, owner)}) },
-        .Named(n, args) -> if owner.needs(k) {
+        .Named(n, args) -> if owner.codes(k) {
+            quote { ${acc}.int(${name(n)}.digest_in(scope, ${e})) }
+        } else if owner.needs(k) {
             quote { ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(${acc}, ${e}) }
         } else {
             match owner.shape(n, args) {
@@ -1262,7 +1271,9 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
         .Str -> quote { (h: StableHasher, v: string) -> h.text(v) },
         .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem, owner)}) },
-        .Named(n, args) -> if owner.needs(k) {
+        .Named(n, args) -> if owner.codes(k) {
+            quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(${name(n)}.digest_in(scope, v)) }
+        } else if owner.needs(k) {
             quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(h, v) }
         } else {
             match owner.shape(n, args) {
@@ -1401,6 +1412,28 @@ fn own_of(answer: string) -> Owner {
         shapes: {},
         ids: {},
         coded: [],
+    }
+}
+
+/// The `@codec` types a kind reaches, by spelling: each crosses by its own codec, whole.
+fn coded_in(k: Kind) -> List<string> { coded_under(k, []) }
+
+fn coded_under(k: Kind, seen: List<string>) -> List<string> {
+    match k {
+        .Opt(inner) or .List(inner) -> coded_under(inner, seen),
+        .Map(_, value) -> coded_under(value, seen),
+        .Named(n, args) -> if wears_codec(n) {
+            [k.spelled()]
+        } else if seen.contains(n) {
+            []
+        } else {
+            match instance_shape(n, args) {
+                .Record(fs) or .Placed(fs) -> [c for f in columns(fs) for c in coded_under(f.kind, seen.concat([n]))],
+                .Over(shape) -> coded_under(shape, seen),
+                rest -> [],
+            }
+        },
+        rest -> [],
     }
 }
 
