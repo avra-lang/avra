@@ -41,7 +41,7 @@ use core.{
     same_type as same_type_id,
     touch,
 }
-use features.{Decls, Decl, TypeCx, bound_decl_of}
+use features.{Decls, Decl, TypeCx, bound_decl_of, Inferred}
 use @std.meta.{bracket}
 use @std.relation.{relation}
 use compiler.families.{Family}
@@ -62,12 +62,6 @@ fn is_bare_underscore(tr: TypeRef) -> bool {
 export fn result_infers(ret: TypeRef) -> bool {
     ret.name == "Result" && ret.applied.length == 2 && is_bare_underscore(ret.applied[1])
 }
-
-/// One `_`-declared fn's own evidence: the error types its direct
-/// `fail`/`?` sites raise, and the OTHER `_`-declared fns whose own
-/// (still-settling) set flows in through a `?` — and every `ErrorSite`
-/// its body holds, for the survey to file.
-type FailSummary = { direct: List<TypeId>, calls: List<DeclId>, sites: List<ErrorSite> }
 
 /// A fail/propagate site's contribution, once its value is asked:
 /// a concrete type, an edge into another pending fn's set, or
@@ -108,6 +102,8 @@ export type ErrorSite = {
     @local @index callee: DeclId?,
     @local enclosing: ExprId?,
     @local errors: List<TypeId>,
+    /// the structural walk could not tell this site's type
+    unresolved: bool,
 }
 
 /// One inferring fn's settled error set, written by the fixpoint's
@@ -233,8 +229,8 @@ impl FailSurvey {
     /// interface at mint, never touched by this attempt: a held `_`-
     /// declared callee's union rode its interface, so its resolved
     /// `Result<_, E>` is read directly, the same as any settled type.
-    /// Without this, `inferred_errors_so_far(d)` for a held `d` answers
-    /// the empty table this attempt never filled, and a caller's own
+    /// Without this, the raised set of a held `d` answers the empty set
+    /// this attempt never solved, and a caller's own
     /// inferred set silently loses every error that flowed through it.
     fn via_callee(d: DeclId) -> SiteType {
         if self.dt.decls.declared_result_hole(d) && !self.dt.ws.is_held(self.dt.decls.decl(d).file) {
@@ -352,9 +348,7 @@ fn smallest_owner(owners: List<ArmOwner>) -> ArmOwner {
     best
 }
 
-/// M6 PREP: every `ErrorSite` one fn's body contains — the walk
-/// `fail_summary` already runs, reshaped as rows instead of a single
-/// folded `FailSummary`. `fail_sites`/`propagate_sites` already find a
+/// Every `ErrorSite` one fn's body contains. `fail_sites`/`propagate_sites` find a
 /// site at any nesting depth (they are index-range scans, blind to AST
 /// shape), so tagging each with `innermost_catch` is the whole of
 /// `within` — no separate arm walk, and so no double count either.
@@ -380,6 +374,7 @@ fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId, enclosing: ExprId?) -> 
         callee: edge_callee(c),
         enclosing: enclosing,
         errors: some_list(direct_ty(c)),
+        unresolved: is_unresolved(c),
     }
 }
 
@@ -392,6 +387,7 @@ fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId, encl
         callee: edge_callee(c),
         enclosing: enclosing,
         errors: some_list(direct_ty(c)),
+        unresolved: is_unresolved(c),
     }
 }
 
@@ -423,6 +419,7 @@ fn catch_error_site(
                 callee: contribution_callee(contribution),
                 enclosing: enclosing,
                 errors: contribution_errors(contribution),
+                unresolved: contribution != null && is_unresolved(contribution!),
             }
         },
         rest -> ErrorSite {
@@ -432,6 +429,7 @@ fn catch_error_site(
             callee: null,
             enclosing: enclosing,
             errors: [],
+            unresolved: false,
         },
     }
 }
@@ -464,35 +462,23 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
         let fns = [x.id for x in self.decls.unheld_decls() if self.decls.inferring(x)]
-        self.decls.clear_inferred()
-        let sums = self.surveyed(fns)
-        self.decls.settle_failures(fns, sums)
+        let _ = self.surveyed(fns)
         self.solve_raised(fns)
-        self
-            .db
-            .settle(
-                k,
-                fp(
-                    21,
-                    [fp_list([m.index for m in self.decls.inferred_errors_so_far(d)]) for d in fns],
-                ),
-            )
+        self.db.settle(k, fp(21, [raised_fp(self.raised_fixpoint.value_at(d.index)) for d in fns]))
         fns.length
     }
 
-    /// Every fn's summary, the sites they hold filed as the survey's rows
-    /// in one step: the last survey's rows these do not name are removed,
-    /// and the solve reads them whole.
-    fn surveyed(fns: List<DeclId>) -> List<FailSummary> {
-        let sums = [self.fail_summary(d) for d in fns]
-        let _ = ErrorSite
-            .replaced(self.decls.rows_db.get(), "survey", flatten([s.sites for s in sums]))
-        sums
+    /// Every fn's sites filed as the survey's rows in one step: the last survey's rows these
+    /// do not name are removed, and the solve reads them whole.
+    fn surveyed(fns: List<DeclId>) -> List<ErrorSite> {
+        let sites = flatten([self.fail_sites_of(d) for d in fns])
+        let _ = ErrorSite.replaced(self.decls.rows_db.get(), "survey", sites)
+        sites
     }
 
     /// `Decls.seats`' hook: types one fn's own parameters, standalone, through
     /// a signing context built for it alone — never the answer, so a caller
-    /// mid this same fixpoint (fail_summary asking for ITS OWN seats) never
+    /// mid this same fixpoint (`fail_sites_of` asking for ITS OWN seats) never
     /// recurses into the answer it is busy computing. A held fn's parameters
     /// come from its record, never a parse it does not have.
     fn seats_ensured(d: DeclId) {
@@ -550,9 +536,9 @@ impl Workspace {
     /// One fn's own evidence, read from its resolved body and the
     /// declarations its expressions name — never from another
     /// `_`-declared fn's `sig()` (FailSurvey.via_callee's guard).
-    fn fail_summary(d: DeclId) -> FailSummary {
+    fn fail_sites_of(d: DeclId) -> List<ErrorSite> {
         let x = self.decls.decl(d)
-        if x.root == null { return FailSummary { direct: [], calls: [], sites: [] } }
+        if x.root == null { return [] }
         let receiver: TypeId? = self.receiver_type(x)
         // `decls.seats`, never `sig`/`sig_so_far`: `d`'s own ANSWER is what
         // this fixpoint is computing, so asking `sig(d)` here would recurse
@@ -578,17 +564,7 @@ impl Workspace {
                 seats: seats,
             },
         }
-        let fails = [fail_contribution(fs, v) for v in fail_sites(store, x.body())]
-        let props = flatten(
-            [some_list(propagate_contribution(fs, self.decls, v)) for v in propagate_sites(store, x.body())],
-        )
-        let all = fails.concat(props)
-        if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
-        FailSummary {
-            direct: flatten([some_list(direct_ty(c)) for c in all]),
-            calls: flatten([some_list(edge_callee(c)) for c in all]),
-            sites: built_error_sites(fs, self.decls, d, store, x.body()),
-        }
+        built_error_sites(fs, self.decls, d, store, x.body())
     }
 
     /// M6 PREP: one member's raw contribution to the raised-set
@@ -614,7 +590,6 @@ impl Workspace {
     /// The raised-set fixpoint over `ErrorSite`, its settled sets filed
     /// as the solve's rows in one step once it ends: the last solve's
     /// rows these do not name are removed.
-    /// Beside `Decls`' own Kleene loop, which typing reads.
     fn solve_raised(fns: List<DeclId>) {
         let solved = self
             .raised_fixpoint
@@ -636,6 +611,17 @@ impl Workspace {
     fn raised_by(d: DeclId) -> List<TypeId> {
         let _ = self.failures()
         Raised.by_owner(self.decls.rows_db.get(), d).first()?.errors ?? []
+    }
+
+    /// What typing reads of an inferring fn: its raised set, and whether a `fail` or `?`
+    /// site's type could not be told.
+    fn inferred_of(d: DeclId) -> Inferred {
+        Inferred {
+            errors: self.raised_by(d),
+            unresolved: ErrorSite
+                .by_owner(self.decls.rows_db.get(), d)
+                .any(it.unresolved && !(it.how is .Catch)),
+        }
     }
 
     /// Every site whose `callee` is `f` — the reverse edge `chain`
@@ -697,28 +683,5 @@ impl Decls {
     /// syntactically.
     fn inferring(x: Decl) -> bool {
         seated(x) && self.declared_result_hole(x.id)
-    }
-
-    /// Kleene iteration over SETS: a fn's inferred error type is a
-    /// member of its own direct raises, or of any callee's set it
-    /// flows from — until no set grows. Same proof receivers.av's
-    /// `scc_fixpoint` already states, for a growing set under union
-    /// rather than a growing set of true bits under OR.
-    fn settle_failures(fns: List<DeclId>, sums: List<FailSummary>) {
-        mut changed = true
-        while changed {
-            changed = false
-            for j, d in fns {
-                if self.settle_fail_one(d, sums[j]) { changed = true }
-            }
-        }
-    }
-
-    @bracket("fail_summary")
-    fn settle_fail_one(d: DeclId, s: FailSummary) -> bool {
-        let before = self.inferred_errors_so_far(d).length
-        for ty in s.direct { self.record_inferred_error(d, ty) }
-        for g in s.calls { for ty in self.inferred_errors_so_far(g) { self.record_inferred_error(d, ty) } }
-        self.inferred_errors_so_far(d).length != before
     }
 }

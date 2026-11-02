@@ -31,15 +31,12 @@ use compiler.families.{Family}
 use @std.relation.{query}
 
 impl Workspace {
-    /// The pass: asking IS the query — the hook the workspace arms
-    /// computes a declaration's own answer on first ask and records
-    /// it; the table only holds.
+    /// The pass: a declaration's consumed seats, inferred from its own body.
     fn computed_consumed(d: DeclId) -> List<bool> {
         let x = self.decls.decl(d)
         let n = self.decls.seat_count(d)
-        // A compile-time run infers no consuming seat and records
-        // nothing: the references relation settles after typing, and
-        // an unrecorded row leaves the program's own ask to decide.
+        // A compile-time run infers no consuming seat: the references
+        // relation settles after typing.
         if self.comptime_active() { return filled(n, false) }
         // A HELD DECLARATION'S BODY IS READ, NEVER RE-GUESSED: the bit this
         // scan would infer from a body this attempt does not have is
@@ -51,17 +48,12 @@ impl Workspace {
         // header), so the record already carries the one true answer — a
         // held declaration's `consumed_seat` is the same value whether this
         // attempt holds it or a different attempt does.
-        if self.is_held(x.file) {
-            let kept = [self.decls.declared_mark(d, j).consumed for j in 0..n]
-            self.decls.record_consumed(d, kept)
-            return kept
-        }
-        // WHERE THE REFERENCES DO NOT STAND, NOTHING IS INFERRED AND NOTHING
-        // RECORDED: an unread relation is no finding that no one takes `d`
-        // as a value, and a recorded bit reaches the module's own record.
-        if x.root == null { return self.none_consumed(d, n) }
+        if self.is_held(x.file) { return [self.decls.declared_mark(d, j).consumed for j in 0..n] }
+        // WHERE THE REFERENCES DO NOT STAND, NOTHING IS INFERRED: an unread
+        // relation is no finding that no one takes `d` as a value.
+        if x.root == null { return filled(n, false) }
         let taken? = self.taken_as_value(d) else { return filled(n, false) }
-        if taken { return self.none_consumed(d, n) }
+        if taken { return filled(n, false) }
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
         mut cx = Consumed {
             store: self.decls.store(d),
@@ -69,26 +61,14 @@ impl Workspace {
             eligible: [self.eligible_seat(x, i, seats) for i in 0..n],
             returned: filled(n, true),
         }
-        let out = cx.scan(x.root!)
-        self.decls.record_consumed(d, out)
-        out
+        cx.scan(x.root!)
     }
 
-    /// A declaration's consumed seats, asked as its own answer. Where the pass cannot settle
-    /// one, the bits are read as the pass would infer them, recorded nowhere.
-    fn consumed_ensured(d: DeclId) {
-        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() {
-            if !self.decls.consumed_known(d) { let _ = self.computed_consumed(d) }
-            return
-        }
-        let _ = seats_consumed(self, d)
-    }
-
-    /// No seat of `d` consumed, recorded.
-    fn none_consumed(d: DeclId, n: int) -> List<bool> {
-        let none = filled(n, false)
-        self.decls.record_consumed(d, none)
-        none
+    /// A declaration's consumed seats, asked as its own answer; inside a resolve or typing,
+    /// inferred in place.
+    fn consumed_of(d: DeclId) -> List<bool> {
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return self.computed_consumed(d) }
+        seats_consumed(self, d)
     }
 
     /// A seat is a candidate at all only as an ordinary BY-VALUE
@@ -238,6 +218,4 @@ fn both(a: List<bool>, b: List<bool>) -> List<bool> { [x && b[i] for i, x in a] 
 /// A declaration's consumed seats: a reader of the bits stands on this answer, so a caller moves
 /// only when a callee it reads has its bits move.
 @query
-fn seats_consumed(ws: Workspace, d: DeclId) -> List<bool> {
-    if ws.decls.consumed_known(d) { ws.decls.consumed_bits(d) } else { ws.computed_consumed(d) }
-}
+fn seats_consumed(ws: Workspace, d: DeclId) -> List<bool> { ws.computed_consumed(d) }
