@@ -721,7 +721,110 @@ carry() {
     }
 }
 
+# THE DEFAULT BACKEND: a GitHub runner (.github/workflows/lane-run.yml). The worktree as it stands,
+# uncommitted files included, is one commit on `run/<lane>` whose message is the order; the push
+# starts the run, and this follows it to the command's status (the log's `lane-run: status <n>`).
+# The ref is deleted after; its caches stay, keyed by the lane, so the next run is warm.
+run_github() {
+    minutes=15
+    builder=""
+    [ "${1:-}" != --builder ] || { builder=1; shift; }
+    if [ "${1:-}" = --for ]; then
+        case ${2:-} in '' | *[!0-9]*) usage run >&2; exit 64 ;; esac
+        minutes=$2
+        shift 2
+    fi
+    [ "${1:-}" != --browser ] || die "the browser leg runs on a Sprite alone — \`run --sprite --browser …\`"
+    case "$*" in "make try"* | "make -s try"*) builder=1 ;; esac
+    case ${1:-} in '' | -*) [ -z "${1:-}" ] || echo "work: \`run\` has no flag \`$1\`" >&2; usage run >&2; exit 64 ;; esac
+    inside
+    cmd=$(assemble "$@")
+    tree=$(git rev-parse --show-toplevel)
+    lane=$(basename "$tree" | sed 's/^avra-//')
+    ref=run/$lane
+    wf=lane-run.yml
+    t0=$(date +%s)
+    live=$($gh_ run list --workflow "$wf" --branch "$ref" --json databaseId,status \
+        -q '[.[] | select(.status != "completed")][0].databaseId // empty' 2>/dev/null) || live=
+    [ -z "$live" ] || { echo "work: BUSY — run $live is live on $ref; \`gh run cancel $live\` ends it" >&2; exit 76; }
+    bk=
+    if [ -n "$builder" ]; then
+        bk=$(builder_key "$tree")
+        [ -n "$bk" ] || echo "work: no compiler is published for the merge-base or its recent ancestors — the run builds the tree's own" >&2
+    fi
+    snap=$(snapshot "$tree" "$(printf 'lane-run: %s\n\nlane: %s\nminutes: %s\nbuilder: %s\ncmd-b64: %s\n' "$lane" "$lane" "$minutes" "${bk%% *}" "$(printf '%s' "$cmd" | base64 | tr -d '\n')")") ||
+        die "could not snapshot the worktree"
+    git push -q -f origin "$snap:refs/heads/$ref" 2>/dev/null || { echo "work: CONNECTION — could not push $ref" >&2; exit 74; }
+    echo "work: github — $ref at $(printf '%s' "$snap" | cut -c1-12), bound $minutes min: $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
+    id=
+    for _ in $(seq 1 30); do
+        id=$($gh_ run list --workflow "$wf" --branch "$ref" --json databaseId,headSha \
+            -q ".[] | select(.headSha == \"$snap\") | .databaseId" 2>/dev/null | head -n 1) || id=
+        [ -z "$id" ] || break
+        sleep 3
+    done
+    [ -n "$id" ] || { git push -q origin ":refs/heads/$ref" 2>/dev/null || :; echo "work: CONNECTION — no run started for $ref within 90s" >&2; exit 74; }
+    url=$($gh_ run view "$id" --json url -q .url 2>/dev/null || :)
+    echo "work: github — run $id $url" >&2
+    trap '$gh_ run cancel "$id" >/dev/null 2>&1 || :; echo "work: COMMAND — stopped (run $id cancelled), $(gh_since)s" >&2; exit 130' INT
+    follow_github "$id" $(( (minutes + 60) * 60 )) || exit $?
+    trap - INT
+    github_status "$id"
+    git push -q origin ":refs/heads/$ref" 2>/dev/null || :
+    case $st in
+        0) echo "work: github — passed, $(gh_since)s ($url)" >&2 ;;
+        70) echo "work: COMMAND — this tree's compiler or libraries did not build, $(gh_since)s ($url)" >&2 ;;
+        124) echo "work: COMMAND — stopped at its bound (\`run --for <minutes>\` raises it), $(gh_since)s ($url)" >&2 ;;
+        143) echo "work: COMMAND — the run ended without a status (cancelled?), $(gh_since)s ($url)" >&2 ;;
+        *) echo "work: COMMAND — exit $st, $(gh_since)s ($url)" >&2 ;;
+    esac
+    return "$st"
+}
+gh_since() { echo $(($(date +%s) - t0)); }
+
+# snapshot <tree> <message>: the worktree as it stands — tracked edits and untracked files git does
+# not ignore — as one commit over HEAD, through a scratch index, so the lane's own index is untouched.
+snapshot() {
+    idx=$(mktemp)
+    (
+        export GIT_INDEX_FILE="$idx"
+        cd "$1" && git read-tree HEAD && git add -A . && git commit-tree "$(git write-tree)" -p HEAD -m "$2"
+    ) && s=0 || s=$?
+    rm -f "$idx"
+    return "$s"
+}
+
+# follow_github <run> <bound s>: says each step as it starts, until the run completes.
+follow_github() {
+    step=
+    while :; do
+        [ "$(gh_since)" -lt "$2" ] || { echo "work: CONNECTION — run $1 did not finish within $(($2 / 60)) min of following" >&2; return 74; }
+        view=$($gh_ run view "$1" --json status,jobs \
+            -q '.status + " " + ([.jobs[0].steps[]? | select(.status == "in_progress") | .name][0] // "")' 2>/dev/null) || { sleep 10; continue; }
+        [ "${view%% *}" != completed ] || return 0
+        now=${view#* }
+        [ -z "$now" ] || [ "$now" = "$step" ] || { step=$now; echo "work: github — $(gh_since)s: $step" >&2; }
+        sleep 10
+    done
+}
+
+# github_status <run>: prints the command's output and sets `st` to its status; a run that never
+# reached the command prints its failed step's tail on stderr and sets 70, or 143 when nothing
+# failed (cancelled).
+github_status() {
+    log=$($gh_ run view "$1" --log 2>/dev/null) || log=
+    printf '%s\n' "$log" | awk -F '\t' '$2 == "command" { sub(/^[^ ]* /, "", $3); print $3 }' | grep -v '^lane-run: status ' || :
+    st=$(printf '%s\n' "$log" | sed -n 's/.*lane-run: status \([0-9][0-9]*\).*/\1/p' | tail -n 1)
+    if [ -z "$st" ]; then
+        failed=$($gh_ run view "$1" --json jobs -q '[.jobs[0].steps[]? | select(.conclusion == "failure") | .name][0] // ""' 2>/dev/null || :)
+        printf '%s\n' "$log" | awk -F '\t' -v s="$failed" '$2 == s { sub(/^[^ ]* /, "", $3); print $3 }' | tail -n 40 >&2
+        if [ -n "$failed" ]; then st=70; else st=143; fi
+    fi
+}
+
 run() {
+    [ "${1:-}" = --sprite ] || { run_github "$@"; return; }
+    shift
     minutes=15
     browser=""
     builder=""
