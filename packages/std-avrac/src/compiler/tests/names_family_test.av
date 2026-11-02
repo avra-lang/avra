@@ -9,8 +9,6 @@ use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn names_key(d: DeclId) -> Key { Key { family: family_ordinal("Names"), arg: d.index } }
-
 fn names_visible_key(ws: Workspace) -> Key { ws.cells_named("file_visible_made").first() ?? Key { family: -1, arg: 0 } }
 
 fn names_workspace(main: string) -> Workspace {
@@ -54,7 +52,11 @@ spec "compiler/workspace — Family.Names is declaration-grain" {
                     (s: Key) -> ws
                         .db
                         .edges_by_reader(s)
-                        .any((k: Key) -> k.family == names_key(b).family && k.arg == names_key(b).arg),
+                        .any(
+                            (k: Key) -> ws
+                                .cells_named("name_slice_of")
+                                .any((c: Key) -> c.family == k.family),
+                        ),
                 )
         }
         then "and names the file's Visible, which carries the namespace the slice leaves out" {
