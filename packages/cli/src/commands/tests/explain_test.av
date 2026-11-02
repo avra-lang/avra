@@ -4,7 +4,7 @@
 use @std.io.{make_dirs, write_text, list_dir}
 use @std.time.{stamp}
 use @std.avrac.compiler.{HeldMismatch}
-use @std.avrac.core.{flatten}
+use @std.avrac.core.{flatten, some_list}
 use @std.text.{parse_int}
 use commands.{explain_answer, Asked, checked_at, disagreement_line, decl_unanswered}
 
@@ -38,6 +38,24 @@ fn table_rows(a: Asked) -> List<string> {
 }
 
 fn page(a: Asked) -> string { [undigested(l) for l in explain_lines(a)].join("\n") }
+
+/// The answer label a `--why` page's line opens with — `Family(subject)`, trimmed — or nothing
+/// when the line is prose, a path or a contract line. Every family's word begins uppercase.
+fn label_shown(line: string) -> string? {
+    let shown = line.trim()
+    let open = shown.index_of("(")
+    if open < 1 || !shown.ends_with(")") { return null }
+    if !HEAD_LETTERS.contains(shown.substring(0, 1)) { return null }
+    shown
+}
+
+/// The letters a family's word begins with.
+const HEAD_LETTERS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+/// The labels a page prints, in the order it prints them.
+fn labels_printed(a: Asked) -> List<string> {
+    [l for line in explain_lines(a) for l in some_list(label_shown(line))]
+}
 
 /// What a check of a lib probe reads from the world, by label: its three
 /// texts; the asks that place its manifest and its module; its two
@@ -444,6 +462,34 @@ spec "commands/explain" {
                     fresh: "1",
                 },
             ) == "  check_length's Reference rows: 0 held, 1 fresh"
+        }
+    }
+    given "`--why` of a package, its answers named" {
+        then "every label the page prints is canonical, carries no internal place, and pastes back as exactly that answer" {
+            let root = edited_lib("why_labels")
+            let labels = labels_printed(Asked { target: "", from: root, why: true })
+            labels.contains("Sig(@why_labels.lib.one)") &&
+                labels.contains("Names(@why_labels.lib.one)") &&
+                labels.contains("Analysis(src/lib/a.av)") &&
+                labels
+                    .all(
+                        (label: string) -> !label.contains("@@") &&
+                            !label.contains("(unit ") &&
+                            !label.contains("(bucket ") &&
+                            !label.contains("(Relation ") &&
+                            (explain_lines(Asked { target: label, from: root }).first() ?? "")
+                                .starts_with("${label}  "),
+                    )
+        }
+        then "`--why --json` spells no label the text does not, and no internal place either" {
+            let root = edited_lib("why_json_labels")
+            let said = explain_lines(Asked { target: "", from: root, why: true, json: true })
+                .join("")
+            labels_printed(Asked { target: "", from: root, why: true })
+                    .all((label: string) -> said.contains("\"${label}\"")) &&
+                !said.contains("@@") &&
+                !said.contains("\"unit ") &&
+                !said.contains("\"bucket ")
         }
     }
     given "`--why` of a package, its files read again" {
