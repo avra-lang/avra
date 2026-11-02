@@ -2358,8 +2358,15 @@ impl Workspace {
                 }
             },
             .Facts(d) -> {
-                let f = self.decls.decl(d).file
-                if self.is_held(f) { self.decls.rows_read(f) } else { let _ = self.syntax(d) }
+                let x = self.decls.raw_decl(d)
+                if self.is_held(x.file) {
+                    self.decls.rows_read(x.file)
+                } else if x.standing == 0 && x.home != null ||
+                    self.decls.store(d).stmts.count() <= x.stmt.index {
+                    self.cover_read(r)
+                } else {
+                    let _ = self.syntax(d)
+                }
             },
             .Decl(_) or .SigSoFar(_) or .Methods(_) or .Written(_) or .Errors(_) -> self.cover_read(r),
         }
