@@ -1,10 +1,16 @@
 // proves: a `@query` over a CONTEXT that answers its Db (`query_db()`), keyed
-// by a dense id, answers in the process only — reused while what it read
-// stands, run again once an input it read moves, and never kept for a later
-// process; the same query over the Db alone with a stable key is kept.
-use @std.relation.{query, input}
+// by a dense id its scope names nothing, answers in the process only — reused
+// while what it read stands, run again once an input it read moves, and never
+// kept for a later process; the same query over the Db alone with a stable key
+// is kept, and so is one over a context whose scope names its dense key:
+// restored in a later process, never run — under the context's scope, or
+// under the window `@scoped_by` makes of the call's own seats; a key that
+// holds a dense id crosses through the scope too.
+use @std.relation.{query, input, scoped_by}
 use @std.relation.db.{Db, Durable, durable_db, LEAF_CHUNK}
+use @std.relation.stable.{Scope}
 use @std.meta.{dense}
+use @std.text.{parse_int}
 
 @dense
 type Item = { index: int }
@@ -15,10 +21,46 @@ type Shelf = { db: Db, scale: int }
 impl Shelf {
     fn query_db() -> Db { self.db }
 
-    /// An item no other process can name: its calls stand on what they read.
-    fn item_spelled(_i: Item) -> string? { null }
+    /// The scope an item crosses under: none names it, so its calls stand on what they read.
+    fn query_scope() -> dyn Scope { Nameless {} }
+}
 
-    fn item_numbered(_s: string) -> Item? { null }
+/// A scope that names no id.
+type Nameless = {}
+
+impl Scope for Nameless {
+    fn spelled(_kind: string, _index: int) -> string { "" }
+
+    fn unspelled(_kind: string, _text: string) -> int? { null }
+
+    fn placed(_file: string, _lo: int, _hi: int) -> List<int>? { null }
+
+    fn unplaced(_file: string, _at: List<int>) -> List<int>? { null }
+}
+
+/// A context whose scope names every item, so its calls are kept past the process.
+type Pricer = { db: Db }
+
+impl Pricer {
+    fn query_db() -> Db { self.db }
+
+    fn query_scope() -> dyn Scope { Named {} }
+}
+
+/// A scope that names an item by its number.
+type Named = {}
+
+impl Scope for Named {
+    fn spelled(_kind: string, index: int) -> string { "item ${index}" }
+
+    fn unspelled(_kind: string, text: string) -> int? {
+        if !text.starts_with("item ") { return null }
+        parse_int(text.substring(5, text.length))
+    }
+
+    fn placed(_file: string, _lo: int, _hi: int) -> List<int>? { null }
+
+    fn unplaced(_file: string, _at: List<int>) -> List<int>? { null }
 }
 
 once fn disk() -> Cell<Map<string, Bytes>> { Cell.new({}) }
@@ -51,6 +93,61 @@ fn weighed(s: Shelf, item: Item) -> int {
 }
 
 @query
+fn priced(p: Pricer, item: Item) -> int {
+    counted()
+    base(p.db, "p") * 100 + item.index
+}
+
+/// An answer that holds a dense id: kept through the same scope as its key.
+type Tag = { item: Item, at: int, near: List<Item> }
+
+@query
+fn tagged(p: Pricer, item: Item) -> Tag {
+    counted()
+    Tag { item: item, at: base(p.db, "p"), near: [Item { index: item.index + 1 }] }
+}
+
+/// A scope that names an item by its distance from a base: a call's own window.
+type Window = { base: int }
+
+impl Scope for Window {
+    fn spelled(_kind: string, index: int) -> string { "+${index - self.base}" }
+
+    fn unspelled(_kind: string, text: string) -> int? {
+        if !text.starts_with("+") { return null }
+        let n? = parse_int(text.substring(1, text.length)) else { return null }
+        n + self.base
+    }
+
+    fn placed(_file: string, _lo: int, _hi: int) -> List<int>? { null }
+
+    fn unplaced(_file: string, _at: List<int>) -> List<int>? { null }
+}
+
+/// The window an item's neighbours cross under: counted from the item itself.
+fn item_window(_p: Pricer, item: Item) -> dyn Scope { Window { base: item.index } }
+
+@query
+@scoped_by(item_window)
+fn neighbours(p: Pricer, item: Item) -> Tag {
+    counted()
+    Tag {
+        item: item,
+        at: base(p.db, "p"),
+        near: [Item { index: item.index + 1 }, Item { index: item.index + 2 }],
+    }
+}
+
+/// A key holding a dense id: spelled through the context's scope.
+type Pick = { item: Item, times: int }
+
+@query
+fn picked(p: Pricer, k: Pick) -> int {
+    counted()
+    base(p.db, "p") * k.times + k.item.index
+}
+
+@query
 fn plain(db: Db, k: string) -> int {
     counted()
     base(db, k) + 1
@@ -73,7 +170,31 @@ fn main_run() -> string {
     set_base(later, "p", 5)
     let fresh = weighed(Shelf { db: later, scale: 10 }, Item { index: 3 })
     let read_back = plain(later, "p")
-    "${first} ${again} ${reused} | ${moved} ${ran} | ${p} kept ${kept().get()} | ${fresh} ${read_back} ${computes().get()}"
+    let before_price = computes().get()
+    let price = priced(Pricer { db: later }, Item { index: 4 })
+    let priced_ran = computes().get() - before_price
+    let third = process()
+    set_base(third, "p", 5)
+    let before_again = computes().get()
+    let price_again = priced(Pricer { db: third }, Item { index: 4 })
+    let restored = computes().get() == before_again
+    let tag = tagged(Pricer { db: later }, Item { index: 9 })
+    let before_tag = computes().get()
+    let tag_again = tagged(Pricer { db: third }, Item { index: 9 })
+    let tag_restored = computes().get() == before_tag &&
+        tag_again.item.index == 9 &&
+        tag_again.near[0].index == 10
+    let near = neighbours(Pricer { db: later }, Item { index: 20 })
+    let before_near = computes().get()
+    let near_again = neighbours(Pricer { db: third }, Item { index: 20 })
+    let near_restored = computes().get() == before_near &&
+        near_again.near[1].index == 22 &&
+        near.near[0].index == 21
+    let pick = picked(Pricer { db: later }, Pick { item: Item { index: 3 }, times: 7 })
+    let before_pick = computes().get()
+    let pick_again = picked(Pricer { db: third }, Pick { item: Item { index: 3 }, times: 7 })
+    let pick_restored = computes().get() == before_pick && pick_again == pick
+    "${first} ${again} ${reused} | ${moved} ${ran} | ${p} kept ${kept().get()} | ${fresh} ${read_back} ${computes().get()} | ${price} ${priced_ran} ${price_again} ${restored} ${tag.at} ${tag_restored} ${near_restored} ${pick} ${pick_restored} kept ${kept().get()}"
 }
 
 main_run()
