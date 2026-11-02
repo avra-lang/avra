@@ -3,7 +3,9 @@
 // lets a call re-entered before it settles compute again, a smaller view,
 // where a plain query answers the cycle; and an answer the body leaves
 // `unkept()` reaches its asker and no cell holds it, so the next ask runs
-// again — in both engines
+// again; and a query's doors — `_key` names the cell a call settled in, `_held`
+// peeks its answer, `_seat_of` reads a key's seat back, `_dropped` lets every
+// answer go — in both engines
 use @std.relation.{query, input, codec, recursive}
 use @std.relation.db.{Db, new_db}
 
@@ -71,6 +73,9 @@ fn view(db: Db, k: string) -> int {
 }
 
 @query
+fn doubled(_db: Db, n: int) -> int { n * 2 }
+
+@query
 fn halfway(db: Db, of: string) -> int {
     ran("halfway")
     if width(db, of) < 50 { db.unkept() }
@@ -108,7 +113,16 @@ fn main_run() -> string {
     set_width(db, "z", 20)
     let g2 = bag_shown(db, "z")
     let bagged = "${g1} ${g2} [${since(nb)}]"
-    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${late}] | ${bagged}"
+    let _ = measure(db, "x")
+    let held_x = measure_held(db, "x")?.width ?? -1
+    let held_none = measure_held(db, "never") == null
+    let _ = doubled(db, 7)
+    let seat = doubled_seat_of(db, doubled_key(db, 7)) ?? -1
+    let foreign = doubled_seat_of(db, measure_key(db, "x")) == null
+    measure_dropped(db)
+    let gone = measure_held(db, "x") == null
+    let doors = "${held_x} ${held_none} ${seat} ${foreign} ${gone}"
+    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${late}] | ${bagged} | ${doors}"
 }
 
 main_run()
