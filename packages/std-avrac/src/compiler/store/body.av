@@ -780,9 +780,14 @@ fn sealed_held_at(pack: Pack, s: Sealed, ordinal: int) -> Held? {
     let line? = mapped_at(s.m, s.base + ordinal * LINE, LINE) else { return null }
     let offset = wide_at(line, KEY_OCTETS, OFFSET_OCTETS)
     let length = wide_at(line, KEY_OCTETS + OFFSET_OCTETS, LENGTH_OCTETS)
-    let raw? = mapped_at(s.m, s.base + s.rows.at + offset, length) else { return null }
-    let families? = families_of(s) else { return null }
-    let h? = decoded_row(reader(raw), families, s.rev) else { return null }
+    let at = s.base + s.rows.at + offset
+    let raw = mapped_at(s.m, at, length)
+    let families = families_of(s)
+    let h? = decoded_row(reader(raw ?? "".bytes()), families ?? [], s.rev) else {
+        // a row the index places and that does not read back whole is damage, said once
+        torn_at(pack, at)
+        return null
+    }
     if traced() { qtrace("Q\tstore\trow\t${ordinal}\n") }
     let t = pack.traffic.get()
     pack.traffic.set(t with { rows: t.rows + 1 })
@@ -928,14 +933,24 @@ fn tables_of_rev(pack: Pack, rev: int) -> Tables? {
 fn tables_for(pack: Pack, s: Sealed) -> Tables? {
     let known = pack.tables.get().get("${s.rev}")
     if known != null { return known }
+    let made? = tables_read(s) else {
+        // a body whose tables do not read back whole is damage, said once
+        torn_at(pack, s.base)
+        return null
+    }
+    pack.tables.put("${s.rev}", made)
+    made
+}
+
+/// A run's tables read back from its sections, each held to its check; absent when any
+/// does not decode whole.
+fn tables_read(s: Sealed) -> Tables? {
     let n? = names_from(section_of(s, s.names) ?? "".bytes()) else { return null }
     let reads? = reads_from(n, section_of(s, s.reads) ?? "".bytes()) else { return null }
     let sets? = sets_from(section_of(s, s.sets) ?? "".bytes()) else { return null }
     let holders? = holders_from(section_of(s, s.holders) ?? "".bytes()) else { return null }
     if holders.length != sets.length() || holders.any((ords) -> ords.any(it >= s.count)) { return null }
-    let made = Tables { reads: reads, sets: sets, holders: holders, named: list_cell() }
-    pack.tables.put("${s.rev}", made)
-    made
+    Tables { reads: reads, sets: sets, holders: holders, named: list_cell() }
 }
 
 // ── Reading ──

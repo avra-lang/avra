@@ -452,7 +452,7 @@ fn claimed(
     stamp: int,
 ) {
     let at = record_key(family, key)
-    let prior = claims.get().get(at)
+    let prior = claims.get().get(at) ?? sealed_claim(pack, at)
     if prior != null {
         let was = prior!
         if was.digest != digest && was.writer != writer {
@@ -468,6 +468,16 @@ fn claimed(
     if standing != null && standing!.stamp > stamp { return }
     pack.records.put(at, listed_row(family, key, digest, read, stamp))
     pack.pending.put(at, true)
+}
+
+/// The claim a sealed run makes for a key, its writer named by the run: a segment that
+/// names another value for the key conflicts with the body as with another segment.
+fn sealed_claim(pack: Pack, at: string) -> Claim? {
+    for s in pack.sealed.get() {
+        let h? = sealed_held(pack, s, at) else { continue }
+        return Claim { digest: h.digest, writer: "body-${s.rev}" }
+    }
+    null
 }
 
 /// A record folded in without a claim: this process's own writes are the only
@@ -517,7 +527,8 @@ fn segments(dir: string) -> List<string> {
 /// process, so a writer that seals again does not wait on itself. A process
 /// that cannot take the lock says it skipped and returns without sealing.
 fn admit(pack: Pack) {
-    if pack.lock_fd.get() < 0 && !locked(pack) { return }
+    // a process refused the lock once does not ask again: the holder seals what it has
+    if pack.lock_fd.get() < 0 && (pack.skipped.get() || !locked(pack)) { return }
     // LICENSED input.store_clock: a seal's cost, said under the trace, never an input of what is built
     let began = now_ns()
     if seal(pack) {
