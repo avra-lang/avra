@@ -11,7 +11,17 @@
 //! A table that SPOKE has no wire: a `Diag` carries a `dyn Error` chain no process rebuilds, so
 //! `facts_encoded_in` answers null, its saver files no row, and a restored body says nothing it
 //! did not say when it was typed.
-use core.{DeclId, TypeId, FileId, ExprId, SideTable, SeatMark, side_table_of}
+use core.{
+    DeclId,
+    TypeId,
+    FileId,
+    ExprId,
+    SideTable,
+    SeatMark,
+    side_table_of,
+    expr_window,
+    stmt_window,
+}
 use features.{TypeFacts, Asked, Sub, ParamScope, RunChoice, PipeStage}
 use diagnostics.{no_voices}
 use compiler.{Workspace}
@@ -300,7 +310,7 @@ fn written_column<V>(
     each: fn(Writer, V) -> void,
 ) {
     w.text(t.name)
-    written_dense(w, scope, kind, t.lo)
+    written_dense(w, scope, kind, t.lo())
     each(w, t.seed)
     written_list(w, t.cells, each)
 }
@@ -315,7 +325,14 @@ fn read_column<V>(
     let lo = dense_read(r, scope, kind, (i: int) -> i)?
     let seed = each(r)?
     let cells = read_list(r, each)?
-    .Ok(side_table_of(name, lo, cells, seed))
+    .Ok(
+        side_table_of(
+            name,
+            if kind == "StmtId" { stmt_window(lo) } else { expr_window(lo) },
+            cells,
+            seed,
+        ),
+    )
 }
 
 /// Every column of a body's typing table, in declaration order, under one walk.
