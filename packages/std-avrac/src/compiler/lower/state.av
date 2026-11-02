@@ -231,11 +231,12 @@ impl LowerCx {
 
     /// A declaration's body under an instantiation, as the symbol a
     /// call or an address names — enqueued on first sight, so the
-    /// program lowers exactly what it reaches. A substitution reaches a
-    /// GENERIC body alone: a plain declaration is one body under any
-    /// caller's, so it wears its own symbol and stays its file's content.
+    /// program lowers exactly what it reaches. A substitution's types reach
+    /// a GENERIC body alone: a plain declaration is one body under any
+    /// caller's types, so it wears its own symbol and stays its file's
+    /// content. Its settled seats still make a body of their own.
     fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
-        let own = if self.view.decls.generic(d) { sub } else { null }
+        let own = self.reaching(d, sub)
         let sym = self.view.decls.symbol(d)
         let name = if own == null { sym } else { self.view.decls.mangle(sym, own!) }
         self.jobs.callees.set(name, d)
@@ -255,6 +256,14 @@ impl LowerCx {
                 )
         }
         name
+    }
+
+    /// What of `sub` reaches `d`'s body: all of it for a generic one; for a plain one, only the
+    /// settled seats, when there are any.
+    fn reaching(d: DeclId, sub: Sub?) -> Sub? {
+        let s? = sub else { return null }
+        if self.view.decls.generic(d) { return s }
+        if s.consts.is_empty() { null } else { s with { args: [] } }
     }
 
     /// The settled seats a call carries into its unit: each `const`
