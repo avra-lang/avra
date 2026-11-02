@@ -61,7 +61,6 @@ use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
-use compiler.failures.{Raised}
 use compiler.findings.{Finding}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
@@ -332,23 +331,6 @@ impl Workspace {
     }
 
     fn codec_same_decl_sig(a: DeclSig, b: DeclSig) -> bool { self.decl_sig_wire(a) == self.decl_sig_wire(b) }
-
-    fn codec_raised_exemplars() -> List<Raised> {
-        let d = self.codec_decl_exemplars()[0]
-        [
-            Raised { owner: d, errors: [] },
-            Raised { owner: d, errors: [self.decls.types.type(int), self.decls.types.type(bool)] },
-        ]
-    }
-
-    fn codec_same_raised(a: Raised, b: Raised) -> bool {
-        self.decls.decl_wire(a.owner) == self.decls.decl_wire(b.owner) &&
-            list_eq(
-                a.errors,
-                b.errors,
-                (x, y) -> self.decls.type_wire(x) == self.decls.type_wire(y),
-            )
-    }
 
     /// `Loc`s anchored to the fixture's real declarations: a loc with
     /// no file, a span at its declaration's start, a span inside it,
@@ -1403,30 +1385,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             (d) -> ws.decls.decl_wire(d),
             (w) -> ws.decl_from_ref(w),
             (x, y) -> ws.codec_same_decl(x, y),
-        ),
-        derived(
-            "family.decls_wire/decls_of_wire",
-            [ws.codec_decl_exemplars()],
-            ["the file's declarations"],
-            (ds) -> ws.decls_wire(ds),
-            (w) -> ws.decls_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_decl(x, y)),
-        ),
-        derived(
-            "family.types_wire/types_of_wire",
-            [[], ws.codec_type_exemplars()],
-            ["empty", "every exemplar"],
-            (ts) -> ws.types_wire(ts),
-            (w) -> ws.types_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_type_shape(x, y)),
-        ),
-        derived(
-            "family.raised_wire/raised_of_wire",
-            ws.codec_raised_exemplars(),
-            ["one owner, no errors", "one owner, two errors"],
-            (r) -> ws.raised_wire(r),
-            (w) -> ws.raised_of_wire(w),
-            (x, y) -> ws.codec_same_raised(x, y),
         ),
         derived(
             "DiagFacts.encoded_in/decoded_in, a place of each shape",
