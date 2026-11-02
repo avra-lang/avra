@@ -1086,7 +1086,7 @@ if section abw; then
 # hit, or the case would be testing a fresh derive.
 mkdir -p $R/abw/src
 printf '[package]\nname = "rt-abw"\nversion = "0.1.0"\n' > $R/abw/avra.toml
-printf 'fn f(mut a: int) -> int { a }\nprintln("${f(1)}")\n' > $R/abw/src/main.av
+printf 'fn f(mut a: int) -> int { a }\nmut v = 1\nprintln("${f(v)}")\n' > $R/abw/src/main.av
 AW() { # AW <label> <the line the warning is reported at> <hit|miss>
     steps=$((steps+1)); holds=$((holds+1)); aw_out=$(./avra check --time $R/abw 2>&1)
     aw_line=$(printf '%s\n' "$aw_out" | grep -a -o 'main.av:[0-9]*' | head -1)
