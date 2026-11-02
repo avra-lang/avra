@@ -39,6 +39,7 @@ use core.{
     FileId,
     SeatMark,
     Span,
+    Worded,
 }
 use features.{
     implements_kind,
@@ -55,7 +56,7 @@ use features.{
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
 use compiler.host.{Host}
-use @std.meta.{code_hash}
+use @std.meta.{code_hash, derive}
 use @std.path.{relative_path}
 
 impl Workspace {
@@ -278,25 +279,8 @@ export fn read_fields(line: string) -> List<string> {
 
 /// THE SHAPE WORD — a declaration line's first column. A header line
 /// ("file"/"import"/"gathers"/"iface"/"bytes") is not a declaration and has none.
+@derive(Worded)
 enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern, Collect, State }
-
-fn shape_of(word: string) -> Shape? {
-    match word {
-        "struct" -> .Struct,
-        "boxed" -> .Boxed,
-        "enum" -> .Enum,
-        "named" -> .Named,
-        "alias" -> .Alias,
-        "const" -> .Const,
-        "aims" -> .Aims,
-        "opaque" -> .Opaque,
-        "fn" -> .Fn,
-        "extern" -> .Extern,
-        "collect" -> .Collect,
-        "state" -> .State,
-        _ -> null,
-    }
-}
 
 /// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
 /// (interface.av, the one writer). `payload` is what is left past the facts
@@ -310,7 +294,7 @@ type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool
 /// runs over a whole record, over the one row a caller already has in hand.
 fn read_row(parts: List<string>) -> Row? {
     if parts.length < 13 || nameless(parts) { return null }
-    let shape? = shape_of(parts[0]) else { return null }
+    let shape? = worded_Shape(parts[0]) else { return null }
     let ordinal? = wire_number(parts[2]) else { return null }
     let stmt? = wire_number(parts[3]) else { return null }
     let parent_at? = wire_number(parts[8]) else { return null }
@@ -345,7 +329,7 @@ impl Row {
 /// that does not.
 fn shaped_of(line: string) -> RowShape? {
     let parts = line.split("\t")
-    let shape? = shape_of(parts[0]) else { return null }
+    let shape? = worded_Shape(parts[0]) else { return null }
     RowShape { shape: shape, payload: parts.drop(1) }
 }
 
@@ -2066,7 +2050,7 @@ fn wired_files(row: List<string>) -> List<string> {
 /// goes, a `dyn` box's vtable included. Null for every other line.
 fn aimed_file(row: List<string>) -> string? {
     if row.length <= 13 { return null }
-    let shape? = shape_of(row[0]) else { return null }
+    let shape? = worded_Shape(row[0]) else { return null }
     match shape { .Aims -> wire_fields(row[13], "~")[0], _ -> null }
 }
 

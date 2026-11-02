@@ -1,0 +1,36 @@
+//! `@derive(Worded)` — a payload-free enum read from its words. Each
+//! such variant is written as its lowercased name, and `worded_<Enum>`
+//! answers the variant a word spells, or null for a word none does. A
+//! variant that carries a payload is no word's.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
+//! TYPES the file that declares it.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Stmts, literal}
+use @std.text.{ascii_lower}
+
+/// The compiler's derive for an enum read from its words.
+export trait Worded {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    export fn ${"worded_${t.name}"}(text: string) -> ${t}? {
+                        ${chain([arm(v) for v in t.variants.filter(it.fields.is_empty())])}
+                        null
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// One variant's test: the word that spells it.
+fn arm(v: MetaVariant) -> Stmts {
+    quote { if text == ${literal(ascii_lower(v.name))} { return .${v} } }
+}
+
+/// The tests as one run of statements.
+fn chain(arms: List<Stmts>) -> Stmts { quote { ${..arms} } }
