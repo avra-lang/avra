@@ -30,6 +30,8 @@ concurrency:
 permissions:
   contents: read
   packages: read
+  # a lane keeps one save: the one before is deleted once the new one stands
+  actions: write
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,9 +86,10 @@ jobs:
           restore-keys: |
             lane-${{ steps.order.outputs.lane }}-${{ steps.order.outputs.key }}-
             ${{ steps.order.outputs.key }}
-            lane-${{ steps.order.outputs.lane }}-
+            lane-${{ steps.order.outputs.lane }}-avrac-
             avrac-
           full: ${{ steps.order.outputs.full }}
+          rungs: ${{ steps.order.outputs.full == '1' }}
       - name: libraries
         timeout-minutes: 15
         run: |
@@ -106,6 +109,7 @@ jobs:
       - if: always() && steps.compiler.outcome == 'success'
         uses: ./.github/actions/prune-cache
       - if: always() && steps.compiler.outcome == 'success'
+        id: save
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -113,3 +117,22 @@ jobs:
             build/avra
             .avra-cache
           key: lane-${{ steps.order.outputs.lane }}-${{ steps.order.outputs.key }}-${{ github.run_id }}
+      # ONE SAVE PER LANE: the repository's caches share one cap, and main's compiler is among them.
+      - if: always() && steps.save.outcome == 'success'
+        name: drop the lane's older saves
+        continue-on-error: true
+        env:
+          PREFIX: lane-${{ steps.order.outputs.lane }}-avrac-
+          KEEP: -${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          api = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches"
+          head = {"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json"}
+          ask = lambda url, method="GET": urllib.request.urlopen(urllib.request.Request(url, headers=head, method=method))
+          caches = json.load(ask(f"{api}?key={os.environ['PREFIX']}&per_page=100"))["actions_caches"]
+          for c in caches:
+              if c["key"].startswith(os.environ["PREFIX"]) and not c["key"].endswith(os.environ["KEEP"]):
+                  ask(f"{api}/{c['id']}", "DELETE")
+                  print(f"dropped {c['key']}")
+          PY

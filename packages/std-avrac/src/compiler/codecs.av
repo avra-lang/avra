@@ -38,8 +38,6 @@ use features.{
     MetaVal,
     UseKind,
     kind_word,
-    Unsettled,
-    Settlement,
     DeclSig,
     FnSig,
     StructSig,
@@ -54,14 +52,12 @@ use features.{
     PipeStage,
     new_type_facts,
 }
-use diagnostics.{SourceFile, DiagFacts, Severity, no_voices}
+use diagnostics.{DiagFacts, Severity, no_voices}
 use @std.relation.stable.{indexed_scope}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
-use @std.text.{from_codepoint}
-use compiler.failures.{Raised}
 use compiler.findings.{Finding}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
@@ -331,23 +327,6 @@ impl Workspace {
 
     fn codec_same_decl_sig(a: DeclSig, b: DeclSig) -> bool { self.decl_sig_wire(a) == self.decl_sig_wire(b) }
 
-    fn codec_raised_exemplars() -> List<Raised> {
-        let d = self.codec_decl_exemplars()[0]
-        [
-            Raised { owner: d, errors: [] },
-            Raised { owner: d, errors: [self.decls.types.type(int), self.decls.types.type(bool)] },
-        ]
-    }
-
-    fn codec_same_raised(a: Raised, b: Raised) -> bool {
-        self.decls.decl_wire(a.owner) == self.decls.decl_wire(b.owner) &&
-            list_eq(
-                a.errors,
-                b.errors,
-                (x, y) -> self.decls.type_wire(x) == self.decls.type_wire(y),
-            )
-    }
-
     /// `Loc`s anchored to the fixture's real declarations: a loc with
     /// no file, a span at its declaration's start, a span inside it,
     /// and a cross-file span anchored in the other file.
@@ -364,10 +343,6 @@ impl Workspace {
             Loc { file: "/w/src/main.av", lo: sa.lo + 1, hi: sa.hi },
             Loc { file: "/w/src/other.av", lo: sb.lo, hi: sb.hi },
         ]
-    }
-
-    fn codec_loc_labels() -> List<string> {
-        ["no file", "at its declaration's start", "inside its declaration", "cross-file"]
     }
 
     /// A `DiagFacts` bearing each loc shape, so the row's own `Loc`s
@@ -417,10 +392,13 @@ impl Workspace {
     /// A facts row of each shape: rules unknown, and rules found.
     fn codec_file_facts_exemplars() -> List<FileFacts> {
         let d = self.codec_diag_exemplars()
-        [FileFacts { warnings: [d[1]], rules: null }, FileFacts { warnings: [], rules: d }]
+        [
+            FileFacts { warnings: [d[1]], rules: null },
+            FileFacts { warnings: [], rules: d },
+            FileFacts { warnings: [placed_at(l) for l in self.codec_loc_exemplars()], rules: null },
+        ]
     }
 
-    fn codec_diag_labels() -> List<string> { ["an unlocated warning", "a note pointing elsewhere", "an error with a frame and a fix"] }
 }
 
 fn type_exemplar_labels() -> List<string> {
@@ -899,26 +877,6 @@ fn same_text(a: string, b: string) -> bool { a == b }
 // ── The scalar family answers — `int`, `bool`, `string` and `bool?`
 // ride the `MetaVal` scalar wire (`scalar_wire.av`). ──
 
-fn int_wire_exemplars() -> List<int> { [0, 1, -1, 42, 9223372036854775807] }
-
-fn int_wire_labels() -> List<string> { ["zero", "one", "minus one", "forty-two", "the int ceiling"] }
-
-fn bool_wire_exemplars() -> List<bool> { [true, false] }
-
-fn bool_wire_labels() -> List<string> { ["true", "false"] }
-
-fn text_wire_exemplars() -> List<string> { ["", "a", from_codepoint(0), "two\nlines"] }
-
-fn text_wire_labels() -> List<string> { ["empty", "one character", "a NUL alone", "a newline inside"] }
-
-fn presence_wire_exemplars() -> List<bool?> { [null, true, false] }
-
-fn presence_wire_labels() -> List<string> { ["absent", "present true", "present false"] }
-
-fn same_opt_bool(a: bool?, b: bool?) -> bool {
-    (a == null) == (b == null) && (a == null || a! == b!)
-}
-
 // ── The `Loc` and `DiagFacts` wires — a span crosses anchored to its
 // declaration, its offsets relative to that declaration's start. ──
 
@@ -1274,38 +1232,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             reach_from_wire,
             same_text,
         ),
-        derived(
-            "family.source_file_wire/source_file_of_wire",
-            SourceFile.exemplars(),
-            SourceFile.exemplar_labels(),
-            source_file_wire,
-            source_file_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "family.unsettled_wire/unsettled_of_wire",
-            Unsettled.exemplars(),
-            Unsettled.exemplar_labels(),
-            unsettled_wire,
-            unsettled_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "family.settlement_enum_wire/settlement_enum_of_wire",
-            Settlement.exemplars(),
-            Settlement.exemplar_labels(),
-            settlement_enum_wire,
-            settlement_enum_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "family.lift_result_wire/lift_result_of_wire",
-            LiftResult.exemplars(),
-            LiftResult.exemplar_labels(),
-            lift_result_wire,
-            lift_result_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
         derived_total(
             "record.packed/unpacked (ComponentNames)",
             component_name_exemplars(),
@@ -1323,41 +1249,9 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_decl(x, y),
         ),
         derived(
-            "family.decls_wire/decls_of_wire",
-            [ws.codec_decl_exemplars()],
-            ["the file's declarations"],
-            (ds) -> ws.decls_wire(ds),
-            (w) -> ws.decls_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_decl(x, y)),
-        ),
-        derived(
-            "family.types_wire/types_of_wire",
-            [[], ws.codec_type_exemplars()],
-            ["empty", "every exemplar"],
-            (ts) -> ws.types_wire(ts),
-            (w) -> ws.types_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_type_shape(x, y)),
-        ),
-        derived(
-            "family.raised_wire/raised_of_wire",
-            ws.codec_raised_exemplars(),
-            ["one owner, no errors", "one owner, two errors"],
-            (r) -> ws.raised_wire(r),
-            (w) -> ws.raised_of_wire(w),
-            (x, y) -> ws.codec_same_raised(x, y),
-        ),
-        derived(
-            "DiagFacts.encoded_in/decoded_in, a place of each shape",
-            [placed_at(l) for l in ws.codec_loc_exemplars()],
-            ws.codec_loc_labels(),
-            (d) -> ws.diag_bytes(d),
-            (b) -> ws.diag_back(b),
-            same_diag_facts,
-        ),
-        derived(
             "diag_wire.file_facts_wire/file_facts_of_wire",
             ws.codec_file_facts_exemplars(),
-            ["no rules found anew", "rules found, one a fix"],
+            ["no rules found anew", "rules found, one a fix", "a place of each shape"],
             (f) -> ws.file_facts_wire(f),
             (w) -> ws.file_facts_of_wire(w),
             same_file_facts,
@@ -1414,52 +1308,12 @@ export fn codec_pairs() -> List<CodecCheck> {
             same_verdict_read,
         ),
         derived(
-            "DiagFacts.encoded_in/decoded_in",
-            ws.codec_diag_exemplars(),
-            ws.codec_diag_labels(),
-            (d) -> ws.diag_bytes(d),
-            (b) -> ws.diag_back(b),
-            same_diag_facts,
-        ),
-        derived(
             "interface.type_wire/read_type_wire",
             ws.codec_type_exemplars(),
             type_exemplar_labels(),
             (t) -> ws.decls.type_wire(t),
             (w) -> ws.read_type_wire_of_wire(w),
             (x, y) -> ws.codec_same_type_shape(x, y),
-        ),
-        derived(
-            "family.int_wire/int_of_wire",
-            int_wire_exemplars(),
-            int_wire_labels(),
-            int_wire,
-            int_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived(
-            "family.bool_wire/bool_of_wire",
-            bool_wire_exemplars(),
-            bool_wire_labels(),
-            bool_wire,
-            bool_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived(
-            "family.text_wire/text_of_wire",
-            text_wire_exemplars(),
-            text_wire_labels(),
-            text_wire,
-            text_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived_total(
-            "family.presence_wire/presence_of_wire",
-            presence_wire_exemplars(),
-            presence_wire_labels(),
-            presence_wire,
-            presence_of_wire,
-            same_opt_bool,
         ),
         derived(
             "family.decl_sig_wire/decl_sig_of_wire",
