@@ -77,7 +77,7 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query, scoped_by, digested_with, recursive}
+use @std.relation.{query, scoped_by, recursive}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
@@ -107,7 +107,6 @@ fn diags_fingerprint(out: List<Diag>) -> int {
 @query
 @recursive
 @scoped_by(body_scope)
-@digested_with(typed_digest)
 fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
     let x = ws.decls.decl(d)
     mut t = ws.type_cx_for(x)
@@ -121,12 +120,6 @@ fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
 fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
     let x = ws.decls.decl(d)
     ws.facts_scope(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo })
-}
-
-/// What readers of a body's typing cut off on: where its facts sit and what they say. The facts
-/// carry arena ids, so a shift that leaves `syntax(d)` and `names(d)` alike still moves it.
-fn typed_digest(ws: Workspace, d: DeclId, facts: TypeFacts) -> int {
-    fp(123, [ws.placed(d), TypeFacts.digest_in(ws.facts_scope(0, 0), facts)])
 }
 
 /// A file's method-table clashes, kept for its analysis; the answer is what they say.
