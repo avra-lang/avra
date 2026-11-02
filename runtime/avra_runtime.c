@@ -328,6 +328,18 @@ static Site g_copy_sites[SITES];
 static int64_t g_copy_slots = 0;
 static int g_sites_census = 0;
 
+// Elements copied by concat, slice and extend, charged to the Avra fn that asked: a copy is
+// one call in `copy`, and its length is what a quadratic accumulation spends.
+static Site g_append_sites[SITES];
+static int64_t g_append_slots = 0;
+static void* g_append_site = NULL;
+
+static void note_appended(int64_t n) {
+    if (!g_sites_census || n <= 0) return;
+    Site* s = site_in(g_append_sites, &g_append_slots, g_append_site);
+    if (s) s->made += n;
+}
+
 static void note_push(void* site) {
     if (!g_sites_census) return;
     Site* s = site_in(g_push_sites, &g_push_slots, site);
@@ -509,6 +521,7 @@ static void acc_report(void) {
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
         report_made("copy", g_copy_sites, 12, slide);
+        report_made("append", g_append_sites, 16, slide);
         report_made("push", g_push_sites, 16, slide);
         report_made("retain", g_retain_sites, 20, slide);
     }
@@ -2864,6 +2877,7 @@ void* avra_array_pop_owned(void* arr) {
 // `src`'s slots from lo up to hi appended to `out`, owned ones
 // retained — a copy holds its own references.
 static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
+    CENSUS(note_appended(hi - lo));
     for (int64_t i = lo; i < hi; i++) {
         if (src->marks[i] & MARK_OWNED) {
             avra_array_push_owned(out, (void*)(uintptr_t)src->data[i]);
@@ -2876,6 +2890,7 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
 
 // A fresh list: `a`'s slots, then `b`'s. Owned.
 void* avra_array_concat(void* a, void* b) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     CENSUS(note_copy(AVRA_CALLER()));
     void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
     g_clone_site = site;
@@ -2889,6 +2904,7 @@ void* avra_array_concat(void* a, void* b) {
 // A fresh list of the slots from lo up to hi, clamped to the list;
 // nothing when lo is not below hi. Owned.
 void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
@@ -2932,6 +2948,7 @@ void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
 
 // `a`'s slots then `b`'s, onto `a` when it is held alone.
 void* avra_array_concat_reusing(void* a, void* b) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     if (a == b || !sole_array(a)) {
         g_clone_site = AVRA_CALLER();
         void* out = avra_array_concat(a, b);
@@ -2948,6 +2965,7 @@ void* avra_array_concat_reusing(void* a, void* b) {
 // `src`'s slots appended to `dst`, owned ones retained; `dst` is
 // grown once, for all of them.
 void avra_array_extend(void* dst, void* src) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* s = (AvraArray*)src;
     avra_array_reserve(dst, s->len);
     array_append(dst, s, 0, s->len);
