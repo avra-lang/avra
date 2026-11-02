@@ -23,6 +23,7 @@ use core.{
     traced,
 }
 use features.{Wanted}
+use @std.relation.{query}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes, make_dirs, remove}
 use @std.text.{parse_int, from_codepoint}
@@ -611,17 +612,8 @@ impl Workspace {
     /// and nothing here keeps a memo across the one key this answers.
     fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
 
-    /// A file's text as one digest, through its Text input: kept per read of
-    /// that input, so a turn that reads the file again digests the text it read.
-    fn text_digest(path: string) -> string {
-        let octets = self.listed_octets(path)
-        let at = "${self.octets_word(path)}\t${path}"
-        let known: string? = self.keys.text_digests.get().get(at)
-        if known != null { return known! }
-        let made = "${octets.length}.${digest_of_octets(octets)}"
-        self.keys.text_digests.put(at, made)
-        made
-    }
+    /// A file's text as one digest, through its Text input.
+    fn text_digest(path: string) -> string { text_digest_of(self, path) }
 
     /// Whether a body's home cannot emit it: the home is held, so its object
     /// is the store's.
@@ -1102,4 +1094,12 @@ fn wasm_unsupported(names: List<string>) -> string {
 fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
     // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
     avra_spawn_status(tool, words) == 0
+}
+
+/// A file's text as one digest, its octets read through the door: asked again only when the
+/// file's bytes move.
+@query
+fn text_digest_of(ws: Workspace, path: string) -> string {
+    let octets = ws.listed_octets(path)
+    "${octets.length}.${digest_of_octets(octets)}"
 }

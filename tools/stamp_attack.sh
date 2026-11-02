@@ -7,9 +7,9 @@
 #
 #   sh tools/stamp_attack.sh
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 A=$(pwd)/avra
-R=build/stamp-attack; fails=0; cases=0
+R=build/stamp-attack; cases=0
 rm -rf "$R" && mkdir -p "$R"
 
 # Build `$1` with leaf `$2` and unrelated `$3`; run it as print `$5` in store `$4`, keeping

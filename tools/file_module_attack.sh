@@ -4,7 +4,7 @@
 # reader in another module keys on the root's record: insert a field before the one it
 # reads and the reader must lower again, or its kept object reads the old slot.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 
 R=build/file-module
 who=file-module-attack
