@@ -49,6 +49,8 @@ use features.{
     RunChoice,
     PipeStage,
     new_type_facts,
+    Settlement,
+    Unsettled,
 }
 use diagnostics.{Diag, Severity, no_voices}
 use @std.relation.stable.{indexed_scope}
@@ -883,7 +885,7 @@ fn use_kind_labels() -> List<string> { ["call", "method call", "read", "write", 
 
 fn same_use_kind(a: UseKind, b: UseKind) -> bool { a == b }
 
-// ── `reach_wire`/`reach_from_wire` — a refusal's words, framed. ──
+// ── a refusal's words, kept with its settlement ──
 
 fn reach_exemplars() -> List<string> { ["", "reads the clock", "a\tb\nc", "R1 inside the words"] }
 
@@ -1193,11 +1195,12 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> x.codec_same(y),
         ),
         derived(
-            "settlement_wire.settled_wire/settled_from_wire",
-            Settled.exemplars(),
-            Settled.exemplar_labels(),
-            settled_wire,
-            settled_from_wire,
+            "kept_settle.kept_text/settlement_of_text",
+            [Settlement.Held(Settled.exemplars()[0] with { ran: [] })]
+                .concat([Settlement.Refused(Unsettled.Reach(w)) for w in reach_exemplars()]),
+            ["a held value"].concat(reach_labels()),
+            kept_text,
+            settlement_of_text,
             (x, y) -> x.codec_same(y),
         ),
         derived(
@@ -1287,14 +1290,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             use_kind_word,
             use_kind_of_word,
             same_use_kind,
-        ),
-        derived(
-            "settlement_wire.reach_wire/reach_from_wire",
-            reach_exemplars(),
-            reach_labels(),
-            reach_wire,
-            reach_from_wire,
-            same_text,
         ),
         derived_total(
             "record.packed/unpacked (ComponentNames)",
