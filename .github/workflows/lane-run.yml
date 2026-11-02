@@ -1,0 +1,115 @@
+# A LANE'S RUN (`sh tools/work run <cmd>`): one command over a lane's worktree as it stands, on a
+# GitHub runner. The client snapshots the worktree, uncommitted files included, as one commit on
+# `run/<lane>` and pushes it. The push is the order: the commit's message names the command and its
+# bound. The compiler comes from the same action checks.yml's prepare uses (.github/actions/compiler).
+# The job's status is the command's, and its exact code is the log's `lane-run: status <n>` line.
+#
+# ONE REF PER LANE keeps the lane warm: a cache is scoped to its ref, so `run/<lane>` restores what
+# its last run saved (the compiler and its store) and main's own compiler caches beside it.
+name: lane-run
+
+on:
+  push:
+    branches: ["run/**"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: the commit to run over
+        required: true
+      cmd:
+        description: the command, as a shell line
+        required: true
+      minutes:
+        description: the command's bound
+        default: "15"
+
+concurrency:
+  group: lane-run-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      options: --cap-add=SYS_PTRACE
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 20
+      # THE ORDER: the snapshot's message (`lane: `, `minutes: `, `builder: <key>`, `cmd-b64: `), or the dispatch's inputs.
+      - id: order
+        name: order
+        env:
+          CMD: ${{ inputs.cmd }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          msg=$(git log -1 --format=%B)
+          field() { printf '%s\n' "$msg" | sed -n "s/^$1: //p" | head -n 1; }
+          if [ -n "$CMD" ]; then cmd=$CMD; minutes=${MINUTES:-15}; lane=dispatch; builder=; else
+            cmd=$(field cmd-b64 | base64 -d); minutes=$(field minutes); lane=$(field lane); builder=$(field builder)
+          fi
+          [ -n "$cmd" ] || { echo "::error::the run names no command"; exit 64; }
+          case $minutes in '' | *[!0-9]*) minutes=15 ;; esac
+          key=$(sh tools/compiler_paths.sh --key)
+          full=1
+          # `builder: <key>` — the merge-base's published compiler stands, and this tree's is never built.
+          if [ -n "$builder" ]; then key=$builder; full=0; fi
+          printf '%s' "$cmd" | base64 -w0 > "$RUNNER_TEMP/cmd.b64"
+          {
+            echo "lane=$lane"
+            echo "minutes=$minutes"
+            echo "key=avrac-$key"
+            echo "full=$full"
+          } >> "$GITHUB_OUTPUT"
+          echo "lane-run: $lane, bound ${minutes} min, compiler avrac-$key$([ "$full" = 1 ] || echo ' (builder)'): $(printf '%s' "$cmd" | head -n 1 | cut -c1-200)"
+      # THE LANE'S OWN SAVE FIRST, then main's for this key, then the lane's newest, then main's newest.
+      - id: compiler
+        uses: ./.github/actions/compiler
+        timeout-minutes: 56
+        with:
+          key: ${{ steps.order.outputs.key }}
+          cache-key: lane-${{ steps.order.outputs.lane }}-${{ steps.order.outputs.key }}-${{ github.run_id }}
+          restore-keys: |
+            lane-${{ steps.order.outputs.lane }}-${{ steps.order.outputs.key }}-
+            ${{ steps.order.outputs.key }}
+            lane-${{ steps.order.outputs.lane }}-
+            avrac-
+          full: ${{ steps.order.outputs.full }}
+      - name: libraries
+        timeout-minutes: 15
+        run: |
+          s=0
+          eval "$(sh tools/work libs-step)"
+          exit "$s"
+      # THE COMMAND, bounded: `timeout` answers 124 past the bound, as a Sprite's run does.
+      - name: command
+        run: |
+          export LLVM_PREFIX=/usr/lib/llvm-22
+          export AVRA_CAP_MB=$(awk '/^MemTotal:/ { print int($2 / 1024) - 1200 }' /proc/meminfo)
+          base64 -d "$RUNNER_TEMP/cmd.b64" > "$RUNNER_TEMP/cmd.sh"
+          st=0
+          timeout -k 10 "$(( ${{ steps.order.outputs.minutes }} * 60 ))" bash -l "$RUNNER_TEMP/cmd.sh" || st=$?
+          echo "lane-run: status $st"
+          exit "$st"
+      - if: always() && steps.compiler.outcome == 'success'
+        uses: ./.github/actions/prune-cache
+      - if: always() && steps.compiler.outcome == 'success'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            build/avra
+            .avra-cache
+          key: lane-${{ steps.order.outputs.lane }}-${{ steps.order.outputs.key }}-${{ github.run_id }}
