@@ -17,7 +17,7 @@ fn named(ws: Workspace, path: string, name: string) -> DeclId {
     ws.decls.decls_of_file(f).find((d) -> ws.decls.decl(d).name == name)!
 }
 
-fn spelled(ws: Workspace, path: string, name: string) -> string { ws.decl_id_spelled(named(ws, path, name)) ?? "" }
+fn spelled(ws: Workspace, path: string, name: string) -> string { ws.query_scope().spelled("DeclId", named(ws, path, name).index) }
 
 fn two_files() -> Workspace {
     package(
@@ -37,7 +37,7 @@ spec "compiler/settlement_wire — a declaration's durable name keys a query pas
         then "each spelling names its own declaration again" {
             let ws = two_files()
             let d = named(ws, "/w/src/b.av", "x")
-            ws.decl_id_numbered(spelled(ws, "/w/src/b.av", "x"))?.index ?? -1 == d.index
+            ws.query_scope().unspelled("DeclId", spelled(ws, "/w/src/b.av", "x")) ?? -1 == d.index
         }
     }
     given "a declaration beside one that is renamed" {
@@ -62,7 +62,7 @@ spec "compiler/settlement_wire — a declaration's durable name keys a query pas
             )
             let ws = package({"/w/src/a.av": "fn x() -> int { 1 }\n"})
             let _ = named(ws, "/w/src/a.av", "x")
-            ws.decl_id_numbered(gone) == null
+            ws.query_scope().unspelled("DeclId", gone) == null
         }
     }
 }

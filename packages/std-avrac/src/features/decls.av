@@ -8,6 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
+use @std.relation.stable.{indexed_scope}
 use core.{
     ComponentParts,
     Record,
@@ -92,6 +93,7 @@ use features.{
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation, codec}
+use @std.relation.stable.{indexed_scope}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -179,8 +181,8 @@ fn run_named(f: FileId, maker: string) -> string { "${f.index} ${maker}" }
 /// `@name(args)` recorded as a declaration's own fact: its callee's name, each
 /// argument's literal value (its written text AND the kind it was written as —
 /// a `by` key compares the kind, never the text), and where it was written.
-@derive(Fingerprint)
 @derive(Exemplar)
+@codec
 export type AnnotationFact = { name: string, args: List<LitArg>, span: Span?, named: List<NamedLit> = [] }
 
 impl AnnotationFact {
@@ -197,8 +199,8 @@ export enum LitKind { Int, Text, Bool, Other }
 
 /// One literal annotation argument: the text the user-facing
 /// `mark.args` projects, and the kind that orders it.
-@derive(Fingerprint)
 @derive(Exemplar)
+@codec
 export type LitArg = { text: string, kind: LitKind }
 
 impl LitArg {
@@ -207,8 +209,8 @@ impl LitArg {
 }
 
 /// An argument written `label: value`: its label and its literal.
-@derive(Fingerprint)
 @derive(Exemplar)
+@codec
 export type NamedLit = { label: string, arg: LitArg }
 
 impl NamedLit {
@@ -303,11 +305,9 @@ fn named_lit(store: SyntaxArena, e: ExprId) -> NamedLit? {
     NamedLit { label: label, arg: arg_lit(store, store.unnamed(e)) }
 }
 
-/// THE FINGERPRINT IS THE CODEC'S CHECKSUM: the derived fold covers EVERY field, so the
-/// record carries it and the decoder recomputes it — a field added and not encoded makes
-/// the two disagree and the module refuses to hold, instead of silently decoding a default.
-@derive(Fingerprint)
+/// THE CODEC'S BYTES ARE THE DIGEST (`digest_in`), so it covers EVERY field.
 @derive(Exemplar)
+@codec
 export type DeclFacts = {
     external: bool,
     stat: bool,
@@ -421,50 +421,50 @@ fn extern_host(store: SyntaxArena, s: StmtId) -> List<string> {
 /// The source a declaration occupies: a default's or a case's root, else
 /// its statement — and none for a hoisted one, whose nodes lie inside
 /// the statement that minted it.
-fn occupied(store: SyntaxArena, x: Decl) -> Span? {
-    if store.is_hoisted(x.stmt) { return null }
-    if !(x.kind is .Default || x.kind is .Case) { return store.stmt_span(x.stmt) }
-    let root? = x.root else { return null }
+fn occupied(store: SyntaxArena, stmt: StmtId, kind: DeclKind, at: ExprId?) -> Span? {
+    if store.is_hoisted(stmt) { return null }
+    if !(kind is .Default || kind is .Case) { return store.stmt_span(stmt) }
+    let root? = at else { return null }
     store.expr_span(root)
 }
 
 /// THE ONE CAPTURE — a parsed declaration's facts, read from its store exactly once.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a store and a declaration in, its facts out.
-fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
+fn capture_facts(store: SyntaxArena, stmt: StmtId, kind: DeclKind, root: ExprId?) -> DeclFacts {
     // A GENERATED declaration's statement lives in an expanded range the written part
     // tables do not cover — `statics`, `grammars`, the parts tables trap past their end.
     // Absence there is "declares nothing", not a defect.
-    let readable = x.stmt.index < store.stmts.count()
+    let readable = stmt.index < store.stmts.count()
     // A declaration riding another's statement (a field's default)
     // wears none of that statement's own words: its seats, its doc, its
     // annotations are the owner's.
-    let owns = readable && names_its_stmt(x.kind)
+    let owns = readable && names_its_stmt(kind)
     DeclFacts {
-        external: readable && x.kind is .Fn && store.extern_parts(x.stmt) != null,
-        stat: store.is_static(x.stmt),
-        is_grammar: readable && x.kind is .Record && store.grammar_of(x.stmt) != null,
-        is_component: readable && x.kind is .Record && store.component_parts(x.stmt) != null,
-        form: if readable && x.kind is .Record { record_form_of(store, x.stmt) } else { null },
-        template: if readable && x.kind is .Record { template_print_of(store, x.stmt) } else { null },
-        span: occupied(store, x),
-        tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
-        bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
-        seats: if owns { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
-        host: if readable { extern_host(store, x.stmt) } else { [] },
-        annotated: owns && !store.annotations_of(x.stmt).is_empty(),
-        of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
-        instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
+        external: readable && kind is .Fn && store.extern_parts(stmt) != null,
+        stat: store.is_static(stmt),
+        is_grammar: readable && kind is .Record && store.grammar_of(stmt) != null,
+        is_component: readable && kind is .Record && store.component_parts(stmt) != null,
+        form: if readable && kind is .Record { record_form_of(store, stmt) } else { null },
+        template: if readable && kind is .Record { template_print_of(store, stmt) } else { null },
+        span: occupied(store, stmt, kind, root),
+        tparams: if readable { store.decl_tparams(stmt) } else { [] },
+        bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(stmt)] } else { [] },
+        seats: if owns { [p.name.of for p in store.fn_parts(stmt)?.params ?? []] } else { [] },
+        host: if readable { extern_host(store, stmt) } else { [] },
+        annotated: owns && !store.annotations_of(stmt).is_empty(),
+        of: if readable && kind is .Impl { store.impl_parts(stmt)?.of ?? "" } else { "" },
+        instance: readable && kind is .Const && store.is_component_inst(stmt),
         word: when {
-            x.kind is .Const -> store.instance_of(x.stmt)
-            x.kind is .CollectEnum -> collect_enum_word
+            kind is .Const -> store.instance_of(stmt)
+            kind is .CollectEnum -> collect_enum_word
             _ -> null
         },
-        doc: if owns { store.doc_comment(x.stmt) } else { null },
-        annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
-        mut_seats: if readable { sealed_names(store, x) } else { [] },
-        trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
-        hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
-        variadic: if owns { [j for j, p in store.fn_parts(x.stmt)?.params ?? [] if p.is_rest()].first() } else { null },
+        doc: if owns { store.doc_comment(stmt) } else { null },
+        annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(stmt)] } else { [] },
+        mut_seats: if readable { sealed_names(store, stmt, kind) } else { [] },
+        trait_args: if readable && kind is .Impl { [spelled(a) for a in store.trait_args_of(stmt)] } else { [] },
+        hosted: readable && kind is .Fn && store.is_host_fn(stmt),
+        variadic: if owns { [j for j, p in store.fn_parts(stmt)?.params ?? [] if p.is_rest()].first() } else { null },
     }
 }
 
@@ -473,8 +473,11 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
 fn told_of(f: DeclFacts, path: string) -> int {
     fp_list(
         [
-            (f with { span: null, annotations: [a with { span: null } for a in f.annotations] })
-                .fingerprint(),
+            DeclFacts
+                .digest_in(
+                    indexed_scope(),
+                    f with { span: null, annotations: [a with { span: null } for a in f.annotations] },
+                ),
             fp_str(path),
         ],
     )
@@ -488,10 +491,10 @@ fn mut_seat_names(store: SyntaxArena, s: StmtId) -> List<string> {
 /// The record names a declaration may seal boxed, so a read of their flatness
 /// signs it first: a fn's `mut` seats, and an impl's target when a method may
 /// write through `self` — a superset of the impl law's own judgement, never less.
-fn sealed_names(store: SyntaxArena, x: Decl) -> List<string> {
-    match x.kind {
-        .Fn -> mut_seat_names(store, x.stmt),
-        .Impl -> if impl_may_seal(store, x.stmt) { some_list(store.impl_parts(x.stmt)?.target) } else { [] },
+fn sealed_names(store: SyntaxArena, stmt: StmtId, kind: DeclKind) -> List<string> {
+    match kind {
+        .Fn -> mut_seat_names(store, stmt),
+        .Impl -> if impl_may_seal(store, stmt) { some_list(store.impl_parts(stmt)?.target) } else { [] },
         .Record or .Named or .Alias or .Enum or .Method or .Default or .Case or .CollectEnum or .Const or .Collect or .State or .Trait or .Syntax or .Main or .Builtin -> [],
     }
 }

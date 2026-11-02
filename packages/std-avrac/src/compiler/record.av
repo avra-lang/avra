@@ -12,6 +12,7 @@
 //! module's types exist.
 use @std.text.{parse_int}
 use @std.relation.engine.{list_cell}
+use @std.relation.stable.{Writer, Reader, encoded_with, decoded_with, indexed_scope}
 use core.{
     Record as RecordForm,
     ChildSlot,
@@ -449,12 +450,10 @@ fn interface_form(line: string) -> string {
     // a re-export's contract is the name it exports and what it names — never its path
     if p[0] == "reexport" { return p.slice(2, p.length).join("\t") }
     if p.length < 13 { return "" }
-    let top = unpacked(p[12])
-    let facts = if top.is_empty() { [] } else { top[0].split(";") }
-    let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
+    let seen = contract_facts(facts_unblocked(p[12]))
     // the payload skips its `writes` bits (field 16); past them stand a fn's bounds,
     // then its cancel bits, parks and spins
-    [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
+    [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen]
         .concat(p.slice(13, 16))
         .concat(p.slice(17, 20))
         .join("\t")
@@ -479,75 +478,21 @@ fn named_file(line: string) -> string {
     parts[1]
 }
 
-/// A DECLARATION'S FACTS, as the record's block — the encoder of `facts_unblocked`, and
-/// the pair is ONE unit. THE HEAD is every fact whose text is a type spelling, a name or
-/// a digit — none of which carry `;` — joined the old way; DOC AND ANNOTATIONS ARE FREE
-/// TEXT a `///` line or a literal argument can spell anything in, so they ride as two
-/// more `packed` segments alongside the head rather than inside its `;`-join.
-export fn facts_block(f: DeclFacts) -> string {
-    let slo = f.span?.lo ?? 0 - 1
-    let shi = f.span?.hi ?? 0 - 1
-    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${if f.hosted { "1" } else { "0" }};${f.variadic ?? 0 - 1};${f.fingerprint()}"
-    packed(
-        [
-            head,
-            doc_wire(f.doc),
-            annotations_wire(f.annotations),
-            form_wire(f.form),
-            list_field(["${t}" for t in some_list(f.template)]),
-        ],
-    )
-}
+/// A DECLARATION'S FACTS as a record column: their one codec's bytes, in hex.
+export fn facts_block(f: DeclFacts) -> string { hex(encoded_with(f, (w: Writer, v: DeclFacts) -> DeclFacts.written_by(w, indexed_scope(), v))) }
 
-/// A component's record form as a `packed` record — empty for none. Every text in it is
-/// a name a declaration wrote, which carries no `~`.
-fn form_wire(r: RecordForm?) -> string {
-    let f? = r else { return "" }
-    packed(
-        [
-            list_field(f.head),
-            packed([packed([s.name, s.of, bit_word(s.gathers)]) for s in f.slots]),
-            bit_word(f.named),
-            bit_word(f.checks),
-            list_field(some_list(f.fn_field)),
-            bit_word(f.fn_optional),
-            packed([packed([e.name, list_field(e.says), bit_word(e.default)]) for e in f.events]),
-            bit_word(f.words),
-        ],
-    )
-}
-
-/// The inverse: none for the empty wire, and none for one that is not eight parts.
-fn form_of_wire(wire: string) -> RecordForm? {
-    let p = unpacked(wire)
-    if p.length != 8 { return null }
-    RecordForm {
-        head: read_list(p[0]),
-        slots: [ChildSlot { name: q[0], of: q[1], gathers: q[2] == "1" } for x in unpacked(p[1]) for q in [unpacked(x)] if q.length == 3],
-        named: p[2] == "1",
-        checks: p[3] == "1",
-        fn_field: read_list(p[4]).first(),
-        fn_optional: p[5] == "1",
-        events: [ComponentEvent { name: q[0], says: read_list(q[1]), default: q[2] == "1" } for x in unpacked(p[6]) for q in [unpacked(x)] if q.length == 3],
-        words: p[7] == "1",
+/// The inverse — none for a column that is not one, so the module is a miss rather than
+/// a declaration whose facts are guessed.
+export fn facts_unblocked(block: string) -> DeclFacts? {
+    let b? = unhex(block) else { return null }
+    match decoded_with(b, (r: Reader) -> DeclFacts.read_by(r, indexed_scope())) {
+        .Ok(f) -> f,
+        .Err(_) -> null,
     }
 }
 
-/// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
-/// a bare `~`-join LOSES a trailing EMPTY element — `split` drops it — and a facts list
-/// legitimately holds `""` (an unconstrained bound, an unwritten width). The old form
-/// decoded `[""]` as `[]`: benign where the only reader returns `""` either way, and a
-/// silent loss the moment a reader distinguishes them. Reserved for text this build
-/// already knows carries no `~` — a type spelling, a parameter name; free text goes
-/// through `packed` instead, which never searches an element for one.
-fn list_field(xs: List<string>) -> string { "${xs.length}~${joined(["${x.length}:${x}" for x in xs], "~")}" }
-
-/// A LIST OF STRINGS, EACH SLICED BY ITS OWN RECORDED LENGTH — never searched for.
-/// `list_field`'s `~` join reads an element's own `~` as another boundary; a doc line
-/// or an annotation's literal argument is free text a program wrote, so it can hold
-/// any byte the record format itself uses as punctuation. Reading `packed` never
-/// inspects an element's bytes for a separator, only jumps by the length recorded
-/// beside it, so nothing an element contains can be mistaken for the list's own shape.
+/// A LIST OF STRINGS, EACH SLICED BY ITS OWN RECORDED LENGTH — never searched for, so
+/// nothing an element contains can be mistaken for the list's own shape.
 fn packed(xs: List<string>) -> string { "${xs.length};${joined(["${x.length}:${x}" for x in xs], "")}" }
 
 fn unpacked(s: string) -> List<string> {
@@ -572,139 +517,29 @@ fn unpacked(s: string) -> List<string> {
     out
 }
 
-/// `List<string>?` as one packed item: absent is `packed(["0"])`, present carries a
-/// `"1"` flag then every line, EACH ESCAPED as `field_text` escapes a name — `packed`
-/// is safe against `;`/`~`/`:`, but the whole block still lands in one TAB COLUMN of
-/// one LINE of the record, and a `///` line or a literal argument can hold either.
-fn doc_wire(doc: List<string>?) -> string {
-    match doc {
-        lines? -> packed(["1"].concat([field_text(l) for l in lines]))
-        null -> packed(["0"])
-    }
-}
-
-fn doc_of_wire(wire: string) -> List<string>? {
-    let parts = unpacked(wire)
-    if parts.is_empty() || parts[0] == "0" { return null }
-    [text_of_field(x) for x in parts.slice(1, parts.length)]
-}
-
-/// One `AnnotationFact` as a 5-item `packed` record: its escaped name, its arguments
-/// (each its escaped text and its kind, packed again — an argument's text is exactly as
-/// free), its span's two wires, and its named arguments (each its label beside its argument).
-fn annotation_wire(a: AnnotationFact) -> string {
-    let slo = a.span?.lo ?? 0 - 1
-    let shi = a.span?.hi ?? 0 - 1
-    packed(
+/// What a declaration's facts say of its contract: its external, static and grammar bits,
+/// its type parameters, bounds, seats and host widths, and whether it is annotated — never
+/// its span. Empty for facts that do not decode.
+fn contract_facts(f: DeclFacts?) -> string {
+    let x? = f else { return "" }
+    joined(
         [
-            field_text(a.name),
-            packed([lit_arg_wire(x) for x in a.args]),
-            "${slo}",
-            "${shi}",
-            packed([packed([field_text(n.label), lit_arg_wire(n.arg)]) for n in a.named]),
+            bit_word(x.external),
+            bit_word(x.stat),
+            bit_word(x.is_grammar),
+            joined(x.tparams, ","),
+            joined(x.bounds, ","),
+            joined(x.seats, ","),
+            joined(x.host, ","),
+            bit_word(x.annotated),
         ],
+        ";",
     )
 }
 
-fn annotation_of_wire(wire: string) -> AnnotationFact {
-    let p = unpacked(wire)
-    let name = if p.length > 0 { text_of_field(p[0]) } else { "" }
-    let args = if p.length > 1 { [lit_arg_of_wire(x) for x in unpacked(p[1])] } else { [] }
-    let slo = if p.length > 2 { wire_number(p[2]) ?? 0 - 1 } else { 0 - 1 }
-    let shi = if p.length > 3 { wire_number(p[3]) ?? 0 - 1 } else { 0 - 1 }
-    let named = if p.length > 4 { [named_lit_of_wire(x) for x in unpacked(p[4])] } else { [] }
-    AnnotationFact { name: name, args: args, span: span_of(slo, shi), named: named }
-}
-
-fn lit_arg_wire(x: LitArg) -> string { packed([field_text(x.text), lit_kind_word(x.kind)]) }
-
-/// One named argument on the wire: its label, then its argument's wire.
-fn named_lit_of_wire(item: string) -> NamedLit {
-    let q = unpacked(item)
-    let label = if q.length > 0 { text_of_field(q[0]) } else { "" }
-    let arg = if q.length > 1 { lit_arg_of_wire(q[1]) } else { LitArg.codec_zero() }
-    NamedLit { label: label, arg: arg }
-}
-
-/// One literal argument on the wire: its text, then its kind's word.
-fn lit_arg_of_wire(item: string) -> LitArg {
-    let q = unpacked(item)
-    let text = if q.length > 0 { text_of_field(q[0]) } else { "" }
-    let kind = if q.length > 1 { lit_kind_of(text_of_field(q[1])) } else { LitKind.Text }
-    LitArg { text: text, kind: kind }
-}
-
-fn lit_kind_word(k: LitKind) -> string {
-    match k { .Int -> "int", .Text -> "text", .Bool -> "bool", .Other -> "other" }
-}
-
-fn lit_kind_of(w: string) -> LitKind {
-    match w { "int" -> .Int, "text" -> .Text, "bool" -> .Bool, rest -> .Other }
-}
-
-/// A span from its two wire ints — the decoder `facts_unblocked` and
-/// `annotation_of_wire` share, both writing `-1` for the same absence.
+/// A span from its two wire ints, `-1` for none.
 fn span_of(lo: int, hi: int) -> Span? {
     if lo < 0 { null } else { Span { lo: lo, hi: hi } }
-}
-
-fn annotations_wire(xs: List<AnnotationFact>) -> string { packed([annotation_wire(a) for a in xs]) }
-
-fn annotations_of_wire(wire: string) -> List<AnnotationFact> { [annotation_of_wire(x) for x in unpacked(wire)] }
-
-/// The inverse, by the list's own count: `"0~"` is the empty list, and a
-/// length-prefixed element survives whether or not it is empty.
-fn read_list(field: string) -> List<string> {
-    let parts = wire_fields(field, "~")
-    let n = parse_int(parts[0]) ?? 0
-    [item_of_field(p) for p in parts.slice(1, 1 + n)]
-}
-
-/// One list element: its length prefix dropped, the value whole.
-fn item_of_field(p: string) -> string {
-    let at = p.index_of(":")
-    if at < 0 { return p }
-    p.substring(at + 1, p.length)
-}
-
-/// The decoder — a block it cannot read makes the whole RECORD undecodable, so the module
-/// is a miss rather than a declaration whose facts are guessed. THE LAST FIELD IS THE
-/// VALUE'S OWN FINGERPRINT: it is recomputed from what was decoded, so a field the
-/// writer added but this reader does not know makes the two disagree and the record is
-/// REFUSED — drift is a rebuild, never a declaration wearing a default.
-export fn facts_unblocked(block: string) -> DeclFacts? {
-    let top = unpacked(block)
-    if top.length < 3 { return null }
-    let p = wire_fields(top[0], ";")
-    if p.length < 19 { return null }
-    let slo? = wire_number(p[3]) else { return null }
-    let shi? = wire_number(p[4]) else { return null }
-    let seat? = wire_number(p[17]) else { return null }
-    let facts = DeclFacts {
-        external: p[0] == "1",
-        stat: p[1] == "1",
-        is_grammar: p[2] == "1",
-        span: span_of(slo, shi),
-        tparams: read_list(p[5]),
-        bounds: read_list(p[6]),
-        seats: read_list(p[7]),
-        host: read_list(p[8]),
-        annotated: p[9] == "1",
-        of: p[10],
-        is_component: p[11] == "1",
-        instance: p[12] == "1",
-        mut_seats: read_list(p[13]),
-        word: read_list(p[14]).first(),
-        trait_args: read_list(p[15]),
-        hosted: p[16] == "1",
-        variadic: if seat < 0 { null } else { seat },
-        doc: doc_of_wire(top[1]),
-        annotations: annotations_of_wire(top[2]),
-        form: if top.length > 3 { form_of_wire(top[3]) } else { null },
-        template: if top.length > 4 { parse_int(read_list(top[4]).first() ?? "") } else { null },
-    }
-    if "${facts.fingerprint()}" != p[18] { return null }
-    facts
 }
 
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
@@ -1379,17 +1214,14 @@ fn named_alone(p: List<string>) -> bool {
         p[11] != "1" {
         return false
     }
-    let top = unpacked(p[12])
-    if top.is_empty() { return false }
-    let facts = top[0].split(";")
-    facts.length > 16 &&
-        facts[0] == "0" &&
-        facts[1] == "0" &&
-        facts[2] == "0" &&
-        facts[9] == "0" &&
-        facts[11] == "0" &&
-        facts[12] == "0" &&
-        facts[16] == "0"
+    let f? = facts_unblocked(p[12]) else { return false }
+    !f.external &&
+        !f.stat &&
+        !f.is_grammar &&
+        !f.annotated &&
+        !f.is_component &&
+        !f.instance &&
+        !f.hosted
 }
 
 /// The lines of a file no name reaches, as one digest.

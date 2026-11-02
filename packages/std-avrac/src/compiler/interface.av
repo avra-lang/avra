@@ -1,6 +1,7 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
 use core.{
+    some_list,
     wire_fields,
     joined,
     flatten,
@@ -24,6 +25,7 @@ use core.{
 }
 use @std.text.{text_before}
 use features.{
+    ItemLine,
     Decl,
     Settlement,
     Unsettled,
@@ -204,17 +206,6 @@ impl Workspace {
 
     /// A held file's declarations adopted by their parents, in one pass over its
     /// lines: the file and its declarations are found ONCE, never per line.
-    fn link_file(path: string, rows: List<List<string>>) {
-        let ids = self.decls.decls_so_far(self.file_id(path))
-        for parts in rows { self.link_row(ids, parts) }
-    }
-
-    fn link_row(ids: List<DeclId>, parts: List<string>) {
-        let row? = read_row(parts) else { return }
-        if row.ordinal < 0 || row.ordinal >= ids.length { return }
-        if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
-    }
-
     /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
     /// file stands once, and its flag stands before the work does, so two files that name
     /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each
@@ -242,65 +233,50 @@ impl Workspace {
         }
         let rows = [p for p in lines if declares(p)]
         let top = self.mint_file(path, rows, makers_in(lines, path))
-        self.link_file(path, rows)
         self.decls.note_rows(f, 2)
         top
     }
 
-    /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
-    /// top-level ones. The file's statement table is written ONCE: read out and stored back
-    /// per line, two copies stand while it is written, and every line copies it.
+    /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order through the one
+    /// minter (`Decls.mint_lines`); answers the top-level ones. A line that does not decode is
+    /// a DEFECT spoken: the hold's attempt fails, and the sources answer.
     fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) -> List<
         DeclId,
     > {
         work_file_minted()
         let f = self.file_id(path)
+        let read = [r for p in rows for r in some_list(read_row(p))]
+        let lines = [l for r in read for l in some_list(self.item_line_of(path, r, makers))]
+        if lines.length != read.length { return [] }
         self.decls.held_opened(f, makers.values())
-        mut by_stmt = self.decls.decl_ids.get()[f.index].get()
-        mut top: List<DeclId> = []
-        for parts in rows {
-            let id: DeclId? = self.minted(f, path, parts, makers)
-            let row? = read_row(parts) else { continue }
-            by_stmt.grow_to(row.stmt + 1)
-            if id != null && by_stmt.get(row.stmt).decl == null { by_stmt.set(row.stmt, DeclAt { decl: id }) }
-            if id != null && row.item { top.push(id!) }
-        }
+        let ids = self.decls.mint_lines(f, lines, 0)
         self.decls.held_closed(f, makers.values())
-        self.decls.keep_stmt_decls(f, by_stmt)
-        top
+        // the cancel bit is read before any signature is asked, so it lands with the row
+        for j, r in read { if j < ids.length { self.decls.record_cancel(ids[j], r.shaped().reach()) } }
+        [ids[j] for j, l in lines if l.item]
     }
 
-    /// One record line as a declaration — null for a line that names nothing. A line
-    /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
-    /// sources answer.
-    fn minted(f: FileId, path: string, parts: List<string>, makers: Map<string, string>) -> DeclId? {
-        let row? = read_row(parts) else { return null }
-        let kind = declared_kind(row.shape, row.kind)
-        let facts = facts_unblocked(row.facts)
+    /// A kept line as the line minting reads — none, and a defect said, for one that does not decode.
+    fn item_line_of(path: string, r: Row, makers: Map<string, string>) -> ItemLine? {
+        let kind = declared_kind(r.shape, r.kind)
+        let facts = facts_unblocked(r.facts)
         if kind == null || facts == null {
             self.defect("a record line did not decode — ${path}")
             return null
         }
-        let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
-        let id = self
-            .decls
-            .mint_faced(
-                f,
-                StmtId { index: row.stmt },
-                row.name,
-                kind!,
-                row.exported,
-                row.owner,
-                null,
-                row.enclosing,
-                root,
-                makers.get("${row.ordinal}") ?? "",
-                facts!,
-            )
-        if kind! is .Main { self.decls.seat_main(f, id) }
-        // the cancel bit is read before any signature is asked, so it lands with the row
-        self.decls.record_cancel(id, row.shaped().reach())
-        id
+        ItemLine {
+            stmt: r.stmt,
+            name: r.name,
+            kind: kind!,
+            exported: r.exported,
+            owner: r.owner,
+            parent: r.parent_at,
+            enclosing: r.enclosing,
+            root: r.root,
+            item: r.item,
+            facts: facts!,
+            maker: makers.get("${r.ordinal}") ?? "",
+        }
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
@@ -318,9 +294,6 @@ impl Workspace {
         let root = d.root?.index ?? 0 - 1
         let facts = self.decls.facts_or(d.id)
         let block = facts_block(facts)
-        // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
-        // back is a defect said now, never a check every reader pays
-        if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
         "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
     }
 
