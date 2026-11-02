@@ -998,18 +998,26 @@ export fn store_rows_written() -> int { written_tally().get() }
 export fn store_wrote() { written_tally().set(written_tally().get() + 1) }
 
 fn append(pack: Pack, body: Bytes) {
-    let _ = make_dirs(pack.dir)
+    if !pack.headed.get() { let _ = make_dirs(pack.dir) }
     let af? = segment_file(pack, writer_segment(pack)) else { return }
     if !pack.headed.get() {
         let _ = af.write(head_bytes(pack.print))
         pack.headed.set(true)
     }
-    let _ = af.write(octets_only(body))
-    store_wrote()
-    kill_at_commit()
-    let _ = af.write(marker_of(body))
+    if killed_at_commit() {
+        let _ = af.write(octets_only(body))
+        store_wrote()
+        kill_at_commit()
+        let _ = af.write(marker_of(body))
+    } else {
+        let _ = af.write([octets_only(body), marker_of(body)].bytes())
+        store_wrote()
+    }
     pack.frames.set(pack.frames.get() + 1)
 }
+
+/// Whether the test hook that kills a writer between a frame and its marker is set.
+fn killed_at_commit() -> bool { env("AVRA_STORE_KILL") ?? "" != "" }
 
 /// A test hook: a writer killed between a frame's octets and its marker.
 fn kill_at_commit() {
