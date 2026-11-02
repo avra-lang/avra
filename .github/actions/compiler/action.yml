@@ -48,7 +48,7 @@ runs:
       shell: sh
       run: |
         list=""
-        if [ "${{ inputs.main }}" = 1 ] && [ "${{ github.event_name }}" = push ]; then
+        if [ "${{ inputs.main }}" = 1 ] && [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
           n=$(git log -1 --format=%s | sed -n 's/.*(#\([0-9][0-9]*\))$/\1/p')
           [ -z "$n" ] || list=$(sh tools/rungs.sh --pr "$n" 2>/dev/null | tr '\n' ' ') || list=""
         else
@@ -168,7 +168,7 @@ runs:
         # never a source wrong.
         # each rung is replayed on the base this tree is judged against, never on its own stale tree
         lbase=origin/main
-        [ "${{ inputs.main }}" != 1 ] || [ "${{ github.event_name }}" != push ] || lbase=HEAD~1
+        [ "${{ inputs.main }}" != 1 ] || [ "${{ github.event_name }}" != push ] || [ "${{ github.ref }}" != refs/heads/main ] || lbase=HEAD~1
         make -s compiler RUNGS="$rungs" LADDER_BASE="$(git rev-parse "$lbase")" GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
           || { echo "::error::the compiler did not build"; exit 1; }
         if [ -n "$rungs" ]; then

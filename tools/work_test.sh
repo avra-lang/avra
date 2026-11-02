@@ -312,7 +312,7 @@ cp "$bk/tools/compiler_release.py" "$bb/tools/"
 bbg() { git -C "$bb" -c user.name=t -c user.email=t@t "$@"; }
 echo old > "$bb/keyfile"; bbg add -A; bbg commit -q -m m
 bbg update-ref refs/remotes/origin/main HEAD
-echo new > "$bb/keyfile"; printf 'on:\n  push:\n    branches: [hd-clean, hd-gate]\n' > "$bb/.github/workflows/base-compiler.yml"
+echo new > "$bb/keyfile"; printf 'on:\n  push:\n    branches: [main, hd-clean, hd-gate]\n' > "$bb/.github/workflows/checks.yml"
 bbg add -A; bbg commit -q -m base
 bbg update-ref refs/remotes/origin/hd-gate HEAD
 echo lane > "$bb/lane"; bbg add -A; bbg commit -q -m lane
