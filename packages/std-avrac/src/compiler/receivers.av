@@ -25,12 +25,12 @@ use core.{
     mut_mark,
     same_decl,
     scc_walk,
-    scc_fixpoint,
+    fp,
+    fp_list,
 }
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
-use @std.meta.{bracket}
 use @std.relation.{query}
-use @std.relation.engine.{Key}
+use @std.relation.engine.{Key, FixpointRefusal, spoken as fixpoint_spoken}
 use compiler.families.{Family}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -51,9 +51,8 @@ impl Workspace {
         // one, and every sig this walk asks of the file in flight would be computed from a
         // smaller view and kept. The declared bits answer until the resolve closes.
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.Writes, d.index)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        if !self.writes_member(d) { return self.writes_held(d, k) }
+        if !(self.db.ask(key(Family.Writes, d.index)) is .Compute) { return 0 }
+        if !self.writes_member(d) { return 0 }
         if self.walking.get() { return 0 }
         self.walking.set(true)
         let walk = self.frame_in(self.walk_family)
@@ -81,54 +80,50 @@ impl Workspace {
         once_each([f.callee for f in write_summary(self, d).edges if self.writes_member(f.callee)])
     }
 
-    /// A held declaration's recorded bits, as the cell a reader stands on.
-    fn writes_held(d: DeclId, k: Key) -> int {
-        self.db.begin(k)
-        self.db.settle(k, self.writes_word(d))
-        0
-    }
-
-    /// A fn's written seats as the word its cell settles on.
-    fn writes_word(d: DeclId) -> int { fp(18, [fp_list(self.decls.written_bits(d))]) }
-
-    /// One set's least fixpoint, recorded and settled: every member's cell stands on the
+    /// One set's least fixpoint, solved by the engine: every member's cell stands on the
     /// summaries of the set and on the settled bits of what the set calls from outside.
     fn settle_writes(members: List<DeclId>) {
-        let sums = [write_summary(self, m) for m in members]
-        let states = scc_fixpoint(
-            members,
-            (m: DeclId) -> filled(self.decls.seat_count(m), false),
-            (m: DeclId, read: fn(DeclId) -> List<bool>) -> self
-                .seats_written(m, sums[members.index_of(m)], read),
-            same_bits,
-            (c: DeclId) -> self.decls.written_bits(c).map(it == 1),
-        )
-        let outside = once_each(
-            [f.callee for s in sums for f in s.edges if self.writes_member(f.callee) && !members.any(same_decl(it, f.callee))],
-        )
-        for i, m in members {
-            self.decls.reset_written(m)
-            for j, w in states[i] { if w { self.decls.record_seat_written(m, j) } }
-            let k = key(Family.Writes, m.index)
-            self.db.begin(k)
-            for x in members { touch(write_summary(self, x)) }
-            for c in outside { touch(self.writes_of(c)) }
-            self.db.settle(k, self.writes_word(m))
-        }
+        let solved = self
+            .writes_fixpoint
+            .solve(
+                [m.index for m in members],
+                (arg: int) -> self.writes_contribution(DeclId { index: arg }),
+            )
+        let refusal? = refusal_of(solved) else { return }
+        self.defect("defect: ${fixpoint_spoken(refusal)}")
     }
 
-    /// A member's seats after one step: written already, written by its own body, or handed
-    /// to a seat another fn writes.
-    fn seats_written(d: DeclId, s: Summary, read: fn(DeclId) -> List<bool>) -> List<bool> {
-        let now = read(d)
-        [now[i] ||
-            bit_at(s.own, i) ||
-            s.edges.any((f: Flow) -> f.from == i && self.flows_into(f, read)) for i in 0..now.length]
+    /// One member's raw contribution: the seats its body writes, and those it hands to a
+    /// seat another fn writes.
+    fn writes_contribution(d: DeclId) -> List<bool> {
+        let s = write_summary(self, d)
+        [bit_at(s.own, i) || s.edges.any((f: Flow) -> f.from == i && self.flows_into(f)) for i in 0..self.decls.seat_count(d)]
+    }
+
+    /// A declaration's written seats as the fixpoint holds them, solved first. None written
+    /// for a declaration it holds no member for, every seat for a held one (its body is not
+    /// here to say), and null where the pass may not run — an absence of a finding.
+    fn writes_ensured(d: DeclId) -> List<bool>? {
+        if self.db.family_active(Family.Resolved.ordinal) { return null }
+        let x = self.decls.decl(d)
+        if seated(x) { let _ = self.writes_of(d) }
+        self.writes_fixpoint.answer_at(d.index) ?? self.unsolved_writes(x)
+    }
+
+    fn unsolved_writes(x: Decl) -> List<bool> {
+        filled(self.decls.seat_count(x.id), seated(x) && self.is_held(x.file))
     }
 
     /// Whether the seat a flow fills is written: the receiver by its declared word too.
-    fn flows_into(f: Flow, read: fn(DeclId) -> List<bool>) -> bool {
-        f.to == 0 && self.decls.declares_writing(f.callee) || bit_at(read(f.callee), f.to)
+    fn flows_into(f: Flow) -> bool {
+        f.to == 0 && self.decls.declares_writing(f.callee) ||
+            bit_at(self.writes_read(f.callee), f.to)
+    }
+
+    /// What the fixpoint says of a callee's seats: a member's as they stand, any other
+    /// declaration's as unsolved.
+    fn writes_read(c: DeclId) -> List<bool> {
+        if self.writes_member(c) { self.writes_fixpoint.value_at(c.index) } else { self.unsolved_writes(self.decls.decl(c)) }
     }
 
     /// The scratch frame a walk's own reads land in, minted once into `family`: a read made
@@ -154,7 +149,14 @@ fn write_summary(ws: Workspace, d: DeclId) -> Summary {
 /// Each declaration once, in first-seen order.
 fn once_each(ds: List<DeclId>) -> List<DeclId> { [d for i, d in ds if !ds.slice(0, i).any(same_decl(it, d))] }
 
-fn same_bits(a: List<bool>, b: List<bool>) -> bool { a.length == b.length && [i for i, x in a if x != b[i]].is_empty() }
+/// `Fixpoint`'s join for written seats: a seat is written when either says so.
+fn writes_join(a: List<bool>, b: List<bool>) -> List<bool> {
+    [bit_at(a, i) || bit_at(b, i) for i in 0..if a.length > b.length { a.length } else { b.length }]
+}
+
+/// A row of seat bits as one value: one digit per seat, in seat order, so no two states
+/// share a word.
+fn bits_fp(bits: List<bool>) -> int { fp_list([if b { 1 } else { 0 } for b in bits]) }
 
 /// Whether seat `i` of a bit row is set; a seat past the row is not.
 fn bit_at(bits: List<bool>, i: int) -> bool { i < bits.length && bits[i] }
@@ -162,15 +164,6 @@ fn bit_at(bits: List<bool>, i: int) -> bool { i < bits.length && bits[i] }
 /// The declarations with seats to write through.
 fn seated(x: Decl) -> bool {
     x.kind is .Fn || x.kind is .Method
-}
-
-impl Decls {
-    /// A fn's written seats for the fingerprint — one digit per seat,
-    /// in seat order, so no two states share a word.
-    @bracket("receivers")
-    fn written_bits(d: DeclId) -> List<int> {
-        [if self.seat_written_so_far(d, i) { 1 } else { 0 } for i in 0..self.seat_count(d)]
-    }
 }
 
 impl Workspace {
@@ -420,7 +413,7 @@ impl Workspace {
     /// writes` prints the same names, in the same order, as fn names
     /// joined by their calls. `self.summary(d)` is recomputed here
     /// rather than read from a stored table: the pass keeps only the
-    /// fixpoint's OUTCOME (`seat_written_so_far`), never the per-fn
+    /// fixpoint's OUTCOME (`seat_written`), never the per-fn
     /// edges it settled from, so a witness asks for the evidence
     /// again — pure and cheap, one fn at a time, never the
     /// whole-program pass. Null when the seat is not written, or no
@@ -428,14 +421,12 @@ impl Workspace {
     /// is written only through another member of it).
     fn write_chain(d: DeclId, i: int, seen: List<DeclId>) -> List<string>? {
         let decls = self.decls
-        if !decls.seat_writes_so_far(d, i) { return null }
+        if !decls.seat_writes(d, i) { return null }
         let hop = decls.decl(d).name
         let s = self.summary(d)
         if i == 0 && decls.declares_writing(d) || s.own[i] { return [hop] }
         if seen.any(same_decl(it, d)) { return null }
-        let edge? = s
-            .edges
-            .find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else {
+        let edge? = s.edges.find((f: Flow) -> f.from == i && decls.seat_writes(f.callee, f.to)) else {
             return null
         }
         let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }

@@ -16,8 +16,6 @@ export enum Bypassed {
     Facts(d: DeclId)
     /// A type's registered methods as they stand, hook-free.
     Methods(d: DeclId)
-    /// Whether a pass found a seat written, as it stands.
-    Written(d: DeclId)
 }
 
 /// The verb a read is reported under.
@@ -28,7 +26,6 @@ export fn bypass_word(r: Bypassed) -> string {
         .Store(_) -> "store_of",
         .Facts(_) -> "facts_of",
         .Methods(_) -> "methods_of",
-        .Written(_) -> "written_so_far",
     }
 }
 
@@ -38,24 +35,17 @@ export fn bypass_word(r: Bypassed) -> string {
 export const audit_build: bool = false
 
 /// How many verbs a reader tells apart: `bypass_ordinal`'s range.
-export const bypass_verbs: int = 6
+export const bypass_verbs: int = 5
 
 /// A read as two dense numbers — its verb and its subject — for a kernel that only
 /// counts. `bypassed_at` is the inverse; both spell every variant.
 export fn bypass_ordinal(r: Bypassed) -> int {
-    match r {
-        .Decl(_) -> 0,
-        .SigSoFar(_) -> 1,
-        .Store(_) -> 2,
-        .Facts(_) -> 3,
-        .Methods(_) -> 4,
-        .Written(_) -> 5,
-    }
+    match r { .Decl(_) -> 0, .SigSoFar(_) -> 1, .Store(_) -> 2, .Facts(_) -> 3, .Methods(_) -> 4 }
 }
 
 export fn bypass_subject(r: Bypassed) -> int {
     match r {
-        .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) or .Written(d) -> d.index,
+        .Decl(d) or .SigSoFar(d) or .Facts(d) or .Methods(d) -> d.index,
         .Store(f) -> f.index,
     }
 }
@@ -67,7 +57,6 @@ export fn bypassed_at(verb: int, subject: int) -> Bypassed {
         2 -> Bypassed.Store(FileId { index: subject }),
         3 -> Bypassed.Facts(DeclId { index: subject }),
         4 -> Bypassed.Methods(DeclId { index: subject }),
-        5 -> Bypassed.Written(DeclId { index: subject }),
         other -> {
             avra_trap(
                 "defect: no read numbered ${other} — bypass_ordinal and bypassed_at must list the same set",
