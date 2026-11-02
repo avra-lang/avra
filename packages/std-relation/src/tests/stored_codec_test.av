@@ -2,7 +2,7 @@
 // id crosses by the spelling the scope gives it, a generic record of one parameter is its
 // fields at the argument, a `@local` field is rebuilt from its default — and every text that
 // is not the type's own is refused, never half read.
-use @std.meta.{dense, Type, Field, Kind, Variant, Mark}
+use @std.meta.{dense, Type, Field, Kind, Variant, Mark, Annotation}
 use @std.relation.{codec, stored_problems}
 use @std.relation.stable.{Scope, indexed_scope, CodecFault}
 use @std.text.{parse_int}
@@ -47,6 +47,10 @@ impl Scope for Based {
         let n? = parse_int(text.substring(kind.length + 1, text.length)) else { return null }
         n - self.base
     }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { null }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
 }
 
 fn here() -> dyn Scope { indexed_scope() }
@@ -178,6 +182,10 @@ spec "std/relation — what is not a stored type's own octets is refused" {
         then "a fn, a cell, a float and a map keyed by a non-string are each refused, named" {
             [stored_problems(unfit_row(k)).length for k in [Kind.Float, Kind.Cell(Kind.Int), Kind.Map(Kind.Int, Kind.Int), Kind.Fn([], Kind.Int)]]
                 .all(it == 1)
+        }
+        then "a codec'd type is never also derived a fingerprint" {
+            let folded = unfit_row(Kind.Int) with { annotations: [Annotation { name: "derive", args: ["Fingerprint"], at: null }] }
+            stored_problems(folded).length == 1 && stored_problems(unfit_row(Kind.Int)).is_empty()
         }
         then "a scalar, a list, a nullable and a string-keyed map are fit" {
             [stored_problems(unfit_row(k)).length for k in [Kind.Int, Kind.List(Kind.Str), Kind.Opt(Kind.Bool), Kind.Map(Kind.Str, Kind.Int)]]

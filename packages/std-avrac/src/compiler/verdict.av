@@ -12,7 +12,7 @@ use @std.errors.{Loc}
 use grammar.{Token, LexResult}
 use @std.relation.engine.{list_cell}
 use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
-use diagnostics.{DiagFacts, SourceFile, new_source_file, render_facts_among, located_files}
+use diagnostics.{Diag, SourceFile, new_source_file, render_among, located_files}
 use compiler.store.{Store, Stored, Reading, node_key, read_spelled}
 use compiler.findings.{Finding, finding_line, findings_read, finding_at}
 
@@ -304,6 +304,25 @@ impl Workspace {
         made
     }
 
+    /// A span of `path` as the token place it stands in now; null where no token holds it.
+    fn place_of(path: string, lo: int, hi: int) -> List<int>? {
+        let tokens? = self.tokens_now(path) else { return null }
+        match anchored_among(tokens, Loc { file: path, lo: lo, hi: hi }) {
+            .In(p) -> [p.lo_token, p.lo_at, p.hi_token, p.hi_at],
+            .NoToken -> null,
+        }
+    }
+
+    /// `place_of`'s inverse against `path`'s text now: the span's offsets, or null where the
+    /// text no longer holds that place.
+    fn span_of(path: string, at: List<int>) -> List<int>? {
+        if at.length != 4 { return null }
+        let tokens? = self.tokens_now(path) else { return null }
+        let kept = TokenPlace { lo_token: at[0], lo_at: at[1], hi_token: at[2], hi_at: at[3] }
+        let l? = placed_among(tokens, Anchored.In(kept)) else { return null }
+        [l.lo, l.hi]
+    }
+
     /// The token streams a row placed against, let go: they are kept for one row alone.
     fn placed_done() {
         let none: Map<string, List<Token>> = {}
@@ -396,7 +415,7 @@ impl Workspace {
     /// A file's warnings and rule findings rendered as a derivation renders them: the
     /// warnings among each, over the texts they point into now. None where a place names no
     /// file — a frame with no file reads the program's first source.
-    fn facts_said(warnings: List<DiagFacts>, rules: List<DiagFacts>) -> string? {
+    fn facts_said(warnings: List<Diag>, rules: List<Diag>) -> string? {
         let all = warnings.concat(rules)
         if all.any((d) -> facts_files(d).length < facts_places(d)) { return null }
         let sources = [new_source_file(p, self.listed_text(p)) for p in distinct(flatten([facts_files(d) for d in all]))]
@@ -439,16 +458,16 @@ fn file_spoke(s: Said, reached: bool, licenses: List<string>) -> FileSpoke {
 }
 
 /// The warnings among `facts`, rendered — "" when none spoke.
-fn warned_facts(facts: List<DiagFacts>, sources: List<SourceFile>) -> string {
-    joined([render_facts_among(f, sources) for f in facts if !(f.severity is .Error)], "\n\n")
+fn warned_facts(facts: List<Diag>, sources: List<SourceFile>) -> string {
+    joined([render_among(f, sources) for f in facts if !(f.severity is .Error)], "\n\n")
 }
 
 /// The files a diagnostic's places name, and how many places it has.
-fn facts_files(d: DiagFacts) -> List<string> { flatten([some_list(l.file) for l in facts_locs(d)]) }
+fn facts_files(d: Diag) -> List<string> { flatten([some_list(l.file) for l in facts_locs(d)]) }
 
-fn facts_places(d: DiagFacts) -> int { facts_locs(d).length }
+fn facts_places(d: Diag) -> int { facts_locs(d).length }
 
-fn facts_locs(d: DiagFacts) -> List<Loc> {
+fn facts_locs(d: Diag) -> List<Loc> {
     [f.loc! for f in [d.primary].concat(d.secondary) if f.loc != null]
         .concat([e.loc for s in d.suggestions for e in s.edits])
 }

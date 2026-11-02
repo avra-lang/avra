@@ -56,6 +56,28 @@ fn helpless(kind: Code, shape: string) -> Fix {
         )
 }
 
+/// A declaration told apart by its MODULE and its name: a foreign package's type that sits
+/// below `@std/meta` and so carries no mark. Both together are its identity, so a same-named
+/// type of another module is untouched; each site says at its line why no mark is possible.
+@keeps("t.name == n")
+@says("a declaration is named by its module only where its package can carry no mark, and the site says why")
+export rule foreign_declaration_named {
+    // LICENSED compiler.foreign_declaration_named: the pattern's own text names the shape it detects
+    quote { ${t}.module == ${m} && ${t}.name == ${n} } -> declaration_named(t),
+}
+
+fn declaration_named(t: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                t.loc(),
+                "`${t.text()}` is told apart by its module and its name — a mark on the declaration says it, unless its package sits below `@std/meta`",
+                "this comparison",
+                null,
+            ),
+        )
+}
+
 /// Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field
 /// is read out beside the value that holds it, so the text is never
 /// held alone and every turn copies it. A LOCAL `mut` grows in place
@@ -528,7 +550,7 @@ fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
 
 /// A fact column sized by hand, or an id read through an offset —
 /// `SideTable<V>` states the window, the growth and the
-/// out-of-window defect once: `side_table(name, lo, hi, seed)`,
+/// out-of-window defect once: `side_table(name, expr_window(lo), hi, seed)`,
 /// `get(id)`, `grow_to(n)`.
 ///
 /// NO REWRITE: adopting `SideTable<V>` means replacing the surrounding
