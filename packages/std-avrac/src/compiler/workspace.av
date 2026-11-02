@@ -643,6 +643,8 @@ export type Workspace = {
     externs: Table<ExternNames>,
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
+    /// each file's clash diagnostics as `method_clashes` last settled them
+    method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
     /// than scanning the whole table on every ask.
@@ -660,9 +662,6 @@ export type Workspace = {
     keys: Keys,
     /// A module's files' ids, remembered for one size of the package table.
     file_ids_of: Cell<Map<string, List<FileId>>>,
-    /// The revision each file's `Admitted` cell was last asked at, dense by FileId:
-    /// after the revision's first ask, a reader records the edge and nothing more.
-    admission_asked: Table<int>,
     // the re-exported names a lookup is following now, by module and name
     reexporting: Cell<Map<string, bool>>,
     import_lists: Cell<Map<string, List<string>>>,
@@ -915,10 +914,6 @@ fn plain_verified(ws: Workspace, arg: int) -> int {
     touch(ws.plain_parsed(file_at(arg)))
     ws.db.changed_at(key(Family.Plain, arg))
 }
-fn references_verified(ws: Workspace, arg: int) -> int {
-    if !ws.typing_open() { touch(ws.references()) }
-    ws.db.changed_at(key(Family.References, arg))
-}
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn file_refs_verified(ws: Workspace, arg: int) -> int {
     touch(ws.file_references(file_at(arg)))
@@ -935,15 +930,6 @@ fn syntax_verified(ws: Workspace, arg: int) -> int {
 fn names_verified(ws: Workspace, arg: int) -> int {
     touch(ws.name_slice(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Names, arg))
-}
-// LICENSED compiler.free_state_verb: a code-hash TARGET — `family_code_hash` asks `code_hash(placed_verified)`, a fn VALUE, so the verifier cannot be a method.
-fn placed_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.placed(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Placed, arg))
-}
-fn admitted_verified(ws: Workspace, arg: int) -> int {
-    ws.admission(file_at(arg))
-    ws.db.changed_at(key(Family.Admitted, arg))
 }
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
@@ -982,15 +968,12 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
-        .References -> references_verified(ws, arg),
         .FileRefs -> file_refs_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
-        .Placed -> placed_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
-        .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
@@ -1006,6 +989,21 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.warnings_of(ws.de
 
 /// The use-site warnings recorded for `d` so far.
 fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks.get()[d.index] ?? [] }
+
+/// A file's rows standing, one constant: a reader that reads them through their buckets is
+/// ordered after the admission, and nothing it reads moves it.
+@query
+fn admitted(ws: Workspace, f: FileId) -> int {
+    touch(ws.items(f))
+    0
+}
+
+/// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi`.
+@query
+fn placement_of(ws: Workspace, d: DeclId) -> int {
+    let x = ws.decls.decl(d)
+    fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
+}
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1117,6 +1115,7 @@ fn built(
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
+        method_diag_rows: new_table<List<Diag>>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
@@ -1126,7 +1125,6 @@ fn built(
         records: new_records(),
         keys: new_keys(),
         file_ids_of: Cell.new(no_file_ids_of),
-        admission_asked: new_table<int>(),
         reexporting: map_cell(),
         import_lists: Cell.new(no_import_lists),
         hold: new_hold(),
@@ -2015,17 +2013,7 @@ impl Workspace {
     /// through the producer index, which mints a module for the name a bucket read asks.
     fn admission(f: FileId) {
         if self.is_held(f) { return }
-        let k = key(Family.Admitted, f.index)
-        let rev = self.db.revision()
-        if self.admission_asked.at(f.index) ?? 0 == rev {
-            self.db.record_dep(k)
-            return
-        }
-        self.admission_asked.keep(f.index, rev)
-        if !(self.db.ask(k) is .Compute) { return }
-        self.db.begin(k)
-        touch(self.items(f))
-        self.db.settle(k, 0)
+        let _ = admitted(self, f)
     }
 
     /// The declaration behind an id.
@@ -2366,15 +2354,7 @@ impl Workspace {
     /// `Syntax` is durable — two declarations of one shape fold alike
     /// wherever they sit — but a body's typed facts carry ARENA IDS, so
     /// a same-file insert above it must move this and retype that body.
-    fn placed(d: DeclId) -> int {
-        let k = key(Family.Placed, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
-        self.db.begin(k)
-        let x = self.decls.decl(d)
-        let h = fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
-        self.db.settle(k, h)
-        h
-    }
+    fn placed(d: DeclId) -> int { placement_of(self, d) }
 
     /// A declaration's own slice of its file's names, DECLARATION-GRAIN
     /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
@@ -2716,15 +2696,12 @@ export fn family_code_hash(f: Family) -> string {
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
-        .References -> code_hash(references_verified) ?? "",
         .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
-        .Placed -> code_hash(placed_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
-        .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
         .Input -> code_hash(input_verified) ?? "",

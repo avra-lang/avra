@@ -47,17 +47,22 @@ spec "compiler/references — a refused replacement" {
         let read = Ref.by_decl(db, a).length
         ws.db.kernel.settle(reader, 0)
         let before = ws.defects.get().length
-        let filed = ws.references()
-        read == 0 && filed == 0 && heard.get().length == 1 && ws.defects.get().length == before + 1
+        let _ = ws.references()
+        read == 0 &&
+            Ref.all(db).length == 0 &&
+            heard.get().length == 1 &&
+            ws.defects.get().length == before + 1
     }
     then "with no reader, the same pass files its rows and speaks nothing" {
         let ws = refs_refused_workspace()
         let before = ws.defects.get().length
-        ws.references() > 0 && ws.defects.get().length == before
+        let _ = ws.references()
+        Ref.all(ws.decls.rows_db.get()).length > 0 && ws.defects.get().length == before
     }
     then "a refusal of NO rows is a refusal still: each refused replacement speaks its defect and no 'used nowhere' is read off the relation" {
         let quiet = refs_refused_over("")
-        let quiet_filed = quiet.references()
+        let _ = quiet.references()
+        let quiet_filed = Ref.all(quiet.decls.rows_db.get()).length
         let quiet_complete = !quiet.decls.refs_are_incomplete()
         let ws = refs_refused_over("")
         let db = ws.decls.rows_db.get()
@@ -68,10 +73,10 @@ spec "compiler/references — a refused replacement" {
         let read = Ref.all(db).length
         ws.db.kernel.settle(reader, 0)
         let before = ws.defects.get().length
-        let filed = ws.references()
+        let _ = ws.references()
         quiet_filed == 0 &&
             read == 0 &&
-            filed == 0 &&
+            Ref.all(db).length == 0 &&
             !heard.get().is_empty() &&
             ws.defects.get().length == before + heard.get().length &&
             ws.decls.refs_are_incomplete() &&
@@ -92,10 +97,10 @@ spec "compiler/references — asked while a resolve is in flight" {
             ws.decls.refs_in_file(ws.file_id(REFS_REFUSED_MAIN)).length
         ws.db.kernel.settle(resolving, 0)
         let recorded = ws.db.kernel.deps_of(resolving).length
-        let filed = ws.references()
+        let _ = ws.references()
         seen == 0 &&
             recorded == 0 &&
-            filed > 0 &&
+            Ref.all(db).length > 0 &&
             heard.get().is_empty() &&
             ws.decls.refs_of(a).length == 1
     }
