@@ -82,7 +82,7 @@ fn keyed_by(f: Family) -> KeyedBy {
         .Items or .Admitted or .FileRefs or .Visible or .Plain -> KeyedBy.File,
         .Namespace -> KeyedBy.Module,
         .Sig or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Placed or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
-        .References or .Failures -> KeyedBy.Program,
+        .References -> KeyedBy.Program,
         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
         .Input -> KeyedBy.Input,
@@ -167,10 +167,10 @@ impl Workspace {
     /// The file at `path` as this workspace numbers it — never minting one.
     fn walked_file(path: string) -> FileId? { self.decls.known_file_id(path) }
 
-    /// A file's analysis: the query a check asks of it, the root of its trails.
+    /// A file's resolve: the query a check asks first of it, the root of its trails.
     fn analysis_key(path: string) -> Key? {
         let f? = self.walked_file(path) else { return null }
-        analysis_in_key(self, f)
+        resolved_in_key(self, f)
     }
 
     /// A file's text: the input its source and its scans read, and the one
@@ -362,6 +362,12 @@ impl Workspace {
     /// A query as a person reads it: its family's word and what it keys by.
     fn key_label(k: Key) -> string { "${self.family_word(k.family)}(${self.key_subject(k)})" }
 
+    /// Every settled cell of the family named `word` — a query's by its fn.
+    fn cells_named(word: string) -> List<Key> {
+        let family? = self.family_worded(word) else { return [] }
+        [c.key for c in self.db.cells_by_family().get(family) ?? []]
+    }
+
     /// A family by its word: a declared one by its name, a query or a relation by the name the
     /// kernel holds for it, an unnamed one by its place.
     fn family_word(family: int) -> string {
@@ -371,7 +377,7 @@ impl Workspace {
 
     /// The file a query analyses, for a file's analysis alone.
     fn analysed_path(k: Key) -> string? {
-        let f? = analysis_in_seats_of(self, k) else { return null }
+        let f? = resolved_in_seat_of(self, k) else { return null }
         self.shown_path(self.decls.file(f).path)
     }
 

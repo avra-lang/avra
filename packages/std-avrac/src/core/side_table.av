@@ -119,8 +119,21 @@ impl SideTable {
     /// each cell's own fold in window order — two windows differ if
     /// either where they sit or what they hold does. SHARED, like
     /// `fp_list`: every caller folds a SideTable through this one tag.
-    fn folded(cell: fn(V) -> int) -> int {
-        fp(1, [self.lo, fp_list([cell(c) for c in self.cells])])
+    fn folded(cell: fn(V) -> int) -> int { self.folded_at(self.lo, cell) }
+
+    /// The window folded as though it started at `lo`.
+    fn folded_at(lo: int, cell: fn(V) -> int) -> int {
+        fp(1, [lo, fp_list([cell(c) for c in self.cells])])
+    }
+
+    /// `@derive(Fingerprint)`'s fold of a window: `folded`, each cell by `cell`.
+    fn fingerprint_with(cell: fn(V) -> int) -> int { self.folded(cell) }
+
+    /// `fingerprint_with` with the window's start folded as `ids` places it — a rebased
+    /// question folds every window alike wherever it sits.
+    fn fingerprint_with_in(ids: Ids, cell: fn(V) -> int) -> int {
+        let place = ids.place
+        self.folded_at(place(self.lo), cell)
     }
 
     /// `folded`, or just the cells when the window's placement is not part of the question.

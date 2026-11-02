@@ -9,15 +9,29 @@
 //! the very declaration, which is redundant, not wrong, or a sibling's
 //! private one, which a plain import shadows in its own file.
 //! Fns and types are namespaces apart, as the language keeps them.
-use core.{DeclId, FileId, DeclKind, same_decl, same_file, inserted, qtrace, traced, flatten, joined}
+use core.{
+    DeclId,
+    FileId,
+    DeclKind,
+    same_decl,
+    same_file,
+    inserted,
+    qtrace,
+    traced,
+    flatten,
+    joined,
+    Fingerprint,
+}
 use @std.text.{text_before}
 use diagnostics.{Diag, refusal, Voices, no_voices}
 use @std.errors.{Loc}
-use @std.meta.{bracket}
+use @std.meta.{bracket, derive}
+use @std.relation.{codec}
 use @std.path.{file_name}
 
 /// A file's namespace: the bindings, the names in declaration order
 /// (for suggestions), and the diagnostics building it earned.
+@derive(Fingerprint)
 export type BoundNames = {
     fns: Map<string, DeclId>,
     types: Map<string, DeclId>,
@@ -30,6 +44,7 @@ export type BoundNames = {
 /// Which of a namespace's three tables a name was asked of.
 export enum NameKind { Fn, Type, Syntax }
 
+@derive(Fingerprint)
 export type Namespace = {
     // The module's winners are shared by every file. These fields hold
     // only this file's own private declarations, its imports, prelude
@@ -119,6 +134,7 @@ export fn no_names() -> Namespace {
 export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash>, base: BoundNames, apart: List<DeclId> }
 
 // the name a module declared twice, so a read of it is answered by this refusal
+@codec
 export type Clash = { file: FileId, name: string, diag: Diag }
 
 /// One imported declaration: what, where the `use` stands, the name it

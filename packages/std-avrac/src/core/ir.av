@@ -700,6 +700,22 @@ export enum StaticBox {
     Octets(b: Bytes)
 }
 
+/// A box's content identity, written by hand: its octets are `Bytes`, which no derive folds.
+impl StaticBox {
+    fn fingerprint() -> int {
+        match self {
+            .Slots(cells) -> fp(172, [fp_list([c.fingerprint() for c in cells])]),
+            .Table(keys, values) -> fp(
+                173,
+                [fp_list([fp_str(k) for k in keys]), fp_list([v.fingerprint() for v in values])],
+            ),
+            .Octets(o) -> fp(174, [fp_list([o.at(i) for i in 0..o.length])]),
+        }
+    }
+
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+}
+
 /// The code addresses these boxes name — a `Slot.Code` is a body
 /// reference as real as an instruction's, just not one an `Ins` scan
 /// would ever see.
@@ -729,6 +745,7 @@ fn slot_code_sym(c: Slot) -> List<string> {
 /// that is no part of what its code DOES — a body's frame, whose label and
 /// declaration span move when a line above the body is written — so the code
 /// graph resolves a reference to it without hashing it.
+@derive(Fingerprint)
 export type Static = { name: string, boxes: List<StaticBox>, file: FileId? = null, debug: bool = false }
 
 /// Which instructions BRACKET a region — kept beside the enum, like

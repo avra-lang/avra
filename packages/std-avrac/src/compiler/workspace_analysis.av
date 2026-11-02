@@ -75,7 +75,7 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query, digested_by, recursive}
+use @std.relation.{query, recursive}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -142,26 +142,6 @@ export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> strin
     node_key(Stored.Unit, ["codes", "inst", home_key, shapes, symbol])
 }
 
-/// One file's analysis. Its digest is what an Analysis carries beyond its
-/// file's names and fold — every diagnostic, in pipeline order; `view` is
-/// the workspace's own state and `program` a closure, a pure fn of the
-/// file's path.
-@query
-@recursive
-@digested_by(analysis_digest)
-fn analysis_in(ws: Workspace, f: FileId) -> Analysis { ws.analyzed(f) }
-
-fn analysis_digest(ws: Workspace, f: FileId, a: Analysis) -> int {
-    fp(
-        1,
-        [
-            dep_hash_fp(ws.db.value_hash_of(resolved_in_key(ws, f))),
-            dep_hash_fp(ws.db.value_hash_of(folded_in_key(ws, f))),
-            fp_list([diag_fp(d) for d in a.diagnostics]),
-        ],
-    )
-}
-
 impl Workspace {
     /// The method-table clashes spoken in a file, asked as `method_clashes`, so the file's
     /// `Analysis` depends on the method tables its own methods belong to — never the whole
@@ -208,13 +188,8 @@ impl Workspace {
         }
     }
 
-    /// One file's analysis: the snapshot every facade reads.
-    fn analysis(f: FileId) -> Analysis {
-        // A closed one-shot workspace retains no Analysis because its
-        // program closure points back here.
-        if self.closed.get() { return self.analyzed(f) }
-        analysis_in(self, f)
-    }
+    /// One file's analysis: the snapshot every facade reads, assembled from the queries it reads.
+    fn analysis(f: FileId) -> Analysis { self.analyzed(f) }
 
     /// THE INTERPROCEDURAL READ SET, as ONE whole-program growing-set
     /// fixpoint (the engine's `Fixpoint`) over the declarations' call
@@ -449,7 +424,7 @@ impl Workspace {
         lowered_of(
             self
                 .relation(fam)
-                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
+                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> lowered_of(r).fingerprint()),
         )
     }
 

@@ -81,6 +81,10 @@ impl Workspace {
 
     fn audit_known(f: FileId) -> bool { f.index < self.decls.file_count() }
 
+    /// A read that skipped the Kernel, recorded in the open query as the cells that cover it —
+    /// what makes an answer standing on it one a record can name.
+    fn cover_read(r: Bypassed) { for k in self.audit_covers(r) { self.db.record_dep(k) } }
+
     /// What would have recorded the read, per verb: a declaration's row and facts are a
     /// function of its name's bucket, its file's parse and items (or its module's held
     /// record); a
@@ -94,7 +98,7 @@ impl Workspace {
             .Methods(d) -> [method_table_key(self, d)],
             .Store(f) -> self.file_covers(f, false),
             .Written(d) -> [key(Family.Writes, d.index)],
-            .Errors(_) -> [key(Family.Failures, 0)],
+            .Errors(_) -> self.cells_named("failures_solved"),
         }
     }
 
@@ -143,11 +147,11 @@ impl Workspace {
         )
     }
 
-    /// `own` when the outermost query is a file's analysis of the very file the read
+    /// `own` when the outermost query is a file's resolve of the very file the read
     /// was made in, `foreign` when it is another's, `-` under any other root.
     fn audit_scope(b: Bypass, home: string) -> string {
         let root? = b.frames.first() else { return "-" }
-        let f? = analysis_in_seats_of(self, root) else { return "-" }
+        let f? = resolved_in_seat_of(self, root) else { return "-" }
         if self.decls.file(f).path == home { "own" } else { "foreign" }
     }
 }

@@ -66,7 +66,7 @@ use core.{
     db_verified,
     quoted_text,
 }
-use @std.relation.db.{Db, Durable, durable_db, transient}
+use @std.relation.db.{Db, Durable, durable_db, transient, unheard_read}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
@@ -91,7 +91,7 @@ use features.{
     no_names,
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
-use @std.relation.{relation}
+use @std.relation.{relation, codec}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -664,6 +664,9 @@ export type Decls = {
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
     audit_hook: Cell<fn(Bypassed) -> void>,
+    /// What a read that skipped the Kernel stands on: the workspace records the cells that cover
+    /// it; with none armed the read is unheard, and a query that made it is never kept.
+    cover_hook: Cell<fn(Bypassed) -> void>,
     /// A DECLARATION ROW'S READ RECORDS ITS NAME'S BUCKET: reading a declaration of a
     /// file settled below records the `Named` cell its name files under (a held file's
     /// module record) in the open query — once per query, by the Kernel's own stamp. A
@@ -932,6 +935,7 @@ fn no_externs() -> List<ExternNote> { [] }
 fn no_modules() -> List<string> { [] }
 
 /// An `extern fn` a record declares: its module and file, its symbol, and whether it has a body.
+@codec
 export type ExternNote = { module: string, path: string, name: string, hosted: bool }
 
 /// What a bucket reader is about to read, as the name environments list it: a declaration
@@ -939,6 +943,9 @@ export type ExternNote = { module: string, path: string, name: string, hosted: b
 export enum Listed { Name(name: string), Word(word: string), Mark(mark: string), Extern(name: string), Hosted }
 
 fn no_audit(_r: Bypassed) {}
+
+/// A read nothing covers: unheard.
+fn uncovered(_r: Bypassed) { unheard_read() }
 
 /// Whether a scope gathers from every file of the owner's package.
 export fn admits_package(scope: CollectScope) -> bool {
@@ -1013,6 +1020,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
+        cover_hook: Cell.new(uncovered),
         record_kernel: new_kernel(),
         rows_db: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
@@ -1171,6 +1179,7 @@ impl Decls {
     fn decl(d: DeclId) -> Decl {
         let x = self.decl_cells.get()[d.index] ?? self.removed(d)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
+        if x.standing == 0 && x.home != null { self.covered(Bypassed.Decl(d)) }
         self.row_read(x)
         x
     }
@@ -1253,6 +1262,19 @@ impl Decls {
         (self.audit_hook.get())(r)
         self.auditing.set(true)
     }
+
+    /// A read the kernel never hears: told to the audit, and to any open query, whose answer
+    /// then stands on something its record cannot name.
+    fn bypassed(r: Bypassed) {
+        if audit_build && self.auditing.get() { self.audited(r) }
+        self.covered(r)
+    }
+
+    /// A read that skipped the Kernel, recorded as the cells that cover it.
+    fn covered(r: Bypassed) { (self.cover_hook.get())(r) }
+
+    /// The workspace arms the cover once: the cells each bypassed read stands on.
+    fn arm_cover(hook: fn(Bypassed) -> void) { self.cover_hook.set(hook) }
 
     /// The workspace arms the audit once, when `AVRA_DEP_AUDIT` asks.
     fn arm_audit(hook: fn(Bypassed) -> void) {
@@ -1357,6 +1379,7 @@ impl Decls {
             file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
             expr: (i: int) -> i,
             stmt: (i: int) -> i,
+            place: (i: int) -> i,
         }
     }
 
@@ -1950,7 +1973,7 @@ impl Decls {
     /// `d` itself belongs to) and must not recurse back into it —
     /// null answers "not settled yet," never "not there is an error."
     fn sig_so_far(d: DeclId) -> DeclSig? {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.SigSoFar(d)) }
+        self.bypassed(Bypassed.SigSoFar(d))
         self.sigs.get()[d.index]
     }
 
@@ -2033,6 +2056,7 @@ impl Decls {
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
+        self.cover_hook.set(uncovered)
         self.types.disarm_declare()
         self.rows_db.get().close_saying(voice)
     }
@@ -2480,7 +2504,7 @@ impl Decls {
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Written(d)) }
+        self.bypassed(Bypassed.Written(d))
         let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
@@ -2516,7 +2540,7 @@ impl Decls {
     /// A `_`-declared fn's growing error set, as the fixpoint found it
     /// so far — deduped by type identity, the pass's own read, hook-free.
     fn inferred_errors_so_far(d: DeclId) -> List<TypeId> {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Errors(d)) }
+        self.bypassed(Bypassed.Errors(d))
         self.inferred_errs.at(d.index) ?? []
     }
 

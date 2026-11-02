@@ -1,0 +1,48 @@
+//! A name a file's annotation generates is that file's declaration like a written one, so its
+//! module's other files read it bare — and a sibling's expansion is its kept answer: a later
+//! revision verifies it, never expands it again.
+use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths}
+use compiler.host.{memory_host}
+use compiler.{expanded_in_key}
+
+fn provider() -> string {
+    "use @std.meta.{Type, Directive, Declared}\n\nexport fn gen(t: Type) -> Declared {\n    Declared {\n        made: [Directive { twin: \"\", name: t.name, at: t.at, source: quote { fn made_seven() -> int { 7 } } }],\n        problems: [],\n    }\n}\n"
+}
+
+fn files() -> Map<string, string> {
+    vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/gen\" = { path = \"vendor/gen\" }\n",
+            "/w/src/main.av": "export fn caller() -> int {\n    made_seven()\n}\n\ncaller()\n",
+            "/w/src/made.av": "use @x.gen.{gen}\n\n@gen\ntype Holder = { n: int }\n",
+            "/w/vendor/gen/avra.toml": "[package]\nname = \"@x/gen\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/gen/src/gen.av": provider(),
+        },
+    )
+}
+
+fn paths() -> List<string> {
+    [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/src/made.av",
+        "/w/vendor/gen/avra.toml",
+        "/w/vendor/gen/src/gen.av",
+    ]
+        .concat(vendored_meta_paths())
+}
+
+spec "compiler/expand — a sibling file's generated name" {
+    given "two files of one module, one generating a fn the other calls" {
+        then "the caller reads it bare" {
+            let ws = test_workspace(memory_host(files(), paths()), "/w")
+            checked(ws, "/w/src/main.av")
+        }
+        then "a later revision verifies the sibling's expansion and does not compute it" {
+            let ws = test_workspace(memory_host(files(), paths()), "/w")
+            let _ = checked(ws, "/w/src/main.av")
+            ws.db.kernel.bump()
+            !(ws.db.ask(expanded_in_key(ws, ws.file_id("/w/src/made.av"))) is .Compute)
+        }
+    }
+}
