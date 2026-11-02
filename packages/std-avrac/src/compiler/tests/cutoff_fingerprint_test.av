@@ -9,7 +9,8 @@
 // alike. The kernel's own cutoff (`prior.value_hash == value_hash` in
 // the kernel's `settle`) is exactly this equality, so a field
 // left out of a fold is exactly a field whose edit would be missed.
-use core.{TypeId, ExprId, StmtId, DeclId, indexed_ids}
+use core.{TypeId, ExprId, StmtId, DeclId}
+use @std.relation.stable.{indexed_scope}
 use features.{Namespace, no_names, new_name_facts, new_type_facts, TypeFacts}
 use @std.relation.stable.{indexed_scope}
 use diagnostics.{Diag, Voices, refusal}
@@ -37,18 +38,18 @@ fn voices_of(ds: List<Diag>) -> Voices {
 spec "compiler/voices — the six families' content fingerprints" {
     given "a namespace's fold, over a namespace's bound names" {
         then "two namespaces built the same way fingerprint alike" {
-            named("foo", did(1)).fingerprint_in(indexed_ids()) == named("foo", did(1)).fingerprint_in(indexed_ids())
+            named("foo", did(1)).fingerprint_in(indexed_scope()) == named("foo", did(1)).fingerprint_in(indexed_scope())
         }
         then "a different bound name's identity moves the fingerprint" {
-            named("foo", did(1)).fingerprint_in(indexed_ids()) != named("foo", did(2)).fingerprint_in(indexed_ids())
+            named("foo", did(1)).fingerprint_in(indexed_scope()) != named("foo", did(2)).fingerprint_in(indexed_scope())
         }
         then "a different bound name's spelling moves the fingerprint" {
-            named("foo", did(1)).fingerprint_in(indexed_ids()) != named("bar", did(1)).fingerprint_in(indexed_ids())
+            named("foo", did(1)).fingerprint_in(indexed_scope()) != named("bar", did(1)).fingerprint_in(indexed_scope())
         }
         then "a namespace's own voices move the fingerprint" {
             let plain = no_names()
             let voiced = no_names() with { voices: voices_of([one_diag("x.y", "boom")]) }
-            plain.fingerprint_in(indexed_ids()) != voiced.fingerprint_in(indexed_ids())
+            plain.fingerprint_in(indexed_scope()) != voiced.fingerprint_in(indexed_scope())
         }
     }
 
@@ -71,18 +72,18 @@ spec "compiler/voices — the six families' content fingerprints" {
         then "the SAME binding at the SAME expression fingerprints alike" {
             let a = new_name_facts(2, no_names())
             let b = new_name_facts(2, no_names())
-            a.fingerprint_in(indexed_ids()) == b.fingerprint_in(indexed_ids())
+            a.fingerprint_in(indexed_scope()) == b.fingerprint_in(indexed_scope())
         }
         then "a mut-seat read mark moves the fingerprint" {
             let a = new_name_facts(2, no_names())
             let b = new_name_facts(2, no_names())
             b.mark_mut_read(eid(0))
-            a.fingerprint_in(indexed_ids()) != b.fingerprint_in(indexed_ids())
+            a.fingerprint_in(indexed_scope()) != b.fingerprint_in(indexed_scope())
         }
         then "the namespace it resolved against moves the fingerprint" {
             let a = new_name_facts(1, no_names())
             let b = new_name_facts(1, named("foo", did(1)))
-            a.fingerprint_in(indexed_ids()) != b.fingerprint_in(indexed_ids())
+            a.fingerprint_in(indexed_scope()) != b.fingerprint_in(indexed_scope())
         }
     }
 

@@ -25,6 +25,7 @@ use core.{
 }
 use @std.path.{dir_of}
 use features.{
+    NameFacts,
     Unsettled,
     Settled,
     Settlement,
@@ -50,6 +51,7 @@ use features.{
     SettleRoot,
     new_type_facts,
     TypeFacts,
+    Offset,
 }
 use core.{StmtId}
 use diagnostics.{Diag, no_voices, has_errors}
@@ -63,20 +65,10 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{
-    Lowered,
-    Body,
-    Unit,
-    Instance,
-    CodeFacts,
-    KeptInstance,
-    HeldWants,
-    lower_unit,
-    code_facts_from_wire,
-}
+use compiler.lower.{Lowered, Body, Unit, Instance, CodeFacts, KeptInstance, HeldWants, lower_unit}
 use compiler.memory.{memory}
 use @std.relation.{query}
-use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
+use @std.relation.engine.{FixpointRefusal, Key, edge_of, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -124,7 +116,14 @@ fn reach_solved(ws: Workspace) -> int {
 
 /// One expression of file `f` wanted as a program's entry.
 fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Wanted {
-    Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }
+    Wanted {
+        file: f,
+        decl: null,
+        name: name,
+        sub: null,
+        seats: seats,
+        root: Offset { index: root.index },
+    }
 }
 
 /// A kept instantiation's reference: its store key and its symbol.
@@ -394,13 +393,19 @@ impl Workspace {
     }
 
     /// One declaration's analysis over its own range's facts, windowed as typed: a fn or
-    /// a method reads nothing outside it, so no file-wide table is laid per body.
-    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis { self.analysis_over(f, self.typed(d)) }
+    /// a method reads nothing outside it, so no file-wide table is laid per body, and its
+    /// reader stands on that declaration's syntax, placement and names, never its file's.
+    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis {
+        let _ = self.syntax(d)
+        let _ = self.placed(d)
+        self.analysis_from(f, self.parse_standing(f), self.names_of(d), self.typed(d))
+    }
 
     /// An analysis of `f` whose body facts are `facts`.
-    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis {
-        let p = self.parsed(f)
-        let names = self.resolved(f)
+    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis { self.analysis_from(f, self.parsed(f), self.resolved(f), facts) }
+
+    /// An analysis of `f` over its parse, its names and the body facts `facts`.
+    fn analysis_from(f: FileId, p: Parsed, names: NameFacts, facts: TypeFacts) -> Analysis {
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
@@ -440,7 +445,10 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id, true) }
+    fn lowered(id: int) -> Unit { self.unit_checked(self.asks.get()[id], id) }
+
+    /// One unit lowered in this process, never served from a kept answer.
+    fn lowered_fresh(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
 
     /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
     /// never `Lowered`'s. The two share `id`'s space (interned by
@@ -450,25 +458,28 @@ impl Workspace {
     /// a comptime run's units — every seat borrowed, see
     /// `comptime_active` — from ever standing in for the real
     /// program's.
-    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id, false) }
+    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id) }
 
     /// The shared memo shape `lowered` and `lift_lowered` differ only
     /// by family: start recursive, reuse a settled answer, or lower
     /// the ask and settle it.
-    fn lowered_in(fam: Family, id: int, rows: bool) -> Unit {
+    fn lowered_in(fam: Family, id: int) -> Unit {
         match self.relation(fam).start_recursive(id) {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
-        let out = self.lowered_unit(self.asks.get()[id], rows)
+        let out = self.lowered_unit(self.asks.get()[id])
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
-        lowered_of(
+        let made = lowered_of(
             self
                 .relation(fam)
                 .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> lowered_of(r).fingerprint()),
         )
+        let k = key_at(fam.ordinal, id)
+        self.decls.rows_db.get().owed(edge_of(k), k)
+        made
     }
 
     /// Every body a unit lowered belongs to the unit's declaration: a specialization
@@ -479,9 +490,8 @@ impl Workspace {
         for b in out.bodies { self.hold.owners.put(b.name, d) }
     }
 
-    /// One unit: served from its kept row when `rows` allows, else lowered and,
-    /// when it spoke nothing, kept.
-    fn lowered_unit(w: Wanted, rows: bool) -> Unit {
+    /// One unit lowered.
+    fn lowered_unit(w: Wanted) -> Unit {
         // A unit's OWN body is a read whatever its shape: a declaration's
         // range, or — for a program's entry, a body no declaration owns —
         // the whole file's parse, which is where that body lives. Without
@@ -491,14 +501,15 @@ impl Workspace {
         } else if w.root == null {
             let _ = self.parsed(w.file)
         }
-        let served = if rows { self.unit_served(w) } else { null }
-        if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
-        if served != null { return served! }
+        if traced() { qtrace("Q\tunit\tlowered\t${w.name}\n") }
         let out = self.lower_requested(w)
         self.owned(w, out)
-        if rows { self.unit_kept(w, out) }
         out
     }
+
+    /// Whether lowered bodies carry the back-edge cancel check: no compile-time run, no wasm
+    /// target, and a program that links a scheduler.
+    fn back_edge_checks() -> bool { !self.comptime_active() && !self.wasm_target() && self.scheduler_linked() }
 
     /// Whether a compile-time run — a lift, an argument crossing, a
     /// const's settlement — is currently lowering bodies. Its units
@@ -596,7 +607,7 @@ impl Workspace {
             let r = todo.pop()
             if seen.get(r.key) != null { continue }
             seen.set(r.key, true)
-            let f? = code_facts_from_wire(s.get(Stored.Unit, r.key) ?? "") else {
+            let f? = self.facts_of_text(s.get(Stored.Unit, r.key) ?? "") else {
                 held.push(r.symbol)
                 continue
             }
@@ -616,9 +627,8 @@ impl Workspace {
     fn read_held_codes(s: Store) -> List<ReadFile> {
         mut unread: List<ReadFile> = []
         for path in held_paths(self) {
-            let codes = code_facts_from_wire(
-                s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "",
-            )
+            let codes = self
+                .facts_of_text(s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "")
             if codes == null { unread.push(ReadFile { path: path, why: Reads.CodesUnread }) } else { self.hold.held_codes.push(codes!) }
         }
         unread
@@ -671,14 +681,35 @@ impl Workspace {
         // either. A WASM build emits none whatever the survey says: its
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
-        let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
+        let checks = self.back_edge_checks()
+        if w.decl != null && self.lowers_from_own_range(w.decl!) {
+            self.hold.ranged.push(w.file.index)
+            let out = lower_unit(
+                self.ranged_analysis(w.file, w.decl!),
+                self.extern_symbols(),
+                self.rooted(w),
+                settle,
+                cross,
+                checks,
+            )
+            let open = self.hold.ranged.get()
+            self.hold.ranged.set(open.slice(0, open.length - 1))
+            return out
+        }
         let analysis = when {
             w.decl == null -> self.analysis(w.file)
-            self.lowers_from_own_range(w.decl!) -> self.ranged_analysis(w.file, w.decl!)
             self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
             _ -> self.analysis(w.file)
         }
-        lower_unit(analysis, self.extern_symbols(), w, settle, cross, checks)
+        lower_unit(analysis, self.extern_symbols(), self.rooted(w), settle, cross, checks)
+    }
+
+    /// A declared unit's want with its root as this process reads the declaration: a want
+    /// written while its file was held carries none, whatever its body.
+    fn rooted(w: Wanted) -> Wanted {
+        let d? = w.decl else { return w }
+        if w.root != null || w.sub != null { return w }
+        w with { root: self.decls.declared_unit(d).root }
     }
 
     /// Whether a declaration lowers from the expressions its own range holds: a fn or a

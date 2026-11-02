@@ -8,6 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
+use @std.relation.{codec}
 use @std.io.{env}
 use @std.errors.{Frame}
 use @std.text.{text_before}
@@ -83,7 +84,7 @@ use compiler.{Analysis, any_root}
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
 /// the params, and `gives` is the register RetVal answers with.
-@derive(Fingerprint)
+@codec
 export type Body = {
     name: string,
     params: List<TypeId>,
@@ -367,7 +368,7 @@ export fn lower_unit(
         )
         w.root != null -> lower_root(
             a,
-            w.root!,
+            a.view.decls.root_of(w)!,
             w.name,
             w.seats,
             externs,
@@ -1734,7 +1735,7 @@ fn lower_state_root(
         .types
         .intern(Type.Error)
     let cell_ty: TypeId = a.view.decls.types.intern(Type.Cell(read_ty))
-    let root? = w.root else {
+    let root? = a.view.decls.root_of(w) else {
         return LoweredBody {
             body: Body {
                 name: w.name,

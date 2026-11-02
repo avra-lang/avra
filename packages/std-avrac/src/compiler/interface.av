@@ -26,6 +26,7 @@ use @std.text.{text_before}
 use features.{
     Decl,
     Settlement,
+    Unsettled,
     LANGUAGE_HOME,
     DeclAt,
     FnSig,
@@ -74,8 +75,8 @@ impl Workspace {
         // only one, and one that decodes as neither a value nor a structural refusal is a
         // defect said
         let raw = text_of_field(row.field(1))
-        let value? = settled_from_wire(raw) else {
-            let words? = reach_from_wire(raw) else {
+        let value? = held_value(settlement_of_text(raw)) else {
+            let words? = reach_words(settlement_of_text(raw)) else {
                 return self
                     .defect(
                         "a held const's value did not decode — `${d.name}` in ${self.decls.file(d.file).path}",
@@ -508,7 +509,7 @@ impl Workspace {
     /// instance holding behavior — refuses structurally too and is kept the same way.
     fn const_kept(d: Decl) -> string {
         match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
-            .Ok(value) -> kept_wire(value),
+            .Ok(value) -> kept_text(Settlement.Held(value)),
             // `settled` collapses a reused refusal to `.Spoken` so a diagnostic never
             // repeats — ask the relation for the const's one real verdict
             .Err(_) -> reach_kept(self.settle_verdict(d.file, SettleRoot.Const(d.stmt), [])),
@@ -929,7 +930,7 @@ export fn wire_spelled(home: string, n: WireName, at: int, count: int) -> string
 }
 
 /// A file's declaration lines' wires, from its Items lines alone, by the name each declares;
-/// each wire names its file as `home`.
+/// `home` is the file's durable name, `path` the one its lines were filed under.
 export fn line_wires_by_name(path: string, home: string, lines: List<List<string>>) -> Map<
     string,
     List<string>,
@@ -976,7 +977,7 @@ fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|
 fn reach_kept(verdict: Settlement?) -> string {
     let v? = verdict else { return "" }
     match v {
-        .Refused(why) -> if why.structural() { reach_wire(why.words()) } else { "" },
+        .Refused(why) -> if why.structural() { kept_text(Settlement.Refused(Unsettled.Reach(why.words()))) } else { "" },
         .Held(_) -> "",
     }
 }
@@ -1016,3 +1017,15 @@ fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
 
 /// Whether a record line is one a file's Items keep: a declaration's, or the maker that made it.
 fn items_line(parts: List<string>) -> bool { declares(parts) || parts[0] == "maker" }
+
+/// A kept settlement's value, when it holds one.
+fn held_value(s: Settlement?) -> Settled? {
+    let kept? = s else { return null }
+    match kept { .Held(v) -> v, .Refused(_) -> null }
+}
+
+/// A kept refusal's reach words, when it was refused for its reach.
+fn reach_words(s: Settlement?) -> string? {
+    let kept? = s else { return null }
+    match kept { .Refused(why) -> why.words(), .Held(_) -> null }
+}
