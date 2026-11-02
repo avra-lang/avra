@@ -752,6 +752,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
 	@sh tools/store_clean_attack.sh
+	@sh tools/package_swap_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
