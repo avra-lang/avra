@@ -27,6 +27,8 @@ use core.{
     Stmt,
     Expr,
     Scoped,
+    expr_window,
+    stmt_window,
 }
 use diagnostics.{Diag}
 use features.{Decl, DeclAt, decl_key_text, no_origins}
@@ -54,11 +56,23 @@ impl Decls {
                 )
             self.file_names.push(name)
             self.stores.push(null)
-            self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
+            self
+                .decl_ids
+                .push(Cell.new(side_table("decl_ids", stmt_window(0), 0, DeclAt { decl: null })))
             self.file_owners.push(owner)
             self
                 .expr_owners
-                .push(Cell.new(side_table<DeclAt>("expr_owners", 0, 0, DeclAt { decl: null })))
+                .push(
+                    Cell
+                        .new(
+                            side_table<DeclAt>(
+                                "expr_owners",
+                                expr_window(0),
+                                0,
+                                DeclAt { decl: null },
+                            ),
+                        ),
+                )
             self.generations.push([])
             self.origins.push(no_origins())
             let no_voices: List<Diag> = []
@@ -167,7 +181,12 @@ impl Decls {
         self.stores.set_at(f.index, store)
         let _ = self.counted.get().opened(f, "")
         mut minted: List<int> = []
-        mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
+        mut by_stmt = side_table(
+            "decl_ids",
+            stmt_window(0),
+            store.stmts.count(),
+            DeclAt { decl: null },
+        )
         mut out: List<DeclId> = []
         // A `state` at the top level is a DECLARATION: the mark lands
         // before `declared_kind` reads it, so this statement mints a
@@ -302,10 +321,12 @@ impl Decls {
     fn clear_file_seats(f: FileId) {
         self.stores.set_at(f.index, null)
         self.mains.set_at(f.index, null)
-        self.decl_ids.set_at(f.index, Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
+        self
+            .decl_ids
+            .set_at(f.index, Cell.new(side_table("decl_ids", stmt_window(0), 0, DeclAt { decl: null })))
         self
             .expr_owners
-            .set_at(f.index, Cell.new(side_table("expr_owners", 0, 0, DeclAt { decl: null })))
+            .set_at(f.index, Cell.new(side_table("expr_owners", expr_window(0), 0, DeclAt { decl: null })))
         self.note_rows(f, 0)
     }
 
@@ -333,7 +354,12 @@ impl Decls {
         mut hi: List<int> = filled(self.decl_count(), 0)
         mut slo: List<int> = filled(self.decl_count(), 0 - 1)
         mut shi: List<int> = filled(self.decl_count(), 0)
-        mut exprs = side_table<DeclAt>("expr_owners", 0, store.exprs.count(), DeclAt { decl: null })
+        mut exprs = side_table<DeclAt>(
+            "expr_owners",
+            expr_window(0),
+            store.exprs.count(),
+            DeclAt { decl: null },
+        )
         // A SYNTHESIZED NODE HAS NO SPAN, AND A RANGE THAT SKIPS IT
         // STOPS SHORT OF IT. A desugaring is minted where it is used,
         // so source order is ownership order: a span-less expression
@@ -484,7 +510,20 @@ impl Decls {
             let store = self.store_of(x.file)
             if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
         }
-        Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
+        Wanted {
+            file: x.file,
+            decl: d,
+            name: self.symbol(d),
+            sub: null,
+            root: if root == null { null } else { Offset { index: root!.index - x.lo } },
+        }
+    }
+
+    /// A want's root expression, where its declaration (or its file) stands now.
+    fn root_of(w: Wanted) -> ExprId? {
+        let at? = w.root else { return null }
+        let base = if w.decl == null { 0 } else { self.decl(w.decl!).lo }
+        ExprId { index: base + at.index }
     }
 
     /// A declared instance's unit.

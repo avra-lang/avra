@@ -22,7 +22,7 @@ use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.voices.{name_slice_fp}
-use features.{SettleRoot, SeatValue}
+use features.{SettleRoot, SeatValue, DeclSig, TypeFacts}
 use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
@@ -118,7 +118,7 @@ impl Workspace {
         let s? = self.decls.sigs.get()[arg] else {
             return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
         }
-        fp_str(self.decl_sig_wire(s))
+        sig_hash(s, self.facts_scope(0, 0))
     }
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
@@ -218,7 +218,7 @@ impl Workspace {
         if arg < 0 || arg >= self.asks.get().length { return null }
         let w = self.asks.get()[arg]
         let path = self.decls.file(w.file).path
-        let root? = w.root else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
+        let root? = self.decls.root_of(w) else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
         let owner? = self.root_owner(w.file, root) else { return null }
         // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
         "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_wire(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
@@ -611,7 +611,7 @@ impl Workspace {
         if placed.any(it == null) { return null }
         joined(
             [
-                "${(facts with { voices: Voices { list: [] } }).fingerprint_in(self.decls.ids().rebased(facts.of_expr.lo))}",
+                "${TypeFacts.digest_in(self.facts_scope(facts.of_expr.lo(), facts.stmt_flags.lo()), facts with { voices: Voices { list: [] } })}",
             ]
                 .concat([p! for p in placed]),
             "\n",

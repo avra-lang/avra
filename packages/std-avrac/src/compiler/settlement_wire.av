@@ -45,24 +45,6 @@ fn wire_map(row: MetaMap) -> string {
     out
 }
 
-/// A unit row contains the answer, its heap, embed dependencies, the bodies its
-/// run entered, and the value fingerprint that specialization keys use. Heap handles remain indices into
-/// these serialized arrays. The bodies a run entered are named as its process named them, so
-/// what the store keeps is `kept_wire`.
-fn settled_wire(s: Settled) -> string {
-    "S2" +
-        wire_field("${s.fingerprint}") +
-        fields_wire(s.embeds) +
-        fields_wire(s.ran) +
-        heap_wire(s.heap) +
-        wire_value(s.answer)
-}
-
-/// A settled value AS THE STORE KEEPS IT: without the bodies its run entered. Those
-/// names are the run's own process's, and nothing reads them back — so no
-/// process-local id crosses the disk.
-fn kept_wire(s: Settled) -> string { settled_wire(s with { ran: [] }) }
-
 type WireReader = { raw: string, pos: int }
 
 /// A counted run of fields: its length, then each one.
@@ -148,41 +130,13 @@ impl WireReader {
     }
 }
 
-fn settled_from_wire(raw: string) -> Settled? {
-    if !raw.starts_with("S2") { return null }
-    mut r = wire_reader(raw)
-    let fp? = r.number() else { return null }
-    let embeds? = r.fields() else { return null }
-    let ran? = r.fields() else { return null }
-    let heap? = heap_from_wire(r) else { return null }
-    let answer? = r.value() else { return null }
-    if r.pos != raw.length { return null }
-    Settled { answer: answer, heap: heap, embeds: embeds, fingerprint: fp, ran: ran }
-}
-
-/// A CONST THAT STRUCTURALLY REACHES THE WORLD, kept under the same key a
-/// settled value would use: the verdict is the fact worth caching, since no
-/// amount of re-settling turns a value that reaches the world into one that
-/// does not. A stale row is safe — a callee that later stops reaching the
-/// world just keeps the const on its runtime `once` path, same answer, one
-/// skipped optimization.
-fn reach_wire(words: string) -> string { "R1" + wire_field(words) }
-
-fn reach_from_wire(raw: string) -> string? {
-    if !raw.starts_with("R1") { return null }
-    mut r = wire_reader(raw)
-    let words? = r.field() else { return null }
-    if r.pos != raw.length { return null }
-    words
-}
-
 // ── What a file's bodies ASK ──────────────────────────────────────
 //
 // A held file contributes no body — its machine code is the stored object — but
 // it does contribute the instantiations its bodies demand. A type argument rides
 // the same wire a record's shape does; `read_type_wire` is its inverse.
 use core.{FileId, DeclId, TypeId, wire_fields}
-use features.{Wanted, Sub, SeatValue}
+use features.{Wanted, Sub, SeatValue, Offset}
 
 fn heap_wire(h: MetaHeap) -> string {
     mut out = wire_field("${h.nodes.length}")
@@ -331,7 +285,7 @@ impl Workspace {
         let sub_mark? = r.field() else { return null }
         let f? = self.file_from_ref(file_path) else { return null }
         let decl = self.decl_from_ref(decl_raw)
-        let root: ExprId? = if root_mark == "+" {
+        let root: Offset? = if root_mark == "+" {
             let d? = decl else { return null }
             self.decls.declared_unit(d).root
         } else {

@@ -1,0 +1,28 @@
+// A BODY'S TYPED DIGEST IS ITS CODEC'S BYTES UNDER ITS OWN WINDOW: ids counted from where the
+// declaration starts, types and declarations by their durable names. So a declaration written
+// above it moves every id it holds and leaves its digest standing, and a change to its own body
+// moves the digest.
+use features.{TypeFacts}
+
+fn td_path() -> string { "/w/src/main.av" }
+
+fn td_body(n: string) -> string { "fn b(x: int) -> int {\n    let y = x + ${n}\n    y * 2\n}\n\nb(1)\n" }
+
+/// `b`'s typed digest, in a process over `text`.
+fn td_digest(text: string) -> int {
+    let ws = a_process_over({td_path(): text}, [td_path()])
+    let _ = checked(ws, td_path())
+    let facts = ws.typed(decl_in_file(ws, td_path(), "b"))
+    TypeFacts.digest_in(ws.facts_scope(facts.of_expr.lo(), facts.stmt_flags.lo()), facts)
+}
+
+spec "compiler/typed digest — a body's digest is its own" {
+    given "a declaration written above `b`" {
+        then "b's typed digest stands" {
+            td_digest(td_body("1")) == td_digest("fn above(a: int) -> int {\n    a + a * 3\n}\n\n${td_body("1")}")
+        }
+    }
+    given "a change to b's own body" {
+        then "b's typed digest moves" { td_digest(td_body("1")) != td_digest(td_body("\"s\".length")) }
+    }
+}
