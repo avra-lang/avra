@@ -25,6 +25,7 @@ use core.{
 }
 use @std.path.{dir_of}
 use features.{
+    NameFacts,
     Unsettled,
     Settled,
     Settlement,
@@ -393,13 +394,19 @@ impl Workspace {
     }
 
     /// One declaration's analysis over its own range's facts, windowed as typed: a fn or
-    /// a method reads nothing outside it, so no file-wide table is laid per body.
-    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis { self.analysis_over(f, self.typed(d)) }
+    /// a method reads nothing outside it, so no file-wide table is laid per body, and its
+    /// reader stands on that declaration's syntax, placement and names, never its file's.
+    fn ranged_analysis(f: FileId, d: DeclId) -> Analysis {
+        let _ = self.syntax(d)
+        let _ = self.placed(d)
+        self.analysis_from(f, self.parse_standing(f), self.names_of(d), self.typed(d))
+    }
 
     /// An analysis of `f` whose body facts are `facts`.
-    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis {
-        let p = self.parsed(f)
-        let names = self.resolved(f)
+    fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis { self.analysis_from(f, self.parsed(f), self.resolved(f), facts) }
+
+    /// An analysis of `f` over its parse, its names and the body facts `facts`.
+    fn analysis_from(f: FileId, p: Parsed, names: NameFacts, facts: TypeFacts) -> Analysis {
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
@@ -673,9 +680,22 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
+        if w.decl != null && self.lowers_from_own_range(w.decl!) {
+            self.hold.ranged.push(w.file.index)
+            let out = lower_unit(
+                self.ranged_analysis(w.file, w.decl!),
+                self.extern_symbols(),
+                self.rooted(w),
+                settle,
+                cross,
+                checks,
+            )
+            let open = self.hold.ranged.get()
+            self.hold.ranged.set(open.slice(0, open.length - 1))
+            return out
+        }
         let analysis = when {
             w.decl == null -> self.analysis(w.file)
-            self.lowers_from_own_range(w.decl!) -> self.ranged_analysis(w.file, w.decl!)
             self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
             _ -> self.analysis(w.file)
         }
