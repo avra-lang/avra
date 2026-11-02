@@ -48,6 +48,7 @@ use core.{
 use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
+    ItemLine,
     ExternNote,
     Listed,
     Ref,
@@ -926,10 +927,6 @@ fn file_refs_verified(ws: Workspace, arg: int) -> int {
     touch(ws.file_references(file_at(arg)))
     ws.db.changed_at(key(Family.FileRefs, arg))
 }
-fn failures_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.failures())
-    ws.db.changed_at(key(Family.Failures, arg))
-}
 fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
@@ -990,7 +987,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
         .FileRefs -> file_refs_verified(ws, arg),
-        .Failures -> failures_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
@@ -1015,6 +1011,13 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.warnings_of(ws.de
 fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks.get()[d.index] ?? [] }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
+/// WHAT A FILE'S PARSE DECLARES: the lines every admission of the file mints from.
+@query
+fn items_of_file(ws: Workspace, f: FileId) -> List<ItemLine> {
+    let p = ws.parsed(f)
+    ws.decls.admission(f, p.store, p.stmts)
+}
+
 @query
 fn source_of(ws: Workspace, f: FileId) -> SourceFile {
     work_loaded()
@@ -2003,8 +2006,8 @@ impl Workspace {
             .Compute -> nothing(),
         }
         self.decls.note_rows(f, 0)
-        let p = self.parsed(f)
-        let out = self.items_settled(f, self.decls.admit(f, p.store, p.stmts))
+        let out = self
+            .items_settled(f, self.decls.admitted(f, self.parsed(f).store, items_of_file(self, f)))
         self.decls.note_rows(f, 1)
         out
     }
@@ -2725,7 +2728,6 @@ export fn family_code_hash(f: Family) -> string {
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
         .FileRefs -> code_hash(file_refs_verified) ?? "",
-        .Failures -> code_hash(failures_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
