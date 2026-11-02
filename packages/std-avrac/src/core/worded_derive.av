@@ -1,0 +1,67 @@
+//! `@derive(Worded)` — an enum read from and written as its words. A
+//! variant's word is its `@word("…")` mark, else its lowercased name.
+//! `worded_<Enum>(text)` answers the payload-free variant a word spells,
+//! or null for a word none does; `word_of_<Enum>(v)` answers a variant's
+//! word, for an enum whose every variant is payload-free. A variant that
+//! carries a payload is no word's.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
+//! TYPES the file that declares it.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Stmts, Arms, literal}
+use @std.text.{ascii_lower}
+
+/// The mark a variant spells its own word with.
+export const word_mark: string = "word"
+
+/// The compiler's derive for an enum read from and written as its words.
+export trait Worded {
+    /// A variant's own word.
+    static fn marks(t: MetaType) -> List<string> { [word_mark] }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        let reading = Directive {
+            twin: "",
+            name: t.name,
+            at: t.at,
+            source: quote {
+                export fn ${"worded_${t.name}"}(text: string) -> ${t}? {
+                    ${chain([arm(v) for v in t.variants.filter(it.fields.is_empty())])}
+                    null
+                }
+            },
+        }
+        if !t.variants.all(it.fields.is_empty()) { return [reading] }
+        [
+            reading,
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    export fn ${"word_of_${t.name}"}(v: ${t}) -> string {
+                        match v { ${[word_arm(v) for v in t.variants]} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// The word that spells a variant: its mark's, else its name lowered.
+fn word_for(v: MetaVariant) -> string {
+    let m? = v.marks.find(it.name == word_mark) else { return ascii_lower(v.name) }
+    m.args[0]
+}
+
+/// One variant's test: the word that spells it.
+fn arm(v: MetaVariant) -> Stmts {
+    quote { if text == ${literal(word_for(v))} { return .${v} } }
+}
+
+/// One variant's arm: its word.
+fn word_arm(v: MetaVariant) -> Arms {
+    quote { .${v} -> ${literal(word_for(v))} }
+}
+
+/// The tests as one run of statements.
+fn chain(arms: List<Stmts>) -> Stmts { quote { ${..arms} } }
