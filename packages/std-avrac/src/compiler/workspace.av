@@ -158,7 +158,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, sig_producer: Cell<Producer?>, build_mode: Cell<string>, one_shot: Cell<bool> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -169,7 +169,6 @@ fn new_keys() -> Keys {
     let no_placed: Map<string, bool> = {}
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
-    let no_digests: Map<string, string> = {}
     let no_staged: Map<string, int> = {}
     let no_words: Map<string, LexWords> = {}
     let no_placing: Map<string, List<Token>> = {}
@@ -190,7 +189,6 @@ fn new_keys() -> Keys {
         placed_from: Cell.new(no_placed),
         object_keys: Cell.new(no_object),
         object_parts: Cell.new(no_parts),
-        text_digests: Cell.new(no_digests),
         staged: Cell.new(no_staged),
         lex_words: Cell.new(no_words),
         placing: Cell.new(no_placing),
@@ -295,6 +293,8 @@ type Hold = {
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
+    /// How many use-site warning queries are open: a whole-program pass never runs under one.
+    marking: Cell<int>,
     read_files: Cell<List<ReadFile>>,
     /// The modules this attempt loaded for real: a file in one was read, so it is not held.
     loaded_turn: Cell<Map<string, bool>>,
@@ -409,6 +409,7 @@ fn new_hold() -> Hold {
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
+        marking: Cell.new(0),
         read_files: Cell.new(no_read_files),
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
@@ -460,6 +461,11 @@ type Records = {
     line_index: Cell<Map<string, Map<string, List<string>>>>,
     /// Each file's use lines as its parse said them this build, kept at its end.
     uses_seen: Cell<Map<string, string>>,
+    /// Each file's kept declaration wires by the name each declares, read once per build.
+    line_refs: Cell<Map<string, LineRefs>>,
+    /// A name's whole bucket as `named_refs` answers it, once it answers: a whole answer
+    /// stands for the build.
+    named_refs: Cell<Map<string, List<string>>>,
     /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
     /// marks as re-exporting a name, read once per build however many
     /// modules see it.
@@ -496,6 +502,10 @@ type Records = {
     component_index: Cell<Map<string, List<string>>?>,
 }
 
+/// A file's kept declaration wires by the name each declares — `kept` false when no read of
+/// its text as it stands kept lines.
+type LineRefs = { kept: bool, by: Map<string, List<string>> }
+
 fn new_records() -> Records {
     let no_loaded: Map<string, bool> = {}
     let no_texts: Map<string, string> = {}
@@ -518,6 +528,8 @@ fn new_records() -> Records {
         record_files: Cell.new(no_files),
         line_index: map_cell(),
         uses_seen: map_cell(),
+        line_refs: map_cell(),
+        named_refs: map_cell(),
         record_producers: Cell.new(no_producers_of),
         record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
@@ -592,12 +604,7 @@ export type Workspace = {
     /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
     /// store stands.
     keys: Keys,
-    /// A path's module, asked once: the answer walks every package.
-    module_names_of: Cell<Map<string, string>>,
-    /// A module's files, remembered for one size of the package table — what
-    /// every `use` line of the program asks again.
-    files_of: Cell<Map<string, List<string>>>,
-    /// The same files' ids, remembered alike.
+    /// A module's files' ids, remembered for one size of the package table.
     file_ids_of: Cell<Map<string, List<FileId>>>,
     /// The revision each file's `Admitted` cell was last asked at, dense by FileId:
     /// after the revision's first ask, a reader records the edge and nothing more.
@@ -884,10 +891,6 @@ fn placed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.placed(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Placed, arg))
 }
-fn marks_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.computed_marks(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Marks, arg))
-}
 fn admitted_verified(ws: Workspace, arg: int) -> int {
     ws.admission(file_at(arg))
     ws.db.changed_at(key(Family.Admitted, arg))
@@ -936,7 +939,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Placed -> placed_verified(ws, arg),
-        .Marks -> marks_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
@@ -944,6 +946,16 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .DeclReads -> decl_reads_verified(ws, arg),
         .Input -> input_verified(ws, arg),
     }
+}
+
+/// A declaration's use-site warnings: each `List<Diagnostic>` annotation run, its WARNINGS
+/// kept (errors speak at the declaration).
+@query
+fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
+    ws.hold.marking.set(ws.hold.marking.get() + 1)
+    let out = ws.warnings_of(ws.decls.decl(d))
+    ws.hold.marking.set(ws.hold.marking.get() - 1)
+    out
 }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
@@ -1038,8 +1050,6 @@ fn built(
     let no_lift_index: Map<string, int> = {}
     let no_settles: List<SettleAsk> = []
     let no_settle_index: Map<string, int> = {}
-    let no_module_names_of: Map<string, string> = {}
-    let no_files_of: Map<string, List<string>> = {}
     let no_file_ids_of: Map<string, List<FileId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
@@ -1067,8 +1077,6 @@ fn built(
         settle_asks_index: Cell.new(no_settle_index),
         records: new_records(),
         keys: new_keys(),
-        module_names_of: Cell.new(no_module_names_of),
-        files_of: Cell.new(no_files_of),
         file_ids_of: Cell.new(no_file_ids_of),
         admission_asked: new_table<int>(),
         reexporting: map_cell(),
@@ -1302,7 +1310,7 @@ impl Workspace {
     /// record or a type pulls nothing.
     fn cancel_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        if self.comptime_active() || self.db.family_active(Family.Marks.ordinal) { return false }
+        if self.comptime_active() || self.hold.marking.get() > 0 { return false }
         if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
     }
@@ -1341,12 +1349,8 @@ impl Workspace {
             self.decls.record_marks(d, [])
             return []
         }
-        let k = key(Family.Marks, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.marks.get()[d.index] ?? [] }
-        self.db.begin(k)
-        let out = self.warnings_of(self.decls.decl(d))
+        let out = marks_of(self, d)
         self.decls.record_marks(d, out)
-        self.db.settle(k, use_warnings_fp(out))
         out
     }
 
@@ -2685,7 +2689,6 @@ export fn family_code_hash(f: Family) -> string {
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Placed -> code_hash(placed_verified) ?? "",
-        .Marks -> code_hash(marks_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",

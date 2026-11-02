@@ -3,7 +3,7 @@
 # `self` is heard by the callers that read that fn's bit and by no other body: a reader
 # stands on the one fn's answer, never on the whole survey of which seats are written.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 A=${AVRA_BIN:-build/avra}
 export AVRA_MAX_COMPILES=0
 R=build/writes-attack

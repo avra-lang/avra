@@ -28,7 +28,7 @@ A check that examined nothing is not a pass: the run prints the counts and
 exits 2 when files or mutants examined is zero. Exit 1 on any difference.
 """
 import argparse
-import glob
+import avsrc
 import json
 import os
 import re
@@ -56,8 +56,7 @@ def clear_store(*dirs):
 
 
 def tree_files(corpus):
-    found = glob.glob(os.path.join(ROOT, corpus, "**", "*.av"), recursive=True)
-    return sorted(os.path.relpath(p, ROOT) for p in found)
+    return avsrc.av_files([corpus], ROOT, tests=True)
 
 
 def mutants(text, every):

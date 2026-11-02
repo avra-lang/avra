@@ -691,7 +691,7 @@ fn key_index_member(t: Type, keys: List<Field>) -> Decls {
 /// relation's, the key's when it has one, and one per named lookup.
 fn member_names(t: Type) -> List<string> {
     let keyed: List<string> = if key_fields(t).is_empty() { [] } else { ["key", "key_text", "index_key", "by_key"] }
-    let whole: List<string> = if unique_checks(t).is_empty() { ["replaced"] } else { [] }
+    let whole: List<string> = if unique_checks(t).is_empty() { ["replaced", "put_owned"] } else { [] }
     every_member.concat(whole).concat(keyed).concat(["by_${f.name}" for f in named_lookups(t)])
 }
 
@@ -937,14 +937,22 @@ fn stored_row(t: Type) -> Code {
 
 /// `replaced`: a named owner's rows of this relation, handed over as a
 /// value — each filed as `insert` files it, the owner's other rows
-/// removed, all or nothing. None for a relation with a `@unique` field:
-/// `unique_checks` refuses row by row.
+/// removed, all or nothing. `put_owned`: one row at the id its writer
+/// minted, stamped as `owner`'s. None for a relation with a `@unique`
+/// field: `unique_checks` refuses row by row.
 fn replaced_members(t: Type) -> List<Decls> {
     if !unique_checks(t).is_empty() { return [] }
     [
         quote {
             static fn replaced(db: Db, owner: string, rows: List<${t}>) -> List<${t}> {
                 ${name(t.name)}.rows_in(db).replaced(db, owner, rows, ${filing_name(t)}())
+            }
+        },
+        quote {
+            static fn put_owned(db: Db, id: int, row: ${t}, owner: int) {
+                ${name(t.name)}
+                    .rows_in(db)
+                    .put_owned(db, ${literal(stable_name(t))}, id, row, row.stable_hash(), row.index_keys(), owner)
             }
         },
     ]
