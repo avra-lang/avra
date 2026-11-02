@@ -65,17 +65,7 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{
-    Lowered,
-    Body,
-    Unit,
-    Instance,
-    CodeFacts,
-    KeptInstance,
-    HeldWants,
-    lower_unit,
-    code_facts_from_wire,
-}
+use compiler.lower.{Lowered, Body, Unit, Instance, CodeFacts, KeptInstance, HeldWants, lower_unit}
 use compiler.memory.{memory}
 use @std.relation.{query}
 use @std.relation.engine.{FixpointRefusal, Key, edge_of, spoken as fixpoint_spoken}
@@ -612,7 +602,7 @@ impl Workspace {
             let r = todo.pop()
             if seen.get(r.key) != null { continue }
             seen.set(r.key, true)
-            let f? = code_facts_from_wire(s.get(Stored.Unit, r.key) ?? "") else {
+            let f? = self.facts_of_text(s.get(Stored.Unit, r.key) ?? "") else {
                 held.push(r.symbol)
                 continue
             }
@@ -632,9 +622,8 @@ impl Workspace {
     fn read_held_codes(s: Store) -> List<ReadFile> {
         mut unread: List<ReadFile> = []
         for path in held_paths(self) {
-            let codes = code_facts_from_wire(
-                s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "",
-            )
+            let codes = self
+                .facts_of_text(s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "")
             if codes == null { unread.push(ReadFile { path: path, why: Reads.CodesUnread }) } else { self.hold.held_codes.push(codes!) }
         }
         unread

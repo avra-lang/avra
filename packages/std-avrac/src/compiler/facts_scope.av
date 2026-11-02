@@ -4,6 +4,7 @@
 use core.{DeclId, TypeId, FileId, hex, unhex, wire_fields}
 use features.{Wanted, Wants, Sub}
 use compiler.{Workspace}
+use compiler.lower.{CodeFacts}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
 
@@ -146,6 +147,15 @@ impl Workspace {
     fn wants_of_text(raw: string) -> List<Wanted>? {
         let octets? = unhex(raw) else { return null }
         match Wants.decoded_in(self.facts_scope(0, 0), octets) { .Ok(w) -> w.list, .Err(_) -> null }
+    }
+
+    /// A file's code as a row keeps it: its codec's octets, spelled.
+    fn facts_text(f: CodeFacts) -> string { hex(f.encoded_in(self.facts_scope(0, 0))) }
+
+    /// `facts_text` read back; none for a text it did not write.
+    fn facts_of_text(raw: string) -> CodeFacts? {
+        let octets? = unhex(raw) else { return null }
+        match CodeFacts.decoded_in(self.facts_scope(0, 0), octets) { .Ok(f) -> f, .Err(_) -> null }
     }
 
     /// A call's instantiation as a key spells it; empty for none.

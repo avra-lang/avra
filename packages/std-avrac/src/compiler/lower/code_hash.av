@@ -23,7 +23,6 @@
 //! that reaches one cannot be computed, so it is ABSENT, and what it keys
 //! is neither read nor kept: a recompute, never a stale answer. The
 //! process says so once.
-use @std.text.{parse_int}
 use features.{Decls}
 use compiler.{mark_word}
 use @std.relation.engine.{list_cell, map_cell}
@@ -264,91 +263,6 @@ export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, as
 }
 
 fn fact_node(name: string, n: CodeNode) -> FactNode { FactNode { name: name, own: n.own, refs: n.refs } }
-
-/// A file's code as text: every field behind its length, every list
-/// behind its count, so no field's text can move a boundary.
-/// A file's code facts fold as their wire: the text already names every part.
-impl CodeFacts {
-    fn fingerprint() -> int { fp_str(code_facts_wire(self)) }
-
-    fn fingerprint_in(_ids: dyn Scope) -> int { self.fingerprint() }
-}
-
-export fn code_facts_wire(f: CodeFacts) -> string {
-    let nodes = [field(n.name) + field(n.own) + fields(n.refs) for n in f.nodes]
-    field("${nodes.length}") + nodes.join("") + fields(f.addressed) + fields(f.asked)
-}
-
-fn field(s: string) -> string { "${s.length}:${s}" }
-
-fn fields(xs: List<string>) -> string { field("${xs.length}") + [field(x) for x in xs].join("") }
-
-/// A file's code read back from its text — none for text no
-/// `code_facts_wire` wrote.
-export fn code_facts_from_wire(text: string) -> CodeFacts? {
-    mut r = WireRead { text: text, at: 0, ok: true }
-    let count = r.count()
-    mut nodes: List<FactNode> = []
-    while r.ok && nodes.length < count {
-        let name = r.field()
-        let own = r.field()
-        nodes.push(FactNode { name: name, own: own, refs: r.list() })
-    }
-    let addressed = r.list()
-    let asked = r.list()
-    if !r.ok || r.at != text.length { return null }
-    CodeFacts { nodes: nodes, addressed: addressed, asked: asked }
-}
-
-/// A cursor over a wire's text; `ok` falls the first time a field does
-/// not read.
-type WireRead = { text: string, at: int, ok: bool }
-
-const colon: int = 58
-const zero: int = 48
-
-impl WireRead {
-    /// One field's text, or "" once the wire has failed — its length's
-    /// digits read in place, so a read copies the field and nothing more.
-    mut fn field() -> string {
-        if !self.ok { return "" }
-        mut n = 0
-        mut i = self.at
-        while i < self.text.length && self.text.char_code(i) != colon {
-            let d = self.text.char_code(i) - zero
-            if d < 0 || d > 9 || i - self.at > 18 {
-                self.ok = false
-                return ""
-            }
-            n = n * 10 + d
-            i = i + 1
-        }
-        let from = i + 1
-        if i == self.at || from + n > self.text.length {
-            self.ok = false
-            return ""
-        }
-        self.at = from + n
-        self.text.substring(from, from + n)
-    }
-
-    /// A count field.
-    mut fn count() -> int {
-        let n? = parse_int(self.field()) else {
-            self.ok = false
-            return 0
-        }
-        n
-    }
-
-    /// A list: its count, then each field.
-    mut fn list() -> List<string> {
-        let n = self.count()
-        mut out: List<string> = []
-        while self.ok && out.length < n { out.push(self.field()) }
-        out
-    }
-}
 
 /// Every fn address the program takes, in a body or a static's slot.
 fn addressed(bodies: List<Body>, statics: List<Static>, shapes: Map<string, string>) -> List<string> {

@@ -30,7 +30,7 @@ use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
+use compiler.lower.{Lowered, Body, HashAsk, code_facts}
 use compiler.host.{no_source}
 use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 
@@ -908,7 +908,7 @@ impl Workspace {
         for ic in lo.instances {
             let key = self.inst_key(store, ic.key)
             let facts = code_facts(self.decls, ic.bodies, ic.statics, [])
-            let _ = store.keep_once(Stored.Unit, key, code_facts_wire(facts))
+            let _ = store.keep_once(Stored.Unit, key, self.facts_text(facts))
             let rows = flatten([[c.symbol, self.inst_key(store, c)] for c in ic.callees])
             let _ = store
                 .keep_once(
@@ -946,10 +946,10 @@ impl Workspace {
             .keep_once(
                 Stored.Unit,
                 self.codes_key(self.held_okey(store, a.view.source.file)),
-                code_facts_wire(facts),
+                self.facts_text(facts),
             )
         let path = a.view.source.file
-        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
+        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), self.facts_text(facts))
     }
 
     /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
