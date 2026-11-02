@@ -677,7 +677,7 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
-        self.hold.serving.set(match at.want { .Diagnostics -> !db_judging(), .Binary -> false })
+        self.hold.serving.set(!db_judging())
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -938,10 +938,7 @@ impl Workspace {
             statics.get(at) ?? [],
             [h.target for h in asks.get(at) ?? []],
         )
-        let facts = merged_facts(
-            fresh,
-            [s.facts for s in self.hold.served.get() if same_file(s.file, f)],
-        )
+        let facts = fresh
         let _ = store
             .keep_once(
                 Stored.Unit,
