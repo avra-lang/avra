@@ -47,7 +47,7 @@ use features.{
     PipeStage,
     new_type_facts,
 }
-use diagnostics.{DiagFacts, Severity, no_voices}
+use diagnostics.{Diag, Severity, no_voices}
 use @std.relation.stable.{indexed_scope}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
@@ -314,12 +314,12 @@ impl Workspace {
         ]
     }
 
-    /// A `DiagFacts` bearing each loc shape, so the row's own `Loc`s
+    /// A `Diag` bearing each loc shape, so the row's own `Loc`s
     /// are exercised beside the pair's.
-    fn codec_diag_exemplars() -> List<DiagFacts> {
+    fn codec_diag_exemplars() -> List<Diag> {
         let at = self.codec_loc_exemplars()[2]
         [
-            DiagFacts {
+            Diag {
                 kind: "t.plain",
                 severity: Severity.Warning,
                 primary: Frame { label: null, loc: null },
@@ -329,7 +329,7 @@ impl Workspace {
                 help: null,
                 suggestions: [],
             },
-            DiagFacts {
+            Diag {
                 kind: "t.pointer",
                 severity: Severity.Note,
                 primary: Frame { label: "met here", loc: at },
@@ -339,7 +339,7 @@ impl Workspace {
                 help: null,
                 suggestions: [],
             },
-            DiagFacts {
+            Diag {
                 kind: "t.rich",
                 severity: Severity.Error,
                 primary: Frame { label: "here", loc: at },
@@ -906,7 +906,7 @@ fn same_text(a: string, b: string) -> bool { a == b }
 // ── The scalar family answers — `int`, `bool`, `string` and `bool?`
 // ride the `MetaVal` scalar wire (`scalar_wire.av`). ──
 
-// ── The `Loc` and `DiagFacts` wires — a span crosses anchored to its
+// ── The `Loc` and `Diag` wires — a span crosses anchored to its
 // declaration, its offsets relative to that declaration's start. ──
 
 fn same_loc(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
@@ -1057,7 +1057,7 @@ fn same_verdict_read(a: VerdictRead, b: VerdictRead) -> bool {
     }
 }
 
-fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
+fn same_diag_facts(a: Diag, b: Diag) -> bool {
     a.kind == b.kind &&
         a.severity == b.severity &&
         same_frame(a.primary, b.primary) &&
@@ -1084,8 +1084,8 @@ export fn codec_loc_past_end_refused() -> bool {
 }
 
 /// A diagnostic whose one frame stands at `l`.
-fn placed_at(l: Loc) -> DiagFacts {
-    DiagFacts {
+fn placed_at(l: Loc) -> Diag {
+    Diag {
         kind: "t.placed",
         severity: Severity.Warning,
         primary: Frame { label: null, loc: l },
@@ -1099,11 +1099,11 @@ fn placed_at(l: Loc) -> DiagFacts {
 
 impl Workspace {
     /// A diagnostic through its codec, under the workspace's scope.
-    fn diag_bytes(d: DiagFacts) -> Bytes { d.encoded_in(self.facts_scope(0, 0)) }
+    fn diag_bytes(d: Diag) -> Bytes { d.encoded_in(self.facts_scope(0, 0)) }
 
     /// `diag_bytes`' inverse; none where a place no longer stands.
-    fn diag_back(b: Bytes) -> DiagFacts? {
-        match DiagFacts.decoded_in(self.facts_scope(0, 0), b) { .Ok(d) -> d, .Err(_) -> null }
+    fn diag_back(b: Bytes) -> Diag? {
+        match Diag.decoded_in(self.facts_scope(0, 0), b) { .Ok(d) -> d, .Err(_) -> null }
     }
 }
 
