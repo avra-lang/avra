@@ -63,9 +63,8 @@ fn counted_from(text: string, base: int) -> int? {
     n + base
 }
 
-/// A workspace and the two window starts a body's ids are offset from, and whether reading an id
-/// back may mint its declaration — a query's restore never does (a mint there is a side write).
-type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int, minting: bool }
+/// A workspace and the two window starts a body's ids are offset from.
+type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int }
 
 impl Scope for FactsScope {
     fn spelled(kind: string, index: int) -> string {
@@ -89,9 +88,9 @@ impl Scope for FactsScope {
     fn unspelled(kind: string, text: string) -> int? {
         let k? = id_kind(kind) else { return null }
         match k {
-            .Decl -> if self.minting { self.ws.decl_from_ref(text)?.index } else { self.ws.decl_standing(text)?.index },
+            .Decl -> self.ws.decl_from_ref(text)?.index,
             .Type -> self.ws.type_from_wire(text)?.index,
-            .File -> self.ws.file_from_ref(text)?.index,
+            .File -> self.ws.decls.known_file_id(text)?.index,
             .Expr -> counted_from(text, self.expr_base),
             .Stmt -> counted_from(text, self.stmt_base),
         }
@@ -104,18 +103,8 @@ impl Workspace {
     /// whole file's, exactly as `new_type_facts` reads it. One rule, applied on both sides, is
     /// what makes a written offset and a read one the same offset.
     fn facts_scope(lo: int, stmt_lo: int) -> dyn Scope {
-        FactsScope {
-            ws: self,
-            expr_base: lo,
-            stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo },
-            minting: true,
-        }
+        FactsScope { ws: self, expr_base: lo, stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo } }
     }
-
-    /// The ONE scope a query over the workspace names its dense ids through — its keys, its
-    /// digests and its records: every id by its durable name, an expression or a statement by
-    /// its index in its file.
-    fn query_scope() -> dyn Scope { FactsScope { ws: self, expr_base: 0, stmt_base: 0, minting: false } }
 }
 
 fn written_type_id(w: Writer, scope: dyn Scope, t: TypeId) {

@@ -43,7 +43,7 @@ use core.{
 }
 use features.{Decls, Decl, TypeCx, bound_decl_of, Inferred}
 use @std.meta.{bracket}
-use @std.relation.{relation, query}
+use @std.relation.{relation}
 use compiler.families.{Family}
 use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
 
@@ -439,10 +439,6 @@ fn within_is(enclosing: ExprId?, c: ExprId) -> bool {
     same_expr(w, c)
 }
 
-/// Every `_`-declared fn's inferred error union, solved once per program state.
-@query
-fn failures_solved(ws: Workspace) -> int { ws.failure_survey() }
-
 /// M6 PREP: the growing-set fixpoint's lattice over `raised_by`'s
 /// answer — sets of `TypeId`, join = union, deduped by index.
 fn raised_join(a: List<TypeId>, b: List<TypeId>) -> List<TypeId> {
@@ -456,21 +452,20 @@ fn refusal_of(r: Result<int, FixpointRefusal>) -> FixpointRefusal? {
 }
 
 impl Workspace {
-    /// The pass: every `_`-declared fn's inferred error union, settled once per program state
-    /// (`failures_solved`) — ONE whole-program answer, never a per-decl memo (see this file's
-    /// header). Never inside a resolve, which would read a half-built namespace.
+    /// The pass: every `_`-declared fn's inferred error union,
+    /// settled once per program state. ONE whole-program key, never
+    /// a per-decl memo (see this file's header).
+    @bracket("fail_summary")
     fn failures() -> int {
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        failures_solved(self)
-    }
-
-    /// The survey and the solve, run: every inferring fn's union, as one word.
-    @bracket("fail_summary")
-    fn failure_survey() -> int {
+        let k = key(Family.Failures, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
         let fns = [x.id for x in self.decls.unheld_decls() if self.decls.inferring(x)]
         let _ = self.surveyed(fns)
         self.solve_raised(fns)
-        fp(21, [raised_fp(self.raised_fixpoint.value_at(d.index)) for d in fns])
+        self.db.settle(k, fp(21, [raised_fp(self.raised_fixpoint.value_at(d.index)) for d in fns]))
+        fns.length
     }
 
     /// Every fn's sites filed as the survey's rows in one step: the last survey's rows these
