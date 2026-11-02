@@ -3,7 +3,7 @@
 //! MATCHING operands. An Error operand ABSORBS everywhere — its
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
-use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId}
+use core.{ExprId, BinOp, Type, TypeId, word_of_BinOp, DeclId}
 use features.{TypeCx, EnumSig, this_is, variants_are, build_a_record, nothing}
 use diagnostics.{refusal}
 
@@ -97,7 +97,7 @@ fn mixed_run(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId) -> BinOp? {
     let held? = binary_op(cx, l) else { return null }
     let at? = cx.view.store.expr_span(e) else { return null }
     let left_at? = cx.view.store.expr_span(l) else { return null }
-    if !in_band(held) || op_symbol(held) == op_symbol(op) || left_at.lo != at.lo { return null }
+    if !in_band(held) || word_of_BinOp(held) == word_of_BinOp(op) || left_at.lo != at.lo { return null }
     held
 }
 
@@ -293,7 +293,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     // compares THROUGH PRESENCE: absent equals nothing but absence.
     let inner: TypeId? = nullable_compared(cx, l, r)
     if inner != null {
-        if !cx.compares_by_value(inner!) { return cx.not_comparable(op_symbol(op), l) }
+        if !cx.compares_by_value(inner!) { return cx.not_comparable(word_of_BinOp(op), l) }
         return cx.type(bool)
     }
     // An AGGREGATE would compare by ADDRESS — never what the writer
@@ -301,7 +301,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     // refused while the backend quietly answered `false` for two
     // identical values.
     let found: ExprId? = uncomparable(cx, l, r)
-    if found != null { return cx.not_comparable(op_symbol(op), found!) }
+    if found != null { return cx.not_comparable(word_of_BinOp(op), found!) }
     // A NAME IS TRANSPARENT AT A READ: the named law already held
     // both sides to one name, so the shapes are what remain to agree.
     if !cx.types_disagree(cx.seen(cx.type_at(l)), cx.seen(cx.type_at(r))) { return cx.type(bool) }
@@ -402,7 +402,7 @@ fn wrong_operand(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
             refusal(
                 "type.mismatch",
                 cx.loc_of(e),
-                "`${op_symbol(op)}` needs `${cx.view.types.name_of(cx.view.types.intern(want))}` operands, found `${n}`",
+                "`${word_of_BinOp(op)}` needs `${cx.view.types.name_of(cx.view.types.intern(want))}` operands, found `${n}`",
                 this_is(n),
                 "give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number",
             ),
@@ -429,7 +429,7 @@ fn both_absent(mut cx: TypeCx, op: BinOp, l: ExprId) -> TypeId {
             refusal(
                 "type.mismatch",
                 cx.loc_of(l),
-                "both sides are always absent, so `${op_symbol(op)}` always answers",
+                "both sides are always absent, so `${word_of_BinOp(op)}` always answers",
                 "always absent",
                 "write the answer alone",
             ),
@@ -443,7 +443,7 @@ fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
             refusal(
                 "type.mismatch",
                 cx.loc_of(solid),
-                "`${op_symbol(op)} null` asks a nullable, this is `${n}`",
+                "`${word_of_BinOp(op)} null` asks a nullable, this is `${n}`",
                 this_is(n),
                 "`${n}` is never absent — drop the comparison",
             ),
@@ -457,7 +457,7 @@ fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
             refusal(
                 "type.mismatch",
                 cx.loc_of(r),
-                "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`",
+                "`${word_of_BinOp(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`",
                 this_is(rn),
                 "compare two values of one type — convert one side, or compare a field of each",
             ),
@@ -515,7 +515,7 @@ fn mixed_bitwise(mut cx: TypeCx, e: ExprId, first: BinOp, second: BinOp) -> Type
             refusal(
                 "type.mixed_bitwise",
                 cx.loc_of(e),
-                "`${op_symbol(first)}` and `${op_symbol(second)}` in one expression have no agreed order",
+                "`${word_of_BinOp(first)}` and `${word_of_BinOp(second)}` in one expression have no agreed order",
                 "two bitwise operators in one run",
                 "write parentheses to say which binds first — `(a | b) & c`",
             ),
