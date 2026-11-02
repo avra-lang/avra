@@ -18,10 +18,10 @@
 //! its answer stays in the process (`saved`), re-asked whenever a read it
 //! recorded moves. A dense id (`@dense`) is a seat in the process too.
 //!
-//! Marks shape a query's cell. `@digested_by(f)` names the fn its
-//! answer is digested by — what its readers cut off on — where the
-//! answer's own fold would read more than the readers do; under
-//! `@digested_with(f)` that fn is handed the call's seats first; under
+//! Marks shape a query's cell. An answer is digested by its type: a
+//! codec's bytes (a `@local` field is no part of them, which is how a
+//! reader is cut off on less than the whole answer), else, for an answer
+//! that stays in the process, the type's own `fingerprint()`. Under
 //! `@scoped_by(f)` the call's dense ids cross under the scope `f` makes of
 //! its seats, where the context's `query_scope()` is not it.
 //! `@recursive` lets a call re-entered before it settles compute again,
@@ -286,7 +286,7 @@ export fn query_problems(f: Fn) -> List<Diagnostic> {
     let first? = f.params.first() else { return [no_db(f)] }
     if !seated(first.kind) { return [no_db(f)] }
     let args = [arg_not_carried(f, p) for p in f.params.slice(1, f.params.length) if !asked_by(p.kind, !is_db(first.kind))]
-    let answer = if carried(f.answers, in_process) || digest_word(f) != null { [] } else { [answer_not_carried(f)] }
+    let answer = if folds_stably(f) || named_answer(f) { [] } else { [answer_not_carried(f)] }
     let seats = args.concat(answer)
     if !seats.is_empty() { return seats }
     codec_problems(f)
@@ -326,22 +326,6 @@ fn numbered(p: Param) -> Code? {
 fn in_process(n: string) -> NamedShape {
     let shape = named_shape(n)
     match shape { .Dense(_) -> NamedShape.Tagged([]), rest -> shape }
-}
-
-/// `@digested_by(f)`: the fn a query's answer is digested by — one seat of the answer, an int out.
-export fn digested_by(f: Fn, by: Fn) -> List<Diagnostic> {
-    if by.params.length != 1 || by.params[0].ty != f.answer || by.answer != "int" { return [digest_shape(f, by)] }
-    if !queried(f) { return [mark_alone(f, "digested_by")] }
-    []
-}
-
-/// `@digested_with(f)`: the fn a query's answer is digested by, handed the call's own seats
-/// first — so it may read the context — then the answer; an int out.
-export fn digested_with(f: Fn, by: Fn) -> List<Diagnostic> {
-    let want = f.params.length + 1
-    if by.params.length != want || by.params[want - 1].ty != f.answer || by.answer != "int" { return [digest_with_shape(f, by)] }
-    if !queried(f) { return [mark_alone(f, "digested_with")] }
-    []
 }
 
 /// `@scoped_by(f)`: the scope a call's dense ids cross under, made from the call's own seats —
@@ -387,25 +371,25 @@ fn fixpoint_words(f: Fn) -> List<string>? {
 /// Whether a fn is a query.
 fn queried(f: Fn) -> bool { f.annotations.any((a: Annotation) -> a.name == "query" || a.name == "over") }
 
-/// The fn a query's answer is digested by, when it names one — alone or with the call's seats.
-fn digest_word(f: Fn) -> string? { mark_word(f, "digested_by") ?? mark_word(f, "digested_with") }
-
 /// A mark's one word, when the fn wears the mark.
 fn mark_word(f: Fn, mark: string) -> string? {
     let found? = f.annotations.find((a: Annotation) -> a.name == mark) else { return null }
     found.args.first()
 }
 
-/// The answer's digest: the named fn — handed the call's seats first under `@digested_with` —
-/// else the answer's own fold.
+/// The answer's digest, picked by its type: an answer the stable encoding folds (every answer
+/// that is saved is one, and its codec's bytes are the digest) digests by that fold; an answer
+/// no encoding folds can only stay in the process, and digests by the type's own `fingerprint()`.
 fn digest_code(f: Fn) -> Code {
-    let seated? = mark_word(f, "digested_with") else {
-        let by? = mark_word(f, "digested_by") else { return answer_hash(f) }
-        return name(by)
-    }
-    let seats = [name(p.name) for p in f.params]
-    quote { (v: ${f.answer}) -> ${seated}(..${seats}, v) }
+    if folds_stably(f) { return answer_hash(f) }
+    quote { (v: ${f.answer}) -> v.fingerprint() }
 }
+
+/// Whether the answer is a declared type, which digests by its own `fingerprint()` when no encoding folds it.
+fn named_answer(f: Fn) -> bool { match f.answers { .Named(_, _) -> true, rest -> false } }
+
+/// Whether the stable encoding folds the answer, dense ids as the process numbers them.
+fn folds_stably(f: Fn) -> bool { carried(f.answers, in_process) }
 
 /// How a call opens: a recursive query computes again on re-entry, a cycled one answers
 /// what its mark names.
@@ -437,7 +421,7 @@ fn saved(f: Fn) -> bool {
 /// opt-in: nothing else gives a type one.
 fn codec_problems(f: Fn) -> List<Diagnostic> {
     let args = [arg_needs_codec(f, p) for p in f.params.slice(1, f.params.length) if !codec_declared(p.kind, [])]
-    let answer = if codec_declared(f.answers, []) { [] } else { [answer_needs_codec(f)] }
+    let answer = if codec_declared(f.answers, []) || !folds_stably(f) { [] } else { [answer_needs_codec(f)] }
     args.concat(answer)
 }
 
@@ -728,24 +712,6 @@ fn over_rows(f: Fn) -> Diagnostic {
     )
 }
 
-fn digest_shape(f: Fn, by: Fn) -> Diagnostic {
-    refuse_as_at(
-        "query_digest",
-        by.at ?? f.at,
-        "`${by.name}` digests `${f.name}`'s answer, so it takes one `${f.answer}` and answers an `int`",
-        "write `fn ${by.name}(v: ${f.answer}) -> int`",
-    )
-}
-
-fn digest_with_shape(f: Fn, by: Fn) -> Diagnostic {
-    refuse_as_at(
-        "query_digest_with",
-        by.at ?? f.at,
-        "`${by.name}` digests `${f.name}`'s answer with its seats, so it takes `${f.name}`'s seats, then one `${f.answer}`, and answers an `int`",
-        "write `fn ${by.name}(${[p.name + ": " + p.ty for p in f.params].join(", ")}, v: ${f.answer}) -> int`",
-    )
-}
-
 fn scope_shape(f: Fn, by: Fn) -> Diagnostic {
     refuse_as_at(
         "query_scope",
@@ -793,7 +759,7 @@ fn fixpoint_twice(f: Fn) -> Diagnostic {
 
 fn cycle_twice(f: Fn) -> Diagnostic {
     refuse_as_at(
-        "query_cycle_recursive",
+        "query_cycle",
         f.at,
         "`${f.name}` computes again on re-entry under `@recursive`, so nothing answers its cycle",
         "keep one: `@recursive` for a smaller view, `@cycled_by` for what stands",

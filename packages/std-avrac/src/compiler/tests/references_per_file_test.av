@@ -6,7 +6,7 @@ use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace}
 use compiler.families.{Family}
 use compiler.host.{memory_host}
-use core.{DeclKind, same_decl}
+use core.{DeclKind, same_decl, flatten}
 use features.{Ref}
 use @std.relation.engine.{Key}
 
@@ -29,7 +29,7 @@ fn referenced() -> Workspace {
     ws
 }
 
-fn gathered(ws: Workspace) -> List<Key> { ws.db.edges_by_reader(Key { family: Family.References.ordinal, arg: 0 }) }
+fn gathered(ws: Workspace) -> List<Key> { flatten([ws.db.edges_by_reader(c) for c in ws.cells_named("references_solved")]) }
 
 spec "compiler/references — one answer per file" {
     then "the gathering reads at least one file answer per file" {
@@ -46,8 +46,10 @@ spec "compiler/references — one answer per file" {
                     .db
                     .edges_by_reader(k)
                     .all(
-                        it.family != Family.FileRefs.ordinal &&
-                            it.family != Family.References.ordinal,
+                        (j: Key) -> j.family != Family.FileRefs.ordinal &&
+                            ws
+                                .cells_named("references_solved")
+                                .all((c: Key) -> c.family != j.family),
                     ),
             )
     }
@@ -59,7 +61,9 @@ spec "compiler/references — one answer per file" {
     }
     then "asked again in the same revision, the pass computes nothing" {
         let ws = referenced()
-        ws.references() == 0
+        let written = ws.decls.rows_db.get().written.get()
+        let _ = ws.references()
+        ws.decls.rows_db.get().written.get() == written
     }
 }
 

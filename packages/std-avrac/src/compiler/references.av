@@ -73,15 +73,21 @@ const HELD_OWNER: string = "references"
 /// the replacement, and whether the rows still stand filed.
 type Surveyed = { rows: List<Ref>, refused: bool, filed: bool }
 
+/// Every named use of a declaration, folded from every file's own rows.
+@query
+fn references_solved(ws: Workspace) -> int { ws.survey_references() }
+
 impl Workspace {
     /// THE PASS: every admitted file's own rows, gathered — each surveyed file stands on
     /// its own `FileRefs` answer, and this one reads those and the held files' kept rows.
     fn references() -> int {
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.References, 0)
-        if !(self.db.ask(k) is .Compute) { return 0 }
+        references_solved(self)
+    }
+
+    /// The gathering, run: every surveyed file's rows and the held files' kept rows, one word.
+    fn survey_references() -> int {
         self.stand_after_typing()
-        self.db.begin(k)
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if !self.is_held(x.id) && self.reads_as_source(x.path)]
         let held = [x.id for x in all_files if self.is_held(x.id)]
@@ -110,8 +116,7 @@ impl Workspace {
             .mark_refs_incomplete(refused || surveyed.any(it.refused) || store == null && !held.is_empty())
         let rows = flatten([s.rows for s in surveyed]).concat(kept)
         self.decls.record_read_flags(rows)
-        self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
-        rows.length
+        fp(41, [fp_list([ref_fp(r) for r in rows])])
     }
 
     /// One file's own rows, filed under the file's owner and kept for the gathering pass.
