@@ -293,8 +293,9 @@ type Hold = {
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
-    /// How many use-site warning queries are open: a whole-program pass never runs under one.
-    marking: Cell<int>,
+    /// The declarations whose use-site warnings are being made: a whole-program pass never
+    /// runs under one, and a re-entry answers what stands.
+    marking: Cell<List<int>>,
     read_files: Cell<List<ReadFile>>,
     /// The modules this attempt loaded for real: a file in one was read, so it is not held.
     loaded_turn: Cell<Map<string, bool>>,
@@ -409,7 +410,7 @@ fn new_hold() -> Hold {
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
-        marking: Cell.new(0),
+        marking: list_cell(),
         read_files: Cell.new(no_read_files),
         loaded_turn: map_cell(),
         holds_now: Cell.new(false),
@@ -952,9 +953,10 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
 /// kept (errors speak at the declaration).
 @query
 fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> {
-    ws.hold.marking.set(ws.hold.marking.get() + 1)
+    let open = ws.hold.marking.get()
+    ws.hold.marking.set(open.concat([d.index]))
     let out = ws.warnings_of(ws.decls.decl(d))
-    ws.hold.marking.set(ws.hold.marking.get() - 1)
+    ws.hold.marking.set(open)
     out
 }
 
@@ -1310,7 +1312,7 @@ impl Workspace {
     /// record or a type pulls nothing.
     fn cancel_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        if self.comptime_active() || self.hold.marking.get() > 0 { return false }
+        if self.comptime_active() || !self.hold.marking.get().is_empty() { return false }
         if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
     }
@@ -1349,6 +1351,9 @@ impl Workspace {
             self.decls.record_marks(d, [])
             return []
         }
+        // A USE INSIDE ITS OWN WARNINGS' RUN — a lift that lowers back through the use —
+        // answers the warnings recorded so far: the run that made them is still open.
+        if self.hold.marking.get().contains(d.index) { return self.decls.marks.get()[d.index] ?? [] }
         let out = marks_of(self, d)
         self.decls.record_marks(d, out)
         out
