@@ -162,18 +162,28 @@ export fn indexed_scope() -> dyn Scope { Indexed {} }
 
 /// A record under construction, as octets. An IDENTITY: every holder
 /// of a writer writes the one record, so no seat needs `mut`.
-export type Writer = { out: Cell<List<int>>, chunks: Cell<List<Bytes>> }
+export type Writer = { out: Cell<List<int>>, chunks: Cell<List<Bytes>>, named: Cell<Map<string, int>> }
 
 export fn writer() -> Writer {
     let out: Cell<List<int>> = Cell.new([])
     let chunks: Cell<List<Bytes>> = Cell.new([])
-    Writer { out: out, chunks: chunks }
+    let named: Cell<Map<string, int>> = Cell.new({})
+    Writer { out: out, chunks: chunks, named: named }
 }
 
-/// A dense id written: the type named `kind`, as `scope` spells it. The scope
-/// travels with the call, never with the writer, so a writer costs no box.
+/// A dense id written: the type named `kind`, as `scope` spells it — the spelling once per
+/// record, a later write of the same id by the place its first came. The scope travels with the
+/// call, never with the writer, so a writer costs no box.
 export fn written_dense(w: Writer, scope: dyn Scope, kind: string, index: int) {
+    let key = "${kind}:${index}"
+    let seen = w.named.get().get(key)
+    if seen != null {
+        w.varint(seen!)
+        return
+    }
+    w.varint(0)
     w.text(scope.spelled(kind, index))
+    w.named.put(key, w.named.get().length + 1)
 }
 
 /// A place written: its file, then the span as `scope` spells it — absent where it cannot.
@@ -223,7 +233,11 @@ impl Writer {
 
     fn count(n: int) { self.varint(n) }
 
-    fn text(s: string) { self.octets(s.bytes()) }
+    fn text(s: string) {
+        if s.length >= CHUNK { return self.octets(s.bytes()) }
+        self.count(s.length)
+        for i in 0..s.length { self.byte(s.char_code(i)) }
+    }
 
     /// A run of octets, counted: a long one joins the record as one chunk, a short one a byte at a time.
     fn octets(b: Bytes) { self.counted(b.length, b) }
@@ -423,9 +437,12 @@ impl CodecFault {
 
 /// A record being read: its octets and the position reached. An
 /// IDENTITY, as a writer is: every holder reads on from one position.
-export type Reader = { b: Bytes, at: Cell<int> }
+export type Reader = { b: Bytes, at: Cell<int>, known: Cell<List<int>> }
 
-export fn reader(b: Bytes) -> Reader { Reader { b: b, at: Cell.new(0) } }
+export fn reader(b: Bytes) -> Reader {
+    let known: Cell<List<int>> = Cell.new([])
+    Reader { b: b, at: Cell.new(0), known: known }
+}
 
 impl Reader {
     fn byte() -> Result<int, CodecFault> {
@@ -543,8 +560,15 @@ export fn dense_read<T>(r: Reader, scope: dyn Scope, kind: string, make: fn(int)
     T,
     CodecFault,
 > {
+    let place = r.varint()?
+    if place > 0 {
+        let known = r.known.get()
+        if place > known.length { fail CodecFault.Unresolved }
+        return .Ok(make(known[place - 1]))
+    }
     let spelling = r.text()?
     let index? = scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
+    r.known.push(index)
     .Ok(make(index))
 }
 
