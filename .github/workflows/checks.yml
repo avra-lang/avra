@@ -87,7 +87,7 @@ jobs:
       full: ${{ steps.plan.outputs.full }}
       mirror: ${{ steps.plan.outputs.mirror }}
       accept_key: ${{ steps.plan.outputs.accept_key }}
-      compiler_source: ${{ steps.release.outputs.source }}
+      compiler_source: ${{ steps.compiler.outputs.source }}
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -99,7 +99,7 @@ jobs:
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
       main: ${{ steps.plan.outputs.main }}
-      rungs: ${{ steps.rungs.outputs.list }}
+      rungs: ${{ steps.compiler.outputs.rungs }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -272,149 +272,17 @@ jobs:
           path: build/avra-tools/*/avra-tools
           if-no-files-found: error
           retention-days: 1
-      # THE RUNGS OF THIS RUN: commits carrying a `Rung: <why>` trailer (tools/rungs.sh). A PR reads
-      # them off its own commits; main's own run, whose squash dropped them, reads the landed PR's
-      # head ref (`(#N)` in the title, refs/pull/N/head stays fetchable) so it replays the same
-      # ladder. A row and its first reader ride ONE landing as two commits; each rung is built by the
-      # product of the one before (tools/ladder.sh), never by a compiler that cannot read it.
-      - id: rungs
-        name: rungs
-        if: steps.plan.outputs.build == '1'
-        run: |
-          list=""
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            head="${{ github.event.pull_request.head.sha }}"
-            git fetch -q --depth=200 origin main "$head" 2>/dev/null || :
-            base=$(git merge-base origin/main "$head" 2>/dev/null || :)
-            [ -z "$base" ] || list=$(sh tools/rungs.sh "$base" "$head" | tr '\n' ' ')
-          elif [ "${{ steps.plan.outputs.main }}" = 1 ]; then
-            n=$(git log -1 --format=%s | sed -n 's/.*(#\([0-9][0-9]*\))$/\1/p')
-            [ -z "$n" ] || list=$(sh tools/rungs.sh --pr "$n" 2>/dev/null | tr '\n' ' ') || list=""
-          fi
-          echo "list=$(echo $list)" >> "$GITHUB_OUTPUT"
-          echo "key=rungs-$(printf '%s' "$list" | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
-          [ -z "$list" ] || echo "rungs: $(echo $list | wc -w) rung(s) — $list"
-      # A LADDER'S PRODUCT IS CACHED PER PR: a re-push that leaves the rung commits as they were
-      # restores the last rung's compiler and builds only HEAD's two generations.
-      - if: steps.plan.outputs.build == '1' && steps.rungs.outputs.list != ''
-        uses: actions/cache/restore@v4
-        id: rungcache
-        with:
-          path: .rung-product
-          key: ${{ steps.rungs.outputs.key }}
-      # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
-      # tree whose compiler is main's takes main's binary and builds nothing.
-      # Otherwise the newest cached binary only has to BUILD this tree — one
-      # `make avra` advances one generation, so twice — and one too old to read
-      # it (new syntax, a new refusal about its own source) fails that build
-      # and the tree BOOTSTRAPS from the committed seed instead.
-      #
-      # `.avra-cache` rides with the binary: a store is one compiler's, so the
-      # restored binary reads its own store for the FIRST self-compile instead
-      # of rebuilding every module (measured: the first compile 517s -> 404s,
-      # the analysis and emit rows reused; `lower` is one program and still
-      # re-runs). The SECOND self-compile is that new compiler's own first
-      # build, so it is cold whatever this cache does.
+      # THE COMPILER, taken or built (.github/actions/compiler — lane-run.yml stands on the same
+      # action): its rungs, the cache, the published release, then the build.
       - if: steps.plan.outputs.build == '1'
-        uses: actions/cache/restore@v4
-        id: cache
-        with:
-          path: &compiler-paths |
-            build/avra
-            .avra-cache
-          key: ${{ steps.plan.outputs.key }}
-          restore-keys: |
-            avrac-
-            avra-
-      # THE COMPILER, FETCHED FROM WHERE EVERY REF CAN REACH IT. A cache is
-      # ref-scoped — only the default branch's caches cross runs, so a train on
-      # its own `gh-readonly-queue/...` ref can never read what main's push
-      # saved. A release asset is not: main publishes the compiler under its own
-      # source digest, and a run whose cache missed the exact key fetches THAT
-      # instead of rebuilding. A MISS NAMES ITSELF: the fallback to a build is
-      # correct, but a silent one reports success while a long rebuild starts,
-      # so the miss is a `::warning::` carrying the fetch's own reason (an
-      # unpublished key, an unreachable API) or that the smoke run failed.
-      #
-      # A MISS FALLS BACK TO MAIN'S NEWEST COMPILER, never straight to the
-      # seed. Only a push to main publishes, so a train's or a PR's own key can
-      # never have a release; main's binary beside main's `.avra-cache` is where
-      # the incremental build starts, and the committed seed is a full cold
-      # bootstrap. A hit on the tree's OWN key needs no build at all. Both
-      # paths are smoke-run before they are trusted, so a binary built for
-      # another image falls through.
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
-        id: release
-        name: compiler from release
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p build
-          tree="${{ steps.plan.outputs.key }}"
-          reason=$(python3 tools/compiler_release.py fetch "$tree" build/avra 2>&1) && rc=0 || rc=$?
-          printf '%s\n' "$reason"
-          if [ "$rc" = 0 ] && build/avra --version >/dev/null 2>&1; then
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-            echo "source=exact" >> "$GITHUB_OUTPUT"
-            echo "speed compiler 0" >> speed.log
-            echo "compiler-release: HIT — the tree's own key ${tree}; no build owed"
-          elif python3 tools/compiler_release.py latest build/avra && build/avra --version >/dev/null 2>&1; then
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-            echo "source=latest" >> "$GITHUB_OUTPUT"
-            echo "::warning::compiler release for ${tree} missed (${reason}); starting the build from the newest published compiler"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-            echo "source=none" >> "$GITHUB_OUTPUT"
-            build/avra --version >/dev/null 2>&1 || rm -f build/avra
-            echo "::warning::compiler release for ${tree} missed (${reason}) and no published compiler ran; building from the committed seed"
-          fi
-      # Two source generations: a cold `make avra` measured ~517 s each, so a
-      # bootstrap fits with margin; each generation and the bootstrap are
-      # bounded, so a hang dies here with its own name and an honest status.
-      # RECORDED TRIGGER: the generation bound is 1500 s and the step 50 min so a slow
-      # builder never falls back to a 22-min bootstrap; lowered back to 900 s / 35 min
-      # once main's published compiler carries the shape-key fix (cold check 158 -> 80 s)
-      # — measure prepare on three compiler-touching PRs, then --accept.
-      # A LIGHT RUN (a draft) takes the published compiler when one stands: its
-      # gate judges fmt and the idioms with it, and the full run is the proof.
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')
-        name: compiler
         id: compiler
-        timeout-minutes: 50
-        run: |
-          s=$(date +%s)
-          # THE LADDER rides `make compiler` (its RUNGS). A cached product for these rungs
-          # stands in for the ladder; a built one is kept for the next push.
-          rungs="${{ steps.rungs.outputs.list }}"
-          if [ -n "$rungs" ] && [ "${{ steps.rungcache.outputs.cache-hit }}" = true ] && [ -x .rung-product/avra ]; then
-            echo "ladder: the rung product is cached for these rungs"
-            cp .rung-product/avra build/avra
-            rungs=""
-          fi
-          # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT, and its
-          # failed generation is the expected shape here: `make compiler` falls
-          # back to the seed, a full build that forgives a compiler too old,
-          # never a source wrong.
-          # each rung is replayed on the base this tree is judged against, never on its own stale tree
-          lbase=origin/main
-          [ "${{ github.event_name }}" != push ] || lbase=HEAD~1
-          make -s compiler RUNGS="$rungs" LADDER_BASE="$(git rev-parse "$lbase")" GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
-            || { echo "::error::the compiler did not build"; exit 1; }
-          if [ -n "$rungs" ]; then
-            mkdir -p .rung-product && cp build/avra-ladder .rung-product/avra
-            echo "built=1" >> "$GITHUB_OUTPUT"
-          fi
-          echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
-          echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
-      - if: steps.compiler.outputs.built == '1' && github.event_name == 'pull_request'
-        name: keep the rung product
-        uses: actions/cache/save@v4
-        continue-on-error: true
+        uses: ./.github/actions/compiler
+        timeout-minutes: 56
         with:
-          path: .rung-product
-          key: ${{ steps.rungs.outputs.key }}
+          key: ${{ steps.plan.outputs.key }}
+          full: ${{ steps.plan.outputs.full }}
+          main: ${{ steps.plan.outputs.main }}
+          keep-rungs: ${{ github.event_name == 'pull_request' }}
       # A CEILING IS READ FROM A WARM STORE, SO PREPARE LEAVES ONE. An
       # exact-key release or a cache hit may hand over a compiler with no
       # matching store (a prefix restore is not this binary's), and the
@@ -451,30 +319,9 @@ jobs:
           mkdir -p .avra-cache/proof
           [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proof/
           echo "proofs: $(find .avra-cache/proof -type f ! -name '*.deps' | wc -l) kept row(s) handed down"
-      # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
-      # restored by prefix from the run before and saved again, and an entry keyed to
-      # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
-      # of it objects). The newest 300 MB stay, by file time — what this run wrote is
-      # newest. A row is a file named by its key: a missing one is rebuilt (`store.has`
-      # asks the disk), so pruning costs a rebuild and never a wrong answer.
+      # THE CACHE IS BOUNDED before it is kept or handed down (.github/actions/prune-cache).
       - if: steps.plan.outputs.build == '1'
-        name: prune the cache
-        run: |
-          [ -d .avra-cache ] || exit 0
-          before=$(du -sm .avra-cache | cut -f1)
-          find .avra-cache/obj .avra-cache/bin -type f -printf '%T@ %s %p\n' 2>/dev/null | sort -rn \
-            | awk -v cap=314572800 '{ acc += $2; if (acc > cap) print $3 }' | xargs -r rm -f
-          # THE STORE KEEPS TWO REVISIONS AND AT MOST 600 MB. Each revision is one compiler's rows, and
-          # a cache that restores and saves the store every main run only grows: 1.1 GB of dead
-          # generations rode into the hand-down tar and broke its 1 GB budget. The newest two are what
-          # a run reads (the compiler it built wrote them last).
-          if [ -d .avra-cache/store ]; then
-            chmod +x build/avra
-            echo "store before: $(du -sm .avra-cache/store | cut -f1) MB"
-            AVRA_STORE_REVISIONS=2 AVRA_STORE_MAX_MB=600 build/avra cache clean || echo "::warning::the bounded cache clean failed"
-            echo "store after: $(du -sm .avra-cache/store | cut -f1) MB"
-          fi
-          echo "prune: .avra-cache $before MB -> $(du -sm .avra-cache | cut -f1) MB"
+        uses: ./.github/actions/prune-cache
       # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
       # restores caches from its own branch and `main`, never a sibling's, and
       # each merge-queue train stands on its own throwaway ref — so a compiler
@@ -482,10 +329,12 @@ jobs:
       # train and only churns the store toward eviction. Save on `push` alone,
       # where the next train and every PR can restore it; `workflow_dispatch` may
       # write `main`'s scope too. Everything else restores only.
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      - if: steps.plan.outputs.build == '1' && steps.compiler.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: *compiler-paths
+          path: |
+            build/avra
+            .avra-cache
           key: ${{ steps.plan.outputs.key }}
       # THE STORE RIDES DOWN TO THE JOBS THAT RUN PROGRAMS. The prepare job's
       # `.avra-cache` is the tree's own compiler's, so a `check` or suite in
