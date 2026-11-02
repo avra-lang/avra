@@ -2,7 +2,18 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, FileId, ModulePath, joined, flatten, distinct, wreck, qtrace, traced}
+use core.{
+    DeclId,
+    FileId,
+    ModulePath,
+    joined,
+    flatten,
+    distinct,
+    sorted_texts,
+    wreck,
+    qtrace,
+    traced,
+}
 use compiler.families.{Family}
 use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
@@ -30,7 +41,7 @@ impl Workspace {
     }
 
     /// THE DURABLE REFS OF EVERY DECLARATION NAMED `name`, program-wide, nothing minted,
-    /// parsed or expanded and nothing recorded: each file the name environments or the standing
+    /// parsed or expanded and nothing recorded, in byte order: each file the name environments or the standing
     /// rows place it in, answered by `refs_in`. None while a file cannot answer whole.
     fn named_refs(name: string) -> List<string>? {
         let known = self.records.named_refs.get().get(name)
@@ -50,7 +61,7 @@ impl Workspace {
         )
         let refs = [self.refs_in(path, name, standing) for path in files]
         if refs.any(it == null) { return null }
-        flatten([r! for r in refs])
+        sorted_texts(flatten([r! for r in refs]))
     }
 
     /// The refs one file gives `name`: off its kept lines while they stand for its text, so the
