@@ -28,8 +28,6 @@ use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
 
-const CLOSURE_OF: string = "closure of "
-
 impl Workspace {
     /// The answers of `fam`, keyed by declaration, spelled by the declaration's wire.
     fn named_by_decl(name: string, fam: Family) -> AnswerRef {
@@ -303,11 +301,9 @@ impl Workspace {
         rdb.answer_known(self.named_impl_sets())
         rdb.answer_known(self.named_lowerings())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
-        rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
         rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
         rdb.answer_known(self.named_by_decl("Placed", Family.Placed))
-        rdb.answer_known(self.named_typed())
         rdb.answer_known(self.named_units())
         rdb.answer_known(self.named_lifts())
         rdb
@@ -334,34 +330,6 @@ impl Workspace {
         rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_file("FileRefs", Family.FileRefs))
         rdb.answer_known(self.named_by_bucket())
-        rdb.answer_known(self.named_closures())
-    }
-
-    /// The groups: the name reads of one answer's run, held as one cell, spelled by the
-    /// answer they belong to.
-    fn named_closures() -> AnswerRef {
-        let ws = self
-        let ordinal = self.hold.closure.get()
-        AnswerRef {
-            name: "Closure",
-            family: () -> ordinal,
-            spelled: (arg: int) -> ws.spelled_closure(arg),
-            arg: (spelled: string) -> ws.closure_arg(spelled),
-            hash: (arg: int) -> ws.group_print(arg),
-        }
-    }
-
-    fn spelled_closure(arg: int) -> string? {
-        let g? = self.hold.groups.get().get(arg) else { return null }
-        if g.owner != Family.Settled.ordinal { return null }
-        let settled? = self.spelled_settle(g.id) else { return null }
-        "${CLOSURE_OF}${settled}"
-    }
-
-    fn closure_arg(spelled: string) -> int? {
-        if !spelled.starts_with(CLOSURE_OF) { return null }
-        let settled? = self.settle_arg(spelled.substring(CLOSURE_OF.length, spelled.length)) else { return null }
-        self.hold.group_index.get().get("${Family.Settled.ordinal}:${settled}")
     }
 
     /// The lifted units, spelled by their wanted and digested with arena ids folded by durable
@@ -459,7 +427,7 @@ impl Workspace {
     fn bucket_digest(b: int) -> int? {
         let name? = self.decls.bucket_label(b) else { return null }
         let refs? = self.named_refs(name) else { return null }
-        fp_str(joined(sorted_texts(refs), "\n"))
+        fp_str(joined(refs, "\n"))
     }
 
     fn spelled_file(arg: int) -> string? {
@@ -530,7 +498,7 @@ impl Workspace {
     /// A typed declaration's reads: its name and each read's identity and digest.
     fn reads_line(arg: int) -> string? {
         let name? = self.spelled_decl(arg) else { return null }
-        let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+        let reads = self.db.kernel.deps_of(typed_body_key(self, DeclId { index: arg }))
         if reads.is_empty() { return null }
         "leaves-reads\t${name}\t${[self.read_word(k) for k in reads].join(";")}"
     }
@@ -562,11 +530,7 @@ impl Workspace {
 
     /// Every family the meter covers.
     fn leaves_report() -> string {
-        [
-            self.leaves_meter(Family.Typed, self.decls.decl_count()),
-            self.leaves_meter(Family.Lowered, self.asks.get().length),
-            self.leaves_meter(Family.Settled, self.settle_asks.get().length),
-        ]
+        [self.leaves_meter(Family.Lowered, self.asks.get().length)]
             .concat(self.leaves_digests())
             .concat(self.leaves_reads())
             .join("\n")
@@ -574,95 +538,6 @@ impl Workspace {
 
     fn family_name(ordinal: int) -> string {
         [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
-    }
-
-    /// The typed bodies, spelled by declaration; a body's digest is what its typing says, wherever
-    /// it sits.
-    fn named_typed() -> AnswerRef {
-        let ws = self
-        let ordinal = Family.Typed.ordinal
-        AnswerRef {
-            name: "Typed",
-            family: () -> ordinal,
-            spelled: (arg: int) -> ws.spelled_decl(arg),
-            arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.typed_digest(arg),
-        }
-    }
-
-    /// A settled body's digest; absent for one not settled here or unplaceable.
-    fn typed_digest(arg: int) -> int? {
-        if self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg)).is_empty() { return null }
-        let says? = self.typed_says(DeclId { index: arg }) else { return null }
-        fp_str(says)
-    }
-
-    /// What a body's typing says, placed by declaration: the facts' fold, then each voice with
-    /// its places kept relative to the declaration holding them. Absent when a voice speaks at
-    /// a place no declaration holds.
-    fn typed_says(d: DeclId) -> string? {
-        let facts = self.typed(d)
-        let placed = [self.voice_says(v) for v in facts.voices.list]
-        if placed.any(it == null) { return null }
-        joined(
-            [
-                "${TypeFacts.digest_in(self.facts_scope(facts.of_expr.lo(), facts.stmt_flags.lo()), facts with { voices: Voices { list: [] } })}",
-            ]
-                .concat([p! for p in placed]),
-            "\n",
-        )
-    }
-
-    fn voice_says(v: Diag) -> string? {
-        let frames = [v.primary].concat(v.secondary)
-        let locs = flatten([some_list(f.loc) for f in frames])
-            .concat(flatten([[e.loc for e in s.edits] for s in v.suggestions]))
-        let wires = [anchoring_wire(self.anchoring(l)) for l in locs]
-        if wires.any(it == anchoring_wire(.Unplaceable)) { return null }
-        "${unplaced(v).fingerprint()}\t${joined(wires, ",")}"
-    }
-
-    /// Typed answers standing on names, kept as saved answers and judged against what a
-    /// fresh typing says: a kept answer still valid must equal it, or a read is missing.
-    fn typed_said_pass(store: Store) {
-        let rdb = self.decls.rows_db.get()
-        mut settled = 0
-        mut stood = 0
-        mut why: Map<string, int> = {}
-        mut valid = 0
-        mut recomputed = 0
-        mut unplaceable = 0
-        mut mismatched = 0
-        for arg in 0..self.decls.decl_count() {
-            let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
-            if reads.is_empty() { continue }
-            settled = settled + 1
-            let leaves? = rdb.leaves_of(reads) else { continue }
-            let d = DeclId { index: arg }
-            stood = stood + 1
-            let says? = self.typed_says(d) else {
-                unplaceable = unplaceable + 1
-                continue
-            }
-            let row = node_key(Stored.Unit, ["typedsaid", self.decl_ref(d)])
-            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
-            if kept == null {
-                recomputed = recomputed + 1
-                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
-                why.set(cause, (why.get(cause) ?? 0) + 1)
-            } else {
-                valid = valid + 1
-                if kept != says {
-                    mismatched = mismatched + 1
-                    eprintln("Q typedsaid mismatch ${self.decl_ref(d)}")
-                }
-            }
-            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
-        }
-        eprintln(
-            "typedsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, unplaceable ${unplaceable}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
-        )
-        if mismatched > 0 { wreck("a valid TypedSaid differs from a fresh typing: a read is missing") }
     }
 }
 

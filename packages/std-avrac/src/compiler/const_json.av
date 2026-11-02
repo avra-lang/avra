@@ -6,7 +6,7 @@
 //! (`{"variant": …, "payload": […]}` when it carries something), a result
 //! `{"ok": …}` or `{"err": …}`, bytes `{"base64": …}`, a float its shortest
 //! round-trip text (`null` for infinity and NaN, which JSON has no word for).
-use core.{FileId, TypeId, TypeRegistry, joined}
+use core.{FileId, StmtId, TypeId, TypeRegistry, joined}
 use features.{SettleRoot, MetaVal, MetaHeap, Unsettled, unsettled_label, absent_tag}
 use @std.text.{base64}
 
@@ -23,11 +23,16 @@ impl Workspace {
             .find(it.kind is .Const && it.name == name) else {
             return .Err("no const `${name}` is declared here")
         }
-        let ty? = self.decls.type_of_const(f, d.stmt) else { return .Err("`${name}` has no type") }
+        let ty? = self.const_type_known(f, d.stmt) else { return .Err("`${name}` has no type") }
         match self.settled(f, SettleRoot.Const(d.stmt), []) {
             .Ok(held) -> self.projected(held.answer, held.heap, ty),
             .Err(why) -> .Err(unsettled_words(name, why)),
         }
+    }
+
+    /// The type the program's typing found for a const, when it found one.
+    fn const_type_known(f: FileId, s: StmtId) -> TypeId? {
+        match self.const_type_ensured(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
     }
 
     /// One value under its type, as JSON text.

@@ -1,0 +1,27 @@
+// A body's typed facts stand over the declaration's window as it is now: a table restored under
+// a scope made before the range was placed would start at the default, not at the body.
+use compiler.{Workspace}
+use core.{DeclId}
+
+fn window_source() -> string { "fn a() -> int {\n    1\n}\nfn b() -> int {\n    let x = 2\n    x\n}\n" }
+
+fn body_named(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+}
+
+spec "compiler/typed_body — a body's tables start where its declaration does" {
+    given "a file of two bodies, checked" {
+        then "the second body's expression window starts at its declaration's first expression" {
+            let ws = a_process_over({"/w/src/main.av": window_source()}, ["/w/src/main.av"])
+            let _ = checked(ws, "/w/src/main.av")
+            let b = body_named(ws, "b")
+            ws.typed(b).of_expr.lo() == ws.decls.decl(b).lo
+        }
+        then "the second body's statement window starts at its declaration's first statement" {
+            let ws = a_process_over({"/w/src/main.av": window_source()}, ["/w/src/main.av"])
+            let _ = checked(ws, "/w/src/main.av")
+            let b = body_named(ws, "b")
+            ws.typed(b).stmt_flags.lo() == ws.decls.decl(b).stmt_lo
+        }
+    }
+}

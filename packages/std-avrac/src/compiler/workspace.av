@@ -50,6 +50,7 @@ use features.components.{word_of, instanced, named_instances}
 use features.{Bypassed}
 use features.{
     ItemLine,
+    ConstType,
     ExternNote,
     Bypassed,
     Listed,
@@ -252,9 +253,6 @@ type Followed = { reads: List<RunRead>, gen: int }
 /// makes the standing stale.
 type ViewStand = { files: int, asks: int, stands: bool }
 
-/// The name buckets one answer's run read, held for the group cell that stands for them.
-type Group = { owner: int, id: int, buckets: List<int> }
-
 /// THE NAME ENVIRONMENTS, as the modules' kept producers file them: the files declaring under
 /// each declaration name, component word and annotation mark; every extern; and the files
 /// declaring a kind that implements a trait for a type. A bucket reader mints the unread files
@@ -392,11 +390,6 @@ type Hold = {
     /// there are its own range's, which its syntax and placement already name.
     ranged: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
-    /// The family a frame's gathered name reads stand under as one read, the groups minted
-    /// for it, and each group's place by its owner's family and id.
-    closure: Cell<int>,
-    groups: Cell<List<Group>>,
-    group_index: Cell<Map<string, int>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
 }
@@ -489,9 +482,6 @@ fn new_hold() -> Hold {
         lowering: list_cell(),
         ranged: list_cell(),
         unit_asks: map_cell(),
-        closure: Cell.new(0 - 1),
-        groups: list_cell(),
-        group_index: map_cell(),
         owners: map_cell(),
         serving: Cell.new(false),
     }
@@ -704,6 +694,7 @@ type LiftAsk = { name: string, decl: DeclId, file: FileId, stmt: StmtId, call: E
 
 /// A const site's stable inputs. The dense list position is the
 /// `Settled` family's key; its initializer is read inside the query.
+@codec
 type SettleAsk = { file: FileId, root: SettleRoot, name: string, seats: List<SeatValue> }
 
 /// The const a settlement is for — none for an expression's.
@@ -862,10 +853,6 @@ fn methods_verified(ws: Workspace, arg: int) -> int {
     touch(ws.methods(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Methods, arg))
 }
-fn typed_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.typed(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Typed, arg))
-}
 fn const_typed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.const_type_at(arg))
     ws.db.changed_at(key(Family.ConstTyped, arg))
@@ -877,10 +864,6 @@ fn folded_verified(ws: Workspace, arg: int) -> int {
 fn analysis_verified(ws: Workspace, arg: int) -> int {
     touch(ws.analysis(file_at(arg)))
     ws.db.changed_at(key(Family.Analysis, arg))
-}
-fn settled_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.settled_at(arg))
-    ws.db.changed_at(key(Family.Settled, arg))
 }
 fn lowered_verified(ws: Workspace, arg: int) -> int {
     touch(ws.lowered(arg))
@@ -969,11 +952,9 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Resolved -> resolved_verified(ws, arg),
         .Sig -> sig_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
-        .Typed -> typed_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
         .Analysis -> analysis_verified(ws, arg),
-        .Settled -> settled_verified(ws, arg),
         .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
@@ -1168,7 +1149,6 @@ fn built(
         if ws.db.family() != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         ws.db.kernel.named(f.ordinal, f.name)
     }
-    ws.hold.closure.set(ws.db.kernel.hashed_family((group: int) -> ws.group_print(group)))
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))
@@ -1326,7 +1306,9 @@ impl Workspace {
         self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
     }
 
-    /// A file's parse, given to declarations minted without it: their nodes and ranges.
+    /// A held declaration may need syntax-only facts that were not part of
+    /// its signature. Parse that file on first such read; the declaration
+    /// identities and object reuse still come from the stored interface.
     fn store_ensured(f: FileId) {
         self.decls.remember_store(f, self.parsed(f).store)
     }
@@ -1335,7 +1317,7 @@ impl Workspace {
         let _ = self.methods(d)
     }
 
-    fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
+    fn const_type_ensured(f: FileId, s: StmtId) -> ConstType { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
 
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
@@ -2524,13 +2506,19 @@ impl Workspace {
         }
     }
 
-    fn cx_over(asked: Decl, names: NameFacts) -> TypeCx {
-        let p = self.parse_standing(asked.file)
+    fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         // A file's module pseudo-declaration owns no statements, so it
         // owes no own-syntax edge.
-        if asked.stmt.index < self.decls.store(asked.id).stmts.count() { let _ = self.syntax(asked.id) }
-        let _ = self.placed(asked.id)
-        let x = self.decls.decl(asked.id)
+        if x.stmt.index < self.decls.store(x.id).stmts.count() { let _ = self.syntax(x.id) }
+        let _ = self.placed(x.id)
+        let p = if self.relation(Family.Parsed).open(x.file.index) {
+            self.parsed(x.file)
+        } else {
+            match self.relation(Family.Parsed).values.entry(x.file.index) {
+                .Present(r) -> parsed_of(r),
+                .Missing -> self.parsed(x.file),
+            }
+        }
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
             self.lang.dispatch,
@@ -2547,41 +2535,13 @@ impl Workspace {
 
     /// One declaration's body typed — a table over its own expression
     /// range, the sigs it names asked as it reads them.
-    fn typed(d: DeclId) -> TypeFacts {
-        // Annotation evaluation re-types the declaration after hiding
-        // the active annotation, so this family also has a smaller
-        // recursive view.
-        match self.relation(Family.Typed).start_recursive(d.index) {
-            .Reuse(value) -> { return typed_of(value) },
-            .Compute -> nothing(),
-        }
-        mut t = self.type_cx_for(self.decls.decl(d))
-        let x = self.decls.decl(d)
-        let out = t.type_decl(x)
-        // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
-        // window typed now lacks the ids the expansion is about to add,
-        // so it answers this asker alone and is never memoized — the
-        // facts settle once the expansion has closed.
-        if self.db.active(key(Family.Expanded, x.file.index)) {
-            self.db.abandon(key(Family.Typed, d.index))
-            return out
-        }
-        // The facts carry ARENA IDS: the settle digest reads them where they are placed, so a
-        // shift that leaves `syntax(d)` and `names(d)` alike still reads this body as moved.
-        let spot = self.placed(d)
-        typed_of(
-            self
-                .relation(Family.Typed)
-                .finish_lazy(
-                    d.index,
-                    DbRow.Typed(out),
-                    (r: DbRow) -> fp(
-                        123,
-                        [spot, TypeFacts.digest_in(self.facts_scope(0, 0), typed_of(r))],
-                    ),
-                ),
-        )
-    }
+    fn typed(d: DeclId) -> TypeFacts { typed_body(self, d) }
+
+    /// Whether `d`'s typing is running now: a read of its own answer is the value asking.
+    fn typing_of(d: DeclId) -> bool { self.db.active(typed_body_key(self, d)) }
+
+    /// The family every body's typing is filed under.
+    fn typed_family() -> int { typed_body_key(self, DeclId { index: 0 }).family }
 
     /// A file's bodies as one table: Main's facts first (its range
     /// spans the file), each declaration's laid over its own range,
@@ -2637,7 +2597,7 @@ impl Workspace {
                         122,
                         [
                             fp_list(
-                                [dep_hash_fp(ws.db.value_hash_of(key(Family.Typed, d.index))) for d in bodies],
+                                [dep_hash_fp(ws.db.value_hash_of(typed_body_key(ws, d))) for d in bodies],
                             ),
                         ],
                     ),
@@ -2746,11 +2706,9 @@ export fn family_code_hash(f: Family) -> string {
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Sig -> code_hash(sig_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
-        .Typed -> code_hash(typed_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",
         .Analysis -> code_hash(analysis_verified) ?? "",
-        .Settled -> code_hash(settled_verified) ?? "",
         .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",

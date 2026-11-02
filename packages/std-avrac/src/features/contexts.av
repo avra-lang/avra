@@ -404,11 +404,11 @@ export fn type_name_decl(sh: Type) -> DeclId? {
 /// instead; a miss there is the honest absence, not a reason to grow
 /// the registry from a read.
 export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
-    // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
-    // body's facts hold only its own range — so a const's type is
-    // the program's answer or the HOLE. Falling through would index
-    // the asker's table with another body's expression (-1).
-    if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return view.decls.type_of_const(view.file, s) }
+    // A CONST FIRST, AND ONLY: a body's facts hold only its own range, so
+    // a const is its own body's fact there and the program's answer (or
+    // the HOLE) everywhere else. Falling through would index the asker's
+    // table with another body's expression (-1).
+    if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return facts.const_type(s) ?? view.decls.type_of_const(view.file, s) }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared }
     let v? = view.store.stmt_value(s) else { return null }
@@ -627,6 +627,7 @@ impl TypeCx {
     fn record_chosen(e: ExprId, m: DeclId) { self.facts.record_chosen(e, m) }
     fn record_dispatch(e: ExprId, d: RunChoice) { self.facts.record_dispatch(e, d) }
     fn record_binding(s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
+    fn record_const_type(s: StmtId, ty: TypeId) { self.facts.record_const_type(s, ty) }
     fn record_index_type(s: StmtId, ty: TypeId) { self.facts.record_index_type(s, ty) }
     fn index_type(s: StmtId) -> TypeId? { self.facts.index_type(s) }
     fn want_at(e: ExprId) -> TypeId? { self.facts.want_at(e) }
