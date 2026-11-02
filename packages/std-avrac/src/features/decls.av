@@ -811,12 +811,10 @@ export type Decls = {
     // the workspace's cancel hook: a record-carrying declaration's reach
     // read by name, so a reader stands on that decl's answer alone
     ensure_cancels: Cell<fn(DeclId) -> bool>,
-    // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
-    // through `ensure_consumed`, the same shape as `marks` (null =
-    // unasked). No fixpoint: unlike `written_seats`, a seat's
+    // WHICH SEATS THE BODY CONSUMES (R3) — the workspace's answer per
+    // declaration. No fixpoint: unlike `written_seats`, a seat's
     // evidence is local to its own body alone.
-    consumed: Cell<List<List<bool>?>>,
-    ensure_consumed: Cell<fn(DeclId) -> void>,
+    ensure_consumed: Cell<fn(DeclId) -> List<bool>>,
     /// Whether a HELD file stood in the workspace the last time the
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
@@ -997,7 +995,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
     let no_methods: List<Cell<List<DeclId>>> = []
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
-    let empty_consumed: List<List<bool>?> = []
     let db = durable_db(durable)
     let d = Decls {
         types: new_type_registry(),
@@ -1086,8 +1083,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         cancels: new_table(),
         schedulers: Cell.new(false),
         shape_keys: new_table(),
-        consumed: Cell.new(empty_consumed),
-        ensure_consumed: Cell.new(no_ensure),
+        ensure_consumed: Cell.new(no_consumed),
         lifter: Cell.new(no_lifter),
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
@@ -1122,6 +1118,8 @@ fn builtin_tparams(arity: int) -> List<string> {
 fn no_ensure(d: DeclId) {}
 
 fn no_answer(_d: DeclId) -> bool { false }
+
+fn no_consumed(_d: DeclId) -> List<bool> { [] }
 
 /// A kind's word — the key's middle, and prose.
 export fn kind_word(k: DeclKind) -> string {
@@ -2020,7 +2018,7 @@ impl Decls {
     fn let_go(voice: string) {
         self.disarm()
         self.ensure_target.set(no_ensure)
-        self.ensure_consumed.set(no_ensure)
+        self.ensure_consumed.set(no_consumed)
         self.ensure_listed.set(no_listing)
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
@@ -2613,32 +2611,16 @@ impl Decls {
         self.ensure_writes.set(ensure)
     }
 
-    /// The consumes pass's own record — one seat's evidence, once
-    /// computed.
-    fn record_consumed(d: DeclId, bits: List<bool>) {
-        self.consumed.set_at(d.index, bits)
-    }
-
-    /// Whether the pass has recorded `d`'s bits.
-    fn consumed_known(d: DeclId) -> bool { self.consumed.get()[d.index] != null }
-
-    /// The bits recorded for `d`, none where unrecorded.
-    fn consumed_bits(d: DeclId) -> List<bool> {
-        let row: List<bool>? = self.consumed.get()[d.index]
-        row ?? []
-    }
-
     /// Whether the body infers seat `i` CONSUMED — asking runs the
     /// pass; a held (precompiled) declaration answers false, since
     /// nothing here re-infers from a body it never stored.
     fn consumed_seat(d: DeclId, i: int) -> bool {
-        (self.ensure_consumed.get())(d)
-        let row: List<bool>? = self.consumed.get()[d.index]
-        row != null && i < row!.length && row![i]
+        let row = (self.ensure_consumed.get())(d)
+        i < row.length && row[i]
     }
 
     /// The workspace arms the consumes hook once.
-    fn arm_consumed(ensure: fn(DeclId) -> void) {
+    fn arm_consumed(ensure: fn(DeclId) -> List<bool>) {
         self.ensure_consumed.set(ensure)
     }
 
