@@ -2501,10 +2501,8 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
-        let ids = self.decls.ids()
-        // The facts carry ARENA IDS: the settle fingerprint folds WHERE
-        // they are placed, so a shift that leaves `syntax(d)` and
-        // `names(d)` alike still reads this body's value as moved.
+        // The facts carry ARENA IDS: the settle digest reads them where they are placed, so a
+        // shift that leaves `syntax(d)` and `names(d)` alike still reads this body as moved.
         let spot = self.placed(d)
         typed_of(
             self
@@ -2512,7 +2510,10 @@ impl Workspace {
                 .finish_lazy(
                     d.index,
                     DbRow.Typed(out),
-                    (r: DbRow) -> fp(123, [spot, typed_of(r).fingerprint_in(ids)]),
+                    (r: DbRow) -> fp(
+                        123,
+                        [spot, TypeFacts.digest_in(self.facts_scope(0, 0), typed_of(r))],
+                    ),
                 ),
         )
     }

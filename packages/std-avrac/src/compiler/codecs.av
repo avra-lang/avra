@@ -734,7 +734,7 @@ fn same_fact_node(a: FactNode, b: FactNode) -> bool { a.name == b.name && a.own 
 
 fn same_texts(a: List<string>, b: List<string>) -> bool { list_eq(a, b, (x, y) -> x == y) }
 
-// ── `facts_encoded_in`/`facts_decoded_in` — a body's typing table, under a scope. ──
+// ── a body's typing table, as its codec's exemplars ──
 
 /// An empty table first, then one with EVERY column holding something: an absent optional, an
 /// empty list and a populated one, so the three shapes a column can wear are all on the wire.
@@ -794,15 +794,7 @@ fn facts_exemplars() -> List<TypeFacts> {
     ]
 }
 
-fn facts_labels() -> List<string> { ["an empty table", "every column holding something"] }
-
 fn ty_at(i: int) -> TypeId { TypeId { index: i } }
-
-/// A table read back under the scope it was written in; absent for one that did not read back.
-fn facts_read_back(b: Bytes?) -> TypeFacts? {
-    let octets? = b else { return null }
-    match facts_decoded_in(octets, indexed_scope()) { .Ok(t) -> t, .Err(_) -> null }
-}
 
 /// Two tables compared WHOLE, column by column: its name, where its window starts, the value it
 /// grows with, and every cell in order.
@@ -1120,14 +1112,6 @@ export fn codec_w2_asks_unread() -> bool {
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
-        derived(
-            "facts_codec.facts_encoded_in/facts_decoded_in",
-            facts_exemplars(),
-            facts_labels(),
-            (t) -> facts_encoded_in(t, indexed_scope()),
-            facts_read_back,
-            same_facts,
-        ),
         derived(
             "lower.code_facts_wire/code_facts_from_wire",
             code_facts_exemplars(),
