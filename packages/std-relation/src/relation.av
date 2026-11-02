@@ -1233,6 +1233,7 @@ fn hashed(acc: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Str -> quote { ${acc}.text(${e}) },
         .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem, owner)}) },
+        .Unspelled("Bytes") -> quote { ${acc}.octets(${e}) },
         .Named(n, args) -> if owner.codes(k) {
             quote { ${acc}.int(${name(n)}.digest_in(scope, ${e})) }
         } else if owner.needs(k) {
@@ -1271,6 +1272,7 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
         .Str -> quote { (h: StableHasher, v: string) -> h.text(v) },
         .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem, owner)}) },
+        .Unspelled("Bytes") -> quote { (h: StableHasher, v: Bytes) -> h.octets(v) },
         .Named(n, args) -> if owner.codes(k) {
             quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(${name(n)}.digest_in(scope, v)) }
         } else if owner.needs(k) {
@@ -1385,6 +1387,7 @@ fn read_value(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { read_opt(rd, ${read_each(inner, owner)})? },
         .List(elem) -> quote { read_list(rd, ${read_each(elem, owner)})? },
         .Map(_, value) -> quote { read_map(rd, ${read_each(value, owner)})? },
+        .Unspelled("Bytes") -> quote { rd.octets()? },
         .Named(n, args) -> when {
             owner.codes(k) -> quote { ${name(n)}.read_by(rd, scope)? }
             owner.needs(k) -> quote { ${read_helper(quote { rd }, k.spelled(), owner)}? }
@@ -1468,6 +1471,7 @@ fn read_each(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner, owner)}) },
         .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem, owner)}) },
         .Map(_, value) -> quote { (r: Reader) -> read_map(r, ${read_each(value, owner)}) },
+        .Unspelled("Bytes") -> quote { (r: Reader) -> r.octets() },
         .Named(n, args) -> when {
             owner.codes(k) -> quote { (r: Reader) -> ${name(n)}.read_by(r, scope) }
             owner.needs(k) -> quote { (r: Reader) -> ${read_helper(quote { r }, k.spelled(), owner)} }
@@ -1496,6 +1500,7 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner, owner)}) },
         .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { written_map(${w}, ${e}, ${write_each(value, owner)}) },
+        .Unspelled("Bytes") -> quote { ${w}.octets(${e}) },
         .Named(n, args) -> when {
             owner.codes(k) -> quote { ${name(n)}.written_by(${w}, scope, ${e}) }
             owner.needs(k) -> write_helper(w, k.spelled(), e, owner)
@@ -1567,6 +1572,7 @@ fn write_each(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner, owner)}) },
         .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { (w: Writer, v: ${k.spelled()}) -> written_map(w, v, ${write_each(value, owner)}) },
+        .Unspelled("Bytes") -> quote { (w: Writer, v: Bytes) -> w.octets(v) },
         .Named(n, args) -> when {
             owner.codes(k) -> quote { (w: Writer, v: ${k.spelled()}) -> ${name(n)}.written_by(w, scope, v) }
             owner.needs(k) -> quote { (w: Writer, v: ${k.spelled()}) -> ${write_helper(quote { w }, k.spelled(), quote { v }, owner)} }
@@ -1911,6 +1917,7 @@ fn kind_fits(k: Kind, fit: Map<string, bool>) -> bool {
         .Opt(inner) -> kind_fits(inner, fit),
         .List(elem) -> kind_fits(elem, fit),
         .Map(key, value) -> key.spelled() == "string" && kind_fits(value, fit),
+        .Unspelled("Bytes") -> true,
         .Named(_, _) -> fit.get(k.spelled()) ?? false,
         .Float or .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }

@@ -1,0 +1,27 @@
+// `Bytes` is a stored kind: written raw, read back whole, empty and with NUL octets, alone, in a
+// list and in a nullable.
+use @std.relation.{codec}
+use @std.relation.stable.{indexed_scope, Scope}
+
+@codec
+type Blob = { name: string, data: Bytes, more: List<Bytes>, maybe: Bytes? }
+
+fn here() -> dyn Scope { indexed_scope() }
+
+fn blob(data: Bytes) -> Blob { Blob { name: "b", data: data, more: [data, data], maybe: data } }
+
+fn back(data: Bytes) -> bool {
+    match Blob.decoded_in(here(), blob(data).encoded_in(here())) {
+        .Ok(x) -> x.name == "b" && x.data.length == data.length && x.more.length == 2 && x.maybe != null,
+        .Err(_) -> false,
+    }
+}
+
+fn octets(xs: List<int>) -> Bytes { xs.bytes()! }
+
+spec "std/relation — Bytes is a stored kind" {
+    given "a record holding Bytes" {
+        then "an empty box reads back present, not absent" { back(octets([])) }
+        then "octets holding zero and 255 read back whole" { back(octets([0, 255, 0, 7])) }
+    }
+}
