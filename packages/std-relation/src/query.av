@@ -336,6 +336,10 @@ export fn scoped_by(f: Fn, by: Fn) -> List<Diagnostic> {
     []
 }
 
+/// `@process_only`: the call's answer is never saved past the process — the mark of a body that
+/// keeps rows aside its answer, which a restored answer would not keep again.
+export fn process_only(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "process_only")] } }
+
 /// `@recursive`: a call re-entered before it settles computes again — the smaller view.
 export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "recursive")] } }
 
@@ -408,7 +412,8 @@ fn opened(f: Fn) -> Code {
 /// and answer are plain numbers and text names nothing of the context and stays in the process.
 fn saved(f: Fn) -> bool {
     let ctx = !is_db(f.params[0].kind)
-    (!ctx || scoped(f) || !coded(f).is_empty()) &&
+    !f.annotations.any((a: Annotation) -> a.name == "process_only") &&
+        (!ctx || scoped(f) || !coded(f).is_empty()) &&
         f
             .params
             .slice(1, f.params.length)

@@ -894,6 +894,7 @@ impl Kernel {
     fn record_at(family: int, arg: int) {
         let reader = self.asker.reader.get()
         if reader == 0 { return }
+        if arg < 0 { negative_arg(family, arg) }
         if packed(family, arg) == self.asker.last.get() { return }
         if self.counting.get() { self.count_read(family) }
         let row = self.stamp_row(family)
@@ -921,7 +922,6 @@ impl Kernel {
     /// value is saved; a stamp a closed query left behind is never
     /// asked for again, so nothing is saved.
     fn newly_read(row: Cell<List<int>>, family: int, arg: int, stamp: int, reader: int) {
-        if arg < 0 { negative_arg(family, arg) }
         if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
         stamped_in(row, arg, reader)
         self.asker.pending.get().last()!.push(packed(family, arg))
