@@ -12,16 +12,18 @@ use features.{
     seats,
     marked_seats,
     isolating,
+    seats_with_holes,
 }
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
-    let consts = b.tokens(3)?
-    let muts = b.tokens(4)?
-    let ps = b.tokens(5)?
-    let r = b.answer(8)
-    let body = b.expr(9)?
+    let holes = b.tokens(3)?
+    let consts = b.tokens(4)?
+    let muts = b.tokens(5)?
+    let ps = b.tokens(7)?
+    let r = b.answer(10)
+    let body = b.expr(11)?
     let ends? = b.span_end() else {
         return .Err(
             "defect: a fn declaration without a span — the arena and the grammar disagree",
@@ -38,24 +40,25 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
         promises: plain_mark,
         id: b.store.alloc_param_id(t.span),
     } for j, t in tp]
-    let params = b
+    let ordinary = b
         .defaulted(
             ps,
             isolating(
                 marked_seats(
                     b.store,
                     ps,
-                    aligned_param_types(ps, b.type_refs(6)?, ends),
+                    aligned_param_types(ps, b.type_refs(8)?, ends),
                     muts,
                     consts,
                     n.span.lo,
                 ),
                 ps,
-                b.tokens(10)?,
+                b.tokens(6)?,
                 n.span.lo,
             ),
-            b.exprs(7)?,
+            b.exprs(9)?,
         )
+    let params = seats_with_holes(b.store, ordinary, holes)
     b.make_stmt(Stmt.FnDecl(Scoped(n.text), tparams, params, r, body))
 }
 

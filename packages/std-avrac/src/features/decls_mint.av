@@ -24,6 +24,7 @@ use core.{
     Stmt,
     Expr,
     Scoped,
+    Plain,
 }
 use diagnostics.{Diag}
 use features.{generated_key, Decl, no_origins}
@@ -734,6 +735,120 @@ impl Decls {
         self.record_generated(f, [d])
         self.note_provenance(d, ann, original, at)
         d
+    }
+
+    /// A WRAP directive: the annotated declaration's OWN identity —
+    /// its name, its file, every binding that already resolves to it
+    /// — never moves; only what it COMPILES TO does. Its written body
+    /// relocates to a fresh sibling under a name no written binding
+    /// can take (`raised_by\$body`), and its own `root` is replaced
+    /// by a freshly minted wrapper that calls the sibling — the same
+    /// "let v = callee(args); v" shape `mint_generated` mints for a
+    /// twin, aimed at the sibling instead of at the original.
+    ///
+    /// THE WRAPPER'S OWN NODES STILL NEED A READER: resolution walks
+    /// STATEMENTS (the written ones, plus `expanded()`'s generated
+    /// ones), never a decl's bare `root` — so a wrapper reachable only
+    /// through `root` is never visited, and lowering meets an unbound
+    /// name that "survived a clean analysis" (nothing ever asked). A
+    /// third, generated decl carries the SAME wrapper body under its
+    /// own statement, purely so the walk finds it and `avra expand`
+    /// has a real body to show under the written name (P7) — its own
+    /// `Decl.name` is mangled too, since `symbol()` keys a fn's
+    /// codegen name off that field, and a second decl spelled
+    /// `raised_by` would collide with the one everyone actually calls.
+    ///
+    /// `target` is the method's own type, when the annotated
+    /// declaration is one — the sibling registers there, since METHOD
+    /// resolution reads that table, never the two-tier NAME lookup a
+    /// free fn's sibling reaches through.
+    fn mint_wrap(f: FileId, w: DeclareWork, ann: string, target: DeclId?) -> List<DeclId> {
+        let owner = self.decl(w.annotated).owner
+        let body_key = generated_key(f, "${owner}#${w.original}\$body")
+        let wrap_key = generated_key(f, "${owner}#${w.original}\$wrap")
+        let known: DeclId? = self.known_id(body_key)
+        // IDEMPOTENT WHOLE: a re-run after invalidation asks the same
+        // keys and stops here — the sibling and the shown wrapper both
+        // stand, and the written decl's `root` already names the
+        // wrapper THAT run minted. Minting a second one here would
+        // leak arena nodes every re-run and repoint `root` at a
+        // fresh, redundant one.
+        if known != null { return [known!, self.known_id(wrap_key)!] }
+        let orig = self.decl(w.annotated)
+        let body_name = "${w.original}\$body"
+        let store = self.store_of(f)
+        let body_stmt = store
+            .alloc_stmt(Stmt.FnDecl(Scoped(body_name), w.tparams, w.params, w.answer, orig.root!), w.at)
+        let bd = self
+            .mint(
+                body_key,
+                f,
+                body_stmt,
+                body_name,
+                orig.kind,
+                false,
+                owner,
+                orig.parent,
+                false,
+                orig.root,
+            )
+        self.decls.set_at(bd.index, self.decl(bd) with { lo: orig.lo, hi: orig.hi })
+        if target != null { self.declare_method(target!, bd) }
+        self.note_provenance(bd, ann, w.original, w.at)
+        // THE WRAPPER: minted last, so its own nodes sit at the
+        // arena's end. UNLIKE A TWIN, the range this widens is the
+        // WRITTEN declaration's OWN — the annotation standing on it
+        // is typed inside that same window, at exprs `range_bodies`
+        // already gave it below `orig.lo`; shrinking the floor to
+        // where the wrapper's own nodes start would read the
+        // annotation's callee through a `wants` table that never
+        // covers it and trap ("side table `wants` holds [...) — id
+        // N is outside it"). The floor stays; only the ceiling moves.
+        let lo = store.exprs.count()
+        let arg_ids = [store.alloc_expr(Expr.Ident(p.name), w.at) for p in w.params]
+        let call = if target != null {
+            store
+                .alloc_expr(
+                    Expr
+                        .MethodCall(store.alloc_expr(Expr.Receiver, w.at), Plain(body_name), arg_ids),
+                    w.at,
+                )
+        } else {
+            store.alloc_expr(Expr.Call(Scoped(body_name), [], arg_ids), w.at)
+        }
+        let v = "${body_name}\$\$v"
+        let bound = store.alloc_expr(Expr.Ident(Scoped(v)), w.at)
+        let l2 = store.alloc_stmt(Stmt.Let(Scoped(v), null, call), w.at)
+        let wrapper_body = store.alloc_expr(Expr.Block([l2], bound), w.at)
+        // THE SHOWN WRAPPER: its OWN stmt spells the written name (so
+        // `avra expand` shows it as `w.original` would read), and its
+        // OWN decl carries a mangled `Decl.name` (so its symbol never
+        // collides with the one everyone calls) — both kind and owner
+        // match the annotated decl, so a method's `Expr.Receiver`
+        // still types against the right target.
+        let wrapper_stmt = store
+            .alloc_stmt(Stmt.FnDecl(Scoped(w.original), w.tparams, w.params, w.answer, wrapper_body), w.at)
+        let hi = store.exprs.count()
+        let wd = self
+            .mint(
+                wrap_key,
+                f,
+                wrapper_stmt,
+                "${w.original}\$wrap",
+                orig.kind,
+                false,
+                owner,
+                orig.parent,
+                false,
+                wrapper_body,
+            )
+        self.decls.set_at(wd.index, self.decl(wd) with { lo: lo, hi: hi })
+        self.record_generated(f, [bd, wd])
+        self.note_provenance(wd, ann, w.original, w.at)
+        self
+            .decls
+            .set_at(w.annotated.index, self.decl(w.annotated) with { root: wrapper_body, hi: hi })
+        [bd, wd]
     }
 
     // ── declarations ──

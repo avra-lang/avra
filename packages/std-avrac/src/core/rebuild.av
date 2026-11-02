@@ -368,13 +368,64 @@ impl Rebuilder {
     /// `dst` does not share, so carrying it unchanged would read
     /// another store's table by a foreign index the day the two
     /// diverge in length.
-    mut fn param(p: Param) -> Param {
+    mut fn param(p: Param) -> List<Param> {
+        let k: int? = self.param_hole(p)
+        if k != null {
+            self.classify(k!, HoleKind.Param)
+            if !self.copying { return [p] }
+            return self.fill_params(k!)
+        }
         let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
-        if !self.copying { return rebuilt }
-        rebuilt with { id: self.dst.alloc_param_id(self.src.param_id_span(p.id)) }
+        if !self.copying { return [rebuilt] }
+        [rebuilt with { id: self.dst.alloc_param_id(self.src.param_id_span(p.id)) }]
     }
 
-    mut fn params(ps: List<Param>) -> List<Param> { [self.param(p) for p in ps] }
+    mut fn params(ps: List<Param>) -> List<Param> { flatten([self.param(p) for p in ps]) }
+
+    /// A seat WHOLE hole: its own name and its own written type both
+    /// the SAME hole — `arm_hole`'s two-field agreement one seat
+    /// over. A seat's type is OPTIONAL (a lambda's bare `x`), so
+    /// `p.name.of` alone would misfire on `${x}: int` (item 6's
+    /// single-name fill, ordinary and untouched); the type must
+    /// agree too, and only the dedicated grammar alternative
+    /// (`hole_param`) ever builds that shape.
+    fn param_hole(p: Param) -> int? {
+        qtrace("Q\tDEBUG_param_hole\tname=${p.name.of}\tty=${p.ty?.name ?? "NULL"}\n")
+        let k? = self.lone_hole(p.name.of) else { return null }
+        let ty? = p.ty else { return null }
+        if self.lone_hole(ty.name) != k { return null }
+        k
+    }
+
+    /// A seat seat: a lone hole standing as a whole seat fills with
+    /// the wrapper declaration's own seats — a fn's params, a
+    /// struct's fields, flattened across every wrapper the fill
+    /// answers.
+    mut fn fill_params(k: int) -> List<Param> {
+        match self.filled(k, HoleKind.Param) {
+            .Stmts(stmts) -> flatten([self.wrapper_params(s) for s in stmts]),
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) -> {
+                self.misfits.push(k)
+                []
+            },
+        }
+    }
+
+    /// A param/field run hole's wrapper: the seats it declares. Any
+    /// other shape answers none, silently — the wrapper is the
+    /// derive's OWN construction, never a program's, so a wrong shape
+    /// there is the derive's defect to fix, not a program's to see.
+    fn wrapper_params(s: StmtId) -> List<Param> {
+        match self.dst.stmt(s) {
+            .FnDecl(_, _, params, _, _) -> params,
+            .StructDecl(_, _, fields) -> fields,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .ExternFn(_, _, _) or .While(_, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .For(_, _, _, _, _, _) or .Use(_, _, _) or .ForEach(_, _, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .SyntaxDecl(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .Setting(_, _) or .Alias(_, _, _) or .CollectEnum(_, _, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .ComponentDecl(_, _, _, _) or .Error -> [],
+        }
+    }
 
     mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
 
