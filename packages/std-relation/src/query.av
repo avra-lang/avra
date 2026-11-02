@@ -92,11 +92,14 @@ fn coded(f: Fn) -> List<string> {
 }
 
 /// Whether a query's dense ids cross through its context's scope — its key's and its answer's,
-/// spelled for the key, the digest and the record alike.
+/// spelled for the key, the digest and the record alike. A `@codec` type's codec asks the scope
+/// for every dense id it holds, whatever this view can see of its fields, so a context query that
+/// crosses one is scoped too.
 fn scoped(f: Fn) -> bool {
     !is_db(f.params[0].kind) &&
         (f.params.slice(1, f.params.length).any(holds_dense(it.kind, named_shape)) ||
-            holds_dense(f.answers, named_shape))
+            holds_dense(f.answers, named_shape) ||
+            !coded(f).is_empty())
 }
 
 /// Whether every dense seat of a call has a name past the process — a scope may name an id
@@ -110,7 +113,8 @@ fn named_seats(f: Fn) -> Code {
     all
 }
 
-/// The context's one scope, bound where a scoped query's code spells an id.
+/// The context's one scope, bound where a scoped query's code spells an id. A `Db` has no scope,
+/// so a query over the Db alone spells a coded type's ids by their numbers.
 fn scope_bound(f: Fn) -> List<Stmts> {
     if !scoped(f) {
         if coded(f).is_empty() { return [] }
