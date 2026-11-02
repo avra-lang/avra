@@ -506,6 +506,10 @@ impl Workspace {
         out
     }
 
+    /// Whether lowered bodies carry the back-edge cancel check: no compile-time run, no wasm
+    /// target, and a program that links a scheduler.
+    fn back_edge_checks() -> bool { !self.comptime_active() && !self.wasm_target() && self.scheduler_linked() }
+
     /// Whether a compile-time run — a lift, an argument crossing, a
     /// const's settlement — is currently lowering bodies. Its units
     /// infer no consuming seat (every argument stays borrowed) and
@@ -676,7 +680,7 @@ impl Workspace {
         // either. A WASM build emits none whatever the survey says: its
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
-        let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
+        let checks = self.back_edge_checks()
         if w.decl != null && self.lowers_from_own_range(w.decl!) {
             self.hold.ranged.push(w.file.index)
             let out = lower_unit(

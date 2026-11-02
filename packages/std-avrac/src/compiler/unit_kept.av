@@ -15,9 +15,10 @@ use @std.relation.{query, codec}
 @codec
 type KeptUnit = { wants: List<Wanted>, bodies: List<Body>, statics: List<Static>, hashes: List<string> }
 
-/// A unit's lowering, kept: a unit that spoke cannot be.
+/// A unit's lowering, kept: a unit that spoke cannot be. The program-level facts a lowering reads
+/// beside its want are seats, so a unit lowered under one program is never another's.
 @query
-fn unit_kept(ws: Workspace, w: Wanted) -> KeptUnit {
+fn unit_kept(ws: Workspace, w: Wanted, _checks: bool) -> KeptUnit {
     let out = ws.lowered_fresh(ws.spec_id(w))
     if !out.voices.list.is_empty() { ws.query_db().unkept() }
     KeptUnit { wants: out.wants, bodies: out.bodies, statics: out.statics, hashes: out.hashes }
@@ -28,16 +29,18 @@ impl Workspace {
     /// process's own lowering when it ran one, else the kept answer standing as the unit.
     fn unit_checked(w: Wanted, id: int) -> Unit {
         if !self.kept_want(w) { return self.lowered_fresh(id) }
-        let kept = unit_kept(self, w)
+        let kept = unit_kept(self, w, self.back_edge_checks())
         let fresh = self.relation(Family.Lowered).values.entry(id)
         if fresh is .Present { return self.lowered_fresh(id) }
-        Unit {
+        let served = Unit {
             bodies: kept.bodies,
             wants: kept.wants,
             voices: no_voices(),
             statics: kept.statics,
             hashes: kept.hashes,
         }
+        self.owned(w, served)
+        served
     }
 
     /// Whether a want's kept answer may stand for its lowering: a plain fn or method, asked
