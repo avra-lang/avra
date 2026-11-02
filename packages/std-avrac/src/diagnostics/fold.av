@@ -1,0 +1,62 @@
+//! A diagnostic's fold, written by hand because no derive reaches it: its cause is a
+//! `dyn Error` and its frames are `@std/errors`' own, so it folds its wire-safe facts —
+//! the cause flattened into the lines the renderer prints for it.
+use core.{fp, fp_str, fp_list, Ids}
+use @std.errors.{Loc, Frame, Edit, Suggestion, Confidence}
+
+impl Diag {
+    fn fingerprint() -> int {
+        let df = diag_facts_of(self)
+        fp(
+            164,
+            [
+                fp_str(df.kind),
+                severity_fp(df.severity),
+                frame_fp(df.primary),
+                fp_list([frame_fp(fr) for fr in df.secondary]),
+                fp_list([fp_str(s) for s in df.cause_lines]),
+                fp_str(df.message),
+                opt_str_fp(df.help),
+                fp_list([suggestion_fp(s) for s in df.suggestions]),
+            ],
+        )
+    }
+
+    /// No arena id reaches a diagnostic's fold: it is its own whatever the ids.
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+}
+
+fn severity_fp(s: Severity) -> int {
+    match s { .Error -> fp(151, []), .Warning -> fp(152, []), .Note -> fp(315, []) }
+}
+
+export fn opt_str_fp(s: string?) -> int {
+    if s == null { fp(153, []) } else { fp(154, [fp_str(s!)]) }
+}
+
+fn loc_fp(l: Loc) -> int {
+    fp(155, [opt_str_fp(l.file), l.lo, l.hi])
+}
+
+export fn opt_loc_fp(l: Loc?) -> int {
+    if l == null { fp(156, []) } else { fp(157, [loc_fp(l!)]) }
+}
+
+fn frame_fp(f: Frame) -> int {
+    fp(158, [opt_str_fp(f.label), opt_loc_fp(f.loc)])
+}
+
+fn edit_fp(e: Edit) -> int {
+    fp(159, [loc_fp(e.loc), fp_str(e.replacement)])
+}
+
+fn confidence_fp(c: Confidence) -> int {
+    match c { .High -> fp(160, []), .Medium -> fp(161, []), .Low -> fp(162, []) }
+}
+
+fn suggestion_fp(s: Suggestion) -> int {
+    fp(
+        163,
+        [confidence_fp(s.confidence), fp_str(s.description), fp_list([edit_fp(e) for e in s.edits])],
+    )
+}

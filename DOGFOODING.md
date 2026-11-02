@@ -1457,6 +1457,14 @@ instantiation works cross-file (the bare form does not). A consumer
 that cannot instantiate (metadata-compiled tests) goes through an
 in-package factory and extends the value with `with`.
 
+## A binder a `quote` writes is reached by `quote`, never by `name`
+A binder spelled inside a template (`(cell) -> …`, `for key, held in …`,
+`.Ok(held) -> …`) is the template's own and hygienic, so a hole that reads it
+is `quote { cell }` — as `fingerprint.av`'s `.List` arm reads `quote { each }`.
+`name("cell")` names a binding of the SITE the template lands in, and finds
+none: "`cell` is not defined", once per expansion (86 of them from one derive,
+beside the methods every other derive in the module then lost).
+
 ## Triple-quoted strings for embedded text
 
 Grammar fragments, docs, fixtures, and GOLDEN test expectations —
