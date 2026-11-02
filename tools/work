@@ -813,7 +813,7 @@ follow_github() {
 # failed (cancelled).
 github_status() {
     log=$($gh_ run view "$1" --log 2>/dev/null) || log=
-    printf '%s\n' "$log" | awk -F '\t' '$2 == "command" { sub(/^[^ ]* /, "", $3); print $3 }' | grep -v '^lane-run: status ' || :
+    printf '%s\n' "$log" | awk -F '\t' '$2 == "command" { sub(/^[^ ]* /, "", $3); if (said && $3 !~ /^##\[/) print $3; if ($3 ~ /^##\[endgroup\]/) said = 1 }' | grep -v '^lane-run: status ' || :
     st=$(printf '%s\n' "$log" | sed -n 's/.*lane-run: status \([0-9][0-9]*\).*/\1/p' | tail -n 1)
     if [ -z "$st" ]; then
         failed=$($gh_ run view "$1" --json jobs -q '[.jobs[0].steps[]? | select(.conclusion == "failure") | .name][0] // ""' 2>/dev/null || :)
