@@ -1712,7 +1712,7 @@ doctrine it expands.
 - ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
 
       sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
-      sh tools/work run <cmd>    # run it on this lane's Sprite, streamed, its exit status
+      sh tools/work run <cmd>    # run it on a GitHub runner (--sprite: the lane's Sprite), its exit status
       sh tools/work test         # what this branch touches, on this lane's Sprite
       sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
       sh tools/work status       # PRs and their merge state; each lane and its Sprite
