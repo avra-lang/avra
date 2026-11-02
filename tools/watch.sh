@@ -8,9 +8,11 @@
 # its cap is a defect, and a wreck that names its peak beats a
 # stall the kernel panics on.
 #
-# ONE HEAVY STEP AT A TIME, MACHINE-WIDE: the lock is a directory
-# in /tmp, so every worktree and every session queues on the same
-# one. A waiting step says who holds it. The lock dies with the
+# HEAVY STEPS ARE ADMITTED BY MEMORY, MACHINE-WIDE: the lock is a
+# set of slot directories in /tmp, so every worktree and every
+# session queues on the same ones; a second step starts only while
+# the machine has AVRA_SLOT_MB (2500) available beyond what the
+# steps still ramping are owed, AVRA_BUILD_SLOTS=<n> fixes the count. A waiting step says who holds it. The lock dies with the
 # step, however the step dies. `./avra` takes this lock ITSELF for
 # any package-scale run, so no path around it exists; a step that
 # already runs under the lock (AVRA_WATCH_HELD set) runs its
@@ -339,7 +341,10 @@ fi
 # The guarded command becomes a process-group leader through `leader`,
 # defined with the tree walkers above; the tree walkers key on that
 # pgid, never on a ppid chain.
-slots="${AVRA_BUILD_SLOTS:-1}"
+slots="${AVRA_BUILD_SLOTS:-}"
+slot_mb="${AVRA_SLOT_MB:-2500}"
+slots_max="${AVRA_SLOTS_MAX:-8}"
+ramp_s="${AVRA_RAMP_S:-30}"
 lock="${AVRA_BUILD_LOCK:-/tmp/avra-build.lock}"
 floor="${AVRA_MEM_FLOOR:-20}"
 
@@ -376,10 +381,37 @@ fi
 # nothing. A ticket or a slot whose holder died is reaped, or it
 # blocks the queue forever.
 #
-# ONE SLOT BY DEFAULT: a full build is CPU-bound on a shared box, so
-# concurrent slots serialise work rather than parallelising it. Raise
-# AVRA_BUILD_SLOTS deliberately, never as the default. A waiting
-# caller is told who holds each slot — its pid and its command.
+# THE SLOT COUNT IS MEMORY'S TO SAY. Slot 1 is always open; slot n > 1
+# is taken only while the machine has AVRA_SLOT_MB available beyond
+# what the holders still ramping toward their peak (started under
+# AVRA_RAMP_S ago) are owed. AVRA_BUILD_SLOTS=<n> fixes the count
+# instead. A waiting caller is told who holds each slot — its pid and
+# its command.
+available_mb() {
+    if [ -r /proc/meminfo ]; then
+        awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo
+    else
+        level=$(sysctl -n kern.memorystatus_level 2>/dev/null) || level=
+        total=$(sysctl -n hw.memsize 2>/dev/null) || total=
+        if [ -n "$level" ] && [ -n "$total" ]; then echo $((level * (total / 1048576) / 100)); else echo 0; fi
+    fi
+}
+mtime_s() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# how many held slots are younger than the ramp
+ramping() {
+    now=$(date +%s)
+    r=0
+    for cand in "$lock" "$lock".[0-9]*; do
+        [ -d "$cand" ] || continue
+        holder_gone "$cand" && continue
+        [ $((now - $(mtime_s "$cand/pid"))) -lt "$ramp_s" ] 2>/dev/null && r=$((r + 1))
+    done
+    echo "$r"
+}
+# whether one more slot beyond the first may open
+memory_admits() {
+    [ $(( $(available_mb) - $(ramping) * slot_mb )) -ge "$slot_mb" ]
+}
 qdir=$lock.q
 mkdir -p "$qdir"
 last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)
@@ -431,8 +463,10 @@ while [ -z "$held" ]; do
     done
     if [ "$ahead" = no ]; then
         n=1
-        while [ "$n" -le "$slots" ]; do
+        limit=${slots:-$slots_max}
+        while [ "$n" -le "$limit" ]; do
             [ "$n" = 1 ] && cand="$lock" || cand="$lock.$n"
+            if [ "$n" -gt 1 ] && [ -z "$slots" ] && ! memory_admits; then break; fi
             if mkdir "$cand" 2>/dev/null; then held="$cand"; break; fi
             if holder_gone "$cand"; then
                 rm -rf "$cand"
@@ -443,7 +477,7 @@ while [ -z "$held" ]; do
     fi
     [ -n "$held" ] && break
     if [ "$said" = no ]; then
-        echo "watch: all $slots build slots busy — waiting (ticket $mine)" >&2
+        echo "watch: build slots busy — waiting (${slots:-memory-sized, $(available_mb) MB available}; ticket $mine)" >&2
         slot_holders
         said=yes
     fi

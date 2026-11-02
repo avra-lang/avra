@@ -333,13 +333,29 @@ ladder_ship() {
     echo "$ls_key:$ls_plan"
 }
 # The compiler to stand as a lane's builder, matched by COMPILER KEY, never by commit: `<key> exact` when
-# a compiler is published for the key of the tree's merge-base with origin/main (a commit that moved no
+# a compiler is published for the key of the tree's base point (`base_point`: main or a base branch) (a commit that moved no
 # compiler source shares its parent's key), else `<key> ancestor <n>` for the nearest published key
 # among its first-parent ancestors (n commits back, at most AVRA_BUILDER_BACK, 40), else nothing.
+# THE BASES: the branches whose pushes publish their compiler (.github/workflows/base-compiler.yml).
+bases() {
+    sed -n 's/^    branches: \[\(.*\)\]$/\1/p' .github/workflows/base-compiler.yml 2>/dev/null | tr -d ',' 
+}
+# Where this tree leaves the line it was cut from: the nearest merge-base with main or a base, the
+# one fewest commits behind HEAD. A lane off a base stands on that base's published compiler.
+base_point() {
+    best=
+    bestn=
+    for ref in origin/main $(for b in $(bases); do echo "origin/$b"; done); do
+        c=$(git merge-base HEAD "$ref" 2>/dev/null) || continue
+        n=$(git rev-list --count "$c..HEAD")
+        if [ -z "$best" ] || [ "$n" -lt "$bestn" ]; then best=$c; bestn=$n; fi
+    done
+    [ -n "$best" ] && echo "$best"
+}
 builder_key() {
     (
         cd "$1"
-        mb=$(git merge-base HEAD origin/main 2>/dev/null) || exit 0
+        mb=$(base_point) || exit 0
         n=0
         seen=
         first=1
@@ -907,7 +923,7 @@ run() {
             "") echo "work: no compiler is published for the merge-base or its recent ancestors — the run takes the tree's own route" >&2 ;;
             *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
             *)
-                mb=$(git -C "$tree" merge-base HEAD origin/main)
+                mb=$(cd "$tree" && base_point)
                 mbk=$(cd "$tree" && python3 tools/compiler_release.py key-of "$mb")
                 route="builderold:${bk%% *}:$mbk"
                 echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2

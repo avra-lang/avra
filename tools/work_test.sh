@@ -304,6 +304,20 @@ printf 'k-old\nk-new\n' > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-new exact" "work builder-key: the merge-base's own key, published, is exact (a commit with no compiler change shares it)" "$scratch/out"
 : > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "" "work builder-key: nothing published answers nothing" "$scratch/out"
+# A LANE OFF A BASE BRANCH stands on the base's compiler, though main's own key is another.
+bb=$scratch/bb
+git init -q -b main "$bb"
+mkdir -p "$bb/tools" "$bb/.github/workflows"
+cp "$bk/tools/compiler_release.py" "$bb/tools/"
+bbg() { git -C "$bb" -c user.name=t -c user.email=t@t "$@"; }
+echo old > "$bb/keyfile"; bbg add -A; bbg commit -q -m m
+bbg update-ref refs/remotes/origin/main HEAD
+echo new > "$bb/keyfile"; printf 'on:\n  push:\n    branches: [hd-clean, hd-gate]\n' > "$bb/.github/workflows/base-compiler.yml"
+bbg add -A; bbg commit -q -m base
+bbg update-ref refs/remotes/origin/hd-gate HEAD
+echo lane > "$bb/lane"; bbg add -A; bbg commit -q -m lane
+echo k-new > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bb")" "k-new exact" "work builder-key: a lane off a base branch takes the base's published compiler" "$scratch/out"
 
 # `compiler --get`: a held compiler for this source needs no build; none held and none published builds.
 lane getme
