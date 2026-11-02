@@ -193,6 +193,12 @@ once fn open_queries() -> Cell<int> { Cell.new(0) }
 
 once fn foreign_reads() -> Cell<int> { Cell.new(0) }
 
+/// A read no kernel hears — a table its owner answers without a read — made while a query is
+/// open: that query stands on something its record cannot name, so its answer is never kept.
+export fn unheard_read() {
+    if open_queries().get() > 0 { foreign_reads().set(foreign_reads().get() + 1) }
+}
+
 /// Where an owner keeps query answers past the process, by a query's
 /// durable name and its arguments' stable hash: `answer` reads a kept
 /// record back, `keep` hands one over. What key a record lives under,
@@ -664,7 +670,8 @@ impl Db {
     fn read_input_leaf(kernel: Kernel, name: string, spelled: string) {
         let owner? = self.answer_named(name) else { return }
         let arg? = owner.arg_of(spelled) else { return }
-        kernel.record_at(owner.family_now(), arg)
+        let family = owner.family_now()
+        if family >= 0 { kernel.record_at(family, arg) }
     }
 
     /// A query or input asked here, as a saved answer may name it.
@@ -846,6 +853,9 @@ type AnswersUnder<V> = {
 
 /// How a query keyed by one dense number names its calls past the process: the number's
 /// durable spelling, its inverse in this process, and the call asked by its number alone.
+/// A scope's spelling as a call's name: an empty one names nothing.
+export fn named_spelling(s: string) -> string? { if s.is_empty() { null } else { s } }
+
 export type DenseNames = { spell: fn(int) -> string?, number: fn(string) -> int?, ask: fn(int) -> void }
 
 export fn answers<V>(name: string, word: string, dense: bool) -> Answers<V> {
@@ -1125,6 +1135,23 @@ impl AnswersUnder<V> {
         if arg < 0 || arg >= self.numbers.get().length { return null }
         let n = self.numbers.get()[arg]
         if n < 0 { null } else { n }
+    }
+
+    /// The answer call `arg` holds, none when it holds none — computing and recording nothing.
+    fn peeked(arg: int) -> V? {
+        match self.memo.values.entry(arg) { .Present(value) -> value, .Missing -> null }
+    }
+
+    /// The number a key of this query was asked with, none for another query's key.
+    fn number_of(k: Key) -> int? {
+        if k.family != self.memo.family { return null }
+        self.number_at(k.arg)
+    }
+    /// Every answer and cell dropped, and every re-ask with them: what a call's closure held of
+    /// its context is let go.
+    fn dropped() {
+        self.memo.evict()
+        self.again.clear()
     }
 
     /// Call `arg`'s settled hash, the call asked by its number first when it never settled.

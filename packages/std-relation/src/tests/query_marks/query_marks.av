@@ -3,8 +3,10 @@
 // lets a call re-entered before it settles compute again, a smaller view,
 // where a plain query answers the cycle; and an answer the body leaves
 // `unkept()` reaches its asker and no cell holds it, so the next ask runs
-// again — in both engines
-use @std.relation.{query, input, digested_by, recursive}
+// again; and a query's doors — `_key` names the cell a call settled in, `_held`
+// peeks its answer, `_seat_of` reads a key's seat back, `_dropped` lets every
+// answer go — in both engines
+use @std.relation.{query, input, digested_by, digested_with, recursive}
 use @std.relation.db.{Db, new_db}
 
 once fn runs() -> Cell<List<string>> { Cell.new([]) }
@@ -32,6 +34,17 @@ fn measure(db: Db, of: string) -> Measure {
     Measure { width: w, wide: w >= 100 }
 }
 
+/// A measure's digest read beside the call: whether it is wide, under the name it was asked by.
+fn named_wideness(_db: Db, of: string, m: Measure) -> int { of.length * 2 + wideness(m) }
+
+@query
+@digested_with(named_wideness)
+fn measured(db: Db, of: string) -> Measure {
+    ran("measured")
+    let w = width(db, of)
+    Measure { width: w, wide: w >= 100 }
+}
+
 @query
 fn shown(db: Db, of: string) -> string {
     ran("shown")
@@ -52,6 +65,9 @@ fn view(db: Db, k: string) -> int {
     entered_depth().set(d)
     inner + 1
 }
+
+@query
+fn doubled(_db: Db, n: int) -> int { n * 2 }
 
 @query
 fn halfway(db: Db, of: string) -> int {
@@ -85,7 +101,20 @@ fn main_run() -> string {
     let n3 = runs().get().length
     let h3 = halfway(db, "y")
     let h4 = halfway(db, "y")
-    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${since(n3)}]"
+    let late = since(n3)
+    let wide_x = wideness(measured(db, "x"))
+    let seated = if db.engine().value_hash_of(measured_key(db, "x")) == 2 + wide_x { "seated" } else { "unseated" }
+    let k = measure_key(db, "x")
+    let door = if db.engine().value_hash_of(k) == wideness(measure(db, "x")) { "keyed" } else { "unkeyed" }
+    let held_x = measure_held(db, "x")?.width ?? -1
+    let held_none = measure_held(db, "never") == null
+    let _ = doubled(db, 7)
+    let seat = doubled_seat_of(db, doubled_key(db, 7)) ?? -1
+    let foreign = doubled_seat_of(db, measure_key(db, "x")) == null
+    measure_dropped(db)
+    let gone = measure_held(db, "x") == null
+    let doors = "${held_x} ${held_none} ${seat} ${foreign} ${gone}"
+    "${a} ${b} [${cut}] ${c} [${moved}] | ${d} | ${h1} ${h2} [${unkept}] ${h3} ${h4} [${late}] | ${door} ${seated} | ${doors}"
 }
 
 main_run()
