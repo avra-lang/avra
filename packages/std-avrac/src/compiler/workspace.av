@@ -15,7 +15,6 @@
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
 use core.{
-    Ids,
     CollectKind,
     CollectScope,
     Plain,
@@ -30,6 +29,7 @@ use core.{
     ExprId,
     fp,
     fp_list,
+    scope_fp,
     fp_str,
     mix_final,
     joined,
@@ -47,8 +47,10 @@ use core.{
 }
 use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
+use features.{Bypassed}
 use features.{
     ExternNote,
+    Bypassed,
     Listed,
     Ref,
     takes_receiver,
@@ -115,6 +117,7 @@ use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 use @std.relation.{query, recursive, codec, cycled_by}
+use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -234,8 +237,7 @@ fn new_keys() -> Keys {
 /// innermost last (`lowering`), and the consts each unit's lowering asked
 /// for, by the unit (`unit_asks`), the declaration each lowered body belongs to, by its
 /// name (`owners`), whether kept units may stand in for lowering
-/// (`serving`), the units that did (`served`), each file's surface (`surfaces`), its kept rows (`rows`), the rows of
-/// this derivation (`rows_live`) and the files that made one (`rows_fresh`).
+/// (`serving`).
 /// A read's expansion, memoized for the attempt: the reads it inherits and the
 /// run generation of the path it walked. A read expands differently as a fn than
 /// as a whole file, so the run generation — not a "seen" mark — invalidates it.
@@ -383,6 +385,9 @@ type Hold = {
     // each held collector, with the set its record says it gathered
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
+    /// The files whose store a declaration-grain lowering is reading, innermost last: its reads
+    /// there are its own range's, which its syntax and placement already name.
+    ranged: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
     /// The family a frame's gathered name reads stand under as one read, the groups minted
     /// for it, and each group's place by its owner's family and id.
@@ -391,12 +396,6 @@ type Hold = {
     group_index: Cell<Map<string, int>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
-    warm: Cell<bool>,
-    served: Cell<List<Served>>,
-    surfaces: Cell<Map<string, string>>,
-    rows: Cell<Map<string, Map<string, UnitRow>>>,
-    rows_live: Cell<Map<string, List<UnitRow>>>,
-    rows_fresh: Cell<Map<string, bool>>,
 }
 
 /// One const a unit's lowering asked the settlement for.
@@ -485,18 +484,13 @@ fn new_hold() -> Hold {
         settle_frames: list_cell(),
         gathered: list_cell(),
         lowering: list_cell(),
+        ranged: list_cell(),
         unit_asks: map_cell(),
         closure: Cell.new(0 - 1),
         groups: list_cell(),
         group_index: map_cell(),
         owners: map_cell(),
         serving: Cell.new(false),
-        warm: Cell.new(false),
-        served: list_cell(),
-        surfaces: map_cell(),
-        rows: map_cell(),
-        rows_live: map_cell(),
-        rows_fresh: map_cell(),
     }
 }
 
@@ -1213,6 +1207,7 @@ fn built(
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
     ws.arm_audit()
+    ws.decls.arm_cover((r: Bypassed) -> ws.door_read(r))
     ws.stage_language()
     ws.load_packages(src)
     ws
@@ -2059,13 +2054,13 @@ impl Workspace {
         let paths = self.met_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        let ids = self.decls.ids()
+        let ids = self.facts_scope(0, 0)
         self.names_rows.keep(m.index, names)
         fp(
             3,
             [
-                fp_list([ids.of_decl(d.index) for d in names.bound]),
-                fp_list([ids.of_decl(d.index) for d in names.apart]),
+                fp_list([scope_fp(ids, "DeclId", d.index) for d in names.bound]),
+                fp_list([scope_fp(ids, "DeclId", d.index) for d in names.apart]),
                 names.clashes.length,
             ],
         )
@@ -2102,7 +2097,7 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
-        let ids = self.decls.ids()
+        let ids = self.facts_scope(0, 0)
         visible_of(
             self
                 .relation(Family.Visible)
@@ -2167,7 +2162,7 @@ impl Workspace {
         let out = resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
-        let ids = self.decls.ids()
+        let ids = self.facts_scope(0, 0)
         let facts = resolved_of(
             self
                 .relation(Family.Resolved)
@@ -2251,7 +2246,7 @@ impl Workspace {
             self.db.begin(k)
             self.decl_row_filled(d)
             let held: DeclSig? = self.decls.sigs.get()[d.index]
-            self.db.settle(k, sig_hash(held, self.decls.ids()))
+            self.db.settle(k, sig_hash(held, self.facts_scope(0, 0)))
             return held
         }
         self.db.begin(k)
@@ -2263,7 +2258,7 @@ impl Workspace {
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out, self.decls.ids()))
+        self.db.settle(k, sig_hash(out, self.facts_scope(0, 0)))
         out
     }
 
@@ -2325,6 +2320,33 @@ impl Workspace {
         out
     }
 
+    /// A raw read of the table, recorded as the read it is: a file's store is its parse, a
+    /// declaration's facts its syntax — and either, in a file held from its record, that
+    /// file's rows. Every other read is recorded as the cells that cover it.
+    fn door_read(r: Bypassed) {
+        match r {
+            .Store(f) -> {
+                if self.is_held(f) {
+                    self.decls.rows_read(f)
+                } else if !self.hold.ranged.get().contains(f.index) {
+                    let _ = self.parsed(f)
+                }
+            },
+            .Facts(d) -> {
+                let x = self.decls.raw_decl(d)
+                if self.is_held(x.file) {
+                    self.decls.rows_read(x.file)
+                } else if x.standing == 0 && x.home != null ||
+                    self.decls.store(d).stmts.count() <= x.stmt.index {
+                    self.cover_read(r)
+                } else {
+                    let _ = self.syntax(d)
+                }
+            },
+            .Decl(_) or .SigSoFar(_) or .Methods(_) or .Written(_) -> self.cover_read(r),
+        }
+    }
+
     /// A declaration's own syntax, DECLARATION-GRAIN (COMPILER DB
     /// townhall §6.11): the fold of its expr/stmt range's fingerprints.
     /// Depends on the file's `Parsed` alone, so an edit ANYWHERE in the
@@ -2365,7 +2387,7 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.facts_scope(0, 0))
         self.db.settle(k, h)
         h
     }
@@ -2452,6 +2474,16 @@ impl Workspace {
     /// on `placed(x)` — WHERE those nodes sit, since the context is over
     /// an arena range. Reads the file's `parsed` table UNRECORDED, so an
     /// edit elsewhere in the file never retypes this declaration.
+    /// `f`'s parse as it stands, read UNRECORDED: a reader that owes only one declaration's
+    /// edges (`syntax`, `placed`, `name_slice`) never stands on the whole file's parse.
+    fn parse_standing(f: FileId) -> Parsed {
+        if self.relation(Family.Parsed).open(f.index) { return self.parsed(f) }
+        match self.relation(Family.Parsed).values.entry(f.index) {
+            .Present(r) -> parsed_of(r),
+            .Missing -> self.parsed(f),
+        }
+    }
+
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         // A file's module pseudo-declaration owns no statements, so it
         // owes no own-syntax edge.
@@ -2500,10 +2532,8 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
-        let ids = self.decls.ids()
-        // The facts carry ARENA IDS: the settle fingerprint folds WHERE
-        // they are placed, so a shift that leaves `syntax(d)` and
-        // `names(d)` alike still reads this body's value as moved.
+        // The facts carry ARENA IDS: the settle digest reads them where they are placed, so a
+        // shift that leaves `syntax(d)` and `names(d)` alike still reads this body as moved.
         let spot = self.placed(d)
         typed_of(
             self
@@ -2511,7 +2541,10 @@ impl Workspace {
                 .finish_lazy(
                     d.index,
                     DbRow.Typed(out),
-                    (r: DbRow) -> fp(123, [spot, typed_of(r).fingerprint_in(ids)]),
+                    (r: DbRow) -> fp(
+                        123,
+                        [spot, TypeFacts.digest_in(self.facts_scope(0, 0), typed_of(r))],
+                    ),
                 ),
         )
     }
@@ -2613,20 +2646,13 @@ fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }
 
-/// A signature's fingerprint — everything the signature SAYS, so an
-/// unchanged sig cuts the wave at every caller and a changed one never
-/// can. DERIVED: the fold is a reading of the declaration's own
-/// shape, so a field added to a sig reaches the hash on the day it
-/// lands rather than whenever someone diffs the parts list against
-/// the record. That diff is what found seven forgotten payloads here,
-/// and every one of them was a field added after its hash was
-/// written. Exported because the shapes that once collided are pinned
-/// as cases.
-/// A signature's digest, durable: types by their spelling and declarations by their name,
-/// never an interner's index, so another process digests one signature alike.
-export fn sig_hash(s: DeclSig?, ids: Ids) -> int {
+/// A signature's digest — everything the signature SAYS, so an unchanged sig cuts the wave
+/// at every caller and a changed one never can: its codec's bytes under `scope`, types by
+/// their spelling and declarations by their name, so another process digests it alike.
+/// Exported because the shapes that once collided are pinned as cases.
+export fn sig_hash(s: DeclSig?, scope: dyn Scope) -> int {
     if s == null { return 0 }
-    s!.fingerprint_in(ids)
+    DeclSig.digest_in(scope, s!)
 }
 
 impl Decls {
