@@ -22,6 +22,9 @@ inputs:
   main:
     description: "'1' on main's own run, which replays the landed PR's ladder"
     default: "0"
+  rungs:
+    description: "'false' skips reading the rungs (a run that stands on a published compiler and never builds)"
+    default: "true"
   keep-rungs:
     description: "'true' keeps a built ladder product for the next push"
     default: "false"
@@ -48,6 +51,7 @@ runs:
       shell: sh
       run: |
         list=""
+        [ "${{ inputs.rungs }}" = false ] || {
         if [ "${{ inputs.main }}" = 1 ] && [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
           n=$(git log -1 --format=%s | sed -n 's/.*(#\([0-9][0-9]*\))$/\1/p')
           [ -z "$n" ] || list=$(sh tools/rungs.sh --pr "$n" 2>/dev/null | tr '\n' ' ') || list=""
@@ -57,6 +61,7 @@ runs:
           base=$(git merge-base origin/main "$head" 2>/dev/null || :)
           [ -z "$base" ] || list=$(sh tools/rungs.sh "$base" "$head" | tr '\n' ' ')
         fi
+        }
         echo "list=$(echo $list)" >> "$GITHUB_OUTPUT"
         echo "key=rungs-$(printf '%s' "$list" | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
         [ -z "$list" ] || echo "rungs: $(echo $list | wc -w) rung(s) — $list"
