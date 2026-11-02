@@ -2,7 +2,9 @@
 //! Core because every layer above speaks it — features implement
 //! typing semantics against these, the driver owns the pass.
 use @std.meta.{derive, identity, dense}
+use @std.relation.{codec}
 use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.stable.{Scope}
 
 /// Opaque handle into the registry: compared and looked up, never
 /// inspected. Text exists only in the registry's printing projection.
@@ -12,7 +14,7 @@ export type TypeId = { index: int }
 impl TypeId {
     fn fingerprint() -> int { derived([fp_str("TypeId"), self.index]) }
 
-    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("TypeId"), ids.of_type(self.index)]) }
+    fn fingerprint_in(ids: dyn Scope) -> int { derived([fp_str("TypeId"), scope_fp(ids, "TypeId", self.index)]) }
 }
 
 /// Type identity — two ids name one type when their indexes agree.
@@ -1085,7 +1087,7 @@ export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId
 /// (compiler/lower/lower.av) — every other holder (`Type.Fn`'s own
 /// identity) already folds it through `mark_words`' own string,
 /// never through this derive.
-@derive(Fingerprint)
+@codec
 @derive(Exemplar)
 @derive(Identity)
 export type SeatMark = { mutable: bool, settled: bool, state: bool = false, unshared: bool = false, consumed: bool = false }

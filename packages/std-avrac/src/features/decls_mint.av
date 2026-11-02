@@ -160,7 +160,7 @@ impl Decls {
 
     fn store_of(f: FileId) -> SyntaxArena {
         if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Store(f)) }
+        self.bypassed(Bypassed.Store(f))
         self.stores.get()[f.index]!
     }
 
@@ -514,13 +514,26 @@ impl Decls {
     /// reading it would parse the whole held file.
     fn declared_unit(d: DeclId) -> Wanted {
         let x = self.decl(d)
-        let root: ExprId? = if self.held.get().get(self.file(x.file).path) != null {
+        let root: ExprId? = if self.file_held(x.file) || !holds_value(x.kind) {
             null
         } else {
-            let store = self.store_of(x.file)
+            let store = self.store(d)
             if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
         }
-        Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
+        Wanted {
+            file: x.file,
+            decl: d,
+            name: self.symbol(d),
+            sub: null,
+            root: if root == null { null } else { Offset { index: root!.index - x.lo } },
+        }
+    }
+
+    /// A want's root expression, where its declaration (or its file) stands now.
+    fn root_of(w: Wanted) -> ExprId? {
+        let at? = w.root else { return null }
+        let base = if w.decl == null { 0 } else { self.decl(w.decl!).lo }
+        ExprId { index: base + at.index }
     }
 
     /// A declared instance's unit.
@@ -532,7 +545,6 @@ impl Decls {
     fn state_unit(d: DeclId) -> Wanted { self.declared_unit(d) }
 
     fn facts_of(d: DeclId) -> DeclFacts? {
-        if audit_build && self.auditing.get() { self.audited(Bypassed.Facts(d)) }
         if d.index >= self.faces.get().length { return null }
         self.row_read(self.raw_decl(d))
         self.faces.get()[d.index]
@@ -1210,5 +1222,14 @@ fn homed(kind: DeclKind, f: FileId) -> FileId? {
     match kind {
         .Builtin -> null,
         .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> f,
+    }
+}
+
+/// Whether a declaration's statement holds a value its unit roots at: a `const`'s or a
+/// `state`'s initializer. Every other kind's statement holds none.
+fn holds_value(k: DeclKind) -> bool {
+    match k {
+        .Const or .State -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Collect or .CollectEnum or .Builtin -> false,
     }
 }

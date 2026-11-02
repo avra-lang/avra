@@ -1,8 +1,10 @@
 //! THE SCOPE A COMPILER VALUE CROSSES UNDER — a declaration, a type and a file by their
 //! durable names, an expression and a statement by their offset from the window it was made
 //! over, and a place in a text as the token place it stands in.
-use core.{DeclId, TypeId, FileId}
+use core.{DeclId, TypeId, FileId, hex, unhex, wire_fields}
+use features.{Wanted, Wants, Sub}
 use compiler.{Workspace}
+use compiler.lower.{CodeFacts}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
 use features.{tree_saved, tree_unsaved}
@@ -121,9 +123,84 @@ impl Workspace {
             windowed: true,
         }
     }
+}
+
+impl Workspace {
+    /// A declaration's durable name; empty for none.
+    fn decl_ref(d: DeclId?) -> string {
+        if d == null { return "" }
+        self.decls.decl_wire(d!)
+    }
+
+    /// `decl_ref`'s inverse — the whole field is a wire, since a ref is never nested inside
+    /// a wider tilde stream the way a type's own is.
+    fn decl_from_ref(raw: string) -> DeclId? {
+        if raw == "" { return null }
+        let wd? = self.decls.wire_decl(raw.split("~"), 0) else { return null }
+        wd.id
+    }
+
+    /// `decl_from_ref` that only LOOKS UP: a declaration of a file whose rows already stand; none
+    /// for one only a mint would answer, so an answer naming it is no answer to restore.
+    fn decl_standing(raw: string) -> DeclId? {
+        let f = self.decls.known_file_named(raw.split("~").first() ?? "")
+        if f != null && self.decls.home_stand(f) == 0 { return null }
+        self.decl_from_ref(raw)
+    }
+
+    /// A declaration's durable name for a query keyed by it: its wire.
+    fn decl_id_spelled(d: DeclId) -> string? { self.decl_ref(d) }
+
+    /// The declaration a durable name names in this process, none for one gone.
+    fn decl_id_numbered(spelled: string) -> DeclId? { self.decl_from_ref(spelled) }
+
+    /// A file's durable name for a query keyed by it: its package and its path within it.
+    fn file_id_spelled(f: FileId) -> string? { self.decls.file(f).name }
+
+    /// The file a name names in this process, none for one this process never met.
+    fn file_id_numbered(spelled: string) -> FileId? { self.decls.known_file_named(spelled) }
+
+    fn file_ref(f: FileId) -> string { self.decls.file(f).name }
+
+    fn type_ref(t: TypeId) -> string { self.decls.type_wire(t) }
+
+    /// `type_ref`'s inverse: split the `~`-joined words, read the primitive at 0, and
+    /// require it to consume them all.
+    fn type_from_wire(raw: string) -> TypeId? {
+        if !raw.starts_with("^") { return null }
+        let words = wire_fields(raw.substring(1, raw.length), "~")
+        let d = self.decls.read_type_wire(words, 0)
+        if d == null || d!.next != words.length { return null }
+        d!.id
+    }
+
+    /// A run of wants as a row keeps it: its codec's octets, spelled.
+    fn wants_text(xs: List<Wanted>) -> string { hex(Wants { list: xs }.encoded_in(self.facts_scope(0, 0))) }
+
+    /// `wants_text` read back; none for a text it did not write or a declaration gone.
+    fn wants_of_text(raw: string) -> List<Wanted>? {
+        let octets? = unhex(raw) else { return null }
+        match Wants.decoded_in(self.facts_scope(0, 0), octets) { .Ok(w) -> w.list, .Err(_) -> null }
+    }
+
+    /// A file's code as a row keeps it: its codec's octets, spelled.
+    fn facts_text(f: CodeFacts) -> string { hex(f.encoded_in(self.facts_scope(0, 0))) }
+
+    /// `facts_text` read back; none for a text it did not write.
+    fn facts_of_text(raw: string) -> CodeFacts? {
+        let octets? = unhex(raw) else { return null }
+        match CodeFacts.decoded_in(self.facts_scope(0, 0), octets) { .Ok(f) -> f, .Err(_) -> null }
+    }
+
+    /// A call's instantiation as a key spells it; empty for none.
+    fn sub_text(sub: Sub?) -> string {
+        let s? = sub else { return "" }
+        hex(s.encoded_in(self.facts_scope(0, 0)))
+    }
 
     /// The ONE scope a query over the workspace crosses its ids under: a declaration, a type and a
     /// file by its durable name; an expression or a statement names nothing, so a call keyed by
     /// one stays in the process and an answer holding one never reads back.
     fn query_scope() -> dyn Scope { FactsScope { ws: self, expr_base: 0, stmt_base: 0, windowed: false } }
 }
+

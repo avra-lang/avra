@@ -57,7 +57,8 @@ use @std.meta.{
     Annotation as MetaAnnotation,
     Code as MetaCode,
 }
-use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of, Ids, indexed_ids}
+use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of}
+use @std.relation.stable.{Scope, indexed_scope}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at, unread_behind}
@@ -963,11 +964,11 @@ fn bool_fp(b: bool) -> int {
     if b { 1 } else { 0 }
 }
 
-fn opt_binding_fp(b: Binding?, ids: Ids) -> int {
+fn opt_binding_fp(b: Binding?, ids: dyn Scope) -> int {
     if b == null { fp(140, []) } else { fp(141, [b!.fingerprint_in(ids)]) }
 }
 
-fn opt_cap_fp(c: Cap?, ids: Ids) -> int {
+fn opt_cap_fp(c: Cap?, ids: dyn Scope) -> int {
     if c == null { fp(142, []) } else { fp(143, [c!.fingerprint_in(ids)]) }
 }
 
@@ -978,7 +979,7 @@ fn opt_cap_fp(c: Cap?, ids: Ids) -> int {
 /// avalanched once. The cells alone: the namespace is the file's, and
 /// `Visible` fingerprints it once per file — never the file's voices,
 /// never a neighbour's cells.
-export fn name_slice_fp(n: NameFacts, lo: int, hi: int, ids: Ids) -> int {
+export fn name_slice_fp(n: NameFacts, lo: int, hi: int, ids: dyn Scope) -> int {
     fp(181, [mix_final(fp(182, [name_cell_col(n, lo, j, ids) for j in 0..(hi - lo) * 5]))])
 }
 
@@ -987,7 +988,7 @@ export fn name_slice_fp(n: NameFacts, lo: int, hi: int, ids: Ids) -> int {
 /// expression's five columns, never a list per expression concat'd
 /// into it: a sub-list per cell paid for a flatten pass that cost
 /// more than the finalizer calls it was buying back.
-fn name_cell_col(n: NameFacts, lo: int, j: int, ids: Ids) -> int {
+fn name_cell_col(n: NameFacts, lo: int, j: int, ids: dyn Scope) -> int {
     let i = lo + j / 5
     if j % 5 == 0 { return opt_binding_fp(n.bindings.get(i), ids) }
     if j % 5 == 1 { return opt_cap_fp(n.captures.get(i), ids) }
@@ -1001,7 +1002,7 @@ fn name_cell_col(n: NameFacts, lo: int, j: int, ids: Ids) -> int {
 /// this adds only what that string does not carry — the type it
 /// wears and the crossed value itself, walked through its heap.
 impl SeatValue {
-    fn fingerprint_in(ids: Ids) -> int {
+    fn fingerprint_in(ids: dyn Scope) -> int {
         fp(
             170,
             [
@@ -1013,7 +1014,7 @@ impl SeatValue {
         )
     }
 
-    fn fingerprint() -> int { self.fingerprint_in(indexed_ids()) }
+    fn fingerprint() -> int { self.fingerprint_in(indexed_scope()) }
 }
 
 /// A dependency's own settled hash, read back for a DERIVED fold

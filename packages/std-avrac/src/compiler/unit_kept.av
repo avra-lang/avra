@@ -1,0 +1,69 @@
+//! A LOWERED UNIT KEPT BY ITS WANT. A plain fn's or method's lowering — an instantiation
+//! included, since it is a function of its want — is kept as the instantiations it asks and the
+//! code it lowered: one `@query` answer, read back wherever every read its lowering made still
+//! stands. A kept unit stands in for its lowering only when it spoke nothing, so serving one can
+//! never hide a voice.
+use core.{DeclKind, Static}
+use features.{Wanted}
+use diagnostics.{no_voices}
+use compiler.lower.{Unit, Body}
+use compiler.families.{Family}
+use @std.relation.{query, codec}
+
+/// What a unit's lowering keeps: the instantiations it asks, its bodies and statics, and the
+/// code hashes it asks.
+@codec
+type KeptUnit = { wants: List<Wanted>, bodies: List<Body>, statics: List<Static>, hashes: List<string> }
+
+/// A unit's lowering, kept: a unit that spoke cannot be. The program-level facts a lowering reads
+/// beside its want are seats, so a unit lowered under one program is never another's.
+@query
+fn unit_kept(ws: Workspace, w: Wanted, _checks: bool) -> KeptUnit {
+    let out = ws.lowered_fresh(ws.spec_id(w))
+    if !out.voices.list.is_empty() { ws.query_db().unkept() }
+    KeptUnit { wants: out.wants, bodies: out.bodies, statics: out.statics, hashes: out.hashes }
+}
+
+impl Workspace {
+    /// A unit lowered for a check or a build: a plain want's comes through its kept answer — this
+    /// process's own lowering when it ran one, else the kept answer standing as the unit.
+    fn unit_checked(w: Wanted, id: int) -> Unit {
+        if !self.kept_want(w) { return self.lowered_fresh(id) }
+        let kept = unit_kept(self, w, self.back_edge_checks())
+        let fresh = self.relation(Family.Lowered).values.entry(id)
+        if fresh is .Present { return self.lowered_fresh(id) }
+        let served = Unit {
+            bodies: kept.bodies,
+            wants: kept.wants,
+            voices: no_voices(),
+            statics: kept.statics,
+            hashes: kept.hashes,
+        }
+        self.owned(w, served)
+        served
+    }
+
+    /// Whether a want's kept answer may stand for its lowering: a plain fn or method, asked
+    /// whole (no substitution, no settled seat) outside a compile-time run, of a file this
+    /// program reads. An entry's root is no declaration's unit.
+    fn kept_want(w: Wanted) -> bool {
+        let d? = w.decl else { return false }
+        if !self.hold.serving.get() ||
+            w.sub != null ||
+            !w.seats.is_empty() ||
+            w.root != null ||
+            self.comptime_active() {
+            return false
+        }
+        let x = self.decls.decl(d)
+        plain_unit(x.kind) && !x.external
+    }
+}
+
+/// Whether a declaration kind lowers as one plain unit a kept answer can stand for.
+fn plain_unit(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method -> true,
+        .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> false,
+    }
+}

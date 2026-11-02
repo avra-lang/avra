@@ -12,6 +12,7 @@
 use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
 use @std.relation.{relation, arena}
+use @std.relation.stable.{Scope}
 
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
@@ -21,7 +22,7 @@ export type ExprId = { index: int }
 impl ExprId {
     fn fingerprint() -> int { derived([fp_str("ExprId"), self.index]) }
 
-    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("ExprId"), ids.of_expr(self.index)]) }
+    fn fingerprint_in(ids: dyn Scope) -> int { derived([fp_str("ExprId"), scope_fp(ids, "ExprId", self.index)]) }
 }
 
 /// Node identity — two ids name one node when their indexes agree.
@@ -37,7 +38,7 @@ export type StmtId = { index: int }
 impl StmtId {
     fn fingerprint() -> int { derived([fp_str("StmtId"), self.index]) }
 
-    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("StmtId"), ids.of_stmt(self.index)]) }
+    fn fingerprint_in(ids: dyn Scope) -> int { derived([fp_str("StmtId"), scope_fp(ids, "StmtId", self.index)]) }
 }
 
 /// The statement a declaration stands on when it has none — an
@@ -56,7 +57,7 @@ export type DeclId = { index: int }
 impl DeclId {
     fn fingerprint() -> int { derived([fp_str("DeclId"), self.index]) }
 
-    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("DeclId"), ids.of_decl(self.index)]) }
+    fn fingerprint_in(ids: dyn Scope) -> int { derived([fp_str("DeclId"), scope_fp(ids, "DeclId", self.index)]) }
 }
 
 /// Statement identity — two ids name one statement when their
@@ -81,7 +82,7 @@ export type FileId = { index: int }
 impl FileId {
     fn fingerprint() -> int { derived([fp_str("FileId"), self.index]) }
 
-    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("FileId"), ids.of_file(self.index)]) }
+    fn fingerprint_in(ids: dyn Scope) -> int { derived([fp_str("FileId"), scope_fp(ids, "FileId", self.index)]) }
 }
 
 export fn same_file(a: FileId, b: FileId) -> bool {
@@ -866,7 +867,7 @@ export type PatId = { index: int }
 impl PatId {
     fn fingerprint() -> int { derived([fp_str("PatId"), self.index]) }
 
-    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+    fn fingerprint_in(_ids: dyn Scope) -> int { self.fingerprint() }
 }
 
 /// Pattern identity — two ids name one pattern when their indexes
