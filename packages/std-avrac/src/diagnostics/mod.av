@@ -5,20 +5,49 @@
 use core.{flatten, Span, inserted, Fingerprint}
 use @std.meta.{derive}
 use @std.relation.{codec}
-use @std.relation.stable.{indexed_scope, Scope}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence, Error, ErrorInfo, info}
 
 /// An error blocks; a warning and a note are said and read past. A note
 /// points at an error said elsewhere.
 export enum Severity { Error, Warning, Note }
 
-/// One diagnostic, plain data — so it crosses a process as it is. The primary frame is always
-/// present — absence lives in ONE place: a problem with no source anchor carries a loc-less
-/// frame. `secondary` frames hold the supporting positions, and are this diagnostic's own
-/// `context()`/`trace()`. `cause_lines` is the deeper failure it wraps, flattened once where
-/// that failure is handed in (`caused_by`) into the `caused by: …` lines it prints as.
-@codec
+/// One diagnostic. The primary frame is always present — absence
+/// lives in ONE place: a problem with no source anchor carries a
+/// loc-less frame. `secondary` frames hold the supporting positions,
+/// and are this diagnostic's own `context()`/`trace()`. `cause` is
+/// the deeper failure this one wraps, when there is one.
 export type Diag = {
+    kind: string,
+    severity: Severity,
+    primary: Frame,
+    secondary: List<Frame>,
+    cause: dyn Error?,
+    message: string,
+    help: string?,
+    suggestions: List<Suggestion>,
+}
+
+impl Error for Diag {
+    fn describe() -> ErrorInfo {
+        info(self.kind, self.message)
+    }
+
+    fn cause() -> dyn Error? { self.cause }
+
+    fn context() -> List<Frame> { self.secondary }
+
+    fn trace() -> List<Frame> { self.secondary }
+}
+
+/// A `Diag`, wire-safe: every field `Diag` has, except `cause`, which
+/// crosses no process as a `dyn Error` — its chain is flattened once,
+/// at the point a live `Diag` still holds it, into the same
+/// `"caused by: …"` lines the renderer would have printed
+/// (`diag_facts_of`, render.av). A durable answer (a witness's row) is
+/// built from these, never from a rendered string, so it prints
+/// correctly wherever it is later read (render.av's `render_facts_among`).
+@codec
+export type DiagFacts = {
     kind: string,
     severity: Severity,
     primary: Frame,
@@ -27,25 +56,6 @@ export type Diag = {
     message: string,
     help: string?,
     suggestions: List<Suggestion>,
-}
-
-/// A diagnostic's fold is its codec's digest, its places as offsets: one derivation.
-impl Diag {
-    fn fingerprint() -> int { Diag.digest_in(indexed_scope(), self) }
-
-    fn fingerprint_in(_ids: dyn Scope) -> int { self.fingerprint() }
-}
-
-impl Error for Diag {
-    fn describe() -> ErrorInfo {
-        info(self.kind, self.message)
-    }
-
-    fn cause() -> dyn Error? { null }
-
-    fn context() -> List<Frame> { self.secondary }
-
-    fn trace() -> List<Frame> { self.secondary }
 }
 
 /// What a kind's voice carries beyond its words. Every voice carries
@@ -193,7 +203,7 @@ export fn error_at(kind: string, loc: Loc?, message: string) -> Diag {
         severity: Severity.Error,
         primary: Frame { label: null, loc: loc },
         secondary: [],
-        cause_lines: [],
+        cause: null,
         message: message,
         help: null,
         suggestions: [],

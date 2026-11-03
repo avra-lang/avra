@@ -3214,23 +3214,6 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
-### A bound on a type's own parameter
-
-`type SideTable<K: Dense, V>` is "expected `=`": a bound lands on a free fn's parameters only. So a
-side table cannot say what its window is over in its type — its methods could not read a generic
-`K`'s index — and says it in a value instead (`window: Window`, an enum of the dense ids it may run
-over; core/side_table.av). The want: a bound on a type's (and an impl's) own parameter, so the
-window's id kind is the type's, and a fifth window kind is a type argument rather than a variant.
-
-### An optional chain reaches through a following method
-
-`t?.xs.any(it == 1)` stops the chain at the `?.`: the method is asked of `List<int>?` and refused
-("`.any(…)` calls a method, and `List<int>?` has none"). Inside a derive's compile-time run the same
-shape typed past that law and failed only when lowered, as a defect naming fingerprint.av's own
-expression — every `@derive(Fingerprint)` in the module went with it. The want: a chain after `?.`
-answers absent whole, so `type_named(n)?.annotations.any(it.name == "codec") ?? false` is one line
-(core/fingerprint.av's `wears_codec`, written as a `let t? = … else` today).
-
 ### Interim record — an event is fired in two statements
 
 A component fires its own declared event by unwrapping the nullable

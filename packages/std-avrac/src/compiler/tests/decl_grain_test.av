@@ -8,7 +8,6 @@
 use @std.avrac.testing.{test_workspace}
 use @std.avrac.testing.{vendored_meta, vendored_meta_paths}
 use compiler.{Workspace}
-use features.{TypeFacts}
 use compiler.host.{memory_host}
 use core.{sorted_texts, distinct}
 use @std.relation.engine.{Key}
@@ -42,8 +41,7 @@ fn grain_seen(ws: Workspace) -> GrainSeen {
         frontier: grain_frontier(ws),
         whole: grain_whole_reads(ws),
         report: main.report(),
-        facts: TypeFacts
-            .digest_in(ws.facts_scope(0, 0), ws.typed(decl_in_file(ws, grain_main(), "caller"))),
+        facts: ws.typed(decl_in_file(ws, grain_main(), "caller")).fingerprint_in(ws.decls.ids()),
         clean: main.clean(),
     }
 }
@@ -124,7 +122,7 @@ fn grain_frontier(ws: Workspace) -> List<string> {
 /// A query `main.av` asks that reads `a.av` whole.
 fn grain_reads_whole(ws: Workspace, k: Key) -> bool {
     let label = ws.key_label(k)
-    ["Parsed", "plain_made", "Expanded", "file_visible_made", "Resolved"]
+    ["Parsed", "plain_made", "Expanded", "Visible", "Resolved"]
         .any((w: string) -> label == "${w}(src/lib/a.av)")
 }
 

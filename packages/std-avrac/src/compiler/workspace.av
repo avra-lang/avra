@@ -15,6 +15,7 @@
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
 use core.{
+    Ids,
     CollectKind,
     CollectScope,
     Plain,
@@ -29,7 +30,6 @@ use core.{
     ExprId,
     fp,
     fp_list,
-    scope_fp,
     fp_str,
     mix_final,
     joined,
@@ -115,7 +115,6 @@ use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 use @std.relation.{query, recursive, codec, cycled_by}
-use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -648,8 +647,6 @@ export type Workspace = {
     method_diag_rows: Table<List<Diag>>,
     /// each module's names as their query last made them
     names_rows: Table<ModuleNames>,
-    /// each file's visible names as their query last made them
-    visible_rows: Table<Namespace>,
     /// each file's plain parse as its query last made it
     plain_rows: Table<Parsed>,
     asks: Cell<List<Wanted>>,
@@ -851,6 +848,10 @@ fn items_verified(ws: Workspace, arg: int) -> int {
     touch(ws.items(file_at(arg)))
     ws.db.changed_at(key(Family.Items, arg))
 }
+fn visible_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.visible(file_at(arg)))
+    ws.db.changed_at(key(Family.Visible, arg))
+}
 fn resolved_verified(ws: Workspace, arg: int) -> int {
     touch(ws.resolved(file_at(arg)))
     ws.db.changed_at(key(Family.Resolved, arg))
@@ -922,6 +923,10 @@ fn syntax_verified(ws: Workspace, arg: int) -> int {
     touch(ws.syntax(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Syntax, arg))
 }
+fn names_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.name_slice(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Names, arg))
+}
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
     ws.db.changed_at(key(Family.Named, arg))
@@ -944,6 +949,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
     match Family.all()[family] {
         .Parsed -> parsed_verified(ws, arg),
         .Items -> items_verified(ws, arg),
+        .Visible -> visible_verified(ws, arg),
         .Resolved -> resolved_verified(ws, arg),
         .Sig -> sig_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
@@ -959,6 +965,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .FileRefs -> file_refs_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
+        .Names -> names_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Named -> named_verified(ws, arg),
@@ -1000,20 +1007,6 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
 fn plain_made(ws: Workspace, f: FileId) -> int { ws.plain_make(f) }
-
-/// What a file's top level sees. A re-entry before it settles is a smaller view.
-@query
-@recursive
-export fn file_visible_made(ws: Workspace, f: FileId) -> int { ws.visible_made(f) }
-
-/// A declaration's slice of its file's names, every id and position spelled from the
-/// declaration's own start: the same slice folds alike wherever the declaration sits, and its
-/// placement is `placement_of`'s.
-@query
-fn name_slice_of(ws: Workspace, d: DeclId) -> int {
-    let x = ws.decls.decl(d)
-    name_slice_fp(ws.resolved(x.file), x.lo, x.hi, ws.facts_scope(x.lo, x.stmt_lo))
-}
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1127,7 +1120,6 @@ fn built(
         method_clashes: new_table<List<Clash>>(),
         method_diag_rows: new_table<List<Diag>>(),
         names_rows: new_table<ModuleNames>(),
-        visible_rows: new_table<Namespace>(),
         plain_rows: new_table<Parsed>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
@@ -1491,16 +1483,6 @@ impl Workspace {
     fn file_name(path: string) -> string {
         let pkg = self.packages()[self.holder_of_path(path)]
         "${pkg.key}:${relative_path(pkg.root, path)}"
-    }
-
-    /// `file_name`'s inverse: the path a name stands at in this tree; a name no package
-    /// holds (the language's own) stays itself.
-    fn path_of_name(name: string) -> string {
-        let colon = name.index_of(":")
-        if colon < 0 { return name }
-        let key = name.substring(0, colon)
-        let pkg? = self.packages().find((p) -> p.key == key) else { return name }
-        joined_path(pkg.root, name.substring(colon + 1, name.length))
     }
 
     /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
@@ -2077,13 +2059,13 @@ impl Workspace {
         let paths = self.met_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        let ids = self.facts_scope(0, 0)
+        let ids = self.decls.ids()
         self.names_rows.keep(m.index, names)
         fp(
             3,
             [
-                fp_list([scope_fp(ids, "DeclId", d.index) for d in names.bound]),
-                fp_list([scope_fp(ids, "DeclId", d.index) for d in names.apart]),
+                fp_list([ids.of_decl(d.index) for d in names.bound]),
+                fp_list([ids.of_decl(d.index) for d in names.apart]),
                 names.clashes.length,
             ],
         )
@@ -2096,13 +2078,10 @@ impl Workspace {
     /// visible namespace back — a re-entry is a SMALLER view, never a
     /// trap.
     fn visible(f: FileId) -> Namespace {
-        let _ = file_visible_made(self, f)
-        self.visible_rows.at(f.index)!
-    }
-
-    /// A file's visible names, made and kept beside the cell; the word is what they say, every id
-    /// by its durable name.
-    fn visible_made(f: FileId) -> int {
+        match self.relation(Family.Visible).start_recursive(f.index) {
+            .Reuse(value) -> { return visible_of(value) },
+            .Compute -> nothing(),
+        }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -2123,8 +2102,12 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
-        self.visible_rows.keep(f.index, out)
-        out.fingerprint_in(self.facts_scope(0, 0))
+        let ids = self.decls.ids()
+        visible_of(
+            self
+                .relation(Family.Visible)
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> visible_of(r).fingerprint_in(ids)),
+        )
     }
 
     /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
@@ -2184,7 +2167,7 @@ impl Workspace {
         let out = resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
-        let ids = self.facts_scope(0, 0)
+        let ids = self.decls.ids()
         let facts = resolved_of(
             self
                 .relation(Family.Resolved)
@@ -2268,7 +2251,7 @@ impl Workspace {
             self.db.begin(k)
             self.decl_row_filled(d)
             let held: DeclSig? = self.decls.sigs.get()[d.index]
-            self.db.settle(k, sig_hash(held, self.facts_scope(0, 0)))
+            self.db.settle(k, sig_hash(held, self.decls.ids()))
             return held
         }
         self.db.begin(k)
@@ -2280,7 +2263,7 @@ impl Workspace {
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out, self.facts_scope(0, 0)))
+        self.db.settle(k, sig_hash(out, self.decls.ids()))
         out
     }
 
@@ -2377,7 +2360,15 @@ impl Workspace {
     /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
     /// range. Recomputed with the file's `Resolved`, and cut off by
     /// `settle` for every declaration whose slice folds the same.
-    fn name_slice(d: DeclId) -> int { name_slice_of(self, d) }
+    fn name_slice(d: DeclId) -> int {
+        let k = key(Family.Names, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
+        self.db.settle(k, h)
+        h
+    }
 
     /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
     /// `Names` (its cells) and one on the file's `Visible` (the
@@ -2509,8 +2500,10 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
-        // The facts carry ARENA IDS: the settle digest reads them where they are placed, so a
-        // shift that leaves `syntax(d)` and `names(d)` alike still reads this body as moved.
+        let ids = self.decls.ids()
+        // The facts carry ARENA IDS: the settle fingerprint folds WHERE
+        // they are placed, so a shift that leaves `syntax(d)` and
+        // `names(d)` alike still reads this body's value as moved.
         let spot = self.placed(d)
         typed_of(
             self
@@ -2518,10 +2511,7 @@ impl Workspace {
                 .finish_lazy(
                     d.index,
                     DbRow.Typed(out),
-                    (r: DbRow) -> fp(
-                        123,
-                        [spot, TypeFacts.digest_in(self.facts_scope(0, 0), typed_of(r))],
-                    ),
+                    (r: DbRow) -> fp(123, [spot, typed_of(r).fingerprint_in(ids)]),
                 ),
         )
     }
@@ -2623,13 +2613,20 @@ fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }
 
-/// A signature's digest — everything the signature SAYS, so an unchanged sig cuts the wave
-/// at every caller and a changed one never can: its codec's bytes under `scope`, types by
-/// their spelling and declarations by their name, so another process digests it alike.
-/// Exported because the shapes that once collided are pinned as cases.
-export fn sig_hash(s: DeclSig?, scope: dyn Scope) -> int {
+/// A signature's fingerprint — everything the signature SAYS, so an
+/// unchanged sig cuts the wave at every caller and a changed one never
+/// can. DERIVED: the fold is a reading of the declaration's own
+/// shape, so a field added to a sig reaches the hash on the day it
+/// lands rather than whenever someone diffs the parts list against
+/// the record. That diff is what found seven forgotten payloads here,
+/// and every one of them was a field added after its hash was
+/// written. Exported because the shapes that once collided are pinned
+/// as cases.
+/// A signature's digest, durable: types by their spelling and declarations by their name,
+/// never an interner's index, so another process digests one signature alike.
+export fn sig_hash(s: DeclSig?, ids: Ids) -> int {
     if s == null { return 0 }
-    DeclSig.digest_in(scope, s!)
+    s!.fingerprint_in(ids)
 }
 
 impl Decls {
@@ -2684,6 +2681,7 @@ export fn family_code_hash(f: Family) -> string {
     match f {
         .Parsed -> code_hash(parsed_verified) ?? "",
         .Items -> code_hash(items_verified) ?? "",
+        .Visible -> code_hash(visible_verified) ?? "",
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Sig -> code_hash(sig_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
@@ -2699,6 +2697,7 @@ export fn family_code_hash(f: Family) -> string {
         .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
+        .Names -> code_hash(names_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",

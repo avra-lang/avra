@@ -1,0 +1,121 @@
+//! The DECLARATION-SIG codec. `DeclSig` is plain data: its variants'
+//! payloads are names, type ids by `type_wire`'s own spelling and
+//! declaration ids by `decl_wire`'s — never a process-local number.
+//! A variant writes its tag, then its fields; `compiler/codecs.av`
+//! exercises it beside its decoder.
+use features.{DeclSig, FnSig, StructSig, EnumSig, NamedSig, Lacked}
+use core.{DeclId, TypeId}
+use compiler.{Workspace}
+
+/// All or nothing: if every element in the list is present, return the
+/// list of values; otherwise return null.
+fn all_or_none<T>(xs: List<T?>) -> List<T>? {
+    if xs.any(it == null) { return null }
+    [v! for v in xs]
+}
+
+/// One `Lacked` row, its two names.
+fn lacked_of(raw: string) -> Lacked? {
+    let p = unpacked(raw)
+    if p.length < 2 { return null }
+    Lacked { field: p[0], why: p[1] }
+}
+
+/// A bool written as `"1"`/`"0"`.
+fn bool_at(raw: string) -> bool? {
+    if raw == "1" { return true }
+    if raw == "0" { return false }
+    null
+}
+
+impl Workspace {
+    /// A run of types, each by `type_wire`'s own spelling.
+    fn type_run(ts: List<TypeId>) -> string { packed([self.type_ref(t) for t in ts]) }
+
+    fn type_run_back(raw: string) -> List<TypeId>? { all_or_none([self.type_from_wire(p) for p in unpacked(raw)]) }
+
+    /// A run of possibly-absent declaration refs — `decl_ref` writes the
+    /// empty text for null, `decl_from_ref` reads it back.
+    fn decl_run(ds: List<DeclId?>) -> string { packed([self.decl_ref(d) for d in ds]) }
+
+    fn decl_run_back(raw: string) -> List<DeclId?> { [self.decl_from_ref(p) for p in unpacked(raw)] }
+
+    fn lacked_run(ls: List<Lacked>) -> string { packed([packed([l.field, l.why]) for l in ls]) }
+
+    fn lacked_run_back(raw: string) -> List<Lacked>? { all_or_none([lacked_of(p) for p in unpacked(raw)]) }
+
+    fn bool_run(bs: List<bool>) -> string { packed([if b { "1" } else { "0" } for b in bs]) }
+
+    fn bool_run_back(raw: string) -> List<bool>? { all_or_none([bool_at(p) for p in unpacked(raw)]) }
+
+    /// A variant's payloads, each a run of types.
+    fn payload_run(ps: List<List<TypeId>>) -> string { packed([self.type_run(inner) for inner in ps]) }
+
+    fn payload_run_back(raw: string) -> List<List<TypeId>>? { all_or_none([self.type_run_back(p) for p in unpacked(raw)]) }
+
+    fn decl_sig_wire(s: DeclSig) -> string {
+        match s {
+            .Fn(sig) -> packed(["fn", self.type_run(sig.params), self.type_ref(sig.ret)]),
+            .Record(sig) -> {
+                packed(
+                    [
+                        "record",
+                        packed(sig.names),
+                        self.type_run(sig.types),
+                        self.decl_run(sig.defaults),
+                        self.lacked_run(sig.lacking),
+                        self.bool_run(sig.states),
+                    ],
+                )
+            },
+            .Enum(sig) -> packed(["enum", packed(sig.names), self.payload_run(sig.payloads)]),
+            .Named(sig) -> packed(["named", self.type_ref(sig.of)]),
+            .Alias(of) -> packed(["alias", self.type_ref(of)]),
+        }
+    }
+
+    fn decl_sig_of_wire(raw: string) -> DeclSig? {
+        let p = unpacked(raw)
+        if p.length < 1 { return null }
+        match p[0] {
+            "fn" -> {
+                if p.length < 3 { return null }
+                let params? = self.type_run_back(p[1]) else { return null }
+                let ret? = self.type_from_wire(p[2]) else { return null }
+                DeclSig.Fn(FnSig { params: params, ret: ret })
+            },
+            "record" -> {
+                if p.length < 6 { return null }
+                let types? = self.type_run_back(p[2]) else { return null }
+                let lacking? = self.lacked_run_back(p[4]) else { return null }
+                let states? = self.bool_run_back(p[5]) else { return null }
+                DeclSig
+                    .Record(
+                        StructSig {
+                            names: unpacked(p[1]),
+                            types: types,
+                            defaults: self.decl_run_back(p[3]),
+                            lacking: lacking,
+                            states: states,
+                        },
+                    )
+            },
+            "enum" -> {
+                if p.length < 3 { return null }
+                let payloads? = self.payload_run_back(p[2]) else { return null }
+                DeclSig.Enum(EnumSig { names: unpacked(p[1]), payloads: payloads })
+            },
+            "named" -> {
+                if p.length < 2 { return null }
+                let of? = self.type_from_wire(p[1]) else { return null }
+                DeclSig.Named(NamedSig { of: of })
+            },
+            "alias" -> {
+                if p.length < 2 { return null }
+                let of? = self.type_from_wire(p[1]) else { return null }
+                DeclSig.Alias(of)
+            },
+            _ -> null,
+        }
+    }
+}

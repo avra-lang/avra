@@ -20,15 +20,11 @@ use core.{
     Ins,
     dst_of,
     rt_sig_of,
-    expr_window,
-    stmt_window,
-    pat_window,
 }
-use core.{SeatMark, SideTable, Window, side_table, side_table_of, ParamId, Fingerprint}
+use core.{SeatMark, SideTable, side_table, side_table_of, ParamId, Fingerprint}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 use @std.meta.{derive}
-use @std.relation.{codec}
 
 /// The language's registries, once — never copied into a program.
 export type LanguageRows = { methods: List<MethodRow>, types: List<TypeRow>, properties: List<PropertyRow>, codes: List<DiagCode>, remedies: List<KeywordRemedy> }
@@ -182,11 +178,11 @@ export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap
 /// captured, no seat read yet.
 export fn new_name_facts(exprs: int, names: Namespace) -> NameFacts {
     NameFacts {
-        bindings: side_table<Binding?>("bindings", expr_window(0), exprs, null),
-        captures: side_table<Cap?>("captures", expr_window(0), exprs, null),
-        mut_reads: side_table("mut_reads", expr_window(0), exprs, false),
-        state_reads: side_table("state_reads", expr_window(0), exprs, false),
-        settled_reads: side_table("settled_reads", expr_window(0), exprs, false),
+        bindings: side_table<Binding?>("bindings", 0, exprs, null),
+        captures: side_table<Cap?>("captures", 0, exprs, null),
+        mut_reads: side_table("mut_reads", 0, exprs, false),
+        state_reads: side_table("state_reads", 0, exprs, false),
+        settled_reads: side_table("settled_reads", 0, exprs, false),
         names: names,
         voices: no_voices(),
     }
@@ -305,7 +301,7 @@ const heard_bit = 512
 /// The one per-statement flag: a `let` whose seed is boxed into a cell.
 const boxed_stmt_bit = 1
 
-@codec
+@derive(Fingerprint)
 export type TypeFacts = {
     of_expr: SideTable<TypeId>,
     widens: SideTable<TypeId?>,
@@ -360,26 +356,26 @@ export fn new_type_facts(lo: int, hi: int, stmt_lo: int, stmt_hi: int, stmts: in
     let whi = if stmt_lo < 0 { stmts } else { stmt_hi }
     let no_types: List<TypeId> = []
     TypeFacts {
-        of_expr: side_table("of_expr", expr_window(lo), hi, hole),
-        widens: side_table<TypeId?>("widens", expr_window(lo), hi, null),
-        narrows: side_table<TypeId?>("narrows", expr_window(lo), hi, null),
-        asks: side_table<Asked?>("asks", expr_window(lo), hi, null),
-        substs: side_table<Sub?>("substs", expr_window(lo), hi, null),
-        lambda_params: side_table<List<TypeId>?>("lambda_params", expr_window(lo), hi, null),
-        lambda_marks: side_table<List<SeatMark>?>("lambda_marks", expr_window(lo), hi, null),
-        captures: side_table<List<TypeId>?>("captures", expr_window(lo), hi, null),
-        wants: side_table<TypeId?>("wants", expr_window(lo), hi, null),
-        flags: side_table("flags", expr_window(lo), hi, 0),
-        collections: side_table<List<ExprId>?>("collections", expr_window(lo), hi, null),
-        chosen: side_table<DeclId?>("chosen", expr_window(lo), hi, null),
-        dispatches: side_table<RunChoice?>("dispatches", expr_window(lo), hi, null),
-        stages: side_table<PipeStage?>("stages", expr_window(lo), hi, null),
-        starved: side_table<TypeId?>("starved", expr_window(lo), hi, null),
-        scopes: side_table<ParamScope?>("scopes", expr_window(lo), hi, null),
-        pattern_types: side_table_of("pattern_types", expr_window(lo), empty_lists_ty(hi - lo), no_types),
-        binding_types: side_table<TypeId?>("binding_types", stmt_window(wlo), whi, null),
-        index_types: side_table<TypeId?>("index_types", stmt_window(wlo), whi, null),
-        stmt_flags: side_table("stmt_flags", stmt_window(wlo), whi, 0),
+        of_expr: side_table("of_expr", lo, hi, hole),
+        widens: side_table<TypeId?>("widens", lo, hi, null),
+        narrows: side_table<TypeId?>("narrows", lo, hi, null),
+        asks: side_table<Asked?>("asks", lo, hi, null),
+        substs: side_table<Sub?>("substs", lo, hi, null),
+        lambda_params: side_table<List<TypeId>?>("lambda_params", lo, hi, null),
+        lambda_marks: side_table<List<SeatMark>?>("lambda_marks", lo, hi, null),
+        captures: side_table<List<TypeId>?>("captures", lo, hi, null),
+        wants: side_table<TypeId?>("wants", lo, hi, null),
+        flags: side_table("flags", lo, hi, 0),
+        collections: side_table<List<ExprId>?>("collections", lo, hi, null),
+        chosen: side_table<DeclId?>("chosen", lo, hi, null),
+        dispatches: side_table<RunChoice?>("dispatches", lo, hi, null),
+        stages: side_table<PipeStage?>("stages", lo, hi, null),
+        starved: side_table<TypeId?>("starved", lo, hi, null),
+        scopes: side_table<ParamScope?>("scopes", lo, hi, null),
+        pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
+        binding_types: side_table<TypeId?>("binding_types", wlo, whi, null),
+        index_types: side_table<TypeId?>("index_types", wlo, whi, null),
+        stmt_flags: side_table("stmt_flags", wlo, whi, 0),
         voices: no_voices(),
     }
 }
@@ -731,12 +727,12 @@ export type BodyRegs = { regs: SideTable<Reg?>, slots: SideTable<Reg?>, boxed: S
 export fn new_body_regs(exprs: int, stmts: int, pats: int) -> BodyRegs {
     let no_regs: List<Reg> = []
     BodyRegs {
-        regs: side_table<Reg?>("regs", expr_window(0), exprs, null),
-        slots: side_table<Reg?>("slots", stmt_window(0), stmts, null),
-        boxed: side_table("boxed", stmt_window(0), stmts, false),
-        pattern_regs: side_table_of("pattern_regs", expr_window(0), empty_lists_reg(exprs), no_regs),
-        index_regs: side_table<Reg?>("index_regs", stmt_window(0), stmts, null),
-        test_regs: side_table_of("test_regs", pat_window(0), empty_lists_reg(pats), no_regs),
+        regs: side_table<Reg?>("regs", 0, exprs, null),
+        slots: side_table<Reg?>("slots", 0, stmts, null),
+        boxed: side_table("boxed", 0, stmts, false),
+        pattern_regs: side_table_of("pattern_regs", 0, empty_lists_reg(exprs), no_regs),
+        index_regs: side_table<Reg?>("index_regs", 0, stmts, null),
+        test_regs: side_table_of("test_regs", 0, empty_lists_reg(pats), no_regs),
     }
 }
 
