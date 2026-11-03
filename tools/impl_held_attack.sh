@@ -6,7 +6,7 @@ set -u
 . "$(dirname "$0")/lib/attack.sh"
 T=$(pwd); B=build/impl-held-attack; R=$B/app
 rm -rf "$B" && mkdir -p $R/src/shapes
-: > $B/.git
+own_store $B
 printf '[package]\nname = "impl-held-attack"\nversion = "0.1.0"\n' > $R/avra.toml
 printf 'export type Box = { side: int }\n' > $R/src/shapes/box.av
 printf 'export trait Say {\n    fn say() -> string\n}\n' > $R/src/shapes/say.av

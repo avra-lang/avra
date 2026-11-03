@@ -12,7 +12,7 @@ T=$(pwd); B=build/gathered-cache-attack; R=$B/plain; W=$B/recursive
 rm -rf "$B" && mkdir -p $R/src/shapes $W/src/shapes
 # a store stands at the nearest checkout root ABOVE a package, so the fixtures'
 # directory is marked as one: their store is their own, cold here, never the tree's
-: > $B/.git
+own_store $B
 cat > $R/avra.toml <<'TOML'
 [package]
 name = "gathered-cache-attack"
