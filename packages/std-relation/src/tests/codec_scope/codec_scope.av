@@ -20,7 +20,7 @@ impl Counted {
 type Shifted = { by: int }
 
 impl Scope for Shifted {
-    fn spelled(_kind: string, index: int) -> string { "item ${index - self.by}" }
+    fn spelled(_kind: string, index: int) -> string { "item ${named_from(index, self.by)}" }
 
     fn unspelled(_kind: string, text: string) -> int? {
         if !text.starts_with("item ") { return null }
@@ -43,7 +43,10 @@ fn process() -> Db { durable_db(Durable { answer: read_record, keep: keep_record
 
 /// The want after `w`: its item's neighbour, and the item's name as a number.
 @query
-fn next_want(c: Counted, w: Want) -> Want { Want { item: Item { index: w.item.index + 1 }, at: w.item.index - c.by } }
+fn next_want(c: Counted, w: Want) -> Want { Want { item: Item { index: w.item.index + 1 }, at: named_from(w.item.index, c.by) } }
+
+/// The name a process numbering its items `by` past their names gives item `index`.
+fn named_from(index: int, by: int) -> int { index - by }
 
 fn main_run() -> string {
     let first = next_want(Counted { db: process(), by: 0 }, Want { item: Item { index: 4 }, at: 0 })

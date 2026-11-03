@@ -711,6 +711,7 @@ fn body_scan_found(lit: Code) -> Fix {
 @keeps("fn f(a: int, b: int) -> int { a + b }")
 @keeps("fn lower(a: Analysis) -> Lowered { a }")
 @keeps("@query\n@cycled_by(standing)\nfn marks(ws: Workspace, d: int) -> int { d }\nfn standing(ws: Workspace, d: int) -> int { 0 }")
+@keeps("@query\n@scoped_by(arena)\nfn placed(ws: Workspace, d: int) -> int { d }\nfn arena(ws: Workspace, d: int) -> int { 0 }")
 @says("the fix moves the body into the state's `impl` and drops the first argument at every call site")
 export rule free_state_verb { quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit) }
 
@@ -730,7 +731,8 @@ const state_types: List<string> = [
 
 /// The marks that make a free fn a QUERY: the engine asks it by its context, so its first
 /// seat is that context by the engine's law, never a verb astray from its state's impl. A fn a
-/// `@cycled_by` names wears its query's seats by the same law (`Code.answers_a_cycle`).
+/// `@cycled_by` or `@scoped_by` names wears its query's seats by the same law
+/// (`Code.shaped_by_a_query`).
 const query_marks: List<string> = ["query", "over"]
 
 /// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
@@ -748,7 +750,7 @@ fn free_state_param(lit: Code) -> Code? {
     let params? = lit.fn_params() else { return null }
     if !is_pass_file(lit.of.view.source.file) { return null }
     if !is_top_level(lit) { return null }
-    if lit.annotations().any((a) -> query_marks.contains(a.name)) || lit.answers_a_cycle() { return null }
+    if lit.annotations().any((a) -> query_marks.contains(a.name)) || lit.shaped_by_a_query() { return null }
     let p0? = params.first() else { return null }
     if !is_state_type(p0.decl_type()) { return null }
     p0

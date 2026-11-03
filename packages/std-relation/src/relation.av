@@ -1238,12 +1238,10 @@ fn hashed(acc: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem, owner)}) },
         .Unspelled("Bytes") -> quote { ${acc}.octets(${e}) },
-        .Named(n, args) -> if owner.codes(k) {
-            quote { ${acc}.int(${name(n)}.digest_in(scope, ${e})) }
-        } else if owner.needs(k) {
-            quote { ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(${acc}, ${e}) }
-        } else {
-            match owner.shape(n, args) {
+        .Named(n, args) -> when {
+            owner.codes(k) -> quote { ${acc}.int(${name(n)}.digest_in(scope, ${e})) }
+            owner.needs(k) -> quote { ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(${acc}, ${e}) }
+            _ -> match owner.shape(n, args) {
                 .Record(fs) or .Placed(fs) -> folded_record(acc, e, fs, owner),
                 .Over(shape) -> hashed(acc, quote { ${e}.of }, shape, owner),
                 .Tagged(_) -> quote { ${acc}.text(${tag_of(e, k)}) },
@@ -1277,12 +1275,10 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
         .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner, owner)}) },
         .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem, owner)}) },
         .Unspelled("Bytes") -> quote { (h: StableHasher, v: Bytes) -> h.octets(v) },
-        .Named(n, args) -> if owner.codes(k) {
-            quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(${name(n)}.digest_in(scope, v)) }
-        } else if owner.needs(k) {
-            quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(h, v) }
-        } else {
-            match owner.shape(n, args) {
+        .Named(n, args) -> when {
+            owner.codes(k) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(${name(n)}.digest_in(scope, v)) }
+            owner.needs(k) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner.name)}.hash_${owner.id_of(k.spelled())}(h, v) }
+            _ -> match owner.shape(n, args) {
                 .Record(fs) or .Placed(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs, owner)} },
                 .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape, owner)} },
                 .Tagged(_) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
@@ -1429,12 +1425,10 @@ fn coded_under(k: Kind, seen: List<string>) -> List<string> {
     match k {
         .Opt(inner) or .List(inner) -> coded_under(inner, seen),
         .Map(_, value) -> coded_under(value, seen),
-        .Named(n, args) -> if wears_codec(n) {
-            [k.spelled()]
-        } else if seen.contains(n) {
-            []
-        } else {
-            match instance_shape(n, args) {
+        .Named(n, args) -> when {
+            wears_codec(n) -> [k.spelled()]
+            seen.contains(n) -> []
+            _ -> match instance_shape(n, args) {
                 .Record(fs) or .Placed(fs) -> [c for f in columns(fs) for c in coded_under(f.kind, seen.concat([n]))],
                 .Over(shape) -> coded_under(shape, seen),
                 rest -> [],
