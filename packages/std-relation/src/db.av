@@ -46,6 +46,7 @@ use stable.{
     Reader,
     CodecFault,
     encoded_with,
+    named_encoding,
     decoded_with,
     int_spelled,
     written_list,
@@ -1464,19 +1465,18 @@ impl AnswersUnder<V> {
         let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
         if !done.wrote && leaves != null {
             let places = db.placed_leaves(leaves!)
+            let named? = named_encoding(
+                done.value,
+                (w, v) -> {
+                    w.text(db.saved_spelling(spelled))
+                    written_list(w, places, write_place)
+                    record.write(w, v)
+                },
+            ) else {
+                return done.value
+            }
             let keep = db.durable.keep
-            keep(
-                query,
-                spelled_hash(query, db.saved_spelling(spelled)),
-                encoded_with(
-                    done.value,
-                    (w, v) -> {
-                        w.text(db.saved_spelling(spelled))
-                        written_list(w, places, write_place)
-                        record.write(w, v)
-                    },
-                ),
-            )
+            keep(query, spelled_hash(query, db.saved_spelling(spelled)), named)
         }
         done.value
     }
