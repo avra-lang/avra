@@ -1,0 +1,59 @@
+// The references are read only where the pass can run: while a resolve is in flight both
+// readers read nothing and record nothing, and the pass answers once it closes.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use compiler.host.{memory_host}
+use features.{Decl}
+use @std.relation.engine.{Key}
+
+const REFS_REFUSED_MAIN: string = "/w/src/main.av"
+
+/// A package of one file, analysed.
+fn refs_refused_over(source: string) -> Workspace {
+    let ws = test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": source,
+            },
+            ["/w/avra.toml", REFS_REFUSED_MAIN],
+        ),
+        "/w",
+    )
+    let _ = ws.analyze_file(REFS_REFUSED_MAIN)
+    ws
+}
+
+fn refs_refused_workspace() -> Workspace {
+    refs_refused_over(
+        "fn a() -> int { 1 }\nfn keep(xs: List<int>) -> List<List<int>> { [xs] }\nfn b() -> int { a() + keep([1]).length }\nb()\n",
+    )
+}
+
+/// A resolve in flight, at a file no workspace here has.
+fn refs_refused_resolving() -> Key { Key { family: Family.Resolved.ordinal, arg: 900 } }
+
+spec "compiler/references — asked while a resolve is in flight" {
+    then "both readers read nothing and record nothing, and the pass then answers in the same revision" {
+        let ws = refs_refused_workspace()
+        let a = Decl.by_name(ws.decls.rows_db.get(), "a").first()!.id
+        let resolving = refs_refused_resolving()
+        ws.db.kernel.begin(resolving)
+        let seen = ws.decls.refs_of(a).length +
+            ws.decls.refs_in_file(ws.file_id(REFS_REFUSED_MAIN)).length
+        ws.db.kernel.settle(resolving, 0)
+        let recorded = ws.db.kernel.deps_of(resolving).length
+        let _ = ws.references()
+        seen == 0 && recorded == 0 && ws.decls.refs_of(a).length == 1
+    }
+    then "a seat's consumption is not inferred while the references cannot be read; asked again once they stand, it is" {
+        let ws = refs_refused_workspace()
+        let keep = Decl.by_name(ws.decls.rows_db.get(), "keep").first()!.id
+        let resolving = refs_refused_resolving()
+        ws.db.kernel.begin(resolving)
+        let during = ws.computed_consumed(keep)
+        ws.db.kernel.settle(resolving, 0)
+        !during.any(it) && ws.computed_consumed(keep).any(it)
+    }
+}

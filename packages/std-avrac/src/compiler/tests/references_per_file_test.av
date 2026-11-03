@@ -1,13 +1,11 @@
 //! THE REFERENCES RELATION STANDS ON ONE ANSWER PER FILE. Each surveyed file's own uses are
-//! its `FileRefs` answer, filed under the file's owner, and `References` gathers those
+//! its `file_refs_made` answer, rows and all, and `refs_index` gathers those
 //! answers and nothing else: no answer reads the whole program's declarations, so an edit
 //! re-surveys one file and the gathering reads a number of cells that follows the files.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
-use compiler.families.{Family}
+use compiler.{Workspace, refs_to, refs_from}
 use compiler.host.{memory_host}
 use core.{DeclKind, same_decl, flatten}
-use features.{Ref}
 use @std.relation.engine.{Key}
 
 fn refs_files() -> Map<string, string> {
@@ -29,27 +27,31 @@ fn referenced() -> Workspace {
     ws
 }
 
-fn gathered(ws: Workspace) -> List<Key> { flatten([ws.db.edges_by_reader(c) for c in ws.cells_named("references_solved")]) }
+fn gathered(ws: Workspace) -> List<Key> { flatten([ws.db.edges_by_reader(c) for c in ws.cells_named("refs_index")]) }
+
+/// Whether a key is one of the per-file reference answers.
+fn is_file_answer(ws: Workspace, k: Key) -> bool { ws.cells_named("file_refs_made").any((c: Key) -> c.family == k.family) }
 
 spec "compiler/references — one answer per file" {
     then "the gathering reads at least one file answer per file" {
-        gathered(referenced()).length >= 3
+        let ws = referenced()
+        [k for k in gathered(ws) if is_file_answer(ws, k)].length >= 3
     }
     then "and beside them only the file table it walks" {
-        [k for k in gathered(referenced()) if k.family != Family.FileRefs.ordinal].length <= 1
+        let ws = referenced()
+        [k for k in gathered(ws) if !is_file_answer(ws, k)].length <= 1
     }
     then "a file's answer reads no other file's references" {
         let ws = referenced()
-        gathered(ws)
+        ws
+            .cells_named("file_refs_made")
             .all(
-                (k: Key) -> ws
+                (c: Key) -> ws
                     .db
-                    .edges_by_reader(k)
+                    .edges_by_reader(c)
                     .all(
-                        (j: Key) -> j.family != Family.FileRefs.ordinal &&
-                            ws
-                                .cells_named("references_solved")
-                                .all((c: Key) -> c.family != j.family),
+                        (j: Key) -> !is_file_answer(ws, j) &&
+                            ws.cells_named("refs_index").all((x: Key) -> x.family != j.family),
                     ),
             )
     }
@@ -57,13 +59,13 @@ spec "compiler/references — one answer per file" {
         let ws = referenced()
         let b = ws.file_id("/w/src/b.av")
         let one = ws.decls.named_decl("/w/src/a.av", DeclKind.Fn, "one")!
-        Ref.by_file(ws.decls.rows_db.get(), b).any(same_decl(it.decl, one))
+        refs_from(ws, b).rows.any(same_decl(it.decl, one))
     }
     then "asked again in the same revision, the pass computes nothing" {
         let ws = referenced()
-        let written = ws.decls.rows_db.get().written.get()
+        let at = ws.db.revision()
         let _ = ws.references()
-        ws.decls.rows_db.get().written.get() == written
+        ws.db.revision() == at
     }
 }
 
@@ -79,30 +81,53 @@ fn turned() -> Turned {
     Turned { ws: ws, files: files }
 }
 
-/// The revision a file's references last changed at.
-fn refs_changed_at(ws: Workspace, path: string) -> int {
-    ws.db.changed_at(Key { family: Family.FileRefs.ordinal, arg: ws.file_id(path).index })
+/// The revision each projection cell last changed at, in the order they were first asked:
+/// `refs_to` of `one` then `two`, and `refs_from` of b then a.
+fn projections(t: Turned) -> List<int> {
+    let ws = t.ws
+    let one = ws.decls.named_decl("/w/src/a.av", DeclKind.Fn, "one")!
+    let two = ws.decls.named_decl("/w/src/b.av", DeclKind.Fn, "two")!
+    let _ = refs_to(ws, one)
+    let _ = refs_to(ws, two)
+    let _ = refs_from(ws, ws.file_id("/w/src/b.av"))
+    let _ = refs_from(ws, ws.file_id("/w/src/a.av"))
+    let to = ws.cells_named("refs_to")
+    let from = ws.cells_named("refs_from")
+    [
+        ws.db.changed_at(to[0]),
+        ws.db.changed_at(to[1]),
+        ws.db.changed_at(from[0]),
+        ws.db.changed_at(from[1]),
+    ]
 }
 
-/// A file's references' last change before and after b's body gains a second use of `one`,
-/// the world read again between.
-fn changed_around_edit(path: string) -> List<int> {
+/// The projections before and after b's body gains a second use of `one`, the world read
+/// again between.
+fn around_edit() -> List<List<int>> {
     let t = turned()
-    let before = refs_changed_at(t.ws, path)
+    let before = projections(t)
     t.files.put("/w/src/b.av", "use a.{one}\n\nexport fn two() -> int { one() + one() }\n")
     let _ = t.ws.world_moved()
     let _ = t.ws.analyze_file("/w/src/main.av")
     let _ = t.ws.references()
-    [before, refs_changed_at(t.ws, path)]
+    [before, projections(t)]
 }
 
-spec "compiler/references — an edit re-surveys the files it moved" {
+spec "compiler/references — an edit moves only the answers it reached" {
+    then "the uses of `one` move: b gained one" {
+        let seen = around_edit()
+        seen[1][0] > seen[0][0]
+    }
+    then "the uses of `two` stand: nothing new calls it, so its readers cut off" {
+        let seen = around_edit()
+        seen[1][1] == seen[0][1]
+    }
     then "the edited file's references move" {
-        let seen = changed_around_edit("/w/src/b.av")
-        seen[1] > seen[0]
+        let seen = around_edit()
+        seen[1][2] > seen[0][2]
     }
     then "a file the edit never reached stands as it was" {
-        let seen = changed_around_edit("/w/src/a.av")
-        seen[1] == seen[0]
+        let seen = around_edit()
+        seen[1][3] == seen[0][3]
     }
 }

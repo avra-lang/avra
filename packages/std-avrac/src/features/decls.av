@@ -552,12 +552,9 @@ fn no_facts() -> DeclFacts {
 /// ever answers about a `DeclId`, which is what crosses files.
 export enum UseKind { Call, MethodCall, Read, Write, Import, TypeUse }
 
-/// `decl` and `file` are `@dense` ids — their ints mean nothing
-/// outside this process, so both are `@local`, indexed for
-/// `by_decl`/`by_file`. `at` names a position (an `ExprId`/`StmtId`
-/// union), local for the same reason; `kind` alone is stable.
-@relation
-export type Ref = { @local @index decl: DeclId, @local @index file: FileId, @local at: At, kind: UseKind }
+/// `decl`, `file` and `at` are dense ids, spelled through the scope that crosses the row.
+@codec
+export type Ref = { decl: DeclId, file: FileId, at: At, kind: UseKind }
 
 /// A file's declarations by kind, owner and name, and how many it held.
 export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
@@ -819,14 +816,15 @@ export type Decls = {
     /// Whether a HELD file stood in the workspace the last time the
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
-    refs_incomplete: Cell<bool>,
+    ref_rows_to: Cell<fn(DeclId) -> List<Ref>>,
+    ref_rows_from: Cell<fn(FileId) -> List<Ref>>,
+    ref_rows_incomplete: Cell<fn() -> bool>,
     ensure_refs: Cell<fn() -> bool>,
     /// The references a HELD file makes to a declaration, restored on the ask that names it:
     /// the relation holds only the ones a read file's declaration receives.
     ensure_held_refs: Cell<fn(DeclId) -> List<Ref>>,
     /// Whether each declaration is read as a value anywhere, as the references pass found it,
     /// by DeclId; a declaration past the end is read nowhere.
-    read_flags: Cell<List<bool>>,
     ensure_read: Cell<fn(DeclId) -> bool>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
@@ -960,6 +958,12 @@ fn no_refs_ensure() -> bool { true }
 // LICENSED fns.dead_parameter: a fn VALUE filling the held-references seat — no workspace stands behind the table, so none is restored
 fn no_held_refs(_d: DeclId) -> List<Ref> { [] }
 
+// LICENSED fns.dead_parameter: a fn VALUE filling the file-references seat — no workspace stands behind the table, so none is read
+fn no_file_refs(_f: FileId) -> List<Ref> { [] }
+
+/// No references pass is armed: nothing is known to be complete.
+fn refs_unknown() -> bool { true }
+
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
 /// for its own type, which only the asking read can speak.
@@ -1086,10 +1090,11 @@ export fn new_decls_under(durable: Durable) -> Decls {
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
         composers_of: Cell.new(none_apart),
-        refs_incomplete: Cell.new(false),
+        ref_rows_to: Cell.new(no_held_refs),
+        ref_rows_from: Cell.new(no_file_refs),
+        ref_rows_incomplete: Cell.new(refs_unknown),
         ensure_refs: Cell.new(no_refs_ensure),
         ensure_held_refs: Cell.new(no_held_refs),
-        read_flags: list_cell(),
         ensure_read: Cell.new(no_answer),
         mut_seat_index: map_cell(),
     }
@@ -2021,6 +2026,9 @@ impl Decls {
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
         self.ensure_read.set(no_answer)
+        self.ref_rows_to.set(no_held_refs)
+        self.ref_rows_from.set(no_file_refs)
+        self.ref_rows_incomplete.set(refs_unknown)
         self.externs_index.set(no_externs)
         self.types_index.set(no_modules)
         self.rows_db.get().answers_forgotten()
@@ -2585,7 +2593,7 @@ impl Decls {
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
         if !self.refs_stand() { return [] }
-        Ref.by_decl(self.rows_db.get(), d).concat((self.ensure_held_refs.get())(d))
+        (self.ref_rows_to.get())(d).concat((self.ensure_held_refs.get())(d))
     }
 
     /// Whether the references relation stands to be read — asking runs
@@ -2602,17 +2610,10 @@ impl Decls {
     /// stand: an absence of a finding is no finding of absence.
     fn read_found(d: DeclId) -> bool? {
         if !(self.ensure_read.get())(d) { return null }
-        self.read_flag_of(d)
+        !self.readers(d).is_empty()
     }
 
     /// The finding as it stands for `d`: a declaration the pass never saw is read nowhere.
-    fn read_flag_of(d: DeclId) -> bool { d.index < self.read_flags.get().length && self.read_flags.get()[d.index] }
-
-    /// The pass's finding of which declarations are read, kept for `read_found`.
-    fn record_read_flags(rows: List<Ref>) {
-        self.read_flags.set([false for _i in 0..self.decl_count()])
-        for r in rows { if r.kind is .Read { self.read_flags.set_at(r.decl.index, true) } }
-    }
 
     /// The workspace arms the read-found hook once.
     fn arm_read_found(ensure: fn(DeclId) -> bool) {
@@ -2639,18 +2640,12 @@ impl Decls {
     /// Whether a held file left the relation INCOMPLETE — a decl
     /// `used(d)` calls unused may be read from inside one, so "no use
     /// anywhere" is not an answer a caller may give while this holds.
-    fn refs_are_incomplete() -> bool {
-        self.refs_incomplete.get()
-    }
-
-    fn mark_refs_incomplete(incomplete: bool) {
-        self.refs_incomplete.set(incomplete)
-    }
+    fn refs_are_incomplete() -> bool { (self.ref_rows_incomplete.get())() }
 
     /// One file's own rows, as `references.av`'s pass wrote them.
     fn refs_in_file(f: FileId) -> List<Ref> {
         if !self.refs_stand() { return [] }
-        Ref.by_file(self.rows_db.get(), f)
+        (self.ref_rows_from.get())(f)
     }
 
     /// The workspace arms the references hook once.
@@ -2659,6 +2654,17 @@ impl Decls {
     }
 
     fn arm_held_refs(held: fn(DeclId) -> List<Ref>) { self.ensure_held_refs.set(held) }
+
+    /// The workspace arms the reference rows' projections once.
+    fn arm_ref_rows(
+        to: fn(DeclId) -> List<Ref>,
+        from: fn(FileId) -> List<Ref>,
+        incomplete: fn() -> bool,
+    ) {
+        self.ref_rows_to.set(to)
+        self.ref_rows_from.set(from)
+        self.ref_rows_incomplete.set(incomplete)
+    }
 
     /// The workspace arms the failures hook once.
     fn arm_failures(ensure: fn(DeclId) -> Inferred) {
