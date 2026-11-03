@@ -86,8 +86,8 @@ export fn file_refs_made(ws: Workspace, f: FileId) -> Uses {
 /// ones, indexed by declaration and by file. In the process only: a reader asks the
 /// projections `refs_to` and `refs_from`, whose digests move only with their own rows.
 type RefsIndex = {
-    by_decl: Cell<Map<string, List<Ref>>>,
-    by_file: Cell<Map<string, List<Ref>>>,
+    by_decl: Cell<Map<string, Cell<List<Ref>>>>,
+    by_file: Cell<Map<string, Cell<List<Ref>>>>,
     incomplete: bool,
     digest: int,
 }
@@ -101,11 +101,11 @@ fn refs_index(ws: Workspace) -> RefsIndex { ws.indexed_references() }
 
 /// The references to one declaration.
 @query
-export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}") ?? [] } }
+export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}")?.get() ?? [] } }
 
 /// The references one file makes.
 @query
-export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}") ?? [] } }
+export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
 
 impl Workspace {
     /// THE PASS: every admitted file's own rows, gathered — each surveyed file stands on
@@ -523,11 +523,12 @@ fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
 }
 
 /// Rows grouped by the index of their declaration, or of their file, in row order.
-fn grouped(rows: List<Ref>, by_decl: bool) -> Map<string, List<Ref>> {
-    mut out: Map<string, List<Ref>> = {}
+fn grouped(rows: List<Ref>, by_decl: bool) -> Map<string, Cell<List<Ref>>> {
+    mut out: Map<string, Cell<List<Ref>>> = {}
     for r in rows {
         let k = if by_decl { "${r.decl.index}" } else { "${r.file.index}" }
-        out.set(k, (out.get(k) ?? []).concat([r]))
+        let held = out.get(k)
+        if held == null { out.set(k, Cell.new([r])) } else { held!.push(r) }
     }
     out
 }
