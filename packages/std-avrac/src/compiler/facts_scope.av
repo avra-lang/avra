@@ -5,6 +5,7 @@ use core.{DeclId, TypeId, FileId}
 use compiler.{Workspace}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
+use features.{tree_saved, tree_unsaved}
 use compiler.store.{cas_big, cas_blob, cas_ref_of, cas_value}
 
 /// The id types a typing table holds.
@@ -45,9 +46,9 @@ impl Scope for FactsScope {
             return ""
         }
         match k {
-            .Decl -> self.ws.decl_ref(DeclId { index: index }),
-            .Type -> self.ws.type_ref(TypeId { index: index }),
-            .File -> self.ws.file_ref(FileId { index: index }),
+            .Decl -> tree_saved(self.ws.decl_ref(DeclId { index: index })),
+            .Type -> tree_saved(self.ws.type_ref(TypeId { index: index })),
+            .File -> tree_saved(self.ws.file_ref(FileId { index: index })),
             .Expr -> "${index - self.expr_base}",
             .Stmt -> "${index - self.stmt_base}",
         }
@@ -68,9 +69,9 @@ impl Scope for FactsScope {
     fn unspelled(kind: string, text: string) -> int? {
         let k? = id_kind(kind) else { return null }
         match k {
-            .Decl -> self.ws.decl_from_ref(text)?.index,
-            .Type -> self.ws.type_from_wire(text)?.index,
-            .File -> self.ws.decls.known_file_named(text)?.index,
+            .Decl -> self.ws.decl_from_ref(tree_unsaved(text))?.index,
+            .Type -> self.ws.type_from_wire(tree_unsaved(text))?.index,
+            .File -> self.ws.decls.known_file_id(tree_unsaved(text))?.index,
             .Expr -> counted_from(text, self.expr_base),
             .Stmt -> counted_from(text, self.stmt_base),
         }
