@@ -663,7 +663,7 @@ impl Decls {
     /// what else is minted yet (`wire_spelled`). A tilde in owner, name or maker
     /// (case labels are sentences) wears NO_ORDINAL rather than corrupt the
     /// tilde stream.
-    fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).path) }
+    fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).name) }
 
     /// `decl_wire`, its file spelled by `home`.
     fn decl_wire_from(d: DeclId, home: fn(FileId) -> string) -> string {
@@ -831,12 +831,7 @@ impl Decls {
     }
 
     /// A type as a record writes it.
-    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).path)}" }
-
-    /// A type as a SYMBOL spells it: the record's wire with each file named
-    /// by its package and its path within it, never where the building
-    /// machine keeps the tree — an object is the same bytes on every machine.
-    fn type_symbol(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).name)}" }
+    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).name)}" }
 
     /// The wire without its mark — what a wire nests — each file spelled by `home`.
     fn wire_body(id: TypeId, home: fn(FileId) -> string) -> string {
@@ -901,7 +896,7 @@ impl Decls {
             let b? = self.builtin_decls().find((d) -> self.decl(d).name == name) else { return null }
             return WireDeclRef { id: b, next: at + 4 }
         }
-        let f: FileId? = self.known_file_id(words[at])
+        let f: FileId? = self.known_file_named(words[at])
         if f == null { return null }
         let made = at + 4 < words.length && words[at + 4].starts_with(MAKER_MARK)
         let maker = if made { text_of_field(words[at + 4].substring(MAKER_MARK.length, words[at + 4].length)) } else { "" }
@@ -933,11 +928,15 @@ export fn wire_spelled(home: string, n: WireName, at: int, count: int) -> string
     if count <= 1 { made } else { "${made}~${at}" }
 }
 
-/// A file's declaration lines' wires, from its Items lines alone, by the name each declares.
-export fn line_wires_by_name(path: string, lines: List<List<string>>) -> Map<string, List<string>> {
+/// A file's declaration lines' wires, from its Items lines alone, by the name each declares;
+/// each wire names its file as `home`.
+export fn line_wires_by_name(path: string, home: string, lines: List<List<string>>) -> Map<
+    string,
+    List<string>,
+> {
     let makers = makers_in(lines, path)
     let names = [line_name(p, makers) for p in lines if declares(p)]
-    let wires = line_wires(path, lines)
+    let wires = line_wires(path, home, lines)
     mut by: Map<string, List<string>> = {}
     for j, n in names { by.set(n.name, (by.get(n.name) ?? []).concat([wires[j]])) }
     by
@@ -945,13 +944,13 @@ export fn line_wires_by_name(path: string, lines: List<List<string>>) -> Map<str
 
 /// Every declaration line's wire, from a file's Items lines alone — what `decl_wire` spells
 /// for each once it is minted, so an unminted file is named without minting it.
-export fn line_wires(path: string, lines: List<List<string>>) -> List<string> {
+export fn line_wires(path: string, home: string, lines: List<List<string>>) -> List<string> {
     let makers = makers_in(lines, path)
     let names = [line_name(p, makers) for p in lines if declares(p)]
     let counts: Cell<Map<string, int>> = Cell.new({})
     for n in names { counts.put(name_key(n), (counts.get().get(name_key(n)) ?? 0) + 1) }
     let seen: Cell<Map<string, int>> = Cell.new({})
-    [wire_spelled(path, n, seen_once(seen, name_key(n)), counts.get().get(name_key(n)) ?? 1) for n in names]
+    [wire_spelled(home, n, seen_once(seen, name_key(n)), counts.get().get(name_key(n)) ?? 1) for n in names]
 }
 
 /// The place of the next declaration filed under `key`: how many came before it.
