@@ -7,7 +7,7 @@ impl Workspace {
     /// The use lines a file's last parse said, when a store keeps them.
     fn kept_uses(path: string) -> KeptUses? {
         let store? = self.store.get() else { return null }
-        let wire? = store.get(Stored.Unit, uses_key(self.root, path)) else { return null }
+        let wire? = store.get(Stored.Unit, self.uses_key(path)) else { return null }
         let uses? = uses_of_wire(wire) else { return null }
         KeptUses { wire: wire, uses: uses }
     }
@@ -16,9 +16,15 @@ impl Workspace {
     /// words by.
     fn keep_uses(store: Store) {
         for path, wire in self.records.uses_seen.get() {
-            if store.get(Stored.Unit, uses_key(self.root, path)) != wire { let _ = store.keep(Stored.Unit, uses_key(self.root, path), wire, []) }
+            let key = self.uses_key(path)
+            if store.get(Stored.Unit, key) != wire { let _ = store.keep(Stored.Unit, key, wire, []) }
         }
     }
+
+    /// WHERE A FILE'S USE LINES ARE KEPT: under its text, so a guess is only ever the lines
+    /// that very text said — a file at the same path with other text, in another tree or after
+    /// an edit, admits nothing its own lines do not name.
+    fn uses_key(path: string) -> string { node_key(Stored.Unit, ["uses", self.root, path, self.text_digest(path)]) }
 }
 
 /// What a file that declares a component keeps in place of its use lines: no guess.
@@ -27,9 +33,6 @@ const DECLARES: string = "declares"
 /// A file's kept use lines, and the wire they were kept as — what a parse's own lines are
 /// compared by.
 type KeptUses = { wire: string, uses: List<UseParts> }
-
-/// Where a file's use lines are kept, by its path alone: a guess its next parse checks.
-fn uses_key(root: string, path: string) -> string { node_key(Stored.Unit, ["uses", root, path]) }
 
 /// A file's use lines as one text: each line's path, items and aliases. Never empty, so a file
 /// with no use line keeps a row.

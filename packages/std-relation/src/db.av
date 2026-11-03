@@ -1023,6 +1023,9 @@ type AnswersUnder<V> = {
     /// Each int-keyed call's number, by its arg.
     numbers: Cell<List<int>>,
     named: Cell<DenseNames?>,
+    /// How a call keyed by one text is asked by that text, set by its first call: a leaf that
+    /// names a call this process has not made is judged by asking it, as a dense one is.
+    texted: Cell<List<fn(string) -> void>>,
     /// A fixpoint query's group solver over this family, made by its first call.
     fixed: Cell<List<Fixpoint<V>>>,
     /// Each fixpoint member's own body, by its arg: what its group's solve steps.
@@ -1133,6 +1136,7 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnde
         dense: dense,
         numbers: list_cell(),
         named: Cell.new(none),
+        texted: list_cell(),
         fixed: list_cell(),
         bodies: new_table(),
     }
@@ -1315,6 +1319,11 @@ impl AnswersUnder<V> {
     /// How a dense-keyed query's calls are named past the process, set by its first call.
     fn durable_by(names: DenseNames) { self.named.set(names) }
 
+    /// How a call keyed by one text is asked by it, once.
+    fn asked_by_text(ask: fn(string) -> void) {
+        if self.texted.get().is_empty() { self.texted.push(ask) }
+    }
+
     /// Call `arg`'s spelling another process reads alike: its arguments as the codec spells
     /// them, or — keyed by a dense number — that number's durable name; none for a number no
     /// name stands for.
@@ -1328,7 +1337,13 @@ impl AnswersUnder<V> {
 
     /// `durable_at`'s inverse: the call a spelling names here, interned when never asked.
     fn durable_arg(spelled: string) -> int? {
-        if !self.dense { return self.args.get().get(spelled) }
+        if !self.dense {
+            let known = self.args.get().get(spelled)
+            if known != null { return known }
+            let ask? = self.texted.get().first() else { return null }
+            self.memo.kernel.unheard(() -> ask(spelled))
+            return self.args.get().get(spelled)
+        }
         let names? = self.named.get() else { return null }
         let number = names.number
         let n? = number(spelled) else { return null }

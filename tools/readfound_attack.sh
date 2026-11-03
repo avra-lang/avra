@@ -1,6 +1,7 @@
 #!/bin/sh
 # AN ENTRY'S OWN BODY MOVES ITS OWN UNIT. A program's entry has no declaration whose
-# `Syntax` answers, so its reads carry the FILE's own `Parsed` beside `Analysis`: a value
+# `Syntax` answers, so its reads carry the FILE's own answers — its `Parsed`, and the
+# `Analysis` that carries that parse, either of which a body edit moves: a value
 # use added to the entry's body (here a fn first taken as a value) re-lowers the entry's
 # one unit and no other file's, and an edit to another fn's signature in another file
 # leaves the entry standing. The entry stands on its own body, never on the whole-program
@@ -28,7 +29,7 @@ printf 'use lib.{c1, c2, c3}\nuse lib.m3.{f3}\nlet taken = f3\nprintln("${c1("a"
 first=$(judged)
 n=$(recomputed_of "$first")
 printf '%s' "$first" | grep -q "mismatched 0" || fail "a valid kept unit differs from a fresh lowering after the first value use: $first"
-printf '%s' "$first" | grep -q "Parsed moved" || fail "the entry's own body edit moved no read of its own unit: $first"
+printf '%s' "$first" | grep -qE "(Parsed|Analysis) moved" || fail "the entry's own body edit moved no read of its own unit: $first"
 printf '%s' "$first" | grep -q "References moved" && fail "the entry re-lowered on the whole-program references relation: $first"
 [ "${n:-99}" -le 4 ] || fail "the first value use of one fn re-lowered $n units: $first"
 sed 's/export fn f2(s: string) -> string { s }/export fn f2(s: string, n: int = 0) -> string { s }/' $P/src/lib/m2.av > $T/m2 && cp $T/m2 $P/src/lib/m2.av

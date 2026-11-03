@@ -407,11 +407,11 @@ impl Workspace {
         let prior_lines = record_cached(self, store, m).split("\n")
         let files = self.module_files(m)
         let kept = lines_by_file(prior_lines)
-        let fresh = flatten([self.imported_by(path) for path in files if self.read_here(path)])
+        let fresh = flatten([self.import_lines(path) for path in files if self.read_here(path)])
         let gathers = flatten([self.gathers_lines(path) for path in files if self.read_here(path)])
         let here = distinct(
-            [line for line in prior_lines if line.starts_with("import\t") || kept_gathers(self, line)]
-                .concat(["import\t${d.text()}" for d in fresh])
+            [line for line in prior_lines if kept_import(self, files, line) || kept_gathers(self, line)]
+                .concat(fresh)
                 .concat(gathers),
         )
         // EVERY FILE'S OWN OUTGOING REFERENCES, kept beside its
@@ -451,6 +451,9 @@ impl Workspace {
     /// One file's part of its module's record. A HELD file's lines are copied
     /// verbatim — it is held against them — and its interface digest with them, so a
     /// body edit elsewhere in the module reads no held line.
+    /// A file's `import` lines: each module it imports, and the file that imports it.
+    fn import_lines(path: string) -> List<string> { ["import\t${d.text()}\t${path}" for d in self.imported_by(path)] }
+
     fn file_lines(store: Store, m: ModulePath, path: string, kept: Map<string, List<string>>) -> FileLines {
         if self.read_here(path) {
             let lines = self.lines_of(path)

@@ -613,7 +613,8 @@ cp $lk_rt $R/lk.rt.kept
 printf 'int lk_pad;\n' > $R/lk_pad.c; $lk_cc -c $R/lk_pad.c -o $R/lk_pad.o; ar q $lk_rt $R/lk_pad.o 2>/dev/null
 LK "the runtime archive moved" built
 cp $R/lk.rt.kept $lk_rt
-LK "and put back" built
+# the store keeps a question's last answers, so the binary linked against these very bytes stands
+LK "and put back" hit
 mv $lk_rt $R/lk.rt.away
 steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1)
 mv $R/lk.rt.away $lk_rt
@@ -700,6 +701,8 @@ if section vd; then
 # or a name a seen module declares. A declaration it never reaches leaves it standing.
 # Each const is traced by its module, from a store of its own: each case is its own repo,
 # and the store sits beside it, at the nearest `.git` above the package's parent.
+# each case's store is its own, the machine's too: a case never reads another's answers
+vd_avra() { AVRA_CACHE_DIR=$PWD/$R/vdc/.avra-cache ./avra "$@"; }
 vd_fixture() {
   rm -rf $R/vdc; mkdir -p $R/vdc/vd/src/f $R/vdc/vd/src/x $R/vdc/vd/src/y; git -C $R/vdc init -q
   printf '[package]\nname = "rt-vd"\nversion = "0.1.0"\n' > $R/vdc/vd/avra.toml
@@ -717,14 +720,14 @@ vd_fixture() {
 }
 vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, edit, then that const's verdict
   vd_fixture
-  ./avra check $R/vdc/vd > /dev/null 2>&1; ./avra check $R/vdc/vd > /dev/null 2>&1
+  vd_avra check $R/vdc/vd > /dev/null 2>&1; vd_avra check $R/vdc/vd > /dev/null 2>&1
   eval "$4"
   steps=$((steps+1))
-  AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
+  AVRA_QTRACE=1 AVRA_CACHE_DIR=$PWD/$R/vdc/.avra-cache ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
   got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { if (v != "ran") v = $4 } END { print v }' $R/vd.out)
   if [ $st -ne 0 ]; then fail "vd: $1: the check failed (status $st)"; failed_tail $R/vd.out
   elif [ "$got" != "$2" ]; then fail "vd: $1: the $3 verdict was '$got', wanted '$2'"
-  elif [ -n "${5:-}" ] && { vd_said=$(sh tools/capped.sh --last ./avra run $R/vdc/vd 2>/dev/null) || vd_said="(status $?) $vd_said"; [ "$vd_said" != "$5" ]; }; then fail "vd: $1: the program printed '$vd_said', wanted '$5'"
+  elif [ -n "${5:-}" ] && { vd_said=$(AVRA_CACHE_DIR=$PWD/$R/vdc/.avra-cache sh tools/capped.sh --last ./avra run $R/vdc/vd 2>/dev/null) || vd_said="(status $?) $vd_said"; [ "$vd_said" != "$5" ]; }; then fail "vd: $1: the program printed '$vd_said', wanted '$5'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
 }
 vd_case "a: a field of a type the const reads is added" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
@@ -746,10 +749,10 @@ vd_case "n: a static fn of an impl a const calls changes its body" ran nn 'ed $R
 # o: a body edit flips an INFERRED fact (the method now writes through self) that a fn elsewhere reads without entering the body
 wb_case() {
   vd_fixture
-  ./avra check $R/vdc/vd > $R/wb0.out 2>&1; ./avra check $R/vdc/vd > /dev/null 2>&1
+  vd_avra check $R/vdc/vd > $R/wb0.out 2>&1; vd_avra check $R/vdc/vd > /dev/null 2>&1
   steps=$((steps+1))
   ed $R/vdc/vd/src/y/calc.av "fn bump() -> int { self.n }" "fn bump() -> int {${NL}        self.n = self.n + 1${NL}        self.n${NL}    }"
-  ./avra check $R/vdc/vd > $R/wb1.out 2>&1
+  vd_avra check $R/vdc/vd > $R/wb1.out 2>&1
   if grep -q "bump" $R/wb0.out; then fail "vd: o: the fixture already speaks of bump before the edit"
   elif ! grep -q "bump" $R/wb1.out; then fail "vd: o: a method starts writing through self and a caller's warning did not follow"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: o: the caller's warning followed the inferred write bit"; fi
@@ -2700,6 +2703,10 @@ printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src
 kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
+# a check the first derivation after the gathered set moved: its held reading gathers anew
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(3)\nexport type D = {}\n' > $R/gk/src/m/m.av
+judged "kg: a member added, a check first" $R/kg
+kg_step "and built after" "a=1 r=0"
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another

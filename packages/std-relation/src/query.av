@@ -143,7 +143,7 @@ export fn query(f: Fn) -> Declared {
 }
 
 /// Where a query's answers are kept: a dense-keyed one is named past the process only by its
-/// context's speller (`named_by`).
+/// context's speller, and a text-keyed one is asked by its text (`named_by`).
 fn kept_source(f: Fn, kept: string) -> Decls {
     quote {
         once fn ${kept}() -> Answers<${f.answer}> {
@@ -161,10 +161,14 @@ fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_f
 /// scope is the ordinary refusal at the generated site; a scope that spells an id empty names
 /// that call nothing, so it stays in the process.
 fn named_by(f: Fn) -> List<Stmts> {
-    if f.params.length != 2 || is_db(f.params[0].kind) { return [] }
+    if f.params.length != 2 { return [] }
     let seat = f.params[1]
-    let field? = dense_field(seat.kind) else { return [] }
     let ctx = name(f.params[0].name)
+    if seat.kind is .Str {
+        return [quote { held.asked_by_text((s: string) -> { let _ = ${f.name}(${ctx}, s) }) }]
+    }
+    if is_db(f.params[0].kind) { return [] }
+    let field? = dense_field(seat.kind) else { return [] }
     let id = quote { ${seat.ty} { ..${[quote { W { ${field}: n } }]} } }
     [
         quote {

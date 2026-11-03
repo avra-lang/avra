@@ -2,7 +2,19 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, FileId, ModulePath, joined, flatten, distinct, wreck, qtrace, traced, same_file}
+use core.{
+    DeclId,
+    DeclKind,
+    FileId,
+    ModulePath,
+    joined,
+    flatten,
+    distinct,
+    wreck,
+    qtrace,
+    traced,
+    same_file,
+}
 use compiler.families.{Family}
 use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
@@ -12,8 +24,8 @@ impl Workspace {
     /// EVERY FILE OF `m` THIS ATTEMPT READ KEEPS ITS ITEMS: its declaration and maker lines in
     /// the record just made, under the text they were read from. An unread file's stand as its
     /// last read kept them. Under `AVRA_DB_VERIFY=decl` the shapes kept for the same text are
-    /// judged against the ones made now.
-    fn keep_items(store: Store, m: ModulePath, made: string) {
+    /// judged against the ones made now, against the module's `prior` record.
+    fn keep_items(store: Store, m: ModulePath, made: string, prior: string) {
         let by_file = lines_by_file(made.split("\n"))
         for path in [p for p in self.module_files(m) if self.read_here(p)] {
             let text = joined(
@@ -24,9 +36,23 @@ impl Workspace {
             let kept = store.get(Stored.Unit, key)
             if kept != null && db_verified_items() { items_judged(path, kept!, text) }
             if kept == text { continue }
-            if kept != null && db_verified_decl() { shapes_judged(path, kept!, text) }
+            if kept != null && db_verified_decl() { shapes_judged(path, kept!, text, self.regathered(path, prior)) }
             let _ = store.keep(Stored.Unit, key, text, [])
         }
+    }
+
+    /// WHETHER `path`'s COLLECT IS READ AGAIN BY ITS RECORDED GATHER: the `prior` record keeps no
+    /// `gathers` line for it, or one naming a set its members no longer gather to — either
+    /// way the hold reads the collector, so its kept members are never minted.
+    fn regathered(path: string, prior: string) -> bool {
+        let line? = prior
+            .split("\n")
+            .map((l) -> l.split("\t"))
+            .find((p) -> p[0] == "gathers" && p.length > 2 && p[2] == path) else {
+            return true
+        }
+        let held? = held_gather(line, "") else { return true }
+        self.gathered_set(held.gathering, self.file_id(path)) != held.digest
     }
 
     /// THE DURABLE REFS OF EVERY DECLARATION NAMED `name`, program-wide, nothing minted,
@@ -176,14 +202,15 @@ fn items_drifted(path: string) -> string {
 /// A file's kept shapes judged against the ones made now, declaration by declaration, by
 /// name: a moved signature, seat, written bit, bound or aim is a read the kept row missed
 /// and wrecks; a moved cancel reach, const value, layout word or consumed mark may move with
-/// another file and is only traced.
-fn shapes_judged(path: string, kept: string, made: string) {
+/// another file and is only traced. A collect enum's members moved by a `regathered` file are
+/// its record's `gathers` read answering, never a missed one.
+fn shapes_judged(path: string, kept: string, made: string, regathered: bool) {
     let was = by_wire(path, kept)
     for w, now in by_wire(path, made) {
         let prior? = was.get(w) else { continue }
         let old = shape_words(prior)
         for j, word in shape_words(now) {
-            if j < old.length && old[j] != word { shape_moved(w, j, now[0], old[j], word) }
+            if j < old.length && old[j] != word && !(regathered && members_at(now, j)) { shape_moved(w, j, now[0], old[j], word) }
         }
     }
 }
@@ -213,6 +240,17 @@ fn traced_only(word: string, j: int, was: string, now: string) -> bool {
         word == "const" -> j > 1 || type_part(was) == type_part(now)
         word == "fn" || word == "extern" -> j == 3 || j == 6 || j == 7
         _ -> false
+    }
+}
+
+/// Whether shape word `j` of a declaration line is the members a collect enum gathers.
+fn members_at(line: List<string>, j: int) -> bool { j == 1 && gathers_its_members(line[6]) }
+
+/// Whether a declaration of the kind `word` names its members by gathering them.
+fn gathers_its_members(word: string) -> bool {
+    match kind_of_word(word) ?? DeclKind.Builtin {
+        .CollectEnum -> true,
+        .Builtin or .Fn or .Record or .Enum or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> false,
     }
 }
 

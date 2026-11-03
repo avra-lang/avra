@@ -385,4 +385,47 @@ moved=$(cd $two/one && AVRA_CACHE_DIR=$OLDPWD/$two/cache AVRA_CWD=$PWD $OLDPWD/a
 case "$moved" in *'"moved":["src/main.av"]'*) ;; *) fail "two mains: one's edit, the other checked between: explain's moved is not its main: $(printf '%s' "$moved" | cut -c1-120)" ;; esac
 say "two mains: two checkouts of one name each kept their own history"
 
+# TWO TREES, ONE MACHINE STORE, PACKAGES ADMITTED IN OTHER ORDERS: each tree holds `deps/a` and
+# `deps/b`, and what one names `@o/p` the other names `@o/q`. A file's module and a module's files
+# are the HOLDING package's, never a count of what was admitted before them, so every check
+# answers as a cold check of its own tree does.
+ord=$R/orders
+for side in one two; do
+    mkdir -p $ord/$side/src $ord/$side/deps/a/src $ord/$side/deps/b/src; : > $ord/$side/.git
+    if [ $side = one ]; then first=p; second=q; else first=q; second=p; fi
+    printf '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\n"@o/%s" = { path = "deps/a" }\n"@o/%s" = { path = "deps/b" }\n' $first $second > $ord/$side/avra.toml
+    printf '[package]\nname = "@o/%s"\nversion = "0.1.0"\n' $first > $ord/$side/deps/a/avra.toml
+    printf '[package]\nname = "@o/%s"\nversion = "0.1.0"\n' $second > $ord/$side/deps/b/avra.toml
+    printf 'export fn %s_says() -> int { 1 }\n' $first > $ord/$side/deps/a/src/lib.av
+    printf 'export fn %s_says() -> int { 2 }\n' $second > $ord/$side/deps/b/src/lib.av
+    printf 'use @o.%s.{%s_says}\nuse @o.%s.{%s_says}\nprintln("${p_says()} ${q_says()}")\n' $first $first $second $second > $ord/$side/src/main.av
+done
+for turn in cold warm; do
+    for side in one two; do
+        AVRA_CACHE_DIR=$PWD/$ord/cache ./avra check $ord/$side > $R/ord.out 2>&1 && say "orders: $side, $turn: checks clean" ||
+            fail "orders: $side, $turn: $(grep -m1 -E 'error|avra:' $R/ord.out)"
+    done
+done
+
+# A PROGRAM ADMITS WHAT ITS OWN TEXT IMPORTS: a server built first, in one machine store, then a
+# hello at the same path in another tree, and the server's own tree edited down to that hello.
+# A file's kept use lines and its record's imports speak for the text they were read from, so
+# neither hello carries the scheduler the server's packages bring.
+adm=$(cd "$(mktemp -d)" && pwd -P)/admits # outside any checkout, as a fixture copied to a temp dir is
+for side in srv hello edited; do
+    mkdir -p $adm/$side/src
+    printf '[package]\nname = "app-%s"\nversion = "0.1.0"\n' $side > $adm/$side/avra.toml
+done
+server='use @std.http.route.{get}\nuse @std.http.server.{server}\n\nserver api {\n    get "/hello" { _req -> "hi" }\n}\nlet ran = api.run()\nif ran is .Err(e) { eprintln(e.describe().message) }\n'
+printf "$server" > $adm/srv/src/main.av; printf "$server" > $adm/edited/src/main.av
+printf 'println("hi")\n' > $adm/hello/src/main.av
+admits() { AVRA_CACHE_DIR=$adm/cache ./avra build $adm/$1 > $R/admits.out 2>&1 || fail "admits: $1 did not build: $(tail -2 $R/admits.out)"; }
+scheduled() { nm $adm/$1/src/main 2>/dev/null | grep -cE 'avra_(task_spawn|fiber_|cores_)'; }
+admits srv; admits edited
+[ "$(scheduled srv)" -gt 0 ] || fail "admits: the server carries no scheduler, so nothing was attacked"
+admits hello
+[ "$(scheduled hello)" = 0 ] && say "admits: a hello after a server, one store, carries no scheduler" || fail "admits: a hello after a server carries $(scheduled hello) scheduler symbol(s)"
+printf 'println("hi")\n' > $adm/edited/src/main.av; admits edited
+[ "$(scheduled edited)" = 0 ] && say "admits: a server edited down to a hello carries no scheduler" || fail "admits: a server edited down to a hello carries $(scheduled edited) scheduler symbol(s)"
+
 verdict

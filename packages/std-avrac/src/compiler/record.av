@@ -717,7 +717,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let prior = record_cached(ws, store, m)
         let forms_were = ws.producers_for(store, m)?.forms
         let made = ws.record_of(store, m)
-        ws.keep_items(store, m, made)
+        ws.keep_items(store, m, made, prior)
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
             let iface = iface_of(made) ?? ""
@@ -820,7 +820,7 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, pr, entry, want, meet) }
+    if first { load_imports(ws, store, m, pr, entry, want, meet) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
@@ -847,12 +847,20 @@ fn load_named(
 /// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
 /// import under the record that keeps it, and where its impls and traits are named.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
+fn load_imports(
+    ws: Workspace,
+    store: Store,
+    m: ModulePath,
+    pr: Producers,
+    entry: string?,
+    want: Want,
+    meet: bool,
+) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
     for parts in pr.walk {
-        if parts[0] == "import" {
+        if parts[0] == "import" && import_stands(ws, store, m, parts) {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
             let key = imp.package()
@@ -1010,6 +1018,24 @@ fn kind_of_words(word: string, name: string) -> CollectKind? {
         "component" -> CollectKind.Component(name),
         _ -> null,
     }
+}
+
+/// WHETHER A KEPT `import` LINE STILL SPEAKS FOR ITS FILE: the file that imports reads the text
+/// the record was made from. A moved file is read again, and its own `use` lines admit what
+/// it imports now.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace, a store, a module and a line in.
+fn import_stands(ws: Workspace, store: Store, m: ModulePath, parts: List<string>) -> bool {
+    if parts.length < 3 { return false }
+    let columns? = record_places(ws, store, m).get(parts[2])?.file else { return false }
+    columns.length > 2 && columns[2] == ws.text_digest(parts[2])
+}
+
+/// Whether a kept `import` line stands for the next record: the file that imports stands in the
+/// module and was held, so its imports are still what its text says.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace, the module's files and a line in.
+fn kept_import(ws: Workspace, files: List<string>, line: string) -> bool {
+    let parts = line.split("\t")
+    parts[0] == "import" && parts.length > 2 && files.contains(parts[2]) && !ws.read_here(parts[2])
 }
 
 /// Whether a kept `gathers` line stands for the next record: its collecting file was held.
