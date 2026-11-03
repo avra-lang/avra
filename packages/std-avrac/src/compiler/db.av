@@ -57,7 +57,7 @@ use core.{watched_kernel, digest_of, joined, sorted_texts, flatten, DeclId, Type
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest, Read}
 use compiler.lower.{Unit}
-use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
+use features.{Namespace, NameFacts, TypeFacts, Settlement}
 use @std.io.{list_dir, is_dir, exists, read_text}
 use @std.path.{joined_path, dir_of}
 use @std.text.{parse_int}
@@ -85,7 +85,6 @@ export enum DbKind {
     Lowered
     Plain
     Items
-    Namespace
     Visible
     Resolved
     Typed
@@ -107,7 +106,6 @@ impl DbKind {
             .Lowered -> "Lowered",
             .Plain -> "Plain",
             .Items -> "Items",
-            .Namespace -> "Namespace",
             .Visible -> "Visible",
             .Resolved -> "Resolved",
             .Typed -> "Typed",
@@ -126,13 +124,13 @@ impl DbKind {
 
 extern fn avra_trap(message: string)
 
-/// EVERY FACT THE COMPILER PRODUCES, one enum. The first sixteen
-/// variants are the ones a `Relation<DbRow>` actually caches — one
+/// EVERY FACT THE COMPILER PRODUCES, one enum. The variants before `Sig`
+/// are the ones a `Relation<DbRow>` actually caches — one
 /// dense slot per registered family, on `Db.families`
 /// (`Workspace.relation`, below), dying with the `Workspace` that
 /// computed them, proven across every access pattern that exists (an
 /// INPUT — `Manifest`; a plain derived query — `Parsed`,
-/// `Plain`, `Items`; a RECURSIVE one — `Lowered`, `Namespace`,
+/// `Plain`, `Items`; a RECURSIVE one — `Lowered`,
 /// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis`, `Expanded`,
 /// each re-entering itself or a peer; a manual ask/begin/finish one
 /// folding real work between the two — `ConstTyped`, `Lifted`,
@@ -186,7 +184,6 @@ export enum DbRow {
     Lowered(Unit)
     Plain(Parsed)
     Items(List<DeclId>)
-    Namespace(ModuleNames)
     Visible(Namespace)
     Resolved(NameFacts)
     Typed(TypeFacts)
@@ -215,7 +212,6 @@ impl DbRow {
             .Lowered(_) -> DbKind.Lowered,
             .Plain(_) -> DbKind.Plain,
             .Items(_) -> DbKind.Items,
-            .Namespace(_) -> DbKind.Namespace,
             .Visible(_) -> DbKind.Visible,
             .Resolved(_) -> DbKind.Resolved,
             .Typed(_) -> DbKind.Typed,
@@ -287,16 +283,6 @@ fn items_of(r: DbRow) -> List<DeclId> {
         rest -> {
             avra_trap("defect: DbRow.Items expected")
             items_of(r)
-        },
-    }
-}
-
-fn namespace_of(r: DbRow) -> ModuleNames {
-    match r {
-        .Namespace(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Namespace expected")
-            namespace_of(r)
         },
     }
 }
