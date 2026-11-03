@@ -1,0 +1,36 @@
+// proves: a `@fixpoint` query whose answer is a `@codec` type digests that answer under the
+// query's scope, as a saved query's does, and solves its group in both engines
+use @std.relation.{query, input, fixpoint, codec}
+use @std.relation.db.{Db, new_db}
+
+const nodes: List<string> = ["a", "b", "c"]
+
+/// What a node reaches, as its own codec writes it.
+@codec
+type Reached = { nodes: List<string> }
+
+/// A node's out-edges, comma-joined, as the driver stages them.
+@input
+fn edges(_db: Db, _node: string) -> string { "" }
+
+fn nothing() -> Reached { Reached { nodes: [] } }
+
+/// The nodes either side holds, in one order whichever side holds them.
+fn union(a: Reached, b: Reached) -> Reached { Reached { nodes: [n for n in nodes if a.nodes.contains(n) || b.nodes.contains(n)] } }
+
+/// Every node `node` reaches, itself included.
+@query
+@fixpoint(nothing, union)
+fn reach(db: Db, node: string) -> Reached {
+    let out = [m for e in edges(db, node).split(",") if !e.is_empty() for m in reach(db, e).nodes]
+    union(Reached { nodes: [node] }, Reached { nodes: out })
+}
+
+fn main_run() -> string {
+    let db = new_db()
+    set_edges(db, "a", "b")
+    set_edges(db, "b", "c,a")
+    [n + ":" + reach(db, n).nodes.join("") for n in nodes].join(" ")
+}
+
+main_run()
