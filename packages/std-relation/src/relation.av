@@ -123,11 +123,11 @@ export trait RelationRow {
 
 /// `@derive(Columns)` — a record carried as a relation's nested column,
 /// hashed and written field by field. It generates nothing: it claims
-/// the `@local` mark, a field this process alone reads.
+/// the marks a stored type's fields read.
 export trait Columns {
     static fn derive(_t: Type) -> List<Directive> { [] }
 
-    static fn marks(_t: Type) -> List<string> { ["local"] }
+    static fn marks(_t: Type) -> List<string> { stored_marks }
 }
 
 /// `@relation` — the generated row members and the shape's contract,
@@ -136,8 +136,9 @@ export fn relation(t: Type) -> Declared {
     Declared { made: RelationRow.derive(t), problems: relation_problems(t) }
 }
 
-/// The marks a stored type's fields read: `local`, a field the wire leaves out.
-const stored_marks: List<string> = ["local"]
+/// The marks a stored type's fields read: `local`, a field the wire leaves out; `file`, a text
+/// naming a file, which a scope spells as it spells a place's file.
+const stored_marks: List<string> = ["local", "file"]
 
 /// `@derive(Codec)`'s generator — see `codec`.
 export trait Codec {
@@ -1461,7 +1462,7 @@ fn record_reader_let(name: string, ty: string, answer: string, fs: List<Field>, 
 /// A record rebuilt from its columns in declared order, read through
 /// `rd` — `written_all`'s mirror.
 fn record_read(n: string, fs: List<Field>, owner: Owner) -> Code {
-    let reads = [quote { W { ${f.name}: ${read_value(f.kind, owner)} } } for f in columns(fs)]
+    let reads = [quote { W { ${f.name}: ${field_read(f, owner)} } } for f in columns(fs)]
     quote { ${n} { ..${reads} } }
 }
 
@@ -1563,7 +1564,22 @@ fn spelled_somehow(kind: string, e: Code) -> Code { quote { scope.spelled(${lite
 
 /// A nested record's writers, one per column in declared order.
 fn column_writers(ty: string, fs: List<Field>, owner: Owner) -> List<Code> {
-    [quote { (w: Writer, v: ${ty}) -> ${written(quote { w }, quote { v.${f.name} }, f.kind, owner)} } for f in columns(fs)]
+    [quote { (w: Writer, v: ${ty}) -> ${field_written(f, owner)} } for f in columns(fs)]
+}
+
+/// Whether a field is a text naming a file, spelled by the scope as a place's file is.
+fn names_a_file(f: Field, owner: Owner) -> bool { owner.scoped && f.kind is .Str && marked(f, "file") }
+
+/// One column written: a `@file` text as the scope spells a file.
+fn field_written(f: Field, owner: Owner) -> Code {
+    if names_a_file(f, owner) { return quote { written_text(w, scope, scope.file_spelled(v.${f.name})) } }
+    written(quote { w }, quote { v.${f.name} }, f.kind, owner)
+}
+
+/// One column read: a `@file` text back under the scope's file.
+fn field_read(f: Field, owner: Owner) -> Code {
+    if names_a_file(f, owner) { return quote { scope.file_unspelled(text_read(rd, scope)?) } }
+    read_value(f.kind, owner)
 }
 
 /// The lambda that writes one value of kind `k`, `hash_each`'s twin.
