@@ -61,6 +61,10 @@ export enum Stored {
     /// THE DB's own rows (compiler/db.av) — a heterogeneous answer, keyed by its kind
     /// and name, never an artifact of a build.
     Rows
+    /// A CHECKOUT'S OWN HISTORY: what moved since its last check, its last verdict and link, a
+    /// file's last shape. A fact about one checkout, never a function of inputs alone, so it
+    /// stays in the tree's own store and no other tree reads it.
+    History
 }
 
 impl Stored {
@@ -77,6 +81,7 @@ impl Stored {
             .Warn -> "warn",
             .Answer -> "answer",
             .Rows -> "rows",
+            .History -> "history",
         }
     }
 
@@ -84,7 +89,15 @@ impl Stored {
     fn file_family() -> bool {
         match self {
             .Obj or .Bin or .Proof -> true,
-            .Sig or .Fp or .Unit or .Warn or .Rows or .Answer -> false,
+            .Sig or .Fp or .Unit or .Warn or .Rows or .Answer or .History -> false,
+        }
+    }
+
+    /// Whether this family is one checkout's own, kept in the tree's store and never the machine's.
+    fn checkout_own() -> bool {
+        match self {
+            .History -> true,
+            .Sig or .Fp or .Unit or .Obj or .Bin or .Proof or .Warn or .Answer or .Rows -> false,
         }
     }
 }
@@ -312,7 +325,7 @@ impl Store {
     /// write fails, its old edge cannot make the new data look complete.
     fn uncommit(family: Stored, key: string) -> bool {
         if !family.file_family() {
-            pack_forget(self.rows(), self.packed(family), self.saved(key))
+            pack_forget(self.pack_of(family), self.packed(family), self.saved(key))
             return true
         }
         let edge = self.edge_path(family, key)
@@ -406,7 +419,7 @@ impl Store {
     fn disk_kept(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         if family.file_family() { return self.written(family, key, bytes, read) }
         pack_put_octets(
-            self.rows(),
+            self.pack_of(family),
             self.packed(family),
             self.saved(key),
             bytes,
@@ -453,6 +466,35 @@ impl Store {
         self.get(family, key)
     }
 
+    /// THE LAST FEW ANSWERS TO ONE QUESTION, newest first: a question asked of a tree that moves
+    /// back, or by a second compiler, finds its earlier answer instead of the one that displaced it.
+    fn slots(family: Stored, key: string) -> List<string> { [slot_key(key, s) for s in self.slot_order(family, key)] }
+
+    /// The slot a new answer to `key` is kept in, made the newest: a free one while fewer than
+    /// `SLOTS` stand, else the oldest, which it replaces.
+    fn slot_to_keep(family: Stored, key: string) -> string {
+        let order = self.slot_order(family, key)
+        let slot = slot_key(
+            key,
+            ["${n}" for n in 0..SLOTS if !order.contains("${n}")].first() ?? order.last() ?? "0",
+        )
+        self.slot_used(family, key, slot)
+        slot
+    }
+
+    /// `slot` made the newest answer to `key`.
+    fn slot_used(family: Stored, key: string, slot: string) {
+        let named = slot.substring(key.length + 1, slot.length)
+        if self.slot_order(family, key).first() == named { return }
+        let order = [named].concat([s for s in self.slot_order(family, key) if s != named])
+        let _ = self.keep(family, order_key(key), order.join(","), [])
+    }
+
+    /// The slots `key`'s answers stand in, newest first.
+    fn slot_order(family: Stored, key: string) -> List<string> {
+        [s for s in (self.get(family, order_key(key)) ?? "").split(",") if !s.is_empty()]
+    }
+
     /// Whether a row's reads all still stand — the rule alone, with no value fetched. A row
     /// not present, or kept with edges that are no pairs, does not hold.
     fn holds(family: Stored, key: string, stands: fn(Reading) -> bool) -> bool {
@@ -465,14 +507,28 @@ impl Store {
     /// on the machine reads and keeps ONE copy of a row; else the store's own.
     fn rows() -> Pack { self.base ?? self.pack }
 
+    /// The pack a family's rows stand in: a checkout's own history in the tree's, the rest
+    /// where every tree shares them.
+    fn pack_of(family: Stored) -> Pack { if family.checkout_own() { self.pack } else { self.rows() } }
+
     /// A packed row.
     fn packed_get(family: Stored, key: string) -> Bytes? {
-        pack_get_octets(self.rows(), self.packed(family), self.saved(key), inspects(self.keeping))
+        pack_get_octets(
+            self.pack_of(family),
+            self.packed(family),
+            self.saved(key),
+            inspects(self.keeping),
+        )
     }
 
     /// A packed row's reads.
     fn packed_reads(family: Stored, key: string) -> List<string>? {
-        pack_reads(self.rows(), self.packed(family), self.saved(key), inspects(self.keeping))
+        pack_reads(
+            self.pack_of(family),
+            self.packed(family),
+            self.saved(key),
+            inspects(self.keeping),
+        )
     }
 
     /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
@@ -500,7 +556,12 @@ impl Store {
     fn unsuspected(family: Stored, key: string, suspect: Map<string, bool>) -> bool {
         !family.file_family() &&
             self.aside_row(family, key) == null &&
-            pack_has(self.rows(), self.packed(family), self.saved(key), inspects(self.keeping)) &&
+            pack_has(
+                self.pack_of(family),
+                self.packed(family),
+                self.saved(key),
+                inspects(self.keeping),
+            ) &&
             suspect.get(self.suspect_key(family, key)) == null
     }
 
@@ -536,7 +597,9 @@ impl Store {
     /// A derivation's end: what it appended is folded into a sealed body once there is
     /// enough of it, so the next open reads an index. An inspection keeps nothing to fold.
     fn settle() {
-        if !inspects(self.keeping) { pack_settle(self.rows()) }
+        if inspects(self.keeping) { return }
+        pack_settle(self.rows())
+        if self.base != null { pack_settle(self.pack) }
     }
 
     /// RECLAIM by §6.7's rule: compaction folds the reachable rows into a fresh
@@ -608,3 +671,12 @@ export fn cas_live() -> List<string> {
         [pack_cas_refs(pack_at(root, store_print(store_dir_of(root)) ?? "")) for root in cas_readers()],
     )
 }
+
+/// How many answers one question keeps.
+const SLOTS: int = 4
+
+/// One answer's place among its question's slots.
+fn slot_key(key: string, slot: string) -> string { "${key}#${slot}" }
+
+/// Where a question's slots stand, newest first.
+fn order_key(key: string) -> string { "${key}#order" }

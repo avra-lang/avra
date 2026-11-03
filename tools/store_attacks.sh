@@ -360,4 +360,29 @@ cas_put=$(find $C/cache/cas -mindepth 2 -maxdepth 2 -type f ! -name 'stand*' | w
 [ ! -e $C/cache/cas/00/stand1 ] && [ ! -e $C/cache/cas/00/stand2 ] && [ ! -e $C/cache/cas/00/stand3 ] && say "cas cap: the least recently read went first" || fail "cas cap: a least recently read blob still stands"
 [ -e $C/cache/cas/00/stand4 ] && say "cas cap: the blob read last stays" || fail "cas cap: the blob read last was let go"
 
+# TWO CHECKOUTS, ONE MACHINE STORE, ONE FILE NAME: each `src/main.av` says something else. A
+# checkout's history is its own, so checks that alternate between them each answer as a cold
+# check of their own tree does, and each warm turn parses nothing.
+two=$R/two-main
+mkdir -p $two/one/src $two/two/src $two/cache
+: > $two/one/.git; : > $two/two/.git
+printf '[package]\nname = "app"\nversion = "0.1.0"\n' > $two/one/avra.toml
+printf '[package]\nname = "app"\nversion = "0.1.0"\n' > $two/two/avra.toml
+printf 'fn bump_one(mut n: int) -> int { n + 1 }\nfn main() { println("one") }\n' > $two/one/src/main.av
+printf 'fn bump_two(mut n: int) -> int { n + 1 }\nfn main() { println("two") }\n' > $two/two/src/main.av
+two_said() { AVRA_CACHE_DIR=$PWD/$two/cache AVRA_QTRACE=1 ./avra check $two/$1 2> $R/two.err > $R/two.out; grep -o 'bump_[a-z]*' $R/two.err $R/two.out | sed 's/.*://' | sort -u | tr '\n' ' '; }
+two_parsed() { grep -c "^Q	parse	.*$two/$1/" $R/two.err; }
+for turn in cold warm again; do
+    for side in one two; do
+        got=$(two_said $side); parsed=$(two_parsed $side)
+        [ "$got" = "bump_$side " ] || fail "two mains: $side, $turn: said '$got', wanted 'bump_$side '"
+        if [ "$turn" != cold ] && [ "$parsed" != 0 ]; then fail "two mains: $side, $turn: parsed its main again ($parsed), its history read the other checkout's"; fi
+    done
+done
+printf 'fn bump_one(mut n: int, by: int = 1) -> int { n + by }\nfn main() { println("one") }\n' > $two/one/src/main.av
+two_said two > /dev/null
+moved=$(cd $two/one && AVRA_CACHE_DIR=$OLDPWD/$two/cache AVRA_CWD=$PWD $OLDPWD/avra explain --why --json 2>/dev/null)
+case "$moved" in *'"moved":["src/main.av"]'*) ;; *) fail "two mains: one's edit, the other checked between: explain's moved is not its main: $(printf '%s' "$moved" | cut -c1-120)" ;; esac
+say "two mains: two checkouts of one name each kept their own history"
+
 verdict
