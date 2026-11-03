@@ -11,16 +11,19 @@ R=$(cd "$(mktemp -d)" && pwd -P)
 mkdir -p "$R/one/app/src" "$R/two/deeper/app/src"
 for d in "$R/one/app" "$R/two/deeper/app"; do
     printf '[package]\nname = "path-leak-attack"\nversion = "0.1.0"\n' > "$d/avra.toml"
-    printf 'fn twice(n: int) -> int { n + n }\nfn main() { println("${twice(4)}") }\n' > "$d/src/main.av"
-    $AVRA build "$d" > "$R/out" 2> "$R/err" || { fail "$d did not build: $(head -2 "$R/err" | tr '\n' ' ')"; continue; }
+    # a warning, so a place in its own file is kept too
+    printf 'fn twice(n: int) -> int { n ?? 3 }\nfn main() { println("${twice(4)}") }\n' > "$d/src/main.av"
+    # the checkout's own cache is the machine's, so every row it keeps is examined here
+    AVRA_CACHE_DIR="$d/.avra-cache" $AVRA build "$d" > "$R/out" 2> "$R/err" || { fail "$d did not build: $(head -2 "$R/err" | tr '\n' ' ')"; continue; }
     seen=0
-    for f in "$d"/.avra-cache/store/* "$d"/.avra-cache/obj/* "$d"/.avra-cache/bin/*; do
+    for f in $(find "$d/.avra-cache" -type f); do
         [ -f "$f" ] || continue
         seen=$((seen + 1))
         n=$(grep -a -o -F "$d" "$f" | wc -l | tr -d ' ')
         [ "$n" = 0 ] || fail "${f#$d/}: $n path(s) of its checkout, e.g. $(grep -a -o "$d[A-Za-z0-9_/.-]*" "$f" | head -1 | sed "s|$d|<root>|")"
     done
     [ "$seen" -gt 0 ] || fail "$d: the build left no cache to examine"
+    echo "path-leak-attack: ${d#$R/}: $seen cache file(s) examined"
 done
 find "$R" -delete
 verdict "path-leak-attack" "one package built from two checkouts"
