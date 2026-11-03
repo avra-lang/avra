@@ -46,6 +46,8 @@ BAD = re.compile(
     re.M,
 )
 TIMEOUT = int(os.environ.get("AVRA_DEFECT_TIMEOUT", "60"))
+# Whose words a refusal speaks in: the self-test's fixtures refuse on purpose, and say so.
+WHO = "defects"
 # a mutant is linked one in this many: a link costs seconds, and check has lowered it already
 BUILD_EVERY = 4
 # @mutate adds the case's mutations; @check runs only `check` — a program
@@ -296,8 +298,9 @@ def verdict(code, out, lenient=False):
 def self_test():
     """The retry's two paths and its neighbours, against a fake `avra` that hangs on demand, and
     the timings report against a fake that is slow by program."""
-    global TIMEOUT
+    global TIMEOUT, WHO
     TIMEOUT = 3
+    WHO = "defects self-test (a fixture's expected refusal)"
     d = tempfile.mkdtemp(prefix="avra-defects-self-")
 
     def fake(name, body):
@@ -336,6 +339,7 @@ def self_test():
     assert timings_self_test() == 0, "the timings report failed"
     dump = stalled(os.getpid())
     assert dump[0].startswith("load: ") and len(dump) > 2 and any(l.startswith(("fd: ", "wchan: ")) for l in dump), dump
+    WHO = "defects"
     print("defects: self-test passed — a timeout finishing alone stands down, one that hangs twice fails with both durations, a voice still fails, and the slowest, the timings file and the last green seconds hold")
     return 0
 
@@ -520,7 +524,7 @@ def survey(avra, work, jobs, progress=0, show=False, previous=None, taken=None, 
     def refuse(n, verb, why, out):
         with lock:
             bad.append((n, why))
-            print("defects: %s (%s) — %s" % (n, verb, why), flush=True)
+            print("%s: %s (%s) — %s" % (WHO, n, verb, why), flush=True)
             print("    " + "\n    ".join(out.strip().split("\n")[:6]), flush=True)
 
     warmed = []

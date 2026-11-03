@@ -1274,6 +1274,29 @@ if [ -x $R/bi.other ]; then
 fi
 rm -f $bi build/.avra.bi.print $R/bi.orig $R/bi.other
 
+if section sp; then
+# A SECOND PROGRAM STANDS ON WHAT THE FIRST KEPT. Two programs of one package share its
+# modules: the first is built cold, and the second holds the modules' files the first kept,
+# reading only its own. A second build that held under half its files found the first's rows
+# keyed by the program they were made for.
+mkdir -p $R/sp/src/m $R/sp/src/n $R/sp/src/p1 $R/sp/src/p2
+printf '[package]\nname = "rt-sp"\nversion = "0.1.0"\n' > $R/sp/avra.toml
+printf 'export fn one() -> int { 1 }\nexport fn two() -> int { 2 }\n' > $R/sp/src/m/leaf.av
+printf 'use m.{one, two}\nexport fn three() -> int { one() + two() }\nexport type Pt = { x: int, y: int }\n' > $R/sp/src/n/mid.av
+printf 'use n.{three}\nprintln("p1 ${three()}")\n' > $R/sp/src/p1/p1.av
+printf 'use n.{three, Pt}\nlet p = Pt { x: three(), y: 4 }\nprintln("p2 ${p.x + p.y}")\n' > $R/sp/src/p2/p2.av
+printf 'p1 3\n' > $R/sp/src/p1/p1.expected
+printf 'p2 7\n' > $R/sp/src/p2/p2.expected
+steps=$((steps+1)); sp_first=$(./avra build --time $R/sp/src/p1/p1.av 2>&1); sp_st1=$?
+steps=$((steps+1)); sp_out=$(./avra build --time $R/sp/src/p2/p2.av 2>&1); sp_st=$?
+sp_held=$(printf '%s\n' "$sp_out" | grep -oE "held [0-9]+/[0-9]+" | tail -1)
+sp_n=${sp_held#held }; sp_h=${sp_n%/*}; sp_t=${sp_n#*/}
+if [ $sp_st1 -ne 0 ]; then fail "sp: the first program did not build (status $sp_st1): $(printf '%s' "$sp_first" | grep -a -e error -e caused | head -1 | cut -c1-200)"
+elif [ $sp_st -ne 0 ] || [ -z "$sp_held" ]; then fail "sp: the second program did not build (status $sp_st): $(printf '%s' "$sp_out" | grep -a -e error -e caused | head -1 | cut -c1-200)"
+elif [ $((sp_h * 2)) -lt "$sp_t" ]; then fail "sp: the second program held only $sp_h of $sp_t files: the first program's rows did not stand for it"
+else [ -n "${VERBOSE:-}" ] && echo "ok    sp: the second program held $sp_h of $sp_t files"; holds=$((holds+1)); fi
+fi
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
     [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the sections named examined nothing"; exit 1; }
     [ "$fails" -eq 0 ]; exit $?
