@@ -387,7 +387,7 @@ impl Workspace {
         for p in paths { row_of.set(store.suspect_key(Stored.Warn, self.said_row(p)), p) }
         let readers = store.readers()
         let edited = [p for p in paths if self.text_moved(store, p)]
-            .concat(self.gone_files(readers, paths))
+            .concat(self.gone_files(store.read_names(readers), paths))
         mut moved = [FileRead.Text.name(p) for p in edited]
             .concat([self.seen_name(p) for p in edited])
         mut rows: Map<string, bool> = {}
@@ -486,10 +486,10 @@ impl Workspace {
     fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(path) }
 
     /// The files a kept row read the text of that stand nowhere now: a deletion moves its module.
-    fn gone_files(readers: Map<string, List<string>>, paths: List<string>) -> List<string> {
+    fn gone_files(names: List<string>, paths: List<string>) -> List<string> {
         mut known: Map<string, bool> = {}
         for p in paths { known.set(p, true) }
-        let read = [text_read_path(name) for name in readers.keys()]
+        let read = [text_read_path(name) for name in names]
         [p! for p in read if p != null && known.get(p!) == null && !self.there(p!)]
     }
 

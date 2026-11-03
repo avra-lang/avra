@@ -8,6 +8,12 @@ export AVRA_MAX_COMPILES=0
 fails=0
 steps=0
 
+# Marks a fixture directory as a checkout whose store is its own, cold, never the tree's.
+own_store() {
+    : > "$1/.git"
+    export AVRA_CACHE_DIR="$PWD/$1/.avra-cache"
+}
+
 # One failed check, counted and named.
 fail() {
     fails=$((fails + 1))

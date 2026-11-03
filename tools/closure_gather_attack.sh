@@ -16,7 +16,7 @@ AVRA=${AVRA_BIN:-$T/build/avra}
 mkdir -p $B/lib/src/other $B/far/src $B/a/src $B/b/src $B/c/src
 # a store stands at the nearest checkout root ABOVE a package, so the fixtures'
 # directory is marked as one: their store is their own, cold here, never the tree's
-: > $B/.git
+own_store $B
 cat > $B/lib/avra.toml <<TOML
 [package]
 name = "@t/libx"
