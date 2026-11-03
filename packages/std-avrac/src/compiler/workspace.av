@@ -690,8 +690,6 @@ export type Workspace = {
     /// The whole-program raised-error fixpoint over `ErrorSite` — its
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
-    walking: Cell<bool>,
-    walk_family: Cell<int>,
     cancel_walking: Cell<bool>,
     cancel_walk_family: Cell<int>,
     /// The whole-program read-reach fixpoint over the declarations' call
@@ -891,11 +889,6 @@ fn lifted_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.Lifted, arg))
 }
 // LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
-fn writes_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.writes_of(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Writes, arg))
-}
-// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
 fn cancel_bits_verified(ws: Workspace, arg: int) -> int {
     touch(ws.cancel_bits_of(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.CancelBits, arg))
@@ -944,7 +937,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
-        .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .DeclReads -> decl_reads_verified(ws, arg),
@@ -1156,8 +1148,6 @@ fn built(
         clock: clock,
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
-        walking: Cell.new(false),
-        walk_family: Cell.new(0 - 1),
         cancel_walking: Cell.new(false),
         cancel_walk_family: Cell.new(0 - 1),
         read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
@@ -1357,12 +1347,11 @@ impl Workspace {
 
     fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
 
-    /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
-    /// runs inside a resolve.
-    fn writes_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) { return false }
-        if seated(self.decls.decl(d)) { let _ = self.writes_of(d) }
-        true
+    /// The seats a declaration writes as the receivers pass answers them, or null where it
+    /// cannot run: a whole-program pass never runs inside a resolve.
+    fn writes_ensured(d: DeclId) -> List<bool>? {
+        if self.db.family_active(Family.Resolved.ordinal) { return null }
+        if seated(self.decls.decl(d)) { self.written_seats_of(d) } else { [] }
     }
 
     /// Runs the cancel pass and says so, or says it cannot: a whole-program pass never
@@ -1384,11 +1373,10 @@ impl Workspace {
         true
     }
 
-    /// Runs the references pass for one declaration's read bit and says so, or says it cannot.
-    fn read_found_ensured(d: DeclId) -> bool {
-        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
-        let _ = read_found(self, d)
-        true
+    /// One declaration's read bit as the references pass settled it, or none where it cannot run.
+    fn read_found_ensured(d: DeclId) -> bool? {
+        if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return null }
+        read_found(self, d)
     }
 
     fn marks_ensured(d: DeclId) {
@@ -2690,7 +2678,6 @@ export fn family_code_hash(f: Family) -> string {
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
-        .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .DeclReads -> code_hash(decl_reads_verified) ?? "",
