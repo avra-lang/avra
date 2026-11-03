@@ -2,7 +2,19 @@
 //! lines, standing on its text; a module's record keeps neither, and reads them back whole
 //! (`record_whole`). A declaration no parse declares is filled from its own line, found by
 //! its name (`decl_row_filled`).
-use core.{DeclId, FileId, ModulePath, joined, flatten, distinct, wreck, qtrace, traced, same_file}
+use core.{
+    DeclId,
+    DeclKind,
+    FileId,
+    ModulePath,
+    joined,
+    flatten,
+    distinct,
+    wreck,
+    qtrace,
+    traced,
+    same_file,
+}
 use compiler.families.{Family}
 use core.debug.{db_verified_decl, db_verified_items}
 use compiler.store.{Store, Stored, node_key}
@@ -183,7 +195,7 @@ fn shapes_judged(path: string, kept: string, made: string) {
         let prior? = was.get(w) else { continue }
         let old = shape_words(prior)
         for j, word in shape_words(now) {
-            if j < old.length && old[j] != word { shape_moved(w, j, now[0], old[j], word) }
+            if j < old.length && old[j] != word { shape_moved(w, j, now, old[j], word) }
         }
     }
 }
@@ -201,18 +213,29 @@ fn by_wire(path: string, text: string) -> Map<string, List<string>> {
 fn shape_words(line: List<string>) -> List<string> { [line[0]].concat(line.drop(13)) }
 
 /// One shape word moved between the kept line and the made one.
-fn shape_moved(wire: string, j: int, word: string, was: string, now: string) {
-    if traced_only(word, j, was, now) { qtrace("Q\tdecl\tmoved\t${wire}\t${j}\n") } else { wreck("a kept declaration's shape moved under the same text — ${wire} field ${j}") }
+fn shape_moved(wire: string, j: int, line: List<string>, was: string, now: string) {
+    if traced_only(line, j, was, now) { qtrace("Q\tdecl\tmoved\t${wire}\t${j}\n") } else { wreck("a kept declaration's shape moved under the same text — ${wire} field ${j}") }
 }
 
 /// Whether a shape word may move with another file: a layout word, a const's value or verdict
-/// (never its type), a fn's marks (they carry `consumed`) or its cancel reach.
-fn traced_only(word: string, j: int, was: string, now: string) -> bool {
+/// (never its type), a fn's marks (they carry `consumed`) or its cancel reach, a collect
+/// enum's members (they are what its scope holds).
+fn traced_only(line: List<string>, j: int, was: string, now: string) -> bool {
+    let word = line[0]
     when {
         j == 0 -> true
+        gathers_its_members(line[6]) -> j == 1
         word == "const" -> j > 1 || type_part(was) == type_part(now)
         word == "fn" || word == "extern" -> j == 3 || j == 6 || j == 7
         _ -> false
+    }
+}
+
+/// Whether a declaration of the kind `word` names its members by gathering them.
+fn gathers_its_members(word: string) -> bool {
+    match kind_of_word(word) ?? DeclKind.Builtin {
+        .CollectEnum -> true,
+        .Builtin or .Fn or .Record or .Enum or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> false,
     }
 }
 
