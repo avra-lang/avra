@@ -1046,7 +1046,7 @@ fn append(pack: Pack, body: Bytes) {
     if killed_at_commit() {
         let _ = af.write(octets_only(body))
         store_wrote()
-        kill_at_commit()
+        if store_rows_written() >= kill_frame() { avra_process_exit(137) }
         let _ = af.write(marker_of(body))
     } else {
         let _ = af.write([octets_only(body), marker_of(body)].bytes())
@@ -1058,15 +1058,13 @@ fn append(pack: Pack, body: Bytes) {
 /// Whether the test hook that kills a writer between a frame and its marker is set.
 fn killed_at_commit() -> bool { !kill_hook().is_empty() }
 
+/// The frame, counted from one, between whose octets and marker the hook kills the writer.
+fn kill_frame() -> int { parse_int(kill_hook()) ?? 1 }
+
 /// The kill test hook's word, read once a process.
 once fn kill_hook() -> string {
     // LICENSED input.debug_flag: a test hook that kills a writer between a frame and its marker
     env("AVRA_STORE_KILL") ?? ""
-}
-
-/// A test hook: a writer killed between a frame's octets and its marker.
-fn kill_at_commit() {
-    if kill_hook() == "commit" { avra_process_exit(137) }
 }
 
 /// A text row kept: its octets.

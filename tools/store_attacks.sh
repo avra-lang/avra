@@ -18,8 +18,8 @@
 #   Q store foreign          a segment written under another pack format
 #   Q store hit|miss <family>  a lookup of one row, by the family it asked
 #   Q db hit|miss <kind>       a durable DbRow recalled, by its kind
-# and two hooks: AVRA_STORE_KILL=commit kills the writer after a segment's
-# frame octets and before its commit marker; AVRA_STORE_HOLD_MS=n holds the
+# and two hooks: AVRA_STORE_KILL=<n> kills the writer after its nth frame's
+# octets and before its commit marker; AVRA_STORE_HOLD_MS=n holds the
 # compaction lock n ms before appending.
 #
 # §6.8 maps its eight attacks here; a check that changes names the row it still
@@ -108,7 +108,7 @@ say "§6.8 kill mid-append: a writer killed between a frame and its marker leave
 rm -rf .avra-cache
 checked cold2
 sed -i.bak 's/{ 4 }/{ 6 }/' $R/p/src/more.av
-AVRA_STORE_KILL=commit ./avra check $R/p > /dev/null 2>&1
+AVRA_STORE_KILL=1 ./avra check $R/p > /dev/null 2>&1
 st=$?
 [ "$st" = 137 ] || fail "the kill hook did not kill the writer (status $st)"
 mv $R/p/src/more.av.bak $R/p/src/more.av
@@ -118,6 +118,21 @@ agrees after_kill "after a kill"
 checked after_kill2
 agrees after_kill2 "two runs after a kill"
 [ "$(heard after_kill2 torn)" = 0 ] || fail "the torn frame is still there a run later"
+
+# ── kill mid-run: a COLD run killed at its nth frame, then a warm one ──
+# Whatever a killed run kept, the next run answers the oracle: a kept answer
+# standing on another process's arena or parse order would not.
+say "kill mid-run: a cold check killed at frame n leaves a store the next check answers the oracle from"
+for n in 2 5 9; do
+    rm -rf .avra-cache
+    AVRA_STORE_KILL=$n ./avra check $R/p > /dev/null 2>&1
+    st=$?
+    [ "$st" = 137 ] || fail "frame $n: the kill hook did not kill the cold run (status $st)"
+    checked mid_kill_$n
+    agrees mid_kill_$n "after a kill at frame $n"
+    checked mid_kill2_$n
+    agrees mid_kill2_$n "two runs after a kill at frame $n"
+done
 
 # ── §6.8 two writers ──
 # The design (S7) gives each writer its OWN segment and no lock; the flock is
