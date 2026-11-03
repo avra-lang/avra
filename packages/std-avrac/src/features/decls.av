@@ -805,7 +805,7 @@ export type Decls = {
     declared_writes: Cell<List<bool>>,
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
-    ensure_writes: Cell<fn(DeclId) -> bool>,
+    ensure_writes: Cell<fn(DeclId) -> List<bool>?>,
     // the workspace's cancel hook: a record-carrying declaration's reach
     // read by name, so a reader stands on that decl's answer alone
     ensure_cancels: Cell<fn(DeclId) -> bool>,
@@ -825,7 +825,7 @@ export type Decls = {
     ensure_held_refs: Cell<fn(DeclId) -> List<Ref>>,
     /// Whether each declaration is read as a value anywhere, as the references pass found it,
     /// by DeclId; a declaration past the end is read nowhere.
-    ensure_read: Cell<fn(DeclId) -> bool>,
+    ensure_read: Cell<fn(DeclId) -> bool?>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -1079,7 +1079,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         seat_marks: Cell.new(no_seat_marks),
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
-        ensure_writes: Cell.new(no_answer),
+        ensure_writes: Cell.new(no_written),
         ensure_cancels: Cell.new(no_answer),
         ensure_failures: Cell.new(no_failures_ensure),
         cancels: new_table(),
@@ -1095,7 +1095,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         ref_rows_incomplete: Cell.new(refs_unknown),
         ensure_refs: Cell.new(no_refs_ensure),
         ensure_held_refs: Cell.new(no_held_refs),
-        ensure_read: Cell.new(no_answer),
+        ensure_read: Cell.new(no_read),
         mut_seat_index: map_cell(),
     }
     // the registry cannot reach a declaration on its own — a struct or
@@ -1121,6 +1121,15 @@ fn builtin_tparams(arity: int) -> List<string> {
 fn no_ensure(d: DeclId) {}
 
 fn no_answer(_d: DeclId) -> bool { false }
+
+fn no_written(_d: DeclId) -> List<bool>? { null }
+
+/// Whether seat `i` of a bit row is set; a seat past the row is not.
+fn bit_in(bits: List<bool>, i: int) -> bool { i < bits.length && bits[i] }
+
+/// No references pass is armed: nothing is known of whether a declaration is read.
+// LICENSED fns.dead_parameter: a fn VALUE filling the read-found seat — no workspace stands behind the table, so none is asked
+fn no_read(_d: DeclId) -> bool? { null }
 
 fn no_consumed(_d: DeclId) -> List<bool> { [] }
 
@@ -2001,7 +2010,7 @@ impl Decls {
         self.ensure_const.set(no_const_ensure)
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
-        self.ensure_writes.set(no_answer)
+        self.ensure_writes.set(no_written)
         self.ensure_cancels.set(no_answer)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
@@ -2025,7 +2034,7 @@ impl Decls {
         self.ensure_listed.set(no_listing)
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
-        self.ensure_read.set(no_answer)
+        self.ensure_read.set(no_read)
         self.ref_rows_to.set(no_held_refs)
         self.ref_rows_from.set(no_file_refs)
         self.ref_rows_incomplete.set(refs_unknown)
@@ -2486,34 +2495,6 @@ impl Decls {
         i < row.length && row[i]
     }
 
-    /// Whether seat `i` is written, declared or found: a method's
-    /// receiver by its word, any seat by the pass.
-    @bracket("receivers")
-    fn seat_writes_so_far(d: DeclId, i: int) -> bool {
-        i == 0 && self.declared_writes.get()[d.index] || self.seat_written_so_far(d, i)
-    }
-
-    /// One fn's inferred bits fall, for its set's fixpoint to re-earn.
-    fn reset_written(d: DeclId) {
-        self
-            .written_seats
-            .set_at(d.index, Cell.new(filled(self.written_seats.get()[d.index].get().length, false)))
-    }
-
-    /// The pass starts over: every inferred bit falls, and the
-    /// fixpoint re-earns them.
-    fn clear_written() {
-        // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
-        // the receivers pass never surveys a held body, so wiping them loses the
-        // writer a caller's retain decision reads. The pass clears what it owns.
-        for x in self.unheld_decls() {
-            let j = x.id.index
-            self
-                .written_seats
-                .set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false)))
-        }
-    }
-
     /// What a call to `d` may reach, recorded.
     fn record_cancel(d: DeclId, r: CancelReach) {
         self.cancels.keep(d.index, r)
@@ -2551,28 +2532,26 @@ impl Decls {
     /// declared is read, so every answer is a function of what is recorded.
     @bracket("receivers")
     fn writes_receiver(d: DeclId) -> bool {
-        let answered = (self.ensure_writes.get())(d)
-        self.declared_writes.get()[d.index] || answered && self.seat_written_so_far(d, 0)
+        self.declared_writes.get()[d.index] || bit_in((self.ensure_writes.get())(d) ?? [], 0)
     }
 
     /// The receiver's bit as the receivers pass found it, or null where the pass could
     /// not be asked: an absence of a finding is no finding of absence.
     @bracket("receivers")
     fn written_found(d: DeclId) -> bool? {
-        if !(self.ensure_writes.get())(d) { return null }
-        self.seat_written_so_far(d, 0)
+        let bits? = (self.ensure_writes.get())(d) else { return null }
+        bit_in(bits, 0)
     }
 
     /// Whether the body writes through seat `i` as the pass found it, false where the
     /// pass could not be asked; the declared `mut` is what the caller's law reads.
     @bracket("receivers")
     fn seat_written(d: DeclId, i: int) -> bool {
-        let answered = (self.ensure_writes.get())(d)
-        answered && self.seat_written_so_far(d, i)
+        bit_in((self.ensure_writes.get())(d) ?? [], i)
     }
 
     /// The workspace arms the receivers hook once.
-    fn arm_writes(ensure: fn(DeclId) -> bool) {
+    fn arm_writes(ensure: fn(DeclId) -> List<bool>?) {
         self.ensure_writes.set(ensure)
     }
 
@@ -2608,15 +2587,12 @@ impl Decls {
 
     /// Whether a plain read names `d`, or null where the references do not
     /// stand: an absence of a finding is no finding of absence.
-    fn read_found(d: DeclId) -> bool? {
-        if !(self.ensure_read.get())(d) { return null }
-        !self.readers(d).is_empty()
-    }
+    fn read_found(d: DeclId) -> bool? { (self.ensure_read.get())(d) }
 
     /// The finding as it stands for `d`: a declaration the pass never saw is read nowhere.
 
     /// The workspace arms the read-found hook once.
-    fn arm_read_found(ensure: fn(DeclId) -> bool) {
+    fn arm_read_found(ensure: fn(DeclId) -> bool?) {
         self.ensure_read.set(ensure)
     }
 

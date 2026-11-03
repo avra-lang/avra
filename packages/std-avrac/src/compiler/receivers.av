@@ -24,12 +24,10 @@ use core.{
     SeatMark,
     mut_mark,
     same_decl,
-    scc_walk,
-    scc_fixpoint,
 }
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
 use @std.meta.{bracket}
-use @std.relation.{query}
+use @std.relation.{query, fixpoint, codec}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
 
@@ -41,105 +39,60 @@ type Summary = { own: List<bool>, edges: List<Flow> }
 /// A place rooted in seat `from` fills seat `to` of `callee`.
 type Flow = { from: int, callee: DeclId, to: int }
 
+/// A fn's written seats, one bit per seat in seat order: the inferred ones, never the declared.
+@codec
+export type Written = { seats: List<bool> }
+
+fn unwritten() -> Written { Written { seats: [] } }
+
+/// Two states of one fn's bits as one: a seat is written when either says so.
+fn joined_written(a: Written, b: Written) -> Written {
+    let n = if a.seats.length > b.seats.length { a.seats.length } else { b.seats.length }
+    Written { seats: [bit_at(a.seats, i) || bit_at(b.seats, i) for i in 0..n] }
+}
+
+/// Which seats of a fn its body writes through, solved with every fn it hands a seat to: a
+/// call cycle is one group, joined from nothing until no member grows. Declared bits (`mut fn`,
+/// a `mut` seat, a trait's word) are recorded at declare; this is the INFERRED ones.
+@query
+@fixpoint(unwritten, joined_written)
+export fn seats_written_of(ws: Workspace, d: DeclId) -> Written { ws.written_step(d) }
+
 impl Workspace {
-    /// One declaration's written seats, settled with its strongly-connected set: the cell a
-    /// reader of the fn's write bit stands on, so a fn whose bits did not move leaves its
-    /// readers standing however the rest of the program moved. Declared bits (`mut fn`, a
-    /// `mut` seat, a trait's word) are recorded at declare; this adds the INFERRED ones.
+    /// One declaration's written seats, asked: nothing where the pass cannot run. A WHOLE-PROGRAM
+    /// PASS MUST NOT RUN INSIDE A RESOLVE: a lifted call runs inside one, and every sig it asks
+    /// of the file in flight would be computed from a smaller view and kept.
     fn writes_of(d: DeclId) -> int {
-        // A WHOLE-PROGRAM WALK MUST NOT RUN INSIDE A RESOLVE: a lifted call runs inside
-        // one, and every sig this walk asks of the file in flight would be computed from a
-        // smaller view and kept. The declared bits answer until the resolve closes.
-        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.Writes, d.index)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        if !self.writes_member(d) { return self.writes_held(d, k) }
-        if self.walking.get() { return 0 }
-        self.walking.set(true)
-        let walk = self.frame_in(self.walk_family)
-        self.db.begin(walk)
-        scc_walk(
-            d,
-            (m: DeclId) -> self.writes_callees(m),
-            (m: DeclId) -> !(self.db.ask(key(Family.Writes, m.index)) is .Compute),
-            (members: List<DeclId>) -> self.settle_writes(members),
-        )
-        self.db.settle(walk, 0)
-        self.walking.set(false)
-        0
+        if self.db.family_active(Family.Resolved.ordinal) || !self.writes_member(d) { return 0 }
+        fp(18, [fp_list([if b { 1 } else { 0 } for b in seats_written_of(self, d).seats])])
     }
 
-    /// A declaration the walk surveys: a seated fn whose body this compile holds. A held
-    /// fn's bits were carried in the interface (`record_line`) and are read as recorded.
+    /// A declaration the pass solves: a seated fn whose body this compile holds. A held fn's
+    /// bits were carried in the interface (`record_line`) and are read as recorded.
     fn writes_member(d: DeclId) -> bool {
         let x = self.decls.decl(d)
         seated(x) && !self.is_held(x.file)
     }
 
-    /// The fns a member calls whose bits the walk settles before its own.
-    fn writes_callees(d: DeclId) -> List<DeclId> {
-        once_each([f.callee for f in write_summary(self, d).edges if self.writes_member(f.callee)])
+    /// The seats a declaration writes as the program answers them: the solved ones for a
+    /// member, the recorded ones for the rest.
+    fn written_seats_of(d: DeclId) -> List<bool> {
+        if self.writes_member(d) { seats_written_of(self, d).seats } else { self.decls.written_bits(d).map(it == 1) }
     }
 
-    /// A held declaration's recorded bits, as the cell a reader stands on.
-    fn writes_held(d: DeclId, k: Key) -> int {
-        self.db.begin(k)
-        self.db.settle(k, self.writes_word(d))
-        0
-    }
-
-    /// A fn's written seats as the word its cell settles on.
-    fn writes_word(d: DeclId) -> int { fp(18, [fp_list(self.decls.written_bits(d))]) }
-
-    /// One set's least fixpoint, recorded and settled: every member's cell stands on the
-    /// summaries of the set and on the settled bits of what the set calls from outside.
-    fn settle_writes(members: List<DeclId>) {
-        let sums = [write_summary(self, m) for m in members]
-        let states = scc_fixpoint(
-            members,
-            (m: DeclId) -> filled(self.decls.seat_count(m), false),
-            (m: DeclId, read: fn(DeclId) -> List<bool>) -> self
-                .seats_written(m, sums[members.index_of(m)], read),
-            same_bits,
-            (c: DeclId) -> self.decls.written_bits(c).map(it == 1),
-        )
-        let outside = once_each(
-            [f.callee for s in sums for f in s.edges if self.writes_member(f.callee) && !members.any(same_decl(it, f.callee))],
-        )
-        for i, m in members {
-            self.decls.reset_written(m)
-            for j, w in states[i] { if w { self.decls.record_seat_written(m, j) } }
-            let k = key(Family.Writes, m.index)
-            self.db.begin(k)
-            for x in members { touch(write_summary(self, x)) }
-            for c in outside { touch(self.writes_of(c)) }
-            self.db.settle(k, self.writes_word(m))
+    /// A member's seats after one step: written by its own body, or handed to a seat another fn
+    /// writes.
+    fn written_step(d: DeclId) -> Written {
+        let s = write_summary(self, d)
+        Written {
+            seats: [bit_at(s.own, i) || s.edges.any((f: Flow) -> f.from == i && self.flows_into(f)) for i in 0..self.decls.seat_count(d)],
         }
     }
 
-    /// A member's seats after one step: written already, written by its own body, or handed
-    /// to a seat another fn writes.
-    fn seats_written(d: DeclId, s: Summary, read: fn(DeclId) -> List<bool>) -> List<bool> {
-        let now = read(d)
-        [now[i] ||
-            bit_at(s.own, i) ||
-            s.edges.any((f: Flow) -> f.from == i && self.flows_into(f, read)) for i in 0..now.length]
-    }
-
     /// Whether the seat a flow fills is written: the receiver by its declared word too.
-    fn flows_into(f: Flow, read: fn(DeclId) -> List<bool>) -> bool {
-        f.to == 0 && self.decls.declares_writing(f.callee) || bit_at(read(f.callee), f.to)
-    }
-
-    /// The scratch frame a walk's own reads land in, minted once into `family`: a read made
-    /// while finding the sets belongs to no member, and never to whoever asked.
-    fn frame_in(family: Cell<int>) -> Key {
-        let known = family.get()
-        if known >= 0 { return Key { family: known, arg: 0 } }
-        let minted = self.db.kernel.family()
-        self.db.kernel.set_verify(minted, (_arg: int) -> 0)
-        family.set(minted)
-        Key { family: minted, arg: 0 }
+    fn flows_into(f: Flow) -> bool {
+        f.to == 0 && self.decls.declares_writing(f.callee) ||
+            bit_at(self.written_seats_of(f.callee), f.to)
     }
 }
 
@@ -153,8 +106,6 @@ fn write_summary(ws: Workspace, d: DeclId) -> Summary {
 
 /// Each declaration once, in first-seen order.
 fn once_each(ds: List<DeclId>) -> List<DeclId> { [d for i, d in ds if !(0..i).any((j) -> same_decl(ds[j], d))] }
-
-fn same_bits(a: List<bool>, b: List<bool>) -> bool { a.length == b.length && [i for i, x in a if x != b[i]].is_empty() }
 
 /// Whether seat `i` of a bit row is set; a seat past the row is not.
 fn bit_at(bits: List<bool>, i: int) -> bool { i < bits.length && bits[i] }
@@ -395,6 +346,17 @@ impl Survey {
 }
 
 impl Workspace {
+    /// The scratch frame a walk's own reads land in, minted once into `family`: a read made
+    /// while finding the sets belongs to no member, and never to whoever asked.
+    fn frame_in(family: Cell<int>) -> Key {
+        let known = family.get()
+        if known >= 0 { return Key { family: known, arg: 0 } }
+        let minted = self.db.kernel.family()
+        self.db.kernel.set_verify(minted, (_arg: int) -> 0)
+        family.set(minted)
+        Key { family: minted, arg: 0 }
+    }
+
     /// A method's receiver type: its impl's target's instance type, or
     /// the record that declares it —
     /// null for a free fn, a trait's sig, and a method whose impl was
@@ -415,12 +377,12 @@ impl Workspace {
 impl Workspace {
     /// A WITNESS for why seat `i` of `d` is written — one path through
     /// the fixpoint's own edges, from the asked seat to the fn whose
-    /// declaration or body writes it directly. `settle_writes` proves
+    /// declaration or body writes it directly. `seats_written_of` proves
     /// the boolean; this walks it back to its cause — `avra docs
     /// writes` prints the same names, in the same order, as fn names
     /// joined by their calls. `self.summary(d)` is recomputed here
     /// rather than read from a stored table: the pass keeps only the
-    /// fixpoint's OUTCOME (`seat_written_so_far`), never the per-fn
+    /// fixpoint's OUTCOME (`seats_written_of`), never the per-fn
     /// edges it settled from, so a witness asks for the evidence
     /// again — pure and cheap, one fn at a time, never the
     /// whole-program pass. Null when the seat is not written, or no
@@ -428,18 +390,19 @@ impl Workspace {
     /// is written only through another member of it).
     fn write_chain(d: DeclId, i: int, seen: List<DeclId>) -> List<string>? {
         let decls = self.decls
-        if !decls.seat_writes_so_far(d, i) { return null }
+        if !self.seat_writes(d, i) { return null }
         let hop = decls.decl(d).name
         let s = self.summary(d)
         if i == 0 && decls.declares_writing(d) || s.own[i] { return [hop] }
         if seen.any(same_decl(it, d)) { return null }
-        let edge? = s
-            .edges
-            .find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else {
-            return null
-        }
+        let edge? = s.edges.find((f: Flow) -> f.from == i && self.seat_writes(f.callee, f.to)) else { return null }
         let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }
         [hop].concat(rest)
+    }
+
+    /// Whether seat `i` is written, declared or found.
+    fn seat_writes(d: DeclId, i: int) -> bool {
+        i == 0 && self.decls.declares_writing(d) || bit_at(self.written_seats_of(d), i)
     }
 }
 
