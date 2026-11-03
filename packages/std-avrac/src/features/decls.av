@@ -52,6 +52,7 @@ use core.{
     GrammarSpec,
     Annotation,
     At,
+    decl_window,
 }
 use core.{
     EmbedKind,
@@ -63,12 +64,11 @@ use core.{
     wreck,
     Mark,
     CollectKind,
-    db_verified,
     quoted_text,
 }
 use @std.relation.db.{Db, Durable, durable_db, transient}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
-use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
+use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -722,9 +722,9 @@ export type Decls = {
     name_buckets: Cell<List<int>>,
     /// The name each name bucket files, dense by bucket — its `Named` cell's label.
     cell_names: Cell<List<string>>,
-    /// Each declaration's and type's durable fold, dense by index; -1 until asked.
-    decl_fps: Cell<List<int>>,
-    type_fps: Cell<List<int>>,
+    /// Each declaration's and type's durable name, dense by index; empty until asked.
+    decl_names: Cell<List<string>>,
+    type_names: Cell<List<string>>,
     rows_state: Cell<List<int>>,
     /// The revision each armed relation cell last moved at, by family.
 
@@ -1021,8 +1021,8 @@ export fn new_decls_under(durable: Durable) -> Decls {
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
-        decl_fps: list_cell(),
-        type_fps: list_cell(),
+        decl_names: list_cell(),
+        type_names: list_cell(),
         rows_state: list_cell(),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
@@ -1046,7 +1046,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         reentering: new_table(),
         wire_index: map_cell(),
         faces: Cell.new(no_faces),
-        doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
+        doc_facts: Cell.new(side_table("doc_facts", decl_window(0), 0, DocFact { doc: null, annotations: [] })),
         doc_facts_side: side_rows(),
         held_values: map_cell(),
         held_reaches: map_cell(),
@@ -1340,34 +1340,26 @@ impl Decls {
         self.decl_row_rows.get().members(b)
     }
 
-    /// Arena ids as a fold reaches them: by the durable name of what they index.
-    fn ids() -> Ids {
+    /// A declaration's durable name. Its wire counts same-named siblings, which are all minted
+    /// only once the file's rows settle, so a name asked earlier is spelled afresh, never remembered.
+    fn decl_spelled(d: DeclId) -> string {
         let ds = self
-        Ids {
-            decl: (i: int) -> if i < 0 { i } else { ds.decl_door(DeclId { index: i }) },
-            ty: (i: int) -> if i < 0 { i } else { ds.durable(ds.type_fps, i, () -> fp_str(ds.type_wire(TypeId { index: i }))) },
-            file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
-            expr: (i: int) -> i,
-            stmt: (i: int) -> i,
-            place: (i: int) -> i,
-        }
-    }
-
-    /// A declaration's durable fold. Its wire counts same-named siblings, which are all minted
-    /// only once the file's rows settle, so a fold made earlier is never remembered.
-    fn decl_door(d: DeclId) -> int {
-        let ds = self
-        let make = () -> fp_str(ds.decl_wire(d))
-        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_fps, d.index, make) }
-        if db_verified() { wreck("a declaration's durable name was asked before its file's rows settled") }
+        let make = () -> ds.decl_wire(d)
+        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_names, d.index, make) }
         make()
     }
 
-    /// `memo`'s fold at `at`, made once.
-    fn durable(memo: Cell<List<int>>, at: int, make: fn() -> int) -> int {
-        while memo.get().length <= at { memo.push(-1) }
+    /// A type's durable name.
+    fn type_spelled(t: TypeId) -> string {
+        let ds = self
+        self.durable(self.type_names, t.index, () -> ds.type_wire(t))
+    }
+
+    /// `memo`'s name at `at`, made once.
+    fn durable(memo: Cell<List<string>>, at: int, make: fn() -> string) -> string {
+        while memo.get().length <= at { memo.push("") }
         let held = memo.get()[at]
-        if held >= 0 { return held }
+        if held != "" { return held }
         let made = make()
         memo.set_at(at, made)
         made
