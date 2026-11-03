@@ -622,6 +622,7 @@ class Cascade:
         for kind, x, y, p in self.chosen:
             self.fill(kind, x, y, p)
         self.settle_known_names()
+        self.settle_identities()
 
     # Entities: encoder spans, LLM picks the antecedent for partial names.
 
@@ -1041,7 +1042,7 @@ class Cascade:
         found = next((r for r in self.spans.get(f"record:{model}", []) if self.within(r, a, b)), {})
         fields, missing = [], []
         for p in m["properties"]:
-            value = self.value_of(model, p, found, ctx, a, b)
+            value = self.value_of(model, p, found, ctx, a, b, fields)
             if value is None:
                 if required(p) and (self.plan.quantity(m, p) or not self.plan.embeddable(m, p)):
                     missing.append(p["name"])
@@ -1072,6 +1073,74 @@ class Cascade:
             f.update(q)
         self.records.append({"local_id": self.mint(), "model": model, "fields": fields, "identities": [], "resolution": {"kind": "new"}, "_score": chosen})
 
+    def identity_paths(self, model):
+        """The property paths this model declares as its identities, single-property ones only."""
+        semantics = (self.plan.models.get(model) or {}).get("semantics") or {}
+        return [k["path"] for k in semantics.get("identities") or [] if len(k.get("path") or []) == 1]
+
+    def settle_identities(self):
+        """A declared identity a record lacks, WRITTEN in the sentence that grounds it, is that
+        identity: a document states a code beside the name it belongs to. The sentence's own
+        mentions supply it — minus whatever another KIND of record claims, since one span
+        states one thing — and a value the graph already holds for this kind wins over them.
+        Only an unambiguous candidate fills; anything else leaves the record alone."""
+        claimed = {}
+        for rec in self.records:
+            for f in rec.get("fields") or []:
+                if isinstance(f.get("value"), str):
+                    claimed.setdefault(f["value"], set()).add(rec.get("model"))
+        known = {}
+        for candidate in self.request.get("candidates") or []:
+            if isinstance(candidate.get("property"), str) and isinstance(candidate.get("value"), str):
+                known.setdefault((candidate.get("kind"), candidate["property"]), set()).add(candidate["value"])
+        for rec in self.records:
+            for path in self.identity_paths(rec.get("model")):
+                prop = path[0]
+                # a value another KIND of record claims states that record, not this one's
+                # identity — the encoder reads an email as a code exactly as easily
+                for f in list(rec.get("fields") or []):
+                    if f.get("property") == prop and isinstance(f.get("value"), str):
+                        others = claimed.get(f["value"], set()) - {rec.get("model")}
+                        # only a claim that is NOT itself a declared identity settles the
+                        # question; two declared identities over one value is an ambiguity no
+                        # reading of the text resolves, and dropping either damages a record
+                        if any(paths for kind in others if (paths := self.identity_paths(kind))):
+                            continue
+                        if others:
+                            log(f"identity {rec.get('model')}.{prop}: {f['value']!r} states a {sorted(others)[0]}")
+                            rec["fields"].remove(f)
+                if any(f.get("property") == prop for f in rec.get("fields") or []):
+                    continue
+                a, b = self.grounded_range(rec)
+                if a is None:
+                    continue
+                said = self.t.s[a:b]
+                held = [v for v in known.get((rec.get("model"), prop), ()) if len(v) > 1 and v in said]
+                if len(held) != 1:
+                    own = {(f.get("evidence") or [{}])[0].get("selector", [{}])[0].get("exact") for f in rec.get("fields") or []}
+                    held = [self.t.s[m["start"]:m["end"]] for xs in self.spans.get("entities", {}).values()
+                            for m in xs if a <= m["start"] and m["end"] <= b
+                            and self.t.s[m["start"]:m["end"]] not in own
+                            and self.t.s[m["start"]:m["end"]] not in claimed]
+                if len(held) == 1:
+                    log(f"identity {rec.get('model')}.{prop} is {held[0]!r}")
+                    rec["fields"].append(self.field(prop, held[0], [(a, b)]))
+                    rec["identities"] = []
+                    self.identities(rec)
+
+    def grounded_range(self, rec):
+        """The span of the sentence a record is grounded in, from its own evidence."""
+        spans = []
+        for f in rec.get("fields") or []:
+            for e in f.get("evidence") or []:
+                for sel in e.get("selector") or []:
+                    if "start" in sel and "end" in sel:
+                        spans.append((sel["start"], sel["end"]))
+        if not spans:
+            return None, None
+        start = min(x for x, _ in spans)
+        return next(((x, y) for _, x, y, *_ in getattr(self, "chosen", []) if x <= start < y), (None, None))
+
     def grounds(self, model, field):
         """Whether a field states something the sentence says: a text, a number,
         a time, a quantity or a declared value. A bare reference only links
@@ -1090,7 +1159,7 @@ class Cascade:
     def shown(self, v):
         return self.name(v) if isinstance(v, str) and any(r["local_id"] == v for r in self.records) else v
 
-    def value_of(self, model, p, found, ctx, a, b):
+    def value_of(self, model, p, found, ctx, a, b, decided=()):
         """One field proposal, or None when the sentence does not state it."""
         kind, name = route(p), p["name"]
         if self.plan.embeddable(self.plan.models[model], p):

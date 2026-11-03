@@ -118,16 +118,19 @@ def known_names(app, schema, params):
     second one. Read from the graph, never from the fixture's answers."""
     out = []
     for model in schema["models"]:
-        label = ((model.get("semantics") or {}).get("label") or [None])[0]
-        if not label:
-            continue
-        answer = app.call({"op": "query",
-                           "cypher": f"MATCH (a:{model['name']}) RETURN a.{label} AS v",
-                           "params": params})
-        for field in (answer or {}).get("fields") or []:
-            value = field.get("value")
-            if isinstance(value, str) and value:
-                out.append({"kind": model["name"], "name": value})
+        semantics = model.get("semantics") or {}
+        props = [((semantics.get("label") or [None])[0], "name")]
+        props += [(k["path"][0], "value") for k in semantics.get("identities") or [] if len(k.get("path") or []) == 1]
+        for prop, channel in props:
+            if not prop:
+                continue
+            answer = app.call({"op": "query",
+                               "cypher": f"MATCH (a:{model['name']}) RETURN a.{prop} AS v",
+                               "params": params})
+            for field in (answer or {}).get("fields") or []:
+                value = field.get("value")
+                if isinstance(value, str) and value:
+                    out.append({"kind": model["name"], channel: value, "property": prop})
     return out
 
 
