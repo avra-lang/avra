@@ -290,16 +290,19 @@ impl Writer {
 }
 
 /// HOW A SAVED NAME SPELLS THE TREE ITS STORE STANDS IN: `home` as a whole path — itself, or
-/// a path under it — is kept as the tree, so a store read from another checkout of the same
-/// tree names the same files. A longer name that only begins like `home` is kept as it is;
-/// so is a path outside it, and everything when `home` is empty.
+/// a path under it — is kept as the tree, and a path beside it (under `home`'s own directory)
+/// as the tree's sibling, so a store read from another checkout of the same tree, or of a
+/// package laid beside the same dependencies, names the same files. A longer name that only
+/// begins like `home` is kept as it is; so is a path further out, and everything when `home`
+/// is empty.
 const TREE_MARK: string = "{tree}"
 
 /// `text` with every whole `home` spelled as the tree: a path under it in one pass, then the
 /// rare `home` that ends a path where it stands.
 export fn saved_in(home: string, text: string) -> string {
-    if home.is_empty() || !text.contains(home) { return text }
-    let under = text.replace("${home}/", "${TREE_MARK}/")
+    let beside = beside_of(home)
+    if home.is_empty() || !text.contains(beside) { return text }
+    let under = text.replace("${home}/", "${TREE_MARK}/").replace(beside, "${TREE_MARK}/../")
     if !under.contains(home) { return under }
     mut parts: List<string> = []
     mut rest = under
@@ -331,7 +334,15 @@ fn ends_a_path(after: string) -> bool {
 /// `text` with the tree spelled as `home`.
 export fn unsaved_in(home: string, text: string) -> string {
     if home.is_empty() || !text.contains(TREE_MARK) { return text }
-    text.replace(TREE_MARK, home)
+    text.replace("${TREE_MARK}/../", beside_of(home)).replace(TREE_MARK, home)
+}
+
+/// The directory `home` stands in, ending in its slash — never the filesystem's root, so a
+/// tree at the top of the disk has nothing beside it.
+fn beside_of(home: string) -> string {
+    let parts = home.split("/")
+    if parts.length < 3 { return "${home}/" }
+    "${parts.take(parts.length - 1).join("/")}/"
 }
 
 /// A text argument spelled for a call's key: itself with `%` and a tab escaped, so a tab joins
