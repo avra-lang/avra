@@ -108,7 +108,7 @@ use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, InputName, memory_host}
 use compiler.store.{Reading}
-use compiler.store.{Store, Keeping, pack_released}
+use compiler.store.{Store, Keeping, pack_released, keys_spelled_from}
 use compiler.lower.{Unit, FieldPlan, CodeFacts}
 use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
@@ -1040,6 +1040,13 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
     built(host, dir, dir, lang, clock, false, true)
 }
 
+/// The checkout a workspace at `root` stands in, every key of the process spelled from it.
+fn spelling_tree(root: string, host: Host) -> string {
+    let tree = tree_root_of(root, host.exists)
+    keys_spelled_from(tree)
+    tree
+}
+
 /// The declaration table with the language's own declarations in it, its reads
 /// recording into `kernel`.
 fn language_decls(lang: Language, kernel: Kernel, answers: Cell<Store?>, tree: string) -> Decls {
@@ -1103,7 +1110,7 @@ fn built(
         root: root,
         lang: lang,
         db: new_db(kernel),
-        decls: language_decls(lang, kernel, attached, tree_root_of(root, host.exists)),
+        decls: language_decls(lang, kernel, attached, spelling_tree(root, host)),
         store: attached,
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
