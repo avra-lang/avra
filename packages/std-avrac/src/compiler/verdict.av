@@ -342,8 +342,8 @@ impl Workspace {
         self.keep_closure(named)
         let _ = store
             .keep_reading(
-                Stored.History,
-                store.slot_to_keep(Stored.History, self.verdict_key(named)),
+                Stored.Unit,
+                store.slot_to_keep(Stored.Unit, self.verdict_key(named)),
                 verdict_wire(said),
                 self.readings(self.verdict_reads(named)),
             )
@@ -356,6 +356,7 @@ impl Workspace {
         let row? = self
             .standing_row(
                 store,
+                Stored.Unit,
                 key,
                 (r: Reading, moved: Cell<List<string>>) -> self.verdict_read_stands(r, moved),
             ) else {
@@ -364,37 +365,47 @@ impl Workspace {
         let said? = verdict_of_wire(row.bytes) else { return null }
         if row.moved.is_empty() { return said }
         let again? = self.said_again(store, said, row.moved) else { return null }
-        self.kept_again(store, row.key, verdict_wire(again))
+        self.kept_again(store, Stored.Unit, row.key, verdict_wire(again))
         again
     }
 
     /// The newest of `key`'s kept answers that stands, in its slot, with the files whose text
     /// moved and kept their shape; the slot is made the newest.
-    fn standing_row(store: Store, key: string, stands: fn(Reading, Cell<List<string>>) -> bool) -> Standing? {
+    fn standing_row(
+        store: Store,
+        family: Stored,
+        key: string,
+        stands: fn(Reading, Cell<List<string>>) -> bool,
+    ) -> Standing? {
         let found? = store
-            .slots(Stored.History, key)
-            .find((slot) -> self.slot_stands(store, slot, stands)) else {
+            .slots(family, key)
+            .find((slot) -> self.slot_stands(store, family, slot, stands)) else {
             return null
         }
         let moved: Cell<List<string>> = list_cell()
-        let bytes? = store.get_standing(Stored.History, found, (r: Reading) -> stands(r, moved)) else { return null }
-        store.slot_used(Stored.History, key, found)
+        let bytes? = store.get_standing(family, found, (r: Reading) -> stands(r, moved)) else { return null }
+        store.slot_used(family, key, found)
         Standing { key: found, bytes: bytes, moved: moved.get() }
     }
 
     /// Whether the answer in `slot` stands, its moved files counted apart from any other slot's.
-    fn slot_stands(store: Store, slot: string, stands: fn(Reading, Cell<List<string>>) -> bool) -> bool {
+    fn slot_stands(
+        store: Store,
+        family: Stored,
+        slot: string,
+        stands: fn(Reading, Cell<List<string>>) -> bool,
+    ) -> bool {
         let moved: Cell<List<string>> = list_cell()
-        store.holds(Stored.History, slot, (r: Reading) -> stands(r, moved))
+        store.holds(family, slot, (r: Reading) -> stands(r, moved))
     }
 
     /// A standing answer kept again with what it says now and every read at its digest now, so
     /// the next ask needs no lex.
-    fn kept_again(store: Store, key: string, bytes: string) {
-        let reads = [r! for r in [read_spelled(l) for l in store.reads_of(Stored.History, key) ?? []] if r != null]
+    fn kept_again(store: Store, family: Stored, key: string, bytes: string) {
+        let reads = [r! for r in [read_spelled(l) for l in store.reads_of(family, key) ?? []] if r != null]
         let _ = store
             .keep_reading(
-                Stored.History,
+                family,
                 key,
                 bytes,
                 [Reading { name: r.name, digest: self.named_now(r.name) ?? r.digest } for r in reads],
