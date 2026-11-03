@@ -303,7 +303,7 @@ fn db_code(f: Fn) -> Code {
 /// Whether an argument can name a call: a stable encoding, a dense id the process spells, or —
 /// through a context, whose scope spells ids — a value holding dense ids.
 fn asked_by(k: Kind, ctx: bool) -> bool {
-    carried(k, named_shape) || dense_field(k) != null || ctx && carried(k, in_process)
+    carried(k, coded_shape) || dense_field(k) != null || ctx && carried(k, in_process)
 }
 
 /// A dense id's one field, none for any other kind.
@@ -323,7 +323,7 @@ fn numbered(p: Param) -> Code? {
 
 /// A shape as the process hashes it: a dense id is its number.
 fn in_process(n: string) -> NamedShape {
-    let shape = named_shape(n)
+    let shape = coded_shape(n)
     match shape { .Dense(_) -> NamedShape.Tagged([]), rest -> shape }
 }
 
@@ -411,7 +411,7 @@ fn saved(f: Fn) -> bool {
         f
             .params
             .slice(1, f.params.length)
-            .all((p: Param) -> carried(p.kind, if ctx { in_process } else { named_shape })) &&
+            .all((p: Param) -> carried(p.kind, if ctx { in_process } else { coded_shape })) &&
         decodable_with(f.answers, ctx)
 }
 
@@ -441,8 +441,8 @@ export fn seat_problems(
 ) -> List<Diagnostic> {
     let first? = f.params.first() else { return [voice_no_db(f)] }
     if !is_db(first.kind) { return [voice_no_db(f)] }
-    let args = [voice_arg(f, p) for p in f.params.slice(1, f.params.length) if !carried(p.kind, named_shape)]
-    let answer = if carried(f.answers, named_shape) { [] } else { [voice_answer(f)] }
+    let args = [voice_arg(f, p) for p in f.params.slice(1, f.params.length) if !carried(p.kind, coded_shape)]
+    let answer = if carried(f.answers, coded_shape) { [] } else { [voice_answer(f)] }
     args.concat(answer)
 }
 
@@ -625,8 +625,13 @@ fn seat_written(p: Param, owner: Owner) -> Code {
 
 /// The dense arg a call is asked under: a lone numbered seat's own number, else its spelled
 /// arguments.
+/// A scoped call's spelling reads what its ids are named by — a call's identity, never what its
+/// asker stands on — so no frame hears it.
 fn arg_code(f: Fn) -> Code {
-    let n? = lone_number(f) else { return quote { held.arg(${args_spelled(f)}) } }
+    let n? = lone_number(f) else {
+        if scoped(f) { return quote { held.arg(${db_code(f)}.spelled_unheard(() -> ${args_spelled(f)})) } }
+        return quote { held.arg(${args_spelled(f)}) }
+    }
     quote { held.int_arg(${n}) }
 }
 
