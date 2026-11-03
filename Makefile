@@ -22,6 +22,9 @@
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
+# An archive is its members alone, never the hour it was made: a check reads it as an
+# input, so two checkouts' archives must be the same bytes (macOS `ar` stamps the clock).
+export ZERO_AR_DATE = 1
 # THE C++ RUNTIME AND THE SYSTEM LIBRARY DIRECTORY the static LLVM link names
 # (packages/std-avrac/avra.toml), per platform.
 ifeq ($(shell uname -s),Darwin)
