@@ -368,6 +368,22 @@ impl Db {
     /// The Db's kernel, made on the first reach when it has none: every
     /// family registered here so far is registered in it then. A program
     /// that traces a plain Db asks for it: `db.engine().trace_on()`.
+    /// What the query at `edge` stood on, named with no frame hearing what naming reads: a
+    /// leaf's name is the record's, never a read of the query that asked.
+    fn leaves_unheard(edge: int) -> List<Leaf>? {
+        let none: List<Leaf>? = null
+        let out = Cell.new(none)
+        self.engine().unheard(() -> out.set(self.leaves_noted(edge)))
+        out.get()
+    }
+
+    /// `spell`'s text, made with no frame hearing what it reads.
+    fn spelled_unheard(spell: fn() -> string) -> string {
+        let out: Cell<string> = Cell.new("")
+        self.engine().unheard(() -> out.set(spell()))
+        out.get()
+    }
+
     fn engine() -> Kernel {
         let held? = self.kernel.get() else {
             let made = new_kernel()
@@ -1420,7 +1436,7 @@ impl AnswersUnder<V> {
         record: KeptRecord<V>,
     ) -> V {
         let done = self.run(db, arg, body, again, digest)
-        let leaves = db.leaves_noted(edge_of(self.memo.query_key(arg)))
+        let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
         if !done.wrote && leaves != null {
             let places = db.placed_leaves(leaves!)
             let keep = db.durable.keep

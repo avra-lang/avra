@@ -357,23 +357,17 @@ fn carried_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) 
         .Int or .Bool or .Str -> true,
         .Opt(inner) -> carried_under(inner, shapes, seen),
         .List(elem) -> carried_under(elem, shapes, seen),
-        .Named(n, _) -> wears_codec(n) ||
-            match shapes(n) {
-                .Tagged(_) -> true,
-                .Payload(vs) -> vs
-                    .all(
-                        (v: Variant) -> v
-                            .fields
-                            .all((f: Field) -> carried_under(f.kind, shapes, seen)),
-                    ),
-                .Record(fs) or .Placed(fs) -> if seen.contains(n) {
-                    true
-                } else {
-                    columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n])))
-                },
-                .Over(shape) -> carried_under(shape, shapes, seen),
-                .Dense(_) or .Plain -> false,
+        .Named(n, _) -> match shapes(n) {
+            .Tagged(_) -> true,
+            .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> carried_under(f.kind, shapes, seen))),
+            .Record(fs) or .Placed(fs) -> if seen.contains(n) {
+                true
+            } else {
+                columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n])))
             },
+            .Over(shape) -> carried_under(shape, shapes, seen),
+            .Dense(_) or .Plain -> false,
+        },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
@@ -572,6 +566,13 @@ export enum NamedShape {
 export fn named_shape(n: string) -> NamedShape {
     let ty? = type_named(n) else { return NamedShape.Plain }
     shape_of(ty)
+}
+
+/// A name as a query's seat or answer is carried: a type that holds its own codec crosses by it,
+/// whatever its fields; any other by its shape.
+export fn coded_shape(n: string) -> NamedShape {
+    if wears_codec(n) { return NamedShape.Tagged([]) }
+    named_shape(n)
 }
 
 /// A declaration's own shape — the record, the enum or the dense id it is.

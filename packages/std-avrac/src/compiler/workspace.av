@@ -115,7 +115,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query, recursive, codec, cycled_by}
+use @std.relation.{query, recursive, codec, cycled_by, scoped_by}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
@@ -976,13 +976,16 @@ fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks
 /// A file's rows standing, one constant: a reader that reads them through their buckets is
 /// ordered after the admission, and nothing it reads moves it.
 @query
+@scoped_by(in_arena_file)
 fn admitted(ws: Workspace, f: FileId) -> int {
     touch(ws.items(f))
     0
 }
 
-/// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi`.
+/// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi` — where this process's
+/// arena put it, which names nothing past the process.
 @query
+@scoped_by(in_arena)
 fn placement_of(ws: Workspace, d: DeclId) -> int {
     let x = ws.decls.decl(d)
     fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])

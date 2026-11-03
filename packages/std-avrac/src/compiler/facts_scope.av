@@ -39,8 +39,9 @@ fn counted_from(text: string, base: int) -> int? {
     n + base
 }
 
-/// A workspace and the two window starts a body's ids are offset from.
-type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int }
+/// A workspace and the two window starts a body's ids are offset from. A scope over no window
+/// names no expression or statement: their arena places mean nothing past the process.
+type FactsScope = { ws: Workspace, expr_base: int, stmt_base: int, windowed: bool }
 
 impl Scope for FactsScope {
     fn spelled(kind: string, index: int) -> string {
@@ -52,8 +53,8 @@ impl Scope for FactsScope {
             .Decl -> tree_saved(self.ws.decl_ref(DeclId { index: index })),
             .Type -> tree_saved(self.ws.type_ref(TypeId { index: index })),
             .File -> tree_saved(self.ws.file_ref(FileId { index: index })),
-            .Expr -> "${index - self.expr_base}",
-            .Stmt -> "${index - self.stmt_base}",
+            .Expr -> if self.windowed { "${index - self.expr_base}" } else { "" },
+            .Stmt -> if self.windowed { "${index - self.stmt_base}" } else { "" },
             .Module -> "",
         }
     }
@@ -83,16 +84,42 @@ impl Scope for FactsScope {
     }
 }
 
+/// THE SCOPE OF WHAT THE ARENA DID: an admission, a placement — facts of this process's arenas,
+/// which name nothing past it, so a call under it stays in the process.
+type InArena = {}
+
+impl Scope for InArena {
+    fn spelled(kind: string, index: int) -> string { "" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { null }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
+}
+
+/// The scope a declaration's placement is asked under.
+fn in_arena(_ws: Workspace, _d: DeclId) -> dyn Scope { InArena {} }
+
+/// The scope a file's admission is asked under.
+fn in_arena_file(_ws: Workspace, _f: FileId) -> dyn Scope { InArena {} }
+
 impl Workspace {
     /// The scope a body's facts cross under: expressions counted from `lo`, statements from
     /// `stmt_lo` — the declaration's own window, whose negative statement start reads as the
     /// whole file's, exactly as `new_type_facts` reads it. One rule, applied on both sides, is
     /// what makes a written offset and a read one the same offset.
     fn facts_scope(lo: int, stmt_lo: int) -> dyn Scope {
-        FactsScope { ws: self, expr_base: lo, stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo } }
+        FactsScope {
+            ws: self,
+            expr_base: lo,
+            stmt_base: if stmt_lo < 0 { 0 } else { stmt_lo },
+            windowed: true,
+        }
     }
 
-    /// The ONE scope a query over the workspace crosses its ids under: every id by its durable
-    /// name, an expression and a statement from the start of the arenas.
-    fn query_scope() -> dyn Scope { self.facts_scope(0, 0) }
+    /// The ONE scope a query over the workspace crosses its ids under: a declaration, a type and a
+    /// file by its durable name; an expression or a statement names nothing, so a call keyed by
+    /// one stays in the process and an answer holding one never reads back.
+    fn query_scope() -> dyn Scope { FactsScope { ws: self, expr_base: 0, stmt_base: 0, windowed: false } }
 }
