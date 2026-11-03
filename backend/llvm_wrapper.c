@@ -800,27 +800,22 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
 }
 
 // ONE GLOBAL PER DISTINCT TEXT where only its ADDRESS is read. The name is the
-// bytes in hex, so distinct text never collides and identical text is ONE box;
-// the name is stripped from the artifact, so its length costs nothing a program
-// downloads. A `.Octets` BOX is NOT interned — its siblings reference it BY the
-// static's own name, so that name must stand. A text past `INTERN_MAX` bytes
-// stands unshared under a plain name: the linker caps a symbol's length, and a
-// name of twice the text's size is past it for a large embedded file.
-#define INTERN_MAX 1024
+// text's length and a 128-bit digest (two independently seeded FNV-1a folds), so
+// identical text is ONE box and the name's size is fixed whatever the text's — the
+// linker caps a symbol's length. The name is stripped from the artifact. A
+// `.Octets` BOX is NOT interned — its siblings reference it BY the static's own
+// name, so that name must stand.
+static uint64_t fold64(const char* s, size_t n, uint64_t h, uint64_t prime) {
+    for (size_t i = 0; i < n; i++) h = (h ^ (unsigned char)s[i]) * prime;
+    return h;
+}
 
 LLVMValueRef avra_llvm_intern_text(LLVMModuleRef m, const char* s, int64_t len) {
     size_t n = (size_t)(len > 0 ? len : 0);
-    if (n > INTERN_MAX) return avra_llvm_global_text(m, s, len, ".bigstr");
-    char* name = (char*)malloc(6 + n * 2 + 1);
-    if (!name) avra_trap("compiler defect: no room for an interned text name");
-    memcpy(name, ".istr.", 6);
-    static const char hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < n; i++) {
-        unsigned char b = (unsigned char)s[i];
-        name[6 + i * 2] = hex[b >> 4];
-        name[7 + i * 2] = hex[b & 15];
-    }
-    name[6 + n * 2] = 0;
+    char name[6 + 16 + 32 + 1];
+    snprintf(name, sizeof name, ".istr.%016llx%016llx%016llx", (unsigned long long)n,
+             (unsigned long long)fold64(s, n, 0xcbf29ce484222325ULL, 0x100000001b3ULL),
+             (unsigned long long)fold64(s, n, 0x84222325cbf29ce4ULL, 0x1000193a5c3b7ULL));
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMValueRef g = LLVMGetNamedGlobal(m, name);
     LLVMValueRef payload;
@@ -830,7 +825,6 @@ LLVMValueRef avra_llvm_intern_text(LLVMModuleRef m, const char* s, int64_t len) 
     } else {
         payload = avra_llvm_global_text(m, s, len, name);
     }
-    free(name);
     return payload;
 }
 
