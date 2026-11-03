@@ -117,6 +117,9 @@ fn flag(v: bool) -> int {
 /// moves, so the scope spells a span of `file` as it chooses (a token place), absent where
 /// it cannot, and reads one back to its offsets, absent where the text no longer holds it.
 ///
+/// A PLACE'S FILE is spelled by the scope too (`file_spelled`), so a place crosses naming no
+/// checkout.
+///
 /// A LONG TEXT crosses out of line where the scope keeps one: `kept_out` answers the
 /// reference it filed the text under, absent to keep it in the record, and `kept_back` the
 /// text a reference names, absent once it is gone — so a record reading one fails, and its
@@ -133,6 +136,10 @@ export trait Scope {
     fn kept_out(text: string) -> string? { null }
 
     fn kept_back(reference: string) -> string? { null }
+
+    fn file_spelled(file: string) -> string { file }
+
+    fn file_unspelled(text: string) -> string { text }
 }
 
 /// The scope that spells an id by its index, which only the process that wrote it reads back.
@@ -186,7 +193,7 @@ export fn written_place(w: Writer, scope: dyn Scope, l: Loc) {
         return
     }
     w.present(true)
-    w.text(file)
+    w.text(scope.file_spelled(file))
     let at = scope.placed(file, l.lo, l.hi)
     w.present(at != null)
     if at != null { written_list(w, at!, (w: Writer, n: int) -> w.int(n)) }
@@ -555,7 +562,7 @@ export fn place_read(r: Reader, scope: dyn Scope) -> Result<Loc, CodecFault> {
         let lo = r.int()?
         return Loc { file: null, lo: lo, hi: r.int()? }
     }
-    let file = r.text()?
+    let file = scope.file_unspelled(r.text()?)
     if !r.present()? { fail CodecFault.Unresolved }
     let n = r.count()?
     let at = [r.int()? for _k in 0..n]
