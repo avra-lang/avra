@@ -5,8 +5,13 @@
 //! A blob is a cache entry like any row: damaged or missing, it answers ABSENT, the
 //! damaged one is removed, and the next writer puts it back. Each store root that
 //! holds a reference registers itself, so `avra cache gc` knows every live reader.
+//!
+//! IT NEVER OUTGROWS ITS CEILING: a process that put a blob trims the store as it settles,
+//! the least recently read first, to `AVRA_CAS_MAX_MB` (two gigabytes by default). A read
+//! marks its blob's time, so the time a blob carries is when it was last of use.
 use @std.io.{
     env,
+    touch,
     make_dirs,
     write_bytes,
     write_text,
@@ -25,8 +30,8 @@ use core.debug.{qtrace, traced}
 /// A value over this many octets is shared; the rest stay in the store's frames.
 const CAS_CUT: int = 65536
 
-/// What a shared store may hold: `AVRA_CAS_MAX_BYTES`, else four gigabytes.
-const CAS_BYTES_KEPT: int = 4294967296
+/// What a shared store may hold, in megabytes, when `AVRA_CAS_MAX_MB` says nothing.
+const CAS_MB_KEPT: int = 2048
 
 /// A stored value that NAMES a blob, never a value: it opens with a control byte no row
 /// value starts with, and a value that does is spelled as a reference too, so no value
@@ -86,9 +91,13 @@ fn cas_blob_octets(value: Bytes) -> bool {
     if exists(at) { return true }
     match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return false } }
     match write_bytes(at, value) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    blobs_put().set(true)
     if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
     true
 }
+
+/// Whether this process put a blob: only a process that grew the store trims it.
+once fn blobs_put() -> Cell<bool> { Cell.new(false) }
 
 /// The reference a value is stored as when it belongs in the shared store: the blob put
 /// there once, and `store_root` registered as one of its readers. Absent when the value
@@ -148,6 +157,8 @@ export fn cas_value_octets(stored: string) -> Bytes? {
     let raw = match o.span(0, o.size) { .Ok(b) -> b, .Err(_) -> "".bytes() }
     o.close()
     if digest_of_octets(raw) != digest { return damaged(at) }
+    // LICENSED input.store_io: a read marks its blob of use, so a trim lets the least used go
+    let _ = touch(at)
     raw
 }
 
@@ -198,8 +209,7 @@ export fn cas_collect(live: List<string>) -> CasReport {
     let dir? = cas_dir() else { return CasReport { kept: 0, freed: 0, kept_bytes: 0, freed_bytes: 0 } }
     mut named: Map<string, bool> = {}
     for d in live { named.set(d, true) }
-    // RECENCY IS THE WRITE TIME: nothing here sets a file's time. A touch on use is `avra_file_touch`'s (the ladder's proof row, #1052).
-    let all = sorted_by(blobs_in(dir), (a: Blob, b: Blob) -> a.at < b.at)
+    let all = by_use(blobs_in(dir))
     let unnamed = [b for b in all if !named.has(b.digest)]
     let aged = [b for b in all if named.has(b.digest) && past_age(b)]
     mut gone: List<Blob> = unnamed.concat(aged)
@@ -222,8 +232,27 @@ export fn cas_collect(live: List<string>) -> CasReport {
 
 fn cas_limit() -> int {
     // LICENSED input.debug_flag: the shared store's own ceiling, never an input of what is built
-    let raw? = env("AVRA_CAS_MAX_BYTES") else { return CAS_BYTES_KEPT }
-    parse_int(raw) ?? CAS_BYTES_KEPT
+    let mb = parse_int(env("AVRA_CAS_MAX_MB") ?? "") ?? CAS_MB_KEPT
+    mb * 1048576
+}
+
+/// Blobs, the least recently read first.
+fn by_use(bs: List<Blob>) -> List<Blob> { sorted_by(bs, (a: Blob, b: Blob) -> a.at < b.at) }
+
+/// The shared store trimmed to its ceiling as a process that grew it settles: the least recently
+/// read blobs go first, each a miss its next reader recomputes.
+export fn cas_fitted() {
+    if !blobs_put().get() { return }
+    let dir? = cas_dir() else { return }
+    let ceiling = cas_limit()
+    let all = by_use(blobs_in(dir))
+    mut held = all.fold(0, (sum, b) -> sum + b.bytes)
+    for b in all {
+        if held <= ceiling { break }
+        let _ = remove(b.path)
+        held = held - b.bytes
+    }
+    blobs_put().set(false)
 }
 
 /// Whether a blob is past `AVRA_CAS_MAX_AGE_DAYS`, by the file's wall-clock time.
