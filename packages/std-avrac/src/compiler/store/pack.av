@@ -270,14 +270,20 @@ export fn pack_suspects(pack: Pack, moved: List<string>, readers: Map<string, Li
 /// derivation writes them, and a remembered reverse goes stale the moment one does.
 export fn pack_readers(pack: Pack) -> Map<string, List<string>> {
     opened_at(pack, true)
-    mut out: Map<string, List<string>> = {}
+    mut by: Map<string, Cell<List<string>>> = {}
     for k, h in pack.records.get() {
         if h.set >= 0 || withdrawn(pack, k) { continue }
         for line in reads_of(pack, h) {
             let n? = read_name(line) else { continue }
-            out.set(n, (out.get(n) ?? []).concat([k]))
+            let readers? = by.get(n) else {
+                by.set(n, Cell.new([k]))
+                continue
+            }
+            readers.push(k)
         }
     }
+    mut out: Map<string, List<string>> = {}
+    for n, readers in by { out.set(n, readers.get()) }
     out
 }
 
