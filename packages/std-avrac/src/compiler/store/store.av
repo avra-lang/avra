@@ -12,7 +12,8 @@
 //! as ABSENT rather than as half a value. A packed row is present once its commit
 //! marker lands, which is the same law one mechanism over.
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
-use @std.path.{joined_path}
+use @std.path.{joined_path, dir_of}
+use @std.relation.stable.{saved_in, unsaved_in}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined, flatten}
 use core.debug.{qtrace, traced}
@@ -87,7 +88,9 @@ export enum Keeping {
 /// ONE STAMP FOR EVERY ROW: the print of the compiler that wrote it. A store holds what one
 /// compiler answered whole, so no reader stands on one family's rows while another's are a
 /// different compiler's.
-export type Store = { root: string, print: string, keeping: Keeping, pack: Pack }
+/// `tree` is where the paths a row names stand: a row spells each path under it from the tree
+/// (`saved_in`), so the same tree checked out elsewhere names the same rows.
+export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, tree: string }
 
 /// The packs this process has open, one per root and compiler print — so a store
 /// is read from disk once however many workspaces ask for it. A pack lives while a
@@ -143,7 +146,14 @@ export fn store_at(root: string) -> Store { store_with(root, "", Keeping.Disk) }
 /// workspace turns its own identity into a store.
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print and a mode in.
 export fn store_with(root: string, print: string, keeping: Keeping) -> Store {
-    Store { root: root, print: print, keeping: keeping, pack: pack_for(root, print) }
+    keyed_tree().set(dir_of(root))
+    Store {
+        root: root,
+        print: print,
+        keeping: keeping,
+        pack: pack_for(root, print),
+        tree: dir_of(root),
+    }
 }
 
 /// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
@@ -173,10 +183,21 @@ export fn read_spelled(line: string) -> Reading? {
 /// families naming the same parts stay apart.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a family and its parts in, the key out.
 export fn node_key(family: Stored, parts: List<string>) -> string {
-    let key = digest_of(joined([family.name()].concat(parts), "\n"))
+    let key = digest_of(saved_in(keyed_tree().get(), joined([family.name()].concat(parts), "\n")))
     if traced() { key_words().put(key, parts.first() ?? "") }
     key
 }
+
+/// The tree the process's store stands in: a key spells every path under it from the tree, so
+/// the same tree checked out elsewhere names the same rows.
+once fn keyed_tree() -> Cell<string> { Cell.new("") }
+
+/// A hand-written wire's text as a saved row spells it: every path under the process's tree
+/// spelled from it.
+export fn tree_saved(text: string) -> string { saved_in(keyed_tree().get(), text) }
+
+/// A saved wire's text read under the tree the process stands in now.
+export fn tree_unsaved(text: string) -> string { unsaved_in(keyed_tree().get(), text) }
 
 /// Under a trace, the first word of each key's parts — what kind of row the key names.
 once fn key_words() -> Cell<Map<string, string>> { map_cell() }
@@ -211,7 +232,7 @@ impl Store {
     /// write fails, its old edge cannot make the new data look complete.
     fn uncommit(family: Stored, key: string) -> bool {
         if !family.file_family() {
-            pack_forget(self.pack, self.packed(family), key)
+            pack_forget(self.pack, self.packed(family), self.saved(key))
             return true
         }
         let edge = self.edge_path(family, key)
@@ -233,7 +254,7 @@ impl Store {
         if family.file_family() {
             self.on_disk(family, key)
         } else {
-            pack_has(self.pack, self.packed(family), key, inspects(self.keeping))
+            pack_has(self.pack, self.packed(family), self.saved(key), inspects(self.keeping))
         }
     }
 
@@ -250,10 +271,16 @@ impl Store {
         }
     }
 
+    /// A key, a read's name or a text row as the store keeps it: every path spelled from the tree.
+    fn saved(text: string) -> string { saved_in(self.tree, text) }
+
+    /// A kept name read back under the tree the store stands in now.
+    fn unsaved(text: string) -> string { unsaved_in(self.tree, text) }
+
     /// The text a key names, or nothing when the row is not committed or is not text.
     fn get(family: Stored, key: string) -> string? {
         let found? = self.get_octets(family, key) else { return null }
-        found.text()
+        self.unsaved(found.text()?)
     }
 
     /// The octets a key names, or nothing when the row is not committed.
@@ -269,7 +296,7 @@ impl Store {
         if family.file_family() {
             self.read_disk(family, key)
         } else {
-            pack_get_octets(self.pack, self.packed(family), key, inspects(self.keeping))
+            pack_get_octets(self.pack, self.packed(family), self.saved(key), inspects(self.keeping))
         }
     }
 
@@ -281,7 +308,7 @@ impl Store {
 
     /// REMEMBER A TEXT ROW: its octets.
     fn keep(family: Stored, key: string, text: string, read: List<string>) -> bool {
-        self.keep_octets(family, key, text.bytes(), read)
+        self.keep_octets(family, key, self.saved(text).bytes(), read)
     }
 
     /// REMEMBER A ROW AS ITS OCTETS — on disk, or set aside where the store keeps none.
@@ -298,7 +325,13 @@ impl Store {
 
     fn disk_kept(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         if family.file_family() { return self.written(family, key, bytes, read) }
-        pack_put_octets(self.pack, self.packed(family), key, bytes, read)
+        pack_put_octets(
+            self.pack,
+            self.packed(family),
+            self.saved(key),
+            bytes,
+            [self.saved(r) for r in read],
+        )
         true
     }
 
@@ -351,7 +384,7 @@ impl Store {
     /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
     /// name. Ids only — no value is fetched, no row decoded. A row not in the set stands.
     fn suspects(moved: List<string>, readers: Map<string, List<string>>) -> List<string> {
-        pack_suspects(self.pack, moved, readers)
+        pack_suspects(self.pack, [self.saved(m) for m in moved], readers)
     }
 
     /// The rows that read each input: ONE reverse, built once and passed to every `suspects`
@@ -360,7 +393,7 @@ impl Store {
 
     /// THE KEY A ROW IS FILED UNDER, as the pack spells it: the family's name and the stamp it
     /// stands under, then the key — the same spelling `pack_suspects` answers with.
-    fn suspect_key(family: Stored, key: string) -> string { record_key(self.packed(family), key) }
+    fn suspect_key(family: Stored, key: string) -> string { record_key(self.packed(family), self.saved(key)) }
 
     /// What this process has asked of the store so far.
     fn traffic() -> Traffic { pack_traffic(self.pack) }
@@ -379,7 +412,17 @@ impl Store {
         if self.aside_row(family, key) != null {
             return lines_of(self.aside_reads(family, key))
         }
-        if !family.file_family() { return pack_reads(self.pack, self.packed(family), key, inspects(self.keeping)) }
+        if !family.file_family() {
+            let kept? = pack_reads(
+                self.pack,
+                self.packed(family),
+                self.saved(key),
+                inspects(self.keeping),
+            ) else {
+                return null
+            }
+            return [self.unsaved(r) for r in kept]
+        }
         // LICENSED input.store_io: the store's own edge file, read to prove a row's reads
         match read_text(self.edge_path(family, key)) { .Ok(t) -> lines_of(t), .Err(_) -> null }
     }
@@ -414,7 +457,7 @@ impl Store {
     /// ANSWER ONE ROW FROM AN OLDER REVISION — §6.7's time-travel read, over a fresh
     /// index of that body (never this process's live one).
     fn at_revision(rev: int, family: Stored, key: string) -> string? {
-        pack_get_rev(pack_at(self.root, self.print), rev, self.packed(family), key)
+        pack_get_rev(pack_at(self.root, self.print), rev, self.packed(family), self.saved(key))
     }
 
     /// The rows a sealed revision holds, for an `explain` that says what changed.

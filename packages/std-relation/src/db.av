@@ -51,6 +51,9 @@ use stable.{
     written_list,
     read_list,
     stable_hasher,
+    spelled_hash,
+    saved_in,
+    unsaved_in,
 }
 
 extern fn avra_trap(message: string)
@@ -234,13 +237,14 @@ once fn foreign_reads() -> Cell<int> { Cell.new(0) }
 /// durable name and its arguments' stable hash: `answer` reads a kept
 /// record back, `keep` hands one over. What key a record lives under,
 /// and whether it still stands, is the owner's.
-export type Durable = { answer: fn(string, int) -> Bytes?, keep: fn(string, int, Bytes) -> void }
+export type Durable = { answer: fn(string, int) -> Bytes?, keep: fn(string, int, Bytes) -> void, home: fn() -> string }
 
 /// An owner that keeps nothing past the process.
 export fn transient() -> Durable {
     Durable {
         answer: (_query: string, _args: int) -> no_bytes(),
         keep: (_query: string, _args: int, _record: Bytes) -> no_word(),
+        home: () -> "",
     }
 }
 
@@ -647,7 +651,10 @@ impl Db {
 
     /// `fresh` kept as one chunk and placed.
     fn chunk_kept(fresh: List<Leaf>) {
-        let bytes = encoded_with(fresh, (w, v) -> written_list(w, v, write_leaf))
+        let bytes = encoded_with(
+            [self.saved_leaf(l) for l in fresh],
+            (w, v) -> written_list(w, v, write_leaf),
+        )
         let chunk = stable_hasher(0).octets(bytes).finish()
         let keep = self.durable.keep
         keep(LEAF_CHUNK, chunk, bytes)
@@ -669,12 +676,40 @@ impl Db {
         let answer = self.durable.answer
         let bytes? = answer(LEAF_CHUNK, chunk) else { return null }
         let read = match decoded_with(bytes, (r: Reader) -> read_list(r, read_leaf)) {
-            .Ok(ls) -> ls,
+            .Ok(ls) -> [self.unsaved_leaf(l) for l in ls],
             .Err(_) -> { return null },
         }
         self.leaf_chunks.put("${chunk}", read)
         for at, l in read { self.leaf_places.put(l.kept_word(), LeafPlace { chunk: chunk, at: at }) }
         read
+    }
+
+    /// The tree this Db's answers are kept from, spelled where a saved name names a path.
+    fn home() -> string {
+        let home = self.durable.home
+        home()
+    }
+
+    /// A call's spelling as its saved record names it: every path spelled from the tree.
+    fn saved_spelling(spelled: string) -> string { saved_in(self.home(), spelled) }
+
+    /// The key a call's record is kept under: its query and its saved spelling, folded.
+    fn saved_key(query: string, spelled: string) -> int { spelled_hash(query, self.saved_spelling(spelled)) }
+
+    /// A leaf as a saved record names it.
+    fn saved_leaf(l: Leaf) -> Leaf {
+        match l {
+            .Rows(_, _) -> l,
+            .Input(name, spelled, digest) -> Leaf.Input(name, self.saved_spelling(spelled), digest),
+        }
+    }
+
+    /// A saved leaf as this process names it, read under the tree the store stands in now.
+    fn unsaved_leaf(l: Leaf) -> Leaf {
+        match l {
+            .Rows(_, _) -> l,
+            .Input(name, spelled, digest) -> Leaf.Input(name, unsaved_in(self.home(), spelled), digest),
+        }
     }
 
     /// Whether every read still has the digest it was kept at.
@@ -1067,7 +1102,7 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
     CodecFault,
 > {
     let kept = r.text()?
-    if kept != spelled { fail CodecFault.OtherArguments }
+    if kept != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
     let places = read_list(r, read_place)?
     let leaves = [db.leaf_at(p) for p in places]
     if leaves.any(it == null) { fail CodecFault.OtherArguments }
@@ -1371,11 +1406,11 @@ impl AnswersUnder<V> {
             let keep = db.durable.keep
             keep(
                 query,
-                record.args,
+                db.saved_key(query, spelled),
                 encoded_with(
                     done.value,
                     (w, v) -> {
-                        w.text(spelled)
+                        w.text(db.saved_spelling(spelled))
                         written_list(w, places, write_place)
                         record.write(w, v)
                     },
@@ -1394,7 +1429,7 @@ impl AnswersUnder<V> {
     /// back is recomputed, never guessed at.
     fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> Kept<V>? {
         let answer = db.durable.answer
-        let bytes? = answer(query, record.args) else { return null }
+        let bytes? = answer(query, db.saved_key(query, spelled)) else { return null }
         match decoded_with(bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
             .Ok(value) -> value,
             .Err(_) -> null,
@@ -1449,7 +1484,7 @@ export fn code_keyed(name: string, hash: string?) -> string? {
     "${name}#${h}"
 }
 
-export type KeptRecord<V> = { query: string?, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
+export type KeptRecord<V> = { query: string?, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
 
 // ── voices ──
 
