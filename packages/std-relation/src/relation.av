@@ -86,6 +86,8 @@ use stable.{
     Scope,
     dense_read,
     written_dense,
+    written_text,
+    text_read,
     written_place,
     place_read,
     stable_hasher,
@@ -1358,7 +1360,7 @@ fn read_value(k: Kind, owner: Owner) -> Code {
     match k {
         .Int -> quote { rd.int()? },
         .Bool -> quote { rd.bool()? },
-        .Str -> quote { rd.text()? },
+        .Str -> if owner.scoped { quote { text_read(rd, scope)? } } else { quote { rd.text()? } },
         .Opt(inner) -> quote { read_opt(rd, ${read_each(inner, owner)})? },
         .List(elem) -> quote { read_list(rd, ${read_each(elem, owner)})? },
         .Map(_, value) -> quote { read_map(rd, ${read_each(value, owner)})? },
@@ -1417,7 +1419,7 @@ fn read_each(k: Kind, owner: Owner) -> Code {
     match k {
         .Int -> quote { (r: Reader) -> r.int() },
         .Bool -> quote { (r: Reader) -> r.bool() },
-        .Str -> quote { (r: Reader) -> r.text() },
+        .Str -> if owner.scoped { quote { (r: Reader) -> text_read(r, scope) } } else { quote { (r: Reader) -> r.text() } },
         .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner, owner)}) },
         .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem, owner)}) },
         .Map(_, value) -> quote { (r: Reader) -> read_map(r, ${read_each(value, owner)}) },
@@ -1445,7 +1447,7 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
     match k {
         .Int -> quote { ${w}.int(${e}) },
         .Bool -> quote { ${w}.bool(${e}) },
-        .Str -> quote { ${w}.text(${e}) },
+        .Str -> if owner.scoped { quote { written_text(${w}, scope, ${e}) } } else { quote { ${w}.text(${e}) } },
         .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner, owner)}) },
         .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { written_map(${w}, ${e}, ${write_each(value, owner)}) },
@@ -1509,7 +1511,11 @@ fn write_each(k: Kind, owner: Owner) -> Code {
     match k {
         .Int -> quote { (w: Writer, v: int) -> w.int(v) },
         .Bool -> quote { (w: Writer, v: bool) -> w.bool(v) },
-        .Str -> quote { (w: Writer, v: string) -> w.text(v) },
+        .Str -> if owner.scoped {
+            quote { (w: Writer, v: string) -> written_text(w, scope, v) }
+        } else {
+            quote { (w: Writer, v: string) -> w.text(v) }
+        },
         .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner, owner)}) },
         .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem, owner)}) },
         .Map(_, value) -> quote { (w: Writer, v: ${k.spelled()}) -> written_map(w, v, ${write_each(value, owner)}) },
@@ -1700,7 +1706,7 @@ fn codec_declared_under(k: Kind, seen: List<string>) -> bool {
 
 /// The number of the stored byte layout: it moves with the layout, so a store written under
 /// another one misses once instead of being read as this one.
-const stored_format: int = 2
+const stored_format: int = 3
 
 /// A stored type's fingerprint, folded at derive time: its own declaration and every type it
 /// reaches, so a type that moves under a reached one moves too.

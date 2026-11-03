@@ -1,0 +1,75 @@
+// `@codec` under a scope that keeps long texts aside — a type the scope crosses, as one holding
+// a dense id is: a long text crosses as the scope's
+// reference and reads back whole, a short one stays in the record, the same long text written
+// twice is one reference, and a reference the scope no longer keeps is unresolved — never a
+// wrong text.
+use @std.meta.{dense}
+use @std.relation.{codec}
+use @std.relation.stable.{Scope, CodecFault}
+use @std.relation.engine.{map_cell}
+use @std.text.{parse_int}
+
+@dense
+type Tid = { index: int }
+
+@codec
+type Note = { at: Tid, title: string, body: string, tags: List<string> }
+
+/// Texts over four characters kept aside, each under its own text.
+type Aside = { kept: Cell<Map<string, string>> }
+
+impl Scope for Aside {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { parse_int(text) }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { null }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
+
+    fn kept_out(text: string) -> string? {
+        if text.length <= 4 { return null }
+        self.kept.put(reference_of(text), text)
+        reference_of(text)
+    }
+
+    fn kept_back(reference: string) -> string? { self.kept.get().get(reference) }
+}
+
+/// A reference that holds none of its text: the text's length and its last character.
+fn reference_of(text: string) -> string { "ref:${text.length}:${text.substring(text.length - 1, text.length)}" }
+
+fn aside() -> Aside { Aside { kept: map_cell() } }
+
+fn note() -> Note { Note { at: Tid { index: 3 }, title: "hi", body: "a long body", tags: ["x", "a long tag"] } }
+
+fn back(n: Note, out: Aside, back_in: Aside) -> Result<Note, CodecFault> { Note.decoded_in(back_in, n.encoded_in(out)) }
+
+fn same(a: Note, b: Result<Note, CodecFault>) -> bool {
+    match b {
+        .Ok(x) -> x.at.index == a.at.index &&
+            x.title == a.title &&
+            x.body == a.body &&
+            x.tags.join("|") == a.tags.join("|"),
+        .Err(_) -> false,
+    }
+}
+
+spec "std/relation — @codec keeps long texts aside" {
+    then "a note round-trips through a scope that keeps its long texts aside" {
+        let s = aside()
+        same(note(), back(note(), s, s))
+    }
+    then "only the long texts are kept aside" {
+        let s = aside()
+        let _ = note().encoded_in(s)
+        s.kept.get().length == 2
+    }
+    then "the record holds a reference, not the long text" {
+        let s = aside()
+        !note().encoded_in(s).text_lossy().contains("a long body")
+    }
+    then "a reference the scope no longer keeps is unresolved" {
+        match back(note(), aside(), aside()) { .Ok(_) -> false, .Err(f) -> f is .Unresolved }
+    }
+}
