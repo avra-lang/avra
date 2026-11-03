@@ -24,7 +24,10 @@ build() {
 }
 
 cp $c $R/avra_runtime.c.kept
-trap 'cp $R/avra_runtime.c.kept $c' EXIT INT TERM
+cp build/avra $R/avra.kept
+cp build/libavra_runtime.a $R/libavra_runtime.a.kept
+restore() { cp $R/avra_runtime.c.kept $c; cp $R/avra.kept build/avra; cp $R/libavra_runtime.a.kept build/libavra_runtime.a; }
+trap restore EXIT INT TERM
 
 echo "=== compiler A: this tree's, against this tree's runtime C"
 wipe
@@ -47,7 +50,4 @@ cmp -s $R/a1.out $R/b1.out && echo "same answer" || echo "DIFFERENT ANSWER"
 hits=$(sig_hits $R/b1.trace)
 echo "WITNESS: the second compiler read $hits of the first one's module records"
 [ "$hits" = 0 ] || { echo "FAIL: a compiler whose C differs read $hits module records"; exit 1; }
-# the tree's compiler is rebuilt from the C it stands on, so whatever runs next runs it
-cp $R/avra_runtime.c.kept $c
-build
 echo "PASS"
