@@ -851,11 +851,16 @@ fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
-    // each module once, however many of this module's files import it
-    for name in distinct([p[1] for p in pr.walk if p[0] == "import" && import_stands(ws, p)]) {
+    // each module once, however many of this module's files import it; a line whose file moved
+    // admits nothing, and loads its module only where a package already stands for it
+    let lines = [p for p in pr.walk if p[0] == "import" && p.length > 1]
+    let standing = distinct([p[1] for p in lines if import_stands(ws, p)])
+    for name in distinct([p[1] for p in lines]) {
         let imp = module_path(name.split("."))
         let key = imp.package()
-        if key != null { ws.ensure_package(key!) }
+        if key != null {
+            if standing.contains(name) { ws.ensure_package(key!) } else if !ws.packages().any(it.key == key!) { continue }
+        }
         for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
     }
     for parts in pr.walk {
