@@ -11,12 +11,25 @@
 //! A FILE ROW IS PRESENT ONLY WHEN ITS EDGES ARE, so a write that never finished reads
 //! as ABSENT rather than as half a value. A packed row is present once its commit
 //! marker lands, which is the same law one mechanism over.
-use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
+use @std.io.{
+    exists,
+    read_text,
+    write_text,
+    read_bytes,
+    write_bytes,
+    make_dirs,
+    remove,
+    list_dir,
+    is_dir,
+    env,
+}
+use @std.text.{parse_int}
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{saved_in, unsaved_in}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined, flatten}
 use core.debug.{qtrace, traced}
+use @std.time.{wall_secs}
 use features.{tree_saved}
 
 /// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
@@ -166,16 +179,72 @@ export fn store_beside(root: string, print: string, keeping: Keeping, shared: st
 }
 
 /// The machine's pack under `print`, none where the store keeps aside, the machine has no
-/// cache, or the store IS the machine's.
+/// cache, or the store IS the machine's. Each print keeps its rows under a root of its own,
+/// so a process opens its own compiler's rows and none of another's.
 fn machine_pack(cache: string?, root: string, print: string, keeping: Keeping) -> Pack? {
     if inspects(keeping) { return null }
     let shared? = cache else { return null }
     if shared == root { return null }
     let known = machine_packs().get().get(print)
     if known != null { return known }
-    let made = pack_at(shared, print)
+    let root_of_print = print_root(shared, print)
+    used_now(root_of_print)
+    let made = pack_at(root_of_print, print)
     machine_packs().put(print, made)
     made
+}
+
+/// THE MACHINE'S ROOT FOR ONE COMPILER: its rows apart from every other compiler's, so an
+/// open reads only its own, and a compiler nobody runs any more is let go whole.
+fn print_root(shared: string, print: string) -> string {
+    joined_path(joined_path(shared, PRINTS), digest_of(print).substring(0, 16))
+}
+
+/// Where the machine keeps each compiler's rows.
+const PRINTS: string = "prints"
+
+/// The mark a print's root bears for the last process that used it: written once a process.
+const USED: string = "used"
+
+fn used_now(root: string) {
+    let _ = make_dirs(root)
+    let _ = write_text(joined_path(root, USED), "")
+}
+
+/// How long the machine keeps a compiler nobody runs: `AVRA_PRINTS_MAX_AGE_DAYS`, else two weeks.
+const PRINTS_DAYS_KEPT: int = 14
+
+/// THE MACHINE LETS A COMPILER GO when no process has used it for its days: its root, every
+/// row and body under it, gone whole. Answers how many it let go.
+export fn prints_collected() -> int {
+    let shared? = machine_cache() else { return 0 }
+    // LICENSED input.debug_flag: the machine store's own age limit, never an input of what is built
+    let days = parse_int(env("AVRA_PRINTS_MAX_AGE_DAYS") ?? "") ?? PRINTS_DAYS_KEPT
+    if days <= 0 { return 0 }
+    let at = joined_path(shared, PRINTS)
+    // LICENSED input.store_io: the machine's print roots, listed to let the unused go
+    let roots = match list_dir(at) { .Ok(ns) -> ns, .Err(_) -> [] }
+    let gone = [r for r in roots if unused_for(joined_path(at, r), days)]
+    for r in gone { removed_whole(joined_path(at, r)) }
+    gone.length
+}
+
+/// Whether no process has marked a print's root used for `days`.
+fn unused_for(root: string, days: int) -> bool {
+    let marked? = kept_file(joined_path(root, USED)) else { return true }
+    // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
+    wall_secs() - marked.at > days * 86400
+}
+
+/// A directory and everything under it, gone.
+fn removed_whole(dir: string) {
+    // LICENSED input.store_io: a let-go print root, listed to remove it
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    for n in names {
+        let path = joined_path(dir, n)
+        if is_dir(path) { removed_whole(path) } else { let _ = remove(path) }
+    }
+    let _ = remove(dir)
 }
 
 /// The machine's pack under each print, one a process: every store reads and writes it
