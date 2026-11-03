@@ -671,6 +671,11 @@ export enum Built {
 @derive(Makes)
 export type FnSeat = { ty: TypeRef, mutable: bool = false, settled: bool = false }
 
+impl FnSeat {
+    /// The promise this seat makes.
+    fn mark() -> SeatMark { SeatMark { mutable: self.mutable, settled: self.settled } }
+}
+
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
 /// field rides across: a fn type's `marks` are part of its identity
@@ -705,7 +710,7 @@ impl TypeRef {
 
     /// A fn type's seat promises, one per seat.
     fn seat_marks() -> List<SeatMark> {
-        [SeatMark { mutable: s.mutable, settled: s.settled } for s in self.seats]
+        [s.mark() for s in self.seats]
     }
 
     /// This type, spelled back — `spelled`, as a method a quote
@@ -728,7 +733,7 @@ export fn spelled(t: TypeRef) -> string {
 
 /// A fn type: its seats, each with its promise, then its answer.
 fn spelled_arrow(t: TypeRef) -> string {
-    let seats = [mark_prefixed(SeatMark { mutable: s.mutable, settled: s.settled }, spelled(s.ty)) for s in t.seats]
+    let seats = [mark_prefixed(s.mark(), spelled(s.ty)) for s in t.seats]
     "fn(${joined(seats, ", ")}) -> ${spelled(t.answer ?? void_ref)}"
 }
 
