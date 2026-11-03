@@ -13,7 +13,7 @@ use grammar.{Token, LexResult}
 use @std.relation.engine.{list_cell}
 use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
 use diagnostics.{DiagFacts, SourceFile, new_source_file, render_facts_among, located_files}
-use compiler.store.{Store, Stored, Reading, node_key, read_spelled}
+use compiler.store.{Store, Stored, Reading, node_key, read_spelled, tree_saved, tree_unsaved}
 use compiler.findings.{Finding, finding_line, findings_read, finding_at}
 
 /// One read the verdict stands on, by the door that answers it.
@@ -115,7 +115,7 @@ fn read_shaped(r: Reader) -> Result<Shaped, CodecFault> {
 
 export fn verdict_wire(v: CheckSaid) -> string {
     let w = writer()
-    w.text(v.voices)
+    w.text(tree_saved(v.voices))
     written_texts(w, v.voice_files)
     written_list(w, v.files, written_spoke)
     hex(w.bytes())
@@ -127,15 +127,15 @@ export fn verdict_of_wire(raw: string) -> CheckSaid? {
 }
 
 fn read_check_said(r: Reader) -> Result<CheckSaid, CodecFault> {
-    let voices = r.text()?
+    let voices = tree_unsaved(r.text()?)
     let voice_files = read_texts(r)?
     CheckSaid { voices: voices, voice_files: voice_files, files: read_spokes(r)? }
 }
 
 fn written_spoke(w: Writer, f: FileSpoke) {
-    w.text(f.path)
+    w.text(tree_saved(f.path))
     w.bool(f.reached)
-    w.text(f.said)
+    w.text(tree_saved(f.said))
     written_texts(w, [finding_line(x) for x in f.findings])
     written_texts(w, f.licenses)
 }
@@ -146,9 +146,9 @@ fn read_spokes(r: Reader) -> Result<List<FileSpoke>, CodecFault> {
 }
 
 fn read_spoke(r: Reader) -> Result<FileSpoke, CodecFault> {
-    let path = r.text()?
+    let path = tree_unsaved(r.text()?)
     let reached = r.bool()?
-    let said = r.text()?
+    let said = tree_unsaved(r.text()?)
     let findings = findings_read(joined(read_texts(r)?, "\n"))
     FileSpoke {
         path: path,
@@ -159,11 +159,11 @@ fn read_spoke(r: Reader) -> Result<FileSpoke, CodecFault> {
     }
 }
 
-fn written_texts(w: Writer, xs: List<string>) { written_list(w, xs, (w: Writer, x: string) -> w.text(x)) }
+fn written_texts(w: Writer, xs: List<string>) { written_list(w, xs, (w: Writer, x: string) -> w.text(tree_saved(x))) }
 
 fn read_texts(r: Reader) -> Result<List<string>, CodecFault> {
     let n = r.count()?
-    [r.text()? for _k in 0..n]
+    [tree_unsaved(r.text()?) for _k in 0..n]
 }
 
 impl Workspace {
@@ -195,7 +195,7 @@ impl Workspace {
     fn read_now(r: VerdictRead) -> string {
         match r {
             .Compiler -> digest_of(self.compiler_id()),
-            .Closure(named) -> digest_of(joined(self.closure(named), "\n")),
+            .Closure(named) -> digest_of(tree_saved(joined(self.closure(named), "\n"))),
             .Files(dir) -> self.listing_word(dir),
             .Text(path) -> self.text_now(path),
             .Shape(path) -> "${self.text_now(path)}/${self.shape_now(path, false) ?? "-"}",
