@@ -803,9 +803,14 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
 // bytes in hex, so distinct text never collides and identical text is ONE box;
 // the name is stripped from the artifact, so its length costs nothing a program
 // downloads. A `.Octets` BOX is NOT interned — its siblings reference it BY the
-// static's own name, so that name must stand.
+// static's own name, so that name must stand. A text past `INTERN_MAX` bytes
+// stands unshared under a plain name: the linker caps a symbol's length, and a
+// name of twice the text's size is past it for a large embedded file.
+#define INTERN_MAX 1024
+
 LLVMValueRef avra_llvm_intern_text(LLVMModuleRef m, const char* s, int64_t len) {
     size_t n = (size_t)(len > 0 ? len : 0);
+    if (n > INTERN_MAX) return avra_llvm_global_text(m, s, len, ".bigstr");
     char* name = (char*)malloc(6 + n * 2 + 1);
     if (!name) avra_trap("compiler defect: no room for an interned text name");
     memcpy(name, ".istr.", 6);
