@@ -1,26 +1,30 @@
 #!/bin/sh
 # A SAVED ROW IS A FUNCTION OF ITS PACKAGE, NOT OF WHERE THE TREE STANDS. One package is
-# built from two checkouts at different depths; no byte of either checkout's cache may carry
-# that checkout's absolute path — the property a machine-wide shared cache needs. Each file
-# that does is named with the count of its leaks.
+# built from two checkouts at different depths, each with a path dependency laid beside it; no
+# byte of either checkout's cache — a row, a key or a kept read's name — may carry an absolute
+# path of the checkout or of what stands beside it, the property a machine-wide shared cache
+# needs. Each file that does is named with the count of its leaks.
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 AVRA=${AVRA:-./avra}
 # outside the tree: a package under it is cached at the tree's root, not its own
 R=$(cd "$(mktemp -d)" && pwd -P)
-mkdir -p "$R/one/app/src" "$R/two/deeper/app/src"
+mkdir -p "$R/one/app/src" "$R/two/deeper/app/src" "$R/one/lib/src" "$R/two/deeper/lib/src"
 for d in "$R/one/app" "$R/two/deeper/app"; do
-    printf '[package]\nname = "path-leak-attack"\nversion = "0.1.0"\n' > "$d/avra.toml"
+    printf '[package]\nname = "@leak/lib"\nversion = "0.1.0"\n' > "$d/../lib/avra.toml"
+    printf 'export fn four() -> int { 4 }\n' > "$d/../lib/src/lib.av"
+    printf '[package]\nname = "path-leak-attack"\nversion = "0.1.0"\n\n[dependencies]\n"@leak/lib" = { path = "../lib" }\n' > "$d/avra.toml"
     # a warning, so a place in its own file is kept too
-    printf 'fn twice(n: int) -> int { n ?? 3 }\nfn main() { println("${twice(4)}") }\n' > "$d/src/main.av"
+    printf 'use @leak.lib.{four}\nfn twice(n: int) -> int { n ?? 3 }\nfn main() { println("${twice(four())}") }\n' > "$d/src/main.av"
     # the checkout's own cache is the machine's, so every row it keeps is examined here
     AVRA_CACHE_DIR="$d/.avra-cache" $AVRA build "$d" > "$R/out" 2> "$R/err" || { fail "$d did not build: $(head -2 "$R/err" | tr '\n' ' ')"; continue; }
     seen=0
     for f in $(find "$d/.avra-cache" -type f); do
         [ -f "$f" ] || continue
         seen=$((seen + 1))
-        n=$(grep -a -o -F "$d" "$f" | wc -l | tr -d ' ')
-        [ "$n" = 0 ] || fail "${f#$d/}: $n path(s) of its checkout, e.g. $(grep -a -o "$d[A-Za-z0-9_/.-]*" "$f" | head -1 | sed "s|$d|<root>|")"
+        around=$(dirname "$d")
+        n=$(grep -a -o -F "$around/" "$f" | wc -l | tr -d ' ')
+        [ "$n" = 0 ] || fail "${f#$d/}: $n path(s) of its checkout or beside it, e.g. $(grep -a -o "$around/[A-Za-z0-9_/.-]*" "$f" | head -1 | sed "s|$around|<around>|")"
     done
     [ "$seen" -gt 0 ] || fail "$d: the build left no cache to examine"
     echo "path-leak-attack: ${d#$R/}: $seen cache file(s) examined"

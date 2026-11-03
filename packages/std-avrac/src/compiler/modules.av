@@ -33,8 +33,14 @@ impl Workspace {
     /// source root, `.`-joined — "" for a file at the root package's
     /// source root, `@scope.name.a` for a dependency's.
     fn module_of(path: string) -> string {
+        // a process only adds packages, so one table size names one answer
+        let at = "${self.packages().length}\t${path}"
+        let known: string? = self.keys.modules_of.get().get(at)
+        if known != null { return known! }
         let pkg = self.packages()[self.holder_of_path(path)]
-        module_at(self, self.module_prefix(pkg), pkg.src, self.per_file, path)
+        let made = module_in(self.module_prefix(pkg), pkg.src, self.per_file, path)
+        self.keys.modules_of.put(at, made)
+        made
     }
 
     /// What a package's module names begin with: nothing for the root's, its key for a
@@ -600,12 +606,10 @@ fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
     [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
 }
 
-/// A FILE'S MODULE, asked of the package that holds it — `prefix` its module names begin
-/// with, `src` its source root — so the answer is the package's, whichever order a tree
-/// admitted it in. A directory of programs (`per_file`) makes every file its own module, so
+/// A FILE'S MODULE, of the package that holds it — `prefix` its module names begin with, `src`
+/// its source root. A directory of programs (`per_file`) makes every file its own module, so
 /// seventy programs' `P`s never share a namespace.
-@query
-fn module_at(_ws: Workspace, prefix: string, src: string, per_file: bool, path: string) -> string {
+fn module_in(prefix: string, src: string, per_file: bool, path: string) -> string {
     let rel = below(path, src)
     let local = if per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
     if prefix.is_empty() || local.is_empty() { return prefix + local }
