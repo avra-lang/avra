@@ -1,6 +1,6 @@
 // `failures()` reads every `_`-declared fn's body through the `Expr`
 // and `Stmt` kind buckets. Its read of each body records ONE edge on
-// that declaration's `Family.Syntax`, so an edit to one declaration
+// that declaration's `syntax_hash_of`, so an edit to one declaration
 // moves only its own edge. `Failures` is 20 and `Syntax` 25
 // (compiler/workspace.av's `ordinal`).
 use @std.avrac.testing.{test_workspace}
@@ -40,13 +40,17 @@ fn surveyed(main: string) -> Workspace {
     ws
 }
 
-/// Whether `failures()` depends on `name`'s own syntax cell.
-fn reads_syntax_of(ws: Workspace, name: string) -> bool {
-    let d = failing_decl(ws, name)
+/// How many declarations' own syntax cells `failures()` depends on.
+fn syntax_edges(ws: Workspace) -> int {
     ws
         .db
         .edges_by_reader(failures_key(ws))
-        .any((k: Key) -> k.family == family_ordinal("Syntax") && k.arg == d.index)
+        .filter(
+            (k: Key) -> ws
+                .cells_named("syntax_hash_of")
+                .any((c: Key) -> c.family == k.family && c.arg == k.arg),
+        )
+        .length
 }
 
 /// The syntax hash `failures()`'s edge on `name` settled on.
@@ -59,7 +63,7 @@ spec "compiler/failures — one syntax edge per surveyed declaration" {
     given "two inferring fns in one file" {
         then "the survey depends on each one's own syntax" {
             let ws = surveyed(failing_source("fail \"a\""))
-            reads_syntax_of(ws, "a") && reads_syntax_of(ws, "b")
+            syntax_edges(ws) == 2
         }
         then "`b`'s one `fail` is found in its `Fail` bucket" {
             let ws = surveyed(failing_source("fail \"a\""))
