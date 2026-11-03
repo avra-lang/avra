@@ -45,8 +45,19 @@ export fn machine_cache() -> string? {
     moved
 }
 
+/// The machine cache this process keeps blobs in: none until a host that is a machine names
+/// one, so a process of in-memory hosts writes no blob.
+once fn machine_in_use() -> Cell<string> { Cell.new("") }
+
+/// The process keeps its blobs in the machine cache at `dir` from now on.
+export fn blobs_kept_in(dir: string) { machine_in_use().set(dir) }
+
 /// Where the shared blobs stand.
-fn cas_dir() -> string? { joined_path(machine_cache()?, "cas") }
+fn cas_dir() -> string? {
+    let dir = machine_in_use().get()
+    if dir.is_empty() { return null }
+    joined_path(dir, "cas")
+}
 
 fn blob_at(dir: string, digest: string) -> string { joined_path(joined_path(dir, digest.substring(0, 2)), digest) }
 
