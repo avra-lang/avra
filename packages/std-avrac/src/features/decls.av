@@ -808,7 +808,7 @@ export type Decls = {
     ensure_writes: Cell<fn(DeclId) -> List<bool>?>,
     // the workspace's cancel hook: a record-carrying declaration's reach
     // read by name, so a reader stands on that decl's answer alone
-    ensure_cancels: Cell<fn(DeclId) -> bool>,
+    ensure_cancels: Cell<fn(DeclId) -> CancelReach?>,
     // WHICH SEATS THE BODY CONSUMES (R3) — the workspace's answer per
     // declaration. No fixpoint: unlike `written_seats`, a seat's
     // evidence is local to its own body alone.
@@ -849,6 +849,7 @@ export type Decls = {
 /// `links` is what it is KNOWN to reach: a row that waits, a waiting
 /// read or a spawn — never a call through a value, which may be any fn
 /// and says nothing of this program's rows. A fn that links parks.
+@codec
 export type CancelReach = { parks: bool, spins: bool, links: bool }
 
 impl CancelReach {
@@ -1080,7 +1081,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_written),
-        ensure_cancels: Cell.new(no_answer),
+        ensure_cancels: Cell.new(no_cancel),
         ensure_failures: Cell.new(no_failures_ensure),
         cancels: new_table(),
         schedulers: Cell.new(false),
@@ -1123,6 +1124,8 @@ fn no_ensure(d: DeclId) {}
 fn no_answer(_d: DeclId) -> bool { false }
 
 fn no_written(_d: DeclId) -> List<bool>? { null }
+
+fn no_cancel(_d: DeclId) -> CancelReach? { null }
 
 /// Whether seat `i` of a bit row is set; a seat past the row is not.
 fn bit_in(bits: List<bool>, i: int) -> bool { i < bits.length && bits[i] }
@@ -2011,7 +2014,7 @@ impl Decls {
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_written)
-        self.ensure_cancels.set(no_answer)
+        self.ensure_cancels.set(no_cancel)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
@@ -2501,11 +2504,10 @@ impl Decls {
     }
 
     /// The recorded answer — null where nothing has said. A reader asks through the
-    /// workspace's hook, so it stands on the declaration's own `CancelBits` answer;
+    /// workspace's hook, so it stands on the declaration's own `cancel_reach_of` answer;
     /// the pass's own reads go to `cancels_so_far`.
     fn cancel_bits(d: DeclId) -> CancelReach? {
         (self.ensure_cancels.get())(d)
-        self.cancels.at(d.index)
     }
 
     /// The pass's own read, hook-free — the table as it stands.
@@ -2514,7 +2516,7 @@ impl Decls {
     }
 
     /// The workspace arms the cancel hook once.
-    fn arm_cancels(ensure: fn(DeclId) -> bool) {
+    fn arm_cancels(ensure: fn(DeclId) -> CancelReach?) {
         self.ensure_cancels.set(ensure)
     }
 
