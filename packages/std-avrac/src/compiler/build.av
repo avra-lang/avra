@@ -498,12 +498,17 @@ impl Workspace {
 
     /// The kept binary placed where a fresh one would be. A binary already standing there with
     /// the kept bytes (`kept`, their digest when it was kept) is left untouched: replacing a file
-    /// costs more than the hit it answers.
+    /// costs more than the hit it answers. A kept file is one key's under every compiler, so
+    /// one whose bytes are not the answer's (`kept`) is another answer's and places nothing.
     fn placed_kept(store: Store, key: string, binary: string, kept: string?) -> bool {
         let there = digest_of_binary(binary)
         if there != null && there == kept ?? digest_of_binary(store.path(Stored.Bin, key)) { return true }
         let staged = staged_beside(binary)
         if !store.place(Stored.Bin, key, staged) { return false }
+        if kept != null && digest_of_binary(staged) != kept {
+            let _ = remove(staged)
+            return false
+        }
         // a stored binary is bytes, and its mode is not in them
         let _ = avra_spawn_status("chmod", ["+x", staged])
         published(staged, binary)

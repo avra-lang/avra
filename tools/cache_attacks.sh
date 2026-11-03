@@ -494,7 +494,7 @@ printf 'use rec.{Cnt}\nexport fn bump(mut c: Cnt) { c.n = c.n + 1 }\nimpl Cnt {\
 printf 'use rec.{Cnt}\nuse own.{bump}\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    bump(c)\n    c.up()\n    c.n\n}\n' > $R/sl/src/use/u.av
 printf 'use use.{total}\nprintln("${total()}")\n' > $R/sl/src/main.av
 sl_n=0
-sl_touch() { sl_n=$((sl_n+1)); printf '// moved %s\n' "$sl_n" >> $R/sl/src/rec/r.av; }
+sl_touch() { sl_n=$((sl_n+1)); printf 'const moved_%s: int = 0\n' "$sl_n" >> $R/sl/src/rec/r.av; }
 sl_held() { AVRA_QTRACE=1 ./avra check $R/sl 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "attempt" { split($4, w, " "); print w[2] }' | tr '\n' ' '; }
 S "cold sl" sl
 sl_touch; sl_got=$(sl_held)
@@ -932,7 +932,7 @@ RX "rx: and back" show.av held "rx 2"
 ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
 RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
 ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
-RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
+RX "rx: and back — one row per question, so the importer's re-pointed row is read again" show.av read "rx 2"
 fi
 
 if section vw; then
