@@ -92,6 +92,24 @@ export fn distinct(xs: List<string>) -> List<string> {
     out
 }
 
+/// `xs` filed under `key`: each key's items in order, keys in first-seen order. Each key's
+/// list grows in place in its own cell, so the fold is linear.
+export fn grouped_by<T>(xs: List<T>, key: fn(T) -> string) -> Map<string, List<T>> {
+    mut cells: Map<string, Cell<List<T>>> = {}
+    for x in xs {
+        let k = key(x)
+        let cell = cells.get(k) ?? {
+            let fresh: Cell<List<T>> = Cell.new([])
+            cells.set(k, fresh)
+            fresh
+        }
+        cell.push(x)
+    }
+    mut out: Map<string, List<T>> = {}
+    for k, cell in cells { out.set(k, cell.get()) }
+    out
+}
+
 /// A `///` doc's own SENTENCE — its lines up to the first blank one.
 export fn doc_first_paragraph(lines: List<string>) -> List<string> {
     mut out: List<string> = []

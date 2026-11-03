@@ -3445,6 +3445,16 @@ hold it. The wanting site is the board's `loaded` (tools/ui-board/src/board.av),
 `tasks = rows` and was run again by every refresh. A lambda-only rule was refused: it would read as
 coverage of a shape it does not see.
 
+`group_by` on a List (COLLECTIONS spec: `(key: fn(T) -> K) -> Map<K, List<T>>`, first-seen key order) is
+absent, so a per-key accumulation is either `m.set(k, (m.get(k) ?? []).concat([x]))` — a copy of the
+whole bucket per element, 76M elements copied in one cold `check packages/cli` — or a hand-built map of
+cells. The wanting site is `lines_by_file` (compiler/record.av); `core.grouped_by` is the stand-in until
+the verb lands. The same accumulation, still hand-rolled, at `filed` (derive.av), `wire_indexed`
+(interface.av, which also files `names`/`wires`), `reached_modules` (record.av), `producers.av`'s
+`filed_map`, `llvm.av`'s `at`/`homed`/`static_at`, `code.av`'s write roots, `store/body.av` and
+`store/pack.av`'s read sets, `std-grammar`'s `keyed_by_first` (a package below core, so it cannot
+import the verb), `std-ui`'s `exact.av` index and `cli`'s `fmt.av` grouping.
+
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
 ### Interim record — the tasks server was unreachable at landing
