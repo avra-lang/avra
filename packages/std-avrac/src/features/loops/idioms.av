@@ -23,8 +23,20 @@ use @std.meta.{name}
 @law("pushing a sequence's values one at a time and concatenating that same sequence at the end build the same list")
 export rule push_loop {
     // LICENSED loops.push_loop: the pattern's own text names the shape it detects
-    quote { for ${x} in ${xs} { ${out}.push(${v}) } } if !v.text().contains(out.text()) -> name("${out.text()} = ${out.text()}.concat([${v.text()} for ${x} in ${xs.text()}])"),
+    quote { for ${x} in ${xs} { ${out}.push(${v}) } } if !v.text().contains(out.text()) && !names_word(out.text(), x) -> name("${out.text()} = ${out.text()}.concat([${v.text()} for ${x} in ${xs.text()}])"),
 }
+
+/// Whether `text` holds `word` as a whole identifier — an accumulator that names the loop's own
+/// variable is a different place every turn, so no single list collects the pushes.
+fn names_word(text: string, word: string) -> bool {
+    !word.is_empty() &&
+        ![i for i in 0..text.length - word.length + 1 if text.substring(i, i + word.length) == word &&
+            word_edge(text, i - 1) &&
+            word_edge(text, i + word.length)]
+            .is_empty()
+}
+
+fn word_edge(text: string, at: int) -> bool { at < 0 || at >= text.length || !is_subscript_ident_char(text.char_code(at)) }
 
 /// `push_loop`'s BRANCHED twin: each arm of a per-element `if`/`else`
 /// pushes to the SAME accumulator, one shape or the other depending
