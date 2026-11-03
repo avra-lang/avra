@@ -167,7 +167,13 @@ fn hex_nibble(c: int) -> int {
 export fn unhex(s: string) -> Bytes? {
     if s.length % 2 != 0 { return null }
     let octets = s.bytes()
-    let nibbles = [hex_nibble(octets.at(i)) for i in 0..s.length]
-    if nibbles.any(it < 0) { return null }
-    [nibbles[2 * i] * 16 + nibbles[2 * i + 1] for i in 0..s.length / 2].bytes()
+    let made = [paired_nibbles(hex_values[octets.at(2 * i)], hex_values[octets.at(2 * i + 1)]) for i in 0..s.length / 2]
+    if made.any(it < 0) { return null }
+    made.bytes()
 }
+
+/// Every octet's hex-digit value, -1 for a non-digit — settled once, read by octet.
+const hex_values: List<int> = [hex_nibble(c) for c in 0..256]
+
+/// Two digit values as one octet, -1 when either is no digit.
+fn paired_nibbles(hi: int, lo: int) -> int { if hi < 0 || lo < 0 { 0 - 1 } else { hi * 16 + lo } }
