@@ -40,10 +40,22 @@ use core.{
     hex,
     unhex,
 }
-use features.{Unsettled, Settled, Settlement, Wanted, SettleRoot, SeatValue, Budgets}
+use features.{
+    Unsettled,
+    Settled,
+    Settlement,
+    MetaVal,
+    MetaHeap,
+    MetaMap,
+    Wanted,
+    SettleRoot,
+    SeatValue,
+    Budgets,
+}
 use @std.relation.stable.{indexed_scope}
 use compiler.backend.{reaches_world}
-use compiler.store.{Store, Stored, Reading, node_key}
+use @std.text.{parse_int}
+use compiler.store.{Store, Stored, Reading, node_key, cas_big, cas_blob, cas_ref_of, cas_value}
 use compiler.work.{work_spell_lookup}
 use compiler.lower.{Unit, type_shape_key}
 use core.{Type}
@@ -489,7 +501,7 @@ impl Workspace {
     /// stands on the fns and consts its run read, in its own lines) and its `use` lines.
     fn outline_values(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind) && !self.plain_free(d)]
+        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if stripped_value(self.decls.decl(d).kind) && !self.plain_free(d)]
         let uses = self.use_fps(f)
         "${fp(313, [fp_list(decls), fp_list(uses)])}"
     }
@@ -885,7 +897,7 @@ fn binds_name(k: DeclKind) -> bool {
 
 /// Whether a declaration kind is in a file's value outline: every kind but a fn-like one
 /// (a default is one, reached at its call sites) and a named type, whose shape a `t` line keys.
-fn outlined_value(k: DeclKind) -> bool {
+fn stripped_value(k: DeclKind) -> bool {
     match k {
         .Fn or .Method or .Default or .Main or .Case or .Record or .Named or .Alias or .Enum -> false,
         .Const or .Trait or .Syntax or .Impl or .Collect or .CollectEnum or .Builtin or .State -> true,
@@ -918,15 +930,116 @@ fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
     match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
 }
 
-/// A settlement as a line keeps it: its codec's octets, spelled — a value without the runs it
-/// took, which are the run's own.
+/// A settlement as a line keeps it: its codec's octets, spelled, then the blobs of every text
+/// or octets over the shared store's cut — a value without the runs it took, which are the
+/// run's own. The same big value is the same blob in every worktree, so a row names the content
+/// and the blob is held once.
 fn kept_text(s: Settlement) -> string {
     let kept = match s { .Held(v) -> Settlement.Held(v with { ran: [] }), .Refused(why) -> s }
-    hex(kept.encoded_in(indexed_scope()))
+    let out = stripped(kept)
+    hex(out.lean.encoded_in(indexed_scope())) + "\t" + joined(out.refs, ",")
 }
 
-/// `kept_text` read back; none for a line it did not write.
+/// `kept_text` read back; none for a line it did not write, or whose blob is gone.
 fn settlement_of_text(raw: string) -> Settlement? {
-    let octets? = unhex(raw) else { return null }
-    match Settlement.decoded_in(indexed_scope(), octets) { .Ok(s) -> s, .Err(_) -> null }
+    let parts = raw.split("\t")
+    let octets? = unhex(parts[0]) else { return null }
+    let refs = if parts.length > 1 && parts[1] != "" { parts[1].split(",") } else { [] }
+    match Settlement.decoded_in(indexed_scope(), octets) {
+        .Ok(lean) -> restored(lean, refs),
+        .Err(_) -> null,
+    }
+}
+
+/// A settlement with its big texts and octets replaced by empty ones, and the blobs they
+/// were — `i:kind:ref`, `i` counting every text and octets met, in the order met.
+type Outlined = { lean: Settlement, refs: List<string> }
+
+fn stripped(s: Settlement) -> Outlined {
+    let seen: Cell<int> = Cell.new(0)
+    let refs: Cell<List<string>> = Cell.new([])
+    let lean = match s {
+        .Held(v) -> Settlement
+            .Held(
+                v with { answer: stripped_val(v.answer, seen, refs), heap: mapped_heap(v.heap, (x) -> stripped_val(x, seen, refs)) },
+            ),
+        .Refused(_) -> s,
+    }
+    Outlined { lean: lean, refs: refs.get() }
+}
+
+fn stripped_val(v: MetaVal, seen: Cell<int>, refs: Cell<List<string>>) -> MetaVal {
+    match v {
+        .Text(t) -> {
+            let i = seen.get()
+            seen.set(i + 1)
+            if cas_big(t) && cas_blob(t) {
+                refs.push("${i}:t:${cas_ref_of(t)}")
+                MetaVal.Text("")
+            } else {
+                v
+            }
+        },
+        .Octets(xs) -> {
+            let i = seen.get()
+            seen.set(i + 1)
+            let listed = ["${x}" for x in xs].join(",")
+            if cas_big(listed) && cas_blob(listed) {
+                refs.push("${i}:d:${cas_ref_of(listed)}")
+                MetaVal.Octets([])
+            } else {
+                v
+            }
+        },
+        rest -> v,
+    }
+}
+
+/// The settlement `stripped` came from: each blob read back into the text or octets it stood for.
+fn restored(s: Settlement, refs: List<string>) -> Settlement? {
+    if refs.is_empty() { return s }
+    let seen: Cell<int> = Cell.new(0)
+    let failed: Cell<bool> = Cell.new(false)
+    let back = (v: MetaVal) -> restored_val(v, refs, seen, failed)
+    let out = match s {
+        .Held(v) -> Settlement.Held(v with { answer: back(v.answer), heap: mapped_heap(v.heap, back) }),
+        .Refused(_) -> s,
+    }
+    if failed.get() { null } else { out }
+}
+
+fn restored_val(v: MetaVal, refs: List<string>, seen: Cell<int>, failed: Cell<bool>) -> MetaVal {
+    match v {
+        .Text(_) or .Octets(_) -> {
+            let i = seen.get()
+            seen.set(i + 1)
+            let at = refs.find(it.starts_with("${i}:"))
+            if at == null { return v }
+            let parts = at!.split(":")
+            let blob? = cas_value(parts[2]) else {
+                failed.set(true)
+                return v
+            }
+            if parts[1] == "t" { MetaVal.Text(blob) } else { octets_listed(blob) ?? v }
+        },
+        rest -> v,
+    }
+}
+
+/// Octets as `["${x}" …].join(",")` wrote them.
+fn octets_listed(listed: string) -> MetaVal? {
+    if listed == "" { return MetaVal.Octets([]) }
+    let out = [parsed_octet(w) for w in listed.split(",")]
+    if out.any(it < 0) { return null }
+    MetaVal.Octets(out)
+}
+
+fn parsed_octet(w: string) -> int { parse_int(w) ?? 0 - 1 }
+
+/// A heap with `f` applied to every value in it, in node then map order.
+fn mapped_heap(h: MetaHeap, f: fn(MetaVal) -> MetaVal) -> MetaHeap {
+    MetaHeap {
+        nodes: [[f(x) for x in row] for row in h.nodes],
+        maps: [MetaMap { keys: m.keys, values: [f(x) for x in m.values] } for m in h.maps],
+    }
 }
