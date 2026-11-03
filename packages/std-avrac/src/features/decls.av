@@ -825,7 +825,7 @@ export type Decls = {
     ensure_held_refs: Cell<fn(DeclId) -> List<Ref>>,
     /// Whether each declaration is read as a value anywhere, as the references pass found it,
     /// by DeclId; a declaration past the end is read nowhere.
-    ensure_read: Cell<fn(DeclId) -> bool>,
+    ensure_read: Cell<fn(DeclId) -> bool?>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -1095,7 +1095,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         ref_rows_incomplete: Cell.new(refs_unknown),
         ensure_refs: Cell.new(no_refs_ensure),
         ensure_held_refs: Cell.new(no_held_refs),
-        ensure_read: Cell.new(no_answer),
+        ensure_read: Cell.new(no_finding),
         mut_seat_index: map_cell(),
     }
     // the registry cannot reach a declaration on its own — a struct or
@@ -1121,6 +1121,8 @@ fn builtin_tparams(arity: int) -> List<string> {
 fn no_ensure(d: DeclId) {}
 
 fn no_answer(_d: DeclId) -> bool { false }
+
+fn no_finding(_d: DeclId) -> bool? { null }
 
 fn no_consumed(_d: DeclId) -> List<bool> { [] }
 
@@ -1402,6 +1404,13 @@ impl Decls {
     fn bucket_standing(name: string) -> int? {
         let found = self.decl_row_rows.get().bucket_of_text(name_index, name)
         if found >= 0 { found } else { null }
+    }
+
+    /// The rows filed under `name` as they stand; nothing is opened or minted.
+    @bracket("decls")
+    fn named_standing(name: string) -> List<Decl> {
+        let b? = self.bucket_standing(name) else { return [] }
+        self.decl_row_rows.get().members(b)
     }
 
     /// How many name buckets stand, emptied ones among them.
@@ -2025,7 +2034,7 @@ impl Decls {
         self.ensure_listed.set(no_listing)
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
-        self.ensure_read.set(no_answer)
+        self.ensure_read.set(no_finding)
         self.ref_rows_to.set(no_held_refs)
         self.ref_rows_from.set(no_file_refs)
         self.ref_rows_incomplete.set(refs_unknown)
@@ -2608,15 +2617,12 @@ impl Decls {
 
     /// Whether a plain read names `d`, or null where the references do not
     /// stand: an absence of a finding is no finding of absence.
-    fn read_found(d: DeclId) -> bool? {
-        if !(self.ensure_read.get())(d) { return null }
-        !self.readers(d).is_empty()
-    }
+    fn read_found(d: DeclId) -> bool? { (self.ensure_read.get())(d) }
 
     /// The finding as it stands for `d`: a declaration the pass never saw is read nowhere.
 
     /// The workspace arms the read-found hook once.
-    fn arm_read_found(ensure: fn(DeclId) -> bool) {
+    fn arm_read_found(ensure: fn(DeclId) -> bool?) {
         self.ensure_read.set(ensure)
     }
 
