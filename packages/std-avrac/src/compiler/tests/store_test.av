@@ -13,7 +13,7 @@ use @std.relation.engine.{map_cell}
 use compiler.host.{memory_host}
 use compiler.{Want, Workspace}
 use @std.avrac.testing.{test_workspace}
-use compiler.store.{Keeping, Reading, Store, Stored, node_key, store_at, store_with}
+use compiler.store.{Keeping, Reading, Store, Stored, node_key, store_at, store_with, cas_blob}
 
 /// One directory per run, so no earlier run's rows answer for this one.
 once fn store_base() -> string { "/tmp/avra-store-test/${stamp()}" }
@@ -289,3 +289,14 @@ spec "store" {
 }
 
 fn printed(root: string, print: string) -> Store { store_with(root, print, Keeping.Disk) }
+
+/// A text over the shared store's cut.
+fn big_text() -> string {
+    mut s = "0123456789abcdef"
+    for _i in 0..13 { s = s + s }
+    s
+}
+
+spec "compiler/the machine's blobs" {
+    then "a process whose hosts are all in memory keeps no blob in the machine's cache" { !cas_blob(big_text()) }
+}

@@ -108,7 +108,7 @@ use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, InputName, memory_host}
 use compiler.store.{Reading}
-use compiler.store.{Store, Keeping, pack_released}
+use compiler.store.{Store, Keeping, pack_released, blobs_kept_in}
 use features.{keys_spelled_from}
 use compiler.lower.{Unit, FieldPlan, CodeFacts}
 use compiler.families.{Family}
@@ -1041,10 +1041,14 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
     built(host, dir, dir, lang, clock, false, true)
 }
 
-/// The checkout a workspace at `root` stands in, every key of the process spelled from it.
+/// The checkout a workspace at `root` stands in. A host that is a machine spells every key of
+/// the process from it and keeps the process's blobs in its cache; a host in memory touches
+/// neither, so no test writes the machine's cache or moves the tree its keys are spelled from.
 fn spelling_tree(root: string, host: Host) -> string {
     let tree = tree_root_of(root, host.exists)
+    let machine? = host.cache else { return tree }
     keys_spelled_from(tree)
+    blobs_kept_in(machine)
     tree
 }
 

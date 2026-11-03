@@ -177,6 +177,18 @@ for m in m1:one/p m2:two/deeper/p m3:three/p; do
 done
 [ "$(grep -c '^Q	attempt' $R/m3.trace)" = 0 ] || fail "the third checkout derived again from a machine store two others sealed"
 [ "$(heard m3 torn)" = 0 ] || fail "the third checkout read a torn machine store"
+
+# ── another tree's answer for other source ──
+# A fourth checkout differs from the third by one edit in a file the entry imports.
+# Checked after the third, on the same machine store, it says only what its own
+# source says: its own warning, at its own path, never the third's answer.
+say "machine store: a tree never reads another tree's answer for different source"
+mkdir -p "$T/four/p" && cp -R $R/p/. "$T/four/p/"
+sed -i.bak 's/{ 4 }/{ 7 }/' "$T/four/p/src/more.av" && rm -f "$T/four/p/src/more.av.bak"
+machined four/p m4
+AVRA_CACHE_DIR=$T/alone ./avra check "$T/four/p" > $R/m4o.out 2> $R/m4o.err; echo "status $?" >> $R/m4o.out; words $R/m4o.err >> $R/m4o.out
+cmp -s $R/m4o.out $R/m4.out || { fail "the fourth checkout answered other than its own source"; diff $R/m4o.out $R/m4.out | head -6; }
+grep -q "$T/three" $R/m4.out && fail "the fourth checkout's answer names the third's files"
 find "$T" -delete
 
 # ── §6.8 compaction contended ──
