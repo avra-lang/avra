@@ -646,10 +646,10 @@ impl Decls {
     /// reading it would parse the whole held file.
     fn declared_unit(d: DeclId) -> Wanted {
         let x = self.decl(d)
-        let root: ExprId? = if self.file_held(x.file) {
+        let root: ExprId? = if self.file_held(x.file) || !holds_value(x.kind) {
             null
         } else {
-            let store = self.store_of(x.file)
+            let store = self.store(d)
             if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
         }
         Wanted {
@@ -677,7 +677,6 @@ impl Decls {
     fn state_unit(d: DeclId) -> Wanted { self.declared_unit(d) }
 
     fn facts_of(d: DeclId) -> DeclFacts? {
-        self.bypassed(Bypassed.Facts(d))
         if d.index >= self.faces.get().length { return null }
         self.row_read(self.raw_decl(d))
         self.faces.get()[d.index]
@@ -1436,5 +1435,14 @@ fn homed(kind: DeclKind, f: FileId) -> FileId? {
     match kind {
         .Builtin -> null,
         .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> f,
+    }
+}
+
+/// Whether a declaration's statement holds a value its unit roots at: a `const`'s or a
+/// `state`'s initializer. Every other kind's statement holds none.
+fn holds_value(k: DeclKind) -> bool {
+    match k {
+        .Const or .State -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Collect or .CollectEnum or .Builtin -> false,
     }
 }

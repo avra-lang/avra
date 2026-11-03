@@ -14,7 +14,6 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.debug.{qtrace, traced}
 use core.{
     CollectKind,
     CollectScope,
@@ -990,6 +989,8 @@ fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
 /// WHAT A FILE'S PARSE DECLARES: the lines every admission of the file mints from.
 @query
 fn items_of_file(ws: Workspace, f: FileId) -> List<ItemLine> {
+    // a line carries its declaration's span, so the text it was read from is a read
+    touch(source_of(ws, f))
     let p = ws.parsed(f)
     ws.decls.admission(f, p.store, p.stmts)
 }
@@ -2513,9 +2514,6 @@ impl Workspace {
         }
         mut t = self.type_cx_for(self.decls.decl(d))
         let x = self.decls.decl(d)
-        if traced() { qtrace(
-                "Q typed ${x.name} kind ${kind_word(x.kind)} file ${self.decls.file(x.file).path} lo ${x.lo} hi ${x.hi} stmt ${x.stmt.index} root ${x.root?.index ?? -1} maker ${x.maker} view-exprs ${t.view.store.exprs.count()} decl-exprs ${self.decls.store(d).exprs.count()}",
-            ) }
         let out = t.type_decl(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
