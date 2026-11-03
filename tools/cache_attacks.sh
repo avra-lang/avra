@@ -1103,6 +1103,145 @@ printf '// again\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
 AW "abw: a second comment" 3 hit
 fi
 
+if section gc; then
+    # A READ STATES ITS CAUSE, NEVER ITS CONSEQUENCE. A collector in its package's ROOT module,
+    # whose key covers every module under it: a member module added moves that key, so the walk
+    # sees only a key with nothing kept under it — the read must still name what moved it, the set
+    # its collect gathers. In a store of its own.
+    gc=$(mktemp -d); mkdir -p $gc/gk/src/m $gc/app/src
+    printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gc/gk/avra.toml
+    printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gc/gk/src/k.av
+    printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gc/gk/src/lib.av
+    printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gc/gk/src/m/m.av
+    printf '[package]\nname = "rt-gc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gc/app/avra.toml
+    printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gc/app/src/main.av
+    steps=$((steps+1)); ./avra build $gc/app > /dev/null 2>&1
+    mkdir -p $gc/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gc/gk/src/n/n.av
+    steps=$((steps+1)); gc_out=$(./avra build --time $gc/app 2>&1); gc_got=$($gc/app/src/main 2>&1)
+    [ "$gc_got" = "a=1" ] || fail "gc: a member module added: the binary printed '$gc_got', wanted 'a=1'"
+    case "$gc_out" in *"gk/src/lib.av — what its collect gathers"*) ;; *) fail "gc: a member module added: lib.av's read names its key, not the set that moved it: $(printf '%s' "$gc_out" | sed -n '/^read:/,$p' | grep 'lib.av' | cut -c1-200)" ;; esac
+    rm -rf $gc
+fi
+
+if section gw; then
+    # AND A COLLECTOR IS HELD TO THE SET IT GATHERED, never to its package's bytes. In a store of
+    # its own, so no other attack's history decides which reason a read is given first: a member's
+    # BODY edit leaves the set and holds the collector; two members swapping their marks' arguments
+    # move it; a member module added under a collector in a module of its own reaches no key of it,
+    # so what it gathers is the first reason it is read.
+    gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
+    printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gw/gk/avra.toml
+    printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gw/gk/src/k.av
+    printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gw/gk/src/c/lib.av
+    printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 1 }\n' > $gw/gk/src/m/m.av
+    printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
+    printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
+    gw_step() { # gw_step <label> <wanted a=…> <collector read: yes|no>
+        steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
+        gw_got=$($gw/app/src/main 2>&1)
+        [ "$gw_got" = "$2" ] || fail "gw: $1: the binary printed '$gw_got', wanted '$2'"
+        case "$gw_out" in *"gk/src/c/lib.av — what its collect gathers"*) gw_read=yes ;; *) gw_read=no ;; esac
+        [ "$gw_read" = "$3" ] || { fail "gw: $1: lib.av read for what it gathers: $gw_read, wanted $3: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)"; }
+    }
+    gw_step "cold" "a=1" no
+    printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
+    gw_step "a member's file edited, its marks and shapes unmoved" "a=1" no
+    printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
+    steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1; gw_got=$($gw/app/src/main 2>&1)
+    [ "$gw_got" = "a=0" ] || fail "gw: two members swap their marks' arguments: the binary printed '$gw_got', wanted 'a=0'"
+    mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gw/gk/src/n/n.av
+    gw_step "a member module added under the collector" "a=1" yes
+    rm -rf $gw
+fi
+
+if section gl; then
+    # A COLLECTOR THAT MOVED HOLDS NOTHING WHERE IT STOOD: a record whose `gathers` line names the
+    # collector's old file is read back after the move, and a later warm build under a hold must
+    # build from where the collector stands now, never ask for the file it left.
+    gl=$(mktemp -d); mkdir -p $gl/gk/src/m $gl/app/src
+    printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gl/gk/avra.toml
+    printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gl/gk/src/k.av
+    printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gl/gk/src/lib.av
+    printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $gl/gk/src/m/m.av
+    printf '[package]\nname = "rt-gl"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gl/app/avra.toml
+    printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gl/app/src/main.av
+    steps=$((steps+1)); ./avra build $gl/app > /dev/null 2>&1
+    mkdir -p $gl/gk/src/c; mv $gl/gk/src/lib.av $gl/gk/src/c/lib.av; printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gl/app/src/main.av
+    steps=$((steps+1)); ./avra build $gl/app > /dev/null 2>&1
+    printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\n' > $gl/gk/src/m/m.av
+    steps=$((steps+1)); gl_out=$(./avra build $gl/app 2>&1); gl_st=$?
+    [ $gl_st = 0 ] || fail "gl: a member edited after its collector moved did not build: $(printf '%s' "$gl_out" | grep 'avra:' | head -1 | cut -c1-160)"
+    gl_got=$($gl/app/src/main 2>&1); [ "$gl_got" = "a=0" ] || fail "gl: after the collector moved, the binary printed '$gl_got', wanted 'a=0'"
+    rm -rf $gl
+fi
+
+if section gt; then
+    # A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
+    # members whose `by` keys tie, in p/ and q/, and p/ moved to z/ — the move moves the order
+    # (z.X now after q.Y), and a warm build answers as a fresh one.
+    gt=$(mktemp -d); mkdir -p $gt/gk/src/c $gt/gk/src/p $gt/gk/src/q $gt/app/src
+    printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gt/gk/avra.toml
+    printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gt/gk/src/k.av
+    printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $gt/gk/src/c/lib.av
+    printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $gt/gk/src/p/p.av
+    printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $gt/gk/src/q/q.av
+    printf '[package]\nname = "rt-gt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gt/app/avra.toml
+    printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $gt/app/src/main.av
+    steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_cold=$($gt/app/src/main 2>&1)
+    mkdir -p $gt/gk/src/z; mv $gt/gk/src/p/p.av $gt/gk/src/z/z.av; rmdir $gt/gk/src/p
+    steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_warm=$($gt/app/src/main 2>&1)
+    rm -rf $gt/app/.avra-cache
+    steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_fresh=$($gt/app/src/main 2>&1)
+    [ "$gt_cold" = "x=0" ] && [ "$gt_warm" = "x=1" ] && [ "$gt_fresh" = "x=1" ] || fail "gt: a list collect's tie: cold '$gt_cold' (wanted x=0), warm '$gt_warm' and fresh '$gt_fresh' after the move (both wanted x=1)"
+    rm -rf $gt
+fi
+
+if section go; then
+    # AND ORDER IS PART OF THE SET: a list's members whose `by` keys tie are gathered in their own
+    # order, so two member files whose order flips change what the collector gathered, with no
+    # member's print moved — and the collector is read for it.
+    go=$(mktemp -d); mkdir -p $go/gk/src/c $go/gk/src/p $go/gk/src/q $go/app/src
+    printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $go/gk/avra.toml
+    printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $go/gk/src/k.av
+    printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $go/gk/src/c/lib.av
+    printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $go/gk/src/p/p.av
+    printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $go/gk/src/q/q.av
+    printf '[package]\nname = "rt-go"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $go/app/avra.toml
+    printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $go/app/src/main.av
+    steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1
+    mkdir -p $go/gk/src/z; mv $go/gk/src/p/p.av $go/gk/src/z/z.av; rmdir $go/gk/src/p
+    steps=$((steps+1)); go_out=$(./avra build --time $go/app 2>&1)
+    case "$go_out" in *"gk/src/c/lib.av — what its collect gathers"*) ;; *) fail "go: member files whose order flipped: lib.av was not read for what it gathers: $(printf '%s' "$go_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
+    printf '// again\n' >> $go/app/src/main.av
+    steps=$((steps+1)); go_again=$(./avra build --time $go/app 2>&1)
+    case "$go_again" in *"gk/src/c/lib.av — what its collect gathers"*) fail "go: the next build read lib.av for what it gathers again — a held collector must stand on the set it was read for" ;; esac
+    rm -rf $go
+fi
+
+if section gm; then
+    # AND A COLLECTOR IS HELD TO WHAT IT BAKES OF EACH MEMBER, not only to the members' names and
+    # shapes: a list projecting a member's module, its doc and the member itself as a fn value. A
+    # member moved to another module and a member's `///` edited each move what the held
+    # collector's object holds, so each must be read again — in a store of its own.
+    gm=$(mktemp -d); mkdir -p $gm/gk/src/c $gm/gk/src/p $gm/app/src
+    printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
+    printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
+    printf 'use k.{seq}\ntype Entry = { name: string, module: string, doc: string, call: fn() -> int }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name, module: it.module, doc: it.doc, call: it } by it.mark.args[0]\nexport fn shown() -> string { "${xs[0].module} ${xs[0].doc} ${xs[0].call()}" }\n' > $gm/gk/src/c/lib.av
+    printf 'use k.{seq}\n/// one\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/p/p.av
+    printf '[package]\nname = "rt-gm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gm/app/avra.toml
+    printf 'use @rt.gk.c.{shown}\nprintln(shown())\n' > $gm/app/src/main.av
+    gm_step() { # gm_step <label> <wanted>
+        steps=$((steps+1)); gm_out=$(./avra build $gm/app 2>&1); gm_got=$($gm/app/src/main 2>&1)
+        [ "$gm_got" = "$2" ] || { fail "gm: $1: the binary printed '$gm_got', wanted '$2': $(printf '%s' "$gm_out" | grep -aE '^error|^avra:' | head -2 | tr '\n' ' ' | cut -c1-200)"; }
+    }
+    gm_step "cold" "p one 1"
+    mkdir -p $gm/gk/src/z; mv $gm/gk/src/p/p.av $gm/gk/src/z/z.av; rmdir $gm/gk/src/p
+    gm_step "the member moved to another module" "z one 1"
+    printf 'use k.{seq}\n/// uno\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/z/z.av
+    gm_step "the member's doc edited" "z uno 1"
+    rm -rf $gm
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
@@ -2538,133 +2677,6 @@ printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src
 kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
-
-# A READ STATES ITS CAUSE, NEVER ITS CONSEQUENCE. A collector in its package's ROOT module,
-# whose key covers every module under it: a member module added moves that key, so the walk
-# sees only a key with nothing kept under it — the read must still name what moved it, the set
-# its collect gathers. In a store of its own.
-gc=$(mktemp -d); mkdir -p $gc/gk/src/m $gc/app/src
-printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gc/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gc/gk/src/k.av
-printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gc/gk/src/lib.av
-printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gc/gk/src/m/m.av
-printf '[package]\nname = "rt-gc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gc/app/avra.toml
-printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gc/app/src/main.av
-steps=$((steps+1)); ./avra build $gc/app > /dev/null 2>&1
-mkdir -p $gc/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gc/gk/src/n/n.av
-steps=$((steps+1)); gc_out=$(./avra build --time $gc/app 2>&1); gc_got=$($gc/app/src/main 2>&1)
-[ "$gc_got" = "a=1" ] || fail "gc: a member module added: the binary printed '$gc_got', wanted 'a=1'"
-case "$gc_out" in *"gk/src/lib.av — what its collect gathers"*) ;; *) fail "gc: a member module added: lib.av's read names its key, not the set that moved it: $(printf '%s' "$gc_out" | sed -n '/^read:/,$p' | grep 'lib.av' | cut -c1-200)" ;; esac
-rm -rf $gc
-
-# AND A COLLECTOR IS HELD TO THE SET IT GATHERED, never to its package's bytes. In a store of
-# its own, so no other attack's history decides which reason a read is given first: a member's
-# BODY edit leaves the set and holds the collector; two members swapping their marks' arguments
-# move it; a member module added under a collector in a module of its own reaches no key of it,
-# so what it gathers is the first reason it is read.
-gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
-printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gw/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gw/gk/src/k.av
-printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gw/gk/src/c/lib.av
-printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 1 }\n' > $gw/gk/src/m/m.av
-printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
-printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
-gw_step() { # gw_step <label> <wanted a=…> <collector read: yes|no>
-    steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
-    gw_got=$($gw/app/src/main 2>&1)
-    [ "$gw_got" = "$2" ] || fail "gw: $1: the binary printed '$gw_got', wanted '$2'"
-    case "$gw_out" in *"gk/src/c/lib.av — what its collect gathers"*) gw_read=yes ;; *) gw_read=no ;; esac
-    [ "$gw_read" = "$3" ] || { fail "gw: $1: lib.av read for what it gathers: $gw_read, wanted $3: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)"; }
-}
-gw_step "cold" "a=1" no
-printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
-gw_step "a member's file edited, its marks and shapes unmoved" "a=1" no
-printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
-steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1; gw_got=$($gw/app/src/main 2>&1)
-[ "$gw_got" = "a=0" ] || fail "gw: two members swap their marks' arguments: the binary printed '$gw_got', wanted 'a=0'"
-mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gw/gk/src/n/n.av
-gw_step "a member module added under the collector" "a=1" yes
-rm -rf $gw
-
-# A COLLECTOR THAT MOVED HOLDS NOTHING WHERE IT STOOD: a record whose `gathers` line names the
-# collector's old file is read back after the move, and a later warm build under a hold must
-# build from where the collector stands now, never ask for the file it left.
-gm=$(mktemp -d); mkdir -p $gm/gk/src/m $gm/app/src
-printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
-printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gm/gk/src/lib.av
-printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $gm/gk/src/m/m.av
-printf '[package]\nname = "rt-gm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gm/app/avra.toml
-printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gm/app/src/main.av
-steps=$((steps+1)); ./avra build $gm/app > /dev/null 2>&1
-mkdir -p $gm/gk/src/c; mv $gm/gk/src/lib.av $gm/gk/src/c/lib.av; printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gm/app/src/main.av
-steps=$((steps+1)); ./avra build $gm/app > /dev/null 2>&1
-printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\n' > $gm/gk/src/m/m.av
-steps=$((steps+1)); gm_out=$(./avra build $gm/app 2>&1); gm_st=$?
-[ $gm_st = 0 ] || fail "gm: a member edited after its collector moved did not build: $(printf '%s' "$gm_out" | grep 'avra:' | head -1 | cut -c1-160)"
-gm_got=$($gm/app/src/main 2>&1); [ "$gm_got" = "a=0" ] || fail "gm: after the collector moved, the binary printed '$gm_got', wanted 'a=0'"
-rm -rf $gm
-
-# A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
-# members whose `by` keys tie, in p/ and q/, and p/ moved to z/ — the move moves the order
-# (z.X now after q.Y), and a warm build answers as a fresh one.
-gt=$(mktemp -d); mkdir -p $gt/gk/src/c $gt/gk/src/p $gt/gk/src/q $gt/app/src
-printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gt/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gt/gk/src/k.av
-printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $gt/gk/src/c/lib.av
-printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $gt/gk/src/p/p.av
-printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $gt/gk/src/q/q.av
-printf '[package]\nname = "rt-gt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gt/app/avra.toml
-printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $gt/app/src/main.av
-steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_cold=$($gt/app/src/main 2>&1)
-mkdir -p $gt/gk/src/z; mv $gt/gk/src/p/p.av $gt/gk/src/z/z.av; rmdir $gt/gk/src/p
-steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_warm=$($gt/app/src/main 2>&1)
-rm -rf $gt/app/.avra-cache
-steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_fresh=$($gt/app/src/main 2>&1)
-[ "$gt_cold" = "x=0" ] && [ "$gt_warm" = "x=1" ] && [ "$gt_fresh" = "x=1" ] || fail "gt: a list collect's tie: cold '$gt_cold' (wanted x=0), warm '$gt_warm' and fresh '$gt_fresh' after the move (both wanted x=1)"
-rm -rf $gt
-
-# AND ORDER IS PART OF THE SET: a list's members whose `by` keys tie are gathered in their own
-# order, so two member files whose order flips change what the collector gathered, with no
-# member's print moved — and the collector is read for it.
-go=$(mktemp -d); mkdir -p $go/gk/src/c $go/gk/src/p $go/gk/src/q $go/app/src
-printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $go/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $go/gk/src/k.av
-printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $go/gk/src/c/lib.av
-printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $go/gk/src/p/p.av
-printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $go/gk/src/q/q.av
-printf '[package]\nname = "rt-go"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $go/app/avra.toml
-printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $go/app/src/main.av
-steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1
-mkdir -p $go/gk/src/z; mv $go/gk/src/p/p.av $go/gk/src/z/z.av; rmdir $go/gk/src/p
-steps=$((steps+1)); go_out=$(./avra build --time $go/app 2>&1)
-case "$go_out" in *"gk/src/c/lib.av — what its collect gathers"*) ;; *) fail "go: member files whose order flipped: lib.av was not read for what it gathers: $(printf '%s' "$go_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
-printf '// again\n' >> $go/app/src/main.av
-steps=$((steps+1)); go_again=$(./avra build --time $go/app 2>&1)
-case "$go_again" in *"gk/src/c/lib.av — what its collect gathers"*) fail "go: the next build read lib.av for what it gathers again — a held collector must stand on the set it was read for" ;; esac
-rm -rf $go
-
-# AND A COLLECTOR IS HELD TO WHAT IT BAKES OF EACH MEMBER, not only to the members' names and
-# shapes: a list projecting a member's module, its doc and the member itself as a fn value. A
-# member moved to another module and a member's `///` edited each move what the held
-# collector's object holds, so each must be read again — in a store of its own.
-gm=$(mktemp -d); mkdir -p $gm/gk/src/c $gm/gk/src/p $gm/app/src
-printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
-printf 'use k.{seq}\ntype Entry = { name: string, module: string, doc: string, call: fn() -> int }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name, module: it.module, doc: it.doc, call: it } by it.mark.args[0]\nexport fn shown() -> string { "${xs[0].module} ${xs[0].doc} ${xs[0].call()}" }\n' > $gm/gk/src/c/lib.av
-printf 'use k.{seq}\n/// one\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/p/p.av
-printf '[package]\nname = "rt-gm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gm/app/avra.toml
-printf 'use @rt.gk.c.{shown}\nprintln(shown())\n' > $gm/app/src/main.av
-gm_step() { # gm_step <label> <wanted>
-    steps=$((steps+1)); gm_out=$(./avra build $gm/app 2>&1); gm_got=$($gm/app/src/main 2>&1)
-    [ "$gm_got" = "$2" ] || { fail "gm: $1: the binary printed '$gm_got', wanted '$2': $(printf '%s' "$gm_out" | grep -aE '^error|^avra:' | head -2 | tr '\n' ' ' | cut -c1-200)"; }
-}
-gm_step "cold" "p one 1"
-mkdir -p $gm/gk/src/z; mv $gm/gk/src/p/p.av $gm/gk/src/z/z.av; rmdir $gm/gk/src/p
-gm_step "the member moved to another module" "z one 1"
-printf 'use k.{seq}\n/// uno\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/z/z.av
-gm_step "the member's doc edited" "z uno 1"
-rm -rf $gm
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
