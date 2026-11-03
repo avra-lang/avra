@@ -412,6 +412,16 @@ impl Code {
         self.of.view.decls.annotations_of(d)
     }
 
+    /// Whether a declaration of this file names this one's declaration in `@cycled_by`: the
+    /// engine shapes it with that query's own seats.
+    fn answers_a_cycle() -> bool {
+        let d? = self.declaring() else { return false }
+        let decls = self.of.view.decls
+        let own = decls.decl(d).name
+        flatten([decls.annotations_of(q) for q in decls.decls_of_file(self.of.view.file)])
+            .any(cycle_answered_by(it, own))
+    }
+
     /// The declaration THIS node's own statement makes — the exact
     /// statement, never merely the innermost one that encloses it
     /// (`enclosing_decl`'s question, for a position anywhere inside a
@@ -1128,3 +1138,6 @@ fn method_could_be_pure(of: Analysed, id: ExprId) -> bool {
     let row? = method_row(of.view.lang.methods, mp.name, sh) else { return false }
     match row.effect { .Read or .Lends -> true, .Write or .Shared -> false }
 }
+
+/// Whether `a` is a `@cycled_by` naming `answer`.
+fn cycle_answered_by(a: AnnotationFact, answer: string) -> bool { a.name == "cycled_by" && a.args.any(it.text == answer) }
