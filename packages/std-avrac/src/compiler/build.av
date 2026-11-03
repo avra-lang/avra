@@ -24,7 +24,7 @@ use core.{
 }
 use features.{Wanted}
 use @std.relation.{query}
-use @std.path.{joined_path, relative_path, dir_of}
+use @std.path.{joined_path, relative_path, dir_of, normalized}
 use @std.io.{read_bytes, make_dirs, remove}
 use @std.text.{parse_int, from_codepoint}
 use @std.time.{now_ns}
@@ -525,31 +525,44 @@ impl Workspace {
     }
 
     /// EVERY PACKAGE A PROGRAM'S KEY COVERS, each as `src<TAB>root`: the admitted
-    /// ones, and the ones its last derivation admitted. `@std/*` is admitted only
-    /// as a `use` reaches for it and the key is asked before anything is read, so
-    /// the closure is REMEMBERED — and it only grows: over-covering costs a
-    /// rebuild, under-covering is a silently wrong binary. A `use` that reaches a
-    /// package the row has not met is an edit to a file the row covers.
+    /// ones, and the ones the last derivation of this very entry text admitted. `@std/*` is
+    /// admitted only as a `use` reaches for it and the key is asked before anything is read,
+    /// so the closure is REMEMBERED — as each derivation admitted it, never grown. A `use`
+    /// that reaches a package the row has not met is an edit to a file the row covers.
     fn closure(named: string) -> List<string> {
         let kept = remembered(self.opened_store(), self.closure_key(named))
         sorted_texts(
             distinct(
                 ["${p.src}\t${p.root}" for p in self.packages()]
-                    .concat([line for line in kept if !line.is_empty()]),
+                    .concat([self.closure_line(line, true) for line in kept if !line.is_empty()]),
             ),
         )
     }
 
-    /// Where a program's closure is remembered.
-    fn closure_key(named: string) -> string { node_key(Stored.Unit, ["closure", self.root, named]) }
+    /// Where a program's closure is remembered: under its entry's text, so another program
+    /// standing at the same path never lends it packages.
+    fn closure_key(named: string) -> string {
+        node_key(Stored.Unit, ["closure", self.root, named, self.text_digest(named)])
+    }
 
-    /// The closure as it stands now, remembered for the next key.
-    fn keep_closure(named: string) {
-        remember(
-            self.opened_store(),
-            self.closure_key(named),
-            ["${p.src}\t${p.root}" for p in self.packages()],
+    /// A closure line's two paths under this tree's root — `home` reads them back from there,
+    /// else they are written relative to it, so a tree at another place reads its own.
+    fn closure_line(line: string, home: bool) -> string {
+        joined(
+            [if home { normalized(joined_path(self.root, x)) } else { relative_path(self.root, x) } for x in line.split("\t")],
+            "\t",
         )
+    }
+
+    /// The closure as this derivation admitted it, remembered for the next key.
+    fn keep_closure(named: string) {
+        let now = joined(
+            sorted_texts([self.closure_line("${p.src}\t${p.root}", false) for p in self.packages()]),
+            "\n",
+        )
+        let store = self.opened_store()
+        let key = self.closure_key(named)
+        if store.get(Stored.Unit, key) != now { let _ = store.keep(Stored.Unit, key, now, []) }
     }
 
     /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NOT ONE OF ITS
@@ -1092,9 +1105,10 @@ fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
 }
 
 /// A file's text as one digest, its octets read through the door: asked again only when the
-/// file's bytes move.
+/// file's bytes move. A file that stands nowhere has none — a kept read naming it has moved.
 @query
 fn text_digest_of(ws: Workspace, path: string) -> string {
+    if !ws.there(path) { return "" }
     let octets = ws.listed_octets(path)
     "${octets.length}.${digest_of_octets(octets)}"
 }
