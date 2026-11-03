@@ -136,6 +136,7 @@ ACKNOWLEDGED_GAPS = {
     # pair is `read_wire`/`read_of_wire`, which IS registered.
     ("of_wire", "read_of_wire"): "record.av: `Row.of_wire` reads one field of a wire row; `read_wire` is `read_of_wire`'s encoder",
     ("lit_arg_wire", "lit_arg_of_wire"): "record.av: one literal argument inside `annotation_wire`'s row; the registered `annotation_wire`/`annotation_of_wire` pair round-trips it",
+    ("type_wire", "read_type_wire"): "interface.av: the lower-level primitive both registered type readers (`interface_type`, `type_from_wire`) wrap; they round-trip it",
 }
 
 
