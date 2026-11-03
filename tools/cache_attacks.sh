@@ -2586,6 +2586,25 @@ mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $
 gw_step "a member module added under the collector" "a=1" yes
 rm -rf $gw
 
+# A COLLECTOR THAT MOVED HOLDS NOTHING WHERE IT STOOD: a record whose `gathers` line names the
+# collector's old file is read back after the move, and a later warm build under a hold must
+# build from where the collector stands now, never ask for the file it left.
+gm=$(mktemp -d); mkdir -p $gm/gk/src/m $gm/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gm/gk/src/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $gm/gk/src/m/m.av
+printf '[package]\nname = "rt-gm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gm/app/avra.toml
+printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gm/app/src/main.av
+steps=$((steps+1)); ./avra build $gm/app > /dev/null 2>&1
+mkdir -p $gm/gk/src/c; mv $gm/gk/src/lib.av $gm/gk/src/c/lib.av; printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gm/app/src/main.av
+steps=$((steps+1)); ./avra build $gm/app > /dev/null 2>&1
+printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\n' > $gm/gk/src/m/m.av
+steps=$((steps+1)); gm_out=$(./avra build $gm/app 2>&1); gm_st=$?
+[ $gm_st = 0 ] || fail "gm: a member edited after its collector moved did not build: $(printf '%s' "$gm_out" | grep 'avra:' | head -1 | cut -c1-160)"
+gm_got=$($gm/app/src/main 2>&1); [ "$gm_got" = "a=0" ] || fail "gm: after the collector moved, the binary printed '$gm_got', wanted 'a=0'"
+rm -rf $gm
+
 # A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
 # members whose `by` keys tie, in p/ and q/, and p/ moved to z/ — the move moves the order
 # (z.X now after q.Y), and a warm build answers as a fresh one.
