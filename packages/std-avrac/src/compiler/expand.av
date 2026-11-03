@@ -1,6 +1,7 @@
 //! The expansion and crossing pass: macros, derives and marks that
 //! materialize generated declarations, and the meta value a crossing
 //! produces. Moved out of the workspace god-object.
+use @std.errors.{Loc}
 use core.{
     Pat,
     Expr,
@@ -764,7 +765,7 @@ impl Workspace {
         }
         self.decls.note_generation(f, Generation { runs: took, at: at })
         let made = self.decls.mint_generated_code(f, store, stmts, before.exprs, maker, ann, at)
-        for d in made { self.decls.note_template(d, template_site(code)) }
+        for d in made { self.decls.note_template(d, self.sited(template_site(code))) }
         self.decls.splice_kept(key, made)
         made
     }
@@ -958,14 +959,22 @@ impl Workspace {
         store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value))
     }
 
+    /// A template's site with its file read back from the name the quote spelled it by.
+    fn sited(site: Loc?) -> Loc? {
+        let l? = site else { return null }
+        let f? = self.decls.known_file_named(l.file ?? "") else { return l }
+        l with { file: self.decls.file(f).path }
+    }
+
     /// A template's body copied into file f's store, each hole filled
     /// AT ITS SEAT by the seat's kind — so a fill's nodes mint just
     /// before the node holding them, and every generated declaration
     /// keeps a contiguous range. A body of nothing but holes is its
     /// fills in the seat asked for. Each copied node records the file
     /// that wrote it, unless that is f itself.
-    fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
-        let origin? = self.decls.known_file_id(file) else { return nothing_copied() }
+    fn copied(f: FileId, named: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
+        let origin? = self.decls.known_file_named(named) else { return nothing_copied() }
+        let file = self.decls.file(origin).path
         let src = self.decls.store_of(origin)
         let q? = src.quote_at(at) else { return self.copied_written(f, origin, src, at) }
         let body? = src.expr(q).body_of() else { return nothing_copied() }
@@ -1518,7 +1527,7 @@ fn body_template(v: FileView, s: StmtId) -> MetaStmts? {
     let q? = v.store.component_body(s) else { return null }
     let at? = v.store.expr_span(q) else { return null }
     let body? = v.store.expr(q).body_of() else { return null }
-    MetaStmts { node: Node.Template(v.source.file, at.lo, body.parts, []) }
+    MetaStmts { node: Node.Template(v.template_home(), at.lo, body.parts, []) }
 }
 
 /// Whether a declaration is a record — the one kind a body belongs to;

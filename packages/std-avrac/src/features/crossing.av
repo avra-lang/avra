@@ -440,7 +440,8 @@ fn crossed_loc(heap: MetaHeap, v: MetaVal) -> Loc? {
     if v is .Absent { return null }
     let c = crossed(heap, v)
     if c.slots.length < 3 { return null }
-    Loc { file: c.opt_text(0), lo: c.int_at(1), hi: c.int_at(2) }
+    let file? = c.opt_text(0) else { return Loc { file: null, lo: c.int_at(1), hi: c.int_at(2) } }
+    Loc { file: tree_unsaved(file), lo: c.int_at(1), hi: c.int_at(2) }
 }
 
 fn crossed_int(v: MetaVal) -> int {
@@ -793,13 +794,19 @@ fn seat_kind(types: TypeRegistry, p: TypeId, m: SeatMark) -> MetaSeatValue {
 /// no shape, and the string beside it is "".
 export fn no_kind() -> Kind { Kind.Unspelled("") }
 
+/// A place's file as generated code spells it: from the process's tree.
+fn saved_file(file: string?) -> string? {
+    let f? = file else { return null }
+    tree_saved(f)
+}
+
 /// A `Loc` as the evaluator holds it — absence for no place.
 fn meta_of_loc(at: Loc?, mut heap: MetaHeap) -> MetaVal {
     if at == null { return MetaVal.Absent }
     let place = at!
     written(
         "Loc",
-        [meta_of_opt_text(place.file), MetaVal.Int(place.lo), MetaVal.Int(place.hi)],
+        [meta_of_opt_text(saved_file(place.file)), MetaVal.Int(place.lo), MetaVal.Int(place.hi)],
         heap,
     )
 }

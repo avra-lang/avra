@@ -18,6 +18,7 @@ use compiler.store.cas.{machine_cache}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined, flatten}
 use core.debug.{qtrace, traced}
+use features.{tree_saved}
 
 /// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
 /// over it is exhaustive. Adding one is this enum and a directory name, which is the
@@ -204,25 +205,10 @@ export fn read_spelled(line: string) -> Reading? {
 /// families naming the same parts stay apart.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a family and its parts in, the key out.
 export fn node_key(family: Stored, parts: List<string>) -> string {
-    let key = digest_of(saved_in(keyed_tree().get(), joined([family.name()].concat(parts), "\n")))
+    let key = digest_of(tree_saved(joined([family.name()].concat(parts), "\n")))
     if traced() { key_words().put(key, parts.first() ?? "") }
     key
 }
-
-/// The tree the process's workspace stands in: a key spells every path under it from the
-/// tree, so the same tree checked out elsewhere names the same rows. Set where a workspace is
-/// made, before any key is.
-once fn keyed_tree() -> Cell<string> { Cell.new("") }
-
-/// The process's keys are spelled from `tree` from now on.
-export fn keys_spelled_from(tree: string) { keyed_tree().set(tree) }
-
-/// A hand-written wire's text as a saved row spells it: every path under the process's tree
-/// spelled from it.
-export fn tree_saved(text: string) -> string { saved_in(keyed_tree().get(), text) }
-
-/// A saved wire's text read under the tree the process stands in now.
-export fn tree_unsaved(text: string) -> string { unsaved_in(keyed_tree().get(), text) }
 
 /// Under a trace, the first word of each key's parts — what kind of row the key names.
 once fn key_words() -> Cell<Map<string, string>> { map_cell() }
