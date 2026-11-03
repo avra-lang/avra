@@ -385,4 +385,26 @@ moved=$(cd $two/one && AVRA_CACHE_DIR=$OLDPWD/$two/cache AVRA_CWD=$PWD $OLDPWD/a
 case "$moved" in *'"moved":["src/main.av"]'*) ;; *) fail "two mains: one's edit, the other checked between: explain's moved is not its main: $(printf '%s' "$moved" | cut -c1-120)" ;; esac
 say "two mains: two checkouts of one name each kept their own history"
 
+# TWO TREES, ONE MACHINE STORE, PACKAGES ADMITTED IN OTHER ORDERS: each tree holds `deps/a` and
+# `deps/b`, and what one names `@o/p` the other names `@o/q`. A file's module and a module's files
+# are the HOLDING package's, never a count of what was admitted before them, so every check
+# answers as a cold check of its own tree does.
+ord=$R/orders
+for side in one two; do
+    mkdir -p $ord/$side/src $ord/$side/deps/a/src $ord/$side/deps/b/src; : > $ord/$side/.git
+    if [ $side = one ]; then first=p; second=q; else first=q; second=p; fi
+    printf '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\n"@o/%s" = { path = "deps/a" }\n"@o/%s" = { path = "deps/b" }\n' $first $second > $ord/$side/avra.toml
+    printf '[package]\nname = "@o/%s"\nversion = "0.1.0"\n' $first > $ord/$side/deps/a/avra.toml
+    printf '[package]\nname = "@o/%s"\nversion = "0.1.0"\n' $second > $ord/$side/deps/b/avra.toml
+    printf 'export fn %s_says() -> int { 1 }\n' $first > $ord/$side/deps/a/src/lib.av
+    printf 'export fn %s_says() -> int { 2 }\n' $second > $ord/$side/deps/b/src/lib.av
+    printf 'use @o.%s.{%s_says}\nuse @o.%s.{%s_says}\nprintln("${p_says()} ${q_says()}")\n' $first $first $second $second > $ord/$side/src/main.av
+done
+for turn in cold warm; do
+    for side in one two; do
+        AVRA_CACHE_DIR=$PWD/$ord/cache ./avra check $ord/$side > $R/ord.out 2>&1 && say "orders: $side, $turn: checks clean" ||
+            fail "orders: $side, $turn: $(grep -m1 -E 'error|avra:' $R/ord.out)"
+    done
+done
+
 verdict

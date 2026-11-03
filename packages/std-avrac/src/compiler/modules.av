@@ -32,28 +32,26 @@ impl Workspace {
     /// The module a file belongs to: its directory under its package's
     /// source root, `.`-joined — "" for a file at the root package's
     /// source root, `@scope.name.a` for a dependency's.
-    fn module_of(path: string) -> string { module_at(self, self.packages().length, path) }
+    fn module_of(path: string) -> string {
+        let pkg = self.packages()[self.holder_of_path(path)]
+        module_at(self, self.module_prefix(pkg), pkg.src, self.per_file, path)
+    }
+
+    /// What a package's module names begin with: nothing for the root's, its key for a
+    /// dependency's.
+    fn module_prefix(pkg: Package) -> string { if pkg.ordinal == 0 { "" } else { key_spelled(pkg.key) } }
 
     /// `module_of`, as the path it names.
     fn module_path_of(path: string) -> ModulePath { module_path(self.module_of(path).split(".")) }
-
-    fn module_named(path: string) -> string {
-        let pkg = self.packages()[self.holder_of_path(path)]
-        // EVERY FILE ITS OWN MODULE in a directory of programs: the
-        // module is the file's path under the root, stem included, so
-        // seventy programs' `P`s never share a namespace
-        let rel = below(path, pkg.src)
-        let local = if self.per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
-        if pkg.ordinal == 0 { return local }
-        if local.is_empty() { return key_spelled(pkg.key) }
-        "${key_spelled(pkg.key)}.${local}"
-    }
 
     /// The files a module path names: a directory's `.av` files, else
     /// the one file, else nothing (the module does not exist). A
     /// directory holding its own `avra.toml` is a package, never a
     /// module of the one above it.
-    fn module_files(m: ModulePath) -> List<string> { module_listed(self, self.packages().length, m.text()) }
+    fn module_files(m: ModulePath) -> List<string> {
+        let pkg? = self.holder(m) else { return [] }
+        module_listed(self, pkg.src, m.text())
+    }
 
     /// The files of `m` the program MET, in listing order — the files it registered.
     fn met_files(m: ModulePath) -> List<string> {
@@ -77,7 +75,11 @@ impl Workspace {
 
     fn listed_files(m: ModulePath) -> List<string> {
         let pkg? = self.holder(m) else { return [] }
-        let src = pkg.src
+        self.listed_under(pkg.src, m)
+    }
+
+    /// A module's files under its package's source root `src`.
+    fn listed_under(src: string, m: ModulePath) -> List<string> {
         if self.crosses_package(src, m.local()) { return [] }
         let dir = m.dir_under(src)
         let entries = self.listing(dir)
@@ -598,13 +600,21 @@ fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
     [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
 }
 
-/// A file's module, asked for ONE count of admitted packages: packages are admitted as `use`
-/// lines reach them, and one admitted later answers for files it holds.
+/// A FILE'S MODULE, asked of the package that holds it — `prefix` its module names begin
+/// with, `src` its source root — so the answer is the package's, whichever order a tree
+/// admitted it in. A directory of programs (`per_file`) makes every file its own module, so
+/// seventy programs' `P`s never share a namespace.
 @query
-fn module_at(ws: Workspace, _admitted: int, path: string) -> string { ws.module_named(path) }
+fn module_at(_ws: Workspace, prefix: string, src: string, per_file: bool, path: string) -> string {
+    let rel = below(path, src)
+    let local = if per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
+    if prefix.is_empty() || local.is_empty() { return prefix + local }
+    "${prefix}.${local}"
+}
 
-/// A module's files, through the host's listing, asked for one count of admitted packages.
+/// A module's files, through the host's listing, under the source root `src` of the package
+/// that holds it; a dependency's `module` names its key.
 @query
-fn module_listed(ws: Workspace, _admitted: int, module: string) -> List<string> {
-    ws.listed_files(module_path(module.split(".")))
+fn module_listed(ws: Workspace, src: string, module: string) -> List<string> {
+    ws.listed_under(src, module_path(module.split(".")))
 }
