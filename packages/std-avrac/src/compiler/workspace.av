@@ -977,19 +977,21 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.warnings_of(ws.de
 /// The use-site warnings recorded for `d` so far.
 fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks.get()[d.index] ?? [] }
 
-/// A file's rows standing, one constant: a reader that reads them through their buckets is
-/// ordered after the admission, and nothing it reads moves it.
+/// A file's rows standing: the declarations its admission minted. A reader that reads them
+/// through their buckets is ordered after the admission, and a restored answer stands only
+/// where those declarations do.
 @query
-fn admitted(ws: Workspace, f: FileId) -> int {
-    touch(ws.items(f))
-    0
-}
+fn admitted(ws: Workspace, f: FileId) -> List<DeclId> { ws.items(f) }
 
-/// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi`.
+/// A declaration's arena range.
+@codec
+type Place = { lo: int, hi: int, stmt_lo: int, stmt_hi: int }
+
+/// Where a declaration's facts sit in its file's arena.
 @query
-fn placement_of(ws: Workspace, d: DeclId) -> int {
+fn placement_of(ws: Workspace, d: DeclId) -> Place {
     let x = ws.decls.decl(d)
-    fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
+    Place { lo: x.lo, hi: x.hi, stmt_lo: x.stmt_lo, stmt_hi: x.stmt_hi }
 }
 
 /// A module's names bound once. A re-entry before it settles is a smaller view.
@@ -2368,7 +2370,10 @@ impl Workspace {
     /// `Syntax` is durable — two declarations of one shape fold alike
     /// wherever they sit — but a body's typed facts carry ARENA IDS, so
     /// a same-file insert above it must move this and retype that body.
-    fn placed(d: DeclId) -> int { placement_of(self, d) }
+    fn placed(d: DeclId) -> int {
+        let at = placement_of(self, d)
+        fp(122, [at.lo, at.hi, at.stmt_lo, at.stmt_hi])
+    }
 
     /// A declaration's own slice of its file's names, DECLARATION-GRAIN
     /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
