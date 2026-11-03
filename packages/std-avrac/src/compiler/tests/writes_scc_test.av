@@ -1,14 +1,13 @@
 // A fn's written seats are settled with its strongly-connected set alone: a cycle takes what
 // a member outside it writes, a cycle with no writer stays unwritten, and asking one fn
-// settles no fn it does not call. `Writes` is family 41 by name; the keys are spelled
-// through `family_ordinal`.
+// settles no fn it does not call.
 use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn writes_key(d: DeclId) -> Key { Key { family: family_ordinal("Writes"), arg: d.index } }
+fn settled_writes(ws: Workspace, d: DeclId) -> bool { ws.cells_named("seats_written_of").any((k: Key) -> k.arg == d.index) }
 
 fn writes_workspace(main: string) -> Workspace {
     let ws = test_workspace(
@@ -64,7 +63,7 @@ spec "compiler/receivers — a fn's written seats settle with its own set" {
         then "asking it settles none of the fns it does not call" {
             let ws = writes_workspace(cycle_source("p.n = 1"))
             let _ = written(ws, "quiet")
-            ws.db.value_hash_of(writes_key(writes_decl(ws, "ping"))) == null
+            !settled_writes(ws, writes_decl(ws, "ping"))
         }
     }
 }
