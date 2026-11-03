@@ -62,7 +62,7 @@ WORLD = {
         "is_dir": "read", "list_dir": "read", "stamp": "read", "kind_of": "read",
         "open_beneath": "read", "watch": "read", "own_dir": "read", "user_dir": "read", "env": "env", "env_or": "env", "compile_slot": "env",
         "write_text": W, "write_bytes": W, "append_bytes": W, "synced": W,
-        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W,
+        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W,
         "println": E, "eprintln": E,
         "one_path": P, "refused": P, "enoent": P, "eacces": P, "enotdir": P,
         "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,
