@@ -20,7 +20,6 @@ use @std.io.{
     make_dirs,
     remove,
     list_dir,
-    is_dir,
     env,
 }
 use @std.text.{parse_int}
@@ -236,15 +235,12 @@ fn unused_for(root: string, days: int) -> bool {
     wall_secs() - marked.at > days * 86400
 }
 
-/// A directory and everything under it, gone.
-fn removed_whole(dir: string) {
+/// A path and everything under it, gone: a file lists nothing.
+fn removed_whole(path: string) {
     // LICENSED input.store_io: a let-go print root, listed to remove it
-    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
-    for n in names {
-        let path = joined_path(dir, n)
-        if is_dir(path) { removed_whole(path) } else { let _ = remove(path) }
-    }
-    let _ = remove(dir)
+    let names = match list_dir(path) { .Ok(ns) -> ns, .Err(_) -> [] }
+    for n in names { removed_whole(joined_path(path, n)) }
+    let _ = remove(path)
 }
 
 /// The machine's pack under each print, one a process: every store reads and writes it

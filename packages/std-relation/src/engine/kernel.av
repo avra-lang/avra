@@ -79,6 +79,9 @@ type Asker = {
     /// Each open query's edges so far, each list in its own cell: a
     /// read appends in place.
     pending: Cell<List<Cell<List<int>>>>,
+    /// The innermost open query's edges, the last of `pending`; a cell no query owns when
+    /// none is open.
+    frame: Cell<Cell<List<int>>>,
     /// Each open query's restores — null until it first overwrites a
     /// still-open ancestor's stamp, which most never do.
     restore: Cell<List<Cell<List<Restore>>?>>,
@@ -102,6 +105,7 @@ fn new_asker() -> Asker {
     Asker {
         open: list_cell(),
         pending: list_cell(),
+        frame: Cell.new(list_cell()),
         restore: list_cell(),
         began: list_cell(),
         readers: list_cell(),
@@ -841,7 +845,9 @@ impl Kernel {
         let no_restore: Cell<List<Restore>>? = null
         let reader = self.minted.get() + 1
         self.minted.set(reader)
-        self.asker.pending.push(Cell.new(none))
+        let frame = Cell.new(none)
+        self.asker.pending.push(frame)
+        self.asker.frame.set(frame)
         self.asker.restore.push(no_restore)
         self.asker.open.push(edge_of(key))
         self.asker.began.push(self.rev.get())
@@ -916,12 +922,13 @@ impl Kernel {
     }
 
     fn closed_frame() -> List<int> {
-        let edges = self.asker.pending.get().last()!.get()
+        let edges = self.asker.frame.get().get()
         let restores = self.asker.restore.get()
         // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
         let restored: Cell<List<Restore>>? = restores[restores.length - 1]
         if self.timing { self.frame_closed(family_of(self.asker.open.get().last() ?? 0 - 1)) }
         dropped(self.asker.pending)
+        self.asker.frame.set(self.asker.pending.get().last() ?? list_cell())
         dropped(self.asker.restore)
         dropped(self.asker.open)
         dropped(self.asker.began)
@@ -992,7 +999,7 @@ impl Kernel {
         if arg < 0 { negative_arg(family, arg) }
         if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
         stamped_in(row, arg, reader)
-        self.asker.pending.get().last()!.push(packed(family, arg))
+        self.asker.frame.get().push(packed(family, arg))
         if !self.counting.get() { self.asker.last.set(packed(family, arg)) }
     }
 
