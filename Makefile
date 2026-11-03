@@ -1142,7 +1142,7 @@ dev-server:
 # Where Firefox, node or a wasm toolchain is absent it FAILS, unless
 # UI_BROWSER_SKIP=<reason> stands it down; ui-browser-skip holds that contract.
 ui-browser:
-	@sh tools/ui_board_browser.sh
+	@sh tools/bounded.sh 900 sh tools/ui_board_browser.sh
 
 ui-browser-skip:
 	@sh tools/ui_board_browser.sh --self-test
