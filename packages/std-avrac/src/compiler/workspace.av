@@ -115,7 +115,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query, recursive, codec, cycled_by}
+use @std.relation.{query, recursive, codec, cycled_by, scoped_by}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
@@ -640,11 +640,9 @@ export type Workspace = {
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
     /// each file's clash diagnostics as `method_clashes` last settled them
-    method_diag_rows: Table<List<Diag>>,
     /// each module's names as their query last made them
     names_rows: Table<ModuleNames>,
     /// each file's plain parse as its query last made it
-    plain_rows: Table<Parsed>,
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
     /// than scanning the whole table on every ask.
@@ -978,13 +976,16 @@ fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks
 /// A file's rows standing, one constant: a reader that reads them through their buckets is
 /// ordered after the admission, and nothing it reads moves it.
 @query
+@scoped_by(in_arena_file)
 fn admitted(ws: Workspace, f: FileId) -> int {
     touch(ws.items(f))
     0
 }
 
-/// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi`.
+/// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi` — where this process's
+/// arena put it, which names nothing past the process.
 @query
+@scoped_by(in_arena)
 fn placement_of(ws: Workspace, d: DeclId) -> int {
     let x = ws.decls.decl(d)
     fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
@@ -997,7 +998,7 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
-fn plain_made(ws: Workspace, f: FileId) -> int { ws.plain_make(f) }
+fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1120,9 +1121,7 @@ fn built(
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
-        method_diag_rows: new_table<List<Diag>>(),
         names_rows: new_table<ModuleNames>(),
-        plain_rows: new_table<Parsed>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
@@ -1333,9 +1332,7 @@ impl Workspace {
         self.minted_modules(distinct([self.module_path_of(p).text() for p in paths]))
     }
 
-    /// A held declaration may need syntax-only facts that were not part of
-    /// its signature. Parse that file on first such read; the declaration
-    /// identities and object reuse still come from the stored interface.
+    /// A file's parse, given to declarations minted without it: their nodes and ranges.
     fn store_ensured(f: FileId) {
         self.decls.remember_store(f, self.parsed(f).store)
     }
@@ -1624,17 +1621,7 @@ impl Workspace {
     /// owns that name for its own coarser span, over the SAME work;
     /// sharing the name would sum a span and its own subset into one
     /// double-counted total.
-    fn plain_parsed(f: FileId) -> Parsed {
-        let _ = plain_made(self, f)
-        self.plain_rows.at(f.index)!
-    }
-
-    /// A file's plain parse, made and kept beside the cell; the word is its structure's hash.
-    fn plain_make(f: FileId) -> int {
-        let p = self.clocked_parse(f)
-        self.plain_rows.keep(f.index, p)
-        program_hash(p)
-    }
+    fn plain_parsed(f: FileId) -> Parsed { plain_made(self, f) }
 
     fn clocked_parse(f: FileId) -> Parsed {
         let t0 = self.clock()
@@ -2461,19 +2448,20 @@ impl Workspace {
     /// on `placed(x)` — WHERE those nodes sit, since the context is over
     /// an arena range. Reads the file's `parsed` table UNRECORDED, so an
     /// edit elsewhere in the file never retypes this declaration.
-    fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
-        // A file's module pseudo-declaration owns no statements, so it
-        // owes no own-syntax edge.
-        if x.stmt.index < self.decls.store(x.id).stmts.count() { let _ = self.syntax(x.id) }
-        let _ = self.placed(x.id)
-        let p = if self.relation(Family.Parsed).open(x.file.index) {
-            self.parsed(x.file)
+    fn cx_over(asked: Decl, names: NameFacts) -> TypeCx {
+        let p = if self.relation(Family.Parsed).open(asked.file.index) {
+            self.parsed(asked.file)
         } else {
-            match self.relation(Family.Parsed).values.entry(x.file.index) {
+            match self.relation(Family.Parsed).values.entry(asked.file.index) {
                 .Present(r) -> parsed_of(r),
-                .Missing -> self.parsed(x.file),
+                .Missing -> self.parsed(asked.file),
             }
         }
+        // A file's module pseudo-declaration owns no statements, so it
+        // owes no own-syntax edge.
+        if asked.stmt.index < self.decls.store(asked.id).stmts.count() { let _ = self.syntax(asked.id) }
+        let _ = self.placed(asked.id)
+        let x = self.decls.decl(asked.id)
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
             self.lang.dispatch,
@@ -2498,8 +2486,8 @@ impl Workspace {
             .Reuse(value) -> { return typed_of(value) },
             .Compute -> nothing(),
         }
+        mut t = self.type_cx_for(self.decls.decl(d))
         let x = self.decls.decl(d)
-        mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
@@ -2619,6 +2607,11 @@ fn module_at(arg: int) -> ModuleId { ModuleId { index: arg } }
 fn decl_at_arg(arg: int) -> DeclId { DeclId { index: arg } }
 
 /// A program's fingerprint — the fold of its statements'.
+impl Parsed {
+    /// A parse folded by its structure: what an in-process answer of one digests by.
+    fn fingerprint() -> int { program_hash(self) }
+}
+
 fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }

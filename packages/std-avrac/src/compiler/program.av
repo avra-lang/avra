@@ -118,7 +118,14 @@ export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> P
     if traced() { qtrace("Q\tparse\t${src.file}\n") }
     work_parsed()
     let quiet = parsed_fresh(lang, src, words, false)
-    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
+    let p = if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
+    // A `state` at the top level is a DECLARATION, marked where the parse makes it, so
+    // every reader of the arena — an admission, a body typed from kept lines — sees it so.
+    // A state inside a body keeps its statement mark alone.
+    for s in p.stmts {
+        if p.store.is_state_stmt(s) { p.store.mark_module_state(s) }
+    }
+    p
 }
 
 /// The words a parse under `words` lexes by.
