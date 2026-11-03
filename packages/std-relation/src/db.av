@@ -657,8 +657,13 @@ impl Db {
         let chunk = stable_hasher(0).octets(bytes).finish()
         let keep = self.durable.keep
         keep(LEAF_CHUNK, chunk, bytes)
-        self.leaf_chunks.put("${chunk}", fresh)
-        for at, l in fresh { self.leaf_places.put(l.kept_word(), LeafPlace { chunk: chunk, at: at }) }
+        self.chunk_placed(chunk, fresh)
+    }
+
+    /// `leaves` known as chunk `chunk`, each placed at its index there.
+    fn chunk_placed(chunk: int, leaves: List<Leaf>) {
+        self.leaf_chunks.put("${chunk}", leaves)
+        for at, l in leaves { self.leaf_places.put(l.kept_word(), LeafPlace { chunk: chunk, at: at }) }
     }
 
     /// The leaf a saved answer names by its place; absent when its chunk is not kept.
@@ -678,8 +683,7 @@ impl Db {
             .Ok(ls) -> [self.unsaved_leaf(l) for l in ls],
             .Err(_) -> { return null },
         }
-        self.leaf_chunks.put("${chunk}", read)
-        for at, l in read { self.leaf_places.put(l.kept_word(), LeafPlace { chunk: chunk, at: at }) }
+        self.chunk_placed(chunk, read)
         read
     }
 
@@ -1121,9 +1125,7 @@ fn write_place(w: Writer, p: LeafPlace) {
 }
 
 fn read_place(r: Reader) -> Result<LeafPlace, CodecFault> {
-    let chunk = r.int()?
-    let at = r.count()?
-    LeafPlace { chunk: chunk, at: at }
+    LeafPlace { chunk: r.int()?, at: r.count()? }
 }
 
 fn write_leaf(w: Writer, l: Leaf) {
