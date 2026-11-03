@@ -169,7 +169,13 @@ export fn indexed_scope() -> dyn Scope { Indexed {} }
 
 /// A record under construction, as octets. An IDENTITY: every holder
 /// of a writer writes the one record, so no seat needs `mut`.
-export type Writer = { out: Cell<List<int>>, chunks: Cell<List<Bytes>>, named: Cell<Map<string, int>> }
+export type Writer = {
+    out: Cell<List<int>>,
+    chunks: Cell<List<Bytes>>,
+    named: Cell<Map<string, int>>,
+    /// Whether an id was written that its scope names as nothing: what was written names no call.
+    nameless: Cell<bool> = Cell.new(false),
+}
 
 export fn writer() -> Writer {
     let out: Cell<List<int>> = Cell.new([])
@@ -188,8 +194,10 @@ export fn written_dense(w: Writer, scope: dyn Scope, kind: string, index: int) {
         w.varint(seen!)
         return
     }
+    let spelled = scope.spelled(kind, index)
+    if spelled.is_empty() { w.nameless.set(true) }
     w.varint(0)
-    w.text(scope.spelled(kind, index))
+    w.text(spelled)
     w.named.put(key, w.named.get().length + 1)
 }
 
@@ -344,6 +352,15 @@ export fn spelled_with(parts: List<fn(Writer) -> void>) -> string {
     w.spelled()
 }
 
+/// The parts spelled as a call's lasting name, none when an id among them names nothing past
+/// the process: such a call is never kept.
+export fn named_with(parts: List<fn(Writer) -> void>) -> string? {
+    let w = writer()
+    for part in parts { part(w) }
+    if w.nameless.get() { return null }
+    w.spelled()
+}
+
 /// A `?` layer written: its presence, then the value when there is one.
 export fn written_opt<T>(w: Writer, v: T?, each: fn(Writer, T) -> void) {
     match v {
@@ -392,6 +409,14 @@ export fn written_ordinal(w: Writer, at: int, parts: List<fn(Writer) -> void>) {
 export fn encoded_with<T>(v: T, each: fn(Writer, T) -> void) -> Bytes {
     let w = writer()
     each(w, v)
+    w.bytes()
+}
+
+/// `v` encoded as a record that names it past the process; none when an id in it names nothing.
+export fn named_encoding<T>(v: T, each: fn(Writer, T) -> void) -> Bytes? {
+    let w = writer()
+    each(w, v)
+    if w.nameless.get() { return null }
     w.bytes()
 }
 

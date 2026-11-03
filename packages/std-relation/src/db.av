@@ -46,6 +46,7 @@ use stable.{
     Reader,
     CodecFault,
     encoded_with,
+    named_encoding,
     decoded_with,
     int_spelled,
     written_list,
@@ -1161,13 +1162,14 @@ fn distinct_leaves(ls: List<Leaf>) -> List<Leaf> {
     by.values()
 }
 
+/// A leaf's place: its chunk, then its position there — a position, never a count of what follows.
 fn write_place(w: Writer, p: LeafPlace) {
     w.int(p.chunk)
-    w.count(p.at)
+    w.int(p.at)
 }
 
 fn read_place(r: Reader) -> Result<LeafPlace, CodecFault> {
-    LeafPlace { chunk: r.int()?, at: r.count()? }
+    LeafPlace { chunk: r.int()?, at: r.int()? }
 }
 
 fn write_leaf(w: Writer, l: Leaf) {
@@ -1421,13 +1423,14 @@ impl AnswersUnder<V> {
     fn ran_lasting(
         db: Db,
         arg: int,
-        spelled: string,
+        named: string?,
         body: fn() -> V,
         again: fn() -> V,
         digest: fn(V) -> int,
         record: KeptRecord<V>,
     ) -> V {
         let query? = record.query else { return self.ran(db, arg, body, again, digest) }
+        let spelled? = named else { return self.ran(db, arg, body, again, digest) }
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
         let kept? = self.restored(db, query, record, spelled) else {
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
@@ -1462,19 +1465,18 @@ impl AnswersUnder<V> {
         let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
         if !done.wrote && leaves != null {
             let places = db.placed_leaves(leaves!)
+            let named? = named_encoding(
+                done.value,
+                (w, v) -> {
+                    w.text(db.saved_spelling(spelled))
+                    written_list(w, places, write_place)
+                    record.write(w, v)
+                },
+            ) else {
+                return done.value
+            }
             let keep = db.durable.keep
-            keep(
-                query,
-                spelled_hash(query, db.saved_spelling(spelled)),
-                encoded_with(
-                    done.value,
-                    (w, v) -> {
-                        w.text(db.saved_spelling(spelled))
-                        written_list(w, places, write_place)
-                        record.write(w, v)
-                    },
-                ),
-            )
+            keep(query, spelled_hash(query, db.saved_spelling(spelled)), named)
         }
         done.value
     }
