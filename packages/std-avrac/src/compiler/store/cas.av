@@ -33,16 +33,20 @@ const CAS_BYTES_KEPT: int = 4294967296
 /// can read as one by accident.
 once fn cas_prefix() -> string { from_codepoint(1) + "avra-cas:" }
 
-/// Where the shared store stands: `AVRA_CACHE_DIR`, else under the user's home.
-fn cas_dir() -> string? {
+/// THE MACHINE'S CACHE: `AVRA_CACHE_DIR`, else `$HOME/.avra/cache` — where every worktree's
+/// shared rows and blobs stand.
+export fn machine_cache() -> string? {
     // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
     let moved? = env("AVRA_CACHE_DIR") else {
         // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
         let home? = env("HOME") else { return null }
-        return joined_path(joined_path(home, ".avra/cache"), "cas")
+        return joined_path(home, ".avra/cache")
     }
-    joined_path(moved, "cas")
+    moved
 }
+
+/// Where the shared blobs stand.
+fn cas_dir() -> string? { joined_path(machine_cache()?, "cas") }
 
 fn blob_at(dir: string, digest: string) -> string { joined_path(joined_path(dir, digest.substring(0, 2)), digest) }
 
