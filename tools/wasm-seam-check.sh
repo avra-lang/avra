@@ -76,6 +76,13 @@ if ! grep -q '"avra_event"' "$work/reactor.objdump"; then say "reactor does not 
 if grep -q '"_start"' "$work/reactor.objdump"; then say "reactor still exports _start"; fail=1; fi
 if ! grep -q '"avra_main"' "$work/reactor.objdump"; then say "reactor does not export avra_main"; fail=1; fi
 
+# both modes write one output path: the command module built again is the command module
+if ! "$avra" build --target "$target" "$work/seam" >"$work/again.out" 2>"$work/again.err"; then
+    say "command rebuild failed"; cat "$work/again.err" >&2; exit 1
+fi
+wasm-objdump -x "$(tail -1 "$work/again.out")" >"$work/again.objdump" 2>&1
+if grep -q '"avra_main"' "$work/again.objdump"; then say "the command module built after the reactor is the reactor"; fail=1; fi
+
 if [ "$fail" -ne 0 ]; then
     say "--- imports/exports ---"; grep -iE "import|export" "$work/objdump.txt" | head -20
     exit 1
