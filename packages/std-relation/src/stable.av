@@ -266,19 +266,24 @@ impl Writer {
 /// so is a path outside it, and everything when `home` is empty.
 const TREE_MARK: string = "{tree}"
 
-/// `text` with every whole `home` spelled as the tree.
+/// `text` with every whole `home` spelled as the tree: a path under it in one pass, then the
+/// rare `home` that ends a path where it stands.
 export fn saved_in(home: string, text: string) -> string {
     if home.is_empty() || !text.contains(home) { return text }
-    mut out = ""
-    mut rest = text
+    let under = text.replace("${home}/", "${TREE_MARK}/")
+    if !under.contains(home) { return under }
+    mut parts: List<string> = []
+    mut rest = under
     mut at = rest.index_of(home)
     while at >= 0 {
         let after = rest.substring(at + home.length, rest.length)
-        out = out + rest.substring(0, at) + if ends_a_path(after) { TREE_MARK } else { home }
+        parts.push(rest.substring(0, at))
+        parts.push(if ends_a_path(after) { TREE_MARK } else { home })
         rest = after
         at = rest.index_of(home)
     }
-    out + rest
+    parts.push(rest)
+    parts.join("")
 }
 
 /// Whether a path ends where `after` begins: nothing follows, or what follows is no part of a

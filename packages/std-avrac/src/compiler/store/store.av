@@ -104,9 +104,9 @@ export enum Keeping {
 /// different compiler's.
 /// `tree` is where the paths a row names stand: a row spells each path under it from the tree
 /// (`saved_in`), so the same tree checked out elsewhere names the same rows.
-/// `base` is the machine's pack under the same print: a row this store misses is read
-/// through to it, and every row this store keeps is kept there too, so a tree checked out
-/// anywhere on the machine starts from what any other computed.
+/// `base` is the machine's pack under the same print: where the host names one, it holds the
+/// store's packed rows, so a tree checked out anywhere on the machine starts from what any
+/// other computed.
 export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, tree: string, base: Pack? }
 
 /// The packs this process has open, one per root and compiler print — so a store
@@ -316,7 +316,7 @@ impl Store {
     /// write fails, its old edge cannot make the new data look complete.
     fn uncommit(family: Stored, key: string) -> bool {
         if !family.file_family() {
-            pack_forget(self.pack, self.packed(family), self.saved(key))
+            pack_forget(self.rows(), self.packed(family), self.saved(key))
             return true
         }
         let edge = self.edge_path(family, key)
@@ -409,10 +409,13 @@ impl Store {
 
     fn disk_kept(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         if family.file_family() { return self.written(family, key, bytes, read) }
-        let reads = [self.saved(r) for r in read]
-        pack_put_octets(self.pack, self.packed(family), self.saved(key), bytes, reads)
-        let base? = self.base else { return true }
-        pack_put_octets(base, self.packed(family), self.saved(key), bytes, reads)
+        pack_put_octets(
+            self.rows(),
+            self.packed(family),
+            self.saved(key),
+            bytes,
+            [self.saved(r) for r in read],
+        )
         true
     }
 
@@ -462,55 +465,43 @@ impl Store {
         !reads.any(it == null || !stands(it!))
     }
 
-    /// A packed row: this store's own, else the machine's.
+    /// THE PACK A PACKED ROW STANDS IN: the machine's, where the host names one, so every tree
+    /// on the machine reads and keeps ONE copy of a row; else the store's own.
+    fn rows() -> Pack { self.base ?? self.pack }
+
+    /// A packed row.
     fn packed_get(family: Stored, key: string) -> Bytes? {
-        let own = pack_get_octets(
-            self.pack,
-            self.packed(family),
-            self.saved(key),
-            inspects(self.keeping),
-        )
-        if own != null { return own }
-        let base? = self.base else { return null }
-        pack_get_octets(base, self.packed(family), self.saved(key), true)
+        pack_get_octets(self.rows(), self.packed(family), self.saved(key), inspects(self.keeping))
     }
 
-    /// A packed row's reads, from the pack that answers its row.
+    /// A packed row's reads.
     fn packed_reads(family: Stored, key: string) -> List<string>? {
-        let own = pack_reads(
-            self.pack,
-            self.packed(family),
-            self.saved(key),
-            inspects(self.keeping),
-        )
-        if own != null { return own }
-        let base? = self.base else { return null }
-        pack_reads(base, self.packed(family), self.saved(key), true)
+        pack_reads(self.rows(), self.packed(family), self.saved(key), inspects(self.keeping))
     }
 
     /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
     /// name. Ids only — no value is fetched, no row decoded. A row not in the set stands.
     fn suspects(moved: List<string>, readers: Map<string, List<string>>) -> List<string> {
-        pack_suspects(self.pack, [self.saved(m) for m in moved], readers)
+        pack_suspects(self.rows(), [self.saved(m) for m in moved], readers)
     }
 
     /// The rows that read each input: ONE reverse, built once and passed to every `suspects`
     /// a fixpoint asks, since the index is read as the derivation writes into it.
-    fn readers() -> Map<string, List<string>> { pack_readers(self.pack) }
+    fn readers() -> Map<string, List<string>> { pack_readers(self.rows()) }
 
     /// THE KEY A ROW IS FILED UNDER, as the pack spells it: the family's name and the stamp it
     /// stands under, then the key — the same spelling `pack_suspects` answers with.
     fn suspect_key(family: Stored, key: string) -> string { record_key(self.packed(family), self.saved(key)) }
 
     /// What this process has asked of the store so far.
-    fn traffic() -> Traffic { pack_traffic(self.pack) }
+    fn traffic() -> Traffic { pack_traffic(self.rows()) }
 
     /// Whether a packed row is there and reads none of the inputs behind `suspect` (a suspect
     /// set's record keys): it stands with nothing judged. An aside or file row is never so.
     fn unsuspected(family: Stored, key: string, suspect: Map<string, bool>) -> bool {
         !family.file_family() &&
             self.aside_row(family, key) == null &&
-            pack_has(self.pack, self.packed(family), self.saved(key), inspects(self.keeping)) &&
+            pack_has(self.rows(), self.packed(family), self.saved(key), inspects(self.keeping)) &&
             suspect.get(self.suspect_key(family, key)) == null
     }
 
@@ -546,16 +537,13 @@ impl Store {
     /// A derivation's end: what it appended is folded into a sealed body once there is
     /// enough of it, so the next open reads an index. An inspection keeps nothing to fold.
     fn settle() {
-        if inspects(self.keeping) { return }
-        pack_settle(self.pack)
-        let base? = self.base else { return }
-        pack_settle(base)
+        if !inspects(self.keeping) { pack_settle(self.rows()) }
     }
 
     /// RECLAIM by §6.7's rule: compaction folds the reachable rows into a fresh
     /// sealed body, then the limits evict the oldest history. The time-travel
     /// window is the limits' `revisions`.
-    fn clean() -> CleanReport { pack_clean(self.pack, store_limits()) }
+    fn clean() -> CleanReport { pack_clean(self.rows(), store_limits()) }
 
     /// ANSWER ONE ROW FROM AN OLDER REVISION — §6.7's time-travel read, over a fresh
     /// index of that body (never this process's live one).
