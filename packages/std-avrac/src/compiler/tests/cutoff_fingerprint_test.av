@@ -10,7 +10,8 @@
 // the kernel's `settle`) is exactly this equality, so a field
 // left out of a fold is exactly a field whose edit would be missed.
 use core.{TypeId, ExprId, StmtId, DeclId, indexed_ids}
-use features.{Namespace, no_names, new_name_facts, new_type_facts}
+use features.{Namespace, no_names, new_name_facts, new_type_facts, TypeFacts}
+use @std.relation.stable.{indexed_scope}
 use diagnostics.{Diag, Voices, refusal}
 
 fn tid(n: int) -> TypeId { TypeId { index: n } }
@@ -85,34 +86,34 @@ spec "compiler/voices — the six families' content fingerprints" {
         }
     }
 
-    given "a typing fold, over one declaration's typing facts" {
+    given "a typing digest, over one declaration's typing facts" {
         then "the SAME table fingerprints alike" {
             let a = new_type_facts(0, 2, 0 - 1, 0, 1, tid(0))
             let b = new_type_facts(0, 2, 0 - 1, 0, 1, tid(0))
-            a.fingerprint_in(indexed_ids()) == b.fingerprint_in(indexed_ids())
+            TypeFacts.digest_in(indexed_scope(), a) == TypeFacts.digest_in(indexed_scope(), b)
         }
         then "an expression's settled type moves the fingerprint" {
             let a = new_type_facts(0, 2, 0 - 1, 0, 1, tid(0))
             let b = new_type_facts(0, 2, 0 - 1, 0, 1, tid(0))
             b.set_type(eid(0), tid(9))
-            a.fingerprint_in(indexed_ids()) != b.fingerprint_in(indexed_ids())
+            TypeFacts.digest_in(indexed_scope(), a) != TypeFacts.digest_in(indexed_scope(), b)
         }
         then "a widened expression moves the fingerprint though its own type does not" {
             let a = new_type_facts(0, 2, 0 - 1, 0, 1, tid(0))
             let b = new_type_facts(0, 2, 0 - 1, 0, 1, tid(0))
             b.widen(eid(0), tid(9))
-            a.fingerprint_in(indexed_ids()) != b.fingerprint_in(indexed_ids())
+            TypeFacts.digest_in(indexed_scope(), a) != TypeFacts.digest_in(indexed_scope(), b)
         }
         then "the boxed_locals column (a WHOLE-FILE window, stmt-indexed) moves the fingerprint" {
             let a = new_type_facts(0, 2, 0 - 1, 0, 3, tid(0))
             let b = new_type_facts(0, 2, 0 - 1, 0, 3, tid(0))
             b.mark_boxed_local(sid(0))
-            a.fingerprint_in(indexed_ids()) != b.fingerprint_in(indexed_ids())
+            TypeFacts.digest_in(indexed_scope(), a) != TypeFacts.digest_in(indexed_scope(), b)
         }
         then "the table's own voices move the fingerprint though every column is untouched" {
             let a = new_type_facts(0, 1, 0 - 1, 0, 1, tid(0))
             let b = a with { voices: voices_of([one_diag("x.y", "boom")]) }
-            a.fingerprint_in(indexed_ids()) != b.fingerprint_in(indexed_ids())
+            TypeFacts.digest_in(indexed_scope(), a) != TypeFacts.digest_in(indexed_scope(), b)
         }
     }
 }
