@@ -295,6 +295,14 @@ impl Row {
     fn shaped() -> RowShape { RowShape { shape: self.shape, payload: self.payload } }
 }
 
+/// A declaration row's value — its shape word, then its payload — decoded; null for one
+/// that does not.
+fn shaped_of(line: string) -> RowShape? {
+    let parts = line.split("\t")
+    let shape? = shape_of(parts[0]) else { return null }
+    RowShape { shape: shape, payload: parts.drop(1) }
+}
+
 impl RowShape {
     /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
     /// writes one field, and one with nothing to say writes it empty.
@@ -1219,6 +1227,16 @@ fn mark_of_word(w: string) -> SeatMark {
     }
 }
 
+/// A NOMINAL type's declaration — the one place the registry knows which types a program
+/// declared. `rest -> null` is the licensed remainder: a structural or scalar shape names
+/// no declaration, and a future nominal variant is added here.
+fn nominal_decl(types: TypeRegistry, id: TypeId) -> DeclId? {
+    match types.shape_of(id) {
+        .Struct(d, _) or .Enum(d, _) or .App(d, _, _) or .Dyn(d, _) or .TypeName(d, _) or .Var(d, _, _) -> d,
+        rest -> null,
+    }
+}
+
 /// A field's NAME, from its `name:spelling` pair.
 fn field_name(pair: string) -> string { pair.split(":")[0] }
 
@@ -1346,9 +1364,13 @@ fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
 /// text, the texts its compile-time runs read, and the interfaces its bodies can see.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
+export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+    object_key_of_parts(ws, ws.key_parts(store, m, path))
+}
+
 /// THE OBJECT KEY OF A FILE'S PARTS under this workspace's compiler and build mode — the
 /// one fold, so a key computed on any route is the key the file was kept under.
-// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and parts in, the key out.
 export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(k)]) }
 
