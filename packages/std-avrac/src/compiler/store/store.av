@@ -14,6 +14,7 @@
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{saved_in, unsaved_in}
+use compiler.store.cas.{machine_cache}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined, flatten}
 use core.debug.{qtrace, traced}
@@ -90,7 +91,10 @@ export enum Keeping {
 /// different compiler's.
 /// `tree` is where the paths a row names stand: a row spells each path under it from the tree
 /// (`saved_in`), so the same tree checked out elsewhere names the same rows.
-export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, tree: string }
+/// `base` is the machine's pack under the same print: a row this store misses is read
+/// through to it, and every row this store keeps is kept there too, so a tree checked out
+/// anywhere on the machine starts from what any other computed.
+export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, tree: string, base: Pack? }
 
 /// The packs this process has open, one per root and compiler print — so a store
 /// is read from disk once however many workspaces ask for it. A pack lives while a
@@ -153,8 +157,26 @@ export fn store_with(root: string, print: string, keeping: Keeping) -> Store {
         keeping: keeping,
         pack: pack_for(root, print),
         tree: dir_of(root),
+        base: machine_pack(root, print, keeping),
     }
 }
+
+/// The machine's pack under `print`, none where the store keeps aside, the machine has no
+/// cache, or the store IS the machine's.
+fn machine_pack(root: string, print: string, keeping: Keeping) -> Pack? {
+    if inspects(keeping) { return null }
+    let shared? = machine_cache() else { return null }
+    if shared == root { return null }
+    let known = machine_packs().get().get(print)
+    if known != null { return known }
+    let made = pack_at(shared, print)
+    machine_packs().put(print, made)
+    made
+}
+
+/// The machine's pack under each print, one a process: every store reads and writes it
+/// through the same pack.
+once fn machine_packs() -> Cell<Map<string, Pack>> { map_cell() }
 
 /// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
 /// of exactly what came back. A name holds no newline; a digest holds no space and is
@@ -254,7 +276,7 @@ impl Store {
         if family.file_family() {
             self.on_disk(family, key)
         } else {
-            pack_has(self.pack, self.packed(family), self.saved(key), inspects(self.keeping))
+            self.packed_get(family, key) != null
         }
     }
 
@@ -296,7 +318,7 @@ impl Store {
         if family.file_family() {
             self.read_disk(family, key)
         } else {
-            pack_get_octets(self.pack, self.packed(family), self.saved(key), inspects(self.keeping))
+            self.packed_get(family, key)
         }
     }
 
@@ -325,13 +347,10 @@ impl Store {
 
     fn disk_kept(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
         if family.file_family() { return self.written(family, key, bytes, read) }
-        pack_put_octets(
-            self.pack,
-            self.packed(family),
-            self.saved(key),
-            bytes,
-            [self.saved(r) for r in read],
-        )
+        let reads = [self.saved(r) for r in read]
+        pack_put_octets(self.pack, self.packed(family), self.saved(key), bytes, reads)
+        let base? = self.base else { return true }
+        pack_put_octets(base, self.packed(family), self.saved(key), bytes, reads)
         true
     }
 
@@ -381,6 +400,32 @@ impl Store {
         !reads.any(it == null || !stands(it!))
     }
 
+    /// A packed row: this store's own, else the machine's.
+    fn packed_get(family: Stored, key: string) -> Bytes? {
+        let own = pack_get_octets(
+            self.pack,
+            self.packed(family),
+            self.saved(key),
+            inspects(self.keeping),
+        )
+        if own != null { return own }
+        let base? = self.base else { return null }
+        pack_get_octets(base, self.packed(family), self.saved(key), true)
+    }
+
+    /// A packed row's reads, from the pack that answers its row.
+    fn packed_reads(family: Stored, key: string) -> List<string>? {
+        let own = pack_reads(
+            self.pack,
+            self.packed(family),
+            self.saved(key),
+            inspects(self.keeping),
+        )
+        if own != null { return own }
+        let base? = self.base else { return null }
+        pack_reads(base, self.packed(family), self.saved(key), true)
+    }
+
     /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
     /// name. Ids only — no value is fetched, no row decoded. A row not in the set stands.
     fn suspects(moved: List<string>, readers: Map<string, List<string>>) -> List<string> {
@@ -403,7 +448,7 @@ impl Store {
     fn unsuspected(family: Stored, key: string, suspect: Map<string, bool>) -> bool {
         !family.file_family() &&
             self.aside_row(family, key) == null &&
-            self.has(family, key) &&
+            pack_has(self.pack, self.packed(family), self.saved(key), inspects(self.keeping)) &&
             suspect.get(self.suspect_key(family, key)) == null
     }
 
@@ -413,12 +458,7 @@ impl Store {
             return lines_of(self.aside_reads(family, key))
         }
         if !family.file_family() {
-            let kept? = pack_reads(
-                self.pack,
-                self.packed(family),
-                self.saved(key),
-                inspects(self.keeping),
-            ) else { return null }
+            let kept? = self.packed_reads(family, key) else { return null }
             return [self.unsaved(r) for r in kept]
         }
         // LICENSED input.store_io: the store's own edge file, read to prove a row's reads
@@ -444,7 +484,10 @@ impl Store {
     /// A derivation's end: what it appended is folded into a sealed body once there is
     /// enough of it, so the next open reads an index. An inspection keeps nothing to fold.
     fn settle() {
-        if !inspects(self.keeping) { pack_settle(self.pack) }
+        if inspects(self.keeping) { return }
+        pack_settle(self.pack)
+        let base? = self.base else { return }
+        pack_settle(base)
     }
 
     /// RECLAIM by §6.7's rule: compaction folds the reachable rows into a fresh
