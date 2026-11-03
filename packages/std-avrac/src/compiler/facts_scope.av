@@ -5,6 +5,7 @@ use core.{DeclId, TypeId, FileId}
 use compiler.{Workspace}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
+use compiler.store.{cas_big, cas_blob, cas_ref_of, cas_value}
 
 /// The id types a typing table holds.
 enum IdKind {
@@ -55,6 +56,14 @@ impl Scope for FactsScope {
     fn placed(file: string, lo: int, hi: int) -> List<int>? { self.ws.place_of(file, lo, hi) }
 
     fn unplaced(file: string, at: List<int>) -> List<int>? { self.ws.span_of(file, at) }
+
+    /// A text over the shared store's cut is ONE blob there, named by its content.
+    fn kept_out(text: string) -> string? {
+        if !cas_big(text) || !cas_blob(text) { return null }
+        cas_ref_of(text)
+    }
+
+    fn kept_back(reference: string) -> string? { cas_value(reference) }
 
     fn unspelled(kind: string, text: string) -> int? {
         let k? = id_kind(kind) else { return null }

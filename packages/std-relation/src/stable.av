@@ -116,6 +116,11 @@ fn flag(v: bool) -> int {
 /// A PLACE IN A TEXT crosses the same way: an offset means nothing once the text above it
 /// moves, so the scope spells a span of `file` as it chooses (a token place), absent where
 /// it cannot, and reads one back to its offsets, absent where the text no longer holds it.
+///
+/// A LONG TEXT crosses out of line where the scope keeps one: `kept_out` answers the
+/// reference it filed the text under, absent to keep it in the record, and `kept_back` the
+/// text a reference names, absent once it is gone — so a record reading one fails, and its
+/// answer is computed again.
 export trait Scope {
     fn spelled(kind: string, index: int) -> string
 
@@ -124,6 +129,10 @@ export trait Scope {
     fn placed(file: string, lo: int, hi: int) -> List<int>?
 
     fn unplaced(file: string, at: List<int>) -> List<int>?
+
+    fn kept_out(text: string) -> string? { null }
+
+    fn kept_back(reference: string) -> string? { null }
 }
 
 /// The scope that spells an id by its index, which only the process that wrote it reads back.
@@ -217,8 +226,11 @@ impl Writer {
     fn text(s: string) { self.octets(s.bytes()) }
 
     /// A run of octets, counted: a long one joins the record as one chunk, a short one a byte at a time.
-    fn octets(b: Bytes) {
-        self.count(b.length)
+    fn octets(b: Bytes) { self.counted(b.length, b) }
+
+    /// `b` behind the count `n`.
+    fn counted(n: int, b: Bytes) {
+        self.count(n)
         if b.length < CHUNK {
             for i in 0..b.length { self.byte(b.at(i)) }
             return
@@ -459,9 +471,12 @@ impl Reader {
         n
     }
 
-    fn octets() -> Result<Bytes, CodecFault> {
-        let n = self.count()?
+    fn octets() -> Result<Bytes, CodecFault> { self.run(self.count()?) }
+
+    /// The next `n` octets, never past what is left to read.
+    fn run(n: int) -> Result<Bytes, CodecFault> {
         let at = self.at.get()
+        if n < 0 || n > self.b.length - at { fail CodecFault.Truncated }
         self.at.set(at + n)
         self.b.slice(at, at + n)
     }
@@ -490,6 +505,32 @@ impl Reader {
 
     /// Whether every octet has been read.
     fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A text written through the scope: a count of zero and the scope's reference where it keeps
+/// the text out of line, else its length plus one and its octets.
+export fn written_text(w: Writer, scope: dyn Scope, s: string) {
+    let out = scope.kept_out(s)
+    if out != null {
+        w.count(0)
+        w.text(out!)
+        return
+    }
+    let b = s.bytes()
+    w.counted(b.length + 1, b)
+}
+
+/// `written_text` read back: a text kept out of line comes back through the scope, and one
+/// the scope no longer keeps is unresolved.
+export fn text_read(r: Reader, scope: dyn Scope) -> Result<string, CodecFault> {
+    let n = r.varint()?
+    if n == 0 {
+        let reference = r.text()?
+        let kept? = scope.kept_back(reference) else { fail CodecFault.Unresolved }
+        return kept
+    }
+    let s? = (r.run(n - 1)?).text() else { fail CodecFault.NotText }
+    s
 }
 
 /// A dense id read back through the reader's scope and built by `make`.
