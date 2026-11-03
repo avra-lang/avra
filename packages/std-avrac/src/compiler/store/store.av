@@ -14,7 +14,6 @@
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{saved_in, unsaved_in}
-use compiler.store.cas.{machine_cache}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined, flatten}
 use core.debug.{qtrace, traced}
@@ -150,22 +149,27 @@ export fn store_at(root: string) -> Store { store_with(root, "", Keeping.Disk) }
 /// A store with its compiler print and where its writes land — the one place a
 /// workspace turns its own identity into a store.
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print and a mode in.
-export fn store_with(root: string, print: string, keeping: Keeping) -> Store {
+export fn store_with(root: string, print: string, keeping: Keeping) -> Store { store_beside(root, print, keeping, null) }
+
+/// A store whose misses read through to the machine's shared cache at `shared` — a host that
+/// is a machine names one; a host in memory names none, so nothing it does reaches a disk.
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print, a mode and the machine's cache in.
+export fn store_beside(root: string, print: string, keeping: Keeping, shared: string?) -> Store {
     Store {
         root: root,
         print: print,
         keeping: keeping,
         pack: pack_for(root, print),
         tree: dir_of(root),
-        base: machine_pack(root, print, keeping),
+        base: machine_pack(shared, root, print, keeping),
     }
 }
 
 /// The machine's pack under `print`, none where the store keeps aside, the machine has no
 /// cache, or the store IS the machine's.
-fn machine_pack(root: string, print: string, keeping: Keeping) -> Pack? {
+fn machine_pack(cache: string?, root: string, print: string, keeping: Keeping) -> Pack? {
     if inspects(keeping) { return null }
-    let shared? = machine_cache() else { return null }
+    let shared? = cache else { return null }
     if shared == root { return null }
     let known = machine_packs().get().get(print)
     if known != null { return known }
