@@ -343,4 +343,21 @@ checked cc_read
 agrees cc_read "after a claim conflict"
 [ "$(heard cc_read claim-conflict)" -ge 1 ] || fail "a claim conflict was not reported when two segments held different values for one key"
 
+# THE SHARED CONTENT STORE NEVER OUTGROWS ITS CEILING: a process that puts a blob trims the
+# store as it settles, the least recently read first. Three 1 MB blobs stand unread for years
+# and a fourth was read last; a check that puts far more than a 7 MB ceiling ends under it,
+# with the three unread gone first and the one read last still standing.
+C=$R/cas-cap
+mkdir -p $C/cache/cas/00
+for n in 1 2 3 4; do head -c 1048576 /dev/zero > $C/cache/cas/00/stand$n; done
+touch -t 202001010000 $C/cache/cas/00/stand1 $C/cache/cas/00/stand2 $C/cache/cas/00/stand3
+touch -t 209901010000 $C/cache/cas/00/stand4
+AVRA_CACHE_DIR=$C/cache AVRA_CAS_MAX_MB=7 ./avra check packages/std-relation > $R/cas-cap.out 2>&1
+cas_bytes=$(find $C/cache/cas -mindepth 2 -maxdepth 2 -type f -exec stat -f %z {} + 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+cas_put=$(find $C/cache/cas -mindepth 2 -maxdepth 2 -type f ! -name 'stand*' | wc -l | tr -d ' ')
+[ "$cas_put" -gt 0 ] || fail "cas cap: the check put no blob, so the ceiling was never tested"
+[ "$cas_bytes" -le 7340032 ] && say "cas cap: $cas_put blob(s) put, the store holds $cas_bytes bytes under its 7 MB ceiling" || fail "cas cap: the store holds $cas_bytes bytes past its 7 MB ceiling"
+[ ! -e $C/cache/cas/00/stand1 ] && [ ! -e $C/cache/cas/00/stand2 ] && [ ! -e $C/cache/cas/00/stand3 ] && say "cas cap: the least recently read went first" || fail "cas cap: a least recently read blob still stands"
+[ -e $C/cache/cas/00/stand4 ] && say "cas cap: the blob read last stays" || fail "cas cap: the blob read last was let go"
+
 verdict
