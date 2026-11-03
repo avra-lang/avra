@@ -650,7 +650,10 @@ impl Db {
 
     /// `fresh` kept as one chunk and placed.
     fn chunk_kept(fresh: List<Leaf>) {
-        let bytes = encoded_with(fresh, (w, v) -> written_list(w, v, write_leaf))
+        let bytes = encoded_with(
+            [self.saved_leaf(l) for l in fresh],
+            (w, v) -> written_list(w, v, write_leaf),
+        )
         let chunk = stable_hasher(0).octets(bytes).finish()
         let keep = self.durable.keep
         keep(LEAF_CHUNK, chunk, bytes)
@@ -672,7 +675,7 @@ impl Db {
         let answer = self.durable.answer
         let bytes? = answer(LEAF_CHUNK, chunk) else { return null }
         let read = match decoded_with(bytes, (r: Reader) -> read_list(r, read_leaf)) {
-            .Ok(ls) -> ls,
+            .Ok(ls) -> [self.unsaved_leaf(l) for l in ls],
             .Err(_) -> { return null },
         }
         self.leaf_chunks.put("${chunk}", read)
@@ -686,10 +689,26 @@ impl Db {
         home()
     }
 
-    /// A text argument as every call spells it: each path under the tree spelled from the
-    /// tree, so a call's spelling, its key and the leaves that name it are the same in every
-    /// checkout.
+    /// A call's spelling as its saved record names it: every path under the tree spelled from
+    /// the tree, so a record, its key and the leaves it names are the same in every checkout.
+    /// The process keeps its own spelling; only what is kept is spelled so.
     fn saved_spelling(text: string) -> string { saved_in(self.home(), text) }
+
+    /// A leaf as a saved record names it.
+    fn saved_leaf(l: Leaf) -> Leaf {
+        match l {
+            .Rows(_, _) -> l,
+            .Input(name, spelled, digest) -> Leaf.Input(name, self.saved_spelling(spelled), digest),
+        }
+    }
+
+    /// A saved leaf as this process names it.
+    fn unsaved_leaf(l: Leaf) -> Leaf {
+        match l {
+            .Rows(_, _) -> l,
+            .Input(name, spelled, digest) -> Leaf.Input(name, unsaved_in(self.home(), spelled), digest),
+        }
+    }
 
     /// Whether every read still has the digest it was kept at.
     fn leaves_hold(ls: List<Leaf>) -> bool { ls.all((l) -> self.leaf_holds(l)) }
@@ -1081,7 +1100,7 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
     CodecFault,
 > {
     let kept = r.text()?
-    if kept != spelled { fail CodecFault.OtherArguments }
+    if kept != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
     let places = read_list(r, read_place)?
     let leaves = [db.leaf_at(p) for p in places]
     if leaves.any(it == null) { fail CodecFault.OtherArguments }
@@ -1385,11 +1404,11 @@ impl AnswersUnder<V> {
             let keep = db.durable.keep
             keep(
                 query,
-                spelled_hash(query, spelled),
+                spelled_hash(query, db.saved_spelling(spelled)),
                 encoded_with(
                     done.value,
                     (w, v) -> {
-                        w.text(spelled)
+                        w.text(db.saved_spelling(spelled))
                         written_list(w, places, write_place)
                         record.write(w, v)
                     },
@@ -1408,7 +1427,7 @@ impl AnswersUnder<V> {
     /// back is recomputed, never guessed at.
     fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> Kept<V>? {
         let answer = db.durable.answer
-        let bytes? = answer(query, spelled_hash(query, spelled)) else { return null }
+        let bytes? = answer(query, spelled_hash(query, db.saved_spelling(spelled))) else { return null }
         match decoded_with(bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
             .Ok(value) -> value,
             .Err(_) -> null,

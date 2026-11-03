@@ -455,35 +455,31 @@ fn wrapper(f: Fn) -> Decls {
 /// is interned by — never a hash, which two calls may share.
 export fn args_spelled(f: Fn) -> Code {
     let seats = f.params.slice(1, f.params.length)
-    let db = db_code(f)
-    if seats.length == 1 && seats[0].kind is .Str { return quote { ${db}.saved_spelling(${name(seats[0].name)}) } }
-    let plain = [plain_spelled(p, db) for p in seats]
+    if seats.length == 1 && seats[0].kind is .Str { return name(seats[0].name) }
+    let plain = [plain_spelled(p) for p in seats]
     if !plain.any(it == null) { return joined_spelling([p! for p in plain]) }
-    let writes = [quote { (w: Writer) -> ${seat_written(p, db, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
+    let writes = [quote { (w: Writer) -> ${seat_written(p, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
 }
 
-/// A seat spelled straight, never through the codec: a text by its length and itself — a
-/// lone text seat as itself, which nothing beside it can run into — a number as itself. None
-/// for any other kind, which the codec spells. A text is spelled as the Db saves it, its tree
-/// spelled first, so its length is the saved spelling's.
-fn plain_spelled(p: Param, db: Code) -> Code? {
-    if p.kind is .Str { return quote { text_spelled(${db}.saved_spelling(${name(p.name)})) } }
+/// A seat spelled straight, never through the codec: a text escaped — a lone text seat as
+/// itself, which nothing beside it can run into — a number as itself. None for any other kind,
+/// which the codec spells.
+fn plain_spelled(p: Param) -> Code? {
+    if p.kind is .Str { return quote { text_spelled(${name(p.name)}) } }
     let n? = numbered(p) else { return null }
     quote { int_spelled(${n}) }
 }
 
-/// Plain seats' spellings as one key: none as empty, one alone, more joined by `/`, which no
-/// number spells and a text's own length puts past.
+/// Plain seats' spellings as one key: none as empty, one alone, more joined by a tab, which no
+/// number spells and a text spells escaped.
 fn joined_spelling(parts: List<Code>) -> Code {
     let first? = parts.first() else { return quote { "" } }
-    parts.drop(1).fold(first, (at: Code, p: Code) -> quote { ${at} + "/" + ${p} })
+    parts.drop(1).fold(first, (at: Code, p: Code) -> quote { ${at} + "\t" + ${p} })
 }
 
-/// One seat written: a number as its number, a text as the Db saves it, any other kind
-/// through the codec.
-fn seat_written(p: Param, db: Code, owner: Owner) -> Code {
-    if p.kind is .Str { return quote { w.text(${db}.saved_spelling(${name(p.name)})) } }
+/// One seat written: a number as its number, any other kind through the codec.
+fn seat_written(p: Param, owner: Owner) -> Code {
     let n? = numbered(p) else { return written(quote { w }, name(p.name), p.kind, owner) }
     quote { w.int(${n}) }
 }
