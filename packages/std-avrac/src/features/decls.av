@@ -1677,7 +1677,14 @@ impl Decls {
         DeclAt.get(self.expr_owners.get()[f.index].get(), e.index)?.decl
     }
 
-    fn store(d: DeclId) -> SyntaxArena { self.store_of(self.decl(d).file) }
+    /// A declaration's file's store, read as that declaration's own nodes: its syntax, never
+    /// the whole parse.
+    fn store(d: DeclId) -> SyntaxArena {
+        let f = self.decl(d).file
+        if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }
+        self.bypassed(Bypassed.Facts(d))
+        self.stores.get()[f.index]!
+    }
 
     /// The component a declaration names, read from its file's parse. A
     /// held declaration whose statement no longer stands there as that

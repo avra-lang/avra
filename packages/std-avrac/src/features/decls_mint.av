@@ -202,13 +202,6 @@ impl Decls {
     /// impl and its methods; the file's Main; then each declaration nested in a body, under
     /// the innermost owner whose span holds it. Mints nothing.
     fn admission(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<ItemLine> {
-        // A `state` at the top level is a DECLARATION: the mark lands
-        // before `declared_kind` reads it, so this statement mints a
-        // State row and a body ever sees it in the namespace. A state
-        // inside a body keeps its statement mark alone.
-        for s in stmts {
-            if store.is_state_stmt(s) { store.mark_module_state(s) }
-        }
         mut out: List<ItemLine> = []
         for s in stmts {
             let kind: DeclKind? = store.declared_kind(s)
@@ -493,7 +486,13 @@ impl Decls {
     /// to the INNERMOST declaration whose span holds it; the rest —
     /// the run-time statements' — belong to Main.
     fn range_bodies(f: FileId, store: SyntaxArena, main: DeclId) {
-        let owners = self.owner_spans(f)
+        // an owner's statement stands in this store: a generation's rows, made over an
+        // expanded arena, keep the ranges that arena gave them
+        let owners = self
+            .owners_among(
+                f,
+                [d for d in self.decls_of_file(f) if self.raw_decl(d).stmt.index < store.stmts.count()],
+            )
         // -1 until a first expression lands: an ownerless decl's
         // range is the empty 0..0
         mut lo: List<int> = filled(self.decl_count(), 0 - 1)

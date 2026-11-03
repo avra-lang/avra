@@ -14,6 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
+use core.debug.{qtrace, traced}
 use core.{
     CollectKind,
     CollectScope,
@@ -977,18 +978,12 @@ fn marks_of(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.warnings_of(ws.de
 /// The use-site warnings recorded for `d` so far.
 fn marks_standing(ws: Workspace, d: DeclId) -> List<Diagnostic> { ws.decls.marks.get()[d.index] ?? [] }
 
-/// A file's rows standing, one constant: a reader that reads them through their buckets is
-/// ordered after the admission, and nothing it reads moves it.
-@query
-fn admitted(ws: Workspace, f: FileId) -> int {
-    touch(ws.items(f))
-    0
-}
-
 /// A declaration's arena range folded whole: `lo, hi, stmt_lo, stmt_hi`.
 @query
 fn placement_of(ws: Workspace, d: DeclId) -> int {
     let x = ws.decls.decl(d)
+    // the range is where the file's parse put the declaration: the parse is a read
+    let _ = ws.parsed(x.file)
     fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
 }
 
@@ -2000,12 +1995,12 @@ impl Workspace {
     /// Every row a file minted, as one hash.
     fn rows_print(f: FileId) -> int { fp_list([self.row_print(d) for d in self.decls.decls_so_far(f)]) }
 
-    /// A file's rows standing before a reader reads them through their buckets: its
-    /// admission asked under a cell whose hash never moves. A held file's rows stand
-    /// through the producer index, which mints a module for the name a bucket read asks.
+    /// A file's rows standing before a reader reads them through their buckets, unheard:
+    /// the reader records the buckets it reads, never the admission. A held file's rows
+    /// stand through the producer index, which mints a module for the name a bucket read asks.
     fn admission(f: FileId) {
         if self.is_held(f) { return }
-        let _ = admitted(self, f)
+        self.db.kernel.unheard(() -> touch(self.items(f)))
     }
 
     /// The declaration behind an id.
@@ -2312,6 +2307,12 @@ impl Workspace {
         out
     }
 
+    /// How many statements `f`'s store holds as it stands, none before its parse; reads nothing.
+    fn stmts_standing(f: FileId) -> int {
+        let store? = self.decls.admitted_store(f) else { return 0 }
+        store.stmts.count()
+    }
+
     /// A raw read of the table, recorded as the read it is: a file's store is its parse, a
     /// declaration's facts its syntax — and either, in a file held from its record, that
     /// file's rows. Every other read is recorded as the cells that cover it.
@@ -2328,8 +2329,7 @@ impl Workspace {
                 let x = self.decls.raw_decl(d)
                 if self.is_held(x.file) {
                     self.decls.rows_read(x.file)
-                } else if x.standing == 0 && x.home != null ||
-                    self.decls.store(d).stmts.count() <= x.stmt.index {
+                } else if x.standing == 0 && x.home != null || self.stmts_standing(x.file) <= x.stmt.index {
                     self.cover_read(r)
                 } else {
                     let _ = self.syntax(d)
@@ -2509,6 +2509,9 @@ impl Workspace {
         }
         mut t = self.type_cx_for(self.decls.decl(d))
         let x = self.decls.decl(d)
+        if traced() { qtrace(
+                "Q typed ${x.name} kind ${kind_word(x.kind)} file ${self.decls.file(x.file).path} lo ${x.lo} hi ${x.hi} stmt ${x.stmt.index} root ${x.root?.index ?? -1} maker ${x.maker} view-exprs ${t.view.store.exprs.count()} decl-exprs ${self.decls.store(d).exprs.count()}",
+            ) }
         let out = t.type_decl(x)
         // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
         // window typed now lacks the ids the expansion is about to add,
