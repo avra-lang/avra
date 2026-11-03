@@ -2,6 +2,8 @@
 # tree's root, runs under the lock its caller holds (no second watchdog) and takes no compile slot.
 cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$PWD/.avra-cache"
 export AVRA_MAX_COMPILES=0
 fails=0
 steps=0

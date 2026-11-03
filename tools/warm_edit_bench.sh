@@ -27,6 +27,8 @@
 # so loudly. On macOS the measurement goes to the lane's Sprite
 # (`tools/work run`), as `speed-ratchet` does — a loaded Mac supplies no
 # number, and a worktree with no Sprite refuses rather than passing.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"

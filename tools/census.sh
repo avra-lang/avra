@@ -18,6 +18,8 @@
 # A CENSUS THAT PRINTS NO COUNTS FAILS. A check that examined nothing
 # is not a check that passed: no `rc:` line means the binary carried no
 # census, and the run exits 1 saying so.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -eu
 cd "$(dirname "$0")/.."
 : "${LLVM_PREFIX:=/opt/homebrew/opt/llvm}"

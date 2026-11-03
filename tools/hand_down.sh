@@ -13,6 +13,8 @@
 #   sh tools/hand_down.sh unpack [tar]
 #   sh tools/hand_down.sh --self-test
 
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 WARN_BYTES=314572800
 MAX_BYTES=1073741824
 
