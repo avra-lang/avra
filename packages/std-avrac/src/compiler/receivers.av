@@ -28,7 +28,6 @@ use core.{
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
 use @std.meta.{bracket}
 use @std.relation.{query, fixpoint, codec}
-use @std.relation.engine.{Key}
 use compiler.families.{Family}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -103,9 +102,6 @@ fn write_summary(ws: Workspace, d: DeclId) -> Summary {
     touch(ws.sig(d))
     ws.summary(d)
 }
-
-/// Each declaration once, in first-seen order.
-fn once_each(ds: List<DeclId>) -> List<DeclId> { [d for i, d in ds if !(0..i).any((j) -> same_decl(ds[j], d))] }
 
 /// Whether seat `i` of a bit row is set; a seat past the row is not.
 fn bit_at(bits: List<bool>, i: int) -> bool { i < bits.length && bits[i] }
@@ -346,17 +342,6 @@ impl Survey {
 }
 
 impl Workspace {
-    /// The scratch frame a walk's own reads land in, minted once into `family`: a read made
-    /// while finding the sets belongs to no member, and never to whoever asked.
-    fn frame_in(family: Cell<int>) -> Key {
-        let known = family.get()
-        if known >= 0 { return Key { family: known, arg: 0 } }
-        let minted = self.db.kernel.family()
-        self.db.kernel.set_verify(minted, (_arg: int) -> 0)
-        family.set(minted)
-        Key { family: minted, arg: 0 }
-    }
-
     /// A method's receiver type: its impl's target's instance type, or
     /// the record that declares it —
     /// null for a free fn, a trait's sig, and a method whose impl was
