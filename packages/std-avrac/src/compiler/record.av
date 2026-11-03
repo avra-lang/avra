@@ -820,7 +820,7 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, m, pr, entry, want, meet) }
+    if first { load_imports(ws, store, pr, entry, want, meet) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
@@ -847,26 +847,18 @@ fn load_named(
 /// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
 /// import under the record that keeps it, and where its impls and traits are named.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    pr: Producers,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
+fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
+    // each module once, however many of this module's files import it
+    for name in distinct([p[1] for p in pr.walk if p[0] == "import" && import_stands(ws, p)]) {
+        let imp = module_path(name.split("."))
+        let key = imp.package()
+        if key != null { ws.ensure_package(key!) }
+        for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
+    }
     for parts in pr.walk {
-        if parts[0] == "import" && import_stands(ws, store, m, parts) {
-            // the ROOT module's name is empty, and `split` drops a trailing empty field
-            let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
-            let key = imp.package()
-            if key != null { ws.ensure_package(key!) }
-            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
-        }
         if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
     }
     note_producers(ws, pr)
@@ -1021,14 +1013,10 @@ fn kind_of_words(word: string, name: string) -> CollectKind? {
 }
 
 /// WHETHER A KEPT `import` LINE STILL SPEAKS FOR ITS FILE: the file that imports reads the text
-/// the record was made from. A moved file is read again, and its own `use` lines admit what
-/// it imports now.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace, a store, a module and a line in.
-fn import_stands(ws: Workspace, store: Store, m: ModulePath, parts: List<string>) -> bool {
-    if parts.length < 3 { return false }
-    let columns? = record_places(ws, store, m).get(parts[2])?.file else { return false }
-    columns.length > 2 && columns[2] == ws.text_digest(parts[2])
-}
+/// the line was written at. A moved file is read again, and its own `use` lines admit what it
+/// imports now.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a line in.
+fn import_stands(ws: Workspace, parts: List<string>) -> bool { parts.length > 3 && parts[3] == ws.text_digest(parts[2]) }
 
 /// Whether a kept `import` line stands for the next record: the file that imports stands in the
 /// module and was held, so its imports are still what its text says.
@@ -2163,7 +2151,9 @@ fn runs_of(parts: List<string>) -> List<RunRead>? {
 fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
     let known: List<string>? = ws.import_lists.get().get(name)
     if known != null { return known! }
-    let made = [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1]
+    let made = distinct(
+        [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1],
+    )
     ws.import_lists.put(name, made)
     made
 }
