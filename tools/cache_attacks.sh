@@ -2258,12 +2258,12 @@ URX() { # URX <label> <a word the refusal carries> <the file it names>
 }
 S "cold ur: an impl in a file nothing names is dispatched" ur
 HR "ur checks clean" check ur 0
-printf '// moved\n' >> $R/ur/src/main.av
+printf 'let _moved = 0\n' >> $R/ur/src/main.av
 UR "ur: an entry edit parses the entry alone" "ur/src/main.av "
 ed $R/url/src/lone.av "self.v + 1" "self.v + 100"
 S "ur: the unnamed file's impl body moved" ur
 HR "ur checks clean after it" check ur 0
-printf '// moved\n' >> $R/ur/src/main.av
+printf 'let _moved = 0\n' >> $R/ur/src/main.av
 UR "ur: the edited sibling is held again" "ur/src/main.av "
 cp $R/url/src/lone.av $R/url/lone.kept
 printf 'export fn lone( -> int { 3 }\n' >> $R/url/src/lone.av
@@ -2280,7 +2280,7 @@ printf 'export fn fresh( -> int { 4 }\n' > $R/url/src/fresh.av
 URX "ur: a new file nothing names arrives broken" "parse." "fresh.av"
 printf 'export fn fresh() -> int { 4 }\n' > $R/url/src/fresh.av
 HR "ur: the new file mended" check ur 0
-printf '// moved\n' >> $R/ur/src/main.av
+printf 'let _moved = 0\n' >> $R/ur/src/main.av
 UR "ur: the new file is held from its first clean check" "ur/src/main.av "
 rm $R/url/src/fresh.av
 S "ur: the new file removed" ur
@@ -2305,7 +2305,7 @@ printf 'use @rt.usl.reach.{r, Say, Pt}\nlet s: dyn Say = Pt { v: 1 }\nprintln("$
 up=us
 S "cold us" us
 HR "us checks clean" check us 0
-printf '// moved\n' >> $R/us/src/main.av
+printf 'let _moved = 0\n' >> $R/us/src/main.av
 UR "us: an entry edit parses the entry alone" "us/src/main.av "
 printf '// moved\n' >> $R/us/src/main.av
 S "us: the held sibling's impl is dispatched" us
