@@ -623,6 +623,8 @@ class Cascade:
             self.fill(kind, x, y, p)
         self.settle_known_names()
         self.settle_identities()
+        for rec in self.records:
+            self.clean(rec)
 
     # Entities: encoder spans, LLM picks the antecedent for partial names.
 
@@ -1073,6 +1075,33 @@ class Cascade:
             f.update(q)
         self.records.append({"local_id": self.mint(), "model": model, "fields": fields, "identities": [], "resolution": {"kind": "new"}, "_score": chosen})
 
+    def holds_rule(self, value, rules):
+        """Whether a value satisfies every rule its property declares. A rule this reader does
+        not know refuses the value: filling an identity is a claim about what the text says,
+        and an unreadable claim is not one."""
+        for rule in rules or []:
+            if rule.startswith("length("):
+                low = int(rule.split("min:")[1].split(",")[0]) if "min:" in rule else 0
+                high = int(rule.split("max:")[1].rstrip(")")) if "max:" in rule else 10 ** 9
+                if not low <= len(value) <= high:
+                    return False
+            elif rule.startswith("range("):
+                if not value.isdigit():
+                    return False
+                low, high = (int(x) for x in rule[6:-1].split(","))
+                if not low <= int(value) <= high:
+                    return False
+            elif rule.startswith("one_of("):
+                if value not in rule[len("one_of(["):-2].replace('"', "").split(", "):
+                    return False
+            elif rule == "email()":
+                local, _, host = value.partition("@")
+                if not local or "." not in host or " " in value:
+                    return False
+            else:
+                return False
+        return True
+
     def identity_paths(self, model):
         """The property paths this model declares as its identities, single-property ones only."""
         semantics = (self.plan.models.get(model) or {}).get("semantics") or {}
@@ -1122,6 +1151,9 @@ class Cascade:
                             for m in xs if a <= m["start"] and m["end"] <= b
                             and self.t.s[m["start"]:m["end"]] not in own
                             and self.t.s[m["start"]:m["end"]] not in claimed]
+                rules = next((prop_rules for p in self.plan.models[rec["model"]]["properties"]
+                              if p["name"] == prop for _ in [0] for prop_rules in [p.get("rules") or []]), [])
+                held = [v for v in held if self.holds_rule(v, rules)]
                 if len(held) == 1:
                     log(f"identity {rec.get('model')}.{prop} is {held[0]!r}")
                     rec["fields"].append(self.field(prop, held[0], [(a, b)]))
@@ -1140,6 +1172,21 @@ class Cascade:
             return None, None
         start = min(x for x, _ in spans)
         return next(((x, y) for _, x, y, *_ in getattr(self, "chosen", []) if x <= start < y), (None, None))
+
+    def clean(self, rec):
+        """Drop whatever a property's own declared rules refuse, before the app has to: a value
+        the declaration forbids is not a reading of the text, and one such field makes the whole
+        source unpublishable. A record left stating nothing but its name still stands."""
+        model = (self.plan.models.get(rec.get("model")) or {})
+        rules = {p["name"]: p.get("rules") or [] for p in model.get("properties") or []}
+        kept = []
+        for f in rec.get("fields") or []:
+            value = f.get("value")
+            if isinstance(value, str) and not self.holds_rule(value, rules.get(f.get("property")) or []):
+                log(f"refuse {rec.get('model')}.{f.get('property')}: {value!r} breaks its declaration")
+                continue
+            kept.append(f)
+        rec["fields"] = kept
 
     def grounds(self, model, field):
         """Whether a field states something the sentence says: a text, a number,
