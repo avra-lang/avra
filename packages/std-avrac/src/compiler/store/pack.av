@@ -725,14 +725,20 @@ type KeptFile = { path: string, bytes: int, at: int }
 /// with its edge, so a later ask finds a miss and links again. The newest is never removed.
 export fn trim_kept_binaries(root: string, limit: int) -> int { trim_kept_files(root, "bin", limit) }
 
-/// The files of one file family (`bin`, `obj`) under `<root>/<family>`, oldest first, past `limit`.
+/// The files of one file family (`bin`, `obj`) under `<root>/<family>`, oldest first, past `limit`
+/// — never one this process kept, which is the run's own answer whatever second it was dated.
 export fn trim_kept_files(root: string, family: string, limit: int) -> int {
     if limit <= 0 { return 0 }
     let bin = joined_path(root, family)
     let kept = sorted_by(kept_binaries(bin), (a: KeptFile, b: KeptFile) -> a.at < b.at)
     mut held = kept.fold(0, (sum, f) -> sum + f.bytes)
     mut gone = 0
-    for f in kept.slice(0, if kept.is_empty() { 0 } else { kept.length - 1 }) {
+    // what this process kept stands; else the newest — a file's time counts whole seconds, so
+    // the newest by time need not be the one just kept
+    let ours = kept_now().get()
+    let others = [f for f in kept if !ours.has(f.path)]
+    let spared = if others.length < kept.length || others.is_empty() { 0 } else { 1 }
+    for f in others.slice(0, others.length - spared) {
         if held <= limit { break }
         let _ = remove("${f.path}.deps")
         let _ = remove(f.path)
@@ -742,6 +748,9 @@ export fn trim_kept_files(root: string, family: string, limit: int) -> int {
     if traced() && gone > 0 { qtrace("Q\tstore\t${family}-trimmed\t${gone}\t${held}\n") }
     gone
 }
+
+/// The files this process kept, by path.
+once fn kept_now() -> Cell<Map<string, bool>> { map_cell() }
 
 fn kept_binaries(bin: string) -> List<KeptFile> {
     // LICENSED input.store_io: the store's own kept binaries, listed and measured to bound them
