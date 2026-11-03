@@ -115,6 +115,7 @@ use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 use @std.relation.{query, recursive, codec, cycled_by}
+use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
     new_table,
@@ -2251,7 +2252,7 @@ impl Workspace {
             self.db.begin(k)
             self.decl_row_filled(d)
             let held: DeclSig? = self.decls.sigs.get()[d.index]
-            self.db.settle(k, sig_hash(held, self.decls.ids()))
+            self.db.settle(k, sig_hash(held, self.facts_scope(0, 0)))
             return held
         }
         self.db.begin(k)
@@ -2263,7 +2264,7 @@ impl Workspace {
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out, self.decls.ids()))
+        self.db.settle(k, sig_hash(out, self.facts_scope(0, 0)))
         out
     }
 
@@ -2500,10 +2501,8 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
-        let ids = self.decls.ids()
-        // The facts carry ARENA IDS: the settle fingerprint folds WHERE
-        // they are placed, so a shift that leaves `syntax(d)` and
-        // `names(d)` alike still reads this body's value as moved.
+        // The facts carry ARENA IDS: the settle digest reads them where they are placed, so a
+        // shift that leaves `syntax(d)` and `names(d)` alike still reads this body as moved.
         let spot = self.placed(d)
         typed_of(
             self
@@ -2511,7 +2510,10 @@ impl Workspace {
                 .finish_lazy(
                     d.index,
                     DbRow.Typed(out),
-                    (r: DbRow) -> fp(123, [spot, typed_of(r).fingerprint_in(ids)]),
+                    (r: DbRow) -> fp(
+                        123,
+                        [spot, TypeFacts.digest_in(self.facts_scope(0, 0), typed_of(r))],
+                    ),
                 ),
         )
     }
@@ -2613,20 +2615,13 @@ fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }
 
-/// A signature's fingerprint — everything the signature SAYS, so an
-/// unchanged sig cuts the wave at every caller and a changed one never
-/// can. DERIVED: the fold is a reading of the declaration's own
-/// shape, so a field added to a sig reaches the hash on the day it
-/// lands rather than whenever someone diffs the parts list against
-/// the record. That diff is what found seven forgotten payloads here,
-/// and every one of them was a field added after its hash was
-/// written. Exported because the shapes that once collided are pinned
-/// as cases.
-/// A signature's digest, durable: types by their spelling and declarations by their name,
-/// never an interner's index, so another process digests one signature alike.
-export fn sig_hash(s: DeclSig?, ids: Ids) -> int {
+/// A signature's digest — everything the signature SAYS, so an unchanged sig cuts the wave
+/// at every caller and a changed one never can: its codec's bytes under `scope`, types by
+/// their spelling and declarations by their name, so another process digests it alike.
+/// Exported because the shapes that once collided are pinned as cases.
+export fn sig_hash(s: DeclSig?, scope: dyn Scope) -> int {
     if s == null { return 0 }
-    s!.fingerprint_in(ids)
+    DeclSig.digest_in(scope, s!)
 }
 
 impl Decls {

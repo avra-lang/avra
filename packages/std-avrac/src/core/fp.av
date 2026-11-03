@@ -5,6 +5,8 @@
 //! beside the node model would make annotating the node model a
 //! silent half-registration.
 
+use @std.relation.stable.{Scope}
+
 /// A variant tag folded with its parts, in order — THE fingerprint
 /// fold, for nodes and for every query value's hash alike.
 export fn fp(tag: int, parts: List<int>) -> int {
@@ -48,7 +50,7 @@ export fn fp_str(s: string) -> int {
 
 /// HOW AN ARENA ID FOLDS: by the durable name its owner gives its index, so a value that
 /// reaches an id folds the same in every process. Each door takes the id's index.
-export type Ids = { decl: fn(int) -> int, ty: fn(int) -> int, file: fn(int) -> int, expr: fn(int) -> int, stmt: fn(int) -> int, place: fn(int) -> int }
+export type Ids = { decl: fn(int) -> int, ty: fn(int) -> int, file: fn(int) -> int, expr: fn(int) -> int, stmt: fn(int) -> int }
 
 impl Ids {
     fn of_decl(index: int) -> int {
@@ -76,14 +78,9 @@ impl Ids {
         f(index)
     }
 
-    /// The same ids with expressions counted from `base`: a window's content, wherever it sits.
-    fn rebased(base: int) -> Ids {
-        self with { expr: (i: int) -> i - base, place: (_i: int) -> 0 }
-    }
-
     /// The same ids with expressions and statements each counted from their own base.
     fn windowed(expr_base: int, stmt_base: int) -> Ids {
-        self with { expr: (i: int) -> i - expr_base, stmt: (i: int) -> i - stmt_base, place: (_i: int) -> 0 }
+        self with { expr: (i: int) -> i - expr_base, stmt: (i: int) -> i - stmt_base }
     }
 }
 
@@ -95,6 +92,36 @@ export fn indexed_ids() -> Ids {
         file: (i: int) -> i,
         expr: (i: int) -> i,
         stmt: (i: int) -> i,
-        place: (i: int) -> i,
     }
+}
+
+/// THE IDS AS A SCOPE: a fold handed to a codec's digest spells each dense id as the fold
+/// reaches it, so a value folded by its codec and one folded field by field read the same ids.
+/// A fold reads nothing back, so every inverse answers absent.
+type IdsScope = { ids: Ids }
+
+impl Ids {
+    /// These ids, as the scope a codec's digest is taken under.
+    fn as_scope() -> dyn Scope { IdsScope { ids: self } }
+}
+
+impl Scope for IdsScope {
+    fn spelled(kind: string, index: int) -> string {
+        let ids = self.ids
+        let folded = match kind {
+            "DeclId" -> ids.of_decl(index),
+            "TypeId" -> ids.of_type(index),
+            "FileId" -> ids.of_file(index),
+            "ExprId" -> ids.of_expr(index),
+            "StmtId" -> ids.of_stmt(index),
+            _ -> index,
+        }
+        "${folded}"
+    }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
 }
