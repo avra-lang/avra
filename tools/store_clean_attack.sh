@@ -154,7 +154,7 @@ rm -rf .avra-cache
 checked_rev
 edit_to 7
 torn_before=$(run_live)
-AVRA_STORE_KILL=commit $AVRA check $R/p > /dev/null 2>&1
+AVRA_STORE_KILL=1 $AVRA check $R/p > /dev/null 2>&1
 st=$?
 [ "$st" = 137 ] || fail "the kill hook did not kill the writer (status $st)"
 AVRA_STORE_REVISIONS=100 $AVRA cache clean > $R/torn.out 2>&1
