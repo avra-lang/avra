@@ -61,15 +61,21 @@ impl Workspace {
         self.verdict_read_stands(r, moved)
     }
 
-    /// THE LINKED ANSWER KEPT: the binary first, then what the build said with what it read —
-    /// a read list never stands in front of an answer that was not kept.
-    fn keep_linked(store: Store, under: Keyed, staged: string, said: LinkedSaid, tools: Toolchain) {
+    /// THE LINKED ANSWER KEPT in its `slot`: the binary first, then what the build said with
+    /// what it read — a read list never stands in front of an answer that was not kept.
+    fn keep_linked(
+        store: Store,
+        under: Keyed,
+        slot: string,
+        staged: string,
+        said: LinkedSaid,
+        tools: Toolchain,
+    ) {
         self.keep_closure(under.named)
-        let key = self.linked_key(under.named)
-        if !store.keep_file(Stored.Bin, key, staged, [key]) { return }
+        if !store.keep_file(Stored.Bin, slot, staged, [slot]) { return }
         let reads? = self.link_readings(under, tools) else { return }
         let _ = store
-            .keep_reading(Stored.Unit, key, linked_wire(said with { bin: digest_of_binary(staged) }), reads)
+            .keep_reading(Stored.History, slot, linked_wire(said with { bin: digest_of_binary(staged) }), reads)
     }
 
     /// A BINARY THAT STANDS for `under`, placed where a fresh one would be — with what its build
@@ -80,16 +86,17 @@ impl Workspace {
         let row? = self
             .standing_row(
                 store,
+                Stored.History,
                 key,
                 (r: Reading, moved: Cell<List<string>>) -> self.link_read_stands(r, moved, tools),
             ) else {
             return null
         }
         let kept? = linked_of_wire(row.bytes) else { return null }
-        if !store.has(Stored.Bin, key) { return null }
-        let said? = self.linked_again(store, key, kept, row.moved) else { return null }
-        if !self.placed_kept(store, key, binary, said.bin) { return null }
-        self.fallback_kept(store, key, binary, tools)
+        if !store.has(Stored.Bin, row.key) { return null }
+        let said? = self.linked_again(store, row.key, kept, row.moved) else { return null }
+        if !self.placed_kept(store, row.key, binary, said.bin) { return null }
+        self.fallback_kept(store, row.key, binary, tools)
         BuildOutcome {
             binary: binary,
             warnings: said.warnings(),
@@ -103,7 +110,7 @@ impl Workspace {
         if moved.is_empty() { return kept }
         let again? = self.said_again(store, kept.said, moved) else { return null }
         let now = kept with { said: again }
-        self.kept_again(store, key, linked_wire(now))
+        self.kept_again(store, Stored.History, key, linked_wire(now))
         now
     }
 }

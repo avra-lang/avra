@@ -932,7 +932,7 @@ RX "rx: and back" show.av held "rx 2"
 ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
 RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
 ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
-RX "rx: and back — one row per question, so the importer's re-pointed row is read again" show.av read "rx 2"
+RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
 fi
 
 if section vw; then

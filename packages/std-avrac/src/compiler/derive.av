@@ -1298,7 +1298,7 @@ impl Workspace {
     fn keep_parts(store: Store, path: string) {
         let now = self.key_parts_cached(store, self.module_path_of(path), path)
         let own = now with { seen: [] }
-        let kept = store.get(Stored.Unit, parts_key(path))
+        let kept = store.get(Stored.History, parts_key(path))
         let was = parts_of(kept ?? "")
         self
             .keep_moved(
@@ -1310,7 +1310,7 @@ impl Workspace {
         // THE MODULE'S SEEN ROW is the module's whole view, one row its files share: the key a
         // file wears narrows it by name, and the move a reader is told of is the module's
         let whole = self.view_parts(store, self.module_path_of(path))
-        let seen = store.get(Stored.Unit, seen_key(now.module))
+        let seen = store.get(Stored.History, seen_key(now.module))
         let seen_was = seen_of(seen ?? "")
         self
             .keep_moved(
@@ -1323,9 +1323,9 @@ impl Workspace {
 
     /// A parts row kept when it moved, what moved noted under its key.
     fn keep_moved(store: Store, key: string, wire: string, moved: List<PartMoved>) {
-        if store.get(Stored.Unit, key) == wire { return }
+        if store.get(Stored.History, key) == wire { return }
         if !moved.is_empty() { self.hold.moved.put(key, moved) }
-        let _ = store.keep(Stored.Unit, key, wire, [])
+        let _ = store.keep(Stored.History, key, wire, [])
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there
@@ -1344,6 +1344,8 @@ impl Workspace {
         let told? = fresh else {
             let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
             let said? = said_of(path, kept) else { return null }
+            // what another tree said serves this one, and this checkout's history starts here
+            if !store.has(Stored.History, parts_key(path)) { self.keep_parts(store, path) }
             return held_said(store, okey, said, want)
         }
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
