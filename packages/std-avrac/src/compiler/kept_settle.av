@@ -39,6 +39,7 @@ use core.{
     sorted_texts,
     hex,
     unhex,
+    wire_fields,
 }
 use features.{
     Unsettled,
@@ -942,9 +943,9 @@ fn kept_text(s: Settlement) -> string {
 
 /// `kept_text` read back; none for a line it did not write, or whose blob is gone.
 fn settlement_of_text(raw: string) -> Settlement? {
-    let parts = raw.split("\t")
+    let parts = wire_fields(raw, "\t")
     let octets? = unhex(parts[0]) else { return null }
-    let refs = if parts.length > 1 && parts[1] != "" { parts[1].split(",") } else { [] }
+    let refs = if parts.length > 1 && parts[1] != "" { wire_fields(parts[1], ",") } else { [] }
     match Settlement.decoded_in(indexed_scope(), octets) {
         .Ok(lean) -> restored(lean, refs),
         .Err(_) -> null,
@@ -1015,7 +1016,7 @@ fn restored_val(v: MetaVal, refs: List<string>, seen: Cell<int>, failed: Cell<bo
             seen.set(i + 1)
             let at = refs.find(it.starts_with("${i}:"))
             if at == null { return v }
-            let parts = at!.split(":")
+            let parts = wire_fields(at!, ":")
             let blob? = cas_value(parts[2]) else {
                 failed.set(true)
                 return v
