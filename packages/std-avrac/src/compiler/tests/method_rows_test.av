@@ -31,15 +31,13 @@ fn reads_methods(ws: Workspace, frame: Key, target: DeclId) -> bool {
 spec "compiler/methods — a method table is read at its own cell" {
     then "fixture: the references relation settles a cell" {
         let ws = referenced_workspace()
-        ws.cells_named("references_solved").any((k: Key) -> ws.db.value_hash_of(k) != null)
+        ws.cells_named("refs_index").any((k: Key) -> ws.db.value_hash_of(k) != null)
     }
     then "the file making the call lists the Methods of a type whose method it resolves through" {
         let ws = referenced_workspace()
-        reads_methods(
-            ws,
-            Key { family: family_ordinal("FileRefs"), arg: ws.file_id("/w/src/a.av").index },
-            decl_in_file(ws, "/w/src/b.av", "Box"),
-        )
+        ws
+            .cells_named("file_refs_made")
+            .any((c: Key) -> reads_methods(ws, c, decl_in_file(ws, "/w/src/b.av", "Box")))
     }
     then "a type's Methods does not list itself" {
         let ws = referenced_workspace()

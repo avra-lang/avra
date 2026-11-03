@@ -64,36 +64,71 @@ use features.{
     LANGUAGE_HOME,
 }
 use compiler.families.{Family}
-use @std.relation.{query}
+use @std.relation.{query, codec}
 use compiler.store.{Store}
 
-const HELD_OWNER: string = "references"
+/// A set of references: the answer of the queries below, which cross by their codec.
+@codec
+export type Uses = { rows: List<Ref> }
 
-/// What one file's references pass filed: the rows as stored, whether the relation refused
-/// the replacement, and whether the rows still stand filed.
-type Surveyed = { rows: List<Ref>, refused: bool, filed: bool }
+impl Uses {
+    fn fingerprint() -> int { fp(41, [fp_list([ref_fp(r) for r in self.rows])]) }
+}
 
-/// Every named use of a declaration, folded from every file's own rows.
+/// One file's references, the rows its walk found: the answer a restore brings back whole.
 @query
-fn references_solved(ws: Workspace) -> int { ws.survey_references() }
+export fn file_refs_made(ws: Workspace, f: FileId) -> Uses {
+    ws.stand_after_typing()
+    Uses { rows: ws.file_refs(f) }
+}
+
+/// Every named use of a declaration, from every file's own rows and the held files' kept
+/// ones, indexed by declaration and by file. In the process only: a reader asks the
+/// projections `refs_to` and `refs_from`, whose digests move only with their own rows.
+type RefsIndex = {
+    by_decl: Cell<Map<string, List<Ref>>>,
+    by_file: Cell<Map<string, List<Ref>>>,
+    incomplete: bool,
+    digest: int,
+}
+
+impl RefsIndex {
+    fn fingerprint() -> int { self.digest }
+}
+
+@query
+fn refs_index(ws: Workspace) -> RefsIndex { ws.indexed_references() }
+
+/// The references to one declaration.
+@query
+export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}") ?? [] } }
+
+/// The references one file makes.
+@query
+export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}") ?? [] } }
 
 impl Workspace {
     /// THE PASS: every admitted file's own rows, gathered — each surveyed file stands on
-    /// its own `FileRefs` answer, and this one reads those and the held files' kept rows.
+    /// its own `file_refs_made` answer, and this one reads those and the held files' kept rows.
     fn references() -> int {
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        references_solved(self)
+        refs_index(self).digest
     }
 
-    /// The gathering, run: every surveyed file's rows and the held files' kept rows, one word.
-    fn survey_references() -> int {
+    /// Whether a held file left the references INCOMPLETE — a decl may be read from inside one.
+    fn refs_incomplete() -> bool {
+        if self.db.family_active(Family.Resolved.ordinal) { return true }
+        refs_index(self).incomplete
+    }
+
+    /// The gathering, run: every surveyed file's rows and the held files' kept rows, indexed.
+    fn indexed_references() -> RefsIndex {
         self.stand_after_typing()
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if !self.is_held(x.id) && self.reads_as_source(x.path)]
         let held = [x.id for x in all_files if self.is_held(x.id)]
         self.hold.held_refs.set({})
-        let surveyed = [self.file_references(f) for f in files]
-        self.leaving_owners([self.refs_owner(f) for f in files])
+        let surveyed = flatten([file_refs_made(self, f).rows for f in files])
         // A HELD FILE'S BODY IS NOT SURVEYED — its outgoing references come
         // from its own kept record instead (`restored_refs`), written the
         // last time it was fresh (`ref_lines`, interface.av's `record_of`).
@@ -102,58 +137,13 @@ impl Workspace {
         // held) `held` is empty and this changes nothing.
         let store: Store? = self.store.get()
         let restored = if store == null { [] } else { self.restored_refs(store!) }
-        let db = self.decls.rows_db.get()
-        // A REPLACEMENT THAT LANDS IS ONE WRITE on the Db's own count,
-        // whatever it hands over; a refused one is none — so a refusal of
-        // no rows at all is seen as one too.
-        let before = db.written.get()
-        let kept = Ref.replaced(db, HELD_OWNER, restored)
-        let refused = db.written.get() == before
-        if refused { self.defect(references_refused(restored.length)) }
-        // refused, the relation holds the LAST pass's rows: no "used nowhere" is read off it
-        self
-            .decls
-            .mark_refs_incomplete(refused || surveyed.any(it.refused) || store == null && !held.is_empty())
-        let rows = flatten([s.rows for s in surveyed]).concat(kept)
-        self.decls.record_read_flags(rows)
-        fp(41, [fp_list([ref_fp(r) for r in rows])])
-    }
-
-    /// One file's own rows, filed under the file's owner and kept for the gathering pass.
-    fn file_references(f: FileId) -> Surveyed {
-        let at = self.refs_owner(f)
-        let kept: Surveyed? = self.hold.file_refs.get().get(at)
-        if self.db.family_active(Family.Resolved.ordinal) { return kept ?? Surveyed { rows: [], refused: true, filed: false } }
-        let k = key(Family.FileRefs, f.index)
-        if !(self.db.ask(k) is .Compute) && kept?.filed ?? false { return kept! }
-        self.stand_after_typing()
-        self.db.begin(k)
-        let found = self.file_refs(f)
-        let db = self.decls.rows_db.get()
-        let before = db.written.get()
-        let rows = Ref.replaced(db, at, found)
-        let refused = db.written.get() == before
-        if refused { self.defect(references_refused(found.length)) }
-        self.hold.refs_owners.push(at)
-        let made = Surveyed { rows: rows, refused: refused, filed: true }
-        self.hold.file_refs.put(at, made)
-        self.db.settle(k, fp(316, [fp_list([ref_fp(r) for r in rows])]))
-        made
-    }
-
-    /// The owner a file's reference rows are filed under.
-    fn refs_owner(f: FileId) -> string { "references:${self.decls.file(f).path}" }
-
-    /// The files filed before and no longer surveyed — withdrawn, held, or gone — leave no rows.
-    fn leaving_owners(standing: List<string>) {
-        let db = self.decls.rows_db.get()
-        for owner in self.hold.refs_owners.get() {
-            if !standing.contains(owner) {
-                let _ = Ref.replaced(db, owner, [])
-                self.hold.file_refs.put(owner, Surveyed { rows: [], refused: false, filed: false })
-            }
+        let rows = surveyed.concat(restored)
+        RefsIndex {
+            by_decl: Cell.new(grouped(rows, true)),
+            by_file: Cell.new(grouped(rows, false)),
+            incomplete: store == null && !held.is_empty(),
+            digest: fp(41, [fp_list([ref_fp(r) for r in rows])]),
         }
-        self.hold.refs_owners.set(distinct(standing))
     }
 
     /// Whether a body is typing or a compile-time run is lowering: no whole-program pass
@@ -532,19 +522,20 @@ fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
     !store.spanned_elsewhere(e) && quotes.any((q: Span) -> q.lo < sp.lo && sp.hi <= q.hi)
 }
 
+/// Rows grouped by the index of their declaration, or of their file, in row order.
+fn grouped(rows: List<Ref>, by_decl: bool) -> Map<string, List<Ref>> {
+    mut out: Map<string, List<Ref>> = {}
+    for r in rows {
+        let k = if by_decl { "${r.decl.index}" } else { "${r.file.index}" }
+        out.set(k, (out.get(k) ?? []).concat([r]))
+    }
+    out
+}
+
 /// One expression's use of a declaration.
 fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl: d, file: f, at: At.Expr(e), kind: kind } }
-
-// ── voices ──
-
-fn references_refused(found: int) -> string {
-    "the references relation is filed whole or not at all — its ${found} rows were refused, so every answer from it is the last pass's"
-}
 
 /// Whether a declaration is read as a value anywhere, as the references pass settled it: a
 /// consumer of that one bit stands on this answer, so a use of another name leaves it standing.
 @query
-fn read_found(ws: Workspace, d: DeclId) -> bool {
-    let _ = ws.references()
-    ws.decls.read_flag_of(d)
-}
+fn read_found(ws: Workspace, d: DeclId) -> bool { refs_to(ws, d).rows.any(it.kind is .Read) }
