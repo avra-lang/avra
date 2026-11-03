@@ -35,6 +35,8 @@ set -u
 # the same door `tools/store_baseline.sh` and `tools/cache_attacks.sh` use.
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
+# The machine's cache is this tree's own, so a cleared .avra-cache is a cold store.
+export AVRA_CACHE_DIR="$PWD/.avra-cache"
 
 R=build/store-attacks
 rm -rf "$R" .avra-cache && mkdir -p $R/p/src
@@ -137,6 +139,30 @@ agrees w1 "the first writer"
 agrees w2 "the second writer"
 segs=$(ls "$(the_store)"/seg-*.log 2>/dev/null | wc -l | tr -d ' ')
 [ "$segs" = 2 ] || fail "two writers left $segs segment(s), not two"
+
+# ── the machine store, sealed at once ──
+# Two checkouts of the package, outside any tree, check cold at the same moment
+# into ONE machine store; both seal it. A third checkout's first check reads only
+# that store: it answers the oracle, derives nothing and sees nothing torn.
+say "machine store: two checkouts sealing one machine store at once leave it whole for a third"
+T=$(cd "$(mktemp -d)" && pwd -P)
+for d in one/p two/deeper/p three/p; do mkdir -p "$T/$d" && cp -R $R/p/. "$T/$d/"; done
+# a run's words with its checkout spelled P, so two checkouts' answers compare
+as_p() { sed -e "s|$2|P|g" "$1"; }
+machined() { AVRA_CACHE_DIR=$T/machine AVRA_QTRACE=1 ./avra check "$T/$1" > $R/$2.out 2> $R/$2.err; echo "status $?" >> $R/$2.out; words $R/$2.err >> $R/$2.out; grep '^Q	' $R/$2.err > $R/$2.trace; }
+machined one/p m1 & p1=$!
+machined two/deeper/p m2 & p2=$!
+wait $p1
+wait $p2
+machined three/p m3
+as_p $R/oracle.out "$PWD/$R/p" | sed -e "s|$R/p|P|g" > $R/oracle.p
+for m in m1:one/p m2:two/deeper/p m3:three/p; do
+    as_p $R/${m%%:*}.out "$T/${m#*:}" > $R/${m%%:*}.p
+    cmp -s $R/oracle.p $R/${m%%:*}.p || { fail "${m%%:*}: the answer differs from the oracle"; diff $R/oracle.p $R/${m%%:*}.p | head -6; }
+done
+[ "$(grep -c '^Q	attempt' $R/m3.trace)" = 0 ] || fail "the third checkout derived again from a machine store two others sealed"
+[ "$(heard m3 torn)" = 0 ] || fail "the third checkout read a torn machine store"
+find "$T" -delete
 
 # ── §6.8 compaction contended ──
 say "§6.8 compaction contended: the process without the lock says it did not compact, and both answer the oracle"
