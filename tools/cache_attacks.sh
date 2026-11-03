@@ -22,7 +22,9 @@ judged() { # <label> <package>
 }
 
 R=build/cache-attacks; holds=0
-# CACHE_ATTACKS names the sections to run, comma-separated (`kr,kv`); unset runs all.
+# Sections run are named by arguments (`cache_attacks.sh kr kv`) or CACHE_ATTACKS, comma-separated
+# (`kr,kv`); neither runs all.
+[ $# -eq 0 ] || CACHE_ATTACKS=$(printf '%s,' "$@" | sed 's/,$//')
 section() { [ -z "${CACHE_ATTACKS:-}" ] || case ",$CACHE_ATTACKS," in *",$1,"*) ;; *) false ;; esac; }
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/inner $R/a/src $R/b/src $R/c/src
 cat > $R/lib/avra.toml <<'TOML'
