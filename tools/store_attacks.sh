@@ -407,4 +407,25 @@ for turn in cold warm; do
     done
 done
 
+# A PROGRAM ADMITS WHAT ITS OWN TEXT IMPORTS: a server built first, in one machine store, then a
+# hello at the same path in another tree, and the server's own tree edited down to that hello.
+# A file's kept use lines and its record's imports speak for the text they were read from, so
+# neither hello carries the scheduler the server's packages bring.
+adm=$(cd "$(mktemp -d)" && pwd -P)/admits # outside any checkout, as a fixture copied to a temp dir is
+for side in srv hello edited; do
+    mkdir -p $adm/$side/src
+    printf '[package]\nname = "app-%s"\nversion = "0.1.0"\n' $side > $adm/$side/avra.toml
+done
+server='use @std.http.route.{get}\nuse @std.http.server.{server}\n\nserver api {\n    get "/hello" { _req -> "hi" }\n}\nlet ran = api.run()\nif ran is .Err(e) { eprintln(e.describe().message) }\n'
+printf "$server" > $adm/srv/src/main.av; printf "$server" > $adm/edited/src/main.av
+printf 'println("hi")\n' > $adm/hello/src/main.av
+admits() { AVRA_CACHE_DIR=$adm/cache ./avra build $adm/$1 > $R/admits.out 2>&1 || fail "admits: $1 did not build: $(tail -2 $R/admits.out)"; }
+scheduled() { nm $adm/$1/src/main 2>/dev/null | grep -cE 'avra_(task_spawn|fiber_|cores_)'; }
+admits srv; admits edited
+[ "$(scheduled srv)" -gt 0 ] || fail "admits: the server carries no scheduler, so nothing was attacked"
+admits hello
+[ "$(scheduled hello)" = 0 ] && say "admits: a hello after a server, one store, carries no scheduler" || fail "admits: a hello after a server carries $(scheduled hello) scheduler symbol(s)"
+printf 'println("hi")\n' > $adm/edited/src/main.av; admits edited
+[ "$(scheduled edited)" = 0 ] && say "admits: a server edited down to a hello carries no scheduler" || fail "admits: a server edited down to a hello carries $(scheduled edited) scheduler symbol(s)"
+
 verdict
