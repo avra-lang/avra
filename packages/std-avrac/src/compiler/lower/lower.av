@@ -315,7 +315,6 @@ export fn lower(a: Analysis) -> Lowered {
             true,
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
-            (_f: FileId) -> false,
         )
 }
 
@@ -457,7 +456,6 @@ impl Decls {
         programs: bool,
         hashed: bool,
         unit_of: fn(Wanted) -> Unit,
-        is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
     ) -> Lowered {
         mut fns: List<Body> = []
@@ -497,13 +495,7 @@ impl Decls {
             statics = mu.statics
             hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
-        let d = drained(
-            wants,
-            unit_of,
-            is_held,
-            (w: Wanted) -> self.instantiated(w),
-            (w: Wanted) -> self.unlowered_stub(w),
-        )
+        let d = drained(wants, unit_of, (w: Wanted) -> self.instantiated(w))
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         let laid_out = distinct_statics(statics.concat(d.statics))
@@ -669,13 +661,7 @@ impl Decls {
     /// it reaches is refused where `refuses_hash` holds, else answered absent.
     fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit, refuses_hash: bool) -> Lowered {
         let ru = unit_of(root)
-        let d = drained(
-            ru.wants,
-            unit_of,
-            (_f: FileId) -> false,
-            (_w: Wanted) -> false,
-            (_w: Wanted) -> null,
-        )
+        let d = drained(ru.wants, unit_of, (_w: Wanted) -> false)
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let laid_out = distinct_statics(ru.statics.concat(d.statics))
@@ -736,20 +722,9 @@ impl Decls {
 
 /// The bodies a worklist reaches, each name once, the statics they
 /// read, and what they spoke.
-/// A roaming instantiation as the workspace keys its code: the symbol it is
-/// lowered under, the file its generic lowers from, and its type arguments'
-/// shapes, one per line.
-export type Instance = { symbol: string, home: FileId, shapes: string }
-
 type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk> }
 
-fn drained(
-    pending: List<Wanted>,
-    unit_of: fn(Wanted) -> Unit,
-    is_held: fn(FileId) -> bool,
-    instantiated: fn(Wanted) -> bool,
-    held_stub: fn(Wanted) -> Body?,
-) -> Drained {
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, instantiated: fn(Wanted) -> bool) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
@@ -758,8 +733,6 @@ fn drained(
     mut asks: List<Ask> = []
     mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
-    // a stub is a fresh caller's, whoever first asked the name
-    mut stubbed: Map<string, bool> = {}
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
@@ -770,20 +743,7 @@ fn drained(
         let roams = instantiated(w)
         if roams { homes.push(w.file) }
         let fresh = claim_seen(seen, w.name)
-        if is_held(w.file) && claim_seen(stubbed, w.name) {
-            // THE BODY IS THE STORE'S, BUT THE CONTRACT MUST STILL BE HERE: a
-            // fresh caller's memory pass reads a called-by-name callee's seat
-            // marks from `l.fns` alone (`marks_by_name`), and a held callee is
-            // never unit_of'd into it. Without a stub a held `consumed` seat
-            // reads as plain, the caller skips the retain the callee's own
-            // (held, unseen) release still performs, and the caller reads
-            // freed memory (.66 hole 3).
-            let stub: Body? = held_stub(w)
-            // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-            if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
-            if stub != null { fns.push(stub!) }
-        }
-        if fresh && !is_held(w.file) {
+        if fresh {
             minted = minted + 1
             let u = unit_of(w)
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
