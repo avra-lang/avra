@@ -1638,14 +1638,19 @@ void avra_array_reserve(void* arr, int64_t spare) {
     }
 }
 
-void avra_array_push(void* arr, int64_t v) {
-    CENSUS(g_list_pushes++);
-    CENSUS(note_push(AVRA_CALLER()));
-    AvraArray* a = (AvraArray*)arr;
+// One word onto the list, uncounted: each public push row counts its own write, so a row that
+// pushes through this one is counted once.
+static inline void array_push_word(AvraArray* a, int64_t v) {
     if (__builtin_expect(a->len == a->cap, 0)) { push_grown(a, v); return; }
     a->data[a->len] = v;
     a->marks[a->len] = 0;
     a->len++;
+}
+
+void avra_array_push(void* arr, int64_t v) {
+    CENSUS(g_list_pushes++);
+    CENSUS(note_push(AVRA_CALLER()));
+    array_push_word((AvraArray*)arr, v);
 }
 
 // RETAIN-AT-PACK: the array takes its own reference to a managed
@@ -1653,7 +1658,7 @@ void avra_array_push(void* arr, int64_t v) {
 void avra_array_push_owned(void* arr, void* v) {
     CENSUS(g_list_pushes++);
     CENSUS(note_push(AVRA_CALLER()));
-    avra_array_push(arr, (int64_t)(uintptr_t)v);
+    array_push_word((AvraArray*)arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
     a->marks[a->len - 1] = MARK_OWNED;
     avra_rc_retain(v);
@@ -1664,7 +1669,7 @@ void avra_array_push_owned(void* arr, void* v) {
 void avra_array_push_moved(void* arr, void* v) {
     CENSUS(g_list_pushes++);
     CENSUS(note_push(AVRA_CALLER()));
-    avra_array_push(arr, (int64_t)(uintptr_t)v);
+    array_push_word((AvraArray*)arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
     a->marks[a->len - 1] = MARK_OWNED;
 }
