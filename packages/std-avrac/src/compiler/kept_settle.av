@@ -44,6 +44,7 @@ use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.work.{work_spell_lookup}
 use compiler.lower.{Unit, type_shape_key}
 use core.{Type}
+use @std.relation.{query}
 use @std.relation.engine.{list_cell}
 
 /// The reader a build's kept-read expansions dedupe under: a read reached by many
@@ -488,9 +489,7 @@ impl Workspace {
     /// stands on the fns and consts its run read, in its own lines) and its `use` lines.
     fn outline_values(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind) && !self.plain_free(d)]
-        let uses = self.use_fps(f)
-        "${fp(313, [fp_list(decls), fp_list(uses)])}"
+        value_outline(self, f)
     }
 
     /// A declaration's entry in a file's value outline: an impl block is its trait, target and
@@ -761,9 +760,7 @@ impl Workspace {
     /// body's own, and every `use` line.
     fn outline(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind) && !self.plain_free(d)]
-        let uses = self.use_fps(f)
-        "${fp(311, [fp_list(decls), fp_list(uses)])}"
+        whole_outline(self, f)
     }
 
     /// A unit's CALL SHAPE, the same in every process: what it asks to be
@@ -915,4 +912,18 @@ fn settles(k: DeclKind) -> bool {
 /// A verdict as one number: a value's own fingerprint, a refusal's words.
 fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
     match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
+}
+
+/// A file's value outline, folded once a revision however many units ask it.
+@query
+fn value_outline(ws: Workspace, f: FileId) -> string {
+    let decls = [fp_str("${ws.outline_syntax(d)}") for d in ws.decls.decls_of_file(f) if outlined_value(ws.decls.decl(d).kind) && !ws.plain_free(d)]
+    "${fp(313, [fp_list(decls), fp_list(ws.use_fps(f))])}"
+}
+
+/// A file's whole outline, folded once a revision however many units ask it.
+@query
+fn whole_outline(ws: Workspace, f: FileId) -> string {
+    let decls = [fp_str("${ws.syntax(d)}") for d in ws.decls.decls_of_file(f) if outlined(ws.decls.decl(d).kind) && !ws.plain_free(d)]
+    "${fp(311, [fp_list(decls), fp_list(ws.use_fps(f))])}"
 }
