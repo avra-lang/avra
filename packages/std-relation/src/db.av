@@ -104,6 +104,8 @@ export type Db = {
     known_at: Cell<int>,
     /// Every leaf this process named, numbered once.
     leaf_table: LeafTable,
+    /// The saved answers named for reading an in-process one, by pair.
+    law_named: Cell<Map<string, bool>>,
     /// The walk each query's cell was last met in, by family and argument.
     walks: Cell<List<Cell<List<int>>>>,
     /// Each leaf chunk this process wrote or read back, by its hash: its leaves' numbers.
@@ -301,6 +303,9 @@ export type AnswerRef = {
     /// Whether a reader of one of these answers stands on the answer itself, by its name and
     /// digest, rather than on what it read: a query's, whose key is a name another process reads.
     by_answer: bool = false,
+    /// Whether these answers live in the process alone: a kept read of one stands only while
+    /// this process holds the call, and a saved answer that records one is the law's finding.
+    in_process: bool = false,
     /// The family whose cell a read of these answers records, for answers no cell of their own
     /// settles: the cell that notes them as its leaves. -1 for answers recorded as themselves.
     noted_by: int = -1,
@@ -431,6 +436,7 @@ fn made(durable: Durable) -> Db {
         known_at: Cell.new(0 - 1),
         written: Cell.new(0),
         leaf_table: leaf_table(),
+        law_named: map_cell(),
         walks: list_cell(),
         leaf_chunks: map_cell(),
     }
@@ -949,6 +955,30 @@ impl Db {
     }
 
     /// The one query or input asked here wearing `name`; none when two do.
+    /// THE LAW, TRACED: a saved answer stands on what outlives the process, so one that reads
+    /// an in-process answer is named — once a process for each pair — until none is left to name.
+    fn in_process_reads(query: string, ns: List<int>) {
+        for n in ns {
+            let read? = self.in_process_read(n) else { continue }
+            self.law_heard(query, read)
+        }
+    }
+
+    /// The in-process answer leaf `n` reads, none for any other read.
+    fn in_process_read(n: int) -> string? {
+        match self.leaf_table.leaf(n) {
+            .Rows(_, _) -> null,
+            .Input(name, _, _) -> if self.answer_named(name)?.in_process ?? false { name } else { null },
+        }
+    }
+
+    fn law_heard(query: string, read: string) {
+        let pair = "${query}\t${read}"
+        if self.law_named.get().has(pair) { return }
+        self.law_named.put(pair, true)
+        avra_qtrace("Q\tlaw\tin_process_read\t${query}\t${read}\n")
+    }
+
     fn answer_named(name: string) -> AnswerRef? {
         let all = self.answer_refs.get().filter(it.name == name)
         if all.length == 1 { all.first() } else { null }
@@ -1148,7 +1178,7 @@ fn open_hash<R>(s: Slot<R>) -> int {
 
 /// One `@query`'s or `@input`'s answers under every Db, by the Db's id: `name` keeps them past
 /// the process, `word` names their family in the kernel's counts and traces.
-export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>>, name: string, word: string, dense: bool }
+export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>>, name: string, word: string, dense: bool, lasting: bool }
 
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
@@ -1165,6 +1195,9 @@ type AnswersUnder<V> = {
     free: Cell<List<int>>,
     /// Whether a call is keyed by a process's own number, which only `named` makes durable.
     dense: bool,
+    /// Whether these answers outlive the process. One that does not is never asked to judge a
+    /// kept read of it: a call this process did not make is a read that does not stand.
+    lasting: bool = true,
     /// Each int-keyed call's number, by its arg.
     numbers: Cell<List<int>>,
     named: Cell<DenseNames?>,
@@ -1184,9 +1217,9 @@ export fn named_spelling(s: string) -> string? { if s.is_empty() { null } else {
 
 export type DenseNames = { spell: fn(int) -> string?, number: fn(string) -> int?, ask: fn(int) -> void }
 
-export fn answers<V>(name: string, word: string, dense: bool) -> Answers<V> {
+export fn answers<V>(name: string, word: string, dense: bool, lasting: bool) -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
-    Answers { held: Cell.new(none), name: name, word: word, dense: dense }
+    Answers { held: Cell.new(none), name: name, word: word, dense: dense, lasting: lasting }
 }
 
 impl Answers<V> {
@@ -1207,7 +1240,8 @@ impl Answers<V> {
         let family = kernel.family()
         kernel.named(family, self.word)
         kernel.set_verify(family, (arg: int) -> reasked(slots.get()[id], arg))
-        self.placed(db, held_in(kernel, family, db.cap.get(), self.dense))
+        let made: AnswersUnder<V> = held_in(kernel, family, db.cap.get(), self.dense)
+        self.placed(db, made with { lasting: self.lasting })
     }
 
     /// `made` kept as the answers under `db`, until the Db closes or is
@@ -1227,6 +1261,7 @@ impl Answers<V> {
                     arg: (spelled: string) -> held_arg(slots, id, spelled),
                     hash: (arg: int) -> held_hash(slots, id, arg),
                     by_answer: true,
+                    in_process: !self.lasting,
                 },
             )
         made
@@ -1502,7 +1537,7 @@ impl AnswersUnder<V> {
     fn durable_arg(spelled: string) -> int? {
         if !self.dense {
             let known = self.args.get().get(spelled)
-            if known != null { return known }
+            if known != null || !self.lasting { return known }
             let ask? = self.texted.get().first() else { return null }
             self.memo.kernel.unheard(() -> ask(spelled))
             return self.args.get().get(spelled)
@@ -1542,7 +1577,7 @@ impl AnswersUnder<V> {
     fn hash_asked(arg: int) -> int? {
         let key = self.memo.query_key(arg)
         let held = self.memo.kernel.value_hash_of(key)
-        if held != null { return held }
+        if held != null || !self.lasting { return held }
         let names? = self.named.get() else { return null }
         let n? = self.number_at(arg) else { return null }
         let ask = names.ask
@@ -1642,6 +1677,7 @@ impl AnswersUnder<V> {
         let done = self.run(db, arg, body, again, digest)
         let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
         if !done.wrote && leaves != null {
+            db.in_process_reads(query, leaves!)
             let places = db.placed_leaves(leaves!)
             let named? = named_encoding(
                 done.value,
