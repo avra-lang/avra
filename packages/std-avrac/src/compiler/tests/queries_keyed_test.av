@@ -1,46 +1,12 @@
-//! THE QUERIES KEYED BY ONE KIND OF ID ARE THE KERNEL'S TO LIST: a `@query` registers its key
-//! seat when it is first asked, so a reader lists every query keyed by a declaration, or by a
-//! file, without a hand list that forgets the next one.
-use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace, refs_to, refs_from, IdKind}
-use compiler.host.{memory_host}
-use core.{DeclKind}
+//! THE QUERIES KEYED BY ONE KIND OF ID ARE THE DECLARATIONS' TO LIST: every `@query` declares
+//! its row, so a reader lists every query keyed by a declaration, or by a file, without a hand
+//! list that forgets the next one — and without asking any of them first.
+use compiler.{queries_keyed_by, IdKind}
 
-fn keyed_files() -> Map<string, string> {
-    {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-        "/w/src/main.av": "use a.{one}\n\nprintln(\"\${one()}\")\n",
-        "/w/src/a.av": "export fn one() -> int { 1 }\n",
-    }
-}
-
-/// A workspace that asked one query keyed by a declaration and one keyed by a file.
-fn asked() -> Workspace {
-    let ws = test_workspace(
-        memory_host(keyed_files(), ["/w/avra.toml", "/w/src/main.av", "/w/src/a.av"]),
-        "/w",
-    )
-    let _ = ws.analyze_file("/w/src/main.av")
-    let one = ws.decls.named_decl("/w/src/a.av", DeclKind.Fn, "one")!
-    let _ = refs_to(ws, one)
-    let _ = refs_from(ws, ws.file_id("/w/src/a.av"))
-    ws
-}
-
-/// The family of the cells a query's calls settled in.
-fn family_of(ws: Workspace, query: string) -> int { ws.cells_named(query).first()?.family ?? 0 - 1 }
-
-spec "compiler/queries keyed — the kernel lists a query by its key seat" {
+spec "compiler/queries keyed — every query is listed by its key seat, asked or not" {
     then "a query keyed by a declaration is listed under declarations, never under files" {
-        let ws = asked()
-        let f = family_of(ws, "refs_to")
-        f >= 0 &&
-            ws.queries_keyed_by(IdKind.Decl).contains(f) &&
-            !ws.queries_keyed_by(IdKind.File).contains(f)
+        queries_keyed_by(IdKind.Decl).contains("refs_to") &&
+            !queries_keyed_by(IdKind.File).contains("refs_to")
     }
-    then "a query keyed by a file is listed under files" {
-        let ws = asked()
-        let f = family_of(ws, "refs_from")
-        f >= 0 && ws.queries_keyed_by(IdKind.File).contains(f)
-    }
+    then "a query keyed by a file is listed under files" { queries_keyed_by(IdKind.File).contains("refs_from") }
 }

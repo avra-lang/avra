@@ -5,11 +5,12 @@ use core.{DeclId, TypeId, FileId}
 use compiler.{Workspace}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
+use @std.relation.{query_row, QueryRow}
 use features.{tree_saved, tree_unsaved}
 use compiler.store.{cas_big, cas_blob, cas_ref_of, cas_value}
 
 /// The id types a typing table holds.
-enum IdKind {
+export enum IdKind {
     Decl
     Type
     File
@@ -102,13 +103,18 @@ impl Scope for InArena {
     fn unplaced(file: string, at: List<int>) -> List<int>? { null }
 }
 
-impl Workspace {
-    /// THE QUERIES KEYED BY ONE KIND OF ID: each family whose calls a `@query` keys by an id of
-    /// kind `k`, as the kernel registered it when the query was first asked — never a hand list.
-    fn queries_keyed_by(k: IdKind) -> List<int> {
-        [f for f, s in self.query_db().engine().seats() if id_kind(s) == k]
-    }
+type Listed = { row: fn() -> QueryRow }
 
+/// Every `@query` the compiler declares, asked or not.
+collect listed_queries: List<Listed> = @query_row in package as Listed { row: it } by it.name
+
+/// THE QUERIES KEYED BY ONE KIND OF ID, by name: every `@query` whose one seat past its context
+/// is an id of kind `k`, from the declarations — never a hand list, never only those asked.
+export fn queries_keyed_by(k: IdKind) -> List<string> {
+    [r.name for r in [(l.row)() for l in listed_queries] if id_kind(r.seat) == k]
+}
+
+impl Workspace {
     /// The scope a body's facts cross under: expressions counted from `lo`, statements from
     /// `stmt_lo` — the declaration's own window, whose negative statement start reads as the
     /// whole file's, exactly as `new_type_facts` reads it. One rule, applied on both sides, is

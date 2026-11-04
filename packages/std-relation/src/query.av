@@ -41,6 +41,7 @@
 //! the lister, so a reader can bring every producer up to date.
 use @std.meta.{
     Fn,
+    Named,
     Param,
     Kind,
     Annotation,
@@ -135,6 +136,7 @@ export fn query(f: Fn) -> Declared {
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
             Directive { twin: "", name: key_name(f), at: f.at, source: key_door(f) },
             Directive { twin: "", name: "${f.name}_dropped", at: f.at, source: dropped_door(f) },
+            Directive { twin: "", name: row_name(f), at: f.at, source: row_source(f) },
         ]
             .concat(held_door(f))
             .concat(seat_door(f)),
@@ -147,8 +149,24 @@ export fn query(f: Fn) -> Declared {
 fn kept_source(f: Fn, kept: string) -> Decls {
     quote {
         once fn ${kept}() -> Answers<${f.answer}> {
-            answers(${literal(durable_name(f))}, ${literal(f.name)}, ${as_code(bool_node(keyed_densely(f)))}, ${as_code(bool_node(lasting(f)))}, ${literal(key_seat(f))})
+            answers(${literal(durable_name(f))}, ${literal(f.name)}, ${as_code(bool_node(keyed_densely(f)))}, ${as_code(bool_node(lasting(f)))})
         }
+    }
+}
+
+/// A query as its declaration names it — every one listed by `@query_row`, asked or not.
+export type QueryRow = { name: string, seat: string }
+
+/// Marks the row a `@query` declares; a `collect` over it lists every query of its scope.
+export fn query_row(_f: Named) {}
+
+fn row_name(f: Fn) -> string { "${f.name}_row" }
+
+/// `<name>_row()`: the query's row, under `@query_row`.
+fn row_source(f: Fn) -> Decls {
+    quote {
+        @query_row
+        fn ${row_name(f)}() -> QueryRow { QueryRow { name: ${literal(f.name)}, seat: ${literal(key_seat(f))} } }
     }
 }
 

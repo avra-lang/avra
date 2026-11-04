@@ -1,8 +1,7 @@
-// A query's key seat registered with its kernel: what any consumer lists the queries keyed by
-// one kind of argument from, never a hand list.
-use @std.relation.{query}
-use @std.relation.db.{Db, new_db}
-use @std.relation.engine.{new_kernel}
+// Every `@query` declares its row under `@query_row`: a `collect` lists the queries of a scope
+// with the type each is keyed by, whether or not any was asked.
+use @std.relation.{query, query_row, QueryRow}
+use @std.relation.db.{Db}
 
 @query
 fn doubled(_db: Db, n: int) -> int { n * 2 }
@@ -13,22 +12,17 @@ fn named_length(_db: Db, word: string) -> int { word.length }
 @query
 fn whole(_db: Db) -> int { 1 }
 
-spec "std/relation — a query's key seat, registered with its kernel" {
-    then "each asked query names the type its calls are keyed by, and a query over the Db alone names none" {
-        let kernel = new_kernel()
-        let db = new_db()
-        db.given_to(kernel)
-        let _ = doubled(db, 2)
-        let _ = named_length(db, "x")
-        let _ = whole(db)
-        let seats = kernel.seats()
-        let ints = [f for f, s in seats if s == "int"]
-        let texts = [f for f, s in seats if s == "string"]
-        let w = whole_key(db).family
-        ints.length == 1 &&
-            ints[0] == doubled_key(db, 2).family &&
-            texts.length == 1 &&
-            texts[0] == named_length_key(db, "x").family &&
-            (w >= seats.length || seats[w] == "")
+type Listed = { row: fn() -> QueryRow }
+
+collect listed: List<Listed> = @query_row in self as Listed { row: it } by it.name
+
+fn rows() -> List<QueryRow> { [(l.row)() for l in listed] }
+
+fn seat_of(name: string) -> string? { rows().find(it.name == name)?.seat }
+
+spec "std/relation — a query's row, listed unasked" {
+    then "each query is listed with the type its calls are keyed by, none asked" {
+        rows().length == 3 && seat_of("doubled") == "int" && seat_of("named_length") == "string"
     }
+    then "a query over the Db alone is keyed by none" { seat_of("whole") == "" }
 }
