@@ -235,9 +235,7 @@ fn new_keys() -> Keys {
 /// and the reads seen under it (`read_gen`, `read_seen`, `read_gens`), the units being lowered,
 /// innermost last (`lowering`), and the consts each unit's lowering asked
 /// for, by the unit (`unit_asks`), the declaration each lowered body belongs to, by its
-/// name (`owners`), whether kept units may stand in for lowering
-/// (`serving`), the units that did (`served`), each file's surface (`surfaces`), its kept rows (`rows`), the rows of
-/// this derivation (`rows_live`) and the files that made one (`rows_fresh`).
+/// name (`owners`).
 /// A read's expansion, memoized for the attempt: the reads it inherits and the
 /// run generation of the path it walked. A read expands differently as a fn than
 /// as a whole file, so the run generation — not a "seen" mark — invalidates it.
@@ -383,13 +381,6 @@ type Hold = {
     groups: Cell<List<Group>>,
     group_index: Cell<Map<string, int>>,
     owners: Cell<Map<string, DeclId>>,
-    serving: Cell<bool>,
-    warm: Cell<bool>,
-    served: Cell<List<Served>>,
-    surfaces: Cell<Map<string, string>>,
-    rows: Cell<Map<string, Map<string, UnitRow>>>,
-    rows_live: Cell<Map<string, List<UnitRow>>>,
-    rows_fresh: Cell<Map<string, bool>>,
 }
 
 /// One const a unit's lowering asked the settlement for.
@@ -471,13 +462,6 @@ fn new_hold() -> Hold {
         groups: list_cell(),
         group_index: map_cell(),
         owners: map_cell(),
-        serving: Cell.new(false),
-        warm: Cell.new(false),
-        served: list_cell(),
-        surfaces: map_cell(),
-        rows: map_cell(),
-        rows_live: map_cell(),
-        rows_fresh: map_cell(),
     }
 }
 
@@ -845,10 +829,6 @@ fn settled_verified(ws: Workspace, arg: int) -> int {
     touch(ws.settled_at(arg))
     ws.db.changed_at(key(Family.Settled, arg))
 }
-fn lowered_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.lowered(arg))
-    ws.db.changed_at(key(Family.Lowered, arg))
-}
 fn lift_lowered_verified(ws: Workspace, arg: int) -> int {
     touch(ws.lift_lowered(arg))
     ws.db.changed_at(key(Family.LiftLowered, arg))
@@ -906,7 +886,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .ConstTyped -> const_typed_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
         .Settled -> settled_verified(ws, arg),
-        .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
@@ -2518,7 +2497,6 @@ export fn family_code_hash(f: Family) -> string {
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",
         .Settled -> code_hash(settled_verified) ?? "",
-        .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",

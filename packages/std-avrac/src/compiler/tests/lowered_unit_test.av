@@ -1,0 +1,62 @@
+// A UNIT'S LOWERING STANDS ON WHAT IT READ. A second process over the same store restores a
+// fn's unit without lowering it after a sibling file's edit, and lowers it again when only a
+// const it reads changed its value.
+use @std.avrac.testing.{test_workspace}
+use @std.time.{now_ns}
+use compiler.{Workspace, lowered_unit_of}
+use compiler.host.{memory_host}
+use compiler.store.{Store, store_at}
+use features.{Wanted}
+
+const UF_MAIN: string = "/w/src/main.av"
+
+fn uf_files(konst: int, sibling: int) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        UF_MAIN: "const K: int = ${konst}\nexport fn f() -> int { K + 1 }\n",
+        "/w/src/b.av": "export fn g() -> int { ${sibling} }\n",
+    }
+}
+
+fn uf_process(files: Map<string, string>, store: Store) -> Workspace {
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.attach_store(store)
+    ws
+}
+
+fn uf_want(ws: Workspace) -> Wanted {
+    let _ = ws.file_id(UF_MAIN)
+    ws.admit_all()
+    ws.decls.plain_want([x.id for x in ws.decls.all_decls() if x.name == "f"][0])
+}
+
+/// Whether a process over `files` WRITES rows lowering `f`'s unit — a restored unit writes none.
+/// The declaration is signed first, so what stands measured is the unit's own lowering.
+fn uf_lowers(files: Map<string, string>, store: Store) -> bool {
+    let ws = uf_process(files, store)
+    let w = uf_want(ws)
+    let _ = ws.sig(w.decl!)
+    let before = ws.decls.rows_db.get().written.get()
+    let _ = lowered_unit_of(ws, w)
+    ws.decls.rows_db.get().written.get() > before
+}
+
+fn uf_store(name: string) -> Store { store_at("/tmp/avra-unit-facts-test/${now_ns()}/${name}") }
+
+spec "compiler/lowered_unit — a unit restores while what it read stands" {
+    given "a fn reading a const, said once" {
+        then "the first process lowers it" {
+            uf_lowers(uf_files(1, 2), uf_store("first"))
+        }
+        then "a process after a sibling edit restores it without lowering" {
+            let s = uf_store("sibling")
+            let _ = uf_lowers(uf_files(1, 2), s)
+            !uf_lowers(uf_files(1, 3), s)
+        }
+        then "a process after the const's value changed lowers it again" {
+            let s = uf_store("const")
+            let _ = uf_lowers(uf_files(1, 2), s)
+            uf_lowers(uf_files(5, 2), s)
+        }
+    }
+}
