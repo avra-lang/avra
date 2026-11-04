@@ -15,6 +15,7 @@ fn file_said(ws: Workspace, f: FileId) -> FileSaid { ws.saying(f) }
 
 impl Workspace {
     fn saying(f: FileId) -> FileSaid {
+        if self.is_held(f) { return self.unsaid() }
         let a = self.analysis(f)
         FileSaid {
             cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(f)],
@@ -23,6 +24,13 @@ impl Workspace {
                 rules: rule_findings(analysed(a), a.view.stmts),
             },
         }
+    }
+
+    /// What a held file says when no kept answer stands for it: nothing known, kept nowhere, so the
+    /// derivation reads the file.
+    fn unsaid() -> FileSaid {
+        self.query_db().unkept()
+        FileSaid { cases: [], facts: FileFacts { warnings: [], rules: null } }
     }
 
     /// A file's diagnostics in pipeline order, each pass's from its own answer: its parse, its
@@ -44,7 +52,8 @@ impl Workspace {
     fn said_now(f: FileId, want: Want) -> Said? {
         let path = self.decls.file(f).path
         let fs = file_said(self, f)
-        let rules = match want { .Diagnostics -> fs.facts.rules ?? [], .Binary -> [] }
+        let found? = fs.facts.rules else { return null }
+        let rules = match want { .Diagnostics -> found, .Binary -> [] }
         let warnings? = self.facts_said(fs.facts.warnings, rules) else { return null }
         let src = new_source_file(path, self.listed_text(path))
         Said {
