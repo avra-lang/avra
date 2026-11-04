@@ -51,7 +51,7 @@ use features.{
     new_type_facts,
     TypeFacts,
 }
-use core.{StmtId}
+use core.{StmtId, same_file, digest_of}
 use diagnostics.{Diag, no_voices, has_errors}
 use compiler.families.{Family}
 use compiler.backend.{
@@ -481,16 +481,20 @@ impl Workspace {
     /// A file's asks row key — read only by the said-row chain filesaid.av still holds.
     fn asks_row(path: string) -> string { node_key(Stored.Unit, ["asks-row", self.root, path]) }
 
-    /// A file's object key row — kept beside its other rows.
-    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), self.root, path]) }
+    /// WHAT A FILE'S OBJECT IS MADE OF, as the key it is kept under: the bodies and statics its
+    /// lowering produced, each digested with its ids spelled by durable name — an edit that moves
+    /// no body of the file moves no object.
+    fn file_code_key(lo: Lowered, f: FileId) -> string {
+        let ids = self.decls.ids()
+        let bodies = ["${b.fingerprint_in(ids)}" for b in lo.fns if b.file != null && same_file(b.file!, f)]
+        let statics = ["${s.fingerprint_in(ids)}" for s in lo.statics if s.file != null && same_file(s.file!, f)]
+        self.object_key_of(digest_of(joined(bodies.concat(["|"]).concat(statics), "\n")))
+    }
 
-    fn held_okey(s: Store, path: string) -> string {
-        let at = "${self.module_path_of(path).text()}\t${path}"
-        let known: string? = self.keys.object_keys.get().get(at)
-        if known != null { return known! }
-        let found = obj_key_cached(self, s, self.module_path_of(path), path)
-        self.keys.object_keys.put(at, found)
-        found
+    /// An object's key: what it is made of under this compiler and build mode — a host object
+    /// never answers a wasm link.
+    fn object_key_of(code: string) -> string {
+        node_key(Stored.Obj, [self.compiler_id(), self.keys.build_mode.get(), "file", code])
     }
 
     /// Whether this build is for wasm: no fiber, no thread, so no `while`
