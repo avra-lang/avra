@@ -86,7 +86,6 @@ export enum DbKind {
     Items
     Visible
     Resolved
-    ConstTyped
     Folded
     Lifted
     Expanded
@@ -104,7 +103,6 @@ impl DbKind {
             .Items -> "Items",
             .Visible -> "Visible",
             .Resolved -> "Resolved",
-            .ConstTyped -> "ConstTyped",
             .Folded -> "Folded",
             .Lifted -> "Lifted",
             .Expanded -> "Expanded",
@@ -127,7 +125,7 @@ extern fn avra_trap(message: string)
 /// `Plain`, `Items`; a RECURSIVE one — `Lowered`,
 /// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis`, `Expanded`,
 /// each re-entering itself or a peer; a manual ask/begin/finish one
-/// folding real work between the two — `ConstTyped`, `Lifted`,
+/// folding real work between the two — `Lifted`,
 /// `Settled`). The last (`Sig`, `Answer`) are `Db`'s own
 /// durable rows, string-keyed, surviving across processes on disk
 /// (`Stored.Rows`) — `key()` is only ever asked of these three; a
@@ -179,7 +177,6 @@ export enum DbRow {
     Items(List<DeclId>)
     Visible(Namespace)
     Resolved(NameFacts)
-    ConstTyped(TypeId)
     Folded(TypeFacts)
     Lifted(LiftResult)
     Expanded(List<DeclId>)
@@ -204,7 +201,6 @@ impl DbRow {
             .Items(_) -> DbKind.Items,
             .Visible(_) -> DbKind.Visible,
             .Resolved(_) -> DbKind.Resolved,
-            .ConstTyped(_) -> DbKind.ConstTyped,
             .Folded(_) -> DbKind.Folded,
             .Lifted(_) -> DbKind.Lifted,
             .Expanded(_) -> DbKind.Expanded,
@@ -261,16 +257,6 @@ fn items_of(r: DbRow) -> List<DeclId> {
         rest -> {
             avra_trap("defect: DbRow.Items expected")
             items_of(r)
-        },
-    }
-}
-
-fn const_typed_of(r: DbRow) -> TypeId {
-    match r {
-        .ConstTyped(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.ConstTyped expected")
-            const_typed_of(r)
         },
     }
 }

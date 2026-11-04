@@ -770,7 +770,6 @@ export type Decls = {
     // the ROOT package's manifest name — its modules carry no package
     // prefix, and a kind spoken there still wears the package
     root_name: Cell<string>,
-    const_types: Cell<Map<string, TypeId>>,
     /// TWO LAYERS SHARED: members are appended through every copy of the
     /// per-parent slot, so an append cannot copy it (a plain
     /// `List<List<DeclId>>` cloned the whole table per child) — AND the
@@ -788,7 +787,7 @@ export type Decls = {
     ensure_target: Cell<fn(DeclId) -> void>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
-    ensure_const: Cell<fn(FileId, StmtId) -> bool>,
+    ensure_const: Cell<fn(FileId, StmtId) -> ConstType>,
     // whether THIS compilation is a program (has an entry) or a
     // library — the closure-fold law's door (features/consts/check.av)
     ensure_entry: Cell<fn() -> bool>,
@@ -962,7 +961,7 @@ export fn gathers_across_files(scope: CollectScope) -> bool {
 }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
-fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
+fn no_const_ensure(f: FileId, s: StmtId) -> ConstType { ConstType.Refused }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
@@ -983,13 +982,12 @@ fn refs_unknown() -> bool { true }
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
 /// for its own type, which only the asking read can speak.
+@codec
 export enum ConstType {
     Known(TypeId)
     Refused
     Cyclic
 }
-
-fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 
 export fn new_decls() -> Decls { new_decls_under(transient()) }
 
@@ -1078,7 +1076,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         marks: Cell.new(empty_marks),
         ensure_marks: Cell.new(no_marks),
         root_name: Cell.new(""),
-        const_types: map_cell(),
         children: Cell.new(no_children),
         methods: Cell.new(no_methods),
         impls: Cell.new(no_impls),
@@ -2083,7 +2080,7 @@ impl Decls {
         self.ensure_target.set(ensure)
     }
 
-    fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
+    fn arm_const(ensure: fn(FileId, StmtId) -> ConstType) { self.ensure_const.set(ensure) }
 
     /// The workspace arms the entry hook once.
     fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
@@ -2187,13 +2184,7 @@ impl Decls {
         self.package_named(self.module_name(self.file(f).module_id))
     }
 
-    fn const_type(f: FileId, s: StmtId) -> ConstType {
-        if (self.ensure_const.get())(f, s) { return ConstType.Cyclic }
-        let held? = self.held_const_type(f, s) else { return ConstType.Refused }
-        ConstType.Known(held)
-    }
-
-    fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get().get(const_type_key(f, s)) }
+    fn const_type(f: FileId, s: StmtId) -> ConstType { (self.ensure_const.get())(f, s) }
 
     fn held_value(d: DeclId) -> Settled? { self.held_values.get().get("${d.index}") }
 
@@ -2202,10 +2193,6 @@ impl Decls {
     fn held_reach(d: DeclId) -> string? { self.held_reaches.get().get("${d.index}") }
 
     fn remember_held_reach(d: DeclId, words: string) { self.held_reaches.put("${d.index}", words) }
-
-    fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
-        self.const_types.put(const_type_key(f, s), ty)
-    }
 
     /// The workspace arms the lifting hook once.
     fn arm_lifter(
