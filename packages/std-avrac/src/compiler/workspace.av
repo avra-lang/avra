@@ -809,7 +809,6 @@ export fn phase_total(phases: List<Phase>, name: string) -> int {
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
 /// import brings in are folded so a dependency's grammar appearing
 /// re-parses this file.
-fn parsed_fingerprint(s: DbRow) -> int { fingerprint_of_parsed(parsed_of(s)) }
 
 /// A PARSE'S OWN DIGEST — structural fingerprints and the block words it read, never a byte or
 /// a comment. The family's cutoff and the record's `syntax` column are the same value, so a
@@ -835,10 +834,6 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 
 // Per-family verifiers — each calls only its own query, so a family's
 // code hash moves only when its own answer does.
-fn parsed_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.parsed(file_at(arg)))
-    ws.db.changed_at(key(Family.Parsed, arg))
-}
 fn items_verified(ws: Workspace, arg: int) -> int {
     touch(ws.items(file_at(arg)))
     ws.db.changed_at(key(Family.Items, arg))
@@ -930,7 +925,6 @@ fn input_verified(ws: Workspace, arg: int) -> int {
 fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
     if family >= Family.all().length { return 0 }
     match Family.all()[family] {
-        .Parsed -> parsed_verified(ws, arg),
         .Items -> items_verified(ws, arg),
         .Visible -> visible_verified(ws, arg),
         .Resolved -> resolved_verified(ws, arg),
@@ -996,6 +990,10 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
 fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
+
+/// A file's parse under the block words it stands under.
+@query
+fn parsed_in(ws: Workspace, f: FileId) -> Parsed { ws.parsed_under_blocks(f) }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1597,11 +1595,7 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        parsed_of(
-            self
-                .relation(Family.Parsed)
-                .demand(f.index, () -> DbRow.Parsed(self.parsed_under_blocks(f)), parsed_fingerprint),
-        )
+        parsed_in(self, f)
     }
 
     /// A file parsed under NO block words — its own words alone: the
@@ -1783,7 +1777,7 @@ impl Workspace {
     /// whole and would export nothing. Its plain parse answers only
     /// inside a cycle: two files importing each other's words.
     fn provider_parsed(f: FileId) -> Parsed {
-        if self.db.active(self.relation(Family.Parsed).query_key(f.index)) { return self.plain_parsed(f) }
+        if self.db.active(parsed_in_key(self, f)) { return self.plain_parsed(f) }
         self.parsed(f)
     }
 
@@ -2459,11 +2453,8 @@ impl Workspace {
     /// A file's parse, read unrecorded where this process already holds it: an open
     /// parse, or one never made, is asked.
     fn parse_unrecorded(f: FileId) -> Parsed {
-        if self.relation(Family.Parsed).open(f.index) { return self.parsed(f) }
-        match self.relation(Family.Parsed).values.entry(f.index) {
-            .Present(r) -> parsed_of(r),
-            .Missing -> self.parsed(f),
-        }
+        if self.db.active(parsed_in_key(self, f)) { return self.parsed(f) }
+        parsed_in_held(self, f) ?? self.parsed(f)
     }
 
     /// The one context over a declaration's expression range: the view
@@ -2600,7 +2591,7 @@ fn decl_at_arg(arg: int) -> DeclId { DeclId { index: arg } }
 /// A program's fingerprint — the fold of its statements'.
 impl Parsed {
     /// A parse folded by its structure: what an in-process answer of one digests by.
-    fn fingerprint() -> int { program_hash(self) }
+    fn fingerprint() -> int { fingerprint_of_parsed(self) }
 }
 
 fn program_hash(p: Parsed) -> int {
@@ -2666,7 +2657,6 @@ fn declared_components(p: Parsed) -> List<ComponentWord> {
 /// family. Baked at build time; the store keys a saved answer by it.
 export fn family_code_hash(f: Family) -> string {
     match f {
-        .Parsed -> code_hash(parsed_verified) ?? "",
         .Items -> code_hash(items_verified) ?? "",
         .Visible -> code_hash(visible_verified) ?? "",
         .Resolved -> code_hash(resolved_verified) ?? "",

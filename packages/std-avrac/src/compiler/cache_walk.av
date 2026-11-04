@@ -79,19 +79,12 @@ enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
 /// What each family keys by.
 fn keyed_by(f: Family) -> KeyedBy {
     match f {
-        .Parsed or .Items or .Visible or .Resolved or .Folded or .Expanded -> KeyedBy.File,
+        .Items or .Visible or .Resolved or .Folded or .Expanded -> KeyedBy.File,
         .Sig or .Methods or .ConstTyped or .Raised or .Syntax or .Names or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
         .Input -> KeyedBy.Input,
     }
-}
-
-/// What a family's keys name — a row's place for a family no declaration
-/// names, a relation's minted one.
-fn keyed(family: int) -> KeyedBy {
-    let f? = Family.all().get(family) else { return KeyedBy.Row }
-    keyed_by(f)
 }
 
 /// A family by its word — a relation's minted family by its place.
@@ -101,6 +94,17 @@ fn keyed_by_decl(f: Family) -> bool {
     match keyed_by(f) {
         .Decl -> true,
         .File or .Module or .Package or .Program or .Unit or .Name or .Input or .Row -> false,
+    }
+}
+
+/// What a query's keys name, by its seat's id kind.
+fn seat_keyed(seat: string) -> KeyedBy {
+    let k? = id_kind(seat) else { return KeyedBy.Row }
+    match k {
+        .File -> KeyedBy.File,
+        .Decl -> KeyedBy.Decl,
+        .Module -> KeyedBy.Module,
+        .Type or .Expr or .Stmt -> KeyedBy.Row,
     }
 }
 
@@ -189,11 +193,7 @@ impl Workspace {
         let family? = self.family_worded(word) else { return Meant.NoFamily(word) }
         let subject = label.substring(open + 1, label.length - 1)
         if subject == "" { return Meant.NoAnswer(label) }
-        let analysed = self.analysis_key("${self.root}/${subject}")
-        if analysed != null && analysed!.family == family {
-            return if self.db.cell(analysed!) != null { Meant.Answers([analysed!]) } else { Meant.NoAnswer(label) }
-        }
-        let keys = [Key { family: family, arg: arg } for arg in self.subject_args(keyed(family), subject)]
+        let keys = [Key { family: family, arg: arg } for arg in self.subject_args(self.keyed(family), subject)]
         let settled = [k for k in keys if self.db.cell(k) != null]
         if settled.is_empty() { Meant.NoAnswer(label) } else { Meant.Answers(settled) }
     }
@@ -385,8 +385,15 @@ impl Workspace {
 
     /// What an answer is keyed by, named: a file, a module, a declaration, a
     /// package, the whole program, a name, or a unit known only by its number.
+    /// What a family's keys name: a declared family's by its declaration, a query's by the kind
+    /// of id its seat is, a row's place for any other.
+    fn keyed(family: int) -> KeyedBy {
+        let f? = Family.all().get(family) else { return seat_keyed(self.query_db().engine().seats().get(family) ?? "") }
+        keyed_by(f)
+    }
+
     fn key_subject(k: Key) -> string {
-        match keyed(k.family) {
+        match self.keyed(k.family) {
             .File -> self.shown_path(self.decls.file(FileId { index: k.arg }).path),
             .Module -> module_shown(self.decls.module_name(ModuleId { index: k.arg })),
             .Decl -> self.decl_shown(DeclId { index: k.arg }),
@@ -395,7 +402,7 @@ impl Workspace {
             .Unit -> "${UNIT}${k.arg}",
             .Name -> self.bucket_shown(k.arg),
             .Input -> self.input_shown(self.input_names.get()[k.arg]),
-            .Row -> self.analysed_path(k) ?? "${k.arg}",
+            .Row -> "${k.arg}",
         }
     }
 

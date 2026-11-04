@@ -74,7 +74,8 @@ spec "compiler/cache_walk — a query's label" {
     then "each ordinal the fixtures use names its family and its subject" {
         let ws = walked()
         let f = decl_in_file(ws, "/w/src/a.av", "f").index
-        label_at(ws, parsed_ordinal(), ws.file_id("/w/src/a.av").index) == "Parsed(src/a.av)" &&
+        named_by(ws, "parsed_in(src/a.av)")
+                .any((k: Key) -> ws.key_label(k) == "parsed_in(src/a.av)") &&
             label_at(ws, sig_ordinal(), f) == "Sig(f · src/a.av)" &&
             label_at(ws, methods_ordinal(), f) == "Methods(f · src/a.av)"
     }
@@ -100,7 +101,7 @@ spec "compiler/cache_walk — a query's label" {
     }
     then "an empty subject names no answer, whatever its family keys by" {
         let ws = walked()
-        ["Parsed()", "Sig()", "Lowered()", "Named()", "Input()"]
+        ["parsed_in()", "Sig()", "Lowered()", "Named()", "Input()"]
             .all((l: string) -> named_by(ws, l).is_empty() && unknown_family(ws, l) == "")
     }
     then "every settled answer's label, read backwards, names that answer" {
@@ -120,7 +121,7 @@ spec "compiler/cache_walk — a graph of two packages" {
         unread(packaged()).length == 0
     }
     then "a dependency's file is found by its path from the asked package" {
-        named_by(packaged(), "Parsed(vendor/greet/src/greet.av)").length == 1
+        named_by(packaged(), "parsed_in(vendor/greet/src/greet.av)").length == 1
     }
 }
 
@@ -170,7 +171,7 @@ spec "compiler/cache_walk — up from a text" {
         let ws = walked()
         let text = ws.input_key("/w/src/a.av")!
         let labels = [ws.key_label(k) for k in above(ws, text)]
-        labels.contains("Parsed(src/a.av)") &&
+        labels.contains("parsed_in(src/a.av)") &&
             labels.contains("analysis_in(src/b.av)") &&
             !labels.contains("Input(text src/a.av)")
     }
@@ -183,7 +184,7 @@ spec "compiler/cache_walk — up from a text" {
     }
     then "an answer never settled is read by nothing" {
         let ws = walked()
-        let gone = Key { family: parsed_ordinal(), arg: 4096 }
+        let gone = Key { family: named_by(ws, "parsed_in(src/a.av)")[0].family, arg: 4096 }
         ws.db.cell(gone) == null &&
             ws.db.edges_by_read(gone).is_empty() &&
             above(ws, gone).is_empty()
