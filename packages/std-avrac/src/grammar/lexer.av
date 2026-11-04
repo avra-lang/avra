@@ -18,7 +18,7 @@
 //! one pass reports everything.
 use @std.text.{Text, builder}
 use core.{Span, span_of, Remark, Trivia}
-use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
+use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder, sorted_by}
 
 /// What a token is; Lit-vs-kind matching keys off this. The IStr
 /// kinds are an interpolated string's pieces: `"a ${x} b ${y} c"`
@@ -793,24 +793,7 @@ fn lex_words(
 /// interleaved line already pushed straight to the list — so the
 /// list is sorted once, the printer's cursor being a single forward
 /// walk that a single out-of-order entry would desync for good.
-fn sorted_remarks(rs: List<Remark>) -> List<Remark> {
-    mut remaining = rs
-    mut out: List<Remark> = []
-    while !remaining.is_empty() {
-        let m = lowest_at_index(remaining)
-        out.push(remaining[m])
-        remaining = remaining.slice(0, m).concat(remaining.slice(m + 1, remaining.length))
-    }
-    out
-}
-
-fn lowest_at_index(rs: List<Remark>) -> int {
-    mut best = 0
-    for i, r in rs {
-        if r.at < rs[best].at { best = i }
-    }
-    best
-}
+fn sorted_remarks(rs: List<Remark>) -> List<Remark> { sorted_by(rs, (a: Remark, b: Remark) -> a.at < b.at) }
 
 /// What the scanner is INSIDE, innermost last: a quote's or block's
 /// body, a string's hole, or a template hole. A hole's brace depth

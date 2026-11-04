@@ -15,6 +15,7 @@ use @std.avrac.core.{
     reversed,
     found_at,
     grouped_by,
+    sorted_by,
 }
 
 /// A list's elements, comma-joined — so a test asserts CONTENT and
@@ -31,6 +32,32 @@ fn ints_shown(xs: List<int>) -> string {
 }
 
 spec "core/lists" {
+    given "sorted_by — the stable merge" {
+        then "nothing and one are themselves" {
+            let nothing: List<int> = []
+            sorted_by(nothing, (a: int, b: int) -> a < b).is_empty() &&
+                ints_shown(sorted_by([7], (a: int, b: int) -> a < b)) == "7"
+        }
+        then "every length from 2 to 33 sorts a reversed list" {
+            mut bad = 0
+            for n in 2..34 {
+                let down = [n - i for i in 0..n]
+                let up = sorted_by(down, (a: int, b: int) -> a < b)
+                if ints_shown(up) != ints_shown([i + 1 for i in 0..n]) { bad = bad + 1 }
+            }
+            bad == 0
+        }
+        then "equal keys keep their order" {
+            let tagged = [21, 11, 22, 12, 13, 23, 31, 14]
+            ints_shown(sorted_by(tagged, (a: int, b: int) -> a / 10 < b / 10)) == "11,12,13,14,21,22,23,31"
+        }
+        then "a list already in order is returned as it was" {
+            ints_shown(sorted_by([1, 1, 2, 3, 3, 5], (a: int, b: int) -> a < b)) == "1,1,2,3,3,5"
+        }
+        then "a shuffle of an odd length is ordered" {
+            ints_shown(sorted_by([5, 3, 9, 1, 7, 2, 8], (a: int, b: int) -> a < b)) == "1,2,3,5,7,8,9"
+        }
+    }
     given "grouped_by — the filing" {
         then "keys come in first-seen order, items in order" {
             let g = grouped_by(["a1", "b1", "a2"], (l: string) -> l.substring(0, 1))
