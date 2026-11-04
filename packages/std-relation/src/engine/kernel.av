@@ -62,7 +62,7 @@ fn input_cell(rev: int, value_hash: int) -> QueryCell {
 /// took it from.
 type Restore = { edge: int, previous: int }
 
-/// THE ASKING HALF: the open queries, innermost last — five stacks
+/// THE ASKING HALF: the open queries, innermost last — six stacks
 /// that grow and shrink together — and the innermost's own reader id
 /// and grain, kept apart so a repeat read asks one cell.
 @identity
@@ -86,6 +86,9 @@ type Asker = {
     /// when none is open.
     readers: Cell<List<int>>,
     reader: Cell<int>,
+    /// The reader in force when each open query began: what its close hands back. A frame's
+    /// parent is the one that was hearing then, never the stack's new top when unheard sat between.
+    outers: Cell<List<int>>,
     /// The edge the innermost open query appended last, `no_edge`
     /// when it has appended none since it began or resumed.
     last: Cell<int>,
@@ -100,6 +103,7 @@ fn new_asker() -> Asker {
         readers: list_cell(),
         views: list_cell(),
         reader: Cell.new(0),
+        outers: list_cell(),
         last: Cell.new(no_edge()),
     }
 }
@@ -777,6 +781,7 @@ impl Kernel {
         self.asker.restore.push(no_restore)
         self.asker.open.push(edge_of(key))
         self.asker.began.push(self.rev.get())
+        self.asker.outers.push(self.asker.reader.get())
         self.asker.readers.push(reader)
         self.asker.reader.set(reader)
         self.asker.last.set(no_edge())
@@ -858,7 +863,8 @@ impl Kernel {
         dropped(self.asker.open)
         dropped(self.asker.began)
         dropped(self.asker.readers)
-        self.asker.reader.set(self.asker.readers.get().last() ?? 0)
+        self.asker.reader.set(self.asker.outers.get().last() ?? 0)
+        dropped(self.asker.outers)
         self.asker.last.set(no_edge())
         if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
         edges
