@@ -117,6 +117,32 @@ export fn queries_keyed_by(k: IdKind) -> List<string> {
 /// The type a query's calls are keyed by, from its declaration; none for a name no query wears.
 export fn query_seat(name: string) -> string { [(l.row)() for l in listed_queries].find(it.name == name)?.seat ?? "" }
 
+/// A SCOPE'S IDS AND TEXTS, ITS PLACES KEPT AS THE OFFSETS THEY ARE. An answer standing on a
+/// file's whole text gains nothing from a token anchor — the leaf moves with any edit — and an
+/// anchor cannot be read back by a process that never lexed the text.
+type Offsets = { inner: dyn Scope }
+
+impl Scope for Offsets {
+    fn spelled(kind: string, index: int) -> string { self.inner.spelled(kind, index) }
+
+    fn unspelled(kind: string, text: string) -> int? { self.inner.unspelled(kind, text) }
+
+    fn placed(_file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(_file: string, at: List<int>) -> List<int>? { if at.length == 2 { at } else { null } }
+
+    fn kept_out(text: string) -> string? { self.inner.kept_out(text) }
+
+    fn kept_back(reference: string) -> string? { self.inner.kept_back(reference) }
+
+    fn file_spelled(file: string) -> string { self.inner.file_spelled(file) }
+
+    fn file_unspelled(text: string) -> string { self.inner.file_unspelled(text) }
+}
+
+/// The scope a file's own answer crosses under: the workspace's names, its places as offsets.
+fn file_offsets(ws: Workspace, _f: FileId) -> dyn Scope { Offsets { inner: ws.query_scope() } }
+
 impl Workspace {
     /// The scope a body's facts cross under: expressions counted from `lo`, statements from
     /// `stmt_lo` — the declaration's own window, whose negative statement start reads as the
