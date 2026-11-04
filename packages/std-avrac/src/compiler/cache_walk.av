@@ -79,7 +79,7 @@ enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
 /// What each family keys by.
 fn keyed_by(f: Family) -> KeyedBy {
     match f {
-        .Parsed or .Items or .Visible or .Resolved or .Folded or .Analysis or .Expanded -> KeyedBy.File,
+        .Parsed or .Items or .Visible or .Resolved or .Folded or .Expanded -> KeyedBy.File,
         .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
@@ -168,7 +168,7 @@ impl Workspace {
     /// A file's analysis: the query a check asks of it, the root of its trails.
     fn analysis_key(path: string) -> Key? {
         let f? = self.walked_file(path) else { return null }
-        key(Family.Analysis, f.index)
+        analysis_in_key(self, f)
     }
 
     /// A file's text: the input its source and its scans read, and the one
@@ -189,6 +189,10 @@ impl Workspace {
         let family? = self.family_worded(word) else { return Meant.NoFamily(word) }
         let subject = label.substring(open + 1, label.length - 1)
         if subject == "" { return Meant.NoAnswer(label) }
+        let analysed = self.analysis_key("${self.root}/${subject}")
+        if analysed != null && analysed!.family == family {
+            return if self.db.cell(analysed!) != null { Meant.Answers([analysed!]) } else { Meant.NoAnswer(label) }
+        }
         let keys = [Key { family: family, arg: arg } for arg in self.subject_args(keyed(family), subject)]
         let settled = [k for k in keys if self.db.cell(k) != null]
         if settled.is_empty() { Meant.NoAnswer(label) } else { Meant.Answers(settled) }
@@ -375,8 +379,8 @@ impl Workspace {
 
     /// The file a query analyses, for a file's analysis alone.
     fn analysed_path(k: Key) -> string? {
-        if k.family != Family.Analysis.ordinal { return null }
-        self.shown_path(self.decls.file(FileId { index: k.arg }).path)
+        let f? = analysis_in_seat_of(self, k) else { return null }
+        self.shown_path(self.decls.file(f).path)
     }
 
     /// What an answer is keyed by, named: a file, a module, a declaration, a
@@ -391,7 +395,7 @@ impl Workspace {
             .Unit -> "${UNIT}${k.arg}",
             .Name -> self.bucket_shown(k.arg),
             .Input -> self.input_shown(self.input_names.get()[k.arg]),
-            .Row -> "${k.arg}",
+            .Row -> self.analysed_path(k) ?? "${k.arg}",
         }
     }
 
