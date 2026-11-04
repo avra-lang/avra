@@ -1,0 +1,19 @@
+//! WHAT A FILE'S PARSE SAID, as one saved answer: its diagnostics, standing on its source and
+//! the block words it parses under.
+use core.{FileId, touch}
+use @std.relation.{query}
+use diagnostics.{Diag}
+
+/// A file's parse diagnostics. Its recorded reads are its source and the block words it parses
+/// under; the parse they come from is read unrecorded, since a parse's voices are a pure fn of
+/// those two, placed by file offsets and never by arena ids.
+@query
+export fn parse_said(ws: Workspace, f: FileId) -> List<Diag> { ws.parse_voices(f) }
+
+impl Workspace {
+    fn parse_voices(f: FileId) -> List<Diag> {
+        touch(source_of(self, f))
+        let p = self.parse_unrecorded(f)
+        self.with_import_remedies(p, self.block_words(f, p)).voices.list
+    }
+}
