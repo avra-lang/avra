@@ -1,0 +1,55 @@
+//! A RESTORED SIGNING LEAVES THE DECLARATION TABLES AS SIGNING DID: a second process over the
+//! same store asks every signature, lands each restored signing's writes, and every table a
+//! signing writes reads exactly as the first process left it — spelled by name, so two
+//! processes' ids compare. A write a signing makes and its answer does not carry is a table
+//! that differs here.
+use @std.avrac.testing.{test_workspace}
+use @std.time.{now_ns}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use compiler.store.{Store, store_at}
+use core.{joined}
+
+/// Every kind of write a signing makes: a trait and its impl, a method writing its receiver,
+/// a `mut` seat sealing a flat record, a named type, an alias, a payload enum, a bound, a
+/// defaulted field and a record's own methods.
+fn signing_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": "use shapes.{Sq, Shape, pick, fill, Cell1, Opts}\n\nprintln(\"\${pick(Sq { n: 2 })} \${Opts {}.size}\")\n",
+        "/w/src/shapes.av": "export trait Shape {\n    fn area() -> int\n}\n\nexport type Sq = { n: int }\n\nimpl Shape for Sq {\n    fn area() -> int { self.n * self.n }\n}\n\nexport type Counter = { n: int, label: string }\n\nimpl Counter {\n    mut fn bump() { self.n = self.n + 1 }\n    fn shown() -> string { self.label }\n}\n\nexport type Cell1 = { v: int }\n\nexport fn fill(mut c: Cell1) { c.v = 1 }\n\nexport type UserId = int\n\nexport alias Ids = List<int>\n\nexport enum Tok {\n    A\n    B(n: int)\n}\n\nexport fn pick<T: Shape>(x: T) -> int { x.area() }\n\nexport type Opts = { size: int = 3 }\n",
+    }
+}
+
+fn fresh_store() -> Store { store_at("/tmp/avra-sig-restore-test/${now_ns()}") }
+
+/// A process over the fixture with `store` attached, every file analysed and every
+/// declaration's signature asked.
+fn signed_process(store: Store) -> Workspace {
+    let files = signing_files()
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.attach_store(store)
+    for path in ["/w/src/shapes.av", "/w/src/main.av"] { let _ = ws.analyze_file(path) }
+    for x in ws.decls.all_decls() { let _ = ws.sig(x.id) }
+    ws
+}
+
+/// Every table a signing writes, without saying whether the signing was made or landed.
+fn tables(ws: Workspace) -> string { joined([unmarked(l) for l in ws.sign_tables()], "\n") }
+
+fn unmarked(line: string) -> string {
+    let p = line.split("\t")
+    joined([p[0]].concat(p.drop(2)), "\t")
+}
+
+/// How many signatures a process landed from a restore rather than signed.
+fn landed(ws: Workspace) -> int { [1 for l in ws.sign_tables() if l.split("\t")[1] == "L"].length }
+
+spec "compiler/signed — a restored signing writes what signing wrote" {
+    then "every table reads alike in the process that signed and the one that restored" {
+        let s = fresh_store()
+        let first = tables(signed_process(s))
+        let again = signed_process(s)
+        landed(again) > 10 && tables(again) == first
+    }
+}
