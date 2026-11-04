@@ -1077,7 +1077,7 @@ impl Workspace {
         let l = self.standalone(f, root, "settling\$${name}", seats, true)
         if has_errors(l.diagnostics) {
             self.recorded_reads(f, l, null)
-            return .Err(Unsettled.Trap(l.diagnostics.first()!.message))
+            return .Err(trapped(l.diagnostics.first()!))
         }
         let ws = self
         let r = run_settle(
@@ -1120,7 +1120,7 @@ impl Workspace {
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.standalone(f, e, self.decls.expr_symbol(f, e), [], false)
         self.recorded_reads(f, l, null)
-        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        if has_errors(l.diagnostics) { return .Err(trapped(l.diagnostics.first()!)) }
         let ws = self
         match run_crossed(
             l,
@@ -1206,7 +1206,7 @@ impl Workspace {
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decl_read(x.file, d)])
         self.recorded_reads(f, l, null)
-        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        if has_errors(l.diagnostics) { return .Err(trapped(l.diagnostics.first()!)) }
         let sig = self.decls.sig(d)?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
@@ -1331,3 +1331,9 @@ fn places_fp(v: List<int>) -> int { fp_list(v) }
 /// hashed — `[1, 2] | [3]` and `[1] | [2, 3]` hold the same ints and are two
 /// answers.
 export fn reach_fp(sets: List<List<int>>) -> int { fp(3, [fp_list([fp_list(s) for s in sets])]) }
+
+/// A refusal that cut a settlement short, in the words it spoke and where it pointed.
+export fn trapped(d: Diag) -> Unsettled {
+    let at? = d.primary.label else { return Unsettled.Trap(d.message) }
+    Unsettled.Trap("${d.message}: ${at}")
+}
