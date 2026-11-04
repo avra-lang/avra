@@ -1,0 +1,30 @@
+//! A settlement cut short speaks the words of what cut it, not only that it was cut.
+use compiler.{trapped}
+use diagnostics.{refusal}
+use features.{Unsettled}
+
+fn words_of(why: Unsettled) -> string {
+    match why {
+        .Trap(w) -> w,
+        .Reach(w) or .Budget(w) or .Param(w) -> "not a trap: ${w}",
+        .Spoken or .Recursive -> "silent",
+    }
+}
+
+spec "compiler/trapped — a cut settlement names its cause" {
+    given "a refusal that cut a settlement short" {
+        then "the words are its message, then what it pointed at" {
+            words_of(
+                trapped(
+                    refusal(
+                        "const.trap",
+                        null,
+                        "a const trapped while settling",
+                        "`x` divided by zero",
+                        null,
+                    ),
+                ),
+            ) == "a const trapped while settling: `x` divided by zero"
+        }
+    }
+}
