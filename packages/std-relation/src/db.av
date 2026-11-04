@@ -104,6 +104,8 @@ export type Db = {
     known_at: Cell<int>,
     /// Every leaf this process named, numbered once.
     leaf_table: LeafTable,
+    /// The walk each query's cell was last met in, by family and argument.
+    walks: Cell<List<Cell<List<int>>>>,
     /// Each leaf chunk this process wrote or read back, by its hash: its leaves' numbers.
     leaf_chunks: Cell<Map<string, List<int>>>,
 }
@@ -267,6 +269,12 @@ enum Noted {
     Owed(key: Key)
 }
 
+/// One read a walk meets: leaves to take, or a settled query's own reads to walk in its place.
+enum Step {
+    Leaves(numbers: List<int>)
+    Reads(keys: List<Key>)
+}
+
 /// A relation reached in a Db, by name: its family and its rows' hash, read live.
 type RelRef = { name: string, family: fn() -> int, hash: fn() -> int }
 
@@ -423,6 +431,7 @@ fn made(durable: Durable) -> Db {
         known_at: Cell.new(0 - 1),
         written: Cell.new(0),
         leaf_table: leaf_table(),
+        walks: list_cell(),
         leaf_chunks: map_cell(),
     }
 }
@@ -702,7 +711,7 @@ impl Db {
 
     /// What one read stands on, by names that outlive the process.
     fn leaves_at(k: Key) -> List<Leaf>? {
-        let ns? = self.numbers_at(k) else { return null }
+        let ns? = self.numbers_of([k]) else { return null }
         [self.leaf_table.leaf(n) for n in ns]
     }
 
@@ -716,29 +725,55 @@ impl Db {
         let named = self.leaf_table
         let union = named.opened()
         mut out: List<int> = []
-        for k in deps {
-            let found? = self.numbers_at(k) else { return null }
-            for n in found {
-                if named.joins(n, union) { out.push(n) }
+        mut todo: List<Key> = [deps[deps.length - 1 - i] for i in 0..deps.length]
+        while !todo.is_empty() {
+            let step? = self.step_of(todo.pop(), union) else { return null }
+            match step {
+                .Leaves(ns) -> {
+                    for n in ns {
+                        if named.joins(n, union) { out.push(n) }
+                    }
+                },
+                .Reads(ks) -> {
+                    for i in 0..ks.length { todo.push(ks[ks.length - 1 - i]) }
+                },
             }
         }
         out
     }
 
-    fn numbers_at(k: Key) -> List<int>? {
-        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_numbers(k) }
-        [self.leaf_table.number(Leaf.Rows(rel.name, rel.hash_now()))]
+    /// One read of a walk: its leaves, or — a query settled on its cell's reads — those reads,
+    /// walked in its place the first time the walk meets it. Absent when the read has no name.
+    fn step_of(k: Key, union: int) -> Step? {
+        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_step(k, union) }
+        Step.Leaves([self.leaf_table.number(Leaf.Rows(rel.name, rel.hash_now()))])
     }
 
-    fn answer_numbers(k: Key) -> List<int>? {
+    fn answer_step(k: Key, union: int) -> Step? {
         let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
         if owner.by_answer {
             let named = self.spelled_numbers(owner, k)
-            if named != null { return named }
+            if named != null { return Step.Leaves(named!) }
         }
-        let edge = edge_of(k)
-        let noted? = self.leaves.get().get("${edge}") else { return self.spelled_numbers(owner, k) }
-        self.known(edge, noted)
+        let noted? = self.leaves.get().get("${edge_of(k)}") else {
+            let named? = self.spelled_numbers(owner, k) else { return null }
+            return Step.Leaves(named)
+        }
+        match noted {
+            .Known(ns) -> Step.Leaves(ns),
+            .Unnamed -> null,
+            .Owed(key) -> if self.first_walk(k, union) { Step.Reads(self.engine().deps_of(key)) } else { Step.Leaves([]) },
+        }
+    }
+
+    /// Whether `k` is met for the first time in walk `union`: a query's reads are walked once a walk.
+    fn first_walk(k: Key, union: int) -> bool {
+        while self.walks.get().length <= k.family { self.walks.push(list_cell()) }
+        let marks = self.walks.get()[k.family]
+        while marks.get().length <= k.arg { marks.push(0 - 1) }
+        if marks.get()[k.arg] == union { return false }
+        marks.set_at(k.arg, union)
+        true
     }
 
     /// A cell no query settled, named by its owner's spelling of its argument.
@@ -760,19 +795,16 @@ impl Db {
 
     fn leaves_noted(edge: int) -> List<int>? {
         let noted? = self.leaves.get().get("${edge}") else { return null }
-        self.known(edge, noted)
+        self.known(noted)
     }
 
-    /// What a noted query stands on, an owed one named now and kept.
-    fn known(edge: int, noted: Noted) -> List<int>? {
+    /// What a noted query stands on: an owed one named now, from its cell's reads — walked
+    /// whenever asked, so no query's union outlives the walk that made it.
+    fn known(noted: Noted) -> List<int>? {
         match noted {
             .Known(leaves) -> leaves,
             .Unnamed -> null,
-            .Owed(key) -> {
-                let found = self.numbers_of(self.engine().deps_of(key))
-                self.noted_numbers(edge, found)
-                found
-            },
+            .Owed(key) -> self.numbers_of(self.engine().deps_of(key)),
         }
     }
 
