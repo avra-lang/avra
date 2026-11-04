@@ -22,17 +22,11 @@ fn signed(ws: Workspace, d: DeclId) -> Signed { ws.signing(d) }
 fn unsigned(_ws: Workspace, _d: DeclId) -> Signed { Signed { writes: [], voices: [] } }
 
 impl Workspace {
-    /// Signs one declaration. A held declaration's signature is its row's — filling it
-    /// declares what the row wrote — and stands on the hold, which no other process reads.
+    /// Signs one declaration.
     fn signing(d: DeclId) -> Signed {
         self.signs.keep(d.index, true)
         let x = self.decls.decl(d)
         self.decls.signing_opened()
-        if self.is_held(x.file) {
-            self.query_db().in_process_only()
-            self.decl_row_filled(d)
-            return Signed { writes: self.decls.signing_closed(), voices: [] }
-        }
         mut t = self.sign_cx_for(x)
         t.declare_one(x)
         Signed { writes: self.decls.signing_closed(), voices: t.facts.voices.list }
