@@ -256,10 +256,12 @@ impl Workspace {
         [d for d in filed if d.name == name || "${d.owner}.${d.name}" == name]
     }
 
-    /// Every settled answer keyed by this declaration: its key in each family
-    /// that keys by one.
+    /// Every settled answer keyed by this declaration: its key in each family that keys by
+    /// one, and in each query the kernel registered as keyed by a declaration.
     fn decl_answers(d: DeclId) -> List<Key> {
-        [key(f, d.index) for f in Family.all() if keyed_by_decl(f) && self.db.cell(key(f, d.index)) != null]
+        let families = [f.ordinal for f in Family.all() if keyed_by_decl(f)]
+            .concat(self.queries_keyed_by(IdKind.Decl))
+        [k for k in [Key { family: o, arg: d.index } for o in families] if self.db.cell(k) != null]
     }
 
     /// An answer with its digest.
@@ -391,8 +393,17 @@ impl Workspace {
             .Unit -> "${UNIT}${k.arg}",
             .Name -> self.bucket_shown(k.arg),
             .Input -> self.input_shown(self.input_names.get()[k.arg]),
-            .Row -> "${k.arg}",
+            .Row -> self.query_subject(k),
         }
+    }
+
+    /// A query's call named by what its key seat is: a declaration or a file, else its number.
+    fn query_subject(k: Key) -> string {
+        if self.queries_keyed_by(IdKind.Decl).contains(k.family) { return self.decl_shown(DeclId { index: k.arg }) }
+        if self.queries_keyed_by(IdKind.File).contains(k.family) {
+            return self.shown_path(self.decls.file(FileId { index: k.arg }).path)
+        }
+        "${k.arg}"
     }
 
     /// A bucket of the name index by the name it files — by its place when it
