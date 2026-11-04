@@ -26,7 +26,7 @@ use @std.text.{parse_int}
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{saved_in, unsaved_in}
 use @std.relation.engine.{map_cell}
-use core.{digest_of, joined, flatten}
+use core.{digest_of, joined, flatten, sorted_by}
 use core.debug.{qtrace, traced}
 use @std.time.{wall_secs}
 use features.{tree_saved}
@@ -90,6 +90,15 @@ impl Stored {
         match self {
             .Obj or .Bin or .Proof -> true,
             .Sig or .Fp or .Unit or .Warn or .Rows or .Answer or .History -> false,
+        }
+    }
+
+    /// Whether a write of this family trims its kept files to the ceiling at once: a whole program
+    /// is what a session of edits would fill a disk with.
+    fn trimmed_on_write() -> bool {
+        match self {
+            .Bin -> true,
+            .Sig or .Fp or .Unit or .Obj or .Proof or .Warn or .Answer or .Rows or .History -> false,
         }
     }
 
@@ -200,7 +209,12 @@ fn machine_pack(cache: string?, root: string, print: string, keeping: Keeping) -
     let known = machine_packs().get().get(print)
     if known != null { return known }
     let root_of_print = print_root(shared, print)
-    if !inspects(keeping) { used_now(root_of_print) }
+    if !inspects(keeping) {
+        // LICENSED input.store_io: whether the machine has met this compiler print, to bound the prints it keeps
+        let fresh = !exists(root_of_print)
+        used_now(root_of_print)
+        if fresh { let _ = trimmed_prints(shared, root_of_print, prints_budget(shared)) }
+    }
     let made = pack_at(root_of_print, print)
     machine_packs().put(print, made)
     made
@@ -246,6 +260,55 @@ fn unused_for(root: string, days: int) -> bool {
     let marked? = kept_file(joined_path(root, USED)) else { return true }
     // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
     wall_secs() - marked.at > days * 86400
+}
+
+/// One compiler print's root, what it holds and when a process last used it.
+type PrintRoot = { path: string, bytes: int, at: int }
+
+/// THE MACHINE KEEPS WITHIN ITS CEILING: the compiler prints go whole, the least recently used
+/// first, until what they hold fits `budget`; the print in use stands. Answers how many went.
+export fn trimmed_prints(shared: string, spare: string, budget: int) -> int {
+    let at = joined_path(shared, PRINTS)
+    // LICENSED input.store_io: the machine's print roots, listed and measured to bound them
+    let roots = match list_dir(at) { .Ok(ns) -> ns, .Err(_) -> [] }
+    let held = sorted_by(
+        [PrintRoot {
+            path: joined_path(at, r),
+            bytes: tree_bytes(joined_path(at, r)),
+            at: used_at(joined_path(at, r)),
+        } for r in roots],
+        (a: PrintRoot, b: PrintRoot) -> a.at < b.at,
+    )
+    mut total = held.fold(0, (sum, p) -> sum + p.bytes)
+    mut gone = 0
+    for p in held {
+        if total <= budget { break }
+        if p.path == spare { continue }
+        removed_whole(p.path)
+        total = total - p.bytes
+        gone = gone + 1
+    }
+    gone
+}
+
+/// The bytes a path holds, itself and everything under it.
+fn tree_bytes(path: string) -> int {
+    // LICENSED input.store_io: a print root, listed and measured to bound the machine's store
+    match list_dir(path) {
+        .Ok(names) -> names.fold(0, (sum, n) -> sum + tree_bytes(joined_path(path, n))),
+        .Err(_) -> kept_file(path)?.bytes ?? 0,
+    }
+}
+
+/// When a process last used a print: its mark's time, else the beginning.
+fn used_at(root: string) -> int { kept_file(joined_path(root, USED))?.at ?? 0 }
+
+/// What the compiler prints may hold: the shared ceiling less what the content store holds, and
+/// never under a quarter of it.
+fn prints_budget(shared: string) -> int {
+    let cap = cas_limit()
+    let left = cap - tree_bytes(joined_path(shared, "cas"))
+    if left < cap / 4 { cap / 4 } else { left }
 }
 
 /// A path and everything under it, gone: a file lists nothing.
@@ -638,7 +701,10 @@ impl Store {
         }
         kept_now().put(self.path(family, key), true)
         match write_text(self.edge_path(family, key), joined(read, "\n")) {
-            .Ok(_) -> true,
+            .Ok(_) -> {
+                if family.trimmed_on_write() { let _ = trim_kept_binaries(self.root, bin_limit()) }
+                true
+            },
             .Err(_) -> false,
         }
     }
