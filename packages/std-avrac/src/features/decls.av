@@ -575,6 +575,9 @@ impl Gather {
     }
 }
 
+/// An open signing: its writes so far, and the declarations it asked.
+type SigningFrame = { writes: Cell<List<Signing>>, asked: Cell<Map<string, bool>> }
+
 /// One write signing a declaration makes — what a restored signing makes again, in order.
 /// `Target`, `Impl`, `Method` and `Sealed` write another declaration's tables.
 @codec
@@ -671,7 +674,7 @@ export type Decls = {
     held_reaches: Cell<Map<string, string>>,
     sigs: Cell<List<DeclSig?>>,
     /// The signings open now, innermost last: each holds the writes its signing made so far.
-    signing: Cell<List<Cell<List<Signing>>>>,
+    signing: Cell<List<SigningFrame>>,
     /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
     /// `sigs` carries, so this memo carries no self-recursion risk. Whichever
     /// caller asks first (`seats`'s hook, or the fn's own natural signing)
@@ -2357,19 +2360,28 @@ impl Decls {
     // ── signing ──
 
     /// A signing opens: every write until it closes is its own.
-    fn signing_opened() { self.signing.push(list_cell()) }
+    fn signing_opened() { self.signing.push(SigningFrame { writes: list_cell(), asked: map_cell() }) }
 
     /// The innermost signing closes, answering the writes it made, in order.
     fn signing_closed() -> List<Signing> {
         let open = self.signing.get()
         self.signing.set(open.slice(0, open.length - 1))
-        open.last()?.get() ?? []
+        let top? = open.last() else { return [] }
+        top.writes.get()
     }
 
     /// A write the innermost open signing made.
     fn wrote(w: Signing) {
         let open? = self.signing.get().last() else { return }
-        open.push(w)
+        open.writes.push(w)
+    }
+
+    /// Another declaration's signature the innermost open signing asked — once, however often.
+    fn asked(d: DeclId) {
+        let open? = self.signing.get().last() else { return }
+        if open.asked.get().has("${d.index}") { return }
+        open.asked.put("${d.index}", true)
+        open.writes.push(Signing.Asked(d))
     }
 
     /// A signing's writes made again, in the order it made them — under a signing of their
