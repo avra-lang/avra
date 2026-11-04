@@ -889,10 +889,6 @@ fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
 }
-fn syntax_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.syntax(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Syntax, arg))
-}
 fn names_verified(ws: Workspace, arg: int) -> int {
     touch(ws.name_slice(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Names, arg))
@@ -928,7 +924,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
-        .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
@@ -980,6 +975,10 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
 fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
+
+/// A declaration's own syntax: the fold of its range's node fingerprints.
+@query
+fn syntax_in(ws: Workspace, d: DeclId) -> int { ws.syntax_made(d) }
 
 /// What a file's top level sees, as its fold. A re-entry before it settles is a smaller view.
 @query
@@ -2246,15 +2245,12 @@ impl Workspace {
     /// signed or lowered under) never calls this for itself: reading
     /// the nodes it is itself the pass for is its computation, not a
     /// Db read.
-    fn syntax(d: DeclId) -> int {
-        let k = key(Family.Syntax, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
-        self.db.begin(k)
+    fn syntax(d: DeclId) -> int { syntax_in(self, d) }
+
+    fn syntax_made(d: DeclId) -> int {
         let x = self.decls.decl(d)
         let _ = self.parsed(x.file)
-        let h = syntax_hash(self.decls.store(d), x)
-        self.db.settle(k, h)
-        h
+        syntax_hash(self.decls.store(d), x)
     }
 
     /// A declaration's own PLACEMENT, DECLARATION-GRAIN: the arena
@@ -2540,7 +2536,6 @@ export fn family_code_hash(f: Family) -> string {
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
-        .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
