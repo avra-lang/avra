@@ -1,8 +1,13 @@
 #!/bin/sh
 # THE BUILD CACHE, ATTACKED. Two programs and a library share ONE store; every step
 # edits a source, builds THROUGH the store, runs the binary, and holds it to the
-# evaluator, which reads no cache. A hold that links the wrong body, or none, is a
-# disagreement here. The fixtures are written fresh each run: the steps edit them.
+# evaluator, which reads no store. A saved answer that stands for a body that moved,
+# or stands for none, is a disagreement here. The fixtures are written fresh each run.
+#
+# WHAT A CHOICE OF STORED ANSWER COSTS is counted, not inferred from a mechanism's own
+# bookkeeping: `cost` reads the engine's `files_parsed` and its trace, and every claim
+# about what may be re-read is a bound on those. A claim that cannot fail is not a
+# witness, so each names the files an edit may reach and the constants that must settle.
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 . tools/lib/failed_tail.sh
@@ -10,7 +15,7 @@ set -u
 # warning a shell with no terminal prints when the watchdog asks for job control.
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
 
-# KEPT ROWS JUDGED AGAINST A FRESH READING: an unheld run (`AVRA_DB_VERIFY`) compares each
+# KEPT ROWS JUDGED AGAINST A FRESH READING: a verified run (`AVRA_DB_VERIFY`) compares each
 # file's Items row kept under the same text with the one a read makes now, and wrecks on a
 # difference; a run that judged no row is a failure, never a clean pass.
 judged() { # <label> <package>
@@ -68,7 +73,7 @@ export trait Shape { fn area() -> int }
 export type Sq = { s: int }
 impl Shape for Sq { fn area() -> int { self.s * self.s } }
 AV
-# one-field records of every word: a layout is ONE law's answer, held or parsed
+# one-field records of every word: a layout is ONE law's answer, kept or parsed
 cat > $R/lib/src/words.av <<'AV'
 export type Word = { text: string }
 export type Ratio = { r: float }
@@ -129,13 +134,9 @@ AV
 S() { # S <label> <app>
     steps=$((steps+1))
     out=$(./avra build --time $R/$2 2>$R/$2.err); st=$?; bin=$(printf '%s\n' "$out" | tail -1)
-    held=$(grep -oE "held [0-9]+/[0-9]+" $R/$2.err | tail -1)
-    case "$held" in "held 0/"*|"") ;; *) holds=$((holds+1)) ;; esac
     if [ ! -x "$bin" ]; then fail "$1 [$2] did not build (status $st)"; { printf '%s\n' "$out"; cat $R/$2.err; } | failed_words; return; fi
-    # A REFUSED HOLD IS A FINDING HERE: the build is right and the hold was wrong.
-    if grep -q "the hold was refused" $R/$2.err; then fail "$1 [$2] the hold was refused: $(grep 'the hold was refused' $R/$2.err | head -1 | cut -c1-200)"; return; fi
     nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | unwatched)
-    if [ "$nat" = "$ev" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [$2] ($held) -> $nat"; else fail "$1 [$2] ($held) native='$nat' eval='$ev'"; fi
+    if [ "$nat" = "$ev" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [$2] -> $nat"; else fail "$1 [$2] native='$nat' eval='$ev'"; fi
 }
 ed() { python3 - "$@" <<'PY' || fail "a fixture edit found nothing to edit: $1 <- $2"
 import sys
@@ -143,18 +144,71 @@ p,old,new=sys.argv[1:4]; t=open(p).read(); assert old in t,(p,old); open(p,'w').
 PY
 }
 
-HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
+HR() { # HR <label> <check|build> <pkg> <exit> [<path-substr> <kept|read>]...
     steps=$((steps+1))
     label=$1; verb=$2; pkg=$3; want_st=$4; shift 4
+    [ $# -eq 0 ] || cost $pkg
     out=$(./avra $verb --time $R/$pkg 2>&1); st=$?
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
     if [ $st -ne "$want_st" ]; then fail "$label: exit $st, wanted $want_st"; printf '%s\n' "$out" | failed_words; return; fi
-    read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
+    rows_claim "$label" "$@"
+}
+
+# WHAT A CHECK COST, from the engine's own counters: `check --counts` (files parsed, each
+# family's recomputations as `why:` rows) and the trace's `Q parse` lines. Sets cost_files (the
+# files parsed, one per line, rooted at the tree), cost_floor (the prelude, parsed
+# or not — the `pf` section measures that one), cost_n (how many) cost_settled (constants
+# settled anew, by the `Settled new` rows) and cost_cas (octets of kept blobs read back) — what
+# a stored answer's bookkeeping used to stand in for.
+cost() { # cost <pkg under $R, or a path>
+    case "$1" in /*|build/*) cost_at=$1 ;; *) cost_at=$R/$1 ;; esac
+    # `--time` is what makes a stored answer say so: without it a hit prints no `cache hit` line,
+    # and a claim that measures a hit measures nothing.
+    cost_out=$(AVRA_QTRACE=1 ./avra check --time --counts $cost_at 2>&1); cost_st=$?
+    cost_parsed=$(printf '%s\n' "$cost_out" | awk -F'\t' '$1 == "Q" && $2 == "parse" { print $3 }' | sort -u)
+    cost_floor=$(printf '%s\n' "$cost_parsed" | grep -c 'packages/std-prelude/src/')
+    cost_files=$(printf '%s\n' "$cost_parsed" | grep -v 'packages/std-prelude/src/' | sed "s|^$PWD/||" | sort -u)
+    cost_n=$(printf '%s\n' "$cost_out" | grep -a -o 'files_parsed=[0-9]*' | tail -1 | cut -d= -f2)
+    cost_cas=$(printf '%s\n' "$cost_out" | grep -a -o 'cas_bytes_read=[0-9]*' | tail -1 | cut -d= -f2)
+    cost_settled=$(printf '%s\n' "$cost_out" | grep -a '^why: Settled new:' | awk '{ s += $NF } END { print s + 0 }')
+    case "$cost_out" in *"cache hit"*) cost_hit=1 ;; *) cost_hit=0 ;; esac
+}
+
+# A FILE'S ROWS ARE KEPT OR THEY MOVED: `kept` promises the check parsed no file of that name —
+# the answer the store keeps stood — and `read` promises it did, since the edit moved what that
+# file reads. Both directions fail; a claim only one direction can break is half a claim.
+rows_claim() { # rows_claim <what> <path-substr> <kept|read> [<path-substr> <kept|read>]...
+    what=$1; shift
     while [ $# -ge 2 ]; do
-        case "$read_list" in *"$1"*) got=read ;; *) got=held ;; esac
-        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fail "$label: $1 wanted $2, got $got: $(printf '%s' "$read_list" | tr '\n' ' ')"; fi
+        case "$cost_files" in *"$1"*) got=read ;; *) got=kept ;; esac
+        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $what: $1 -> $got"
+        else fail "$what: $1 was $got, wanted $2 (parsed: $(printf '%s' "$cost_files" | tr '\n' ' '))"; fi
         shift 2
     done
+}
+
+# A CHECK'S COST HELD TO A BOUND: the check after an edit settles between `lo` and `hi` constants
+# anew and parses no file but the allowed ones (substrings of `dir/file.av`, the edited file and the
+# entry among them). An edit that moves nothing a reader read settles none and parses its own file
+# alone; one that moves what a const read settles the chain and may parse the readers it reaches.
+cost_claim() { # cost_claim <label> <pkg> <lo> <hi> <allowed>...: substrings of a parsed path
+    steps=$((steps+1)); label=$1; pkg=$2; lo=$3; hi=$4; shift 4
+    cost $pkg
+    if [ "${cost_st:-1}" -ne 0 ]; then fail "$label: the check the claim stands on refused (status $cost_st): $(printf '%s' "$cost_out" | grep -avE '^watch:' | head -3 | tr '\n' ' ')"; return; fi
+    # A CLAIM THAT NAMES A FILE EXPECTS IT PARSED: a stored answer means the state had already
+    # been measured, and the bound below then counts nothing that this claim was written to see.
+    if [ "${cost_hit:-0}" -eq 1 ] && [ $# -gt 0 ]; then fail "$label: the check answered from a stored answer, so nothing about the edit was measured"; return; fi
+    if [ "${cost_settled:-0}" -lt "$lo" ] || [ "${cost_settled:-0}" -gt "$hi" ]; then
+        fail "$label: $cost_settled constant(s) settled anew, wanted $lo to $hi: $(printf '%s' "$cost_out" | grep -a '^why: Settled' | tr '\n' ' ' | cut -c1-200)"
+    fi
+    stray=""
+    for f in $cost_files; do
+        ok=0; for a in "$@"; do case "$f" in *"$a"*) ok=1 ;; esac; done
+        [ $ok = 1 ] && continue
+        stray="$stray $f"
+    done
+    [ -z "$stray" ] || { fail "$label: parsed${stray}, which no edit reached (parsed ${cost_n:-?}: $(printf '%s' "$cost_files" | tr '\n' ' '))"; }
+    holds=$((holds+1))
+    [ -z "${VERBOSE:-}" ] || echo "ok    $label: parsed ${cost_n:-?}, settled $cost_settled"
 }
 
 if section kr; then
@@ -170,17 +224,16 @@ printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kr/src/x/mid.av
 printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\nfn scaled(const n: int, factor: int) -> int { n * factor }\nexport fn seated() -> int { scaled(J, 10) }\n' > $R/kr/src/f/held.av
 printf 'use f.{shown, seated}\nprintln("${shown()} ${seated()}")\n' > $R/kr/src/main.av
 # THE READ SET IS THE KEPT VERDICT'S OWN: the build below keeps K, the body its run
-# entered then moves, and held.av must be read in the FIRST attempt with the value
-# following. A verdict that had dropped its reads would stand, and the binary would
-# print the body that ran before. The record's read set moved into the packed store,
-# so the claim is held where the tool states it rather than in a row file.
+# entered then moves, and held.av's answer must settle anew with the value following.
+# A verdict that had dropped its reads would stand, and the binary would print the body
+# that ran before — which is why every claim below names both the constants that settle
+# and the files the edit may reach.
 HR "cold kr" check kr 0
 S "kr: built with K's verdict kept" kr
 printf '// moved\n' >> $R/kr/src/main.av
-S "kr: an edit elsewhere, held.av held" kr
+S "kr: an edit elsewhere, held.av's rows stand" kr
 ed $R/kr/src/y/calc.av "n * 2" "n * 3"
-steps=$((steps+1)); kr_out=$(./avra check --time $R/kr 2>&1)
-case "$kr_out" in *"discarded 0, refused 0"*"f/held.av"*|*"f/held.av"*"discarded 0, refused 0"*) [ -n "${VERBOSE:-}" ] && echo "ok    kr: the body J ran moved -> held.av read in the first attempt" ;; *) fail "kr: the body J ran moved, and held.av was not read in the first attempt: $(printf '%s' "$kr_out" | grep -E '^time:|discarded:|held.av' | cut -c1-260 | tr '\n' ' ')" ;; esac
+cost_claim "kr: the body J ran moved -> K settles anew, nothing unrelated parsed" kr 2 99 y/calc.av x/mid.av f/held.av main.av
 S "kr: and the binary follows" kr
 steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
 [ "$kr_out" = "18 90" ] || fail "kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"
@@ -234,18 +287,15 @@ printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n
 printf 'use f.{K}\nexport const L: int = K + 1\nexport fn topped() -> int { L }\n' > $R/kv/src/g/top.av
 printf 'export const E: int = 5\nexport fn alone() -> int { E }\n' > $R/kv/src/e/alone.av
 printf 'use f.{shown}\nuse g.{topped}\nuse e.{alone}\nprintln("${shown()} ${topped()} ${alone()}")\n' > $R/kv/src/main.av
-# The chain's record read sets ride the packed store; the same claim is held where the
-# tool states it — every file on the chain read in the FIRST attempt after the body
-# moves, and the binary following. `alone.av`'s "records nothing" has no shell projection
-# of its own any more.
+# The chain's answers ride the packed store; the claim is the constants that settle
+# anew after the body moves and the files the edit reaches, with the binary following.
+# `alone.av`'s "reads nothing" is what the parse bound keeps honest.
 HR "cold kv" check kv 0
 S "kv: built with every verdict kept" kv
 printf '// moved\n' >> $R/kv/src/main.av
-S "kv: an edit elsewhere, the chain held" kv
+S "kv: an edit elsewhere, the chain stands" kv
 ed $R/kv/src/y/calc.av "n * 2" "n * 3"
-steps=$((steps+1)); kv_out=$(./avra check --time $R/kv 2>&1)
-case "$kv_out" in *"discarded 0, refused 0"*) ;; *) fail "kv: the body moved and an attempt was thrown away before the chain was read: $(printf '%s' "$kv_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$kv_out" in *"f/held.av"*"g/top.av"*|*"g/top.av"*"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    kv: the body moved -> held.av and top.av read at once" ;; *) fail "kv: the body moved and the chain was not read: $(printf '%s' "$kv_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+cost_claim "kv: the body moved -> J, K and L settle anew, the chain alone parsed" kv 3 99 y/calc.av x/mid.av f/held.av g/top.av main.av
 S "kv: and the binary follows" kv
 steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
 [ "$kv_out" = "18 19 5" ] || fail "kv: a const on the chain kept the value of the body J ran before: printed '$kv_out', wanted '18 19 5'"
@@ -254,7 +304,7 @@ fi
 
 if section tw; then
 # TWO EDITS, ONE READ FILE. A run reads a DECLARATION of a file, never the file: editing a
-# body ELSEWHERE in that file leaves its readers held, while editing the declaration the run
+# body ELSEWHERE in that file leaves its readers kept, while editing the declaration the run
 # read reads them in the FIRST attempt, none thrown away.
 mkdir -p $R/tw/src/f $R/tw/src/x $R/tw/src/y
 printf '[package]\nname = "rt-tw"\nversion = "0.1.0"\n' > $R/tw/avra.toml
@@ -265,13 +315,9 @@ printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/tw/src/main.av
 HR "cold tw" check tw 0
 S "tw: built with K's verdict kept" tw
 ed $R/tw/src/y/calc.av "n + 1" "n + 7"
-steps=$((steps+1)); tw_out=$(./avra check --time $R/tw 2>&1)
-case "$tw_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fail "tw: an unreached body moved and an attempt was thrown away: $(printf '%s' "$tw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$tw_out" in *"f/held.av"*) fail "tw: an unreached body moved and its reader was read all the same: $(printf '%s' "$tw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    tw: an unreached body moved -> the reader held" ;; esac
+cost_claim "tw: an unreached body moved -> nothing settles, its own file alone parsed" tw 0 0 y/calc.av main.av
 ed $R/tw/src/y/calc.av "n * 2" "n * 3"
-steps=$((steps+1)); tw_out=$(./avra check --time $R/tw 2>&1)
-case "$tw_out" in *"discarded 0, refused 0"*) ;; *) fail "tw: the read declaration moved and an attempt was thrown away: $(printf '%s' "$tw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$tw_out" in *"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    tw: the read declaration moved -> the reader read in the first attempt" ;; *) fail "tw: the read declaration moved and the reader was not read: $(printf '%s' "$tw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+cost_claim "tw: the read declaration moved -> J and K settle anew" tw 2 99 y/calc.av x/mid.av f/held.av main.av
 S "tw: and the binary follows" tw
 steps=$((steps+1)); tw_out=$($R/tw/src/main 2>&1)
 [ "$tw_out" = "18" ] || fail "tw: the published value did not follow the declaration the run read: printed '$tw_out', wanted '18'"
@@ -281,7 +327,7 @@ fi
 if section lm; then
 # A RUN'S READ OF A LIFTED LAMBDA OR A FN TAKEN AS A VALUE RIDES ITS DECLARATION. `lm`'s J
 # runs a fn that maps a lambda and one that maps a named fn (a wrapper), both in calc.av.
-# Editing a fn of calc.av that J never reaches leaves mid.av held and no attempt thrown
+# Editing a fn of calc.av that J never reaches leaves mid.av kept and no attempt thrown
 # away; editing the fn the lambda sits in reads mid.av in the first attempt.
 mkdir -p $R/lm/src/f $R/lm/src/x $R/lm/src/y
 printf '[package]\nname = "rt-lm"\nversion = "0.1.0"\n' > $R/lm/avra.toml
@@ -294,12 +340,9 @@ S "lm: built with J's verdict kept" lm
 ed $R/lm/src/y/calc.av "n + 1 }
 " "n + 7 }
 "
-steps=$((steps+1)); lm_out=$(./avra check --time $R/lm 2>&1)
-case "$lm_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fail "lm: an unreached fn moved and an attempt was thrown away: $(printf '%s' "$lm_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$lm_out" in *"x/mid.av"*|*"f/held.av"*) fail "lm: an unreached fn moved and a reader of a lambda or a wrapper in its file was read all the same: $(printf '%s' "$lm_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    lm: an unreached fn moved -> the readers held" ;; esac
+cost_claim "lm: an unreached fn moved -> nothing settles, its own file alone parsed" lm 0 0 y/calc.av main.av
 ed $R/lm/src/y/calc.av "x + 1" "x + 2"
-steps=$((steps+1)); lm_out=$(./avra check --time $R/lm 2>&1)
-case "$lm_out" in *"x/mid.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    lm: the lambda's fn moved -> the reader read" ;; *) fail "lm: the fn holding the lambda moved and its reader was not read: $(printf '%s' "$lm_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+cost_claim "lm: the lambda's fn moved -> J and K settle anew" lm 2 99 y/calc.av x/mid.av f/held.av main.av
 S "lm: and the binary follows" lm
 steps=$((steps+1)); lm_out=$($R/lm/src/main 2>&1)
 [ "$lm_out" = "26" ] || fail "lm: the published value did not follow the lambda: printed '$lm_out', wanted '26'"
@@ -324,9 +367,7 @@ HR "cold pk" check pk 0
 S "pk: built with J's verdict kept" pk
 ed $R/pk/src/y/calc.av "n + 1" "n + 7"
 printf 'two' > $R/pk/src/x/data.txt
-steps=$((steps+1)); pk_out=$(./avra check --time $R/pk 2>&1)
-case "$pk_out" in *"none were kept"*) fail "pk: a reader's key moved under a pending read and it was held until its rule findings were found missing: $(printf '%s' "$pk_out" | grep -E 'discarded:' | cut -c1-260 | tr '\n' ' ')" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    pk: the key moved -> the reader read, never held for its findings" ;; esac
-case "$pk_out" in *"x/mid.av"*) ;; *) fail "pk: the embedded text moved and the reader was not read: $(printf '%s' "$pk_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+cost_claim "pk: the read declaration and the embedded text moved -> J and TEXT settle anew" pk 2 99 y/calc.av x/mid.av f/held.av main.av
 S "pk: and the binary follows" pk
 steps=$((steps+1)); pk_out=$($R/pk/src/main 2>&1)
 [ "$pk_out" = "two 6" ] || fail "pk: the published value did not follow the embedded text: printed '$pk_out', wanted 'two 6'"
@@ -338,7 +379,7 @@ if section rp; then
 # and calc.av sees base.av. Editing a fn of calc.av that mid.av never reaches leaves calc.av
 # to be read while mid.av waits on whether its declaration stands; judging that must not ask
 # calc.av's resolution, which asks the items of every file it sees — parsing base.av and
-# mid.av, held files the holds have not yet settled.
+# mid.av, files whose answers stand.
 mkdir -p $R/rp/src/f $R/rp/src/x $R/rp/src/y $R/rp/src/w
 printf '[package]\nname = "rt-rp"\nversion = "0.1.0"\n' > $R/rp/avra.toml
 printf 'use w.{base}\nexport fn twice(n: int) -> int { n * 2 }\nexport fn unused(n: int) -> int { n + base() }\n' > $R/rp/src/y/calc.av
@@ -349,9 +390,7 @@ printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/rp/src/main.av
 HR "cold rp" check rp 0
 S "rp: built with J's verdict kept" rp
 ed $R/rp/src/y/calc.av "n + base()" "n + base() + 1"
-steps=$((steps+1)); rp_parsed=$(AVRA_QTRACE=1 ./avra check $R/rp 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "parse" { print $3 }')
-case "$rp_parsed" in *"y/calc.av"*) ;; *) fail "rp: the edited file was not parsed, so the trace read nothing: '$rp_parsed'" ;; esac
-case "$rp_parsed" in *"w/base.av"*|*"x/mid.av"*|*"f/held.av"*) fail "rp: a held file was parsed to judge a pending read: $(printf '%s' "$rp_parsed" | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    rp: the read file alone was parsed" ;; esac
+cost_claim "rp: a pending read is judged by parsing the edited file alone" rp 0 99 y/calc.av main.av
 S "rp: and the binary follows" rp
 steps=$((steps+1)); rp_out=$($R/rp/src/main 2>&1)
 [ "$rp_out" = "6" ] || fail "rp: the published value drifted: printed '$rp_out', wanted '6'"
@@ -411,7 +450,7 @@ fi
 if section rb; then
 # A READER INHERITS THE RUNS BEHIND WHAT IT READ, NOT BEHIND THE FILE. lib.av's const C runs
 # zbase from data.av. fnread.av runs only a FN of lib.av, constread.av runs the CONST C.
-# data.av is rewritten to the same answer: fnread.av stays held, since nothing it ran reads
+# data.av is rewritten to the same answer: fnread.av stands, since nothing it ran reads
 # data.av. Then the answer moves: constread.av is read and the values follow.
 mkdir -p $R/rb/src/z $R/rb/src/x $R/rb/src/r
 printf '[package]\nname = "rt-rb"\nversion = "0.1.0"\n' > $R/rb/avra.toml
@@ -423,11 +462,9 @@ printf 'use r.{shown, topped}\nprintln("${shown()} ${topped()}")\n' > $R/rb/src/
 HR "cold rb" check rb 0
 S "rb: built with every verdict kept" rb
 ed $R/rb/src/z/data.av "{ 5 }" "{ 2 + 3 }"
-steps=$((steps+1)); rb_out=$(./avra check --time $R/rb 2>&1)
-case "$rb_out" in *"r/fnread.av"*) fail "rb: a file only a const of a fn's file runs was rewritten to the same answer and a reader of the fn was read: $(printf '%s' "$rb_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    rb: a fn's reader held while a const's run file moved" ;; esac
+cost_claim "rb: a file rewritten to the same answer -> no constant settles anew" rb 0 0 z/data.av main.av
 ed $R/rb/src/z/data.av "2 + 3" "2 + 5"
-steps=$((steps+1)); rb_out=$(./avra check --time $R/rb 2>&1)
-case "$rb_out" in *"r/constread.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    rb: the file a const's run read moved -> its reader read" ;; *) fail "rb: the file a const's run read moved and its reader was not read: $(printf '%s' "$rb_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+cost_claim "rb: the file a const's run read moved -> the const and its reader settle anew" rb 2 99 z/data.av x/lib.av r/constread.av main.av
 S "rb: and the binary follows" rb
 steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
 [ "$rb_out" = "6 8" ] || fail "rb: the published values did not follow: printed '$rb_out', wanted '6 8'"
@@ -458,7 +495,7 @@ fi
 if section gi; then
 # A SPECIALIZATION'S READ NAMES THE GENERIC IT WAS MADE FROM. A const's run that reaches
 # `first<int>` reads the declaration of `first`, never the file that holds it: editing a
-# body ELSEWHERE in that file leaves the run's reader held, while editing `first` reads
+# body ELSEWHERE in that file leaves the run's reader kept, while editing `first` reads
 # the reader in the FIRST attempt, none thrown away, and the value follows.
 mkdir -p $R/gi/src/f $R/gi/src/x $R/gi/src/y
 printf '[package]\nname = "rt-gi"\nversion = "0.1.0"\n' > $R/gi/avra.toml
@@ -469,13 +506,9 @@ printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gi/src/main.av
 HR "cold gi" check gi 0
 S "gi: built with K's verdict kept" gi
 ed $R/gi/src/y/calc.av "n + 1" "n + 7"
-steps=$((steps+1)); gi_out=$(./avra check --time $R/gi 2>&1)
-case "$gi_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fail "gi: an unreached body moved and an attempt was thrown away: $(printf '%s' "$gi_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$gi_out" in *"f/held.av"*|*"x/mid.av"*) fail "gi: a body the specialization never reads moved and its reader was read all the same: $(printf '%s' "$gi_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    gi: an unreached body moved -> the readers held" ;; esac
+cost_claim "gi: an unreached body moved -> nothing settles, its own file alone parsed" gi 0 0 y/calc.av main.av
 ed $R/gi/src/y/calc.av "{ a }" "{ b }"
-steps=$((steps+1)); gi_out=$(./avra check --time $R/gi 2>&1)
-case "$gi_out" in *"discarded 0, refused 0"*) ;; *) fail "gi: the generic moved and an attempt was thrown away: $(printf '%s' "$gi_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$gi_out" in *"x/mid.av"*|*"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    gi: the generic moved -> the reader read in the first attempt" ;; *) fail "gi: the generic moved and no reader was read: $(printf '%s' "$gi_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+cost_claim "gi: the generic moved -> J and K settle anew" gi 2 99 y/calc.av x/mid.av f/held.av main.av
 S "gi: and the binary follows" gi
 steps=$((steps+1)); gi_out=$($R/gi/src/main 2>&1)
 [ "$gi_out" = "8" ] || fail "gi: the published value did not follow the generic: printed '$gi_out', wanted '8'"
@@ -483,10 +516,10 @@ steps=$((steps+1)); gi_out=$($R/gi/src/main 2>&1)
 fi
 
 if section sl; then
-# A SEAL A HELD DECLARATION KEEPS STANDS. `Cnt` is sealed boxed by `own/s.av` (a `mut` seat and
-# a writing method), which stays held while `rec/r.av`, where `Cnt` is declared, is read: no
-# attempt may give up the hold. Once the sealer is edited away and `Cnt` is read, nothing keeps
-# it boxed, and only the sources whole can say what its layout is — the hold is given up.
+# A SEAL A STANDING DECLARATION KEEPS STANDS. `Cnt` is sealed boxed by `own/s.av` (a `mut` seat and
+# a writing method), which stands while `rec/r.av`, where `Cnt` is declared, is read: no
+# attempt may let the stored answer stand. Once the sealer is edited away and `Cnt` is read, nothing keeps
+# it boxed, and only the sources whole can say what its layout is — the stored answer no longer stands.
 mkdir -p $R/sl/src/rec $R/sl/src/own $R/sl/src/use
 printf '[package]\nname = "rt-sl"\nversion = "0.1.0"\n' > $R/sl/avra.toml
 printf 'export type Cnt = { n: int }\n' > $R/sl/src/rec/r.av
@@ -494,41 +527,37 @@ printf 'use rec.{Cnt}\nexport fn bump(mut c: Cnt) { c.n = c.n + 1 }\nimpl Cnt {\
 printf 'use rec.{Cnt}\nuse own.{bump}\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    bump(c)\n    c.up()\n    c.n\n}\n' > $R/sl/src/use/u.av
 printf 'use use.{total}\nprintln("${total()}")\n' > $R/sl/src/main.av
 sl_n=0
-sl_touch() { sl_n=$((sl_n+1)); printf 'const moved_%s: int = 0\n' "$sl_n" >> $R/sl/src/rec/r.av; }
-sl_held() { AVRA_QTRACE=1 ./avra check $R/sl 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "attempt" { split($4, w, " "); print w[2] }' | tr '\n' ' '; }
+sl_touch() { sl_n=$((sl_n+1)); printf '// moved %s\n' "$sl_n" >> $R/sl/src/rec/r.av; }
 S "cold sl" sl
-sl_touch; sl_got=$(sl_held)
-steps=$((steps+1)); case "$sl_got" in *false*) fail "sl: reading the file a held seal's record is declared in gave up the hold (attempts: '$sl_got')" ;; "true "|"true true ") [ -n "${VERBOSE:-}" ] && echo "ok    sl: the declaring file read, the hold kept" ;; *) fail "sl: reading the file a held seal's record is declared in gave up the hold (attempts: '$sl_got')" ;; esac
+HR "cold sl check" check sl 0
+sl_touch
+cost_claim "sl: the declaring file of a sealed record read, the sealers unparsed" sl 0 99 rec/r.av main.av
 S "sl: the declaring file read" sl
-steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "12" ] || fail "sl: bump and up lost a write through the held seal: '$($R/sl/src/main 2>&1)', wanted '12'"
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "12" ] || fail "sl: bump and up lost a write through the sealed record: '$($R/sl/src/main 2>&1)', wanted '12'"
 printf 'use rec.{Cnt}\nexport fn bump(c: Cnt) -> int { c.n + 1 }\nexport fn up(c: Cnt) -> int { c.n + 10 }\n' > $R/sl/src/own/s.av
 printf 'use rec.{Cnt}\nuse own.{bump, up}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    bump(c) + up(c)\n}\n' > $R/sl/src/use/u.av
-sl_touch; sl_got=$(sl_held)
-steps=$((steps+1)); case "$sl_got" in *"false"*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the sealer gone, the hold given up" ;; *) fail "sl: a record nothing seals any more stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+sl_touch
 S "sl: the sealer edited away" sl
 steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || fail "sl: after the seal left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"
 # a NEW sealing site in a read file seals as it is typed, and the record it boxes follows; when
-# that site goes and nothing held seals the record, the hold is given up again
+# that site goes and nothing sealed records the record, the stored answer no longer stands again
 printf 'use rec.{Cnt}\nuse own.{bump, up}\nfn grow(mut c: Cnt) { c.n = c.n + 5 }\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    grow(c)\n    bump(c) + up(c) + c.n\n}\n' > $R/sl/src/use/u.av
 sl_touch
 S "sl: a new sealing site in a read file" sl
 steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "29" ] || fail "sl: with a new seal the program printed '$($R/sl/src/main 2>&1)', wanted '29'"
 printf 'use rec.{Cnt}\nuse own.{bump, up}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    bump(c) + up(c)\n}\n' > $R/sl/src/use/u.av
-sl_touch; sl_got=$(sl_held)
-steps=$((steps+1)); case "$sl_got" in *false*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the new site gone, the hold given up" ;; *) fail "sl: a record whose only sealer left a read file stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+sl_touch
 S "sl: the new sealing site removed" sl
 steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || fail "sl: after the site left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"
-# the held sealer's FILE deleted: nothing held seals the record any more
+# the sealed recorder's FILE deleted: nothing sealed records the record any more
 printf 'use rec.{Cnt}\nexport fn bump(mut c: Cnt) { c.n = c.n + 1 }\nimpl Cnt {\n    mut fn up() { self.n = self.n + 10 }\n}\n' > $R/sl/src/own/s.av
 printf 'use rec.{Cnt}\nuse own.{bump}\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    bump(c)\n    c.up()\n    c.n\n}\n' > $R/sl/src/use/u.av
 sl_touch
 S "sl: the sealer restored" sl
-sl_touch; sl_got=$(sl_held)
-steps=$((steps+1)); case "$sl_got" in *false*) fail "sl: the restored held seal gave up the hold (attempts: '$sl_got')" ;; esac
+sl_touch
 rm $R/sl/src/own/s.av
 printf 'use rec.{Cnt}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    c.n + 12\n}\n' > $R/sl/src/use/u.av
-sl_touch; sl_got=$(sl_held)
-steps=$((steps+1)); case "$sl_got" in *false*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the sealing file deleted, the hold given up" ;; *) fail "sl: a record whose held sealer's file was deleted stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+sl_touch
 S "sl: the sealing file deleted" sl
 steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || fail "sl: after the file left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"
 
@@ -553,7 +582,7 @@ bk_keys() { awk -F'\t' '$1 == "Q" && $2 == "bucket" { print $3, $4 }' $R/bk.q | 
 bk_changed() { awk 'NR == FNR { a[$1] = $2; next } a[$1] != $2 { print $1 }' $R/bk.prev - | sort -n | tr '\n' ' '; }
 bk_placed() { awk -F'\t' -v pat="$1" '$1 == "Q" && $2 == "placed" && index($3, pat) { print $4 }' $R/bk.q | sort -un | tr '\n' ' '; }
 S "cold bk" bk
-# the baseline keys come from a build that lowers the whole program (a held build lists no keys)
+# the baseline keys come from a build that lowers the whole program (a kept build lists no keys)
 rm -rf .avra-cache; bk_run; bk_keys > $R/bk.prev
 set -- $(bk_objects); bk_linked=${4:-0}
 steps=$((steps+1)); [ "${bk_linked:-0}" -gt 3 ] || fail "bk: the program's bodies fell in $bk_linked bucket(s) only, so the fixture splits nothing"
@@ -642,23 +671,21 @@ fi
 
 if section gg; then
 # A GUESS ONLY PRE-ADMITS. Editing held.av's const to need calc.av's body turns the attempt once (calc.av
-# is held and a compile-time run asks for its body); the same edit again starts with calc.av read and
-# stands on its first attempt. Whatever the guess holds — a file the next edit no longer needs — the
+# is kept and a compile-time run asks for its body); the same edit again starts with calc.av read and
+# stands on its first attempt. Whatever the guess keeps — a file the next edit no longer needs — the
 # answer is the one a store with no guess gives: the same exit, the same binary output.
 mkdir -p $R/gg/src/f $R/gg/src/y
 printf '[package]\nname = "rt-gg"\nversion = "0.1.0"\n' > $R/gg/avra.toml
 printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/gg/src/y/calc.av
 printf 'use y.{twice}\nexport const K: int = twice(3)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
 printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gg/src/main.av
-gg_attempts() { AVRA_QTRACE=1 ./avra check $R/gg 2>&1 >/dev/null | grep -ac -P '^Q\tattempt'; }
 S "cold gg" gg
+HR "cold gg check" check gg 0
 printf 'use y.{twice}\nexport const K: int = twice(4)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
-gg_first=$(gg_attempts)
+cost_claim "gg: the const needs calc.av's body -> K settles anew" gg 1 1 f/held.av y/calc.av main.av
 S "gg: the const needs calc.av's body" gg
-steps=$((steps+1)); [ "$gg_first" = 2 ] || fail "gg: a const that needs a held body turned $gg_first attempts, wanted 2 (the turn that reads calc.av)"
 printf 'use y.{twice}\nexport const K: int = twice(5)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
-gg_again=$(gg_attempts)
-steps=$((steps+1)); [ "$gg_again" = 1 ] || fail "gg: the same edit again turned $gg_again attempts, wanted 1 (calc.av is remembered)"
+cost_claim "gg: the same edit again -> K settles anew, calc.av no more parsed than the first time" gg 1 1 f/held.av y/calc.av main.av
 S "gg: the remembered read stands" gg
 steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "10" ] || fail "gg: the program printed '$($R/gg/src/main 2>&1)', wanted '10'"
 printf 'export const K: int = 7\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
@@ -670,8 +697,7 @@ printf 'export const K: int = 8\nexport fn shown() -> int { K }\n' > $R/gg/src/f
 S "gg: the remembered file is gone" gg
 steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "8" ] || fail "gg: with the remembered file deleted the program printed '$($R/gg/src/main 2>&1)', wanted '8'"
 printf 'export const K: int = 9\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
-gg_third=$(gg_attempts)
-steps=$((steps+1)); [ "$gg_third" = 1 ] || fail "gg: a body edit after another edit of the same file turned $gg_third attempts, wanted 1"
+cost_claim "gg: a body edit after another edit of the same file -> K settles anew, its file alone parsed" gg 1 1 f/held.av main.av
 gg_warm=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
 rm -rf .avra-cache; gg_cold=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
 steps=$((steps+1)); [ "$gg_warm" = "$gg_cold" ] || fail "gg: a guess changed what a check says: $gg_warm lines warm, $gg_cold with no store"
@@ -760,7 +786,7 @@ wb_case() {
 wb_case
 fi
 
-# A HOST FN IS THE LINK'S, HELD OR FRESH. A module a build holds still defines its
+# A HOST FN IS THE LINK'S, STANDING OR FRESH. A module a build keeps still defines its
 # symbol for the whole program: the bare name and the program's own are both in
 # the binary, and the build lists the host fn, exactly as the cold build did.
 if section lh; then
@@ -778,17 +804,17 @@ printf '// edited\n' >> $lh/src/main.av
 lh_state warm
 for k in nm fns; do
     if [ -s $R/lh.cold.$k ] && cmp -s $R/lh.cold.$k $R/lh.warm.$k; then :; else
-        fail "lh: a held module's host fn ($k) differs warm from cold: cold [$(tr '\n' ' ' < $R/lh.cold.$k)] warm [$(tr '\n' ' ' < $R/lh.warm.$k)]"
+        fail "lh: a module whose answers stood still defines its host fn ($k) differently warm than cold: cold [$(tr '\n' ' ' < $R/lh.cold.$k)] warm [$(tr '\n' ' ' < $R/lh.warm.$k)]"
     fi
 done
 rm -rf $lh
 fi
 
-# A HELD FN THAT PARKS STILL LINKS THE SCHEDULER, REACHED ONLY THROUGH A VALUE. No call
+# A STANDING FN THAT PARKS STILL LINKS THE SCHEDULER, REACHED ONLY THROUGH A VALUE. No call
 # by name leads to it, so only its interface's word says the program links: the build
-# that holds its module must check the loop's back-edge exactly as the cold build did.
+# that stands on its module must check the loop's back-edge exactly as the cold build did.
 # THE WARM BUILD MUST HOLD: an edit to main.av alone leaves the module's interface
-# unmoved, so its file is held — a warm build that held nothing attacks nothing.
+# unmoved, so its file is kept — a warm build that kept nothing attacks nothing.
 if section lv; then
 lv=$R/lv; mkdir -p $lv/src/x
 printf '[package]\nname = "lv"\nversion = "0.1.0"\n\n[bin]\nname = "lv"\npath = "src/main.av"\n' > $lv/avra.toml
@@ -799,23 +825,21 @@ lv_state() { # lv_state <label>: how many back-edge checks the program's own cod
     objdump -d $lv/src/main 2>/dev/null | grep -c '<_\{0,1\}avra_tick_cold>$' > $R/lv.$1.ticks
 }
 lv_state cold
+HR "cold lv check" check lv 0
 printf '// edited\n' >> $lv/src/main.av
+cost_claim "lv: an edit to main.av alone parses it alone" lv 0 99 main.av
 lv_state warm
-case "$lv_out" in
-    *"held "[1-9]*"/"*) holds=$((holds+1)) ;;
-    *) fail "lv: the warm build held nothing, so no held fn's word was read: $(printf '%s' "$lv_out" | grep -a '^time:' | cut -c1-200)" ;;
-esac
 if [ "$(cat $R/lv.cold.ticks)" -gt 0 ] 2>/dev/null && cmp -s $R/lv.cold.ticks $R/lv.warm.ticks; then :; else
-    fail "lv: a held fn that parks, reached only through a value: the loop's check differs warm from cold: cold [$(cat $R/lv.cold.ticks)] warm [$(cat $R/lv.warm.ticks)]"
+    fail "lv: a fn that parks, reached only through a value: the loop's check differs warm from cold: cold [$(cat $R/lv.cold.ticks)] warm [$(cat $R/lv.warm.ticks)]"
 fi
 rm -rf $lv
 fi
 
-# EXTERNS AND EXPORTS ARE ANSWERED BY NAME, HELD OR READ. A held module answers "what
+# EXTERNS AND EXPORTS ARE ANSWERED BY NAME, STANDING OR READ. A module whose answer stands answers "what
 # does it export", "which externs does it declare" and "which of them have bodies" from
 # its record, so a reader names the one thing it wants and mints at most the module that
-# has it. Each step is an edit the index must follow while a sibling file stays held: an
-# export renamed (the importer fresh), an import left stale, a host fn added beside held
+# has it. Each step is an edit the index must follow while a sibling file stands: an
+# export renamed (the importer fresh), an import left stale, a host fn added beside kept
 # files, a dependency's host fn the program never imports, a host fn answering another
 # package's bodiless extern. Every verdict is the one a cold build speaks.
 if section ex; then
@@ -831,7 +855,6 @@ printf 'extern fn avra_ex_event(who: int) -> int { who + 1 }\n' > $ex/src/x/host
 printf 'use x.{one, two}\nuse @rt.exl.{exl_one}\nuse @rt.exl2.{exl2_one}\nprintln("ex ${one()} ${two()} ${exl_one()} ${exl2_one()}")\n' > $ex/src/main.av
 EXC() { # EXC <label> <want exit> <phrase the refusal speaks, or ->: a check of ex
     steps=$((steps+1)); ex_out=$(./avra check --time $ex 2>&1); ex_st=$?
-    case "$ex_out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
     if [ $ex_st -ne "$2" ]; then fail "ex: $1: exit $ex_st, wanted $2"; printf '%s\n' "$ex_out" | failed_words; return; fi
     case "$3" in -) ;; *) case "$ex_out" in *"$3"*) ;; *) fail "ex: $1: the refusal did not speak '$3': $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')" ;; esac ;; esac
 }
@@ -850,19 +873,19 @@ EXH "cold lists the program's host fns" avra_ex_event
 EXN "a native build carries no dependency host fn marked for the page" avra_exl_event
 EXN "nor a dependency's own dependency's" avra_exl2_event
 printf '// moved\n' >> $ex/src/main.av
-S "ex: an edit elsewhere, every module held" ex
-EXH "a held module's host fn is listed" avra_ex_event
-# an export renamed in a module whose sibling stays held, the importer fresh
+S "ex: an edit elsewhere, every module stands" ex
+EXH "a standing module's host fn is listed" avra_ex_event
+# an export renamed in a module whose sibling stands, the importer fresh
 ed $ex/src/x/a.av "fn one()" "fn uno()"
 EXC "the importer still names the old export" 1 "does not export \`one\`"
 ed $ex/src/main.av "use x.{one, two}" "use x.{uno, two}"
 ed $ex/src/main.av '${one()}' '${uno()}'
 S "ex: the importer follows the renamed export" ex
-# a host fn added in one file of a module whose other files stay held
+# a host fn added in one file of a module whose other files stand
 printf 'extern fn avra_ex_b(n: int) -> int { n + 2 }\nexport fn two() -> int { 2 }\n' > $ex/src/x/b.av
-S "ex: a host fn added beside held files" ex
+S "ex: a host fn added beside files that stand" ex
 EXH "the added host fn is listed and defined" avra_ex_b
-EXH "the held host fns are still listed" avra_ex_event
+EXH "the standing host fns are still listed" avra_ex_event
 # the same file loses its body: the extern is bodiless now, and no host fn
 printf 'extern fn avra_ex_b(n: int) -> int\nexport fn two() -> int { 2 }\n' > $ex/src/x/b.av
 steps=$((steps+1)); ex_b=$(./avra build --time $ex 2>&1)
@@ -882,10 +905,10 @@ rm -rf $ex $xl $x2
 fi
 
 # A REFERENCE BETWEEN TWO HELD FILES IS NOT RESTORED UNTIL ASKED. `user.av` is the only
-# reader of `target`, and both stay held: the relation holds no row for the edge, yet
-# `refs_of` on the held target answers it on demand, and the kept rows judge equal to a
+# reader of `target`, and both stand: the relation keeps no row for the edge, yet
+# `refs_of` on the kept target answers it on demand, and the kept rows judge equal to a
 # fresh reading. Then the target is renamed with `user.av` untouched:
-# the edge must surface as the refusal a cold check speaks, never a stale held answer.
+# the edge must surface as the refusal a cold check speaks, never a stale kept answer.
 if section hh; then
 hh=$R/hh; mkdir -p $hh/src/t $hh/src/u
 printf '[package]\nname = "hh"\nversion = "0.1.0"\n' > $hh/avra.toml
@@ -894,12 +917,12 @@ printf 'use t.{target}\nexport fn user() -> int { target() }\n' > $hh/src/u/user
 printf 'use u.{user}\nprintln("hh ${user()}")\n' > $hh/src/main.av
 S "hh: cold" hh
 printf '// moved\n' >> $hh/src/main.av
-S "hh: an edit elsewhere, both ends of the edge held" hh
-judged "hh: a held-to-held edge" $hh
+S "hh: an edit elsewhere, both ends of the edge stand" hh
+judged "hh: an edge between two standing files" $hh
 ed $hh/src/t/target.av "fn target()" "fn goal()"
 steps=$((steps+1)); hh_out=$(./avra check $hh 2>&1); hh_st=$?
 if [ $hh_st -ne 1 ]; then fail "hh: a rename the only reader never followed exited $hh_st, wanted 1"
-else case "$hh_out" in *"does not export \`target\`"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: the held reader's edge surfaced as a refusal" ;; *) fail "hh: the rename was not refused where the held reader imports it: $(printf '%s' "$hh_out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')" ;; esac; fi
+else case "$hh_out" in *"does not export \`target\`"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: the reader's edge surfaced as a refusal" ;; *) fail "hh: the rename was not refused where the reader imports it: $(printf '%s' "$hh_out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')" ;; esac; fi
 rm -rf $hh
 fi
 
@@ -908,16 +931,16 @@ if section rx; then
 # names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
 # reference lands on the ORIGINAL declaration's file. Re-pointing the re-export at
 # another declaration never moves that file, and must still re-read `show.av` —
-# or it stays held against a name that now means something else. A body edit to
-# the original holds it (avra-8sb5.64.10.1).
-RX() { # RX <label> <path-substr> <want: held|read> <printed>
+# or it keeps the answer it had for a name that now means something else. A body edit to
+# the original moves nothing the importer reads (avra-8sb5.64.10.1).
+RX() { # RX <label> <path-substr> <kept|read> <printed>
     steps=$((steps+1))
-    out=$(./avra build --time $R/rx 2>&1) || { fail "$1: the build failed: $(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"; return; }
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; *"held 0/"*) [ "$3" = held ] && fail "$1: a derivation held nothing, so a file staying held was never examined" ;; esac
-    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
-    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fail "$1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+    cost rx
+    out=$(./avra build --time $R/rx 2>$R/rx.err) || { fail "$1: the build failed: $(cat $R/rx.err | tail -n 3 | tr '\n' ' ')"; return; }
     printed=$("$(printf '%s\n' "$out" | tail -1)" 2>&1)
     [ "$printed" = "$4" ] || fail "$1 printed '$printed', wanted '$4'"
+    rows_claim "$1" "$2" "$3"
+    holds=$((holds+1))
 }
 mkdir -p $R/rxl/src/util $R/rxl/src/other $R/rx/src
 printf '[package]\nname = "@rt/rxl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-rxl"\npath = "src/lib.av"\n' > $R/rxl/avra.toml
@@ -929,13 +952,13 @@ printf 'use @rt.rxl.{twice}\nexport fn shown() -> int { twice() }\n' > $R/rx/src
 printf 'println("rx ${shown()}")\n' > $R/rx/src/main.av
 S "cold rx: an importer reaches a name through a re-export" rx
 ed $R/rxl/src/util/u.av "{ 2 }" "{ 4 }"
-RX "rx: the original's body only moves — show.av stays held" show.av held "rx 4"
+RX "rx: the original's body only moves — show.av stands" show.av kept "rx 4"
 ed $R/rxl/src/util/u.av "{ 4 }" "{ 2 }"
-RX "rx: and back" show.av held "rx 2"
+RX "rx: and back" show.av kept "rx 2"
 ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
 RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
 ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
-RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
+RX "rx: and back — the store still keeps the first build's importer" show.av kept "rx 2"
 fi
 
 if section vw; then
@@ -947,7 +970,6 @@ VW() { # VW <label> <max fallbacks>
     steps=$((steps+1))
     out=$(./avra check --counts $R/vwa 2>&1)
     n=$(printf '%s\n' "$out" | grep -oE 'judge_fallbacks=[0-9]+' | tail -1 | cut -d= -f2)
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
     if [ -z "$n" ]; then fail "$1: no judge_fallbacks count printed"; return; fi
     if [ "$n" -le "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $n"; else fail "$1: judge_fallbacks=$n, wanted at most $2"; fi
 }
@@ -967,7 +989,7 @@ fi
 # A METHOD TABLE IS READ BY WHAT IT GATHERED AND BY WHO MAY JOIN IT: `read.av` calls
 # `bump` on `Pt`, which no impl declares, so it carries an error. An impl for `Pt` added
 # in ANOTHER file — one no kept row names — must clear it; and an impl body edited in
-# `Pt`'s home file, which the reader never calls, must leave it held.
+# `Pt`'s home file, which the reader never calls, must leave it kept.
 if section mi; then
 mkdir -p $R/mil/src $R/mi/src
 printf '[package]\nname = "@rt/mil"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mil"\npath = "src/lib.av"\n' > $R/mil/avra.toml
@@ -986,19 +1008,19 @@ MI "mi: warm, the refusal stands" refused
 printf 'use lib.{Pt}\nimpl Pt { fn bump() -> int { 1 } }\n' > $R/mil/src/pt_bump.av
 MI "mi: an impl for Pt in a NEW file declares it — the reader's refusal clears" clean
 printf 'println("mi ${read()} ${other()}")\n' > $R/mi/src/main.av
-MIB() { # MIB <label> <path-substr> <want: held|read>
+MIB() { # MIB <label> <path-substr> <kept|read>: whether the edit moved that file's rows
     steps=$((steps+1))
+    cost mi
     out=$(./avra build --time $R/mi 2>&1); st=$?
     if [ $st -ne 0 ]; then fail "$1 did not build (status $st): $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')"; return; fi
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
-    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1: $2 -> $got"; else fail "$1: $2 wanted $3, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
+    rows_claim "$1" "$2" "$3"
+    holds=$((holds+1))
 }
 steps=$((steps+1)); ./avra build $R/mi >/dev/null 2>&1 || fail "mi: the fixed reader did not build"
 ed $R/mil/src/lib.av "{ self.v } }" "{ self.v + 1 } }"
-MIB "mi: Pt's home file edits an impl body the reader never calls — read.av stays held" read.av held
+MIB "mi: Pt's home file edits an impl body the reader never calls — read.av stands" read.av kept
 ed $R/mil/src/lib.av "{ self.v + 1 } }" "{ self.v } }"
-MIB "mi: and back" read.av held
+MIB "mi: and back" read.av kept
 # A METHOD ADDED TO AN EXISTING IMPL BLOCK moves no signature of the block's own: `again.av`
 # calls `tock` on `Pt`, which `impl Pt` does not declare yet, so it carries an error; adding
 # `tock` to the SAME block must clear it, and a cold build must agree.
@@ -1014,9 +1036,9 @@ fi
 
 if section hs; then
 # THE HELD SET, and the reverse index that feeds it. A derivation remembers the files
-# whose holds it confirmed standing; the next one asks a file only when that set does
+# whose answers it confirmed standing; the next one asks a file only when that set does
 # not name it, or when a row of it read an input that moved. A file nothing moved near
-# must not be asked, and a hold that could serve a stale answer must be broken.
+# must not be asked, and a stored answer that could serve a stale answer must be broken.
 mkdir -p $R/hs/src/f $R/hs/src/x $R/hs/src/y
 printf '[package]\nname = "rt-hs"\nversion = "0.1.0"\n' > $R/hs/avra.toml
 printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/hs/src/y/calc.av
@@ -1027,22 +1049,15 @@ S "hs: built cold" hs
 S "hs: warm, the binary kept" hs
 steps=$((steps+1)); ./avra check $R/hs >/dev/null 2>&1
 ed $R/hs/src/y/calc.av "n * 2" "n * 3"
-steps=$((steps+1)); hs_out=$(AVRA_QTRACE=1 ./avra check --time $R/hs 2>&1)
-hs_holds=$(printf '%s\n' "$hs_out" | grep -a 'Q	holds' | tail -1)
-hs_asked=$(printf '%s\n' "$hs_holds" | cut -f3 | cut -d' ' -f1)
-hs_files=$(printf '%s\n' "$hs_holds" | cut -f4 | cut -d' ' -f1)
-hs_read=$(printf '%s\n' "$hs_out" | sed -n '/^read:/,$p')
-case "$hs_asked" in ""|0) fail "hs: the held set was not read, so every file was asked (holds: '$hs_holds')" ;; esac
-[ -n "$hs_asked" ] && [ -n "$hs_files" ] && [ "$hs_asked" -lt "$hs_files" ] && [ "$hs_asked" -gt 0 ] || fail "hs: a file whose hold stood and read nothing that moved was asked anyway (asked '$hs_asked' of '$hs_files')"
-case "$hs_read" in *"f/leaf.av"*) fail "hs: a file that reads nothing the edit moved was read all the same" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    hs: the file that reads nothing of it was not asked (asked '$hs_asked' of '$hs_files')" ;; esac
+cost_claim "hs: a body edit nothing else reads -> nothing settles, its own file alone parsed" hs 0 0 y/calc.av main.av
 S "hs: the binary follows the edit" hs
 steps=$((steps+1)); hs_again=$(AVRA_QTRACE=1 ./avra check --time $R/hs 2>&1)
 case "$hs_again" in *"cache hit"*) [ -n "${VERBOSE:-}" ] && echo "ok    hs: the unchanged check after it is a hit" ;; *) fail "hs: the check after it was no hit: $(printf '%s' "$hs_again" | grep -aE '^time:' | tail -1 | cut -c1-200)" ;; esac
-# NO FEWER: the callee's name is gone, and the reader that holds over it must be asked
+# NO FEWER: the callee's name is gone, and the reader that keeps over it must be asked
 # again — a set trusted past its inputs would serve the old answer and compile clean.
 ed $R/hs/src/y/calc.av "fn twice(n: int)" "fn thrice(n: int)"
 steps=$((steps+1)); hs_stale=$(./avra check $R/hs 2>&1); hs_st=$?
-[ "$hs_st" -ne 0 ] && printf '%s' "$hs_stale" | grep -q "twice" || { fail "hs: the callee was renamed and the reader's hold stood all the same (exit $hs_st): $(printf '%s' "$hs_stale" | grep -aE '^error|twice' | head -3 | tr '\n' ' ' | cut -c1-200)"; }
+[ "$hs_st" -ne 0 ] && printf '%s' "$hs_stale" | grep -q "twice" || { fail "hs: the callee was renamed and the reader's answer stood all the same (exit $hs_st): $(printf '%s' "$hs_stale" | grep -aE '^error|twice' | head -3 | tr '\n' ' ' | cut -c1-200)"; }
 [ -n "${VERBOSE:-}" ] && [ "$hs_st" -ne 0 ] && echo "ok    hs: the renamed callee broke the hold"
 fi
 
@@ -1085,25 +1100,22 @@ steps=$((steps+1)); st_got=$($R/st/src/main 2>&1)
 fi
 
 if section abw; then
-# A COMMENT THAT ADDS LINES ABOVE A WARNING MOVES THE WARNING, AND THE CHECK THAT SAYS SO IS
-# THE KEPT VERDICT. The verdict a comment edit leaves standing is said again from the new
-# text, so its place is the new line, never the kept one; and each such check is a cache
-# hit, or the case would be testing a fresh derive.
+# A COMMENT THAT ADDS LINES ABOVE A WARNING MOVES THE WARNING: the verdict is said again
+# from the new text, so its place is the new line, never the one the text had before.
 mkdir -p $R/abw/src
 printf '[package]\nname = "rt-abw"\nversion = "0.1.0"\n' > $R/abw/avra.toml
 printf 'fn f(mut a: int) -> int { a }\nmut v = 1\nprintln("${f(v)}")\n' > $R/abw/src/main.av
-AW() { # AW <label> <the line the warning is reported at> <hit|miss>
+AW() { # AW <label> <the line the warning is reported at>
     steps=$((steps+1)); holds=$((holds+1)); aw_out=$(./avra check --time $R/abw 2>&1)
     aw_line=$(printf '%s\n' "$aw_out" | grep -a -o 'main.av:[0-9]*' | head -1)
     [ "$aw_line" = "main.av:$2" ] || fail "$1: the warning was reported at '$aw_line', wanted 'main.av:$2'"
-    case "$aw_out" in *"cache hit"*) ;; *) [ "$3" = miss ] || fail "$1: the check was not a cache hit: $(printf '%s' "$aw_out" | grep -a '^time:' | cut -c1-200)" ;; esac
 }
-AW "abw: cold" 1 miss
-AW "abw: unchanged" 1 hit
+AW "abw: cold" 1
+AW "abw: unchanged" 1
 printf '// above\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
-AW "abw: a comment added above the warning" 2 hit
+AW "abw: a comment added above the warning" 2
 printf '// again\n%s' "$(cat $R/abw/src/main.av)" > $R/abw/src/main.av
-AW "abw: a second comment" 3 hit
+AW "abw: a second comment" 3
 fi
 
 if section gc; then
@@ -1120,16 +1132,17 @@ if section gc; then
     printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gc/app/src/main.av
     steps=$((steps+1)); ./avra build $gc/app > /dev/null 2>&1
     mkdir -p $gc/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gc/gk/src/n/n.av
-    steps=$((steps+1)); gc_out=$(./avra build --time $gc/app 2>&1); gc_got=$($gc/app/src/main 2>&1)
+    steps=$((steps+1)); cost $gc/app; gc_out=$(./avra build --time $gc/app 2>&1); gc_got=$($gc/app/src/main 2>&1)
     [ "$gc_got" = "a=1" ] || fail "gc: a member module added: the binary printed '$gc_got', wanted 'a=1'"
-    case "$gc_out" in *"gk/src/lib.av — what its collect gathers"*) ;; *) fail "gc: a member module added: lib.av's read names its key, not the set that moved it: $(printf '%s' "$gc_out" | sed -n '/^read:/,$p' | grep 'lib.av' | cut -c1-200)" ;; esac
+    case "$cost_files" in *lib.av*) ;; *) fail "gc: a member module added: the collector was not parsed, so nothing gathered the new member (parsed: $(printf '%s' "$cost_files" | tr '\n' ' '))" ;; esac
+    holds=$((holds+1))
     rm -rf $gc
 fi
 
 if section gw; then
     # AND A COLLECTOR IS HELD TO THE SET IT GATHERED, never to its package's bytes. In a store of
     # its own, so no other attack's history decides which reason a read is given first: a member's
-    # BODY edit leaves the set and holds the collector; two members swapping their marks' arguments
+    # BODY edit leaves the set and keeps the collector; two members swapping their marks' arguments
     # move it; a member module added under a collector in a module of its own reaches no key of it,
     # so what it gathers is the first reason it is read.
     gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
@@ -1139,14 +1152,15 @@ if section gw; then
     printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 1 }\n' > $gw/gk/src/m/m.av
     printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
     printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
-    gw_step() { # gw_step <label> <wanted a=…> <collector read: yes|no>
-        steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
+    gw_step() { # gw_step <label> <wanted a=…> <the collector parsed: yes|no>
+        steps=$((steps+1)); cost $gw/app; gw_out=$(./avra build --time $gw/app 2>&1)
         gw_got=$($gw/app/src/main 2>&1)
         [ "$gw_got" = "$2" ] || fail "gw: $1: the binary printed '$gw_got', wanted '$2'"
-        case "$gw_out" in *"gk/src/c/lib.av — what its collect gathers"*) gw_read=yes ;; *) gw_read=no ;; esac
-        [ "$gw_read" = "$3" ] || { fail "gw: $1: lib.av read for what it gathers: $gw_read, wanted $3: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)"; }
+        case "$cost_files" in *"c/lib.av"*) gw_read=yes ;; *) gw_read=no ;; esac
+        [ "$gw_read" = "$3" ] || { fail "gw: $1: the collector parsed: $gw_read, wanted $3 (parsed: $(printf '%s' "$cost_files" | tr '\n' ' '))"; }
+        holds=$((holds+1))
     }
-    gw_step "cold" "a=1" no
+    gw_step "cold" "a=1" yes
     printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
     gw_step "a member's file edited, its marks and shapes unmoved" "a=1" no
     printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
@@ -1158,8 +1172,8 @@ if section gw; then
 fi
 
 if section gl; then
-    # A COLLECTOR THAT MOVED HOLDS NOTHING WHERE IT STOOD: a record whose `gathers` line names the
-    # collector's old file is read back after the move, and a later warm build under a hold must
+    # A COLLECTOR THAT MOVED KEEPS NOTHING WHERE IT STOOD: a record whose `gathers` line names the
+    # collector's old file is read back after the move, and a later warm build under a stored answer must
     # build from where the collector stands now, never ask for the file it left.
     gl=$(mktemp -d); mkdir -p $gl/gk/src/m $gl/app/src
     printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gl/gk/avra.toml
@@ -1213,19 +1227,19 @@ if section go; then
     printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $go/app/src/main.av
     steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1
     mkdir -p $go/gk/src/z; mv $go/gk/src/p/p.av $go/gk/src/z/z.av; rmdir $go/gk/src/p
-    steps=$((steps+1)); go_out=$(./avra build --time $go/app 2>&1)
-    case "$go_out" in *"gk/src/c/lib.av — what its collect gathers"*) ;; *) fail "go: member files whose order flipped: lib.av was not read for what it gathers: $(printf '%s' "$go_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
+    steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1; go_got=$($go/app/src/main 2>&1)
+    [ "$go_got" = "x=1" ] || fail "go: member files whose order flipped: the collector did not gather the new order: the binary printed '$go_got', wanted 'x=1'"
+    ./avra check $go/app > /dev/null 2>&1
     printf '// again\n' >> $go/app/src/main.av
-    steps=$((steps+1)); go_again=$(./avra build --time $go/app 2>&1)
-    case "$go_again" in *"gk/src/c/lib.av — what its collect gathers"*) fail "go: the next build read lib.av for what it gathers again — a held collector must stand on the set it was read for" ;; esac
+    cost_claim "go: the check after the flip re-derives nothing the order settled" $go/app 0 0 main.av
     rm -rf $go
 fi
 
 if section gm; then
     # AND A COLLECTOR IS HELD TO WHAT IT BAKES OF EACH MEMBER, not only to the members' names and
     # shapes: a list projecting a member's module, its doc and the member itself as a fn value. A
-    # member moved to another module and a member's `///` edited each move what the held
-    # collector's object holds, so each must be read again — in a store of its own.
+    # member moved to another module and a member's `///` edited each move what the kept
+    # collector's object keeps, so each must be read again — in a store of its own.
     gm=$(mktemp -d); mkdir -p $gm/gk/src/c $gm/gk/src/p $gm/app/src
     printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
     printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
@@ -1248,7 +1262,7 @@ fi
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
-# a stamp that holds reuses it, anything else reads the bytes, and the digest is the
+# a stamp that keeps reuses it, anything else reads the bytes, and the digest is the
 # bytes' either way. Each step wants how the print was settled and which bytes it named.
 bi=build/avra.bi
 mkdir -p $R/bi/src; printf 'export fn one() -> int { 1 }\n' > $R/bi/src/m.av
@@ -1279,9 +1293,9 @@ rm -f $bi build/.avra.bi.print $R/bi.orig $R/bi.other
 
 if section sp; then
 # A SECOND PROGRAM STANDS ON WHAT THE FIRST KEPT. Two programs of one package share its
-# modules: the first is built cold, and the second holds the modules' files the first kept,
-# reading only its own. A second build that held under half its files found the first's rows
-# keyed by the program they were made for.
+# modules: the first is built cold, and the second finds the modules' answers standing,
+# parsing only its own entry. A second build whose answers were keyed by the program they
+# were made for would have to read every module again.
 mkdir -p $R/sp/src/m $R/sp/src/n $R/sp/src/p1 $R/sp/src/p2
 printf '[package]\nname = "rt-sp"\nversion = "0.1.0"\n' > $R/sp/avra.toml
 printf 'export fn one() -> int { 1 }\nexport fn two() -> int { 2 }\n' > $R/sp/src/m/leaf.av
@@ -1291,13 +1305,13 @@ printf 'use n.{three, Pt}\nlet p = Pt { x: three(), y: 4 }\nprintln("p2 ${p.x + 
 printf 'p1 3\n' > $R/sp/src/p1/p1.expected
 printf 'p2 7\n' > $R/sp/src/p2/p2.expected
 steps=$((steps+1)); sp_first=$(./avra build --time $R/sp/src/p1/p1.av 2>&1); sp_st1=$?
-steps=$((steps+1)); sp_out=$(./avra build --time $R/sp/src/p2/p2.av 2>&1); sp_st=$?
-sp_held=$(printf '%s\n' "$sp_out" | grep -oE "held [0-9]+/[0-9]+" | tail -1)
-sp_n=${sp_held#held }; sp_h=${sp_n%/*}; sp_t=${sp_n#*/}
 if [ $sp_st1 -ne 0 ]; then fail "sp: the first program did not build (status $sp_st1): $(printf '%s' "$sp_first" | grep -a -e error -e caused | head -1 | cut -c1-200)"
-elif [ $sp_st -ne 0 ] || [ -z "$sp_held" ]; then fail "sp: the second program did not build (status $sp_st): $(printf '%s' "$sp_out" | grep -a -e error -e caused | head -1 | cut -c1-200)"
-elif [ $((sp_h * 2)) -lt "$sp_t" ]; then fail "sp: the second program held only $sp_h of $sp_t files: the first program's rows did not stand for it"
-else [ -n "${VERBOSE:-}" ] && echo "ok    sp: the second program held $sp_h of $sp_t files"; holds=$((holds+1)); fi
+else
+    cost_claim "sp: the modules' answers stand for the second program, its own entry alone parsed" $R/sp/src/p2/p2.av 0 99 p2/p2.av
+    steps=$((steps+1)); sp_st=0; sp_out=$(./avra build --time $R/sp/src/p2/p2.av 2>&1) || sp_st=$?
+    [ $sp_st -eq 0 ] || fail "sp: the second program did not build (status $sp_st): $(printf '%s' "$sp_out" | grep -a -e error -e caused | head -1 | cut -c1-200)"
+    [ "$($R/sp/src/p2/p2)" = "p2 7" ] || fail "sp: the second program printed '$($R/sp/src/p2/p2)', wanted 'p2 7'"
+fi
 fi
 
 if section xt; then
@@ -1324,8 +1338,8 @@ S "xt: the first tree edited" xt1;              xt_want "xt: first tree follows 
 S "xt: the second tree after" xt2;              xt_want "xt: second tree is unmoved" "xt two"
 fi
 
-echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
-    [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the sections named examined nothing"; exit 1; }
+echo "cache-attacks: $steps builds through one store, $holds cost claims, $fails failed"
+    [ "$holds" -gt 0 ] || { echo "cache-attacks: no cost claim ran — the sections named examined nothing"; exit 1; }
     [ "$fails" -eq 0 ]; exit $?
 fi
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b
@@ -1354,9 +1368,9 @@ mut bt = tick()
 bump(bt)
 println("b ${bt.n} '
 ed $R/b/src/main.av "use @rt.lib.{two, pick}" "use @rt.lib.{two, pick, Tick, tick}"; S "a seal arrives from a file that does not declare the record" b
-# A HELD CALLEE'S CONSUMED SEAT (R3): wrapped(s) packs s into a fresh list it
+# A STANDING CALLEE'S CONSUMED SEAT (R3): wrapped(s) packs s into a fresh list it
 # answers — the callee never retains it itself, so the CALLER must hand s
-# over already retained. (.66 hole 3: a held callee's record never carried
+# over already retained. (.66 hole 3: a kept callee's record never carried
 # `consumed`, so a fresh caller reading it back defaulted every seat plain,
 # skipped the retain, and s's second use read what the callee's own,
 # never-happened release should have kept alive.)
@@ -1374,14 +1388,14 @@ ed $R/a/src/main.av 'println("a. ' 'println("A ';                     S "entry-o
 ed $R/a/src/main.av ' ${pick("p", "q", false)}' '';            S "instantiation removed" a
 # EVERY PACKED ROW DELETED, THE OBJECTS KEPT: the value families (sig, fp, unit,
 # warn, rows) ride `store/`, so removing it drops every ask, home and const row while
-# `obj/` and `bin/` stand — the same claim the file layout's unit directory held.
+# `obj/` and `bin/` stand — the same claim the file layout's unit directory kept.
 [ -d .avra-cache/store ] || { echo "FAIL  no packed store under .avra-cache: $(ls .avra-cache)"; fails=$((fails+1)); }
 rm -rf .avra-cache/store
 S "every packed row deleted (asks, homes, consts; objects kept)" a; S "same, b" b
 ed $R/c/src/main.av 'println("cc ' 'println("C ';                     S "c again, over a's objects" c
 S "final no-op a" a
 # A DECLARATION INSERTED ABOVE ANOTHER SHIFTS ITS ORDINAL WITHIN THE FILE: a
-# caller held across the edit reads every shifted name's WIRE, and the wire
+# caller kept across the edit reads every shifted name's WIRE, and the wire
 # must still name the shape it named before — never the newcomer sharing its
 # old ordinal.
 ed $R/lib/src/words.av 'export type Word = { text: string }' 'export enum Sizing { Fixed, Auto }
@@ -1422,9 +1436,9 @@ impl Word {
 }' 'export type Word = { text: string }'
 S "and back, again" a
 # A GENERIC REACHED WITH NO SUBSTITUTION IS STILL AN INSTANTIATION, and the caller's.
-# `st` holds @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
+# `st` keeps @std/relation reaching only stable.av; `rel`'s derive then calls db.av's
 # `stores<R>` with R pinned by nothing but the answer, from a home `st` never lowered.
-# The held generic's stub and that roaming instance share one NAME, declared once:
+# The kept generic's stub and that roaming instance share one NAME, declared once:
 # signatures that disagreed would be an "invalid redefinition" at emit, not at link.
 mkdir -p $R/st/src $R/rel/src
 printf '[package]\nname = "rt-st"\nversion = "0.1.0"\n' > $R/st/avra.toml
@@ -1442,7 +1456,7 @@ AV
 S "a program holds @std/relation, reaching only stable.av" st
 S "a @relation's generic, reached with no substitution, from a home never lowered" rel
 
-# THE SUITE THROUGH THE SAME STORE: a verdict must follow a body a held test calls
+# THE SUITE THROUGH THE SAME STORE: a verdict must follow a body a test calls
 mkdir -p $R/t/src/tests/shown
 cat > $R/t/avra.toml <<'TOML'
 [package]
@@ -1462,7 +1476,6 @@ printf 'use @rt.t.{three}\nprintln("three is ${three()}")\n' > $R/t/src/tests/sh
 printf 'three is 3\n' > $R/t/src/tests/shown/shown.expected
 T() { # T <label> <want: green|red>
     steps=$((steps+1)); out=$(./avra test --time $R/t 2>&1); st=$?
-    case "$out" in *"held 0/"*|*"cache hit"*) ;; *"held "*) holds=$((holds+1)) ;; esac
     got=green; [ "$st" -ne 0 ] && got=red
     if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [t] -> $got"; else fail "$1 [t] wanted $2, got $got: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
 }
@@ -1481,14 +1494,13 @@ ed $R/t/src/tests/lib_test.av "three() == 3 && true" "twice(three()).length == 2
 ed $R/t/src/tests/lib_test.av "use @rt.t.{three, twice}" "use @rt.t.{three}"
 ed $R/t/src/tests/lib_test.av "twice(three()).length == 2" "three() == 3 && true"; rm $R/t/src/twice.av; T "the home is deleted" green
 
-# ONE FILE'S CASES, WITH EVERY FILE HELD: nothing is read, so no module is minted and
-# no type interned — the entry declares the cases it calls and is built over the
-# registry that links it, or the module is refused.
+# ONE FILE'S CASES, WITH EVERY ROW STANDING: no type is interned afresh — the entry
+# declares the cases it calls and is built over the registry that links it, or the
+# module is refused.
 steps=$((steps+1)); out=$(./avra test --time $R/t/src/tests/lib_test.av 2>&1); st=$?
-case "$out" in *"held 0/"*|*"cache hit"*) ;; *"held "*) holds=$((holds+1)) ;; esac
-if [ "$st" -eq 0 ]; then [ -n "${VERBOSE:-}" ] && echo "ok    one file's cases under a whole hold [t]"; else fail "one file's cases under a whole hold [t]: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
+if [ "$st" -eq 0 ]; then [ -n "${VERBOSE:-}" ] && echo "ok    one file's cases over a warm store [t]"; else fail "one file's cases over a warm store [t]: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
 
-# A HELD ENUM'S PAYLOAD NAMES A SIBLING STRUCT: filling it asks that struct's
+# A STANDING ENUM'S PAYLOAD NAMES A SIBLING STRUCT: filling it asks that struct's
 # signature, which asks its own file's VISIBLE namespace — this module's, already
 # open while the sibling that carries it is being minted from the same record. A
 # re-entry here must be a smaller view, never a trap (avra-8sb5.25.52/.54: a stale
@@ -1520,8 +1532,8 @@ C "no-op cyc" ok
 ed $R/cyc/src/cyc_b.av "CycB = { n: int }" "CycB = { n: int, m: int = 0 }"
 C "cyc_b moves alone — cyc_a stays held, its enum payload re-enters cyc_b's own visible namespace mid-mint" ok
 
-# A NAME A HELD FILE REACHES WITHOUT AN IMPORT LEAVES ITS MODULE: the file did not
-# move and is refused all the same — a hold that kept it would hide the refusal
+# A NAME A FILE WHOSE ANSWER STANDS REACHES WITHOUT AN IMPORT LEAVES ITS MODULE: the file did not
+# move and is refused all the same — a stored answer that kept it would hide the refusal
 cp $R/lib/src/sib.av $R/sib.kept
 mkdir -p $R/lib/src/away && mv $R/lib/src/sib.av $R/lib/src/away/sib.av
 steps=$((steps+1)); out=$(./avra build $R/a 2>&1); st=$?
@@ -1577,11 +1589,11 @@ W "and its own store serves it" build/avra.other hit
 K "while the first compiler's still serves the first" hit
 rm -f build/avra.twin build/avra.other
 
-# CHECK SPEAKS THE SAME under a hold as from the sources
+# CHECK SPEAKS THE SAME under a stored answer as from the sources
 for app in a b c; do
-    held_says=$(./avra check $R/$app 2>&1 | unwatched)
+    warm_says=$(./avra check $R/$app 2>&1 | unwatched)
     rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | unwatched)
-    steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || fail "check [$app] speaks otherwise under the hold"
+    steps=$((steps+1)); [ "$warm_says" = "$plain_says" ] || fail "check [$app] speaks otherwise warm than from the sources"
 done
 
 # KEPT ROWS OVER A WARM `a`: every Items row this build just kept judges equal to what a
@@ -1591,11 +1603,11 @@ judged "a, warm" $R/a
 
 # A CALLER'S CONST FOLLOWS ITS CALLEE'S BODY EVEN WHEN THE CALLER'S OWN FILE IS
 # HELD, NEVER THE ENTRY: `hcl/src/lib.av` declares `const M` and is a library
-# file, so it is never forced fresh by the entry law — `a`'s own held consts
+# file, so it is never forced fresh by the entry law — `a`'s own const whose answer standss
 # above (TWICE, FAR) all live in the entry and never exercise this. Editing
 # only `seed()`'s body, in a sibling file `lib.av` never touches, must still
-# move `M`: `avra run` holds nothing, so a native/eval split here means a
-# stale held object, not a mistyped fixture (avra-8sb5.57.85).
+# move `M`: `avra run` keeps nothing, so a native/eval split here means a
+# stale kept object, not a mistyped fixture (avra-8sb5.57.85).
 mkdir -p $R/hcl/src $R/hc/src
 printf '[package]\nname = "@rt/hcl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-hcl"\npath = "src/lib.av"\n' > $R/hcl/avra.toml
 printf 'export fn seed() -> int { 41 }\n' > $R/hcl/src/seed.av
@@ -1608,7 +1620,7 @@ got=$($R/hc/src/main 2>&1)
 ed $R/hcl/src/seed.av "{ 41 }" "{ 42 }"
 S "hc: the callee's body moves, the held caller's const must follow" hc
 got=$($R/hc/src/main 2>&1)
-[ "$got" = "hc 42" ] || fail "warm hc printed '$got', wanted 'hc 42' — a held const did not follow its callee's body"
+[ "$got" = "hc 42" ] || fail "warm hc printed '$got', wanted 'hc 42' — the const did not follow its callee's body"
 judged "hc" $R/hc
 
 # A BARE INTRA-PACKAGE MODULE KEYS ON ITS OWN INTERFACE, NEVER THE PACKAGE'S
@@ -1619,21 +1631,22 @@ judged "hc" $R/hc
 # keeps compiling against a signature that moved (avra-8sb5.57's
 # perf/module-hold). AND AN IMPORTER IN ANOTHER PACKAGE KEYS ON THE FILES ITS
 # USES REACH, NEVER THE PACKAGE WHOLE: `show.av` names `host` alone, so a
-# signature edit to `pad` holds it and one to `host` never may.
+# signature edit to `pad` keeps it and one to `host` never may.
 # AND AN IMPL IS REACHED THROUGH ITS TYPE: `dyn.av` names `Pt` and `Say`, never
 # `pt_say.av`, yet the `dyn Say` box it builds carries that file's impl.
-MH() { # MH <label> <path-substr> <want: held|read> [<path-substr> <want>]...
+MH() { # MH <label> <path-substr> <kept|read> [<path-substr> <kept|read>]...
     steps=$((steps+1))
     label=$1; shift
-    out=$(./avra build --time $R/mh 2>&1); st=$?
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    # a build that failed read nothing, and says nothing a hold could be judged by
-    if [ $st -ne 0 ]; then fail "$label did not build (status $st)"; printf '%s\n' "$out" | failed_words; return; fi
-    while [ $# -ge 2 ]; do
-        case "$out" in *"read:"*"$1"*) got=read ;; *) got=held ;; esac
-        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fail "$label: $1 wanted $2, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
-        shift 2
-    done
+    # A file served stale is a wrong binary, so every step keeps the build to the evaluator, which
+    # reads no store, beside the claim about which files the edit moved.
+    cost mh
+    out=$(./avra build --time $R/mh 2>$R/mh.err); st=$?
+    # a build that failed read nothing, and says nothing to judge it by
+    if [ $st -ne 0 ]; then fail "$label did not build (status $st)"; { printf '%s\n' "$out"; cat $R/mh.err; } | failed_words; return; fi
+    mh_nat=$("$(printf '%s\n' "$out" | tail -1)" 2>&1); mh_ev=$(./avra run $R/mh 2>/dev/null | unwatched)
+    [ "$mh_nat" = "$mh_ev" ] || { fail "$label: the binary printed '$mh_nat', the evaluator '$mh_ev'"; }
+    rows_claim "$label" "$@"
+    holds=$((holds+1))
 }
 mkdir -p $R/mhl/src $R/mh/src
 printf '[package]\nname = "@rt/mhl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mhl"\npath = "src/lib.av"\n' > $R/mhl/avra.toml
@@ -1669,41 +1682,42 @@ printf 'use @rt.mhl.{Say, Pt}\nexport fn said() -> int {\n    let s: dyn Say = P
 printf 'println("mh ${shown()} ${said()} ${told()}")\n' > $R/mh/src/main.av
 S "cold mh: a sibling reaches one file by use, another by no use at all" mh
 S "mh: warm no-op" mh
+HR "mh: the check rows" check mh 0
 ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
-MH "mh: pad's body only moves — lib.av stays held" lib.av held
+MH "mh: pad's body only moves — lib.av stands" lib.av kept
 ed $R/mhl/src/pad.av "{ 30 }" "{ 3 }"
-MH "mh: and back" lib.av held
+MH "mh: and back" lib.av kept
 ed $R/mhl/src/pad.av "export fn pad() -> int { 3 }" "export fn pad(n: int = 0) -> int { 3 }"
-MH "mh: pad's EXPORTED signature moves (reached through a use) — lib.av re-reads, show.av never named it" lib.av read show.av held
+MH "mh: pad's EXPORTED signature moves (reached through a use) — lib.av re-reads, show.av never named it" lib.av read show.av kept
 ed $R/mhl/src/pad.av "export fn pad(n: int = 0) -> int { 3 }" "export fn pad() -> int { 3 }"
-MH "mh: and back" lib.av held show.av held
+MH "mh: and back" lib.av kept show.av kept
 ed $R/mhl/src/lib.av "export fn host() -> int" "export fn host(n: int = 0) -> int"
 MH "mh: host's signature moves — show.av names it, and re-reads" show.av read
 ed $R/mhl/src/lib.av "export fn host(n: int = 0) -> int" "export fn host() -> int"
-MH "mh: and back" show.av held
+MH "mh: and back" show.av kept
 ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
-MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read show.av held
+MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read show.av kept
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
-MH "mh: and back, cold no more" lib.av held
+MH "mh: and back, cold no more" lib.av kept
 ed $R/mhl/src/pt_say.av "self.v + base() }" "self.v + base() + 1 }"
-MH "mh: the unnamed impl's body only moves — dyn.av stays held" dyn.av held
+MH "mh: the unnamed impl's body only moves — dyn.av stands" dyn.av kept
 ed $R/mhl/src/pt_say.av "self.v + base() + 1 }" "self.v + base() }"
-MH "mh: and back" dyn.av held
+MH "mh: and back" dyn.av kept
 ed $R/mhl/src/pt_say.av "fn base() -> int" "fn base(n: int = 0) -> int"
 MH "mh: the impl's file moves a signature — dyn.av boxes Pt as dyn Say, and re-reads" dyn.av read
 ed $R/mhl/src/pt_say.av "fn base(n: int = 0) -> int" "fn base() -> int"
-MH "mh: and back" dyn.av held
+MH "mh: and back" dyn.av kept
 # AN IMPL IN THE TRAIT'S PACKAGE IS REACHED THROUGH THE TYPE IT AIMS AT, in another.
 ed $R/mht/src/tell_pt.av "fn tbase() -> int" "fn tbase(n: int = 0) -> int"
 MH "mh: the trait's package moves its impl's file — third.av re-reads" third.av read
 ed $R/mht/src/tell_pt.av "fn tbase(n: int = 0) -> int" "fn tbase() -> int"
-MH "mh: and back" third.av held
+MH "mh: and back" third.av kept
 # THE IMPL LEAVES A FILE THAT STAYS FOR ONE NOBODY NAMES: dyn.av re-reads, and dispatches to it.
 ed $R/mhl/src/pt_say.av "impl Say for Pt { fn say() -> int { self.v + base() } }" ""
 printf 'use pt.{Say, Pt}\nfn tag() -> int { 0 }\nimpl Say for Pt { fn say() -> int { self.v * 1000 + tag() } }\n' > $R/mhl/src/pt_moved.av
 MH "mh: the impl moves to a new file — dyn.av re-reads" dyn.av read
 S "mh: and the box dispatches to the moved impl" mh
-# AND GONE, A BOX OF Pt HAS NO VTABLE: the importer is refused by typing, never held into a link.
+# AND GONE, A BOX OF Pt HAS NO VTABLE: the importer is refused by typing, never kept into a link.
 rm $R/mhl/src/pt_moved.av
 steps=$((steps+1)); out=$(./avra build $R/mh 2>&1)
 case "$out" in *"error[type."*) [ -n "${VERBOSE:-}" ] && echo "ok    mh: an impl gone -> refused" ;; *) fail "mh: an impl gone must refuse the box at typing: $(printf '%s' "$out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
@@ -1712,9 +1726,9 @@ impl Say for Pt { fn say() -> int { self.v + base() } }"
 S "mh: the impl back home" mh
 
 
-# KEPT ROWS JUDGED OVER A HELD `collect enum`: its record line's
+# KEPT ROWS JUDGED OVER A STANDING `collect enum`: its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
-# shape alone and the held declaration is a plain enum, so the decl wire naming
+# shape alone and the declaration whose answer stands is a plain enum, so the decl wire naming
 # it (`…~collect_enum~~Command`) resolves to nothing: its references vanish and
 # `describe`'s seat reads as an error type.
 mkdir -p $R/ce/src/lib
@@ -1733,14 +1747,14 @@ export fn describe(c: Command) -> string {
 }
 AV
 S "cold ce: a collect enum in a library module" ce
-S "warm ce: the collect enum's file is held" ce
+S "warm ce: the collect enum's file stands" ce
 judged "ce" $R/ce
 
 # THE JUDGEMENT COVERS AN IMPL'S TARGET: the target lives in
 # Decls' own table, filled through ensure_target/fill_aims, never through `sig()`
-# — a held file with no OTHER declaration worth diffing would pass this suite
+# — a kept file with no OTHER declaration worth diffing would pass this suite
 # clean while the one fact an impl carries went unchecked. `vtlib/src/lib.av` is
-# held both times (never the entry); the impl lands in it exactly once, so the
+# kept both times (never the entry); the impl lands in it exactly once, so the
 # SAME run's before/after declaration count proves it joined what was compared,
 # never just an absolute total that a run examining nothing could still print.
 mkdir -p $R/vtlib/src $R/vt/src
@@ -1783,8 +1797,8 @@ fi
 
 # A BODY EDIT MUST NOT COST A DEPENDENT ITS HOLD: `wrap` alone takes `leaf`'s
 # `helper` as a value, and a whole-program reference read answers the same
-# whether `wrap` is held or read. Each part is its own module, so the
-# reference crosses a module boundary a hold can stand on either side of.
+# whether `wrap` is kept or read. Each part is its own module, so the
+# reference crosses a module boundary a stored answer can stand on either side of.
 mkdir -p $R/vh2/src/shape $R/vh2/src/leaf $R/vh2/src/wrap
 cat > $R/vh2/avra.toml <<TOML
 [package]
@@ -1811,31 +1825,26 @@ let f = get_helper()
 println("vh2 ${f(Sq { s: 3 })}")
 AV
 S "cold vh2: helper taken as a value from a non-entry module" vh2
+HR "cold vh2 check" check vh2 0
 ed $R/vh2/src/leaf/mod.av 'cx.area() }' 'cx.area() + 0 }'
+cost_claim "vh2: a body-only edit in leaf/mod.av parses it and the entry alone" vh2 0 99 leaf/mod.av main.av
 S "vh2: a body-only edit in leaf/mod.av — no signature, no new declaration" vh2
-held_vh2=$(grep -oE "held [0-9]+/[0-9]+" $R/vh2.err | tail -1 | sed 's/^held //')
-h2=${held_vh2%/*}; m2=${held_vh2#*/}
-steps=$((steps+1))
-if [ -z "$h2" ] || [ -z "$m2" ] || [ "$h2" -lt "$((m2 - 2))" ]; then
-    fails=$((fails+1))
-    echo "FAIL  a body edit in leaf/mod.av cost the package its holds: held $held_vh2, wanted >= $((m2 - 2))/$m2 (only leaf/mod.av's own file need move)"
-fi
-# leaf/mod.av settles as a hold candidate now that nothing further edits it —
+# leaf/mod.av settles as a stored answer candidate now that nothing further edits it —
 # The judgement then compares `helper`'s OWN kept lines (written the run
-# above, while `wrap/mod.av` was held) against a fresh reading: a wrongly-set
+# above, while `wrap/mod.av` was kept) against a fresh reading: a wrongly-set
 # `consumed` bit from that run is a MISMATCH here, never a clean pass.
 S "vh2: no-op rebuild — leaf/mod.av is now itself a hold candidate" vh2
 judged "vh2" $R/vh2
 
-# A HELD `_`-DECLARED CALLEE MUST NOT LOSE ITS ERROR UNION: `helper/mod.av`
+# A STANDING `_`-DECLARED CALLEE MUST NOT LOSE ITS ERROR UNION: `helper/mod.av`
 # declares `raise_thing`, whose `Result<int, _>` infers `SomeErr` from its
 # own `fail`; `leaf/mod.av` declares `wrapper`, whose OWN `Result<int, _>`
 # infers ONLY through a `?` into `raise_thing` — nothing else in
 # `wrapper`'s body can fail. A body-only edit to `leaf/mod.av` leaves
-# `helper/mod.av` held; if the held callee's inferred set is read from the
+# `helper/mod.av` kept; if the kept callee's inferred set is read from the
 # fixpoint's own (unfilled) table instead of its already-settled
 # signature, `wrapper`'s answer collapses to "nothing here can fail" and
-# the hold is refused whole — `S` itself catches that refusal as a FAIL.
+# the stored answer is refused whole — `S` itself catches that refusal as a FAIL.
 mkdir -p $R/vh3/src/helper $R/vh3/src/leaf
 cat > $R/vh3/avra.toml <<TOML
 [package]
@@ -1869,11 +1878,11 @@ AV
 S "cold vh3: a fn's inferred error union flows through a call" vh3
 ed $R/vh3/src/leaf/mod.av 'raise_thing(n)?' 'let m = n + 0
     raise_thing(m)?'
-S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
+S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stands" vh3
 
 # RULE FINDINGS ARE KEPT BY EVERY WANT AND SPOKEN BY A CHECK: a build keeps the
-# rows and prints none; a check after that build holds them and speaks what a
-# cold check speaks; a check held on a check's rows speaks the same again.
+# rows and prints none; a check after that build keeps them and speaks what a
+# cold check speaks; a check kept on a check's rows speaks the same again.
 mkdir -p $R/rw/src
 printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
 printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
@@ -1883,12 +1892,12 @@ rm -rf .avra-cache; rw_build=$(./avra build $R/rw 2>&1)
 steps=$((steps+1)); case "$rw_build" in *unmutated_mut*) fail "a build printed a rule finding" ;; esac
 rw_after=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || fail "a check after a build speaks otherwise than a cold check"
-rw_held=$(./avra check $R/rw 2>&1 | unwatched)
-steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || fail "a check held on a check's rows speaks otherwise than a cold check"
+rw_warm=$(./avra check $R/rw 2>&1 | unwatched)
+steps=$((steps+1)); [ "$rw_warm" = "$rw_cold" ] || fail "a warm check over a check's rows speaks otherwise than a cold check"
 
-# THE RATCHET JUDGES EVERY FILE, HELD OR READ: an edit to module `y` alone
-# holds module `x`, and `x/a.av`'s site — new against an empty baseline — must
-# still refuse the warm check, or a held file's new site slips the gate.
+# THE RATCHET JUDGES EVERY FILE, STANDING OR READ: an edit to module `y` alone
+# leaves module `x`'s answers standing, and `x/a.av`'s site — new against an empty baseline — must
+# still refuse the warm check, or a kept file's new site slips the gate.
 mkdir -p $R/rf/src/x $R/rf/src/y
 printf '[package]\nname = "rt-rf"\nversion = "0.1.0"\n' > $R/rf/avra.toml
 printf 'export fn a() -> int {\n    mut n = 1\n    n\n}\n' > $R/rf/src/x/a.av
@@ -1899,9 +1908,9 @@ rm -rf .avra-cache; rf_cold=$(./avra check $R/rf --baseline $R/rf.baseline 2>&1 
 steps=$((steps+1)); case "$rf_cold" in *"NEW violation"*"x/a.av"*) ;; *) fail "the ratchet fixture draws no new site cold, so it attacks nothing" ;; esac
 ed $R/rf/src/y/b.av "{ 2 }" "{ 3 }"
 rf_st=0; rf_warm=$(./avra check $R/rf --baseline $R/rf.baseline 2>&1) || rf_st=$?
-steps=$((steps+1)); case "$rf_st:$rf_warm" in 1:*"NEW violation"*"x/a.av"*) ;; *) fail "a warm check after an edit elsewhere let a held file's new site through the ratchet (exit $rf_st)" ;; esac
+steps=$((steps+1)); case "$rf_st:$rf_warm" in 1:*"NEW violation"*"x/a.av"*) ;; *) fail "a warm check after an edit elsewhere let a standing file's new site through the ratchet (exit $rf_st)" ;; esac
 
-# A CHECK THAT HOLDS SOME FILES AND READS OTHERS AFTER A BUILD: the held ones
+# A CHECK THAT KEEPS SOME FILES AND READS OTHERS AFTER A BUILD: the kept
 # with no rule row are read again (a miss), and the check stands.
 rm -rf .avra-cache; lib_cold=$(./avra check $R/lib 2>&1 | unwatched)
 rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/null 2>&1
@@ -1913,7 +1922,7 @@ steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || fail "a library check afte
 # counter that read every edit anywhere as "changed" through them. These pin
 # two of the fields the fold covers: a lambda's CAPTURE (NameFacts/TypeFacts)
 # and a WARNING'S OWN PRESENCE (voices) — an edit to either must still reach
-# a caller held across the edit, whether that caller is the program's own
+# a caller kept across the edit, whether that caller is the program's own
 # printed answer or the check output the file itself earns.
 mkdir -p $R/cutfp/src
 printf '[package]\nname = "rt-cutfp"\nversion = "0.1.0"\n' > $R/cutfp/avra.toml
@@ -1940,7 +1949,7 @@ got=$($R/cutfp/src/main 2>&1)
 [ "$got" = "cutfp 16" ] || fail "warm cutfp printed '$got', wanted 'cutfp 16' — a captured value's edit did not propagate"
 
 # THE WARNING MOVES, THE PROGRAM'S OWN VALUE ALSO MOVES: `mut unused`
-# becomes read, so the unmutated_mut voice must vanish from a held file's
+# becomes read, so the unmutated_mut voice must vanish from a kept file's
 # own check — voices ride no program output, so only the diagnostic text
 # can catch a dropped fold.
 ed $R/cutfp/src/main.av 'mut unused = 1' 'mut unused = 1
@@ -1954,7 +1963,7 @@ cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c '^warning\[[a-z_.]*unmutated_
 
 # A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
 # STRUCTURAL one (Reach) is persisted as ready; a const that traps while
-# settling never is, so its file never holds and the trap never goes quiet.
+# settling never is, so its file never keeps and the trap never goes quiet.
 mkdir -p $R/rs/src
 printf '[package]\nname = "rt-rs"\nversion = "0.1.0"\n' > $R/rs/avra.toml
 printf 'export const x: int = x + 1\n' > $R/rs/src/bad.av
@@ -1968,14 +1977,14 @@ printf '// moved\n' >> $R/rs/src/main.av
 rs_warm=$(./avra build $R/rs 2>&1 | unwatched)
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fail "a non-structural refusal went silent on a warm build" ;; esac
 
-# THE DURABLE WITNESS IS THE HOLD'S KEY: a file's text and the interface digest of
+# THE DURABLE WITNESS IS THE ANSWER'S KEY: a file's text and the interface digest of
 # every module it sees. HR runs one command over a package and judges it: its exit,
-# and for each named file whether the run read it or held it.
+# and for each named file whether the run parsed it or found its rows standing.
 
 
-# A HELD FILE IS NEVER PARSED: every parse a warm check makes names a file it read.
-# A body edit to `m1` reads `m1` and the entry; `m2`, `m3` and the prelude are held,
-# and AVRA_QTRACE's parse lines must name exactly the two read files.
+# A FILE WHOSE ROWS STAND IS NEVER PARSED: every parse a warm check makes names a file
+# whose rows moved. A body edit to `m1` parses `m1` and the entry; `m2` and `m3` stand,
+# and AVRA_QTRACE's parse lines must name exactly the two.
 mkdir -p $R/zp/src/m1 $R/zp/src/m2 $R/zp/src/m3
 printf '[package]\nname = "rt-zp"\nversion = "0.1.0"\n' > $R/zp/avra.toml
 printf 'export fn f1() -> int { 1 }\n' > $R/zp/src/m1/mod.av
@@ -1984,14 +1993,26 @@ printf 'use m2.{f2}\nexport fn f3() -> int { f2() + 1 }\n' > $R/zp/src/m3/mod.av
 printf 'use m3.{f3}\nprintln("${f3()}")\n' > $R/zp/src/main.av
 HR "cold zp" check zp 0
 ed $R/zp/src/m1/mod.av "{ 1 }" "{ 10 }"
-steps=$((steps+1))
-zp_out=$(AVRA_QTRACE=1 ./avra check --time $R/zp 2>&1)
-zp_held=$(printf '%s\n' "$zp_out" | grep -oE 'held [0-9]+/[0-9]+' | tail -1)
-zp_parsed=$(printf '%s\n' "$zp_out" | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep '/cache-attacks/zp/' | sed 's|.*/cache-attacks/zp/||' | sort -u | tr '\n' ' ')
-case "$zp_held" in "held 0/"*|"") fail "zp: a body edit held nothing ($zp_held), so the parse count attacks nothing" ;; *) holds=$((holds+1)) ;; esac
-[ "$zp_parsed" = "src/m1/mod.av src/main.av " ] || fail "zp: a warm check parsed '$zp_parsed' ($zp_held), wanted m1/mod.av and main.av alone"
+cost_claim "zp: a body edit parses the edited file and the entry alone" zp 0 0 m1/mod.av main.av
 
-# A DELETED IMPORT TARGET NEVER READS AS HELD: the store still keeps `leaf`'s record,
+if section pf; then
+# THE FLOOR IS NOT RE-READ: `@std/prelude` is a package the toolchain carries, seen by every
+# file and edited by no one, so a check that re-reads its package after an edit must still
+# find the prelude's rows standing — its text is the text every earlier check kept.
+mkdir -p $R/pf/src/y $R/pf/src/f
+printf '[package]\nname = "rt-pf"\nversion = "0.1.0"\n' > $R/pf/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/pf/src/y/calc.av
+printf 'use y.{twice}\nexport const K: int = twice(3)\nexport fn shown() -> int { K }\n' > $R/pf/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/pf/src/main.av
+HR "cold pf" check pf 0
+cost_claim "pf: an unchanged check parses nothing at all" pf 0 0
+ed $R/pf/src/f/held.av "twice(3)" "twice(4)"
+cost pf
+steps=$((steps+1)); holds=$((holds+1))
+[ "${cost_floor:-0}" -eq 0 ] || fail "pf: an edit parsed the prelude's own file — the floor is read again on every change"
+fi
+
+# A DELETED IMPORT TARGET NEVER READS AS STANDING: the store still keeps `leaf`'s record,
 # and a record that places a file the host no longer has keys on the module's bytes,
 # so `mid` re-reads and refuses the `use` a cold check refuses.
 mkdir -p $R/dt/src/mid $R/dt/src/leaf
@@ -2001,12 +2022,12 @@ printf 'use leaf.{f}\nexport fn g() -> int { f() + 1 }\n' > $R/dt/src/mid/mod.av
 printf 'use mid.{g}\nprintln("${g()}")\n' > $R/dt/src/main.av
 HR "cold dt" check dt 0
 printf '// moved\n' >> $R/dt/src/main.av
-HR "dt: an entry edit holds mid" check dt 0 mid/mod.av held
+HR "dt: an entry edit moves nothing else" check dt 0 mid/mod.av kept
 rm $R/dt/src/leaf/mod.av; rmdir $R/dt/src/leaf
 steps=$((steps+1)); dt_out=$(./avra check $R/dt 2>&1)
 case "$dt_out" in *"resolve.no_module"*"mid/mod.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    dt: the import target gone -> refused" ;; *) fail "dt: mid's import target is gone and the check did not refuse it: $(printf '%s' "$dt_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 
-# A DELETED HELD SIBLING NEVER READS AS HELD: `a` calls `b`'s `h` by no `use`, and
+# A DELETED SIBLING NEVER READS AS STANDING: `a` calls `b`'s `h` by no `use`, and
 # with `b` gone its module's record names a file the module no longer has.
 mkdir -p $R/ds/src/mid
 printf '[package]\nname = "rt-ds"\nversion = "0.1.0"\n' > $R/ds/avra.toml
@@ -2015,7 +2036,7 @@ printf 'export fn g() -> int { h() + 1 }\n' > $R/ds/src/mid/a.av
 printf 'use mid.{g}\nprintln("${g()}")\n' > $R/ds/src/main.av
 HR "cold ds" check ds 0
 printf '// moved\n' >> $R/ds/src/main.av
-HR "ds: an entry edit holds both siblings" check ds 0 mid/a.av held mid/b.av held
+HR "ds: an entry edit moves nothing else" check ds 0 mid/a.av kept mid/b.av kept
 rm $R/ds/src/mid/b.av
 steps=$((steps+1)); ds_out=$(./avra check $R/ds 2>&1)
 case "$ds_out" in *"resolve.unresolved"*"mid/a.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    ds: the sibling gone -> refused" ;; *) fail "ds: a's sibling is gone and the check did not refuse h(): $(printf '%s' "$ds_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
@@ -2023,7 +2044,7 @@ case "$ds_out" in *"resolve.unresolved"*"mid/a.av"*) [ -n "${VERBOSE:-}" ] && ec
 # A MODULE WITH NO RECORD KEYS ON ITS BYTES, NEVER ON NOTHING: with `nrl`'s record
 # gone, `user`'s key rides `nrl`'s bytes, so removing the import target re-reads the
 # importer and a WARM check REFUSES where a stale hold would have passed over it. The
-# packed store holds no per-row file to remove, so the target's own removal is the
+# packed store keeps no per-row file to remove, so the target's own removal is the
 # trigger — the same defect, witnessed by the verdict a cold check gives.
 mkdir -p $R/nrl/src $R/nr/src
 printf '[package]\nname = "@rt/nrl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-nrl"\npath = "src/lib.av"\n' > $R/nrl/avra.toml
@@ -2033,20 +2054,20 @@ printf 'use @rt.nrl.{lf}\nexport fn u() -> int { lf() + 1 }\n' > $R/nr/src/user.
 printf 'use user.{u}\nprintln("${u()}")\n' > $R/nr/src/main.av
 HR "cold nr" check nr 0
 printf '// moved\n' >> $R/nr/src/main.av
-HR "nr: an entry edit holds user" check nr 0 user.av held
+HR "nr: an entry edit moves nothing else" check nr 0 user.av kept
 rm $R/nrl/src/lib.av
 printf '// moved again\n' >> $R/nr/src/main.av
 steps=$((steps+1)); nr_out=$(./avra check $R/nr 2>&1); nr_st=$?
 case "$nr_st:$nr_out" in 1:*"nrl"*) [ -n "${VERBOSE:-}" ] && echo "ok    nr: nrl's file gone -> user re-read and the check refused" ;; *) fail "nr: nrl's file gone — a warm check did not refuse (exit $nr_st): $(printf '%s' "$nr_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 printf 'export fn lf() -> int { 3 }\n' > $R/nrl/src/lib.av
 printf '// and again\n' >> $R/nr/src/main.av
-HR "nr: the target is back — the run after holds user again" check nr 0 user.av held
+HR "nr: the target is back — the run after moves nothing else" check nr 0 user.av kept
 
 # A CALLEE'S ERROR TYPE IS PART OF ITS INTERFACE, ACROSS TWO PROCESSES: `user` reads
 # `e.code` from `errs`' `risky` and `inferred`, whose `E` moves under it. Every move
 # re-reads `user` and the binary follows the new `E` (`code` turns from a number to
 # text, one flat field either way, so only the interface can tell); a body edit that
-# leaves `E` alone holds `user`; an `E` with no `code` is refused where it is read.
+# leaves `E` alone keeps `user`; an `E` with no `code` is refused where it is read.
 mkdir -p $R/ee/src/errs $R/ee/src/user
 printf '[package]\nname = "rt-ee"\nversion = "0.1.0"\n' > $R/ee/avra.toml
 cat > $R/ee/src/errs/mod.av <<'AV'
@@ -2080,9 +2101,9 @@ AV
 printf 'use user.{shown, shown2}\nprintln("ee ${shown(1)} ${shown(-2)} ${shown2(-3)}")\n' > $R/ee/src/main.av
 S "cold ee" ee
 printf '// moved\n' >> $R/ee/src/main.av
-HR "ee: an entry edit holds user" build ee 0 user/mod.av held
+HR "ee: an entry edit moves nothing else" build ee 0 user/mod.av kept
 ed $R/ee/src/errs/mod.av "fail Bad { code: n } }" "fail Bad { code: n - 1 } }"
-HR "ee: risky's body moves, its E does not — user stays held" build ee 0 user/mod.av held
+HR "ee: risky's body moves, its E does not — user stands" build ee 0 user/mod.av kept
 ed $R/ee/src/errs/mod.av "Result<int, Bad> {
     if n < 0 { fail Bad { code: n - 1 } }" "Result<int, Said> {
     if n < 0 { fail Said { code: \"neg\" } }"
@@ -2095,25 +2116,25 @@ HR "ee: what inferred fails moves its inferred E — user's stale row is refused
 S "ee: and the binary reads the inferred E" ee
 ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
 [ "$ee_got" = "ee ok 1 err neg err inferred" ] || fail "ee printed '$ee_got', wanted 'ee ok 1 err neg err inferred'"
-HR "ee: a check holds user, whose rule findings the build kept" check ee 0 user/mod.av held
+HR "ee: a check finds user's rows standing, over the rule findings the build kept" check ee 0 user/mod.av kept
 printf '// checked\n' >> $R/ee/src/main.av
-HR "ee: and the next check holds it" check ee 0 user/mod.av held
+HR "ee: and the next check finds them standing" check ee 0 user/mod.av kept
 ed $R/ee/src/errs/mod.av "Result<int, Said> {
     if n < 0 { fail Said { code: \"neg\" } }" "Result<int, Other> {
     if n < 0 { fail Other { why: \"neg\" } }"
 steps=$((steps+1)); ee_out=$(./avra check $R/ee 2>&1)
 case "$ee_out" in *"type.unknown_prop"*"user/mod.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    ee: an E with no code -> refused in user" ;; *) fail "ee: risky's E has no code and the check did not refuse user's e.code: $(printf '%s' "$ee_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
-# A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
+# A COLLECT'S FRESH BODY REFERENCES A STANDING MEMBER'S CLOSURE AS AN EXTERN,
 # NEVER AS A GAP: `members.av` declares two exported named
 # instances of `widget` (a component whose one field is `run: fn(int) ->
 # int`, the same shape `rule`'s `run: fn(Code) -> Fix?` is) — each an
 # `is_instance` const. `table.av`'s `collect` reads `it.run` for each,
 # calling it by its `instance_unit` symbol. Editing `table.av` ALONE forces
-# the collect fresh while `widget.av`/`members.av` stay held; without a
-# declaration for a held member's symbol the link traps "nothing declares
+# the collect fresh while `widget.av`/`members.av` stand; without a
+# declaration for a member's symbol the link traps "nothing declares
 # ... — the program is not closed" (witnessed: packages/std-avrac/src/
 # compiler/interface.av's `Workspace.stub_of`/`instance_stub`, reused by
-# `held_stubs`, is what a held FN's own symbol already goes through — the
+# `held_stubs`, is what a fn's own symbol already goes through — the
 # fix is keeping a gathered member's structural refusal the same way).
 mkdir -p $R/cl/src
 printf '[package]\nname = "rt-cl"\nversion = "0.1.0"\n' > $R/cl/avra.toml
@@ -2143,10 +2164,10 @@ ed $R/cl/src/table.av 'type Entry = { name: string, ran: fn(int) -> int }' 'type
 // moved'
 S "cl: table.av alone moves — widget.av/members.av stay held, the fresh collect body must reference their closures as externs" cl
 got_cl1=$($R/cl/src/main 2>&1)
-[ "$got_cl1" = "cl 2 one=11 two=12" ] || fail "cl (collect fresh, members held) printed '$got_cl1', wanted 'cl 2 one=11 two=12'"
-# A MEMBER'S OWN BODY EDIT, while the collect's own file stays held, is NOT
+[ "$got_cl1" = "cl 2 one=11 two=12" ] || fail "cl (collect fresh, members' answers standing) printed '$got_cl1', wanted 'cl 2 one=11 two=12'"
+# A MEMBER'S OWN BODY EDIT, while the collect's own file stands, is NOT
 # pinned here: on a brand-new tiny package it trips a pre-existing, GENERAL
-# held-collect/held-instance gap (a stale interface read that the "hold was
+# collect/instance gap (a stale interface read that the "hold was
 # refused, rebuilt from sources" safety net catches and self-heals — right
 # answer, wasted work — reproduced with a plain DATA-only component too, no
 # `run: fn`/structural-refusal involved, so it is not this ticket's exclusion
@@ -2156,7 +2177,7 @@ got_cl1=$($R/cl/src/main 2>&1)
 # directly against compiler/features/enums/idioms.av's `bool_variant_match`
 # itself, not against a synthetic fixture here.
 
-# A HELD RECORD'S SEAT-WRITTEN BIT (interface.av's `record_line`):
+# A STANDING RECORD'S SEAT-WRITTEN BIT (interface.av's `record_line`):
 # `relay`'s `mut` seat is written only through a FLOW EDGE —
 # `maybe_bump`'s own body — and a warm build over the edit must answer
 # the write, with `pair[1]`, `pair[0]`'s alias, left unwritten. This
@@ -2178,12 +2199,12 @@ S "cold w: relay's seat is not written yet — no copy owed, both read 5" w
 ed $R/lib/src/writeflow.av 'export fn maybe_bump(mut xs: List<int>) {}' 'export fn maybe_bump(mut xs: List<int>) { xs.set(0, xs[0] + 1) }'
 S "maybe_bump now writes; relay's flow edge carries it into lib's held record, and the aliased path opens unique" w
 got_w=$($R/w/src/main 2>&1)
-[ "$got_w" = "w 5 6" ] || fail "w (relay's inferred write, read back from lib's held record) printed '$got_w', wanted 'w 5 6' — pair[1] must stay unaliased"
+[ "$got_w" = "w 5 6" ] || fail "w (relay's inferred write, read back from lib's record) printed '$got_w', wanted 'w 5 6' — pair[1] must stay unaliased"
 
 # `Decls.decl(d)` fetches its row through the pinned row storage, never
 # the relation's own recorded `get` — so it must still call `rows_read(x.file)`, the SAME
 # file-grain edge the hand table's read always fed the kernel. `drm`'s
-# held const `M` reads `drl`'s `seed` — a Const it runs — through a
+# const whose answer stands `M` reads `drl`'s `seed` — a Const it runs — through a
 # fresh query frame every settle; editing `seed`'s body alone, warm,
 # must still move `M`. A lost edge would leave `drm` reusing the value
 # it settled before the edit.
@@ -2204,9 +2225,9 @@ got_drm2=$($R/drm/src/main 2>&1)
 # A TYPE ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
 # HOLD TAKES IT, while a fn `b` never names moves nothing (both pinned): `b` names
 # `a` and a collect in `coll`, so an interface move in `a` re-reads `b` while `coll`
-# stays held — and `b` types `entries.length`
-# against the held collect's recorded type. ND judges one warm check (held,
-# never refused, `coll` held and `b` read) and holds its words to a cold one.
+# stands — and `b` types `entries.length`
+# against the kept collect's recorded type. ND judges one warm check (kept,
+# never refused, `coll` kept and `b` read) and keeps its words to a cold one.
 mkdir -p $R/nd/src/a $R/nd/src/b $R/nd/src/coll
 printf '[package]\nname = "rt-nd"\nversion = "0.1.0"\n' > $R/nd/avra.toml
 printf 'export fn fa() -> int { 1 }\nexport fn fz() -> int { 2 }\n' > $R/nd/src/a/mod.av
@@ -2215,36 +2236,27 @@ printf 'export widget one { n -> n + 1 }\nexport widget two { n -> n + 2 }\n' > 
 printf 'type Entry = { name: string, ran: fn(int) -> int }\nexport collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name\n' > $R/nd/src/coll/table.av
 printf 'use a.{fa}\nuse coll.{entries}\nexport fn fb() -> int { entries.length + fa() }\n' > $R/nd/src/b/mod.av
 printf 'use b.{fb}\nprintln("nd ${fb()}")\n' > $R/nd/src/main.av
-ND() { # ND <label> [read|held]: whether b re-reads (default read)
+ND() { # ND <label> [read|kept]: whether b re-reads (default read)
     want_b=${2:-read}
     steps=$((steps+1))
     rm -rf $R/nd.warm; cp -R .avra-cache $R/nd.warm
-    out=$(./avra check --time $R/nd 2>&1); st=$?
-    read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
-    case "$out" in
-        *"the hold was refused"*) fail "$1: the hold was refused: $(printf '%s\n' "$out" | grep -m1 'the hold was refused' | cut -c1-200)" ;;
-        *"held "[1-9]*"/"*) holds=$((holds+1)) ;;
-        *) fail "$1: held nothing (exit $st)" ;;
-    esac
-    case "$read_list" in *coll/*) fail "$1: coll was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
-    case "$read_list" in
-        *b/mod.av*) [ "$want_b" = read ] || { fail "$1: b was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')"; } ;;
-        *) [ "$want_b" = held ] || { fail "$1: b was held, wanted read: $(printf '%s' "$read_list" | tr '\n' ' ')"; } ;;
-    esac
+    cost nd
+    rows_claim "$1" coll kept b/mod.av "$want_b"
+    holds=$((holds+1))
     rm -rf .avra-cache; cp -R $R/nd.warm .avra-cache
-    held_says=$(./avra check $R/nd 2>&1 | unwatched)
+    warm_says=$(./avra check $R/nd 2>&1 | unwatched)
     rm -rf .avra-cache; plain_says=$(./avra check $R/nd 2>&1 | unwatched)
-    steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fail "$1: a warm check speaks otherwise than a cold one: $(printf '%s' "$held_says" | head -3 | tr '\n' ' ')"; }
+    steps=$((steps+1)); [ "$warm_says" = "$plain_says" ] || { fail "$1: a warm check speaks otherwise than a cold one: $(printf '%s' "$warm_says" | head -3 | tr '\n' ' ')"; }
 }
 rm -rf .avra-cache; ./avra check $R/nd >/dev/null 2>&1
 printf 'export fn fnew() -> int { 3 }\n' >> $R/nd/src/a/mod.av
-ND "nd: a fn nobody in b names, appended to a" held
+ND "nd: a fn nobody in b names, appended to a" kept
 ed $R/nd/src/a/mod.av 'export fn fz()' 'fn fmid() -> int { 4 }
 export fn fz()'
-ND "nd: a fn nobody in b names, inserted between two in a" held
+ND "nd: a fn nobody in b names, inserted between two in a" kept
 ed $R/nd/src/a/mod.av 'export fn fnew() -> int { 3 }
 ' ''
-ND "nd: a fn nobody in b names, removed from a" held
+ND "nd: a fn nobody in b names, removed from a" kept
 printf 'export type Fnew = { n: int }\n' >> $R/nd/src/a/mod.av
 ND "nd: a type appended to a" read
 ed $R/nd/src/a/mod.av 'export fn fz()' 'type Fmid = { n: int }
@@ -2297,9 +2309,9 @@ steps=$((steps+1)); [ "$kept_before" = "$(store_print)" ] ||
 steps=$((steps+1)); [ "$kept_before" != "$(store_print)" ] ||
     fail "a check after the edit kept nothing"
 explain_says "no input moved since the kept state" "$(inspected --why)" "--why, after a check"
-# WHAT COMPOSES A COMPONENT IS NEVER SERVED STALE. `note` holds a body, composed by
+# WHAT COMPOSES A COMPONENT IS NEVER SERVED STALE. `note` keeps a body, composed by
 # the trait its file names (`kit`'s `Says`, wearing `@composes`); `card` is made of
-# `note`, a sibling it names by no `use`. An entry edit holds both. Then the mark is
+# `note`, a sibling it names by no `use`. An entry edit keeps both. Then the mark is
 # dropped from the trait with no edit to either component — `note` has no composer
 # and must be refused — and put back; then the sibling's component is renamed with
 # no edit to `card`, whose body names a word its module no longer declares.
@@ -2349,7 +2361,7 @@ printf 'use kit.{said_by}\n\nexport component card(name: string) {\n    said_by(
 printf 'use kit.{said_by}\nuse part.{card}\nprintln(said_by(card "a"))\n' > $R/cb/src/main.av
 HR "cold cb" check cb 0
 printf '// moved\n' >> $R/cb/src/main.av
-HR "cb: an entry edit holds the components" check cb 0 part/note.av held part/card.av held
+HR "cb: an entry edit moves nothing else" check cb 0 part/note.av kept part/card.av kept
 cp $R/cb/src/kit/kit.av $R/cb/kit.kept
 grep -v '^@composes' $R/cb/kit.kept > $R/cb/src/kit/kit.av
 steps=$((steps+1)); cb_out=$(./avra check $R/cb 2>&1)
@@ -2362,7 +2374,7 @@ case "$cb_out" in *"card.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    cb: the sibl
 
 # A ROW ASKED OF A RENAMED SIBLING READS NOTHING PAST ITS FILE. `cr` is `cb` with `card`'s
 # body also making rows of `note` in a comprehension, so the repeated-row law asks `note`'s
-# declaration while `card` is held — and after `note` is renamed, that declaration's statement
+# declaration while `card` is kept — and after `note` is renamed, that declaration's statement
 # no longer stands in its file's reparse: the law answers nothing of it, and `card` is refused.
 mkdir -p $R/cr/src/kit $R/cr/src/part
 printf '[package]\nname = "rt-cr"\nversion = "0.1.0"\n' > $R/cr/avra.toml
@@ -2410,7 +2422,7 @@ printf 'use kit.{said_by}\n\nexport component card(name: string) {\n    said_by(
 printf 'use kit.{said_by}\nuse part.{card}\nprintln(said_by(card "a"))\n' > $R/cr/src/main.av
 HR "cold cr" check cr 0
 printf '// moved\n' >> $R/cr/src/main.av
-HR "cr: an entry edit holds the components" check cr 0 part/note.av held part/card.av held
+HR "cr: an entry edit moves nothing else" check cr 0 part/note.av kept part/card.av kept
 cp $R/cr/src/kit/kit.av $R/cr/kit.kept
 grep -v '^@composes' $R/cr/kit.kept > $R/cr/src/kit/kit.av
 steps=$((steps+1)); cr_out=$(./avra check $R/cr 2>&1)
@@ -2423,7 +2435,7 @@ case "$cr_out" in *"card.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    cr: the sibl
 
 # A FILE NOTHING REACHES IS HELD LIKE ANY OTHER. `ur` names ONE file of `@rt/url`'s
 # root module; its siblings are registered with it — a module is one namespace — and
-# a sibling no `use` names must be held by its record, never parsed again on every
+# a sibling no `use` names must be kept by its record, never parsed again on every
 # run. It is still the module's: its edit, its parse error, its clash, its impl and
 # its removal each reach the next check as they reach a cold one.
 mkdir -p $R/url/src $R/ur/src
@@ -2435,7 +2447,7 @@ printf 'use reach.{Say, Pt}\nexport fn lone() -> int { 3 }\nimpl Say for Pt { fn
 printf 'use @rt.url.reach.{r, Say, Pt}\nlet s: dyn Say = Pt { v: 1 }\nprintln("${r()} ${s.say()}")\n' > $R/ur/src/main.av
 up=ur
 ur_parsed() { # the files of the fixture `up` a warm check parses, sorted
-    AVRA_QTRACE=1 ./avra check $R/$up 2>&1 | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep "/cache-attacks/$up" | sed 's|.*/cache-attacks/||' | sort -u | tr '\n' ' '
+    AVRA_QTRACE=1 ./avra check $R/$up 2>&1 | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep "/cache-attacks/$up/" | sed 's|.*/cache-attacks/||' | sort -u | tr '\n' ' '
 }
 UR() { # UR <label> <the files parsed>
     steps=$((steps+1)); holds=$((holds+1)); got=$(ur_parsed)
@@ -2453,7 +2465,7 @@ ed $R/url/src/lone.av "self.v + 1" "self.v + 100"
 S "ur: the unnamed file's impl body moved" ur
 HR "ur checks clean after it" check ur 0
 printf 'let _moved = 0\n' >> $R/ur/src/main.av
-UR "ur: the edited sibling is held again" "ur/src/main.av "
+UR "ur: the edited sibling is kept again" "ur/src/main.av "
 cp $R/url/src/lone.av $R/url/lone.kept
 printf 'export fn lone( -> int { 3 }\n' >> $R/url/src/lone.av
 URX "ur: the unnamed file gains a parse error" "parse." "lone.av"
@@ -2470,15 +2482,15 @@ URX "ur: a new file nothing names arrives broken" "parse." "fresh.av"
 printf 'export fn fresh() -> int { 4 }\n' > $R/url/src/fresh.av
 HR "ur: the new file mended" check ur 0
 printf 'let _moved = 0\n' >> $R/ur/src/main.av
-UR "ur: the new file is held from its first clean check" "ur/src/main.av "
+UR "ur: the new file is kept from its first clean check" "ur/src/main.av "
 rm $R/url/src/fresh.av
 S "ur: the new file removed" ur
 ed $R/ur/src/main.av "$(printf 'use @rt.url.reach.{r, Say, Pt}\nuse @rt.url.lone.{lone}')" 'use @rt.url.reach.{r, Say, Pt}'
 ed $R/ur/src/main.av '${r()} ${lone()} ' '${r()} '
 printf 'export fn lone() -> int { 3 }\n' > $R/url/src/lone.av
-URX "ur: the file that held the impl loses it" "Say" "main.av"
+URX "ur: the file that kept the impl loses it" "Say" "main.av"
 
-# A HELD SIBLING STANDS ON ITS OWN MODULE. `us` names one file of `@rt/usl`; the
+# A STANDING SIBLING STANDS ON ITS OWN MODULE. `us` names one file of `@rt/usl`; the
 # sibling nothing names implements that file's trait and calls its PRIVATE fn with
 # no `use` line — a module is one namespace. Held, it must still dispatch; and a
 # signature it leans on, moved in the named file, must refuse at the sibling as a
@@ -2497,31 +2509,32 @@ HR "us checks clean" check us 0
 printf 'let _moved = 0\n' >> $R/us/src/main.av
 UR "us: an entry edit parses the entry alone" "us/src/main.av "
 printf '// moved\n' >> $R/us/src/main.av
-S "us: the held sibling's impl is dispatched" us
+S "us: the standing sibling's impl is dispatched" us
 cp $R/usl/src/reach.av $R/usl/reach.kept
 ed $R/usl/src/reach.av "fn say() -> int" "fn say() -> string"
-URX "us: the trait's answer moved under the held sibling's impl" "say" "lone.av"
+URX "us: the trait's answer moved under the kept sibling's impl" "say" "lone.av"
 cp $R/usl/reach.kept $R/usl/src/reach.av
 HR "us: the trait back" check us 0
 ed $R/usl/src/reach.av "fn hidden() -> int { 4 }" 'fn hidden() -> string { "4" }'
-URX "us: a private fn the held sibling calls with no use changed its answer" "hidden" "lone.av"
+URX "us: a private fn the kept sibling calls with no use changed its answer" "hidden" "lone.av"
 cp $R/usl/reach.kept $R/usl/src/reach.av
 HR "us: the private fn back" check us 0
 ed $R/usl/src/reach.av "fn hidden() -> int { 4 }
 " ""
-URX "us: a private fn the held sibling calls with no use is gone" "hidden" "lone.av"
+URX "us: a private fn the kept sibling calls with no use is gone" "hidden" "lone.av"
 cp $R/usl/reach.kept $R/usl/src/reach.av
 HR "us: the private fn restored" check us 0
 ed $R/usl/src/reach.av "export fn r() -> int { 2 }" "$(printf 'const K: int = seven()\nexport fn r() -> int { K }')"
-S "us: a const in the named file starts running the held sibling's body" us
+S "us: a const in the named file starts running the sibling's body" us
 HR "us checks clean after it" check us 0
 
-# A HELD FILE'S ASKS READ BACK WHEN ONE AIMS AT A BUILTIN. An impl over `List<T>`
+# A FILE'S ASKS READ BACK WHEN ONE AIMS AT A BUILTIN. An impl over `List<T>`
 # asks for an instantiation whose target is the language's own declaration; that
 # target's wire names whichever file was first in the process that wrote it, and a
 # row that cannot be read back turns the attempt and reads the file on every build.
 # `abx` reads the rows `ab` wrote from ANOTHER ENTRY, so the two processes meet
-# different first files whatever order a package lists its own.
+# different first files whatever order a package lists its own: each check and build
+# stands on them and says nothing of a row it could not read.
 mkdir -p $R/abl/src $R/ab/src $R/abx/src
 printf '[package]\nname = "@rt/abl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-abl"\npath = "src/lib.av"\n' > $R/abl/avra.toml
 for p in ab abx; do printf '[package]\nname = "rt-%s"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/abl" = { path = "../abl" }\n' $p > $R/$p/avra.toml; done
@@ -2546,17 +2559,20 @@ printf 'use @rt.abl.shows.{shown, count}\nuse @rt.abl.other.{other}\nlet m: Map<
 printf 'export fn first() -> int { 0 }\n' > $R/abx/src/aaa.av
 printf 'use aaa.{first}\nuse @rt.abl.shows.{shown}\nprintln("${first()} ${shown()}")\n' > $R/abx/src/main.av
 AB() { # AB <label> <build|check> <pkg>: no file is read because its asks could not be read back
-    steps=$((steps+1)); ab_out=$(./avra $2 --time $R/$3 2>&1)
-    case "$ab_out" in *"could not be read back"*) fail "$1: a held file's asks did not read back: $(printf '%s' "$ab_out" | grep -E '^time:|discarded:|read back' | cut -c1-300 | tr '\n' ' ')" ;; *"held "[1-9]*"/"*|*"cache hit"*) holds=$((holds+1)); [ -n "${VERBOSE:-}" ] && echo "ok    $1" ;; *) fail "$1: nothing was held, so no asks row was read: $(printf '%s' "$ab_out" | grep -E '^time:' | cut -c1-200)" ;; esac
+    ab_st=0; ab_out=$(./avra $2 --time $R/$3 2>&1) || ab_st=$?
+    case "$ab_out" in
+        *"could not be read back"*) fail "$1: a file's asks did not read back: $(printf '%s' "$ab_out" | grep -E '^time:|read back' | cut -c1-300 | tr '\n' ' ')" ;;
+        *) [ "$ab_st" -eq 0 ] || fail "$1: exit $ab_st, wanted 0: $(printf '%s' "$ab_out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')" ;;
+    esac
 }
 S "cold ab: impls over builtin generics, a scalar, a user generic over one" ab
 HR "ab checks clean" check ab 0
 ed $R/abl/src/other.av "{ 1 }" "{ 10 }"
-HR "ab: an edit elsewhere holds the file whose asks aim at a builtin" check ab 0 shows.av held
+HR "ab: an edit elsewhere leaves the file whose asks aim at a builtin standing" check ab 0 shows.av kept
 ed $R/abl/src/other.av "{ 10 }" "{ 100 }"
 AB "ab: a build after an edit elsewhere" build ab
 S "ab: the binary after it" ab
-HR "abx: another entry checks clean over ab's rows" check abx 0 shows.av held
+HR "abx: another entry checks clean over ab's rows" check abx 0 shows.av kept
 printf '// moved\n' >> $R/abx/src/aaa.av
 AB "abx: a check from another entry" check abx
 printf '// moved\n' >> $R/abx/src/aaa.av
@@ -2565,7 +2581,7 @@ S "abx: the binary from another entry" abx
 
 # ONE DECLARATION, ONE SPELLING. A builtin's wire names the language, never the file
 # a process happened to meet first — so a body edit under impls over builtins leaves
-# the module's interface where it was, its importer held, and the same package
+# the module's interface where it was, its importer kept, and the same package
 # inspected with no entry (`avra explain --why`) sees no interface moved. And
 # an impl over a builtin that an importer dispatches through, in a file the importer
 # never names, is still the importer's: removed, the warm check refuses as a cold one.
@@ -2578,9 +2594,9 @@ printf 'use @rt.bwl.shows.{shown}\nexport fn used() -> string { shown() }\n' > $
 printf 'use user.{used}\nprintln(used())\n' > $R/bw/src/main.av
 HR "cold bw" check bw 0
 ed $R/bwl/src/shows.av '"list"' '"lst"'
-HR "bw: a body edit under impls over builtins holds the importer" check bw 0 user.av held
+HR "bw: a body edit under impls over builtins leaves the importer's rows standing" check bw 0 user.av kept
 ed $R/bwl/src/shows.av '"lst"' '"l"'
-HR "bw: and again" check bw 0 user.av held
+HR "bw: and again" check bw 0 user.av kept
 steps=$((steps+1)); bw_moved=$( (cd $R/bw && "$tree/avra" explain --why 2>&1) | grep -c 'moved module')
 [ "$bw_moved" -eq 0 ] || fail "bw: inspected with no entry, $bw_moved interfaces read as moved since the entry's own check"
 mkdir -p $R/bil/src $R/bi/src
@@ -2601,10 +2617,10 @@ case "$bi_st:$bi_out" in 1:*"tell"*) [ -n "${VERBOSE:-}" ] && echo "ok    bi: th
 
 # A FILE IS HELD ONLY WHILE EVERY INPUT ITS COMPILE-TIME RUNS READ STANDS. `ke`'s TEXT is
 # an `embed` of a text file beside the file that declares it. The embedded text is
-# edited and nothing else: the declaring file's own text never moves, so a hold that
+# edited and nothing else: the declaring file's own text never moves, so a stored answer that
 # stands on its text alone keeps the const's old value — in the binary, with the key
 # missing and a derivation running. The file must be read again, in a check and in a
-# build, twice over, and with another file edited first so the declaring file is held;
+# build, twice over, and with another file edited first so the declaring file is kept;
 # a const derived from the embedded text moves with it.
 mkdir -p $R/ke/src/f
 printf '[package]\nname = "rt-ke"\nversion = "0.1.0"\n' > $R/ke/avra.toml
@@ -2619,7 +2635,7 @@ S "cold ke" ke; ke_says "cold" "one n=3"
 printf '// moved\n' >> $R/ke/src/main.av
 S "ke: an edit elsewhere, held.av held" ke; ke_says "an edit elsewhere" "one n=3"
 printf 'two' > $R/ke/src/f/data.txt
-HR "ke: the embedded text moved -> its file is read, not held" check ke 0 "f/held.av" read
+HR "ke: the embedded text moved -> its file is parsed" check ke 0 "f/held.av" read
 S "ke: and the binary follows the embedded text" ke; ke_says "the embedded text moved under a held file" "two n=3"
 printf 'three' > $R/ke/src/f/data.txt
 S "ke: moved again, nothing else touched" ke; ke_says "the embedded text moved again" "three n=5"
@@ -2647,13 +2663,13 @@ ke_refuses "the embedded text is gone" "finds no"
 printf 'back' > $R/ke/src/f/data.txt
 S "ke: the text stands again" ke; ke_says "the embedded text back" "back n=4"
 
-# AN EMBED REACHED THROUGH A HELD FILE IS NO FILE MINTED MID-QUERY. `kw`'s const runs fns
+# AN EMBED REACHED THROUGH A FILE WHOSE ANSWER STANDS IS NO FILE MINTED MID-QUERY. `kw`'s const runs fns
 # that `util.av` declares, and the `embed` literals stand in their bodies. Only main.av
-# is edited, so `util.av` is held and its literals are never scanned: the embedded texts
+# is edited, so `util.av` is kept and its literals are never scanned: the embedded texts
 # are first met inside the const's own settlement. A warm build and a warm test must run,
 # and the binary print the embedded texts, never trap on a row written after it was read.
-# THEN THE KEY ALONE: an embedded text edited while every source is held moves the
-# program's key through the records' runs — one named `a|b.txt` too, whose name holds
+# THEN THE KEY ALONE: an embedded text edited while every source is kept moves the
+# program's key through the records' runs — one named `a|b.txt` too, whose name keeps
 # the character a record once spent between runs.
 mkdir -p $R/kw/src/tests
 printf '[package]\nname = "rt-kw"\nversion = "0.1.0"\n' > $R/kw/avra.toml
@@ -2681,13 +2697,13 @@ S "kw: b.txt edited, every source held" kw; kw_says "b.txt edited under held sou
 printf 'p2' > "$R/kw/src/a|b.txt"
 S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held sources" "b=b2 p=p2"
 
-# A COLLECT GATHERS WHAT ITS SCOPE HOLDS NOW, HELD OR NOT. `kg` depends on `@rt/gk`, whose
+# A COLLECT GATHERS WHAT ITS SCOPE KEEPS NOW, HELD OR NOT. `kg` depends on `@rt/gk`, whose
 # c/lib.av collects every `@kind` in its package, in a module of its own; its members stand in files nothing imports, so
 # only the collect reaches them, and the mark they wear is declared in a file of its own, so a
 # member's compile-time run never reads the collecting file. A member is added, removed, a member file added and deleted —
-# each edit touching no file the collect stands in, so lib.av is held — and A's ordinal follows
+# each edit touching no file the collect stands in, so lib.av is kept — and A's ordinal follows
 # every time. The root package's own `in package` collect follows the same edits, and `@rt/kc`'s
-# `in closure` list stands with no package collect beside it. After every step a held reading
+# `in closure` list stands with no package collect beside it. After every step a reading
 # answers what a fresh one does (`judged`), and the evaluator agrees with the binary.
 mkdir -p $R/gk/src/m $R/gk/src/c $R/kc/src/z $R/kg/src/m
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
@@ -2727,7 +2743,7 @@ printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src
 kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
-# a check the first derivation after the gathered set moved: its held reading gathers anew
+# a check the first derivation after the gathered set moved: its reading gathers anew
 printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(3)\nexport type D = {}\n' > $R/gk/src/m/m.av
 judged "kg: a member added, a check first" $R/kg
 kg_step "and built after" "a=1 r=0"
@@ -2747,7 +2763,7 @@ steps=$((steps+1)); rm -rf .avra-cache $R/eo.cold $R/eo.warm; eo_built cold
 steps=$((steps+1)); rm -rf .avra-cache; ./avra check $eo >/dev/null 2>&1; eo_built warm
 if [ -s $R/eo.cold ] && [ -s $R/eo.warm ] && cmp -s $R/eo.cold $R/eo.warm; then [ -n "${VERBOSE:-}" ] && echo "ok    eo: a build after a check is the cold build's bytes"; else fail "eo: $eo built after a check differs from its cold build in $(cmp -l $R/eo.cold $R/eo.warm 2>/dev/null | wc -l | tr -d ' ') bytes (0 means one side did not build)"; fi
 
-echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
-# A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
-[ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
+echo "cache-attacks: $steps builds through one store, $holds cost claims, $fails failed"
+# A RUN THAT NEVER MEASURED A COST ATTACKED NOTHING: every correctness step above is green on a store that keeps nothing.
+[ "$holds" -gt 0 ] || { echo "cache-attacks: no cost claim ran — the attacks examined nothing"; exit 1; }
 [ "$fails" -eq 0 ]
