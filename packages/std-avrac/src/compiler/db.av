@@ -512,7 +512,15 @@ impl Db {
     /// The `Kernel` verbs a `Workspace` calls directly (`self.db.ask(...)`
     /// and its siblings) — forwarded verbatim so every such call site
     /// reads `Db` as if it always answered these itself.
-    fn ask(key: Key) -> KernelVerdict { self.kernel.ask(key) }
+    fn ask(key: Key) -> KernelVerdict {
+        let verdict = self.kernel.ask(key)
+        if self.kernel.tracing.get() {
+            qtrace(
+                "Q\task\t${self.kernel.family_name(key.family)}\t${key.arg}\t${verdict_tag(verdict)}\n",
+            )
+        }
+        verdict
+    }
 
     fn begin(key: Key) { self.kernel.begin(key) }
 
@@ -676,4 +684,9 @@ fn decoded(kind: DbKind, name: string, text: string) -> DbRow? {
             null
         },
     }
+}
+
+/// A verdict by name alone, as the trace spells it.
+fn verdict_tag(v: KernelVerdict) -> string {
+    match v { .Reuse -> "reuse", .Compute -> "compute", .Cycle -> "cycle" }
 }
