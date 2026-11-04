@@ -27,6 +27,7 @@ use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
+use compiler.host.{InputName}
 
 const CLOSURE_OF: string = "closure of "
 
@@ -204,10 +205,15 @@ impl Workspace {
         "${kind_word(name.kind)} ${name.key}"
     }
 
+    /// The input a spelling names, minted when this process has not read it yet: an input is
+    /// the world, read when asked.
     fn input_arg(spelled: string) -> int? {
-        let ws = self
-        self
-            .spelled_ask("input", self.input_names.get().length, (i: int) -> ws.spelled_input(i), spelled)
+        let at = spelled.index_of(" ")
+        if at < 0 { return null }
+        let kind? = input_kind_worded(spelled.substring(0, at)) else { return null }
+        let name = InputName { kind: kind, key: spelled.substring(at + 1, spelled.length) }
+        let _ = self.input(name)
+        self.world_key(name)
     }
 
     /// A family whose answers are keyed by an ask this workspace spells.
