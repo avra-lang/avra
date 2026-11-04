@@ -1152,7 +1152,7 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
 > {
     let kept = r.text()?
     if kept != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
-    let places = read_list(r, read_place)?
+    let places = [p for run in read_list(r, read_run)? for p in run]
     let leaves = [db.leaf_at(p) for p in places]
     if leaves.any(it == null) { fail CodecFault.OtherArguments }
     let value = read(r)?
@@ -1166,14 +1166,44 @@ fn distinct_leaves(ls: List<Leaf>) -> List<Leaf> {
     by.values()
 }
 
-/// A leaf's place: its chunk, then its position there — a position, never a count of what follows.
-fn write_place(w: Writer, p: LeafPlace) {
-    w.int(p.chunk)
-    w.int(p.at)
+/// PLACES IN ONE CHUNK, IN A ROW: the chunk once, then each position as its step from the one
+/// before — a chunk's leaves are placed in order, so a step is mostly one octet.
+type PlaceRun = { chunk: int, ats: List<int> }
+
+/// `places` as runs, each its consecutive places in one chunk, in order.
+fn runs_of(places: List<LeafPlace>) -> List<PlaceRun> {
+    mut runs: List<PlaceRun> = []
+    mut chunk = 0
+    mut ats: List<int> = []
+    for p in places {
+        if !ats.is_empty() && p.chunk != chunk {
+            runs.push(PlaceRun { chunk: chunk, ats: ats })
+            ats = []
+        }
+        chunk = p.chunk
+        ats.push(p.at)
+    }
+    if !ats.is_empty() { runs.push(PlaceRun { chunk: chunk, ats: ats }) }
+    runs
 }
 
-fn read_place(r: Reader) -> Result<LeafPlace, CodecFault> {
-    LeafPlace { chunk: r.int()?, at: r.int()? }
+/// A run: its chunk, its count, then each position's step from the one before (from zero).
+fn write_run(w: Writer, run: PlaceRun) {
+    w.int(run.chunk)
+    w.count(run.ats.length)
+    for i, at in run.ats { w.int(at - if i == 0 { 0 } else { run.ats[i - 1] }) }
+}
+
+fn read_run(r: Reader) -> Result<List<LeafPlace>, CodecFault> {
+    let chunk = r.int()?
+    let n = r.count()?
+    mut at = 0
+    mut out: List<LeafPlace> = []
+    for _i in 0..n {
+        at = at + r.int()?
+        out.push(LeafPlace { chunk: chunk, at: at })
+    }
+    out
 }
 
 fn write_leaf(w: Writer, l: Leaf) {
@@ -1484,7 +1514,7 @@ impl AnswersUnder<V> {
                 done.value,
                 (w, v) -> {
                     w.text(db.saved_spelling(spelled))
-                    written_list(w, places, write_place)
+                    written_list(w, runs_of(places), write_run)
                     record.write(w, v)
                 },
             ) else {
