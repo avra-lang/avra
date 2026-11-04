@@ -972,10 +972,10 @@ fn placement_of(ws: Workspace, d: DeclId) -> int {
     fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
 }
 
-/// A module's names bound once. A re-entry before it settles is a smaller view.
+/// A module's names bound once, kept past the process. A re-entry before it settles is a smaller view.
 @query
 @recursive
-fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
+export fn module_names(ws: Workspace, m: ModuleId) -> ModuleNames { ws.names_made(m) }
 
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
@@ -1976,26 +1976,13 @@ impl Workspace {
     /// against that file's visible namespace, which asks this same
     /// module's names back — a re-entry is a SMALLER view (the binder
     /// alone, no signature work waits on it), never a trap.
-    fn namespace(m: ModuleId) -> ModuleNames {
-        let _ = module_names_made(self, m)
-        self.names_rows.at(m.index)!
-    }
+    fn namespace(m: ModuleId) -> ModuleNames { module_names(self, m) }
 
-    /// A module's names, made and kept beside the cell; the word is what they say.
-    fn names_made(m: ModuleId) -> int {
+    /// A module's names, bound from its files' declarations.
+    fn names_made(m: ModuleId) -> ModuleNames {
         let paths = self.met_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
-        let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        let ids = self.decls.ids()
-        self.names_rows.keep(m.index, names)
-        fp(
-            3,
-            [
-                fp_list([ids.of_decl(d.index) for d in names.bound]),
-                fp_list([ids.of_decl(d.index) for d in names.apart]),
-                names.clashes.length,
-            ],
-        )
+        self.decls.module_names(ordered, (path: string) -> self.shown(path))
     }
 
     /// What a file's top level sees: its module's names, then its
@@ -2152,8 +2139,9 @@ impl Workspace {
     /// prefilter that keeps the two-tier second look off the common
     /// path: a file with no generator never demands `expanded` (and
     /// never re-enters the namespace from inside a resolve).
-    fn has_declares(f: FileId) -> bool {
-        let p = self.parsed(f)
+    fn has_declares(f: FileId) -> bool { self.declares_in(self.parsed(f)) }
+
+    fn declares_in(p: Parsed) -> bool {
         declaring_stmts(p)
             .any(
                 (s: StmtId) -> !p.store.annotations_of(s).is_empty() ||
@@ -2173,10 +2161,9 @@ impl Workspace {
     /// annotation still walks the expansion, because that is where
     /// every mark is held to a reader, and such a file is about to be
     /// refused anyway: nothing claims its marks.
-    fn has_marks(f: FileId) -> bool {
-        let p = self.parsed(f)
-        declaring_stmts(p).any((s: StmtId) -> !p.store.marks_written(s).is_empty())
-    }
+    fn has_marks(f: FileId) -> bool { self.marks_in(self.parsed(f)) }
+
+    fn marks_in(p: Parsed) -> bool { declaring_stmts(p).any((s: StmtId) -> !p.store.marks_written(s).is_empty()) }
 
     /// The declarations a type's method table gathers from: its own members and every impl
     /// block aimed at it.

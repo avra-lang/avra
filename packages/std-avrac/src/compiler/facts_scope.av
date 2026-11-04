@@ -1,7 +1,7 @@
 //! THE SCOPE A COMPILER VALUE CROSSES UNDER — a declaration, a type and a file by their
 //! durable names, an expression and a statement by their offset from the window it was made
 //! over, and a place in a text as the token place it stands in.
-use core.{DeclId, TypeId, FileId}
+use core.{DeclId, TypeId, FileId, ModuleId}
 use compiler.{Workspace}
 use @std.text.{parse_int}
 use @std.relation.stable.{Scope}
@@ -16,7 +16,7 @@ export enum IdKind {
     File
     Expr
     Stmt
-    /// A module id, which no scope names: a call keyed by one stays in the process.
+    /// A module id, by its dotted name.
     Module
 }
 
@@ -56,7 +56,7 @@ impl Scope for FactsScope {
             .File -> tree_saved(self.ws.file_ref(FileId { index: index })),
             .Expr -> if self.windowed { "${index - self.expr_base}" } else { "" },
             .Stmt -> if self.windowed { "${index - self.stmt_base}" } else { "" },
-            .Module -> "",
+            .Module -> module_shown(self.ws.decls.module_name(ModuleId { index: index })),
         }
     }
 
@@ -84,7 +84,7 @@ impl Scope for FactsScope {
             .File -> self.ws.decls.known_file_id(tree_unsaved(text))?.index,
             .Expr -> counted_from(text, self.expr_base),
             .Stmt -> counted_from(text, self.stmt_base),
-            .Module -> null,
+            .Module -> self.ws.decls.module_id(module_named(text)).index,
         }
     }
 }

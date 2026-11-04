@@ -1,0 +1,65 @@
+// A FILE'S RESOLVE DIAGNOSTICS STAND ON THE SOURCES THEY READ NAMES FROM. A second process over
+// the same store restores them without resolving the file, after an edit in a module it does not
+// import, and what it restores is what a fresh resolve says.
+use @std.avrac.testing.{test_workspace}
+use @std.time.{now_ns}
+use compiler.{Workspace, resolve_said}
+use compiler.families.{Family}
+use compiler.host.{memory_host}
+use compiler.store.{Store, store_at}
+
+const RS_MAIN: string = "/w/src/main.av"
+
+fn rs_files(elsewhere: string) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        RS_MAIN: "fn f() -> int {\n    missing_name()\n}\n",
+        "/w/src/lib/b.av": elsewhere,
+    }
+}
+
+/// A fresh process over `files`, its store the one attached.
+fn rs_process(files: Map<string, string>, store: Store) -> Workspace {
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.attach_store(store)
+    ws
+}
+
+/// What a process over `files` says of the main file's resolve.
+fn rs_said(files: Map<string, string>, store: Store) -> string {
+    let ws = rs_process(files, store)
+    [d.message for d in resolve_said(ws, ws.file_id(RS_MAIN))].join("\n")
+}
+
+/// Whether a process over `files` resolves the main file to say it.
+fn rs_resolves(files: Map<string, string>, store: Store) -> bool {
+    let ws = rs_process(files, store)
+    let f = ws.file_id(RS_MAIN)
+    let _ = resolve_said(ws, f)
+    ws.relation(Family.Resolved).values.entry(f.index) is .Present
+}
+
+fn rs_store(name: string) -> Store { store_at("/tmp/avra-resolve-said-test/${now_ns()}/${name}") }
+
+fn rs_before() -> Map<string, string> { rs_files("export fn g() -> int { 2 }\n") }
+
+fn rs_after() -> Map<string, string> { rs_files("export fn g() -> int { 3 }\n") }
+
+spec "compiler/resolve_said — a file's resolve diagnostics restore without a resolve" {
+    given "a file naming nothing, said once, then an unrelated module edited" {
+        then "the first process resolves it and says something" {
+            !rs_said(rs_before(), rs_store("first")).is_empty() &&
+                rs_resolves(rs_before(), rs_store("first-resolve"))
+        }
+        then "a second process restores it without resolving" {
+            let s = rs_store("restore")
+            let _ = rs_said(rs_before(), s)
+            !rs_resolves(rs_after(), s)
+        }
+        then "what it restores is what a fresh process says" {
+            let s = rs_store("equal")
+            let _ = rs_said(rs_before(), s)
+            rs_said(rs_after(), s) == rs_said(rs_after(), rs_store("fresh"))
+        }
+    }
+}

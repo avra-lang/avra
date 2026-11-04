@@ -1,0 +1,44 @@
+//! WHAT A FILE'S RESOLVE SAID, as one saved answer: its resolution diagnostics, standing on the
+//! sources of the files a resolve reads names from.
+use core.{FileId, touch, module_path}
+use features.{NameFacts}
+use compiler.families.{Family}
+use @std.relation.{query}
+use diagnostics.{Diag}
+
+/// A file's resolve diagnostics. Its recorded reads are its source, its module's names and the
+/// sources of the files it imports from; the resolution they come from is read unrecorded where
+/// this process holds it, since the voices are a pure fn of those, placed by file offsets. A file
+/// that generates declarations resolves through expansions that stand in the process only, so
+/// its answer is told and not kept.
+@query
+export fn resolve_said(ws: Workspace, f: FileId) -> List<Diag> { ws.resolve_voices(f) }
+
+impl Workspace {
+    fn resolve_voices(f: FileId) -> List<Diag> {
+        let p = self.parse_unrecorded(f)
+        if self.declares_in(p) || self.marks_in(p) { self.query_db().unkept() }
+        touch(source_of(self, f))
+        touch(module_names(self, self.decls.file(f).module_id))
+        for g in self.resolve_reads(f, p) { touch(source_of(self, g)) }
+        self.resolved_unrecorded(f).voices.list
+    }
+
+    /// The files whose text a resolve of `f` reads names from: its module's, then each imported
+    /// module's, in listing order.
+    fn resolve_reads(f: FileId, p: Parsed) -> List<FileId> {
+        let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
+        let imported = [self.canonical(qualified(module_path(u.path), from)) for u in use_lines(p)]
+        [self.file_id(path) for m in [self.module_path_of(self.decls.file(f).path)].concat(imported) for path in self.module_files(m)]
+    }
+
+    /// A file's resolution, read unrecorded where this process already holds it: an open
+    /// resolve, or one never made, is asked.
+    fn resolved_unrecorded(f: FileId) -> NameFacts {
+        if self.relation(Family.Resolved).open(f.index) { return self.resolved(f) }
+        match self.relation(Family.Resolved).values.entry(f.index) {
+            .Present(r) -> resolved_of(r),
+            .Missing -> self.resolved(f),
+        }
+    }
+}
