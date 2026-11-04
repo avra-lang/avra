@@ -129,13 +129,7 @@ impl Workspace {
         let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
         let calls = [self.program_call(path, told_from) for path in programs]
         let began = self.clock()
-        let d = self
-            .evaluated(
-                store,
-                owed,
-                told_from,
-                (met: Derived) -> link_owes(met, suite_module(met, only, calls), tools),
-            )?
+        let d = self.evaluated(store, owed, told_from)?
         eprintln(
             "proofs: ${owed.length} of ${programs.length} programs owed, evaluated in ${(self.clock() - began) / 1000000} ms",
         )
@@ -189,13 +183,8 @@ impl Workspace {
     /// each run and held to its text — and remembered, so an unmoved program is
     /// not run again. A quarrel under a hold is asked again of the sources: a
     /// held body the record did not foresee is no verdict on the program.
-    /// `owes` is the link's own whole question, asked here so no derivation is
-    /// made again at the link.
-    fn evaluated(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Derived,
-        string,
-    > {
-        match self.heard(store, owed, told_from, owes)? {
+    fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+        match self.heard(store, owed, told_from)? {
             .Agreed(d) -> .Ok(d),
             .Quarrelled -> self.heard_whole(store, owed, told_from),
         }
@@ -204,14 +193,10 @@ impl Workspace {
     /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: agreed with, or — quarrelling
     /// under a hold — let go, so the sources' own derivation never stands beside
     /// it. A quarrel with nothing held is the program's.
-    fn heard(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Hearing,
-        string,
-    > {
+    fn heard(store: Store, owed: List<string>, told_from: string) -> Result<Hearing, string> {
         let reach = [ReadFile { path: path, why: Reads.Reached } for path in flatten([self.seen_files(store, path) for path in owed])]
         // the evaluator runs bodies, an instantiation's among them
-        let d = self
-            .derived_owing(null, Want.Binary, reach, (met: Derived) -> !owed.is_empty() || owes(met))?
+        let d = self.derived_reading(null, Want.Binary, reach)?
         let first = d.program.ws.quarrels(d, owed, told_from)
         if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed)) }
         fail joined(first, "\n")

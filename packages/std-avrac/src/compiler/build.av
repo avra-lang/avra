@@ -476,15 +476,7 @@ impl Workspace {
         let keyed = Keyed { named: entry, beside: [] }
         let kept = self.kept_linked(keyed, binary, tools)
         if kept != null { return .Ok(kept!) }
-        let d = diagnosed(
-            self
-                .derived_owing(
-                    entry,
-                    Want.Binary,
-                    [],
-                    (met: Derived) -> link_owes(met, runner_module(self.file_name(entry)), tools),
-                ),
-        )?
+        let d = diagnosed(self.derived_reading(entry, Want.Binary, []))?
         let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
         if main.view.stmts.is_empty() { fail BuildError.Empty }
         let _ = make_dirs(dir_of(binary))
@@ -611,36 +603,17 @@ impl Workspace {
     /// A file's text as one digest, through its Text input.
     fn text_digest(path: string) -> string { text_digest_of(self, path) }
 
-    /// Whether a body's home cannot emit it: the home is held, so its object
-    /// is the store's.
-    fn homed_in_held(bd: Body) -> bool {
-        let home? = home_of(bd) else { return false }
-        false
-    }
-
-    /// The derivation as a build links it: a held fn as a declaration alone, and
-    /// what ROAMS — an instantiation no file owns, a body whose held home cannot
-    /// emit it — owned by no file and weak, in name order, so the program's
-    /// module has the same bytes whatever order the walk met them in.
-    fn homed(lo: Lowered, m: ProgramModule, main: ProgramMain, unlowered: List<Wanted>) -> Lowered {
-        let roams = [bd for bd in lo.fns if home_of(bd) == null || self.homed_in_held(bd)]
+    /// The derivation as a build links it: what ROAMS — an instantiation no file
+    /// owns — owned by no file and weak, in name order, so the program's module has
+    /// the same bytes whatever order the walk met them in.
+    fn homed(lo: Lowered, m: ProgramModule, main: ProgramMain) -> Lowered {
+        let roams = [bd for bd in lo.fns if home_of(bd) == null]
         mut by_name: Map<string, Body> = {}
-        // with instantiations owed, the program's module is the STORE's: what roams
-        // here is already in it, and stands as a declaration alone
-        for bd in roams {
-            by_name
-                .set(
-                    bd.name,
-                    if unlowered.is_empty() { bd with { file: null, weak: true } } else { bd with { file: null, weak: true, ins: [], reg_types: [] } },
-                )
-        }
+        for bd in roams { by_name.set(bd.name, bd with { file: null, weak: true }) }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
-        let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
-        // a symbol is one body: a held stub stands only where nothing lowered the symbol
-        let stand = undeclared(owed, lo.fns)
-            .concat(stay)
+        let stand = stay
             .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
-        // a held module nobody read is never minted, so nothing else declares its cases
+        // a module nobody read is never minted, so nothing else declares its cases
         let brought = [main.case_stub(c.call, self.file_id(c.path)) for c in m.cases]
         lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand) }
     }
@@ -668,23 +641,15 @@ impl Workspace {
         BuildError,
     > {
         let main = m.main(d.lowered.types)
-        let asked = program_asked_key(d, main, tools)
-        // instantiations nobody lowered are owed, unless a build of these very asks kept them
-        if !d.unlowered.is_empty() && !d.store.has(Stored.Unit, buckets_key(asked)) {
-            let whole = diagnosed(self.whole(d, []))?
-            return whole.linked(m, under, binary, tools)
-        }
         mut clock = self.marking()
-        let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
+        let full = closed(self.homed(d.lowered, m, main))?
         if tools.target != "" {
             let missing = unsupported_on_wasm(d.program.reached())
             if !missing.is_empty() { fail BuildError.UnsupportedOnWasm(missing) }
         }
-        let programs = self.program_objects(d, full, asked, tools)?
+        let programs = self.program_objects(full, tools)?
         let read = [self.object_of(full, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat(programs), tools)?
-        // the program's buckets stand under what they are a function of, too
-        if d.unlowered.is_empty() { let _ = d.store.keep_once(Stored.Unit, buckets_key(asked), buckets_text(programs)) }
         clock.mark("emit")
         clock.mark("place")
         let absent = self.absent_objects(tools.target)
@@ -808,16 +773,8 @@ impl Workspace {
     /// that moves no instantiation compiles nothing — and by what it is a function
     /// of when it was not. The `.o` is named by its key, as `object_of`'s is; the
     /// `.bc` a key is computed from has no key yet, so its scratch name is call-unique.
-    fn program_objects(d: Derived, full: Lowered, asked: string, tools: Toolchain) -> Result<
-        List<Made>,
-        BuildError,
-    > {
+    fn program_objects(full: Lowered, tools: Toolchain) -> Result<List<Made>, BuildError> {
         let _ = make_dirs(joined_path(build_cache_root(self), "obj"))
-        if !d.unlowered.is_empty() {
-            return .Ok(
-                [self.bucket_made(k.index, k.key) for k in buckets_of(d.store.get(Stored.Unit, buckets_key(asked)) ?? "")],
-            )
-        }
         if traced() {
             for b in full.fns {
                 if home_of(b) == null { qtrace("Q\tplaced\t${b.name}\t${program_bucket(b, PROGRAM_BUCKETS)}\n") }
@@ -854,12 +811,8 @@ impl Workspace {
         BuildError,
     > {
         let owed = [o for o in objects if !d.store.has(Stored.Obj, o.key)]
-        let gone = owed.find((o: Made) -> in_bucket(o.which))
-        if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
         if traced() {
-            qtrace(
-                "Q\tobjects\t${owed.length}\t${objects.length}\t${owed.filter((o: Made) -> in_bucket(o.which)).length}\t${objects.filter((o: Made) -> in_bucket(o.which)).length}\n",
-            )
+            qtrace("Q\tobjects\t${owed.length}\t${objects.length}\n")
         }
         let broke = handed(full, owed, opt_level(tools.opt), tools.target)
         let unwritten = objects_made()
@@ -874,13 +827,6 @@ fn runner_module(named: string) -> ProgramModule {
     ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(named)) }
 }
 
-/// WHETHER A LINK OWES THE INSTANTIATIONS A DERIVATION LEFT UNLOWERED: no build
-/// of these very asks kept the program's module. Asked where the derivation is
-/// made, so the one that owes is let go before the whole one begins.
-fn link_owes(d: Derived, m: ProgramModule, tools: Toolchain) -> bool {
-    !d.store.has(Stored.Unit, buckets_key(program_asked_key(d, m.main(d.lowered.types), tools)))
-}
-
 /// How many modules the program's own bodies are split into: an edit that moves a few
 /// instantiations compiles the few buckets they fall in, on every worker. More buckets cost
 /// every module a scan of the program (cli one-edit emit at 16 / 64 / 256: 1.6-2.0 / 1.8-2.2 / 2.6-3.4 s).
@@ -892,44 +838,6 @@ fn occupied_buckets(full: Lowered) -> List<int> {
         ["${program_bucket(b, PROGRAM_BUCKETS)}" for b in full.fns if home_of(b) == null],
     )
     [i for i in 0..PROGRAM_BUCKETS if i == 0 || used.contains("${i}")]
-}
-
-/// Where the buckets a program's asks were built as are listed.
-fn buckets_key(asked: string) -> string { node_key(Stored.Unit, ["program-buckets", asked]) }
-
-/// The list as the store keeps it: a line per bucket, its index and its object's key.
-fn buckets_text(made: List<Made>) -> string { joined([bucket_line(o) for o in made], "\n") }
-
-fn bucket_line(o: Made) -> string {
-    match o.which { .Bucket(i, _) -> "${i}\t${o.key}", .Whole or .File(_) or .Program -> "" }
-}
-
-/// A kept list back as (index, key) pairs.
-fn buckets_of(raw: string) -> List<BucketKey> {
-    [BucketKey { index: parse_int(l.split("\t")[0]) ?? 0, key: l.split("\t")[1] } for l in raw.split("\n") if l.contains("\t")]
-}
-
-type BucketKey = { index: int, key: string }
-
-fn in_bucket(which: Owned) -> bool {
-    match which { .Bucket(_, _) -> true, .Whole or .File(_) or .Program -> false }
-}
-
-/// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, and
-/// what compiles it.
-fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string {
-    node_key(
-        Stored.Obj,
-        [
-            "program",
-            d.asked,
-            "${fp_list([i.fingerprint() for i in main.body.ins])}",
-            joined(d.lowered.code_hashes, "\n"),
-            tools.opt,
-            tools.runtime,
-            tools.mode(),
-        ],
-    )
 }
 
 /// THE EXTERNS NOTHING HERE ANSWERS: no runtime row, no package's

@@ -1,9 +1,10 @@
-// A UNIT'S LOWERING STANDS ON WHAT IT READ. A second process over the same store restores a
-// fn's unit without lowering it after a sibling file's edit, and lowers it again when only a
-// const it reads changed its value.
+// A UNIT'S LOWERING STANDS ON WHAT IT READ, and its code is named by durable name, so two
+// processes over one store answer one digest. A sibling file's edit moves nothing; a const
+// the body READS moving moves the unit.
 use @std.avrac.testing.{test_workspace}
 use @std.time.{now_ns}
 use compiler.{Workspace, lowered_unit_of}
+use compiler.lower.{code_facts}
 use compiler.host.{memory_host}
 use compiler.store.{Store, store_at}
 use features.{Wanted}
@@ -30,33 +31,31 @@ fn uf_want(ws: Workspace) -> Wanted {
     ws.decls.plain_want([x.id for x in ws.decls.all_decls() if x.name == "f"][0])
 }
 
-/// Whether a process over `files` WRITES rows lowering `f`'s unit — a restored unit writes none.
-/// The declaration is signed first, so what stands measured is the unit's own lowering.
-fn uf_lowers(files: Map<string, string>, store: Store) -> bool {
+/// A process over `files` runs `f`'s unit and answers its CODE, digested by durable name.
+fn uf_unit(files: Map<string, string>, store: Store) -> int {
     let ws = uf_process(files, store)
-    let w = uf_want(ws)
-    let _ = ws.sig(w.decl!)
-    let before = ws.decls.rows_db.get().written.get()
-    let _ = lowered_unit_of(ws, w)
-    ws.decls.rows_db.get().written.get() > before
+    let u = lowered_unit_of(ws, uf_want(ws))
+    code_facts(ws.decls, u.bodies, u.statics, []).fingerprint()
 }
 
 fn uf_store(name: string) -> Store { store_at("/tmp/avra-unit-facts-test/${now_ns()}/${name}") }
 
-spec "compiler/lowered_unit — a unit restores while what it read stands" {
+spec "compiler/lowered_unit — a unit stands on what it read" {
     given "a fn reading a const, said once" {
-        then "the first process lowers it" {
-            uf_lowers(uf_files(1, 2), uf_store("first"))
+        then "a second process over the same files answers one unit" {
+            let s = uf_store("same")
+            let before = uf_unit(uf_files(1, 2), s)
+            uf_unit(uf_files(1, 2), s) == before
         }
-        then "a process after a sibling edit restores it without lowering" {
+        then "a process after a sibling edit answers the unit it answered before" {
             let s = uf_store("sibling")
-            let _ = uf_lowers(uf_files(1, 2), s)
-            !uf_lowers(uf_files(1, 3), s)
+            let before = uf_unit(uf_files(1, 2), s)
+            uf_unit(uf_files(1, 3), s) == before
         }
-        then "a process after the const's value changed lowers it again" {
+        then "a process after the const's value changed answers a different unit" {
             let s = uf_store("const")
-            let _ = uf_lowers(uf_files(1, 2), s)
-            uf_lowers(uf_files(5, 2), s)
+            let before = uf_unit(uf_files(1, 2), s)
+            uf_unit(uf_files(5, 2), s) != before
         }
     }
 }
