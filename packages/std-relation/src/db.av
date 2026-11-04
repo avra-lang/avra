@@ -1183,15 +1183,7 @@ fn open_hash<R>(s: Slot<R>) -> int {
 
 /// One `@query`'s or `@input`'s answers under every Db, by the Db's id: `name` keeps them past
 /// the process, `word` names their family in the kernel's counts and traces.
-export type Answers<V> = {
-    held: Cell<List<AnswersUnder<V>?>>,
-    name: string,
-    word: string,
-    dense: bool,
-    lasting: bool,
-    /// The type the calls are keyed by, as the query's declaration spells it; "" for none.
-    seat: string = "",
-}
+export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>>, name: string, word: string, dense: bool, lasting: bool }
 
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
@@ -1230,18 +1222,9 @@ export fn named_spelling(s: string) -> string? { if s.is_empty() { null } else {
 
 export type DenseNames = { spell: fn(int) -> string?, number: fn(string) -> int?, ask: fn(int) -> void }
 
-export fn answers<V>(name: string, word: string, dense: bool, lasting: bool, seat: string) -> Answers<
-    V,
-> {
+export fn answers<V>(name: string, word: string, dense: bool, lasting: bool) -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
-    Answers {
-        held: Cell.new(none),
-        name: name,
-        word: word,
-        dense: dense,
-        lasting: lasting,
-        seat: seat,
-    }
+    Answers { held: Cell.new(none), name: name, word: word, dense: dense, lasting: lasting }
 }
 
 impl Answers<V> {
@@ -1261,7 +1244,6 @@ impl Answers<V> {
         let kernel = db.engine()
         let family = kernel.family()
         kernel.named(family, self.word)
-        if !self.seat.is_empty() { kernel.keyed(family, self.seat) }
         kernel.set_verify(family, (arg: int) -> reasked(slots.get()[id], arg))
         let made: AnswersUnder<V> = held_in(kernel, family, db.cap.get(), self.dense)
         self.placed(db, made with { lasting: self.lasting })
