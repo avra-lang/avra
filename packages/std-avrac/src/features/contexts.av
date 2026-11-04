@@ -403,12 +403,22 @@ export fn type_name_decl(sh: Type) -> DeclId? {
 /// `for` loop's own `int` counter) asks the registry's lookup door
 /// instead; a miss there is the honest absence, not a reason to grow
 /// the registry from a read.
+/// A CONST'S TYPE AS THE FACTS IN HAND KNOW IT: this body's own record, else
+/// the program's answer — the ONE projection a reader of a const shares, so a
+/// reader holding facts answers after the workspace's hooks are let go.
+export fn type_of_const_in(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
+    facts.const_type(s) ?? view.decls.type_of_const(view.file, s)
+}
+
 export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
     // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
     // body's facts hold only its own range — so a const's type is
-    // the program's answer or the HOLE. Falling through would index
-    // the asker's table with another body's expression (-1).
-    if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return view.decls.type_of_const(view.file, s) }
+    // this body's own record, else the program's answer or the HOLE.
+    // Falling through would index the asker's table with another
+    // body's expression (-1).
+    if view.store.const_value(s) != null || view.store.collect_parts(s) != null {
+        return type_of_const_in(facts, view, s)
+    }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared }
     let v? = view.store.stmt_value(s) else { return null }
@@ -426,9 +436,6 @@ impl Decls {
     /// off a literal, else the program's answer through the const-type
     /// query.
     fn const_answer(f: FileId, s: StmtId) -> ConstType {
-        // A held declaration has no parsed store. Its type crossed the interface.
-        let kept: TypeId? = self.held_const_type(f, s)
-        if kept != null { return ConstType.Known(kept!) }
         let literal: TypeId? = settled_type(self.store_of(f), self.types, s)
         if literal != null { return ConstType.Known(literal!) }
         self.const_type(f, s)
@@ -441,7 +448,7 @@ impl Decls {
 }
 
 /// A literal const's type can be read without asking the workspace.
-/// Computed and nominal types fall through to the ConstTyped family.
+/// Computed and nominal types fall through to the const-type query.
 fn settled_type(store: SyntaxArena, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v? = store.const_value(s) else { return null }
     let word? = literal_shape(store.valued(v)) else { return spelled_type(types, store.binding_ty(s)) }
