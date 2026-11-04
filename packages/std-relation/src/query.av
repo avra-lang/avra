@@ -163,7 +163,7 @@ fn known_door(f: Fn) -> List<Directive> {
     let source = if is_db(first.kind) {
         quote {
             @query_known_db
-            fn ${door}(..${seat}) {
+            export fn ${door}(..${seat}) {
                 let held = ${kept_name(f)}().under(${db_code(f)})
                 ${asks}
             }
@@ -171,7 +171,7 @@ fn known_door(f: Fn) -> List<Directive> {
     } else {
         quote {
             @query_known
-            fn ${door}(..${seat}) {
+            export fn ${door}(..${seat}) {
                 let held = ${kept_name(f)}().under(${db_code(f)})
                 ${asks}
             }
@@ -525,7 +525,7 @@ fn is_list(k: Kind) -> bool { match k { .List(_) -> true, rest -> false } }
 fn key_door(f: Fn) -> Decls {
     let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
     quote {
-        fn ${key_name(f)}(..${seats}) -> Key {
+        export fn ${key_name(f)}(..${seats}) -> Key {
             let held = ${kept_name(f)}().under(${db_code(f)})
 ${scope_bound(f)}
             ${named_by(f)}
@@ -547,7 +547,7 @@ fn held_door(f: Fn) -> List<Directive> {
             name: "${f.name}_held",
             at: f.at,
             source: quote {
-                fn ${"${f.name}_held"}(..${seats}) -> ${f.answer}? {
+                export fn ${"${f.name}_held"}(..${seats}) -> ${f.answer}? {
                     let held = ${kept_name(f)}().under(${db_code(f)})
 ${scope_bound(f)}
                     held.peeked(${arg_code(f)})
@@ -562,7 +562,7 @@ ${scope_bound(f)}
 fn dropped_door(f: Fn) -> Decls {
     let first = f.params[0]
     quote {
-        fn ${"${f.name}_dropped"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }]}) {
+        export fn ${"${f.name}_dropped"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }]}) {
             ${kept_name(f)}().under(${db_code(f)}).dropped()
         }
     }
@@ -586,7 +586,7 @@ fn seat_door(f: Fn) -> List<Directive> {
             name: "${f.name}_seat_of",
             at: f.at,
             source: quote {
-                fn ${"${f.name}_seat_of"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }, quote { fn _(k: Key) {} }]}) -> ${seat.ty}? {
+                export fn ${"${f.name}_seat_of"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }, quote { fn _(k: Key) {} }]}) -> ${seat.ty}? {
                     let seat: fn(int) -> ${seat.ty} = (n: int) -> ${made}
                     let found? = ${kept_name(f)}().under(${db_code(f)}).number_of(k) else { return null }
                     seat(found)
