@@ -2,7 +2,7 @@
 //! findings as facts — never rendered. The print renders them, through the one renderer.
 use core.{flatten, FileId}
 use @std.relation.{query, codec}
-use diagnostics.{new_source_file}
+use diagnostics.{Diag, new_source_file, by_position}
 use compiler.findings.{finding_at}
 
 /// A file's saying: its cases and its facts.
@@ -16,11 +16,27 @@ fn file_said(ws: Workspace, f: FileId) -> FileSaid { ws.saying(f) }
 impl Workspace {
     fn saying(f: FileId) -> FileSaid {
         let a = self.analysis(f)
-        let found = rule_findings(analysed(a), a.view.stmts)
         FileSaid {
             cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(f)],
-            facts: FileFacts { warnings: [d for d in a.diagnostics if is_warning(d)], rules: found },
+            facts: FileFacts {
+                warnings: [d for d in self.file_voices(f) if is_warning(d)],
+                rules: rule_findings(analysed(a), a.view.stmts),
+            },
         }
+    }
+
+    /// A file's diagnostics in pipeline order, each pass's from its own answer: its parse, its
+    /// names, its signatures, its methods, and its bodies by position.
+    fn file_voices(f: FileId) -> List<Diag> {
+        flatten(
+            [
+                parse_said(self, f),
+                self.resolved(f).voices.list,
+                sig_said(self, f),
+                method_clashes(self, f),
+                by_position(flatten([self.typed(d).voices.list for d in self.bodies_of(f)])),
+            ],
+        )
     }
 
     /// What a file said under `want`, rendered over its texts now: under a diagnostics want
