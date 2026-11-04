@@ -1,19 +1,31 @@
 //! WHAT A FILE SAID, as one answer: the cases it declares, and its warnings and rule
 //! findings as facts — never rendered. The print renders them, through the one renderer.
-use core.{flatten, FileId}
+use core.{flatten, FileId, touch}
 use @std.relation.{query, codec}
-use diagnostics.{new_source_file}
+use diagnostics.{Diag, new_source_file}
 use compiler.findings.{finding_at}
 
 /// A file's saying: its cases and its facts.
 @codec
 export type FileSaid = { cases: List<CaseCall>, facts: FileFacts }
 
+/// A file's parse diagnostics. Its recorded reads are its source and the block words it parses
+/// under; the parse they come from is read unrecorded, since a parse's voices are a pure fn of
+/// those two, placed by file offsets and never by arena ids.
+@query
+export fn parse_said(ws: Workspace, f: FileId) -> List<Diag> { ws.parse_voices(f) }
+
 /// What a file says: its analysis's warnings and its rule findings, and its cases.
 @query
 fn file_said(ws: Workspace, f: FileId) -> FileSaid { ws.saying(f) }
 
 impl Workspace {
+    fn parse_voices(f: FileId) -> List<Diag> {
+        touch(source_of(self, f))
+        let p = self.parse_unrecorded(f)
+        self.with_import_remedies(p, self.block_words(f, p)).voices.list
+    }
+
     fn saying(f: FileId) -> FileSaid {
         let a = self.analysis(f)
         let found = rule_findings(analysed(a), a.view.stmts)

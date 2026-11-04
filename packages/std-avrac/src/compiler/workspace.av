@@ -2461,6 +2461,16 @@ impl Workspace {
         self.cx_over(x, new_name_facts(0, self.visible(x.file)))
     }
 
+    /// A file's parse, read unrecorded where this process already holds it: an open
+    /// parse, or one never made, is asked.
+    fn parse_unrecorded(f: FileId) -> Parsed {
+        if self.relation(Family.Parsed).open(f.index) { return self.parsed(f) }
+        match self.relation(Family.Parsed).values.entry(f.index) {
+            .Present(r) -> parsed_of(r),
+            .Missing -> self.parsed(f),
+        }
+    }
+
     /// The one context over a declaration's expression range: the view
     /// of its file, the names it reads. Stands on `syntax(x)` — a
     /// declaration's own nodes, the one edge a body owes the file — and
@@ -2468,14 +2478,7 @@ impl Workspace {
     /// an arena range. Reads the file's `parsed` table UNRECORDED, so an
     /// edit elsewhere in the file never retypes this declaration.
     fn cx_over(asked: Decl, names: NameFacts) -> TypeCx {
-        let p = if self.relation(Family.Parsed).open(asked.file.index) {
-            self.parsed(asked.file)
-        } else {
-            match self.relation(Family.Parsed).values.entry(asked.file.index) {
-                .Present(r) -> parsed_of(r),
-                .Missing -> self.parsed(asked.file),
-            }
-        }
+        let p = self.parse_unrecorded(asked.file)
         // A file's module pseudo-declaration owns no statements, so it
         // owes no own-syntax edge.
         if asked.stmt.index < self.decls.store(asked.id).stmts.count() { let _ = self.syntax(asked.id) }

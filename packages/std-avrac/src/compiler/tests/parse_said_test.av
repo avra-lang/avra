@@ -1,0 +1,65 @@
+// A FILE'S PARSE DIAGNOSTICS STAND ON ITS SOURCE AND ITS BLOCK WORDS ALONE. A second process
+// over the same store restores them without parsing the file, after a sibling file's edit, and
+// what it restores is what a fresh parse says.
+use @std.avrac.testing.{test_workspace}
+use @std.time.{now_ns}
+use compiler.{Workspace, parse_said}
+use compiler.families.{Family}
+use compiler.host.{memory_host}
+use compiler.store.{Store, store_at}
+
+const PS_MAIN: string = "/w/src/main.av"
+
+fn ps_files(sibling: string) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        PS_MAIN: "fn f() -> int {\n    1 +\n}\n",
+        "/w/src/b.av": sibling,
+    }
+}
+
+/// A fresh process over `files`, its store the one attached.
+fn ps_process(files: Map<string, string>, store: Store) -> Workspace {
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.attach_store(store)
+    ws
+}
+
+/// What a process over `files` says of the main file's parse.
+fn ps_said(files: Map<string, string>, store: Store) -> string {
+    let ws = ps_process(files, store)
+    [d.message for d in parse_said(ws, ws.file_id(PS_MAIN))].join("\n")
+}
+
+/// Whether a process over `files` parses the main file to say it.
+fn ps_parses(files: Map<string, string>, store: Store) -> bool {
+    let ws = ps_process(files, store)
+    let f = ws.file_id(PS_MAIN)
+    let _ = parse_said(ws, f)
+    ws.relation(Family.Parsed).values.entry(f.index) is .Present
+}
+
+fn ps_store(name: string) -> Store { store_at("/tmp/avra-parse-said-test/${now_ns()}/${name}") }
+
+fn ps_before() -> Map<string, string> { ps_files("export fn g() -> int { 2 }\n") }
+
+fn ps_after() -> Map<string, string> { ps_files("export fn g() -> int { 3 }\n") }
+
+spec "compiler/parse_said — a file's parse diagnostics restore without a parse" {
+    given "a file with a parse error, said once, then a sibling edited" {
+        then "the first process parses it and says something" {
+            let s = ps_store("first")
+            !ps_said(ps_before(), s).is_empty() && ps_parses(ps_before(), ps_store("first-parse"))
+        }
+        then "a second process restores it without parsing" {
+            let s = ps_store("restore")
+            let _ = ps_said(ps_before(), s)
+            !ps_parses(ps_after(), s)
+        }
+        then "what it restores is what a fresh process says" {
+            let s = ps_store("equal")
+            let _ = ps_said(ps_before(), s)
+            ps_said(ps_after(), s) == ps_said(ps_after(), ps_store("fresh"))
+        }
+    }
+}
