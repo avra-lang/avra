@@ -20,13 +20,20 @@ impl Workspace {
     fn parse_voices(f: FileId) -> List<Diag> {
         touch(source_of(self, f))
         touch(block_words_print(self, f))
-        self.parse_unrecorded(f).voices.list
+        self.parse_unheard(f).voices.list
+    }
+
+    /// A file's parse, made or read with no frame hearing it.
+    fn parse_unheard(f: FileId) -> Parsed {
+        let got: Cell<Parsed?> = Cell.new(null)
+        self.db.kernel.unheard(() -> got.set(self.parsed(f)))
+        got.get()!
     }
 
     fn words_print(f: FileId) -> int {
         touch(source_of(self, f))
         let path = self.decls.file(f).path
-        let p = self.parse_unrecorded(f)
+        let p = self.parse_unheard(f)
         let from = self.packages()[self.holder_of_path(path)]
         let providers = flatten(
             [self.provider_files(qualified(module_path(u.path), from)) for u in p.store.built_uses()],
