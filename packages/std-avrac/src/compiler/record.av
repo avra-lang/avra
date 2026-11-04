@@ -772,14 +772,6 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
     load_named(ws, store, m, ws.module_files(m), entry, want, true)
 }
 
-/// THE SAME WALK, NAMES ONLY: every file registered and every module's impl/trait names indexed,
-/// so a by-name ask can answer — but no interface loaded, no file met, nothing held. What an
-/// on-demand load reads the store for before it decides which modules to load for real.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-export fn bare_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want, false)
-}
-
 /// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
 /// each file met once. A `use` may name ONE FILE of a directory module
 /// (`@std.http.frame`) — its record is the directory's, and every file that record
@@ -2177,11 +2169,10 @@ fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool>
         parsed_in.set(m, (parsed_in.get(m) ?? []).concat([a]))
     }
     mut held_in: Map<string, bool> = {}
-    for path in ws.decls.held.get().keys() { held_in.set(ws.module_of(path), true) }
     mut work: List<string> = [prelude_module().text()]
         .concat(
             distinct(
-                [ws.module_of(path) for path in ws.decls.held.get().keys().concat([a.view.source.file for a in p.files]) if ws.holder_of_path(path) == 0],
+                [ws.module_of(path) for path in [a.view.source.file for a in p.files] if ws.holder_of_path(path) == 0],
             ),
         )
     mut at = 0
@@ -2247,44 +2238,7 @@ export fn held_modules(ws: Workspace, store: Store, built: string?) -> List<Modu
 /// interface writes, so no list of modules can disagree with the files actually held.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace in, its held files' paths out.
 export fn held_paths(ws: Workspace) -> List<string> {
-    [ws.decls.file(f).path for f in ws.decls.held_files()]
-}
-
-// ── STUB BODIES FOR HELD FUNCTIONS ──────────────────────────────────
-
-/// A HELD FN, AS A DECLARATION THE EMITTER CAN SEE. A body that is never LOWED into
-/// instructions is still a NAME and a SIGNATURE, and that is exactly what a caller's module
-/// needs: `emit_module` declares what its bodies NAME, so a call to a held function finds a
-/// declaration. IT IS NEVER DEFINED, because the file it belongs to is never emitted — its
-/// machine code comes from the object the store already holds.
-///
-/// WITHOUT THIS A FRESH MODULE THAT CALLS A HELD ONE HAS NOTHING TO DECLARE THE CALL
-/// AGAINST: `main.av` calling `twice` whose module was skipped died in the link, and that
-/// was the one thing between the skip and a sub-second edit.
-///
-/// AND A HELD FILE MAY BE AN IMPORT — the modules `held_modules` walks are the ROOT's,
-/// while `load_interface` holds imported files too — so the stub set is EVERY held file,
-/// never the root's module list.
-// LICENSED compiler.free_state_verb: A STUB — the workspace in, the bodies every held file lets a caller name.
-export fn held_stubs(ws: Workspace) -> List<Body> {
-    mut out: List<Body> = []
-    for d in ws.decls.all_decls() {
-        let stub = if ws.is_held(d.file) { ws.stub_of(d) } else { null }
-        if stub != null { out.push(stub!) }
-    }
-    // a held file's top level is a body of its object too
-    out
-        .concat(
-            [Body {
-                name: program_symbol(ws.file_name(path)),
-                params: [],
-                ret: ws.decls.types.type(int),
-                gives: null,
-                ins: [],
-                reg_types: [],
-                file: ws.file_id(path),
-            } for path in held_paths(ws)],
-        )
+    []
 }
 
 fn gathers_collectorless() -> string {

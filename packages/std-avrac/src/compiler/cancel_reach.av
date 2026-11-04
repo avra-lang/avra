@@ -182,7 +182,7 @@ impl Workspace {
     /// A declaration the pass surveys: a body this compile holds.
     fn cancel_member(d: DeclId) -> bool {
         let x = self.decls.decl(d)
-        !x.external && x.root != null && !self.is_held(x.file) && calls_kind(x.kind)
+        !x.external && x.root != null && calls_kind(x.kind)
     }
 
     /// What a call to a declaration that is no member answers: a
@@ -201,7 +201,6 @@ impl Workspace {
                     spins: false,
                     links: rt_waits(x.name),
                 }
-                self.is_held(x.file) -> self.decls.cancel_bits(g) ?? reaches_all()
                 _ -> reaches_both()
             },
             .Const or .State -> reaches_both(),
@@ -285,7 +284,6 @@ impl Workspace {
         let x = self.decls.decl(d)
         when {
             x.external -> "the runtime row `${x.name}`"
-            self.is_held(x.file) -> interface_says()
             _ -> "a body this compile cannot see"
         }
     }
@@ -313,7 +311,7 @@ impl Workspace {
     fn call_links(g: DeclId) -> bool {
         let x = self.decls.decl(g)
         if x.external { return rt_waits(x.name) }
-        if self.cancel_member(g) || self.is_held(x.file) { return self.decls.cancel_bits(g)?.links ?? false }
+        if self.cancel_member(g) { return self.decls.cancel_bits(g)?.links ?? false }
         false
     }
 
@@ -411,10 +409,6 @@ fn reaches_nothing() -> CancelReach { CancelReach { parks: false, spins: false, 
 /// The answer of a call nothing can see into: it may reach either
 /// way, and is known to reach no row.
 fn reaches_both() -> CancelReach { CancelReach { parks: true, spins: true, links: false } }
-
-/// The answer of a held fn whose record says nothing: it may reach
-/// everything, a row among it.
-fn reaches_all() -> CancelReach { CancelReach { parks: true, spins: true, links: true } }
 
 fn via_member(a: CallAnswer) -> List<DeclId> {
     match a { .Known(_) -> [], .Via(m) -> [m] }

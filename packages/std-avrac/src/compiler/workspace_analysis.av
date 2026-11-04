@@ -243,7 +243,7 @@ impl Workspace {
     /// `Unknown`, which a site never hoists nor writes directly.
     fn decl_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(d))],
             .Fn or .Method or .Default or .Main or .Case -> {
@@ -258,7 +258,7 @@ impl Workspace {
 
     /// A declaration the read-reach fixpoint holds: a body it can walk.
     fn read_member(kind: DeclKind, external: bool, file: FileId, root: ExprId?) -> bool {
-        if external || self.is_held(file) || root == null { return false }
+        if external || root == null { return false }
         match kind { .Fn or .Method or .Default or .Main or .Case -> true, rest -> false }
     }
 
@@ -289,7 +289,7 @@ impl Workspace {
     /// fixpoint.
     fn callee_places(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
             rest -> plain_places(self.read_fixpoint.value_at(g.index)),
@@ -305,7 +305,7 @@ impl Workspace {
     fn structural_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
         let root? = x.root else { return [unknown_key()] }
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         let _ = self.read_reach()
         let names = self.names_of(d)
         let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
@@ -327,7 +327,7 @@ impl Workspace {
     /// structural half.
     fn callee_structural(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
             rest -> structural_places_of_keys(self.read_fixpoint.value_at(g.index)),
@@ -524,7 +524,7 @@ impl Workspace {
     /// Whether a held ask's home is held: its body is the store's.
     fn home_held(h: HeldAsk) -> bool {
         let f? = self.ask_home(h) else { return false }
-        self.is_held(f)
+        false
     }
 
     /// A held ask resolved; one whose declaration no longer resolves sends its asking file to be read.
@@ -608,13 +608,7 @@ impl Workspace {
         let at = "${self.module_path_of(path).text()}\t${path}"
         let known: string? = self.keys.object_keys.get().get(at)
         if known != null { return known! }
-        let kept: string? = if self.is_held(self.file_id(path)) &&
-            self.file_judged(s, path, Stored.Unit, self.okey_row(path)) {
-            s.get(Stored.Unit, self.okey_row(path))
-        } else {
-            null
-        }
-        let found? = kept else { return obj_key_cached(self, s, self.module_path_of(path), path) }
+        let found = obj_key_cached(self, s, self.module_path_of(path), path)
         self.keys.object_keys.put(at, found)
         found
     }
@@ -631,13 +625,6 @@ impl Workspace {
     /// compile-time run reads the body it calls — it answers nothing and NOTES the
     /// file, and the build starts again with that file parsed.
     fn lower_requested(w: Wanted) -> Unit {
-        if self.is_held(w.file) {
-            self
-                .hold
-                .body_asks
-                .set(self.hold.body_asks.get().concat([self.decls.file(w.file).path]))
-            return Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
-        }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (
             f: FileId,
@@ -679,7 +666,7 @@ impl Workspace {
     /// is the RUN's own, remembered under `lift_lowered`, never `lowered`.
     fn lowered_for_eval(id: int) -> Unit {
         let w = self.asks.get()[id]
-        if w.decl == null || !self.is_held(w.file) { return self.lift_lowered(id) }
+        if w.decl == null || true { return self.lift_lowered(id) }
         self.lower_requested(w)
     }
 
@@ -822,8 +809,8 @@ impl Workspace {
             path: path,
             digest: self.text_digest(path),
             ref: self.decl_ref(d),
-            print: if self.is_held(f) { "" } else { "${self.syntax(d!)}" },
-            outline: if self.is_held(f) { "" } else { self.outline(path) },
+            print: "${self.syntax(d!)}",
+            outline: self.outline(path),
         }
     }
 
@@ -966,7 +953,7 @@ impl Workspace {
         // record's own type.
         if d != null && !cyclic {
             let dv = d!
-            if self.is_held(ask.file) { self.decl_row_filled(dv) } else { touch(self.typed(dv)) }
+            touch(self.typed(dv))
         }
         let ty = self.decls.held_const_type(ask.file, s) ?? error
         let _ = self
@@ -1032,7 +1019,7 @@ impl Workspace {
     fn settle_result(ask: SettleAsk) -> Result<Settled, Unsettled> {
         match ask.root {
             .Const(s) -> {
-                if !self.is_held(ask.file) { return self.const_settlement(ask, s) }
+                return self.const_settlement(ask, s)
                 let d? = self.decls.decl_of(ask.file, s) else { return .Err(Unsettled.Trap("a held const names no declaration")) }
                 self.decl_row_filled(d)
                 let v? = self.decls.held_value(d) else {

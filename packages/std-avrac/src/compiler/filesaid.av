@@ -151,19 +151,6 @@ impl Workspace {
         )
     }
 
-    /// A file's kept answer, while every answer it stood on has its digest.
-    fn file_row(store: Store, path: string, family: Stored, key: string) -> string? {
-        // ONE PREDICATE FOR A ROW'S STANDING: a row the suspect set does not name stands with
-        // nothing judged, exactly as `file_kept` answers — only a row it might name is judged
-        // read by read. Asking `get_valid` first judges every read of every held file's row,
-        // for rows that were never in doubt.
-        if store.unsuspected(family, key, self.suspect_rows(store)) && !db_verified_files() {
-            return store.get(family, key)
-        }
-        let k = self.key_parts_cached(store, self.module_path_of(path), path)
-        store.get_valid(family, key, (name) -> self.stood_on(k, name))
-    }
-
     /// Whether a file's kept answer is there and still stands: unsuspected rows stand with
     /// nothing derived, the rest are judged by their reads.
     fn file_kept(store: Store, path: string, family: Stored, key: string) -> bool {
@@ -176,23 +163,6 @@ impl Workspace {
             )
         }
         kept
-    }
-
-    /// WHETHER EVERY ROW THAT STANDS IN FOR A FILE IS PRESENT AND READS NOTHING THAT MOVED. A row
-    /// the suspect set names is JUDGED, never cast out on suspicion alone — suspicion is a module's
-    /// TEXT having moved, not its narrowed interface, so a bystander fn would otherwise read every
-    /// reader of its module. The on-demand load's gate: a file whose rows so stand is never met.
-    fn file_rows_stand(store: Store, path: string, want: Want) -> bool {
-        let suspects = self.suspect_rows(store)
-        let asks_key = self.asks_row(path)
-        let codes_key = self.codes_row(path)
-        let asks = store.unsuspected(Stored.Unit, asks_key, suspects) ||
-            self.file_judged(store, path, Stored.Unit, asks_key)
-        let codes = store.unsuspected(Stored.Unit, codes_key, suspects) ||
-            self.file_judged(store, path, Stored.Unit, codes_key)
-        asks &&
-            codes &&
-            (want is .Diagnostics || store.has(Stored.Obj, self.held_okey(store, path)))
     }
 
     fn file_judged(store: Store, path: string, family: Stored, key: string) -> bool {
@@ -334,12 +304,6 @@ impl Workspace {
         rows
     }
 
-    /// THE FILES THE REVERSE INDEX NAMES: every file with a row that read an input that moved.
-    fn suspect_files(store: Store) -> Map<string, bool> {
-        let _ = self.suspect_rows(store)
-        self.keys.suspects.get().paths
-    }
-
     /// THE HELD SET: the files whose holds a derivation of this program confirmed standing
     /// under this name and want — one line a file, so it is bounded by the program's own
     /// files and rewritten only when the set moves. The name carries no count: a derivation
@@ -369,37 +333,6 @@ impl Workspace {
         let key = self.held_set_key(entry, want)
         if store.get(Stored.Fp, key) == text { return }
         let _ = store.keep(Stored.Fp, key, text, [])
-    }
-
-    /// WHICH FILES A DERIVATION MUST ASK: every file the held set does not confirm standing,
-    /// and every file the reverse index names as having read an input that moved. A file that
-    /// is neither asks nothing and stands untouched.
-    fn holds_asked(store: Store, entry: string?, want: Want) -> Map<string, bool> {
-        let trusted = if want is .Binary { null } else { self.held_set(store, entry, want) }
-        let suspects = self.suspect_files(store)
-        mut asked: Map<string, bool> = {}
-        for fi in self.decls.files_standing() {
-            if trusted?.get(fi.path) == null || suspects.get(fi.path) != null { asked.set(fi.path, true) }
-        }
-        if traced() {
-            qtrace(
-                "Q\tholds\t${asked.keys().length} asked\t${self.decls.files_standing().length} files\n",
-            )
-        }
-        asked
-    }
-
-    /// Whether one file's hold is asked: a file the held set does not confirm standing, or one
-    /// the reverse index names, and whose rows do not stand. A file no one asks stands as it was.
-    fn hold_asks(
-        store: Store,
-        path: string,
-        want: Want,
-        must_read: List<string>,
-        asked: Map<string, bool>,
-    ) -> bool {
-        must_read.contains(path) ||
-            asked.get(path) != null && !self.file_rows_stand(store, path, want)
     }
 
     /// The read a file's module is seen through.

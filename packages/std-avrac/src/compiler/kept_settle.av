@@ -109,24 +109,6 @@ impl Workspace {
     /// Where `d`'s kept verdict lives: its file's path and its name.
     fn kept_settle_key(f: FileId, d: DeclId) -> string { kept_key_for(self.decls.file(f).path, self.decls.decl(d).name) }
 
-    /// The files a read file's runs force read: none when its kept const
-    /// verdicts will answer without running AND account for every run its
-    /// record lists — a run no verdict answers for (a derive's) runs again.
-    fn forced_runs(store: Store, path: string) -> List<string> {
-        let m = self.module_path_of(path)
-        let runs = kept_runs(record_places(self, store, m).get(path))
-        let consts = [parts[5] for parts in file_lines(self, store, m, path) if parts.length > 5 && parts[0] == "const"]
-        let kept = [kept_reads(store, kept_key_for(path, n)) for n in consts]
-        if consts.is_empty() || kept.any(it == null) { return [r.path for r in runs] }
-        let read = flatten([r ?? [] for r in kept])
-        // A run's membership is a question about PATHS: the union is deduped as
-        // paths, so no read's wire is hexed to answer it.
-        let asked = distinct(
-            [p.path for p in read.concat(flatten([self.ran_by(store, p.path) for p in read]))],
-        )
-        if runs.all((r) -> asked.contains(r.path)) { [] } else { [r.path for r in runs] }
-    }
-
     /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE: the run
     /// about to replace it reads the bodies the verdict's run read, so every
     /// held one among them — and what their own runs read — is asked now, and
@@ -157,7 +139,7 @@ impl Workspace {
     /// Whether `path` is a file this attempt holds.
     fn held_path(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
-        self.is_held(f)
+        false
     }
 
     /// The innermost open settlement's lines, its frame closed.
@@ -195,7 +177,7 @@ impl Workspace {
                     path,
                     self.text_digest(path),
                     self.decl_ref(d),
-                    if d == null || self.is_held(w.file) { "" } else { "${self.syntax(d!)}" },
+                    if d == null { "" } else { "${self.syntax(d!)}" },
                     self.unit_shape(u),
                 ],
                 "\t",
@@ -303,7 +285,6 @@ impl Workspace {
     /// The named types a declaration's own expressions carry, read from its typed facts.
     fn note_decl_types(d: DeclId) {
         let x = self.decls.decl(d)
-        if self.is_held(x.file) { return }
         let facts = self.typed(d)
         for e in x.body_exprs() { self.decls.note_named(facts.type_at(e)) }
     }
@@ -353,7 +334,6 @@ impl Workspace {
         if r.length < 7 { return false }
         if self.text_digest(r[1]) == r[2] { return true }
         let d? = self.decl_from_ref(r[3]) else { return false }
-        if self.is_held(self.decls.decl(d).file) { return false }
         if "${self.syntax(d)}" == r[4] { return true }
         if r[6] == "1" { return false }
         let wanted? = self.wanted_list_from_wire(joined(r.slice(7, r.length), "\t")) else { return false }
@@ -427,12 +407,6 @@ impl Workspace {
         rows.all((r: List<string>) -> r[0] != "n" || self.names_stand(r, mods, rows))
     }
 
-    /// Whether a kept row that needs no analysis refuses: a view by its lines, any other by its own.
-    fn row_refuses(store: Store, r: List<string>) -> bool {
-        if r[0] == "v" { return !self.view_stands(store, r) }
-        judged_by_files(r) && !self.kept_row_stands(r)
-    }
-
     /// `seen` and every module it imports, to a fixed point.
     fn import_closure(seen: List<string>) -> List<string> {
         let more = distinct(
@@ -452,7 +426,7 @@ impl Workspace {
     /// Whether `path` is parsed in this build: loaded, and not held.
     fn file_is_read(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
-        !self.is_held(f)
+        true
     }
 
     /// A module's kept line: its files, so a file added or removed moves it.

@@ -188,25 +188,12 @@ impl Workspace {
         if decoded.next == words.length { decoded.id } else { self.decls.types.intern(Type.Error) }
     }
 
-    /// A held file's declarations adopted by their parents, in one pass over its
-    /// lines: the file and its declarations are found ONCE, never per line.
-    fn link_file(path: string, rows: List<List<string>>) {
-        let ids = self.decls.decls_so_far(self.file_id(path))
-        for parts in rows { self.link_row(ids, parts) }
-    }
-
-    fn link_row(ids: List<DeclId>, parts: List<string>) {
-        let row? = read_row(parts) else { return }
-        if row.ordinal < 0 || row.ordinal >= ids.length { return }
-        if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
-    }
-
     /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
     /// file stands once, and its flag stands before the work does, so two files that name
     /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each
     /// declaration from its own row, on the ask that names it.
     fn mint_files(paths: List<string>) {
-        let unread = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
+        let unread: List<string> = []
         if unread.is_empty() { return }
         for path in unread {
             if traced() { qtrace("Q\tmint\t${path}\n") }
@@ -214,23 +201,6 @@ impl Workspace {
         }
         work_module_minted()
         for path in unread { let _ = self.items(self.file_id(path)) }
-    }
-
-    /// AN UNREAD FILE'S ITEMS, minted from the lines its last read kept: its declarations in
-    /// kept order, adopted by their parents. Answers the top-level ids.
-    fn items_minted(f: FileId) -> List<DeclId> {
-        let path = self.decls.file(f).path
-        self.hold.minted.put(path, true)
-        self.decls.note_rows(f, 0)
-        let lines? = self.items_lines(path) else {
-            self.defect("an unread file's items were not kept — ${path}")
-            return []
-        }
-        let rows = [p for p in lines if declares(p)]
-        let top = self.mint_file(path, rows, makers_in(lines, path))
-        self.link_file(path, rows)
-        self.decls.note_rows(f, 2)
-        top
     }
 
     /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the
@@ -387,7 +357,7 @@ impl Workspace {
     /// met has no row, and its record lines carry forward as a held one's do.
     fn read_here(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
-        !self.is_held(f)
+        true
     }
 
     fn record_of(store: Store, m: ModulePath) -> string {
