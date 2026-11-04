@@ -79,7 +79,7 @@ export type Db = {
     closers: Cell<List<fn() -> void>>,
     kernel: Cell<Kernel?>,
     home: Cell<Home>,
-    moves: Cell<Map<string, Cell<Map<string, int>>>>,
+    moves: Cell<Map<string, Cell<List<int>>>>,
     row_families: Cell<List<int>>,
     hears: Cell<fn(string) -> void>,
     durable: Durable,
@@ -102,10 +102,103 @@ export type Db = {
     keys_known: Cell<Map<string, Key>>,
     digests_known: Cell<Map<string, int>>,
     known_at: Cell<int>,
-    /// Each leaf this process placed in a kept chunk, by its identity and digest: where it stands.
-    leaf_places: Cell<Map<string, LeafPlace>>,
-    /// Each leaf chunk this process wrote or read back, by its hash.
-    leaf_chunks: Cell<Map<string, List<Leaf>>>,
+    /// Every leaf this process named, numbered once.
+    leaf_table: LeafTable,
+    /// Each leaf chunk this process wrote or read back, by its hash: its leaves' numbers.
+    leaf_chunks: Cell<Map<string, List<int>>>,
+}
+
+/// THE LEAVES A PROCESS NAMED, NUMBERED: a leaf (its read and its digest) has one number, and
+/// every number one KIN — the read apart from its digest — so a union of what queries stood
+/// on is a walk over numbers, never a map of spelled names. A number's place in a kept chunk
+/// stands beside it once the leaf is kept.
+type LeafTable = {
+    numbers: Cell<Map<string, int>>,
+    leaves: Cell<List<Leaf>>,
+    kin: Cell<List<int>>,
+    kins: Cell<Map<string, int>>,
+    /// The union a kin, and a number, was last taken into: `union` moves on per union.
+    marks: Cell<List<int>>,
+    taken: Cell<List<int>>,
+    union: Cell<int>,
+    chunk_of: Cell<List<int>>,
+    at_of: Cell<List<int>>,
+}
+
+fn leaf_table() -> LeafTable {
+    LeafTable {
+        numbers: map_cell(),
+        leaves: list_cell(),
+        kin: list_cell(),
+        kins: map_cell(),
+        marks: list_cell(),
+        taken: list_cell(),
+        union: Cell.new(0),
+        chunk_of: list_cell(),
+        at_of: list_cell(),
+    }
+}
+
+impl LeafTable {
+    /// `l`'s number, given it the first time it is named.
+    fn number(l: Leaf) -> int {
+        let word = l.kept_word()
+        let known? = self.numbers.get().get(word) else {
+            let n = self.leaves.get().length
+            self.numbers.put(word, n)
+            self.leaves.push(l)
+            self.kin.push(self.kin_of(l.id()))
+            self.taken.push(0 - 1)
+            self.chunk_of.push(0)
+            self.at_of.push(0 - 1)
+            return n
+        }
+        known
+    }
+
+    fn kin_of(id: string) -> int {
+        let known? = self.kins.get().get(id) else {
+            let k = self.kins.get().length
+            self.kins.put(id, k)
+            self.marks.push(0 - 1)
+            return k
+        }
+        known
+    }
+
+    fn leaf(n: int) -> Leaf { self.leaves.get()[n] }
+
+    /// A new union: every kin is out of it.
+    fn opened() -> int {
+        self.union.set(self.union.get() + 1)
+        self.union.get()
+    }
+
+    /// Whether `n`'s kin joins union `u` now — false when it already stood in it.
+    fn joins(n: int, u: int) -> bool {
+        let k = self.kin.get()[n]
+        if self.marks.get()[k] == u { return false }
+        self.marks.set_at(k, u)
+        true
+    }
+
+    /// Whether `n` itself joins union `u` now — false when it already stood in it.
+    fn first_in(n: int, u: int) -> bool {
+        if self.taken.get()[n] == u { return false }
+        self.taken.set_at(n, u)
+        true
+    }
+
+    /// `n`'s place in a kept chunk, none before it is kept.
+    fn place(n: int) -> LeafPlace? {
+        let at = self.at_of.get()[n]
+        if at < 0 { null } else { placed_at(self.chunk_of.get()[n], at) }
+    }
+
+    fn placed(n: int, p: LeafPlace) {
+        self.chunk_of.set_at(n, p.chunk)
+        self.at_of.set_at(n, p.at)
+    }
 }
 
 /// A leaf as a saved answer names it: the chunk it was kept in, and its place there.
@@ -169,7 +262,7 @@ impl Leaf {
 /// named from its cell's reads the first time a reader asks, so a query no saved answer reads
 /// never walks them.
 enum Noted {
-    Known(leaves: List<Leaf>)
+    Known(leaves: List<int>)
     Unnamed
     Owed(key: Key)
 }
@@ -290,7 +383,7 @@ fn made(durable: Durable) -> Db {
     next.set(id + 1)
     let hashes: Cell<List<fn() -> int>> = Cell.new([])
     let closers: Cell<List<fn() -> void>> = Cell.new([])
-    let moves: Cell<Map<string, Cell<Map<string, int>>>> = Cell.new({})
+    let moves: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
     let row_families: Cell<List<int>> = Cell.new([])
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
@@ -329,7 +422,7 @@ fn made(durable: Durable) -> Db {
         digests_known: map_cell(),
         known_at: Cell.new(0 - 1),
         written: Cell.new(0),
-        leaf_places: map_cell(),
+        leaf_table: leaf_table(),
         leaf_chunks: map_cell(),
     }
 }
@@ -373,8 +466,8 @@ impl Db {
     /// that traces a plain Db asks for it: `db.engine().trace_on()`.
     /// What the query at `edge` stood on, named with no frame hearing what naming reads: a
     /// leaf's name is the record's, never a read of the query that asked.
-    fn leaves_unheard(edge: int) -> List<Leaf>? {
-        let none: List<Leaf>? = null
+    fn leaves_unheard(edge: int) -> List<int>? {
+        let none: List<int>? = null
         let out = Cell.new(none)
         self.engine().unheard(() -> out.set(self.leaves_noted(edge)))
         out.get()
@@ -419,9 +512,13 @@ impl Db {
     /// A family of `kernel` verified by the revision a write last stamped
     /// each cell with.
     fn stamped_family(kernel: Kernel) -> int {
-        let moved_at: Cell<Map<string, int>> = Cell.new({})
+        let moved_at: Cell<List<int>> = list_cell()
         let family = kernel.family()
-        kernel.set_verify(family, (cell: int) -> moved_at.get().get("${cell}") ?? 0)
+        kernel
+            .set_verify(
+                family,
+                (cell: int) -> if cell < moved_at.get().length { moved_at.get()[cell] } else { 0 },
+            )
         self.moves.put("${family}", moved_at)
         family
     }
@@ -451,7 +548,7 @@ impl Db {
     /// numbers its own from the start. Each
     /// relation forgets its read marks as it registers again.
     fn forgotten() {
-        let no_moves: Map<string, Cell<Map<string, int>>> = {}
+        let no_moves: Map<string, Cell<List<int>>> = {}
         let no_rows: List<int> = []
         self.moves.set(no_moves)
         self.row_families.set(no_rows)
@@ -599,46 +696,60 @@ impl Db {
     /// relation by its rows' hash, each input by its value's. A query read stands for
     /// what it stood on. Absent when any read has no such name.
     fn leaves_of(deps: List<Key>) -> List<Leaf>? {
-        mut seen: Map<string, bool> = {}
-        mut out: List<Leaf> = []
+        let ns? = self.numbers_of(deps) else { return null }
+        [self.leaf_table.leaf(n) for n in ns]
+    }
+
+    /// What one read stands on, by names that outlive the process.
+    fn leaves_at(k: Key) -> List<Leaf>? {
+        let ns? = self.numbers_at(k) else { return null }
+        [self.leaf_table.leaf(n) for n in ns]
+    }
+
+    /// The query at `edge` settled standing on `leaves`, absent when it stood on a read with no name.
+    fn noted(edge: int, leaves: List<Leaf>?) {
+        let ls? = leaves else { return self.noted_numbers(edge, null) }
+        self.noted_numbers(edge, [self.leaf_table.number(l) for l in ls])
+    }
+
+    fn numbers_of(deps: List<Key>) -> List<int>? {
+        let named = self.leaf_table
+        let union = named.opened()
+        mut out: List<int> = []
         for k in deps {
-            let found? = self.leaves_at(k) else { return null }
-            for l in found {
-                let id = l.id()
-                if !(seen.get(id) ?? false) {
-                    seen.set(id, true)
-                    out.push(l)
-                }
+            let found? = self.numbers_at(k) else { return null }
+            for n in found {
+                if named.joins(n, union) { out.push(n) }
             }
         }
         out
     }
 
-    fn leaves_at(k: Key) -> List<Leaf>? {
-        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_leaves(k) }
-        [Leaf.Rows(rel.name, rel.hash_now())]
+    fn numbers_at(k: Key) -> List<int>? {
+        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_numbers(k) }
+        [self.leaf_table.number(Leaf.Rows(rel.name, rel.hash_now()))]
     }
 
-    fn answer_leaves(k: Key) -> List<Leaf>? {
+    fn answer_numbers(k: Key) -> List<int>? {
         let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
         if owner.by_answer {
-            let named = self.spelled_leaves(owner, k)
+            let named = self.spelled_numbers(owner, k)
             if named != null { return named }
         }
         let edge = edge_of(k)
-        let noted? = self.leaves.get().get("${edge}") else { return self.spelled_leaves(owner, k) }
+        let noted? = self.leaves.get().get("${edge}") else { return self.spelled_numbers(owner, k) }
         self.known(edge, noted)
     }
 
     /// A cell no query settled, named by its owner's spelling of its argument.
-    fn spelled_leaves(owner: AnswerRef, k: Key) -> List<Leaf>? {
+    fn spelled_numbers(owner: AnswerRef, k: Key) -> List<int>? {
         let spelled? = owner.spelled_at(k.arg) else { return null }
         let digest? = owner.hash_at(k.arg) else { return null }
-        [Leaf.Input(owner.name, spelled, digest)]
+        [self.leaf_table.number(Leaf.Input(owner.name, spelled, digest))]
     }
 
     /// What the query at `edge` settled standing on.
-    fn noted(edge: int, leaves: List<Leaf>?) {
+    fn noted_numbers(edge: int, leaves: List<int>?) {
         self
             .leaves
             .put("${edge}", if leaves == null { Noted.Unnamed } else { Noted.Known(leaves!) })
@@ -647,19 +758,19 @@ impl Db {
     /// The query at `edge` settled on its cell's reads, named when first asked.
     fn owed(edge: int, key: Key) { self.leaves.put("${edge}", Noted.Owed(key)) }
 
-    fn leaves_noted(edge: int) -> List<Leaf>? {
+    fn leaves_noted(edge: int) -> List<int>? {
         let noted? = self.leaves.get().get("${edge}") else { return null }
         self.known(edge, noted)
     }
 
     /// What a noted query stands on, an owed one named now and kept.
-    fn known(edge: int, noted: Noted) -> List<Leaf>? {
+    fn known(edge: int, noted: Noted) -> List<int>? {
         match noted {
             .Known(leaves) -> leaves,
             .Unnamed -> null,
             .Owed(key) -> {
-                let found = self.leaves_of(self.engine().deps_of(key))
-                self.noted(edge, found)
+                let found = self.numbers_of(self.engine().deps_of(key))
+                self.noted_numbers(edge, found)
                 found
             },
         }
@@ -668,18 +779,18 @@ impl Db {
     /// LEAVES ARE KEPT ONCE A PROCESS: each read a saved answer stands on is written into a
     /// chunk the first time any answer names it, and an answer names it by its place there.
     /// A chunk is named by its hash, so one written twice is one row.
-    fn placed_leaves(ls: List<Leaf>) -> List<LeafPlace> {
-        let fresh = distinct_leaves(
-            [l for l in ls if self.leaf_places.get().get(l.kept_word()) == null],
-        )
+    fn placed_leaves(ns: List<int>) -> List<LeafPlace> {
+        let named = self.leaf_table
+        let union = named.opened()
+        let fresh = [n for n in ns if named.place(n) == null && named.first_in(n, union)]
         if !fresh.is_empty() { self.chunk_kept(fresh) }
-        [self.leaf_places.get().get(l.kept_word())! for l in ls]
+        [named.place(n)! for n in ns]
     }
 
     /// `fresh` kept as one chunk and placed.
-    fn chunk_kept(fresh: List<Leaf>) {
+    fn chunk_kept(fresh: List<int>) {
         let bytes = encoded_with(
-            [self.saved_leaf(l) for l in fresh],
+            [self.saved_leaf(self.leaf_table.leaf(n)) for n in fresh],
             (w, v) -> written_list(w, v, write_leaf),
         )
         let chunk = stable_hasher(0).octets(bytes).finish()
@@ -688,27 +799,27 @@ impl Db {
         self.chunk_placed(chunk, fresh)
     }
 
-    /// `leaves` known as chunk `chunk`, each placed at its index there.
-    fn chunk_placed(chunk: int, leaves: List<Leaf>) {
-        self.leaf_chunks.put("${chunk}", leaves)
-        for at, l in leaves { self.leaf_places.put(l.kept_word(), placed_at(chunk, at)) }
+    /// The leaves numbered `ns` known as chunk `chunk`, each placed at its index there.
+    fn chunk_placed(chunk: int, ns: List<int>) {
+        self.leaf_chunks.put("${chunk}", ns)
+        for at, n in ns { self.leaf_table.placed(n, placed_at(chunk, at)) }
     }
 
-    /// The leaf a saved answer names by its place; absent when its chunk is not kept.
-    fn leaf_at(p: LeafPlace) -> Leaf? {
+    /// The number of the leaf a saved answer names by its place; absent when its chunk is not kept.
+    fn leaf_at(p: LeafPlace) -> int? {
         let chunk? = self.chunk_read(p.chunk) else { return null }
         if p.at < 0 || p.at >= chunk.length { return null }
         chunk[p.at]
     }
 
-    /// A chunk read back once a process.
-    fn chunk_read(chunk: int) -> List<Leaf>? {
+    /// A chunk read back once a process, its leaves numbered.
+    fn chunk_read(chunk: int) -> List<int>? {
         let known = self.leaf_chunks.get().get("${chunk}")
         if known != null { return known }
         let answer = self.durable.answer
         let bytes? = answer(LEAF_CHUNK, chunk) else { return null }
         let read = match decoded_with(bytes, (r: Reader) -> read_list(r, read_leaf)) {
-            .Ok(ls) -> [self.unsaved_leaf(l) for l in ls],
+            .Ok(ls) -> [self.leaf_table.number(self.unsaved_leaf(l)) for l in ls],
             .Err(_) -> { return null },
         }
         self.chunk_placed(chunk, read)
@@ -743,7 +854,7 @@ impl Db {
     }
 
     /// Whether every read still has the digest it was kept at.
-    fn leaves_hold(ls: List<Leaf>) -> bool { ls.all((l) -> self.leaf_holds(l)) }
+    fn leaves_hold(ns: List<int>) -> bool { ns.all((n) -> self.leaf_holds(self.leaf_table.leaf(n))) }
 
     fn leaf_holds(l: Leaf) -> bool {
         match l {
@@ -812,10 +923,10 @@ impl Db {
     }
 
     /// An answer read back reads what it stood on: the same cells a run of it would.
-    fn read_leaves(ls: List<Leaf>) {
+    fn read_leaves(ns: List<int>) {
         let kernel = self.engine()
-        for l in ls {
-            match l {
+        for n in ns {
+            match self.leaf_table.leaf(n) {
                 .Rows(name, _) -> self.read_rows_leaf(kernel, name),
                 .Input(name, spelled, _) -> self.read_input_leaf(kernel, name, spelled),
             }
@@ -857,10 +968,12 @@ impl Db {
         self.answer_refs.set(none)
     }
 
-    /// The revision `cell` moved at, kept where a family verifies by it.
+    /// The revision `cell` moved at, kept where a family verifies by it — a cell is a dense
+    /// number, so its revision stands at its place.
     fn stamped(family: int, cell: int, rev: int) {
         let moved_at? = self.moves.get().get("${family}") else { return }
-        moved_at.put("${cell}", rev)
+        while moved_at.get().length <= cell { moved_at.push(0) }
+        moved_at.set_at(cell, rev)
     }
 
     /// Whether any cell here can have a reader: no query ever opened in
@@ -1143,7 +1256,7 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnde
 }
 
 /// A kept record read back: what the answer stood on, and the answer.
-type Kept<V> = { leaves: List<Leaf>, value: V }
+type Kept<V> = { leaves: List<int>, value: V }
 
 /// A kept record's answer, read back only when it was kept for `spelled`.
 fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, CodecFault>) -> Result<
@@ -1157,13 +1270,6 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
     if leaves.any(it == null) { fail CodecFault.OtherArguments }
     let value = read(r)?
     Kept { leaves: [l! for l in leaves], value: value }
-}
-
-/// The leaves of one list, each identity once: what a chunk holds.
-fn distinct_leaves(ls: List<Leaf>) -> List<Leaf> {
-    mut by: Map<string, Leaf> = {}
-    for l in ls { by.set(l.kept_word(), l) }
-    by.values()
 }
 
 /// A leaf's place: its chunk and its position there.
@@ -1480,14 +1586,14 @@ impl AnswersUnder<V> {
         }
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
-        db.noted(edge_of(self.memo.query_key(arg)), kept.leaves)
+        db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
         self.memo.finish(arg, kept.value, digest(kept.value))
     }
 
     /// What a settled call stands on, noted: unnamed when a read of rows it could not hear
     /// happened since `foreign`, else owed to its first reader.
     fn note_leaves(db: Db, key: Key, foreign: int) {
-        if foreign_reads().get() > foreign { db.noted(edge_of(key), null) } else { db.owed(edge_of(key), key) }
+        if foreign_reads().get() > foreign { db.noted_numbers(edge_of(key), null) } else { db.owed(edge_of(key), key) }
     }
 
     /// A call run, its answer kept with what it stood on.
