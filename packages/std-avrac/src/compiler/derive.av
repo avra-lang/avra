@@ -526,7 +526,6 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
-        self.hold.serving.set(match at.want { .Diagnostics -> !db_judging(), .Binary -> false })
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -534,7 +533,6 @@ impl Workspace {
         let staging = self.clock()
         for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
         self.timed("inputs", staging)
-        self.hold.warm.set(!true)
         self.host.reads_ahead(self.reads_ahead())
 
         store
@@ -599,7 +597,6 @@ impl Workspace {
         self.keep_uses(store)
         let defects = self.defects.get()
         if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
-        self.keep_unit_rows(store)
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
     }
@@ -619,9 +616,6 @@ impl Workspace {
         let reach = reached_modules(self, store, p)
         let asked = self.asked_print(store, self.known_as(at), fresh)
         let _ = store.keep_once(Stored.Unit, clean_key(asked), "")
-        if db_verified() {
-            self.lowered_said_pass(store)
-        }
         if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
         self.keep_docs_read(store)
         store.settle()

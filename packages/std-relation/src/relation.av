@@ -1894,8 +1894,7 @@ fn problems_of(t: Type, shapes: Map<string, NamedShape>, coded: List<string>) ->
     let fit = fit_names(shapes, coded)
     let unfit = [stored_unfit(t, f) for f in stored_fields(t) if !marked(f, "local") && !kind_fits(f.kind, fit)]
     let defaultless = [stored_defaultless(t, f) for f in stored_fields(t) if marked(f, "local") && f.default == null]
-    let folded = [stored_fingerprinted(t) for a in t.annotations if a.name == "derive" && a.args.contains("Fingerprint")]
-    unfit.concat(defaultless).concat(folded)
+    unfit.concat(defaultless)
 }
 
 /// Which reached names have a wire form, each assumed to until its own fields say otherwise —
@@ -2311,15 +2310,6 @@ fn stored_unfit(t: Type, f: Field) -> Diagnostic {
         f.at ?? t.at,
         "a stored type's fields have a wire form — an int, a bool, a string, an enum, a record, a typed id, a generic record of one parameter, or a list or nullable of any — and `${t.name}.${f.name}` is `${f.ty}`",
         "store what identifies the value as one of those, or mark the field `@local` and declare its default",
-    )
-}
-
-fn stored_fingerprinted(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "stored_fingerprinted",
-        t.at,
-        "`${t.name}` wears `@codec`, whose bytes are its digest, so it is digested once — never also by `@derive(Fingerprint)`",
-        "drop `@derive(Fingerprint)` and digest it by `${t.name}.digest_in(scope, v)`",
     )
 }
 
