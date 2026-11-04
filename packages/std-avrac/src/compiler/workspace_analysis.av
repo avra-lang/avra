@@ -75,7 +75,8 @@ use compiler.lower.{
     code_facts_from_wire,
 }
 use compiler.memory.{memory}
-use @std.relation.{query, recursive}
+use @std.relation.{query, scoped_by, recursive}
+use @std.relation.stable.{Scope}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
@@ -92,6 +93,27 @@ fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned 
         return Interned.Fresh(next)
     }
     Interned.Found(known)
+}
+
+/// One declaration's body typed: its facts, a table over its own window. A declaration still
+/// expanding has a range that will grow, so a window typed now answers its asker alone.
+@query
+@recursive
+@scoped_by(body_scope)
+fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
+    let x = ws.decls.decl(d)
+    mut t = ws.type_cx_for(x)
+    let out = t.type_decl(x)
+    if ws.db.active(key(Family.Expanded, x.file.index)) { ws.query_db().unkept() }
+    out
+}
+
+/// The scope a body's ids cross under: offsets from its own window as it stands now, so
+/// its range is placed before it is read.
+fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
+    let _ = ws.placed(d)
+    let x = ws.decls.decl(d)
+    ws.facts_scope(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo })
 }
 
 /// A file's method-table clashes, as its analysis speaks them.
@@ -936,7 +958,7 @@ impl Workspace {
         // Its typing already OPEN is the same cycle seen from the
         // other side — the value is asking for the const's own type.
         let d: DeclId? = self.decls.decl_of(ask.file, s)
-        let cyclic = d != null && self.relation(Family.Typed).open(d!.index)
+        let cyclic = d != null && self.typing_of(d!)
         // A HELD CONST'S TYPE IS ALREADY THE RECORD'S: its declaration's
         // `lo`/`hi` are blank (a held Decl carries a signature, never an
         // expression range), so typing its body here would read past an

@@ -42,10 +42,10 @@ fn placed_seen(lead: string) -> PlacedSeen {
     }
 }
 
-fn placed_reads(ws: Workspace, reader: Family, d: DeclId) -> bool {
+fn placed_reads(ws: Workspace, reader: Key) -> bool {
     ws
         .db
-        .edges_by_reader(Key { family: reader.ordinal, arg: d.index })
+        .edges_by_reader(reader)
         .any((k: Key) -> ws.cells_named("placement_of").any((c: Key) -> c.family == k.family))
 }
 
@@ -71,7 +71,7 @@ spec "compiler/workspace — placement_of is declaration-grain and position-true
                 ["/w/src/main.av"],
             )
             let _ = checked(ws, "/w/src/main.av")
-            placed_reads(ws, Family.Typed, placed_decl(ws))
+            placed_reads(ws, ws.typed_key(placed_decl(ws)))
         }
         then "`Sig(b)` reads `Placed(b)` too" {
             let ws = a_process_over(
@@ -79,7 +79,7 @@ spec "compiler/workspace — placement_of is declaration-grain and position-true
                 ["/w/src/main.av"],
             )
             let _ = checked(ws, "/w/src/main.av")
-            placed_reads(ws, Family.Sig, placed_decl(ws))
+            placed_reads(ws, Key { family: Family.Sig.ordinal, arg: placed_decl(ws).index })
         }
     }
 }
