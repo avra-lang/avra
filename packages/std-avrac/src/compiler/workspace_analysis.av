@@ -63,17 +63,7 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{
-    Lowered,
-    Body,
-    Unit,
-    Instance,
-    CodeFacts,
-    KeptInstance,
-    HeldWants,
-    lower_unit,
-    code_facts_from_wire,
-}
+use compiler.lower.{Lowered, Body, Unit, CodeFacts, lower_unit}
 use compiler.memory.{memory}
 use @std.relation.{query, scoped_by, recursive}
 use @std.relation.stable.{Scope}
@@ -137,22 +127,6 @@ fn reach_solved(ws: Workspace) -> int {
 /// One expression of file `f` wanted as a program's entry.
 fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Wanted {
     Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }
-}
-
-/// A kept instantiation's reference: its store key and its symbol.
-type KeptRef = { key: string, symbol: string }
-
-/// The roaming callees a callee row lists: a count, then each callee's symbol and key.
-fn callee_refs(row: string) -> List<KeptRef> {
-    let parts = row.split("\n")
-    let n = parts.length / 2
-    [KeptRef { symbol: parts[2 * j + 1], key: parts[2 * j + 2] } for j in 0..n]
-}
-
-/// An instantiation's key: its home's object key, its type arguments' shapes, and its
-/// symbol. The object key covers every module the generic's body sees.
-export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> string {
-    node_key(Stored.Unit, ["codes", "inst", home_key, shapes, symbol])
 }
 
 /// One file's analysis.
@@ -490,119 +464,11 @@ impl Workspace {
     /// The store, attached by a build; null outside one.
     fn attach_store(s: Store) { self.store.set(s) }
 
-    /// Where a file's asks live: beside its object, under the object's key.
-    fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }
-
-    /// FILE-SAID: a file's asks, keyed by PATH under the program's root — written beside the object-keyed row.
+    /// A file's asks row key — read only by the said-row chain filesaid.av still holds.
     fn asks_row(path: string) -> string { node_key(Stored.Unit, ["asks-row", self.root, path]) }
 
-    /// EVERY ASK THE HELD FILES' BODIES MAKE, read by name where the bodies are not —
-    /// kept for the lowering, nothing resolved — and the held files whose row could NOT be read.
-    /// An unread row is a file that must parse: holding it would link a program
-    /// missing whatever its bodies ask for.
-    /// A link resolves every ask up front, as it lowers their instantiations from the store.
-    fn read_held_asks(s: Store, links: bool) -> List<ReadFile> {
-        mut unread: List<ReadFile> = []
-        mut asks: List<HeldAsk> = []
-        for path in held_paths(self) {
-            let held = self
-                .held_asks_from_wire(path, s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
-            if held == null || !held!.all((h) -> self.ask_stands(h, links)) { unread.push(ReadFile { path: path, why: Reads.AsksUnread }) } else { asks = asks.concat(held!) }
-        }
-        self.hold.held_asks.set(asks)
-        unread
-    }
-
-    /// Whether a held ask names a file here — and, for a link, a declaration that resolves.
-    fn ask_stands(h: HeldAsk, links: bool) -> bool {
-        self.ask_home(h) != null && (!links || self.held_ask_wanted(h) != null)
-    }
-
-    /// A held ask's home, as this attempt knows it.
-    fn ask_home(h: HeldAsk) -> FileId? { self.decls.known_file_id(h.home) }
-
-    /// Whether a held ask's home is held: its body is the store's.
-    fn home_held(h: HeldAsk) -> bool {
-        let f? = self.ask_home(h) else { return false }
-        false
-    }
-
-    /// A held ask resolved; one whose declaration no longer resolves sends its asking file to be read.
-    fn asked_want(h: HeldAsk) -> Wanted? {
-        let w = self.held_ask_wanted(h)
-        if w == null { self.hold.asks_lost.push(h.by) }
-        w
-    }
-
-    /// WHAT HELD BODIES ASK, for the lowering: an ask homed in a read file resolved — it lowers
-    /// here — and the rest by name, resolved only where it roams and a link owes code hashes.
-    fn held_wants(hashed: bool) -> HeldWants {
-        let asks = self.hold.held_asks.get()
-        let stored = [h for h in asks if self.home_held(h)]
-        HeldWants {
-            read: flatten([some_list(self.asked_want(h)) for h in asks if !self.home_held(h)]),
-            names: [h.name for h in stored],
-            homes: [self.ask_home(h)! for h in stored if h.roams],
-            roaming: if hashed { flatten([some_list(self.asked_want(h)) for h in stored if h.roams]) } else { [] },
-        }
-    }
-
-    /// Where a file's code lives: beside its object, under the object's key.
-    fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
-
-    /// FILE-SAID: a file's code, keyed by PATH under the program's root — written beside the object-keyed row.
-    fn codes_row(path: string) -> string { node_key(Stored.Unit, ["codes-row", self.root, path]) }
-
-    /// Where an instantiation's code is kept: its symbol, its type arguments'
-    /// shapes, and the object key of the file its generic lowers from, so an
-    /// edit to any of the three reads no old record.
-    fn inst_key(s: Store, i: Instance) -> string {
-        inst_key_of(self.held_okey(s, self.decls.file(i.home).path), i.shapes, i.symbol)
-    }
-
-    /// Where an instantiation's roaming callees are listed, beside its facts.
-    fn callees_key(key: string) -> string { node_key(Stored.Unit, [key, "callees"]) }
-
-    /// An instantiation's kept code and that of every roaming instantiation it reaches,
-    /// read to the bottom. A symbol whose facts or callee list is missing is HELD, so a
-    /// hash that reaches it is absent and never named by its symbol.
-    fn kept_instance(i: Instance) -> KeptInstance {
-        let s? = self.store.get() else { return KeptInstance { facts: [], held: [i.symbol] } }
-        mut facts: List<CodeFacts> = []
-        mut held: List<string> = []
-        mut seen: Map<string, bool> = {}
-        mut todo: List<KeptRef> = [KeptRef { key: self.inst_key(s, i), symbol: i.symbol }]
-        while !todo.is_empty() {
-            let r = todo.pop()
-            if seen.get(r.key) != null { continue }
-            seen.set(r.key, true)
-            let f? = code_facts_from_wire(s.get(Stored.Unit, r.key) ?? "") else {
-                held.push(r.symbol)
-                continue
-            }
-            let callees? = s.get(Stored.Unit, self.callees_key(r.key)) else {
-                held.push(r.symbol)
-                continue
-            }
-            facts.push(f)
-            todo = todo.concat(callee_refs(callees))
-        }
-        KeptInstance { facts: facts, held: held }
-    }
-
-    /// WHAT EVERY HELD FILE'S CODE IS, read where its bodies are not — so a
-    /// code hash reaching one is computed through it — and the held files
-    /// whose row could NOT be read, which must parse.
-    fn read_held_codes(s: Store) -> List<ReadFile> {
-        mut unread: List<ReadFile> = []
-        for path in held_paths(self) {
-            let codes = code_facts_from_wire(
-                s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "",
-            )
-            if codes == null { unread.push(ReadFile { path: path, why: Reads.CodesUnread }) } else { self.hold.held_codes.push(codes!) }
-        }
-        unread
-    }
+    /// A file's object key row — kept beside its other rows.
+    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), self.root, path]) }
 
     fn held_okey(s: Store, path: string) -> string {
         let at = "${self.module_path_of(path).text()}\t${path}"
@@ -612,10 +478,6 @@ impl Workspace {
         self.keys.object_keys.put(at, found)
         found
     }
-
-    /// FILE-SAID: a file's object key, keyed by PATH under the program's root — kept beside its other rows, and read back for a
-    /// file whose rows stand, so a held file's key needs none of its parts.
-    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), self.root, path]) }
 
     /// Whether this build is for wasm: no fiber, no thread, so no `while`
     /// check — the row it would call has no body on that target.

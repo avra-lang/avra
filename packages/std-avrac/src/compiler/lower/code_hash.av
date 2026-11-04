@@ -18,11 +18,6 @@
 //! no text projection, and a codec or derive spells a name as a literal
 //! (`ConstStr`, or a static's text). A projection that prints names must
 //! print them so.
-//!
-//! A body held from an earlier build has no instructions here. A hash
-//! that reaches one cannot be computed, so it is ABSENT, and what it keys
-//! is neither read nor kept: a recompute, never a stale answer. The
-//! process says so once.
 use @std.text.{parse_int}
 use features.{Decls}
 use compiler.{mark_word}
@@ -64,23 +59,17 @@ export fn code_hash_symbol(target: string) -> string { "avra.code_hash.${target}
 /// `target=hash`, or the target alone where it has none.
 export type CodeHashes = { bodies: List<Body>, keys: List<string> }
 
-/// Each asked target's code hash, over the program's bodies and statics
-/// and the code of every held file; `held` names the bodies an earlier
-/// build stands in for. A held file's own asks are answered too.
+/// Each asked target's code hash, over the program's bodies and statics.
 export fn code_hashes(
     decls: Decls,
     bodies: List<Body>,
     statics: List<Static>,
-    held: List<string>,
     targets: List<string>,
-    kept: List<CodeFacts>,
     known: List<string>,
 ) -> CodeHashes {
-    let asked = distinct_targets(targets.concat(flatten([f.asked for f in kept])))
+    let asked = distinct_targets(targets)
     if asked.is_empty() { return CodeHashes { bodies: [], keys: [] } }
-    // fresh code last, so it wins over a kept record of the same name
-    let facts = kept.concat([code_facts(decls, bodies, statics, targets)])
-    mut g = code_graph(facts, held, known, asked)
+    mut g = code_graph([code_facts(decls, bodies, statics, targets)], known, asked)
     mut out: List<Body> = []
     mut keys: List<string> = []
     for t in asked {
@@ -92,7 +81,7 @@ export fn code_hashes(
 }
 
 /// The body answering one target's hash: its text, or absence when it
-/// reaches a held body.
+/// reaches a symbol nothing answers for.
 fn hash_body(types: TypeRegistry, target: string, hash: string?) -> Body {
     let r0 = Reg { index: 0 }
     let answer = types.type(string?)
@@ -150,10 +139,9 @@ fn values_node_name(shapes: Map<string, string>, t: TypeId) -> string {
 /// The program's code as a graph, and the hashes asked of it so far.
 type CodeGraph = {
     nodes: Map<string, CodeNode>,
-    held: Map<string, bool>,
     known: Map<string, bool>,
     hashes: Map<string, string>,
-    /// The symbols whose hash reaches a held body, so has none.
+    /// The symbols whose hash reaches a symbol nothing answers for, so has none.
     unhashed: Map<string, bool>,
     /// Tarjan's walk: each node's visit number and lowest reach, the
     /// open stack, and the next number.
@@ -164,12 +152,7 @@ type CodeGraph = {
     next: int,
 }
 
-export fn code_graph(
-    facts: List<CodeFacts>,
-    held: List<string>,
-    known: List<string>,
-    asked: List<string>,
-) -> CodeGraph {
+export fn code_graph(facts: List<CodeFacts>, known: List<string>, asked: List<string>) -> CodeGraph {
     mut nodes: Map<string, CodeNode> = {}
     // PER-TYPE VALUE NODES: a `CallPtr` folds the fns taken with its
     // callee's type; the bare node is the fallback, holding every one.
@@ -214,13 +197,10 @@ export fn code_graph(
         ),
     )
     for node in unpopulated { nodes.set(node, CodeNode { own: digest_of_name(node), refs: [], set: true }) }
-    mut held_names: Map<string, bool> = {}
-    for h in held { held_names.set(h, true) }
     mut known_names: Map<string, bool> = {}
     for k in known { known_names.set(k, true) }
     CodeGraph {
         nodes: nodes,
-        held: held_names,
         known: known_names,
         hashes: {},
         unhashed: {},
@@ -669,8 +649,8 @@ fn slot_digest(d: Digest, c: Slot, refs: List<string>) -> Digest {
 }
 
 impl CodeGraph {
-    /// A symbol's code hash: a node's, by its cycle; none for a held body
-    /// and all that reach one; the name of a runtime row or an extern; none
+    /// A symbol's code hash: a node's, by its cycle; none for a symbol
+    /// whose reach has none; the name of a runtime row or an extern; none
     /// for any other symbol, which nothing kept answers for.
     mut fn hash(sym: string) -> string? {
         if self.unhashed.get(sym) != null { return null }
@@ -679,20 +659,10 @@ impl CodeGraph {
     }
 
     mut fn computed(sym: string) -> string? {
-        if self.nodes.get(sym) == null && self.held.get(sym) != null { return self.unhashable(sym) }
         if self.nodes.get(sym) == null && self.known.get(sym) == null { return null }
         if self.nodes.get(sym) == null { return digest_of_name(sym) }
         self.visit(sym)
         self.hash(sym)
-    }
-
-    /// A held body has no hash, and the process says once that it could
-    /// not compute one.
-    mut fn unhashable(sym: string) -> string? {
-        qtrace("Q\tcode_hash\theld\t${sym}")
-        held_spoken()
-        self.unhashed.set(sym, true)
-        null
     }
 
     /// Whether a symbol's hash, or its want of one, is settled.
@@ -797,12 +767,4 @@ fn distinct_count(xs: List<string>) -> int { distinct_targets(xs).length }
 fn texts_digest(parts: List<string>) -> Digest { parts.fold(digest_int(new_digest(), parts.length), (d, t) -> digest_text(d, t)) }
 
 fn digest_of_name(sym: string) -> string { digest_key(digest_text(digest_int(new_digest(), 0), sym)) }
-
-/// Said once per process, however many hashes reach a held body.
-once fn held_spoken() -> string {
-    eprintln(
-        "avra: a code hash reached a body held from an earlier build, so what it keys is neither read nor kept this run (AVRA_QTRACE names each)",
-    )
-    ""
-}
 

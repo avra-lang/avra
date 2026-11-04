@@ -200,9 +200,6 @@ export type Derived = { entry: string?, want: Want, program: Program, lowered: L
 /// moved in its key since it was last kept.
 export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string>, moved: List<PartMoved> }
 
-/// A stored row by what it keeps, and whether the store has it.
-type StoreRow = { says: string, kept: bool }
-
 /// What an attempt that holds nothing is about to read, as a count.
 const EVERY_FILE: int = 1000000
 
@@ -426,9 +423,6 @@ impl Workspace {
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Unit, self.asks_key(okey)) || !s.has(Stored.Unit, self.codes_key(okey)) {
-            return false
-        }
         want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
@@ -467,21 +461,7 @@ impl Workspace {
     /// The rows standing in for a file under `want` that the store lacks, by
     /// what each keeps.
     fn missing_rows(store: Store, okey: string, want: Want) -> List<string> {
-        let rows = [
-            StoreRow {
-                says: "what its bodies ask",
-                kept: store.has(Stored.Unit, self.asks_key(okey)),
-            },
-            StoreRow {
-                says: "what its code is",
-                kept: store.has(Stored.Unit, self.codes_key(okey)),
-            },
-            StoreRow {
-                says: "its object",
-                kept: want is .Diagnostics || store.has(Stored.Obj, okey),
-            },
-        ]
-        [r.says for r in rows if !r.kept]
+        if want is .Diagnostics || store.has(Stored.Obj, okey) { [] } else { ["its object"] }
     }
 
     /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
@@ -590,8 +570,6 @@ impl Workspace {
         at.having_read(self.gathered_moved([a.view.file for a in p.files]))?
         if !p.clean() { fail Turn.Refused(p.report()) }
         self.layouts_judged(at, store, p)?
-        at.having_read(self.read_held_asks(store, at.want.links()))?
-        at.having_read(self.read_held_codes(store))?
         p
     }
 
@@ -603,10 +581,6 @@ impl Workspace {
         let lowered = p.files_checked(at.want.links())
         self.settle_consts(p)
         at.having_read(self.bodies_asked())?
-        at
-            .having_read(
-                [ReadFile { path: path, why: Reads.AsksUnread } for path in distinct(self.hold.asks_lost.get())],
-            )?
         let lo = or_refused(lowered)?
         remember(
             store,
@@ -625,78 +599,9 @@ impl Workspace {
         self.keep_uses(store)
         let defects = self.defects.get()
         if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
-        let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
-        if !adrift.is_empty() { fail at.adrift(adrift) }
-        let bodies = filed(lo.unmanaged, (b) -> b.file)
-        let statics = filed(lo.statics, (s) -> s.file)
-        let asks = filed(lo.hash_asks, (h) -> h.by)
-        for a in p.files {
-            self.keep_asks(store, lo, a)
-            self.keep_codes(store, a, bodies, statics, asks)
-        }
         self.keep_unit_rows(store)
-        self.keep_instances(store, lo)
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
-    }
-
-    /// What one read file's bodies ask, kept under the file's key.
-    fn keep_asks(store: Store, lo: Lowered, a: Analysis) {
-        let asks = self.held_asks_wire([k.want for k in lo.asks if same_file(k.by, a.view.file)])
-        let _ = store
-            .keep_once(Stored.Unit, self.asks_key(self.held_okey(store, a.view.source.file)), asks)
-        let path = a.view.source.file
-        self.keep_file_row(store, path, Stored.Unit, self.asks_row(path), asks)
-    }
-
-    /// Each fresh instantiation's code, kept under its own key — what a held
-    /// home's stub reads back in a later build.
-    fn keep_instances(store: Store, lo: Lowered) {
-        for ic in lo.instances {
-            let key = self.inst_key(store, ic.key)
-            let facts = code_facts(self.decls, ic.bodies, ic.statics, [])
-            let _ = store.keep_once(Stored.Unit, key, code_facts_wire(facts))
-            let rows = flatten([[c.symbol, self.inst_key(store, c)] for c in ic.callees])
-            let _ = store
-                .keep_once(
-                    Stored.Unit,
-                    self.callees_key(key),
-                    ["${ic.callees.length}"].concat(rows).join("\n"),
-                )
-        }
-    }
-
-    /// What one read file's code is, kept under the file's key.
-    fn keep_codes(
-        store: Store,
-        a: Analysis,
-        bodies: Map<string, List<Body>>,
-        statics: Map<string, List<Static>>,
-        asks: Map<string, List<HashAsk>>,
-    ) {
-        let f = a.view.file
-        let at = "${f.index}"
-        // A FILE WHOSE CODES ROW STANDS OWES NOTHING: the row is the answer, keyed by what the
-        // file is, so hashing every body again would only re-derive what is already written.
-        if store.has(Stored.Unit, self.codes_key(self.held_okey(store, a.view.source.file))) { return }
-        let fresh = code_facts(
-            self.decls,
-            bodies.get(at) ?? [],
-            statics.get(at) ?? [],
-            [h.target for h in asks.get(at) ?? []],
-        )
-        let facts = merged_facts(
-            fresh,
-            [s.facts for s in self.hold.served.get() if same_file(s.file, f)],
-        )
-        let _ = store
-            .keep_once(
-                Stored.Unit,
-                self.codes_key(self.held_okey(store, a.view.source.file)),
-                code_facts_wire(facts),
-            )
-        let path = a.view.source.file
-        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
     }
 
     /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
@@ -712,16 +617,8 @@ impl Workspace {
     ) -> Derived {
         let fresh = [k.want for k in lo.asks]
         let reach = reached_modules(self, store, p)
-        let held = self.hold.held_asks.get()
-        let asked = self.asked_print(store, self.known_as(at), held, fresh)
-        let owed_fresh = [w for w in fresh if false]
-        let owed_held = [h for h in held if self.home_held(h)]
-        let unlowered = owed_fresh
-            .concat(
-                if at.want.links() { flatten([some_list(self.asked_want(h)) for h in owed_held]) } else { [] },
-            )
-        let owed = owed_fresh.length + owed_held.length
-        if owed == 0 { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
+        let asked = self.asked_print(store, self.known_as(at), fresh)
+        let _ = store.keep_once(Stored.Unit, clean_key(asked), "")
         if db_verified() {
             self.lowered_said_pass(store)
         }
@@ -740,8 +637,8 @@ impl Workspace {
                     .concat([s.warnings for s in said if reaches_file(self, reach, s.path)]),
             ),
             unreached: [s.path for s in said if !reaches_file(self, reach, s.path)],
-            unlowered: unlowered,
-            owed: owed,
+            unlowered: [],
+            owed: 0,
             asked: asked,
             held: 0,
             files: self.decls.file_count(),
@@ -935,14 +832,12 @@ impl Workspace {
     /// key of every home it has lowered from — a home's text, and the interfaces
     /// it sees. An ask a home's own body makes is that home's content. A home the
     /// tree no longer has is gone from the print, so the print moves with it.
-    fn asked_print(store: Store, known_as: string, held: List<HeldAsk>, fresh: List<Wanted>) -> string {
+    fn asked_print(store: Store, known_as: string, fresh: List<Wanted>) -> string {
         // a home this program never admitted asks nothing of it, and naming it would mint it
         let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty() && self.there(path) && self.decls.known_file_id(path) != null]
         digest_of(
             joined(
-                sorted_texts(
-                    distinct([h.wire for h in held].concat([self.wanted_wire(w) for w in fresh])),
-                )
+                sorted_texts(distinct([self.wanted_wire(w) for w in fresh]))
                     .concat(["${path}\t${self.held_okey(store, path)}" for path in homes]),
                 "\n",
             ),
