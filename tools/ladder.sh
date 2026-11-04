@@ -4,13 +4,15 @@
 # answers the last product's path. The one definition CI's prepare and a lane's Sprite both call.
 #
 #   sh tools/ladder.sh <compiler> <rung-commit>...      prints the last rung's compiler on stdout
+#   sh tools/ladder.sh --clean <dir>                    removes a ladder's scratch (its caller does, once it has copied the product)
 #   sh tools/ladder.sh --self-test
 #
 # A rung's compiler is a REAL generation (`make avra` run by the previous rung's product), so each
 # step is the one the generation law already asks of a tree, and a compiler is never asked to read
 # what only a newer one can. A rung that does not build names itself and its log; nothing falls back
 # to the seed, which cannot read a rung either. The whole ladder is capped at AVRA_LADDER_S (900 s),
-# each rung at what is left.
+# each rung at what is left. A ladder that FAILS removes its own scratch; one that builds leaves it for
+# its caller, who copies the product and then asks `--clean`, so no ladder outlives its use.
 #
 # A RUNG IS REPLAYED ON THE TREE UNDER BUILD, NEVER ON ITS OWN. With AVRA_LADDER_BASE set (the base the
 # tree is judged against: origin/main for a pull request, the commit before for main's own push), the
@@ -18,6 +20,19 @@
 # whose branch began before the base moved is read with the base's sources, not its stale ones. A rung
 # the base already holds is no rung: the starting compiler, built from the base, already reads it.
 set -eu
+# A ladder's scratch: each rung's worktree (registered in the repository) and its logs, all gone.
+ladder_clean() {
+    [ -d "$1" ] || return 0
+    for w in "$1"/rung-*; do
+        [ -d "$w" ] && git worktree remove --force "$w" >/dev/null 2>&1 || :
+    done
+    find "$1" -delete 2>/dev/null || :
+    git worktree prune >/dev/null 2>&1 || :
+}
+if [ "${1:-}" = --clean ]; then
+    ladder_clean "${2:?usage: ladder.sh --clean <dir>}"
+    exit 0
+fi
 if [ "${1:-}" = --self-test ]; then
     me=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-ladder.XXXXXX")
@@ -48,6 +63,12 @@ Rung: broken"
     r3=$(g rev-parse HEAD)
     if (cd "$d/repo" && AVRA_LADDER_DIR="$d/work2" sh "$me" "$d/start" "$r3" > "$d/out3" 2> "$d/err3"); then echo "ladder: a rung that failed to build was passed"; exit 1; fi
     grep -q "rung 1 did not build" "$d/err3" || { echo "ladder: the failing rung was not named: $(cat "$d/err3")"; exit 1; }
+    # a ladder that fails leaves no scratch behind, and the caller's clean takes a built one away
+    [ ! -e "$d/work2" ] || { echo "ladder: a failed ladder left its scratch ($d/work2)"; exit 1; }
+    [ -d "$d/work" ] || { echo "ladder: the built ladder's product vanished before its caller copied it"; exit 1; }
+    (cd "$d/repo" && sh "$me" --clean "$d/work") || { echo "ladder: --clean failed"; exit 1; }
+    [ ! -e "$d/work" ] || { echo "ladder: --clean left the scratch ($d/work)"; exit 1; }
+    [ -z "$(git -C "$d/repo" worktree list | grep -F "$d/work")" ] || { echo "ladder: --clean left a worktree registered"; exit 1; }
     # a rung whose branch began before the base moved is replayed ON the base: a tree that needs the
     # base's file builds, where the rung's own stale tree would not
     printf 'avra:\n\t@test -f moved && mkdir -p build && { cat build/avra; echo built-on-base; } > build/avra.next && chmod +x build/avra.next && mv build/avra.next build/avra\n' > "$d/repo/Makefile"
@@ -79,6 +100,8 @@ shift
 [ -z "${AVRA_LADDER_REPO:-}" ] || cd "$AVRA_LADDER_REPO"
 dir=${AVRA_LADDER_DIR:-${RUNNER_TEMP:-/tmp}/ladder}
 mkdir -p "$dir"
+built=0
+trap '[ "$built" = 1 ] || ladder_clean "$dir"' EXIT
 cap=${AVRA_LADDER_S:-900}
 began=$(date +%s)
 i=0
@@ -116,4 +139,5 @@ for r in "$@"; do
     echo "ladder: rung $i built in $(($(date +%s) - s)) s" >&2
     cur=$wt/build/avra
 done
+built=1
 echo "$cur"

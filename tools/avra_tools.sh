@@ -10,8 +10,10 @@
 # compiler under `tools-<key>` (tools/tools_key.sh, tools/compiler_release.py).
 # Resolved in order:
 #   1. build/avra-tools/<key>/avra-tools, already here;
-#   2. the published asset for the key, fetched;
-#   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler
+#   2. the published asset for the key, fetched — on Linux x86-64 only, the one platform CI
+#      publishes for; any other machine builds its own;
+#   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler (Linux x86-64) or
+#      the standing build/avra (any other machine)
 #      (tools/compiler_release.py install, into $dir/compiler), for a tree whose tools/
 #      differs from anything published — run from build/, where a compiler stands;
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
@@ -50,12 +52,20 @@ main_compiler() {
 key=$(sh tools/tools_key.sh)
 dir=build/avra-tools/$key
 bin=$dir/avra-tools
-if [ ! -x "$bin" ]; then
+# THE PUBLISHED BINARIES ARE LINUX X86-64 ELFs: another machine cannot run them, so it builds its own.
+published=0
+[ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] && published=1
+if [ ! -x "$bin" ] && [ "$published" = 1 ]; then
     mkdir -p "$dir"
     python3 tools/compiler_release.py --asset avra-tools fetch "tools-$key" "$bin" >&2 && chmod +x "$bin" || true
 fi
 if [ ! -x "$bin" ] && [ -z "${AVRA_TOOLS_COMPILER:-}" ]; then
-    main_compiler && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
+    if [ "$published" = 1 ]; then
+        main_compiler && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
+    elif [ -x build/avra ]; then
+        mkdir -p "$dir"
+        AVRA_TOOLS_COMPILER=build/avra
+    fi
 fi
 if [ ! -x "$bin" ] && [ -n "${AVRA_TOOLS_COMPILER:-}" ] && [ -x "$AVRA_TOOLS_COMPILER" ]; then
     build_tools "$AVRA_TOOLS_COMPILER" || true

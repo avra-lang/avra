@@ -543,6 +543,7 @@ compiler:
 	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
 	  cp "$$product" build/avra-ladder && cp "$$product" build/avra; \
+	  sh tools/ladder.sh --clean "$${AVRA_LADDER_DIR:-$${RUNNER_TEMP:-/tmp}/ladder}"; \
 	  gens || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
 	elif [ -x build/avra ] && gens; then :; else \
 	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \
