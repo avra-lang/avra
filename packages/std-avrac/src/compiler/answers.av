@@ -4,7 +4,7 @@
 //! file and fetch bytes under the query's durable name — which already holds its
 //! code hash — and its arguments' hash, in the store the workspace attaches.
 //! A workspace with no store attached keeps nothing and finds nothing.
-use @std.relation.{input}
+use @std.relation.{input, query_known, query_known_db}
 use @std.relation.db.{Db as RelDb, Durable}
 use compiler.store.{Store, Stored, node_key}
 use core.{joined}
@@ -73,4 +73,25 @@ fn kept_answer(slot: Cell<Store?>, query: string, args: int) -> Bytes? {
 fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
     let store? = slot.get() else { return }
     let _ = store.keep_octets(Stored.Answer, answer_key(query, args), record, [])
+}
+
+/// A lasting query over the Db alone, opened by its `_known` door.
+type KnownOverDb = { open: fn(RelDb) -> void }
+
+/// A lasting query over the workspace, opened by its `_known` door.
+type KnownOverWs = { open: fn(Workspace) -> void }
+
+collect known_over_db: List<KnownOverDb> = @query_known_db in package as KnownOverDb { open: it } by it.name
+
+collect known_over_ws: List<KnownOverWs> = @query_known in package as KnownOverWs { open: it } by it.name
+
+impl Workspace {
+    /// EVERY LASTING QUERY IS KNOWN BEFORE ANY IS ASKED: a record that read a call this
+    /// process never asked asks it by its spelling — restored, or run where its own reads
+    /// moved — while a call the process alone answers stays a miss.
+    fn known_opened() {
+        let rdb = self.query_db()
+        for q in known_over_db { (q.open)(rdb) }
+        for q in known_over_ws { (q.open)(self) }
+    }
 }

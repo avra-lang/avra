@@ -41,6 +41,7 @@
 //! the lister, so a reader can bring every producer up to date.
 use @std.meta.{
     Fn,
+    Named,
     Param,
     Kind,
     Annotation,
@@ -137,9 +138,45 @@ export fn query(f: Fn) -> Declared {
             Directive { twin: "", name: "${f.name}_dropped", at: f.at, source: dropped_door(f) },
         ]
             .concat(held_door(f))
-            .concat(seat_door(f)),
+            .concat(seat_door(f))
+            .concat(known_door(f)),
         problems: [],
     }
+}
+
+/// Marks a lasting query's `_known` door over a context: an owner opens each so a record may
+/// restore a call this process never asked.
+export fn query_known(_f: Named) {}
+
+/// `query_known` for a query over the Db alone.
+export fn query_known_db(_f: Named) {}
+
+/// `<name>_known(ctx)`: the answers opened under the context's Db with how a call is asked by
+/// its spelling — only a lasting query's, so a restore asks none of the process's own work.
+fn known_door(f: Fn) -> List<Directive> {
+    let asks = named_by(f)
+    if !lasting(f) || asks.is_empty() { return [] }
+    let first = f.params[0]
+    let seat = [quote { fn _(${first.name}: ${first.ty}) {} }]
+    let door = "${f.name}_known"
+    let source = if is_db(first.kind) {
+        quote {
+            @query_known_db
+            fn ${door}(..${seat}) {
+                let held = ${kept_name(f)}().under(${db_code(f)})
+                ${asks}
+            }
+        }
+    } else {
+        quote {
+            @query_known
+            fn ${door}(..${seat}) {
+                let held = ${kept_name(f)}().under(${db_code(f)})
+                ${asks}
+            }
+        }
+    }
+    [Directive { twin: "", name: door, at: f.at, source: source }]
 }
 
 /// Where a query's answers are kept: a dense-keyed one is named past the process only by its
