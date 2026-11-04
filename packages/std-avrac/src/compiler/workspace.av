@@ -2194,11 +2194,29 @@ impl Workspace {
         found
     }
 
+    /// A generated declaration of `f`'s MODULE by its name: the file's own first, then each
+    /// read sibling's — a module is one namespace, so what one file's annotation makes, its
+    /// siblings name as they name what it writes. A held sibling's stand in its rows.
+    fn generated_in_module(f: FileId, name: string) -> DeclId? {
+        let own = self.generated_named(f, name)
+        if own != null { return own }
+        let siblings = [self.file_id(p) for p in self.module_files(self.module_path_of(self.decls.file(f).path))]
+        let maker? = siblings
+            .find(
+                (s: FileId) -> !same_file(s, f) &&
+                    !self.is_held(s) &&
+                    self.generated_named(s, name) != null,
+            ) else {
+            return null
+        }
+        self.generated_named(maker, name)
+    }
+
     /// The two looks past `f`'s written namespace: its generated
     /// declarations, and the namespace of the file that wrote a node.
     fn elsewhere_of(f: FileId) -> Elsewhere {
         Elsewhere {
-            generated: (name: string) -> self.generated_named(f, name),
+            generated: (name: string) -> self.generated_in_module(f, name),
             written_in: (origin: FileId) -> self.visible(origin),
             unread: () -> self.unread_source(self.module_path_of(self.decls.file(f).path)),
         }
