@@ -52,6 +52,8 @@ use features.{
     NamedLit,
     LitKind,
     CancelReach,
+    tree_saved,
+    tree_unsaved,
 }
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, node_key}
@@ -2070,13 +2072,14 @@ fn hex_fields_of(field: string) -> List<string>? {
 }
 
 /// ONE READ as one field: its five texts hexed, `~` between. Hexing each keeps
-/// a print holding `~`, `|` or a tab from spending the field's own separators.
+/// a print holding `~`, `|` or a tab from spending the field's own separators; the
+/// path and the declaration are spelled from the tree first, since no store reads inside hex.
 fn read_wire(r: RunRead) -> string {
     joined(
         [
-            hex(r.path.bytes()),
+            hex(tree_saved(r.path).bytes()),
             hex(r.digest.bytes()),
-            hex(r.ref.bytes()),
+            hex(tree_saved(r.ref).bytes()),
             hex(r.print.bytes()),
             hex(r.outline.bytes()),
         ],
@@ -2100,7 +2103,7 @@ fn unhex_text(s: string) -> string? {
 fn read_of_wire(s: string) -> RunRead? {
     if !s.contains("~") {
         let text? = unhex_text(s) else { return null }
-        return RunRead { path: text, digest: "", ref: "", print: "", outline: "" }
+        return RunRead { path: tree_unsaved(text), digest: "", ref: "", print: "", outline: "" }
     }
     let parts = wire_fields(s, "~")
     if parts.length > 5 { return null }
@@ -2110,7 +2113,7 @@ fn read_of_wire(s: string) -> RunRead? {
     let rt? = unhex_text(cells[2]) else { return null }
     let qt? = unhex_text(cells[3]) else { return null }
     let ot? = unhex_text(cells[4]) else { return null }
-    RunRead { path: pt, digest: dt, ref: rt, print: qt, outline: ot }
+    RunRead { path: tree_unsaved(pt), digest: dt, ref: tree_unsaved(rt), print: qt, outline: ot }
 }
 
 /// A list of reads as one record field, each a `read_wire`.
