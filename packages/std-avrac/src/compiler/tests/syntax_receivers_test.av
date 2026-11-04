@@ -1,20 +1,16 @@
-// M5b slice 2: a write summary (compiler/receivers.av) reads a seated
-// fn's nodes through `self.decls.store(d)` — a table read the Kernel's
-// `ask` never sees (`features/bypass.av`'s `Bypassed.Store`) — for
-// declarations that are never its own. It now
-// calls `touch(self.syntax(d))` first, so that foreign read depends on
-// `d`'s own declaration-grain `Family.Syntax`, never only on the
-// file's whole `Parsed` (COMPILER DB townhall §6.11 rule 2). `Family`
-// and `key` are compiler-internal (no `export`), so this
-// file names their stable, append-only ordinals directly: `Receivers`
-// is 16, `Syntax` is 25 (places in `Family`, compiler/workspace.av).
+// A write summary (compiler/receivers.av) reads a seated fn's nodes
+// through `self.decls.store(d)` — a table read the Kernel's `ask` never
+// sees (`features/bypass.av`'s `Bypassed.Store`) — for declarations that
+// are never its own. It calls `touch(self.syntax(d))` first, so that
+// foreign read depends on `d`'s own syntax, never only on the file's
+// whole `Parsed`.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, syntax_in_key}
 use compiler.host.{memory_host}
 use core.{DeclId}
-use @std.relation.engine.{Key}
+use @std.relation.engine.{Key, same_key}
 
-fn syntax_key(d: DeclId) -> Key { Key { family: family_ordinal("Syntax"), arg: d.index } }
+fn syntax_key(ws: Workspace, d: DeclId) -> Key { syntax_in_key(ws, d) }
 
 fn receivers_workspace(main: string) -> Workspace {
     test_workspace(
@@ -48,7 +44,7 @@ fn receivers_synced_b(ws: Workspace) -> int {
     ws.syntax(receivers_decl_named(ws, "b"))
 }
 
-spec "compiler/receivers — a foreign store_of read depends on the declaration's own Syntax (M5b slice 2)" {
+spec "compiler/receivers — a foreign store_of read depends on the declaration's own syntax" {
     given "`b`'s write summary over a program with two plain fns" {
         then "its own dependency list names `b`'s Syntax directly, not only the file's Parsed" {
             let ws = receivers_workspace(receivers_source("1", "2"))
@@ -61,10 +57,7 @@ spec "compiler/receivers — a foreign store_of read depends on the declaration'
                     (s: Key) -> ws
                         .db
                         .edges_by_reader(s)
-                        .any(
-                            (k: Key) -> k.family == syntax_key(b).family &&
-                                k.arg == syntax_key(b).arg,
-                        ),
+                        .any((k: Key) -> same_key(k, syntax_key(ws, b))),
                 )
         }
     }

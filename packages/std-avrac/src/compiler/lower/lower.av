@@ -8,11 +8,13 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
+use @std.relation.{codec}
 use @std.io.{env}
 use @std.errors.{Frame}
 use @std.text.{text_before}
 use core.{
     IndexRange,
+    Ids,
     rt_sigs,
     Fingerprint,
     StmtId,
@@ -84,6 +86,7 @@ use compiler.{Analysis, any_root}
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
 /// the params, and `gives` is the register RetVal answers with.
 @derive(Fingerprint)
+@codec
 export type Body = {
     name: string,
     params: List<TypeId>,
@@ -123,9 +126,6 @@ export type Body = {
     hash_answer: bool = false,
 }
 
-/// An instantiation `want`, demanded by a body `by` declares.
-export type Ask = { by: FileId, want: Wanted }
-
 impl Decls {
     /// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
     /// arguments, a fn at its settled seats, a root no declaration owns. A plain
@@ -160,14 +160,6 @@ export type LinkedPackage = { name: string, library: string, externs: List<strin
 export type Lowered = {
     fns: List<Body>,
     entry: Body,
-    /// The instantiations each file's own bodies demand — what a later
-    /// build reads in place of those bodies when the file is held.
-    asks: List<Ask> = [],
-    /// Every file an instantiation lowers FROM. Its generic's body is what
-    /// each asking program reads, so such a file is never held.
-    homes: List<FileId> = [],
-    /// The roaming instantiations lowered fresh, each with its unit's code.
-    instances: List<InstanceCode> = [],
     types: TypeRegistry,
     diagnostics: List<Diag>,
     // the host fns the program declares `extern` — rows the backend
@@ -311,22 +303,18 @@ export fn lower(a: Analysis) -> Lowered {
             false,
             false,
             true,
-            no_held_wants(),
-            [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
-            (_f: FileId) -> false,
-            no_kept,
         )
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
-/// wrappers it minted (they never escape it), the code facts a kept row stood
-/// in for, the bodies of OTHER
+/// wrappers it minted (they never escape it), the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
 @derive(Fingerprint)
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [], kept: List<CodeFacts> = [] }
+@codec
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -457,12 +445,8 @@ impl Decls {
         every: bool,
         programs: bool,
         hashed: bool,
-        held_asks: HeldWants,
-        held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
-        is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
-        kept_instance: fn(Instance) -> KeptInstance,
     ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -501,16 +485,7 @@ impl Decls {
             statics = mu.statics
             hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
-        let d = drained(
-            wants.concat(held_asks.read),
-            held_asks,
-            unit_of,
-            is_held,
-            (w: Wanted) -> self.instantiated(w),
-            (w: Wanted) -> self.unlowered_stub(w),
-            (w: Wanted) -> instance_of(self, w),
-            if hashed { kept_instance } else { no_kept },
-        )
+        let d = drained(wants, unit_of, (w: Wanted) -> self.instantiated(w))
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         let laid_out = distinct_statics(statics.concat(d.statics))
@@ -521,9 +496,7 @@ impl Decls {
                 self,
                 fns.concat([entry_body]),
                 laid_out,
-                d.held,
                 [h.target for h in asked],
-                held_codes.concat(d.kept),
                 [r.name for r in rt_sigs()].concat(self.extern_names()),
             )
         } else {
@@ -535,8 +508,6 @@ impl Decls {
         Lowered {
             fns: fns,
             entry: entry_body,
-            asks: d.asks,
-            homes: d.homes,
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
@@ -545,7 +516,6 @@ impl Decls {
             code_hashes: answered.keys,
             hash_asks: asked,
             unmanaged: unmanaged,
-            instances: d.instances,
         }
     }
 
@@ -588,80 +558,6 @@ impl Decls {
         }
     }
 
-    /// A DECLARATION NOBODY LOWERED A BODY FOR, HERE: an instantiation the
-    /// program owes but a held home never ran, or a HELD CALLEE a fresh
-    /// caller reaches. A REGISTRY over the declaration's kind: every kind
-    /// that owns a symbol a caller can reach (`Fn`/`Method`/`Default`, a
-    /// `Collect`) builds its own stub; the rest answer null by name, so
-    /// the next kind that starts owning a symbol cannot vanish silently
-    /// the way `Collect` did (a held collect's caller referenced a symbol
-    /// no stub answered for, and `program_closed` found it undeclared).
-    fn unlowered_stub(w: Wanted) -> Body? {
-        let d? = w.decl else { return null }
-        // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-        if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("unlowered_stub: name=${w.name} is_collect=${self.decl(d).kind is .Collect}") }
-        match self.decl(d).kind {
-            .Fn or .Method or .Default -> self.fn_stub(w, d),
-            .Collect -> self.collect_stub(w, d),
-            .State -> self.state_stub(w, d),
-            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Const or .CollectEnum -> null,
-        }
-    }
-
-    /// A held fn-shaped callee's stub: its signature under its type
-    /// arguments (what `lower_fn` would give it), and its OWN seat marks,
-    /// so a caller's memory pass (`marks_by_name`, compiler/memory/
-    /// memory.av) can read a held callee's `consumed` seats exactly as it
-    /// reads a fresh one's, instead of defaulting every seat plain
-    /// because the callee's real body never entered `l.fns`.
-    fn fn_stub(w: Wanted, d: DeclId) -> Body? {
-        let sig? = self.sig(d)?.fn_sig() else { return null }
-        Body {
-            name: w.name,
-            params: [viewed(self.types, w.sub, pt) for pt in sig.params],
-            ret: viewed(self.types, w.sub, sig.ret),
-            gives: null,
-            ins: [],
-            reg_types: [],
-            weak: true,
-            marks: self.marks_of(d, sig.params.length),
-            hosted: self.is_host_fn(d),
-        }
-    }
-
-    /// A held state's stub: no parameters, its answer the shared
-    /// `Cell<T>` a fresh unit builds — the object answers for the
-    /// build, and a weak empty body lets the linker prefer it.
-    fn state_stub(w: Wanted, d: DeclId) -> Body {
-        let x = self.decl(d)
-        let read_ty: TypeId = self.type_of_const(x.file, x.stmt) ?? self.types.intern(Type.Error)
-        Body {
-            name: w.name,
-            params: [],
-            ret: self.types.intern(Type.Cell(read_ty)),
-            gives: null,
-            ins: [],
-            reg_types: [],
-            weak: true,
-        }
-    }
-
-    /// A held collect's stub: no parameters (a collect's read takes
-    /// none), its answer type the same `collect_answer_type` gives
-    /// `lower_collect`'s own body, so a held read and a fresh one agree.
-    fn collect_stub(w: Wanted, d: DeclId) -> Body {
-        let x = self.decl(d)
-        Body {
-            name: w.name,
-            params: [],
-            ret: collect_answer_type(self, x.file, x.stmt),
-            gives: null,
-            ins: [],
-            reg_types: [],
-            weak: true,
-        }
-    }
-
     /// THE ENTRY'S LAW over every other file: a module file runs nothing. A program
     /// file is no module file — its statements are its own program's.
     fn outside_entry(files: List<Analysis>, entry: int?, is_program: fn(FileId) -> bool) -> List<
@@ -679,16 +575,7 @@ impl Decls {
     /// it reaches is refused where `refuses_hash` holds, else answered absent.
     fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit, refuses_hash: bool) -> Lowered {
         let ru = unit_of(root)
-        let d = drained(
-            ru.wants,
-            no_held_wants(),
-            unit_of,
-            (_f: FileId) -> false,
-            (_w: Wanted) -> false,
-            (_w: Wanted) -> null,
-            (w: Wanted) -> instance_of(self, w),
-            no_kept,
-        )
+        let d = drained(ru.wants, unit_of, (_w: Wanted) -> false)
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let laid_out = distinct_statics(ru.statics.concat(d.statics))
@@ -749,71 +636,15 @@ impl Decls {
 
 /// The bodies a worklist reaches, each name once, the statics they
 /// read, and what they spoke.
-/// A roaming instantiation as the workspace keys its code: the symbol it is
-/// lowered under, the file its generic lowers from, and its type arguments'
-/// shapes, one per line.
-export type Instance = { symbol: string, home: FileId, shapes: string }
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, hashes: List<HashAsk> }
 
-/// An instantiation lowered fresh: its key, the bodies and statics of the unit it lowered as, and
-/// the roaming instantiations that unit calls.
-export type InstanceCode = { key: Instance, bodies: List<Body>, statics: List<Static>, callees: List<Instance> }
-
-/// What the store kept of an instantiation and the roaming instantiations it reaches: the
-/// facts found, and the symbols whose facts are missing — held, so a hash reaching one is absent.
-export type KeptInstance = { facts: List<CodeFacts>, held: List<string> }
-
-/// Nothing kept: the pure lowering's answer.
-fn no_kept(_i: Instance) -> KeptInstance { KeptInstance { facts: [], held: [] } }
-
-/// The key an instantiation's code is kept under.
-fn instance_of(decls: Decls, w: Wanted) -> Instance {
-    Instance {
-        symbol: w.name,
-        home: w.file,
-        shapes: [type_shape_key(decls, t) for t in w.sub?.args ?? []].join("\n"),
-    }
-}
-
-/// WHAT HELD BODIES ASK, as the lowering takes it: the asks homed in read files, resolved —
-/// they lower here — and of the rest their names, the homes of those that roam, and, when a
-/// link owes code hashes, the roaming ones resolved.
-export type HeldWants = { read: List<Wanted>, names: List<string>, homes: List<FileId>, roaming: List<Wanted> }
-
-/// No held body asks anything.
-export fn no_held_wants() -> HeldWants { HeldWants { read: [], names: [], homes: [], roaming: [] } }
-
-type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk>, held: List<string>, instances: List<InstanceCode>, kept: List<CodeFacts> }
-
-fn drained(
-    pending: List<Wanted>,
-    asked: HeldWants,
-    unit_of: fn(Wanted) -> Unit,
-    is_held: fn(FileId) -> bool,
-    instantiated: fn(Wanted) -> bool,
-    held_stub: fn(Wanted) -> Body?,
-    instance_key: fn(Wanted) -> Instance,
-    kept_instance: fn(Instance) -> KeptInstance,
-) -> Drained {
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, instantiated: fn(Wanted) -> bool) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     mut statics: List<Static> = []
     mut hashes: List<HashAsk> = []
-    mut held: List<string> = []
-    mut instances: List<InstanceCode> = []
-    mut kept: List<CodeFacts> = []
-    mut asks: List<Ask> = []
-    mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
-    // a held body's ask is the store's: its name is seen, and its code kept only where it roams
-    for name in asked.names { seen.set(name, true) }
-    for w in asked.roaming {
-        let k = kept_instance(instance_key(w))
-        kept = kept.concat(k.facts)
-        held = held.concat(k.held)
-    }
-    // a stub is a fresh caller's, whoever first asked the name
-    mut stubbed: Map<string, bool> = {}
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
@@ -822,51 +653,16 @@ fn drained(
         // wants it, WEAK and owned by no file — and its home is reported, because
         // a home that is held has no body to lower from.
         let roams = instantiated(w)
-        if roams { homes.push(w.file) }
         let fresh = claim_seen(seen, w.name)
-        if is_held(w.file) && claim_seen(stubbed, w.name) {
-            // THE BODY IS THE STORE'S, BUT THE CONTRACT MUST STILL BE HERE: a
-            // fresh caller's memory pass reads a called-by-name callee's seat
-            // marks from `l.fns` alone (`marks_by_name`), and a held callee is
-            // never unit_of'd into it. Without a stub a held `consumed` seat
-            // reads as plain, the caller skips the retain the callee's own
-            // (held, unseen) release still performs, and the caller reads
-            // freed memory (.66 hole 3).
-            let stub: Body? = held_stub(w)
-            // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-            if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
-            if stub != null { fns.push(stub!) }
-        }
-        if fresh && is_held(w.file) {
-            held.push(w.name)
-            if roams {
-                let k = kept_instance(instance_key(w))
-                kept = kept.concat(k.facts)
-                held = held.concat(k.held)
-            }
-        }
-        if fresh && !is_held(w.file) {
+        if fresh {
             minted = minted + 1
             let u = unit_of(w)
-            kept = kept.concat(u.kept)
-            if roams {
-                instances
-                    .push(
-                        InstanceCode {
-                            key: instance_key(w),
-                            bodies: u.bodies,
-                            statics: u.statics,
-                            callees: [instance_key(more) for more in u.wants if instantiated(more)],
-                        },
-                    )
-            }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for b in u.bodies { fns.push(if roams { b with { file: null, weak: true } } else { b }) }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for d in u.voices.list { spoken.push(d) }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for more in u.wants {
-                if !roams && instantiated(more) { asks.push(Ask { by: w.file, want: more }) }
                 wants.push(more)
             }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
@@ -884,17 +680,7 @@ fn drained(
                 ),
             )
     }
-    Drained {
-        fns: fns,
-        spoken: spoken,
-        statics: statics,
-        asks: asks,
-        homes: asked.homes.concat(homes),
-        hashes: hashes,
-        held: asked.names.concat(held),
-        instances: instances,
-        kept: kept,
-    }
+    Drained { fns: fns, spoken: spoken, statics: statics, hashes: hashes }
 }
 
 /// Each static once: units read one const independently and each

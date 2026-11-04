@@ -151,6 +151,12 @@ export trait Fingerprint {
 /// variant's payload. A type that is neither has nothing to fold and
 /// answers its name alone, which is still an identity.
 fn body_of(t: MetaType) -> MetaDecls {
+    if t.annotations.any(it.name == "codec") {
+        return quote {
+            fn fingerprint() -> int { ${name(t.name)}.digest_in(indexed_scope(), self) }
+            fn fingerprint_in(ids: Ids) -> int { ${name(t.name)}.digest_in(ids.as_scope(), self) }
+        }
+    }
     quote {
         fn fingerprint() -> int { ${folding(t, plain_folds())} }
         fn fingerprint_in(ids: Ids) -> int { ${folding(t, id_folds())} }

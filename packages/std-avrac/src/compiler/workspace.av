@@ -143,7 +143,6 @@ type ReadScope = { before: List<RunRead>, gen: int }
 fn no_pending() -> List<PendingRead> { [] }
 
 /// No held file's code, typed.
-fn no_codes() -> List<CodeFacts> { [] }
 
 /// The host's environment — what a `${NAME}` hole in a link row fills from.
 extern fn avra_host_env(name: string) -> string
@@ -237,9 +236,7 @@ fn new_keys() -> Keys {
 /// and the reads seen under it (`read_gen`, `read_seen`, `read_gens`), the units being lowered,
 /// innermost last (`lowering`), and the consts each unit's lowering asked
 /// for, by the unit (`unit_asks`), the declaration each lowered body belongs to, by its
-/// name (`owners`), whether kept units may stand in for lowering
-/// (`serving`), the units that did (`served`), each file's surface (`surfaces`), its kept rows (`rows`), the rows of
-/// this derivation (`rows_live`) and the files that made one (`rows_fresh`).
+/// name (`owners`).
 /// A read's expansion, memoized for the attempt: the reads it inherits and the
 /// run generation of the path it walked. A read expands differently as a fn than
 /// as a whole file, so the run generation — not a "seen" mark — invalidates it.
@@ -340,9 +337,6 @@ fn filed_into(map: Cell<Map<string, List<string>>>, key: string, files: List<str
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
-    held_asks: Cell<List<HeldAsk>>,
-    asks_lost: Cell<List<string>>,
-    held_codes: Cell<List<CodeFacts>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<RunRead>>>,
     read_gen: Cell<Map<string, int>>,
@@ -388,13 +382,6 @@ type Hold = {
     groups: Cell<List<Group>>,
     group_index: Cell<Map<string, int>>,
     owners: Cell<Map<string, DeclId>>,
-    serving: Cell<bool>,
-    warm: Cell<bool>,
-    served: Cell<List<Served>>,
-    surfaces: Cell<Map<string, string>>,
-    rows: Cell<Map<string, Map<string, UnitRow>>>,
-    rows_live: Cell<Map<string, List<UnitRow>>>,
-    rows_fresh: Cell<Map<string, bool>>,
 }
 
 /// One const a unit's lowering asked the settlement for.
@@ -406,11 +393,6 @@ type PendingRead = { reader: string, read: RunRead }
 
 /// A held file's `collect` that gathers across files: the file, the package's source,
 /// what it gathers, and the set it gathered when it was last read.
-/// WHAT A HELD BODY ASKS, AS A NAME: the held file that asks, the want's symbol and home, whether
-/// it roams (an instantiation, lowered wherever it is wanted), and its own wire — resolved into a
-/// want only when a reader needs its declaration.
-type HeldAsk = { by: string, name: string, home: string, roams: bool, wire: string }
-
 type HeldGather = { collector: string, package: string, gathering: Gathering, digest: string }
 
 /// A `collect`'s name, what it gathers by, from where, the order it gathers in, and what it
@@ -439,7 +421,6 @@ type KeptLine = {
 
 fn new_hold() -> Hold {
     let no_forced: Map<string, Reads> = {}
-    let no_asks: List<HeldAsk> = []
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
     let no_minted: Map<string, bool> = {}
@@ -449,9 +430,6 @@ fn new_hold() -> Hold {
     let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
         forced: Cell.new(no_forced),
-        held_asks: Cell.new(no_asks),
-        asks_lost: list_cell(),
-        held_codes: Cell.new(no_codes()),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
         read_gen: map_cell(),
@@ -485,13 +463,6 @@ fn new_hold() -> Hold {
         groups: list_cell(),
         group_index: map_cell(),
         owners: map_cell(),
-        serving: Cell.new(false),
-        warm: Cell.new(false),
-        served: list_cell(),
-        surfaces: map_cell(),
-        rows: map_cell(),
-        rows_live: map_cell(),
-        rows_fresh: map_cell(),
     }
 }
 
@@ -822,7 +793,7 @@ fn key(f: Family, arg: int) -> Key {
     Key { family: f.ordinal, arg: arg }
 }
 
-/// `Family.Syntax`'s own fold: the declaration's expr range and its
+/// A declaration's syntax fold: its expr range and its
 /// declaring statement, each avalanched (`mix_final`, splitmix64's
 /// finalizer) before folding through `fp_list` — `fp`'s own inner mix
 /// is linear, so summing raw fingerprints would carry over whatever
@@ -855,10 +826,6 @@ fn settled_verified(ws: Workspace, arg: int) -> int {
     touch(ws.settled_at(arg))
     ws.db.changed_at(key(Family.Settled, arg))
 }
-fn lowered_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.lowered(arg))
-    ws.db.changed_at(key(Family.Lowered, arg))
-}
 fn lift_lowered_verified(ws: Workspace, arg: int) -> int {
     touch(ws.lift_lowered(arg))
     ws.db.changed_at(key(Family.LiftLowered, arg))
@@ -885,10 +852,6 @@ fn expanded_verified(ws: Workspace, arg: int) -> int {
 fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
-}
-fn syntax_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.syntax(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Syntax, arg))
 }
 fn names_verified(ws: Workspace, arg: int) -> int {
     touch(ws.name_slice(decl_at_arg(arg)))
@@ -919,12 +882,10 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Methods -> methods_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
         .Settled -> settled_verified(ws, arg),
-        .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
-        .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
@@ -976,6 +937,10 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
 fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
+
+/// A declaration's own syntax: the fold of its range's node fingerprints.
+@query
+fn syntax_in(ws: Workspace, d: DeclId) -> int { ws.syntax_made(d) }
 
 /// What a file's top level sees, as its fold. A re-entry before it settles is a smaller view.
 @query
@@ -2245,15 +2210,12 @@ impl Workspace {
     /// signed or lowered under) never calls this for itself: reading
     /// the nodes it is itself the pass for is its computation, not a
     /// Db read.
-    fn syntax(d: DeclId) -> int {
-        let k = key(Family.Syntax, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
-        self.db.begin(k)
+    fn syntax(d: DeclId) -> int { syntax_in(self, d) }
+
+    fn syntax_made(d: DeclId) -> int {
         let x = self.decls.decl(d)
         let _ = self.parsed(x.file)
-        let h = syntax_hash(self.decls.store(d), x)
-        self.db.settle(k, h)
-        h
+        syntax_hash(self.decls.store(d), x)
     }
 
     /// A declaration's own PLACEMENT, DECLARATION-GRAIN: the arena
@@ -2533,12 +2495,10 @@ export fn family_code_hash(f: Family) -> string {
         .Methods -> code_hash(methods_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",
         .Settled -> code_hash(settled_verified) ?? "",
-        .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
-        .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",

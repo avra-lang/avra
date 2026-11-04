@@ -5,7 +5,6 @@
 use @std.avrac.compiler.{Program}
 use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
-use compiler.workspace_analysis.{inst_key_of}
 use compiler.lower.{code_graph, CodeFacts, FactNode}
 
 fn hashing(main: string) -> Program {
@@ -205,27 +204,6 @@ spec "compiler — a fn's code hash" {
     }
 }
 
-spec "compiler — an instantiation's kept key" {
-    given "the same home, arguments and symbol" {
-        then "name one key" {
-            inst_key_of("home", "int", "g\$^T") == inst_key_of("home", "int", "g\$^T")
-        }
-    }
-    given "a type argument whose shape differs" {
-        then "names another key" {
-            inst_key_of("home", "int", "g\$^T") != inst_key_of("home", "record 1 (int)", "g\$^T")
-        }
-        then "a field's type moved under the same name names another key" {
-            inst_key_of("home", "record 2 (int, int)", "g\$^T") != inst_key_of("home", "record 2 (int, string)", "g\$^T")
-        }
-    }
-    given "a home whose object key differs" {
-        then "names another key" {
-            inst_key_of("home", "int", "g\$^T") != inst_key_of("home2", "int", "g\$^T")
-        }
-    }
-}
-
 /// The hash of a fn whose one ref names `target`, which has no facts of its own.
 fn ref_hash(target: string, known: List<string>) -> string? {
     mut g = code_graph(
@@ -236,7 +214,6 @@ fn ref_hash(target: string, known: List<string>) -> string? {
                 asked: [],
             },
         ],
-        [],
         known,
         [],
     )
