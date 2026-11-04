@@ -1,13 +1,12 @@
 // `failures()` reads every `_`-declared fn's body through the `Expr`
 // and `Stmt` kind buckets. Its read of each body records ONE edge on
-// that declaration's `Family.Syntax`, so an edit to one declaration
-// moves only its own edge. `Failures` is 20 and `Syntax` 25
-// (compiler/workspace.av's `ordinal`).
+// that declaration's own syntax answer, so an edit to one declaration
+// moves only its own edge.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace, ErrorSite}
+use compiler.{Workspace, ErrorSite, syntax_in_key}
 use compiler.host.{memory_host}
 use core.{DeclId}
-use @std.relation.engine.{Key}
+use @std.relation.engine.{Key, same_key}
 
 fn failures_key(ws: Workspace) -> Key { ws.cells_named("failures_solved").first() ?? Key { family: -1, arg: 0 } }
 
@@ -43,10 +42,7 @@ fn surveyed(main: string) -> Workspace {
 /// Whether `failures()` depends on `name`'s own syntax cell.
 fn reads_syntax_of(ws: Workspace, name: string) -> bool {
     let d = failing_decl(ws, name)
-    ws
-        .db
-        .edges_by_reader(failures_key(ws))
-        .any((k: Key) -> k.family == family_ordinal("Syntax") && k.arg == d.index)
+    ws.db.edges_by_reader(failures_key(ws)).any((k: Key) -> same_key(k, syntax_in_key(ws, d)))
 }
 
 /// The syntax hash `failures()`'s edge on `name` settled on.
