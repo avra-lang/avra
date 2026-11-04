@@ -859,10 +859,6 @@ fn methods_verified(ws: Workspace, arg: int) -> int {
     touch(ws.methods(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Methods, arg))
 }
-fn typed_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.typed(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Typed, arg))
-}
 fn const_typed_verified(ws: Workspace, arg: int) -> int {
     touch(ws.const_type_at(arg))
     ws.db.changed_at(key(Family.ConstTyped, arg))
@@ -944,7 +940,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Resolved -> resolved_verified(ws, arg),
         .Sig -> sig_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
-        .Typed -> typed_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
         .Analysis -> analysis_verified(ws, arg),
@@ -2502,41 +2497,13 @@ impl Workspace {
 
     /// One declaration's body typed — a table over its own expression
     /// range, the sigs it names asked as it reads them.
-    fn typed(d: DeclId) -> TypeFacts {
-        // Annotation evaluation re-types the declaration after hiding
-        // the active annotation, so this family also has a smaller
-        // recursive view.
-        match self.relation(Family.Typed).start_recursive(d.index) {
-            .Reuse(value) -> { return typed_of(value) },
-            .Compute -> nothing(),
-        }
-        mut t = self.type_cx_for(self.decls.decl(d))
-        let x = self.decls.decl(d)
-        let out = t.type_decl(x)
-        // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
-        // window typed now lacks the ids the expansion is about to add,
-        // so it answers this asker alone and is never memoized — the
-        // facts settle once the expansion has closed.
-        if self.db.active(key(Family.Expanded, x.file.index)) {
-            self.db.abandon(key(Family.Typed, d.index))
-            return out
-        }
-        // The facts carry ARENA IDS: the settle digest reads them where they are placed, so a
-        // shift that leaves `syntax(d)` and `names(d)` alike still reads this body as moved.
-        let spot = self.placed(d)
-        typed_of(
-            self
-                .relation(Family.Typed)
-                .finish_lazy(
-                    d.index,
-                    DbRow.Typed(out),
-                    (r: DbRow) -> fp(
-                        123,
-                        [spot, TypeFacts.digest_in(self.facts_scope(0, 0), typed_of(r))],
-                    ),
-                ),
-        )
-    }
+    fn typed(d: DeclId) -> TypeFacts { typed_body(self, d) }
+
+    /// Whether `d`'s typing is running now: a read of its own answer is the value asking.
+    fn typing_of(d: DeclId) -> bool { self.db.active(typed_body_key(self, d)) }
+
+    /// The family every body's typing is filed under.
+    fn typed_family() -> int { typed_body_key(self, DeclId { index: 0 }).family }
 
     /// A file's bodies as one table: Main's facts first (its range
     /// spans the file), each declaration's laid over its own range,
@@ -2592,7 +2559,7 @@ impl Workspace {
                         122,
                         [
                             fp_list(
-                                [dep_hash_fp(ws.db.value_hash_of(key(Family.Typed, d.index))) for d in bodies],
+                                [dep_hash_fp(ws.db.value_hash_of(typed_body_key(ws, d))) for d in bodies],
                             ),
                         ],
                     ),
@@ -2705,7 +2672,6 @@ export fn family_code_hash(f: Family) -> string {
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Sig -> code_hash(sig_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
-        .Typed -> code_hash(typed_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",
         .Analysis -> code_hash(analysis_verified) ?? "",
