@@ -309,7 +309,14 @@ export type AnswerRef = {
     /// The family whose cell a read of these answers records, for answers no cell of their own
     /// settles: the cell that notes them as its leaves. -1 for answers recorded as themselves.
     noted_by: int = -1,
+    /// The dense number a call was asked with, none for a call asked by no number.
+    number: fn(int) -> int? = unnumbered,
+    /// The call asked with a dense number, none when none was.
+    numbered: fn(int) -> int? = unnumbered,
 }
+
+/// No call is asked by a number.
+fn unnumbered(_n: int) -> int? { null }
 
 impl AnswerRef {
     fn family_now() -> int {
@@ -984,6 +991,19 @@ impl Db {
         avra_qtrace("Q\tlaw\tin_process_read\t${query}\t${read}\n")
     }
 
+    /// The dense number a query's call `k` was asked with — a declaration's or a file's index —
+    /// none for a call asked by none.
+    fn number_of(k: Key) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        (owner.number)(k.arg)
+    }
+
+    /// The call of `family` asked with dense number `n`, none when none was.
+    fn call_numbered(family: int, n: int) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == family) else { return null }
+        (owner.numbered)(n)
+    }
+
     fn answer_named(name: string) -> AnswerRef? {
         let all = self.answer_refs.get().filter(it.name == name)
         if all.length == 1 { all.first() } else { null }
@@ -1267,6 +1287,8 @@ impl Answers<V> {
                     hash: (arg: int) -> held_hash(slots, id, arg),
                     by_answer: true,
                     in_process: !self.lasting,
+                    number: (arg: int) -> held_number(slots, id, arg),
+                    numbered: (n: int) -> held_numbered(slots, id, n),
                 },
             )
         made
@@ -1290,6 +1312,18 @@ fn held_spelled<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> st
 fn held_arg<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, spelled: string) -> int? {
     let h? = slots.get()[id] else { return null }
     h.durable_arg(spelled)
+}
+
+/// The dense number call `arg` was asked with.
+fn held_number<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> int? {
+    let h? = slots.get()[id] else { return null }
+    h.number_at(arg)
+}
+
+/// The call asked with dense number `n`.
+fn held_numbered<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, n: int) -> int? {
+    let h? = slots.get()[id] else { return null }
+    h.numbered_arg(n)
 }
 
 /// The hash of call `arg`'s settled value — the call asked first, by its number, when it
@@ -1569,6 +1603,13 @@ impl AnswersUnder<V> {
     fn number_of(k: Key) -> int? {
         if k.family != self.memo.family { return null }
         self.number_at(k.arg)
+    }
+
+    /// The call asked with dense number `n`, none when none was.
+    fn numbered_arg(n: int) -> int? {
+        let known = self.ints.get()
+        if n < 0 || n >= known.length || known[n] < 0 { return null }
+        known[n]
     }
     /// Every answer and cell dropped, and every re-ask with them: what a call's closure held of
     /// its context is let go.

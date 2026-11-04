@@ -641,6 +641,8 @@ export type Workspace = {
     /// each file's clash diagnostics as `method_clashes` last settled them
     /// each module's names as their query last made them
     names_rows: Table<ModuleNames>,
+    /// each file's visible names as their query last made them
+    visible_rows: Table<Namespace>,
     /// each file's plain parse as its query last made it
     asks: Cell<List<Wanted>>,
     /// `asks`' own name -> index, so `spec_id` interns in O(1) rather
@@ -836,10 +838,6 @@ fn items_verified(ws: Workspace, arg: int) -> int {
     touch(ws.items(file_at(arg)))
     ws.db.changed_at(key(Family.Items, arg))
 }
-fn visible_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.visible(file_at(arg)))
-    ws.db.changed_at(key(Family.Visible, arg))
-}
 fn resolved_verified(ws: Workspace, arg: int) -> int {
     touch(ws.resolved(file_at(arg)))
     ws.db.changed_at(key(Family.Resolved, arg))
@@ -920,7 +918,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
     if family >= Family.all().length { return 0 }
     match Family.all()[family] {
         .Items -> items_verified(ws, arg),
-        .Visible -> visible_verified(ws, arg),
         .Resolved -> resolved_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
@@ -983,6 +980,11 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
 fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
+
+/// What a file's top level sees, as its fold. A re-entry before it settles is a smaller view.
+@query
+@recursive
+export fn file_visible_made(ws: Workspace, f: FileId) -> int { ws.visible_made(f) }
 
 /// A file's parse under the block words it stands under.
 @query
@@ -1110,6 +1112,7 @@ fn built(
         signs: new_table<bool>(),
         method_clashes: new_table<List<Clash>>(),
         names_rows: new_table<ModuleNames>(),
+        visible_rows: new_table<Namespace>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
         lift_asks: Cell.new(no_lifts),
@@ -2002,10 +2005,18 @@ impl Workspace {
     /// visible namespace back — a re-entry is a SMALLER view, never a
     /// trap.
     fn visible(f: FileId) -> Namespace {
-        match self.relation(Family.Visible).start_recursive(f.index) {
-            .Reuse(value) -> { return visible_of(value) },
-            .Compute -> nothing(),
+        let _ = file_visible_made(self, f)
+        let made? = self.visible_rows.at(f.index) else {
+            // a restored fold carries no names; they are made again unheard, the fold standing for them
+            self.db.kernel.unheard(() -> touch(self.visible_made(f)))
+            return self.visible_rows.at(f.index)!
         }
+        made
+    }
+
+    /// A file's visible names, made and kept beside the cell; the fold is what they say, every id
+    /// by its durable name.
+    fn visible_made(f: FileId) -> int {
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -2026,12 +2037,8 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
-        let ids = self.decls.ids()
-        visible_of(
-            self
-                .relation(Family.Visible)
-                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> visible_of(r).fingerprint_in(ids)),
-        )
+        self.visible_rows.keep(f.index, out)
+        out.fingerprint_in(self.decls.ids())
     }
 
     /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
@@ -2523,7 +2530,6 @@ fn declared_components(p: Parsed) -> List<ComponentWord> {
 export fn family_code_hash(f: Family) -> string {
     match f {
         .Items -> code_hash(items_verified) ?? "",
-        .Visible -> code_hash(visible_verified) ?? "",
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",

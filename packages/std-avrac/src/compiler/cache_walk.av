@@ -79,7 +79,7 @@ enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
 /// What each family keys by.
 fn keyed_by(f: Family) -> KeyedBy {
     match f {
-        .Items or .Visible or .Resolved or .Folded or .Expanded -> KeyedBy.File,
+        .Items or .Resolved or .Folded or .Expanded -> KeyedBy.File,
         .Methods or .ConstTyped or .Raised or .Syntax or .Names or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
@@ -193,7 +193,7 @@ impl Workspace {
         let family? = self.family_worded(word) else { return Meant.NoFamily(word) }
         let subject = label.substring(open + 1, label.length - 1)
         if subject == "" { return Meant.NoAnswer(label) }
-        let keys = [Key { family: family, arg: arg } for arg in self.subject_args(self.keyed(family), subject)]
+        let keys = [Key { family: family, arg: arg } for id in self.subject_args(self.keyed(family), subject) for arg in some_list(self.call_of(family, id))]
         let settled = [k for k in keys if self.db.cell(k) != null]
         if settled.is_empty() { Meant.NoAnswer(label) } else { Meant.Answers(settled) }
     }
@@ -393,16 +393,40 @@ impl Workspace {
     }
 
     fn key_subject(k: Key) -> string {
+        let n? = self.subject_of(k) else { return "${k.arg}" }
         match self.keyed(k.family) {
-            .File -> self.shown_path(self.decls.file(FileId { index: k.arg }).path),
-            .Module -> module_shown(self.decls.module_name(ModuleId { index: k.arg })),
-            .Decl -> self.decl_shown(DeclId { index: k.arg }),
-            .Package -> self.package_shown(self.packages()[k.arg].root),
+            .File -> self.shown_path(self.decls.file(FileId { index: n }).path),
+            .Module -> module_shown(self.decls.module_name(ModuleId { index: n })),
+            .Decl -> self.decl_shown(DeclId { index: n }),
+            .Package -> self.package_shown(self.packages()[n].root),
             .Program -> THE_PROGRAM,
-            .Unit -> "${UNIT}${k.arg}",
-            .Name -> self.bucket_shown(k.arg),
-            .Input -> self.input_shown(self.input_names.get()[k.arg]),
-            .Row -> "${k.arg}",
+            .Unit -> "${UNIT}${n}",
+            .Name -> self.bucket_shown(n),
+            .Input -> self.input_shown(self.input_names.get()[n]),
+            .Row -> "${n}",
+        }
+    }
+
+    /// The id a key stands for: a query keyed by an id was asked with it; any other key's arg is
+    /// its own subject.
+    fn subject_of(k: Key) -> int? {
+        if !self.keyed_by_number(k.family) { return k.arg }
+        self.query_db().number_of(k)
+    }
+
+    /// The key arg a family answers id `n` under: the call asked with it for a query keyed by an
+    /// id, the id itself for any other.
+    fn call_of(family: int, n: int) -> int? {
+        if !self.keyed_by_number(family) { return n }
+        self.query_db().call_numbered(family, n)
+    }
+
+    /// Whether a family is a query whose calls are asked by an id's number.
+    fn keyed_by_number(family: int) -> bool {
+        if Family.all().get(family) != null { return false }
+        match self.keyed(family) {
+            .File or .Module or .Decl or .Package or .Program or .Unit or .Name or .Input -> true,
+            .Row -> false,
         }
     }
 
