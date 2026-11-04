@@ -9,6 +9,7 @@
 //! on the way.
 
 use @std.errors.{Loc}
+use @std.text.{from_codepoint}
 
 /// splitmix64's finalizer: a nonlinear 64-bit mix.
 export fn mix(x: int) -> int {
@@ -281,12 +282,22 @@ impl Writer {
         self.chunks.get().bytes()
     }
 
-    /// The octets as text no other octets spell: what a record is
-    /// interned by.
+    /// The octets as text no other octets spell: what a record is interned by. A printable
+    /// octet stands as itself and every other, `%` included, as `%` and two hex digits.
     fn spelled() -> string {
         let all = self.bytes()
-        ["${all.at(i)}" for i in 0..all.length].join(".")
+        let words = octet_words()
+        [words[all.at(i)] for i in 0..all.length].join("")
     }
+}
+
+/// Each octet's spelling in `Writer.spelled`, by its value.
+once fn octet_words() -> List<string> { [octet_word(o) for o in 0..256] }
+
+fn octet_word(o: int) -> string {
+    if o > 32 && o < 127 && o != 37 { return from_codepoint(o) }
+    let digits = "0123456789ABCDEF"
+    "%${digits.substring(o / 16, o / 16 + 1)}${digits.substring(o % 16, o % 16 + 1)}"
 }
 
 /// HOW A SAVED NAME SPELLS THE TREE ITS STORE STANDS IN: `home` as a whole path — itself, or
@@ -300,8 +311,9 @@ const TREE_MARK: string = "{tree}"
 /// `text` with every whole `home` spelled as the tree: a path under it in one pass, then the
 /// rare `home` that ends a path where it stands.
 export fn saved_in(home: string, text: string) -> string {
+    if home.is_empty() { return text }
     let beside = beside_of(home)
-    if home.is_empty() || !text.contains(beside) { return text }
+    if !text.contains(beside) { return text }
     let under = text.replace("${home}/", "${TREE_MARK}/").replace(beside, "${TREE_MARK}/../")
     if !under.contains(home) { return under }
     mut parts: List<string> = []
@@ -340,9 +352,9 @@ export fn unsaved_in(home: string, text: string) -> string {
 /// The directory `home` stands in, ending in its slash — never the filesystem's root, so a
 /// tree at the top of the disk has nothing beside it.
 fn beside_of(home: string) -> string {
-    let parts = home.split("/")
-    if parts.length < 3 { return "${home}/" }
-    "${parts.take(parts.length - 1).join("/")}/"
+    mut at = home.length - 1
+    while at > 0 && home.char_code(at) != 47 { at = at - 1 }
+    if at <= 0 { "${home}/" } else { home.substring(0, at + 1) }
 }
 
 /// A text argument spelled for a call's key: itself with `%` and a tab escaped, so a tab joins
