@@ -115,7 +115,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query, recursive, codec, cycled_by, scoped_by}
+use @std.relation.{query, lasting, recursive, codec, cycled_by, scoped_by}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
@@ -893,10 +893,6 @@ fn syntax_verified(ws: Workspace, arg: int) -> int {
     touch(ws.syntax(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Syntax, arg))
 }
-fn names_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.name_slice(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Names, arg))
-}
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
     ws.db.changed_at(key(Family.Named, arg))
@@ -929,7 +925,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Expanded -> expanded_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
-        .Names -> names_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Named -> named_verified(ws, arg),
@@ -976,6 +971,13 @@ fn placement_of(ws: Workspace, d: DeclId) -> int {
 @query
 @recursive
 export fn module_names(ws: Workspace, m: ModuleId) -> ModuleNames { ws.names_made(m) }
+
+/// A declaration's own slice of its file's names. A re-entry before it settles is a smaller view.
+/// LASTING because its reads are all recorded inputs: the declaration's expression range and the
+/// file's resolved names, both read through the relation the frame records.
+@query
+@lasting
+export fn names_in(ws: Workspace, d: DeclId) -> int { ws.name_slice_made(d) }
 
 /// A file parsed under NO block words: the pre-scan every first read starts from.
 @query
@@ -2253,16 +2255,13 @@ impl Workspace {
 
     /// A declaration's own slice of its file's names, DECLARATION-GRAIN
     /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
-    /// range. Recomputed with the file's `Resolved`, and cut off by
-    /// `settle` for every declaration whose slice folds the same.
-    fn name_slice(d: DeclId) -> int {
-        let k = key(Family.Names, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
-        self.db.begin(k)
+    /// range. Recomputed with the file's `Resolved`.
+    fn name_slice(d: DeclId) -> int { names_in(self, d) }
+
+    /// A declaration's own slice, made once per declaration and kept past the process.
+    fn name_slice_made(d: DeclId) -> int {
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
-        self.db.settle(k, h)
-        h
+        name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
     }
 
     /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
@@ -2528,7 +2527,6 @@ export fn family_code_hash(f: Family) -> string {
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
-        .Names -> code_hash(names_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",

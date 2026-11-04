@@ -246,7 +246,6 @@ impl Workspace {
         rdb.answer_known(self.named_by_file("Items", Family.Items))
         rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
         rdb.answer_known(self.named_by_file("Expanded", Family.Expanded))
-        rdb.answer_known(self.named_names())
         rdb.answer_known(self.named_by_bucket())
         rdb.answer_known(self.named_closures())
         self.known_opened()
@@ -329,36 +328,6 @@ impl Workspace {
         let ws = self
         self
             .spelled_ask("lift", self.lift_asks.get().length, (i: int) -> ws.spelled_lift(i), spelled)
-    }
-
-    /// A declaration's slice of its file's names, spelled by the declaration and digested with
-    /// its positions counted from its own start, so another process spells it alike wherever
-    /// the declaration sits. The kernel's own cell keeps the placed slice.
-    fn named_names() -> AnswerRef {
-        let ws = self
-        let ordinal = Family.Names.ordinal
-        AnswerRef {
-            name: "Names",
-            family: () -> ordinal,
-            spelled: (arg: int) -> ws.spelled_decl(arg),
-            arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.durable_slice(arg),
-        }
-    }
-
-    fn durable_slice(arg: int) -> int? {
-        if arg < 0 || arg >= self.decls.decl_count() { return null }
-        if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
-        let x = self.decls.decl(DeclId { index: arg })
-        match self.relation(Family.Resolved).values.entry(x.file.index) {
-            .Present(r) -> name_slice_fp(
-                resolved_of(r),
-                x.lo,
-                x.hi,
-                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
-            ),
-            .Missing -> null,
-        }
     }
 
     /// The `Named` cells: a name's bucket of declarations, spelled by the name.
