@@ -1010,7 +1010,12 @@ impl VisibleNames {
 @query
 fn name_slice_of(ws: Workspace, d: DeclId) -> int {
     let x = ws.decls.decl(d)
-    name_slice_fp(ws.resolved(x.file), x.lo, x.hi, ws.facts_scope(x.lo, x.stmt_lo))
+    name_slice_fp(
+        ws.resolved(x.file),
+        x.lo,
+        x.hi,
+        ws.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
+    )
 }
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
@@ -2111,7 +2116,7 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
-        VisibleNames { names: out, word: out.fingerprint_in(self.facts_scope(0, 0)) }
+        VisibleNames { names: out, word: out.fingerprint_in(self.decls.ids()) }
     }
 
     /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
