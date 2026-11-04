@@ -681,12 +681,11 @@ impl Workspace {
             if !missing.is_empty() { fail BuildError.UnsupportedOnWasm(missing) }
         }
         let programs = self.program_objects(d, full, asked, tools)?
-        let read = [self.object_of(d.store, a) for a in d.program.files]
+        let read = [self.object_of(full, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat(programs), tools)?
         // the program's buckets stand under what they are a function of, too
         if d.unlowered.is_empty() { let _ = d.store.keep_once(Stored.Unit, buckets_key(asked), buckets_text(programs)) }
         clock.mark("emit")
-        let held = self.held_objects(d.store)?
         clock.mark("place")
         let absent = self.absent_objects(tools.target)
         if !absent.is_empty() { fail BuildError.ObjectsMissing(absent) }
@@ -695,7 +694,7 @@ impl Workspace {
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
-                [d.store.path(Stored.Obj, o.key) for o in by_source(read.concat(held)).concat(programs)],
+                [d.store.path(Stored.Obj, o.key) for o in by_source(read).concat(programs)],
                 self,
                 tools.runtime,
                 staged,
@@ -793,23 +792,15 @@ impl Workspace {
     /// A read file's object: kept under the file's key, standing beside the store's
     /// for the link. Its scratch path is named by that same content key, so two
     /// builds of one tree share a file only when they would write the same bytes.
-    fn object_of(store: Store, a: Analysis) -> Made {
+    fn object_of(full: Lowered, a: Analysis) -> Made {
         let path = a.view.source.file
-        let key = self.read_okey(store, path)
+        let key = self.file_code_key(full, a.view.file)
         Made {
             which: Owned.File(a.view.file),
             key: key,
             obj: "${build_cache_root(self)}/obj/${key}.o",
             source: path,
         }
-    }
-
-    /// A read file's object key: its parts, with the sets its collects gather now —
-    /// a member that moved what a collect bakes moves the object its collector builds.
-    fn read_okey(store: Store, path: string) -> string {
-        let parts = self.key_parts_cached(store, self.module_path_of(path), path)
-        let now = [self.gathered_set(g, self.file_id(path)) for g in self.gatherings(path)]
-        if fields_wire(now) == fields_wire(parts.gathered) { self.held_okey(store, path) } else { object_key_of_parts(self, parts with { gathered: now }) }
     }
 
     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered
@@ -875,24 +866,6 @@ impl Workspace {
         if broke != null || unwritten != null { fail BuildError.EmitFailed(broke ?? unwritten!) }
         for o in owed { let _ = d.store.keep_file(Stored.Obj, o.key, o.obj, []) }
         owed.length
-    }
-
-    /// Every held file's object, where the store keeps it: it links in place.
-    fn held_objects(store: Store) -> Result<List<Made>, BuildError> {
-        let held = [self.held_object(store, path) for path in held_paths(self)]
-        let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))
-        if gone != null { fail BuildError.ObjectGone(gone!.source) }
-        held
-    }
-
-    fn held_object(store: Store, path: string) -> Made {
-        let key = self.held_okey(store, path)
-        Made {
-            which: Owned.File(self.file_id(path)),
-            key: key,
-            obj: store.path(Stored.Obj, key),
-            source: path,
-        }
     }
 }
 

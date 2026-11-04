@@ -439,13 +439,11 @@ impl Workspace {
 
     fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
         let why: Reads? = d.read.find(it.path == path)?.why
-        let unkept = why != null && why! is .Unkept
-        let missing = if unkept { self.missing_rows(d.store, self.held_okey(d.store, path), d.want) } else { [] }
         FileHold {
             path: path,
             held: false,
             why: why,
-            missing: missing,
+            missing: [],
             moved: self.parts_moved_at(path),
         }
     }
@@ -456,12 +454,6 @@ impl Workspace {
         let moved = self.hold.moved.get()
         (moved.get(parts_key(path)) ?? [])
             .concat(moved.get(seen_key(self.module_path_of(path).text())) ?? [])
-    }
-
-    /// The rows standing in for a file under `want` that the store lacks, by
-    /// what each keeps.
-    fn missing_rows(store: Store, okey: string, want: Want) -> List<string> {
-        if want is .Diagnostics || store.has(Stored.Obj, okey) { [] } else { ["its object"] }
     }
 
     /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
@@ -614,7 +606,7 @@ impl Workspace {
     ) -> Derived {
         let fresh = [k.want for k in lo.asks]
         let reach = reached_modules(self, store, p)
-        let asked = self.asked_print(store, self.known_as(at), fresh)
+        let asked = self.asked_print(store, self.known_as(at), lo, fresh)
         let _ = store.keep_once(Stored.Unit, clean_key(asked), "")
         if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
         self.keep_docs_read(store)
@@ -826,13 +818,13 @@ impl Workspace {
     /// key of every home it has lowered from — a home's text, and the interfaces
     /// it sees. An ask a home's own body makes is that home's content. A home the
     /// tree no longer has is gone from the print, so the print moves with it.
-    fn asked_print(store: Store, known_as: string, fresh: List<Wanted>) -> string {
+    fn asked_print(store: Store, known_as: string, lo: Lowered, fresh: List<Wanted>) -> string {
         // a home this program never admitted asks nothing of it, and naming it would mint it
         let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty() && self.there(path) && self.decls.known_file_id(path) != null]
         digest_of(
             joined(
                 sorted_texts(distinct([self.wanted_wire(w) for w in fresh]))
-                    .concat(["${path}\t${self.held_okey(store, path)}" for path in homes]),
+                    .concat(["${path}\t${self.file_code_key(lo, self.file_id(path))}" for path in homes]),
                 "\n",
             ),
         )
@@ -899,13 +891,10 @@ impl Workspace {
     }
 
     /// A read file's key: its pending reads resolved first, so what is kept and what is
-    /// asked wear one spelling — its parts, and the object key under its path.
+    /// asked wear one spelling — its parts.
     fn keep_file_key(store: Store, path: string) {
-        let _ = self.held_okey(store, path)
         let _ = self.resolve_pending_reads(store)
         self.keep_parts(store, path)
-        self
-            .keep_file_row(store, path, Stored.Unit, self.okey_row(path), self.held_okey(store, path))
     }
 }
 
