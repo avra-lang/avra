@@ -52,74 +52,6 @@ impl Workspace {
     // spelling it does not know is a DEFECT in the record, not a name to guess at. The
     // fallback is `error`, the ABSORBING type, so a broken record produces a type that
     // refuses rather than one that is silently wrong.
-    fn fill_shape(id: DeclId, row: RowShape) {
-        let d = self.decls.decl(id)
-        match row.shape {
-            .Const -> self.fill_const(row, d, id),
-            .Collect or .State -> self.decls.record_const_type(d.file, d.stmt, self.interface_type(row.of_wire())),
-            .Aims -> self.fill_aims(row, id),
-            .Named -> self.fill_named(row, id),
-            .Alias -> self.decls.landed([Signing.Declared(id, .Alias(self.interface_type(row.of_wire())))]),
-            .Struct -> self.fill_record(row, id, false),
-            .Boxed -> self.fill_record(row, id, true),
-            .Enum -> self.fill_enum(row, id),
-            .Fn or .Extern -> self.fill_fn(row, id),
-            .Opaque -> self.fill_opaque(row, id),
-        }
-    }
-
-    fn fill_const(row: RowShape, d: Decl, id: DeclId) {
-        let ty = self.interface_type(row.of_wire())
-        self.decls.record_const_type(d.file, d.stmt, ty)
-        // a held const has no initializer to settle again: its line's kept verdict is the
-        // only one, and one that decodes as neither a value nor a structural refusal is a
-        // defect said
-        let raw = text_of_field(row.field(1))
-        let value? = settled_from_wire(raw) else {
-            let words? = reach_from_wire(raw) else {
-                return self
-                    .defect(
-                        "a held const's value did not decode — `${d.name}` in ${self.decls.file(d.file).path}",
-                    )
-            }
-            return self.decls.remember_held_reach(id, words)
-        }
-        self.decls.remember_held_value(id, value)
-    }
-
-    fn fill_aims(row: RowShape, id: DeclId) {
-        let aimed? = self.decl_from_ref(row.field(0)) else { return }
-        self.decls.landed([Signing.Target(id, aimed)])
-    }
-
-    fn fill_named(row: RowShape, id: DeclId) {
-        let of = self.interface_type(row.of_wire())
-        let named = self.decls.types.intern(Type.Struct(id, self.decls.decl(id).name))
-        self
-            .decls
-            .landed([Signing.Declared(id, .Named(NamedSig { of: of })), Signing.NamedOver(named, of)])
-    }
-
-    fn fill_record(row: RowShape, id: DeclId, boxed: bool) {
-        let fields = row.items()
-        let states = row.field(2)
-        let sig = StructSig {
-            names: [field_name(f) for f in fields],
-            types: [self.interface_type(name_of_field(f)) for f in fields],
-            defaults: [self.field_default(id, field_name(f), row.list_at(1), j) for j, f in fields],
-            lacking: self.decls.lacking(id),
-            states: [j < states.length && states.char_code(j) == 49 for j, f in fields],
-        }
-        // a seal is sticky, so the layout the record kept lands before the declaration
-        let seal = if boxed { [Signing.Sealed(self.decls.record_type(id))] } else { [] }
-        self.decls.landed(seal.concat([Signing.Declared(id, .Record(sig))]))
-        let made = self.decls.record_type(id)
-        // peek, not is_flat: this is a belief to watch for drift, not a
-        // read to answer for — layouts_moved (compiler/derive.av) asks
-        // again once typing finishes, and a seal from a file that never
-        // declares this record must still be free to land before then
-        if self.decls.types.peek_flat(made) { self.hold.held_flat.push(made) }
-    }
 
     /// A held field's default: the record's own, else the one its row
     /// names — a spread field's default belongs to the record it came
@@ -128,32 +60,6 @@ impl Workspace {
     fn field_default(id: DeclId, field: string, refs: List<string>, j: int) -> DeclId? {
         self.decls.default_named(id, field) ?? self
             .decl_from_ref(if j < refs.length { refs[j] } else { "" })
-    }
-
-    fn fill_enum(row: RowShape, id: DeclId) {
-        let arms = row.items()
-        let sig = EnumSig {
-            names: [field_name(a) for a in arms],
-            payloads: [payload_of(self, a) for a in arms],
-        }
-        self.decls.landed([Signing.Declared(id, .Enum(sig))])
-    }
-
-    fn fill_fn(row: RowShape, id: DeclId) {
-        let sig = FnSig {
-            params: [self.interface_type(s) for s in row.items()],
-            ret: self.interface_type(row.ret_wire()),
-        }
-        let bits = row.writes()
-        let written = [Signing.SeatWritten(id, j) for j in 0..bits.length if bits.char_code(j) == 49]
-        let bounds = Signing.Bounds(id, self.bounds_read(id, row.bounds()))
-        self
-            .decls
-            .landed(
-                [Signing.Seats(id, row.marks()), Signing.Declared(id, .Fn(sig))]
-                    .concat(written)
-                    .concat([bounds]),
-            )
     }
 
     /// Each bounded seat's trait arguments as `seat=wire|wire`, `;`-joined —
@@ -167,40 +73,16 @@ impl Workspace {
         )
     }
 
-    /// The column `bounds_wire` wrote, back as one argument list per seat.
-    fn bounds_read(d: DeclId, entries: List<string>) -> List<List<TypeId>> {
-        [self.bound_at(entries, j) for j in 0..self.decls.tparams(d).length]
-    }
-
     fn bound_at(entries: List<string>, j: int) -> List<TypeId> {
         let hit? = entries.find(it.starts_with("${j}=")) else { return [] }
         [self.interface_type(w) for w in hit.substring("${j}=".length, hit.length).split("|")]
     }
-
-    /// A `trait`/`syntax`/`default`/`main`/`case`/`builtin` declaration has no
-    /// signature to fill — `sig(d.id)` answered null when its line was written.
-    fn fill_opaque(_row: RowShape, _id: DeclId) {}
 
     /// A type as a record wrote it: a wire, or the error type — a record writes nothing else.
     fn interface_type(name: string) -> TypeId {
         let words = wire_fields(name.substring(1, name.length), "~")
         let decoded? = (if name.starts_with("^") { self.decls.read_type_wire(words, 0) } else { null }) else { return self.decls.types.intern(Type.Error) }
         if decoded.next == words.length { decoded.id } else { self.decls.types.intern(Type.Error) }
-    }
-
-    /// A MODULE'S UNREAD FILES, MINTED: each file's `Items`, minted from its kept lines. A
-    /// file stands once, and its flag stands before the work does, so two files that name
-    /// each other meet once. SHAPES ARE NOT FILLED HERE: `decl_row_filled` fills each
-    /// declaration from its own row, on the ask that names it.
-    fn mint_files(paths: List<string>) {
-        let unread: List<string> = []
-        if unread.is_empty() { return }
-        for path in unread {
-            if traced() { qtrace("Q\tmint\t${path}\n") }
-            self.hold.minted.put(path, true)
-        }
-        work_module_minted()
-        for path in unread { let _ = self.items(self.file_id(path)) }
     }
 
     /// ONE UNREAD FILE'S DECLARATIONS, minted from its kept lines in kept order; answers the

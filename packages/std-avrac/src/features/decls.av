@@ -617,10 +617,6 @@ export type Decls = {
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: Cell<fn(FileId) -> void>,
-    /// THE NAME ENVIRONMENTS' DOOR, the workspace's to arm: a bucket reader names the value
-    /// it is about to read, and every unread file the environments list under it is minted
-    /// first — `named_rows`, `indexed`, `indexed_by_mark`, the extern readers.
-    ensure_listed: Cell<fn(Listed) -> void>,
     /// Every extern the name environments list, by symbol.
     externs_index: Cell<fn() -> List<ExternNote>>,
     /// The files the name environments list as declaring a type that may implement a trait.
@@ -939,9 +935,6 @@ fn embed_unjudged(_f: FileId, _rel: string, _kind: EmbedKind, _base: EmbedBase) 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
-// LICENSED fns.dead_parameter: a fn VALUE filling the listing seat — no workspace stands behind the table, so no file is minted
-fn no_listing(_l: Listed) {}
-
 fn no_externs() -> List<ExternNote> { [] }
 
 fn no_modules() -> List<string> { [] }
@@ -1054,7 +1047,6 @@ export fn new_decls_under(durable: Durable) -> Decls {
         rows_state: list_cell(),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
-        ensure_listed: Cell.new(no_listing),
         externs_index: Cell.new(no_externs),
         types_index: Cell.new(no_modules),
         embed_judge: Cell.new(embed_unjudged),
@@ -1359,7 +1351,6 @@ impl Decls {
     /// what this read saw.
     @bracket("decls")
     fn named(name: string) -> List<Decl> {
-        self.listed(Listed.Name(name))
         self.named_filed(name)
     }
 
@@ -1770,7 +1761,6 @@ impl Decls {
     /// Every declaration `collect` gathers under `word` — a declared instance
     /// of that component — in id order.
     fn indexed(word: string) -> List<Decl> {
-        self.listed(Listed.Word(word))
         self.filed(word_index, word)
     }
 
@@ -1779,7 +1769,6 @@ impl Decls {
 
     /// Every declaration wearing `@name`, in id order.
     fn indexed_by_mark(name: string) -> List<Decl> {
-        self.listed(Listed.Mark(name))
         self.filed(marks_index, name)
     }
 
@@ -2064,7 +2053,6 @@ impl Decls {
         self.disarm()
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_consumed)
-        self.ensure_listed.set(no_listing)
         self.ensure_refs.set(no_refs_ensure)
         self.ensure_held_refs.set(no_held_refs)
         self.ensure_read.set(no_finding)
@@ -2998,13 +2986,11 @@ impl Decls {
 
     /// The externs answering one symbol, their held modules minted first.
     fn externs_named(name: string) -> List<Decl> {
-        self.listed(Listed.Extern(name))
         [x for x in self.standing_externs() if x.name == name]
     }
 
     /// The program's host fns, their held modules minted first.
     fn host_fns() -> List<Decl> {
-        self.listed(Listed.Hosted)
         [x for x in self.standing_externs() if self.is_host_fn(x.id)]
     }
 
@@ -3163,7 +3149,6 @@ impl Decls {
     /// unrecorded.
     @bracket("decls")
     fn named_rows(name: string) -> List<Decl> {
-        self.listed(Listed.Name(name))
         let rs = self.decl_row_rows.get()
         rs.members(rs.bucket_of_text(name_index, name))
     }

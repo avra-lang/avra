@@ -127,38 +127,6 @@ impl Workspace {
         [read_fields(l) for l in text.split("\n").drop(1)]
     }
 
-    /// A declaration no parse declares, filled from its own line on the ask that names it,
-    /// never before: a line can name a declaration whose own is filled later, and a read through
-    /// that name must see that fill. Once per declaration, so a name reached while filling its
-    /// own line (a cycle) sees "not filled yet" rather than recursing.
-    fn decl_row_filled(d: DeclId) {
-        if self.hold.row_filled.at(d.index) != null { return }
-        self.hold.row_filled.keep(d.index, true)
-        let store? = self.store.get() else { return }
-        let x = self.decls.decl(d)
-        let path = self.decls.file(x.file).path
-        let m = self.module_path_of(path)
-        let row? = self.line_named(path, file_lines(self, store, m, path), d) else { return self.defect("a declaration has no line — ${self.decl_ref(d)}") }
-        self.fill_shape(d, row.shaped())
-    }
-
-    /// A declaration's line among its file's, found by its name: the line whose wire, spelled
-    /// from the lines alone, is the declaration's.
-    fn line_named(path: string, lines: List<List<string>>, d: DeclId) -> Row? {
-        let line? = self.lines_by_wire(path, lines).get(self.decl_ref(d)) else { return null }
-        read_row(line)
-    }
-
-    /// A file's declaration lines by the wire each spells — indexed once per build.
-    fn lines_by_wire(path: string, lines: List<List<string>>) -> Map<string, List<string>> {
-        let known = self.records.line_index.get().get(path)
-        if known != null { return known! }
-        let decls = [p for p in lines if declares(p)]
-        mut by: Map<string, List<string>> = {}
-        for j, w in line_wires(path, lines) { by.set(w, decls[j]) }
-        self.records.line_index.put(path, by)
-        by
-    }
 }
 
 impl RecordBodies {

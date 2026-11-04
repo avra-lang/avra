@@ -313,14 +313,6 @@ impl RowShape {
     /// shapes whose payload opens with a `;`-joined list.
     fn items() -> List<string> { self.list_at(0) }
 
-    /// `Named`'s underlying type, `Alias`'s, `Const`'s and `Collect`'s type — the shapes whose payload
-    /// opens with one wire (a `Const`'s carries its settled value's
-    /// fingerprint after a `;`, dropped here).
-    fn of_wire() -> string { self.field(0).split(";").first() ?? "" }
-
-    /// `Fn`/`Extern`'s return type wire.
-    fn ret_wire() -> string { self.field(1) }
-
     /// `Fn`/`Extern`'s seat marks, one per seat.
     fn marks() -> List<SeatMark> { [mark_of_word(w) for w in self.list_at(2)] }
 
@@ -760,17 +752,6 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 }
 
 // ── REBUILDING ──────────────────────────────────────────────────────
-
-/// THE DECLARATIONS A MODULE'S RECORD DESCRIBES, minted into the workspace as if its file
-/// had been parsed. THE IMPORTS COME FIRST: a shape may name another module's type, and
-/// `by_name` can only answer for a type that exists.
-///
-/// A MINTED DECLARATION HAS NO BODY AND NO STORE, which is safe for the same reason a
-/// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
-/// rows are lies.
-export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want, true)
-}
 
 /// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
 /// each file met once. A `use` may name ONE FILE of a directory module
@@ -1227,9 +1208,6 @@ fn mark_of_word(w: string) -> SeatMark {
         consumed: w.substring(4, 5) == "o",
     }
 }
-
-/// A field's NAME, from its `name:spelling` pair.
-fn field_name(pair: string) -> string { pair.split(":")[0] }
 
 /// A field's SPELLING, from the same pair — the part `by_name` is asked for.
 fn name_of_field(pair: string) -> string {

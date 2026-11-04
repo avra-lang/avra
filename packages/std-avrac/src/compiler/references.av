@@ -121,27 +121,17 @@ impl Workspace {
         refs_index(self).incomplete
     }
 
-    /// The gathering, run: every surveyed file's rows and the held files' kept rows, indexed.
+    /// The gathering, run: every surveyed file's rows, indexed.
     fn indexed_references() -> RefsIndex {
         self.stand_after_typing()
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if self.reads_as_source(x.path)]
-        let held = [x.id for x in all_files if false]
         self.hold.held_refs.set({})
-        let surveyed = flatten([file_refs_made(self, f).rows for f in files])
-        // A HELD FILE'S BODY IS NOT SURVEYED — its outgoing references come
-        // from its own kept record instead (`restored_refs`), written the
-        // last time it was fresh (`ref_lines`, interface.av's `record_of`).
-        // Complete either way: a store attached means every held file's
-        // rows are readable; with none attached (a lone check with nothing
-        // held) `held` is empty and this changes nothing.
-        let store: Store? = self.store.get()
-        let restored = if store == null { [] } else { self.restored_refs(store!) }
-        let rows = surveyed.concat(restored)
+        let rows = flatten([file_refs_made(self, f).rows for f in files])
         RefsIndex {
             by_decl: Cell.new(grouped(rows, true)),
             by_file: Cell.new(grouped(rows, false)),
-            incomplete: store == null && !held.is_empty(),
+            incomplete: false,
             digest: fp(43, [fp_list([ref_fp(r) for r in rows])]),
         }
     }
@@ -166,24 +156,6 @@ impl Workspace {
             )
         }
     }
-
-    /// The references held files' bodies once made to anything a read file holds, read back
-    /// off their modules' kept records (`ref` lines, written by `record_of` the last time each
-    /// file was fresh) — never re-scanned, since a held file has no body to walk. A held
-    /// file's reference to another held declaration or to the language's arrives on the ask
-    /// that names the declaration (`held_refs_to`), so no held module is minted for it and no
-    /// record line of a module nothing reads is decoded. A line naming a declaration this
-    /// attempt cannot find (a stale row from before a name moved) answers no row rather than
-    /// a wrong one; the record it came from is validated whole elsewhere (`record_complete`).
-    fn restored_refs(store: Store) -> List<Ref> {
-        flatten(
-            [self.refs_into(store, target) for target in self.hold.refs_by_target.get().keys() if self.read_target(target)],
-        )
-    }
-
-    /// Whether a target's held references are restored whole: a read file's are, while a held
-    /// file's and the language's wait for the ask that names their declaration.
-    fn read_target(target: string) -> bool { target != LANGUAGE_HOME }
 
     /// The references held files make to `target`, a path no held file answers to.
     fn refs_into(store: Store, target: string) -> List<Ref> {
