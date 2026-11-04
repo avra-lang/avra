@@ -1,19 +1,43 @@
 //! WHAT A FILE'S PARSE SAID, as one saved answer: its diagnostics, standing on its source and
-//! the block words it parses under.
-use core.{FileId, touch}
+//! on the texts its block words come from.
+use core.{FileId, touch, fp_str, joined, sorted_texts, distinct, flatten, ModulePath, module_path}
 use @std.relation.{query}
 use diagnostics.{Diag}
 
-/// A file's parse diagnostics. Its recorded reads are its source and the block words it parses
-/// under; the parse they come from is read unrecorded, since a parse's voices are a pure fn of
-/// those two, placed by file offsets and never by arena ids.
+/// A file's parse diagnostics. Its recorded reads are its source and `block_words_print`; the
+/// parse they come from is read unrecorded, since a parse's voices are a pure fn of those two,
+/// placed by file offsets and never by arena ids.
 @query
 export fn parse_said(ws: Workspace, f: FileId) -> List<Diag> { ws.parse_voices(f) }
+
+/// What a file's block words stand on: the texts of every file that may declare one it takes —
+/// a provider its `use` lines name, a sibling of its module that declares a component. Read off
+/// texts and listings alone, so it is kept and restored as any answer over inputs is.
+@query
+export fn block_words_print(ws: Workspace, f: FileId) -> int { ws.words_print(f) }
 
 impl Workspace {
     fn parse_voices(f: FileId) -> List<Diag> {
         touch(source_of(self, f))
+        touch(block_words_print(self, f))
+        self.parse_unrecorded(f).voices.list
+    }
+
+    fn words_print(f: FileId) -> int {
+        touch(source_of(self, f))
+        let path = self.decls.file(f).path
         let p = self.parse_unrecorded(f)
-        self.with_import_remedies(p, self.block_words(f, p)).voices.list
+        let from = self.packages()[self.holder_of_path(path)]
+        let providers = flatten(
+            [self.provider_files(qualified(module_path(u.path), from)) for u in p.store.built_uses()],
+        )
+        let sources = sorted_texts(distinct(providers.concat(self.declaring_siblings(path))))
+        fp_str(joined([s + "\t" + file_text(self.text_staged(s), s) for s in sources], "\n"))
+    }
+
+    /// The files of `m` that may declare a block word, by their text.
+    fn provider_files(m: ModulePath) -> List<string> {
+        let pkg? = self.holder(m) else { return [] }
+        [path for path in self.listed_under(pkg.src, m) if file_lexes_block(self, path)]
     }
 }
