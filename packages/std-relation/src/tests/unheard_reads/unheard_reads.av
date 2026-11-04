@@ -1,0 +1,35 @@
+// proves: a read under `unheard` reaches no frame — a query opened inside it settles its own
+// reads, and a read made after that query closes belongs to no one
+use @std.relation.{relation}
+use @std.relation.db.{new_db}
+use @std.relation.engine.{Key, new_kernel}
+
+@relation
+type Fact = { @key name: string, n: int }
+
+fn run() -> string {
+    let kernel = new_kernel()
+    let queries = kernel.family()
+    let db = new_db()
+    db.given_to(kernel)
+    let _ = Fact.insert(db, name: "before", n: 1)
+    let _ = Fact.insert(db, name: "inner", n: 2)
+    let _ = Fact.insert(db, name: "after", n: 3)
+    let outer = Key { family: queries, arg: 7 }
+    let inner = Key { family: queries, arg: 8 }
+    kernel.begin(outer)
+    let _ = Fact.by_key(db, FactKey { name: "before" })
+    kernel
+        .unheard(
+            () -> {
+                kernel.begin(inner)
+                let _ = Fact.by_key(db, FactKey { name: "inner" })
+                kernel.settle(inner, 0)
+                let _ = Fact.by_key(db, FactKey { name: "after" })
+            },
+        )
+    kernel.settle(outer, 0)
+    "${kernel.deps_of(outer).length} ${kernel.deps_of(inner).length}"
+}
+
+run()
