@@ -167,7 +167,6 @@ export type Lowered = {
     /// each asking program reads, so such a file is never held.
     homes: List<FileId> = [],
     /// The roaming instantiations lowered fresh, each with its unit's code.
-    instances: List<InstanceCode> = [],
     types: TypeRegistry,
     diagnostics: List<Diag>,
     // the host fns the program declares `extern` — rows the backend
@@ -311,22 +310,18 @@ export fn lower(a: Analysis) -> Lowered {
             false,
             false,
             true,
-            no_held_wants(),
-            [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
             (_f: FileId) -> false,
-            no_kept,
         )
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
-/// wrappers it minted (they never escape it), the code facts a kept row stood
-/// in for, the bodies of OTHER
+/// wrappers it minted (they never escape it), the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
 @derive(Fingerprint)
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [], kept: List<CodeFacts> = [] }
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -457,12 +452,9 @@ impl Decls {
         every: bool,
         programs: bool,
         hashed: bool,
-        held_asks: HeldWants,
-        held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
-        kept_instance: fn(Instance) -> KeptInstance,
     ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -502,14 +494,11 @@ impl Decls {
             hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
         let d = drained(
-            wants.concat(held_asks.read),
-            held_asks,
+            wants,
             unit_of,
             is_held,
             (w: Wanted) -> self.instantiated(w),
             (w: Wanted) -> self.unlowered_stub(w),
-            (w: Wanted) -> instance_of(self, w),
-            if hashed { kept_instance } else { no_kept },
         )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
@@ -521,9 +510,7 @@ impl Decls {
                 self,
                 fns.concat([entry_body]),
                 laid_out,
-                d.held,
                 [h.target for h in asked],
-                held_codes.concat(d.kept),
                 [r.name for r in rt_sigs()].concat(self.extern_names()),
             )
         } else {
@@ -545,7 +532,6 @@ impl Decls {
             code_hashes: answered.keys,
             hash_asks: asked,
             unmanaged: unmanaged,
-            instances: d.instances,
         }
     }
 
@@ -681,13 +667,10 @@ impl Decls {
         let ru = unit_of(root)
         let d = drained(
             ru.wants,
-            no_held_wants(),
             unit_of,
             (_f: FileId) -> false,
             (_w: Wanted) -> false,
             (_w: Wanted) -> null,
-            (w: Wanted) -> instance_of(self, w),
-            no_kept,
         )
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
@@ -754,64 +737,23 @@ impl Decls {
 /// shapes, one per line.
 export type Instance = { symbol: string, home: FileId, shapes: string }
 
-/// An instantiation lowered fresh: its key, the bodies and statics of the unit it lowered as, and
-/// the roaming instantiations that unit calls.
-export type InstanceCode = { key: Instance, bodies: List<Body>, statics: List<Static>, callees: List<Instance> }
-
-/// What the store kept of an instantiation and the roaming instantiations it reaches: the
-/// facts found, and the symbols whose facts are missing — held, so a hash reaching one is absent.
-export type KeptInstance = { facts: List<CodeFacts>, held: List<string> }
-
-/// Nothing kept: the pure lowering's answer.
-fn no_kept(_i: Instance) -> KeptInstance { KeptInstance { facts: [], held: [] } }
-
-/// The key an instantiation's code is kept under.
-fn instance_of(decls: Decls, w: Wanted) -> Instance {
-    Instance {
-        symbol: w.name,
-        home: w.file,
-        shapes: [type_shape_key(decls, t) for t in w.sub?.args ?? []].join("\n"),
-    }
-}
-
-/// WHAT HELD BODIES ASK, as the lowering takes it: the asks homed in read files, resolved —
-/// they lower here — and of the rest their names, the homes of those that roam, and, when a
-/// link owes code hashes, the roaming ones resolved.
-export type HeldWants = { read: List<Wanted>, names: List<string>, homes: List<FileId>, roaming: List<Wanted> }
-
-/// No held body asks anything.
-export fn no_held_wants() -> HeldWants { HeldWants { read: [], names: [], homes: [], roaming: [] } }
-
-type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk>, held: List<string>, instances: List<InstanceCode>, kept: List<CodeFacts> }
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk> }
 
 fn drained(
     pending: List<Wanted>,
-    asked: HeldWants,
     unit_of: fn(Wanted) -> Unit,
     is_held: fn(FileId) -> bool,
     instantiated: fn(Wanted) -> bool,
     held_stub: fn(Wanted) -> Body?,
-    instance_key: fn(Wanted) -> Instance,
-    kept_instance: fn(Instance) -> KeptInstance,
 ) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     mut statics: List<Static> = []
     mut hashes: List<HashAsk> = []
-    mut held: List<string> = []
-    mut instances: List<InstanceCode> = []
-    mut kept: List<CodeFacts> = []
     mut asks: List<Ask> = []
     mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
-    // a held body's ask is the store's: its name is seen, and its code kept only where it roams
-    for name in asked.names { seen.set(name, true) }
-    for w in asked.roaming {
-        let k = kept_instance(instance_key(w))
-        kept = kept.concat(k.facts)
-        held = held.concat(k.held)
-    }
     // a stub is a fresh caller's, whoever first asked the name
     mut stubbed: Map<string, bool> = {}
     mut minted = 0
@@ -837,29 +779,9 @@ fn drained(
             if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
             if stub != null { fns.push(stub!) }
         }
-        if fresh && is_held(w.file) {
-            held.push(w.name)
-            if roams {
-                let k = kept_instance(instance_key(w))
-                kept = kept.concat(k.facts)
-                held = held.concat(k.held)
-            }
-        }
         if fresh && !is_held(w.file) {
             minted = minted + 1
             let u = unit_of(w)
-            kept = kept.concat(u.kept)
-            if roams {
-                instances
-                    .push(
-                        InstanceCode {
-                            key: instance_key(w),
-                            bodies: u.bodies,
-                            statics: u.statics,
-                            callees: [instance_key(more) for more in u.wants if instantiated(more)],
-                        },
-                    )
-            }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for b in u.bodies { fns.push(if roams { b with { file: null, weak: true } } else { b }) }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
@@ -884,17 +806,7 @@ fn drained(
                 ),
             )
     }
-    Drained {
-        fns: fns,
-        spoken: spoken,
-        statics: statics,
-        asks: asks,
-        homes: asked.homes.concat(homes),
-        hashes: hashes,
-        held: asked.names.concat(held),
-        instances: instances,
-        kept: kept,
-    }
+    Drained { fns: fns, spoken: spoken, statics: statics, asks: asks, homes: homes, hashes: hashes }
 }
 
 /// Each static once: units read one const independently and each
