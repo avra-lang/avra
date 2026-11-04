@@ -102,19 +102,6 @@ impl Workspace {
         [module_path(name.split(".")) for name in distinct([self.module_of(f) for f in self.module_files(m)])]
     }
 
-    /// THE MODULES A MODULE IMPORTS — read from the PARSE, which is the ONE time
-    /// they are free. The interface record keeps them so that every later
-    /// question about them costs nothing, which is what lets validation decide
-    /// whether to re-parse WITHOUT parsing.
-    ///
-    /// A file's `use` lines name paths qualified against the file's own package,
-    /// which is exactly what the resolver does — the record must agree with the
-    /// resolver about what an import MEANS, or it would validate a module
-    /// against a contract it never had.
-    fn imports_of(m: ModulePath) -> List<ModulePath> {
-        flatten([self.imported_by(path) for path in self.module_files(m)])
-    }
-
     /// The modules ONE file imports, each path qualified against the file's own
     /// package — the spelling the resolver uses, so the record cannot mean a
     /// different module than the compiler does.
@@ -227,18 +214,6 @@ impl Workspace {
             }
         }
         out
-    }
-
-    /// The root package's source files — what `check <root>` analyzes.
-    /// EVERY package's sources — the build's input set, from the DISK rather than from
-    /// what resolution happened to load. This is what lets a held file be known without
-    /// being resolved.
-    fn every_source() -> List<string> {
-        // A TEST IS NOT PROGRAM CODE. `all_files` walks every `.av` under a package's
-        // source root, tests included, and analysing one as a program fails in its own
-        // words — "a module file holds declarations, only the entry runs statements" —
-        // which is a diagnostic about the TEST rather than about the build.
-        [f for f in flatten([self.all_files(pkg.src) for pkg in self.packages()]) if !self.is_test_path(f)]
     }
 
     /// Whether a source path is in its OWN package's test tree rather
