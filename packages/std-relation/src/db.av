@@ -956,7 +956,8 @@ impl Db {
 
     /// The one query or input asked here wearing `name`; none when two do.
     /// THE LAW, TRACED: a saved answer stands on what outlives the process, so one that reads
-    /// an in-process answer is named — once a process for each pair — until none is left to name.
+    /// an in-process answer is named — once a process for each pair, and only under a trace,
+    /// so a compile pays nothing — until none is left to name.
     fn in_process_reads(query: string, ns: List<int>) {
         for n in ns {
             let read? = self.in_process_read(n) else { continue }
@@ -1677,7 +1678,7 @@ impl AnswersUnder<V> {
         let done = self.run(db, arg, body, again, digest)
         let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
         if !done.wrote && leaves != null {
-            db.in_process_reads(query, leaves!)
+            if db.engine().tracing.get() { db.in_process_reads(query, leaves!) }
             let places = db.placed_leaves(leaves!)
             let named? = named_encoding(
                 done.value,
