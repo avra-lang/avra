@@ -300,8 +300,9 @@ const TREE_MARK: string = "{tree}"
 /// `text` with every whole `home` spelled as the tree: a path under it in one pass, then the
 /// rare `home` that ends a path where it stands.
 export fn saved_in(home: string, text: string) -> string {
+    if home.is_empty() { return text }
     let beside = beside_of(home)
-    if home.is_empty() || !text.contains(beside) { return text }
+    if !text.contains(beside) { return text }
     let under = text.replace("${home}/", "${TREE_MARK}/").replace(beside, "${TREE_MARK}/../")
     if !under.contains(home) { return under }
     mut parts: List<string> = []
@@ -340,9 +341,9 @@ export fn unsaved_in(home: string, text: string) -> string {
 /// The directory `home` stands in, ending in its slash — never the filesystem's root, so a
 /// tree at the top of the disk has nothing beside it.
 fn beside_of(home: string) -> string {
-    let parts = home.split("/")
-    if parts.length < 3 { return "${home}/" }
-    "${parts.take(parts.length - 1).join("/")}/"
+    mut at = home.length - 1
+    while at > 0 && home.char_code(at) != 47 { at = at - 1 }
+    if at <= 0 { "${home}/" } else { home.substring(0, at + 1) }
 }
 
 /// A text argument spelled for a call's key: itself with `%` and a tab escaped, so a tab joins
