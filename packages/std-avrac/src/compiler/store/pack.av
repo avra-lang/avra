@@ -53,10 +53,6 @@ const ACTION_TAG: int = 2
 const REVISIONS_KEPT: int = 10
 const MAX_BYTES_KEPT: int = 2147483648
 
-/// What the kept binaries (`bin/`) may hold: each is a whole program, one per program key, so a
-/// session of edits would otherwise fill a disk. Oldest out first; the newest always stays.
-const BIN_BYTES_KEPT: int = 1073741824
-
 /// What the kept objects (`obj/`) may hold. An object is a cache entry like any row: one the
 /// ceiling drops is a MISS, its file read again and its object rebuilt, never a build refusal.
 const OBJ_BYTES_KEPT: int = 2147483648
@@ -711,8 +707,9 @@ fn enforce_limits(pack: Pack) {
 /// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
 fn obj_limit() -> int { env_int("AVRA_OBJ_MAX_BYTES") ?? OBJ_BYTES_KEPT }
 
-/// The kept binaries' ceiling in bytes: `AVRA_BIN_MAX_BYTES`, else a gigabyte.
-fn bin_limit() -> int { env_int("AVRA_BIN_MAX_BYTES") ?? BIN_BYTES_KEPT }
+/// The kept binaries' ceiling in bytes: `AVRA_BIN_MAX_BYTES`, else an eighth of the shared ceiling
+/// (`AVRA_CAS_MAX_MB`), since every worktree keeps binaries of its own.
+export fn bin_limit() -> int { env_int("AVRA_BIN_MAX_BYTES") ?? cas_limit() / 8 }
 
 /// One kept binary: where it stands, its edge beside it, its size and its time.
 type KeptFile = { path: string, bytes: int, at: int }
