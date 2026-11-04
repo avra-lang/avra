@@ -1,0 +1,34 @@
+// A query's key seat registered with its kernel: what any consumer lists the queries keyed by
+// one kind of argument from, never a hand list.
+use @std.relation.{query}
+use @std.relation.db.{Db, new_db}
+use @std.relation.engine.{new_kernel}
+
+@query
+fn doubled(_db: Db, n: int) -> int { n * 2 }
+
+@query
+fn named_length(_db: Db, word: string) -> int { word.length }
+
+@query
+fn whole(_db: Db) -> int { 1 }
+
+spec "std/relation — a query's key seat, registered with its kernel" {
+    then "each asked query names the type its calls are keyed by, and a query over the Db alone names none" {
+        let kernel = new_kernel()
+        let db = new_db()
+        db.given_to(kernel)
+        let _ = doubled(db, 2)
+        let _ = named_length(db, "x")
+        let _ = whole(db)
+        let seats = kernel.seats()
+        let ints = [f for f, s in seats if s == "int"]
+        let texts = [f for f, s in seats if s == "string"]
+        let w = whole_key(db).family
+        ints.length == 1 &&
+            ints[0] == doubled_key(db, 2).family &&
+            texts.length == 1 &&
+            texts[0] == named_length_key(db, "x").family &&
+            (w >= seats.length || seats[w] == "")
+    }
+}
