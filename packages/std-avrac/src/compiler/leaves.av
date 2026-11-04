@@ -83,31 +83,8 @@ impl Workspace {
             .noted(edge_of(k), [Leaf.Input("ImplSet", self.decl_ref(target), self.impl_set_hash(target))])
     }
 
-    /// The signatures, spelled by declaration. A signature settled by no query (a held
-    /// declaration's, a builtin's) is digested as the signature it is.
-    fn named_sigs() -> AnswerRef {
-        let ws = self
-        let ordinal = Family.Sig.ordinal
-        AnswerRef {
-            name: "Sig",
-            family: () -> ordinal,
-            spelled: (arg: int) -> ws.spelled_decl(arg),
-            arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.sig_digest(arg),
-        }
-    }
-
     /// A type's digest is its spelling, which another process spells alike.
     fn type_digest(t: TypeId) -> int { fp_str(self.type_ref(t)) }
-
-    /// A signature's digest is its wire: types by their spelling, never by the interner's index.
-    fn sig_digest(arg: int) -> int? {
-        if arg < 0 || arg >= self.decls.sigs.get().length { return null }
-        let s? = self.decls.sigs.get()[arg] else {
-            return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
-        }
-        sig_hash(s, self.facts_scope(0, 0))
-    }
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
     /// under — the name `Settled` wears too.
@@ -246,7 +223,6 @@ impl Workspace {
     fn answers_named() {
         let rdb = self.decls.rows_db.get()
         self.db.kernel.keep_folds()
-        rdb.answer_known(self.named_sigs())
         rdb.answer_known(self.named_impl_sets())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))

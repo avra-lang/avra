@@ -575,6 +575,27 @@ impl Gather {
     }
 }
 
+/// One write signing a declaration makes — what a restored signing makes again, in order.
+/// `Target`, `Impl`, `Method` and `Sealed` write another declaration's tables.
+@codec
+export enum Signing {
+    Declared(d: DeclId, sig: DeclSig)
+    Seats(d: DeclId, marks: List<SeatMark>)
+    SeatTypes(d: DeclId, types: List<TypeId>)
+    Bounds(d: DeclId, args: List<List<TypeId>>)
+    Target(block: DeclId, target: DeclId)
+    Impl(ty: DeclId, tr: DeclId)
+    Method(target: DeclId, m: DeclId)
+    Answered(m: DeclId, member: DeclId)
+    Writes(d: DeclId)
+    SeatWritten(d: DeclId, at: int)
+    Sealed(ty: TypeId)
+    NamedOver(named: TypeId, of: TypeId)
+    Noted(ty: TypeId)
+    /// Another declaration's signature asked while signing.
+    Asked(d: DeclId)
+}
+
 @identity
 @plain_field("rows")
 export type Decls = {
@@ -649,6 +670,8 @@ export type Decls = {
     /// ask answers the same `Unsettled.Reach` a fresh compile would.
     held_reaches: Cell<Map<string, string>>,
     sigs: Cell<List<DeclSig?>>,
+    /// The signings open now, innermost last: each holds the writes its signing made so far.
+    signing: Cell<List<Cell<List<Signing>>>>,
     /// A fn's own PARAMETERS, typed once — never inferred, unlike the answer
     /// `sigs` carries, so this memo carries no self-recursion risk. Whichever
     /// caller asks first (`seats`'s hook, or the fn's own natural signing)
@@ -1056,6 +1079,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         held_values: map_cell(),
         held_reaches: map_cell(),
         sigs: Cell.new(no_sigs),
+        signing: list_cell(),
         seat_types: Cell.new(no_seat_types),
         bound_types: Cell.new(no_bound_types),
         seat_ensure: Cell.new(no_ensure),
@@ -1158,7 +1182,10 @@ impl Decls {
     }
 
     /// A named type the typer resolved, kept in order.
-    fn note_type(t: TypeId) { self.touched_types.push(t) }
+    fn note_type(t: TypeId) {
+        self.wrote(Signing.Noted(t))
+        self.touched_types.push(t)
+    }
 
     // ── files ──
 
@@ -1984,7 +2011,10 @@ impl Decls {
     /// whichever caller's ask lands first (`seats`'s hook, or the fn's own
     /// natural `declare_sig`/`declare_method`/`declare_trait_sig`) records
     /// here, and the other finds it already settled.
-    fn record_seat_types(d: DeclId, ts: List<TypeId>) { self.seat_types.set_at(d.index, ts) }
+    fn record_seat_types(d: DeclId, ts: List<TypeId>) {
+        self.wrote(Signing.SeatTypes(d, ts))
+        self.seat_types.set_at(d.index, ts)
+    }
 
     /// The trait arguments seat `j`'s bound names — `[]` for a bound that takes none.
     fn bound_args(d: DeclId, j: int) -> List<TypeId> {
@@ -1993,7 +2023,10 @@ impl Decls {
     }
 
     /// Records every type parameter's bound's trait arguments, in seat order.
-    fn record_bound_args(d: DeclId, args: List<List<TypeId>>) { self.bound_types.set_at(d.index, args) }
+    fn record_bound_args(d: DeclId, args: List<List<TypeId>>) {
+        self.wrote(Signing.Bounds(d, args))
+        self.bound_types.set_at(d.index, args)
+    }
 
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them
@@ -2001,10 +2034,11 @@ impl Decls {
     /// sig asked after that is held or, loudly, absent. `ensure_consumed`
     /// stays armed, as `ensure_refs` already does: consumption is asked
     /// at LOWERING, after a one-shot's own disarm, so zeroing this hook
-    /// here would make every seat read unconsumed forever.
+    /// here would make every seat read unconsumed forever. The query answers stand: an
+    /// answer asked after disarm is the one settled, never a run with its hooks gone, and
+    /// `let_go` closes them.
     fn disarm() {
         self.auditing.set(false)
-        self.rows_db.get().released()
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
@@ -2245,6 +2279,7 @@ impl Decls {
     /// signature typed from source and one read from an interface both
     /// land here, so a layout has one law.
     fn declare(d: DeclId, sig: DeclSig) {
+        self.wrote(Signing.Declared(d, sig))
         self.sigs.set_at(d.index, sig)
         let e: EnumSig? = enum_parts(sig)
         if e != null { return self.flatten_enum(d, e!) }
@@ -2317,6 +2352,64 @@ impl Decls {
             },
             rest -> nothing_asked(),
         }
+    }
+
+    // ── signing ──
+
+    /// A signing opens: every write until it closes is its own.
+    fn signing_opened() { self.signing.push(list_cell()) }
+
+    /// The innermost signing closes, answering the writes it made, in order.
+    fn signing_closed() -> List<Signing> {
+        let open = self.signing.get()
+        self.signing.set(open.slice(0, open.length - 1))
+        open.last()?.get() ?? []
+    }
+
+    /// A write the innermost open signing made.
+    fn wrote(w: Signing) {
+        let open? = self.signing.get().last() else { return }
+        open.push(w)
+    }
+
+    /// A signing's writes made again, in the order it made them — under a signing of their
+    /// own, so no open one takes them for its own.
+    fn landed(writes: List<Signing>) {
+        self.signing_opened()
+        for w in writes { self.made(w) }
+        let _ = self.signing_closed()
+    }
+
+    fn made(w: Signing) {
+        match w {
+            .Declared(d, sig) -> self.declare(d, sig),
+            .Seats(d, marks) -> self.record_seats(d, marks),
+            .SeatTypes(d, ts) -> self.record_seat_types(d, ts),
+            .Bounds(d, args) -> self.record_bound_args(d, args),
+            .Target(block, target) -> self.record_target(block, target),
+            .Impl(ty, tr) -> self.record_impl(ty, tr),
+            .Method(target, m) -> self.declare_method(target, m),
+            .Answered(m, member) -> self.record_answered(m, member),
+            .Writes(d) -> self.record_declared_writing(d),
+            .SeatWritten(d, at) -> self.record_seat_written(d, at),
+            .Sealed(ty) -> self.sealed(ty),
+            .NamedOver(named, of) -> self.named_over(named, of),
+            .Noted(ty) -> self.note_type(ty),
+            .Asked(d) -> touch(self.sig(d)),
+        }
+    }
+
+    /// A type keeps its box: a `mut` seat or a written receiver writes through it.
+    fn sealed(ty: TypeId) {
+        self.wrote(Signing.Sealed(ty))
+        self.types.unflatten(ty)
+    }
+
+    /// A named type stands over `of`: every read sees through it, and it travels as `of`.
+    fn named_over(named: TypeId, of: TypeId) {
+        self.wrote(Signing.NamedOver(named, of))
+        self.types.mark_named(named, of)
+        self.types.mark_flat(named, [of])
     }
 
     /// Every `.Fn` decl whose `mut` parameters seal `name` — a NAME match,
@@ -2426,6 +2519,7 @@ impl Decls {
     /// 0 is its receiver and is never declared here. The written bits
     /// take the same shape, all false until the pass runs.
     fn record_seats(d: DeclId, marks: List<SeatMark>) {
+        self.wrote(Signing.Seats(d, marks))
         self.seat_marks.set_at(d.index, marks)
         self.written_seats.set_at(d.index, Cell.new(filled(marks.length, false)))
     }
@@ -2475,6 +2569,7 @@ impl Decls {
     /// `mut fn` — the method (or trait sig) declared its receiver
     /// written.
     fn record_declared_writing(d: DeclId) {
+        self.wrote(Signing.Writes(d))
         self.declared_writes.set_at(d.index, true)
     }
 
@@ -2485,6 +2580,7 @@ impl Decls {
 
     /// The seats pass found the body writing through seat `i`.
     fn record_seat_written(d: DeclId, i: int) {
+        self.wrote(Signing.SeatWritten(d, i))
         if i < self.written_seats.get()[d.index].get().length { self.written_seats.get()[d.index].set_at(i, true) }
     }
 
@@ -2678,6 +2774,7 @@ impl Decls {
     }
 
     fn record_answered(method: DeclId, member: DeclId) {
+        self.wrote(Signing.Answered(method, member))
         self.answers.set_at(method.index, member)
     }
 
@@ -2690,6 +2787,7 @@ impl Decls {
     }
 
     fn record_target(impl_decl: DeclId, target: DeclId) {
+        self.wrote(Signing.Target(impl_decl, target))
         self.targets.set_at(impl_decl.index, target)
     }
 
@@ -3559,11 +3657,13 @@ impl Decls {
     /// that share a name (instantiations) both stand.
     @bracket("methods")
     fn declare_method(target: DeclId, m: DeclId) {
+        self.wrote(Signing.Method(target, m))
         if self.methods.get()[target.index].get().any((prior: DeclId) -> same_decl(prior, m)) { return }
         self.methods.get()[target.index].push(m)
     }
 
     fn record_impl(ty: DeclId, tr: DeclId) {
+        self.wrote(Signing.Impl(ty, tr))
         if self.holds_impl(ty, tr) { return }
         self.impls.get()[ty.index].push(tr)
     }

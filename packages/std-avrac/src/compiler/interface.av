@@ -38,6 +38,7 @@ use features.{
     kind_word,
     WireIndex,
     CancelReach,
+    Signing,
 }
 use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
@@ -58,7 +59,7 @@ impl Workspace {
             .Collect or .State -> self.decls.record_const_type(d.file, d.stmt, self.interface_type(row.of_wire())),
             .Aims -> self.fill_aims(row, id),
             .Named -> self.fill_named(row, id),
-            .Alias -> self.decls.declare(id, .Alias(self.interface_type(row.of_wire()))),
+            .Alias -> self.decls.landed([Signing.Declared(id, .Alias(self.interface_type(row.of_wire())))]),
             .Struct -> self.fill_record(row, id, false),
             .Boxed -> self.fill_record(row, id, true),
             .Enum -> self.fill_enum(row, id),
@@ -87,37 +88,31 @@ impl Workspace {
     }
 
     fn fill_aims(row: RowShape, id: DeclId) {
-        let aimed = self.decl_from_ref(row.field(0))
-        if aimed != null { self.decls.record_target(id, aimed!) }
+        let aimed? = self.decl_from_ref(row.field(0)) else { return }
+        self.decls.landed([Signing.Target(id, aimed)])
     }
 
     fn fill_named(row: RowShape, id: DeclId) {
         let of = self.interface_type(row.of_wire())
-        self.decls.declare(id, .Named(NamedSig { of: of }))
         let named = self.decls.types.intern(Type.Struct(id, self.decls.decl(id).name))
-        self.decls.types.mark_named(named, of)
-        self.decls.types.mark_flat(named, [of])
+        self
+            .decls
+            .landed([Signing.Declared(id, .Named(NamedSig { of: of })), Signing.NamedOver(named, of)])
     }
 
     fn fill_record(row: RowShape, id: DeclId, boxed: bool) {
-        // a seal is sticky, so the layout the record kept lands before the declaration
-        if boxed { self.decls.types.unflatten(self.decls.record_type(id)) }
         let fields = row.items()
         let states = row.field(2)
-        self
-            .decls
-            .declare(
-                id,
-                .Record(
-                    StructSig {
-                        names: [field_name(f) for f in fields],
-                        types: [self.interface_type(name_of_field(f)) for f in fields],
-                        defaults: [self.field_default(id, field_name(f), row.list_at(1), j) for j, f in fields],
-                        lacking: self.decls.lacking(id),
-                        states: [j < states.length && states.char_code(j) == 49 for j, f in fields],
-                    },
-                ),
-            )
+        let sig = StructSig {
+            names: [field_name(f) for f in fields],
+            types: [self.interface_type(name_of_field(f)) for f in fields],
+            defaults: [self.field_default(id, field_name(f), row.list_at(1), j) for j, f in fields],
+            lacking: self.decls.lacking(id),
+            states: [j < states.length && states.char_code(j) == 49 for j, f in fields],
+        }
+        // a seal is sticky, so the layout the record kept lands before the declaration
+        let seal = if boxed { [Signing.Sealed(self.decls.record_type(id))] } else { [] }
+        self.decls.landed(seal.concat([Signing.Declared(id, .Record(sig))]))
         let made = self.decls.record_type(id)
         // peek, not is_flat: this is a belief to watch for drift, not a
         // read to answer for — layouts_moved (compiler/derive.av) asks
@@ -137,36 +132,28 @@ impl Workspace {
 
     fn fill_enum(row: RowShape, id: DeclId) {
         let arms = row.items()
-        self
-            .decls
-            .declare(
-                id,
-                .Enum(
-                    EnumSig {
-                        names: [field_name(a) for a in arms],
-                        payloads: [payload_of(self, a) for a in arms],
-                    },
-                ),
-            )
+        let sig = EnumSig {
+            names: [field_name(a) for a in arms],
+            payloads: [payload_of(self, a) for a in arms],
+        }
+        self.decls.landed([Signing.Declared(id, .Enum(sig))])
     }
 
     fn fill_fn(row: RowShape, id: DeclId) {
-        let seats = row.items()
-        self.decls.record_seats(id, row.marks())
+        let sig = FnSig {
+            params: [self.interface_type(s) for s in row.items()],
+            ret: self.interface_type(row.ret_wire()),
+        }
+        let bits = row.writes()
+        let written = [Signing.SeatWritten(id, j) for j in 0..bits.length if bits.char_code(j) == 49]
+        let bounds = Signing.Bounds(id, self.bounds_read(id, row.bounds()))
         self
             .decls
-            .declare(
-                id,
-                .Fn(
-                    FnSig {
-                        params: [self.interface_type(s) for s in seats],
-                        ret: self.interface_type(row.ret_wire()),
-                    },
-                ),
+            .landed(
+                [Signing.Seats(id, row.marks()), Signing.Declared(id, .Fn(sig))]
+                    .concat(written)
+                    .concat([bounds]),
             )
-        let bits = row.writes()
-        for j in 0..bits.length { if bits.char_code(j) == 49 { self.decls.record_seat_written(id, j) } }
-        self.decls.record_bound_args(id, self.bounds_read(id, row.bounds()))
     }
 
     /// Each bounded seat's trait arguments as `seat=wire|wire`, `;`-joined —

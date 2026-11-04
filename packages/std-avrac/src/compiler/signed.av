@@ -1,0 +1,126 @@
+//! A DECLARATION'S SIGNING IS A QUERY'S ANSWER: `signed(ws, d)` signs one declaration and
+//! answers every write the signing made (`Signing`, features/decls.av) with the refusals it
+//! spoke. The answer crosses by its codec, so a later process makes the same writes again
+//! (`Decls.landed`) without signing.
+use core.{DeclId, TypeId, joined, sorted_texts, touch}
+use features.{Decl}
+use @std.io.{env, write_text}
+use features.{Signing, DeclSig}
+use @std.relation.engine.{Key}
+use diagnostics.{Diag}
+use @std.relation.{query, cycled_by, codec}
+
+/// What signing a declaration wrote, in order, and what it refused.
+@codec
+export type Signed = { writes: List<Signing>, voices: List<Diag> }
+
+/// A declaration's signing. One asked again while it signs has written nothing yet.
+@query
+@cycled_by(unsigned)
+fn signed(ws: Workspace, d: DeclId) -> Signed { ws.signing(d) }
+
+fn unsigned(_ws: Workspace, _d: DeclId) -> Signed { Signed { writes: [], voices: [] } }
+
+impl Workspace {
+    /// Signs one declaration. A held declaration's signature is its row's — filling it
+    /// declares what the row wrote — and stands on the hold, which no other process reads.
+    fn signing(d: DeclId) -> Signed {
+        self.signs.keep(d.index, true)
+        let x = self.decls.decl(d)
+        self.decls.signing_opened()
+        if self.is_held(x.file) {
+            self.query_db().in_process_only()
+            self.decl_row_filled(d)
+            return Signed { writes: self.decls.signing_closed(), voices: [] }
+        }
+        mut t = self.sign_cx_for(x)
+        t.declare_one(x)
+        Signed { writes: self.decls.signing_closed(), voices: t.facts.voices.list }
+    }
+
+    /// A declaration's signature, signed here or restored: a restored signing's writes are
+    /// made again the first time this process asks for it.
+    fn sig(d: DeclId) -> DeclSig? {
+        // the language's own declarations were signed at admission
+        if self.decls.is_builtin(d) { return self.decls.sigs.get()[d.index] }
+        self.decls.wrote(Signing.Asked(d))
+        let s = signed(self, d)
+        if self.signs.at(d.index) == null {
+            self.signs.keep(d.index, false)
+            self.decls.landed(s.writes)
+        }
+        self.decls.sigs.get()[d.index]
+    }
+
+    /// What a declaration's signing refused.
+    fn sig_voices(d: DeclId) -> List<Diag> {
+        touch(self.sig(d))
+        signed(self, d).voices
+    }
+
+    /// The cell a declaration's signing settles in.
+    fn sig_key(d: DeclId) -> Key { signed_key(self, d) }
+
+    /// Whether a declaration's signature is being computed right now.
+    fn registering(d: DeclId) -> bool { self.db.active(self.sig_key(d)) }
+
+    /// EVERY TABLE A SIGNING WRITES, one line per declaration this process signed or landed,
+    /// spelled by name so two processes compare: `S` signed here, `L` landed from a restore.
+    fn sign_tables() -> List<string> {
+        sorted_texts(
+            [self.sign_line(x) for x in self.decls.all_decls() if self.signs.at(x.id.index) != null],
+        )
+    }
+
+    /// `sign_tables`, written where `AVRA_SIGN_TABLES` names.
+    fn sign_tables_written() {
+        // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+        let path? = env("AVRA_SIGN_TABLES") else { return }
+        if path.is_empty() { return }
+        let _ = write_text(path, joined(self.sign_tables(), "\n"))
+    }
+
+    fn sign_line(x: Decl) -> string {
+        let i = x.id.index
+        let how = if self.signs.at(i) ?? false { "S" } else { "L" }
+        joined(
+            [
+                self.decl_ref(x.id),
+                how,
+                "${sig_hash(self.decls.sigs.get()[i], self.facts_scope(0, 0))}",
+                joined(
+                    ["${m.mutable}${m.settled}${m.state}${m.unshared}${m.consumed}" for m in self.decls.seat_marks.get()[i]],
+                    ",",
+                ),
+                self.types_spelled(self.decls.seat_types.get()[i] ?? []),
+                joined([self.types_spelled(b) for b in self.decls.bound_types.get()[i] ?? []], ";"),
+                self.decl_ref(self.decls.targets.get()[i]),
+                joined(
+                    sorted_texts([self.decl_ref(m) for m in self.decls.registered_methods(x.id)]),
+                    ",",
+                ),
+                joined(
+                    sorted_texts([self.decl_ref(t) for t in self.decls.impls.get()[i].get()]),
+                    ",",
+                ),
+                self.decl_ref(self.decls.answers.get()[i]),
+                "${self.decls.declared_writes.get()[i]}",
+                self.layout_of(x),
+            ],
+            "\t",
+        )
+    }
+
+    fn types_spelled(ts: List<TypeId>) -> string { joined([self.type_ref(t) for t in ts], ",") }
+
+    /// A record's layout: flat, and boxed by a seal.
+    fn layout_of(x: Decl) -> string {
+        match x.kind {
+            .Record -> {
+                let t = self.decls.record_type(x.id)
+                "${self.decls.types.peek_flat(t)}/${self.decls.types.peek_boxed_flat(t)}"
+            },
+            rest -> "",
+        }
+    }
+}

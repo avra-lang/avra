@@ -638,7 +638,8 @@ export type Workspace = {
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
-    sig_voices: Table<Voices>,
+    /// The signings this process holds, by declaration: made here (true) or landed from a restore.
+    signs: Table<bool>,
     method_clashes: Table<List<Clash>>,
     /// each file's clash diagnostics as `method_clashes` last settled them
     /// each module's names as their query last made them
@@ -846,10 +847,6 @@ fn resolved_verified(ws: Workspace, arg: int) -> int {
     touch(ws.resolved(file_at(arg)))
     ws.db.changed_at(key(Family.Resolved, arg))
 }
-fn sig_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.sig(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Sig, arg))
-}
 fn methods_verified(ws: Workspace, arg: int) -> int {
     touch(ws.methods(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Methods, arg))
@@ -928,7 +925,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Items -> items_verified(ws, arg),
         .Visible -> visible_verified(ws, arg),
         .Resolved -> resolved_verified(ws, arg),
-        .Sig -> sig_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
         .ConstTyped -> const_typed_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
@@ -1114,7 +1110,7 @@ fn built(
         decls: language_decls(lang, kernel, attached, spelling_tree(root, host)),
         store: attached,
         externs: new_table<ExternNames>(),
-        sig_voices: new_table<Voices>(),
+        signs: new_table<bool>(),
         method_clashes: new_table<List<Clash>>(),
         names_rows: new_table<ModuleNames>(),
         asks: Cell.new(no_asks),
@@ -2237,40 +2233,6 @@ impl Workspace {
         declaring_stmts(p).any((s: StmtId) -> !p.store.marks_written(s).is_empty())
     }
 
-    /// A declaration's signature, computed on first ask: the ONE place
-    /// declaration order stops mattering — a sig asks the sigs it names
-    /// lazily through the table. A sig reached from inside its own
-    /// computation (a recursive payload re-judging its slots) is
-    /// simply not there yet.
-    fn sig(d: DeclId) -> DeclSig? {
-        let k = key(Family.Sig, d.index)
-        let early = self.decls.decl(d)
-        // the language's own declarations were signed at admission
-        if !(self.db.ask(k) is .Compute) || early.kind is .Builtin {
-            return self.decls.sigs.get()[d.index]
-        }
-        // A HELD DECLARATION'S SIGNATURE IS ITS ROW'S: filling it declares what the row
-        // wrote, where computing it re-reads every type it names.
-        if self.is_held(early.file) {
-            self.db.begin(k)
-            self.decl_row_filled(d)
-            let held: DeclSig? = self.decls.sigs.get()[d.index]
-            self.db.settle(k, sig_hash(held, self.facts_scope(0, 0)))
-            return held
-        }
-        self.db.begin(k)
-        // THE ROW IS READ ONCE ITS PARSE STANDS: attaching a minted file's parse reseats its
-        // declarations with the parse's own ranges, so the row that stood before the attach
-        // names another arena's statements and its record would be read from them.
-        let x = self.decls.decl(d)
-        mut t = self.sign_cx_for(x)
-        t.declare_one(x)
-        self.sig_voices.keep(d.index, t.facts.voices)
-        let out: DeclSig? = self.decls.sigs.get()[d.index]
-        self.db.settle(k, sig_hash(out, self.facts_scope(0, 0)))
-        out
-    }
-
     /// The declarations a type's method table gathers from: its own members and every impl
     /// block aimed at it.
     fn method_blocks(target: DeclId) -> List<DeclId> {
@@ -2429,11 +2391,6 @@ impl Workspace {
         if named.length == 1 { named.first() } else { null }
     }
 
-    /// Whether a declaration's signature is being computed right now.
-    fn registering(d: DeclId) -> bool {
-        self.db.active(key(Family.Sig, d.index))
-    }
-
     /// A type context over one declaration's BODY: reads the names resolve computed for
     /// its own expressions, standing on its slice of them and on the file's namespace
     /// alone, so an edit elsewhere in the file moves nothing it read.
@@ -2574,9 +2531,7 @@ impl Workspace {
         for rank in 0..4 {
             for d in own {
                 if self.decls.sig_rank(self.decls.decl(d)) == rank {
-                    touch(self.sig(d))
-                    let v: Voices? = self.sig_voices.at(d.index)
-                    if v != null { out = out.concat(v!.list) }
+                    out = out.concat(self.sig_voices(d))
                 }
             }
         }
@@ -2660,7 +2615,6 @@ export fn family_code_hash(f: Family) -> string {
         .Items -> code_hash(items_verified) ?? "",
         .Visible -> code_hash(visible_verified) ?? "",
         .Resolved -> code_hash(resolved_verified) ?? "",
-        .Sig -> code_hash(sig_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
         .ConstTyped -> code_hash(const_typed_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",

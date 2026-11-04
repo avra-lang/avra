@@ -76,7 +76,7 @@ spec "compiler/cache_walk — a query's label" {
         let f = decl_in_file(ws, "/w/src/a.av", "f").index
         named_by(ws, "parsed_in(src/a.av)")
                 .any((k: Key) -> ws.key_label(k) == "parsed_in(src/a.av)") &&
-            label_at(ws, sig_ordinal(), f) == "Sig(f · src/a.av)" &&
+            label_at(ws, family_ordinal("Syntax"), f) == "Syntax(f · src/a.av)" &&
             label_at(ws, methods_ordinal(), f) == "Methods(f · src/a.av)"
     }
     then "a family past the declared ones is named by the kernel, else by its place" {
@@ -87,21 +87,21 @@ spec "compiler/cache_walk — a query's label" {
             ws.family_word(ws.db.kernel.named_family("source_of") ?? -1) == "source_of"
     }
     then "a label typed whole names exactly that query" {
-        named_by(walked(), "Sig(f · src/a.av)").length == 1
+        named_by(walked(), "Syntax(f · src/a.av)").length == 1
     }
     then "part of a label names no query" {
         let ws = walked()
-        named_by(ws, "Sig(f").is_empty() && named_by(ws, "Sig(f · src/b.av)").is_empty()
+        named_by(ws, "Syntax(f").is_empty() && named_by(ws, "Syntax(f · src/b.av)").is_empty()
     }
     then "a word no family wears is named as the word" {
         let ws = walked()
         unknown_family(ws, "Sog(f · src/a.av)") == "Sog" &&
             unknown_family(ws, "Relation 4096(0)") == "Relation 4096" &&
-            unknown_family(ws, "Sig(f · src/a.av)") == ""
+            unknown_family(ws, "Syntax(f · src/a.av)") == ""
     }
     then "an empty subject names no answer, whatever its family keys by" {
         let ws = walked()
-        ["parsed_in()", "Sig()", "Lowered()", "Named()", "Input()"]
+        ["parsed_in()", "Syntax()", "Lowered()", "Named()", "Input()"]
             .all((l: string) -> named_by(ws, l).is_empty() && unknown_family(ws, l) == "")
     }
     then "every settled answer's label, read backwards, names that answer" {
@@ -142,7 +142,7 @@ spec "compiler/cache_walk — what a target names" {
         named_word(walked(), Subject.Query("Sog(f)")) == "no family Sog"
     }
     then "a label its family holds no answer for carries the label" {
-        named_word(walked(), Subject.Query("Sig()")) == "no answer Sig()"
+        named_word(walked(), Subject.Query("Syntax()")) == "no answer Syntax()"
     }
 }
 
@@ -231,7 +231,8 @@ spec "compiler/cache_walk — one answer explained" {
         let ws = walked()
         let found = ws.decls_named("f")
         found.length == 1 &&
-            [ws.key_label(k) for k in ws.decl_answers(found[0].id)].contains("Sig(f · src/a.av)") &&
+            [ws.key_label(k) for k in ws.decl_answers(found[0].id)]
+                .contains("Syntax(f · src/a.av)") &&
             ws.decls_named("no_such_name").is_empty()
     }
 }

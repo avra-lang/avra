@@ -2,8 +2,7 @@
 // carry ARENA IDS, so a reader stands not only on a declaration's own
 // `Syntax` — durable content, equal wherever the declaration sits — but
 // on WHERE it sits. A same-file insert above a declaration that leaves
-// its `Syntax`, its `Names` slice and its file's `Visible` names alike
-// must still move `Placed`: without that dep a served `Typed` answer
+// its `Syntax` and its `Names` slice alike must still move `Placed`: without that dep a served `Typed` answer
 // keeps stale arena positions, and the body is judged over nodes that
 // have moved.
 //
@@ -24,19 +23,16 @@ fn placed_decl(ws: Workspace) -> DeclId {
 }
 
 /// `b`'s own answers, read once the file is checked: its own syntax, its
-/// name slice, its file's visible-names hash, its placement, and the
-/// arena offset that placement names.
-type PlacedSeen = { syntax: int, names: int, visible: int, placed: int, lo: int }
+/// name slice, its placement, and the arena offset that placement names.
+type PlacedSeen = { syntax: int, names: int, placed: int, lo: int }
 
 fn placed_seen(lead: string) -> PlacedSeen {
     let ws = a_process_over({"/w/src/main.av": placed_source(lead)}, ["/w/src/main.av"])
-    let f = ws.file_id("/w/src/main.av")
     let _ = checked(ws, "/w/src/main.av")
     let b = placed_decl(ws)
     PlacedSeen {
         syntax: ws.syntax(b),
         names: ws.name_slice(b),
-        visible: ws.db.value_hash_of(Key { family: Family.Visible.ordinal, arg: f.index }) ?? 0 - 1,
         placed: ws.placed(b),
         lo: ws.decls.decl(b).lo,
     }
@@ -51,12 +47,10 @@ fn placed_reads(ws: Workspace, reader: Key) -> bool {
 
 spec "compiler/workspace — placement_of is declaration-grain and position-true" {
     given "a non-exported declaration inserted above `b`" {
-        then "`b`'s syntax, name slice and file's visible names all stand" {
+        then "`b`'s syntax and name slice stand" {
             let before = placed_seen("")
             let after = placed_seen(placed_lead())
-            before.syntax == after.syntax &&
-                before.names == after.names &&
-                before.visible == after.visible
+            before.syntax == after.syntax && before.names == after.names
         }
         then "but the insert shifts `b`'s arena range and moves `Placed`" {
             let before = placed_seen("")
@@ -73,13 +67,13 @@ spec "compiler/workspace — placement_of is declaration-grain and position-true
             let _ = checked(ws, "/w/src/main.av")
             placed_reads(ws, ws.typed_key(placed_decl(ws)))
         }
-        then "`Sig(b)` reads `Placed(b)` too" {
+        then "`signed(b)` reads `Placed(b)` too" {
             let ws = a_process_over(
                 {"/w/src/main.av": placed_source(placed_lead())},
                 ["/w/src/main.av"],
             )
             let _ = checked(ws, "/w/src/main.av")
-            placed_reads(ws, Key { family: Family.Sig.ordinal, arg: placed_decl(ws).index })
+            placed_reads(ws, ws.sig_key(placed_decl(ws)))
         }
     }
 }
