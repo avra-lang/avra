@@ -2,7 +2,7 @@
 //! every pass's facts, every diagnostic, and every question —
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
-use core.{ExprId, StmtId, DeclId, TypeId, At, joined, FileId, Binding}
+use core.{ExprId, StmtId, DeclId, TypeId, At, joined, FileId, Binding, fp, fp_list}
 use diagnostics.{Diag, SourceFile, render_among, has_errors}
 use features.{
     Decls,
@@ -24,6 +24,7 @@ use features.{
     lowering_plan_of,
 }
 use compiler.lower.{Lowered}
+use compiler.families.{Family}
 use @std.relation.engine.{list_cell}
 use @std.text.{chars}
 
@@ -42,6 +43,20 @@ export type Analysis = {
 }
 
 impl Analysis {
+    /// What an analysis carries beyond its file's tree: its names' and its fold's digests, and
+    /// every diagnostic in pipeline order. `view` and `ws` are the workspace's own state.
+    fn fingerprint() -> int {
+        let f = self.view.file
+        fp(
+            1,
+            [
+                dep_hash_fp(self.ws.db.value_hash_of(key(Family.Resolved, f.index))),
+                dep_hash_fp(self.ws.db.value_hash_of(key(Family.Folded, f.index))),
+                fp_list([d.fingerprint() for d in self.diagnostics]),
+            ],
+        )
+    }
+
     /// The program this file belongs to.
     fn program() -> Program {
         self.ws.standing()
