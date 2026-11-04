@@ -9,6 +9,7 @@
 //! on the way.
 
 use @std.errors.{Loc}
+use @std.text.{from_codepoint}
 
 /// splitmix64's finalizer: a nonlinear 64-bit mix.
 export fn mix(x: int) -> int {
@@ -281,12 +282,22 @@ impl Writer {
         self.chunks.get().bytes()
     }
 
-    /// The octets as text no other octets spell: what a record is
-    /// interned by.
+    /// The octets as text no other octets spell: what a record is interned by. A printable
+    /// octet stands as itself and every other, `%` included, as `%` and two hex digits.
     fn spelled() -> string {
         let all = self.bytes()
-        ["${all.at(i)}" for i in 0..all.length].join(".")
+        let words = octet_words()
+        [words[all.at(i)] for i in 0..all.length].join("")
     }
+}
+
+/// Each octet's spelling in `Writer.spelled`, by its value.
+once fn octet_words() -> List<string> { [octet_word(o) for o in 0..256] }
+
+fn octet_word(o: int) -> string {
+    if o > 32 && o < 127 && o != 37 { return from_codepoint(o) }
+    let digits = "0123456789ABCDEF"
+    "%${digits.substring(o / 16, o / 16 + 1)}${digits.substring(o % 16, o % 16 + 1)}"
 }
 
 /// HOW A SAVED NAME SPELLS THE TREE ITS STORE STANDS IN: `home` as a whole path — itself, or
