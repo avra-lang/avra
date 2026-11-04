@@ -679,7 +679,7 @@ export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
     }
     let evicted = prune_bodies(pack.dir, limits)
     let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
-    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit())
+    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit(), false)
     CleanReport {
         skipped: false,
         sealed: sealed,
@@ -709,7 +709,7 @@ fn enforce_limits(pack: Pack) {
     let _ = prune_bodies(pack.dir, store_limits())
     drop_unreferenced_values(pack.dir)
     let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
-    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit())
+    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit(), false)
 }
 
 /// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
@@ -723,11 +723,12 @@ type KeptFile = { path: string, bytes: int, at: int }
 
 /// The binaries under `<root>/bin`, oldest first, past what `limit` allows: each is removed
 /// with its edge, so a later ask finds a miss and links again. The newest is never removed.
-export fn trim_kept_binaries(root: string, limit: int) -> int { trim_kept_files(root, "bin", limit) }
+export fn trim_kept_binaries(root: string, limit: int) -> int { trim_kept_files(root, "bin", limit, true) }
 
-/// The files of one file family (`bin`, `obj`) under `<root>/<family>`, oldest first, past `limit`
-/// — never one this process kept, which is the run's own answer whatever second it was dated.
-export fn trim_kept_files(root: string, family: string, limit: int) -> int {
+/// The files of one file family (`bin`, `obj`) under `<root>/<family>`, oldest first, past `limit`.
+/// Where `ours_stand`, a file this process kept is never trimmed — a kept binary is the run's own
+/// answer whatever second it was dated; a process keeps many objects, and only the newest stands.
+export fn trim_kept_files(root: string, family: string, limit: int, ours_stand: bool) -> int {
     if limit <= 0 { return 0 }
     let bin = joined_path(root, family)
     let kept = sorted_by(kept_binaries(bin), (a: KeptFile, b: KeptFile) -> a.at < b.at)
@@ -736,7 +737,7 @@ export fn trim_kept_files(root: string, family: string, limit: int) -> int {
     // what this process kept stands; else the newest — a file's time counts whole seconds, so
     // the newest by time need not be the one just kept
     let ours = kept_now().get()
-    let others = [f for f in kept if !ours.has(f.path)]
+    let others = [f for f in kept if !ours_stand || !ours.has(f.path)]
     let spared = if others.length < kept.length || others.is_empty() { 0 } else { 1 }
     for f in others.slice(0, others.length - spared) {
         if held <= limit { break }

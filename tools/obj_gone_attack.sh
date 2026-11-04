@@ -17,7 +17,7 @@ B() { # B <label> <want>: build and run, the output held to <want>
     [ $st -eq 0 ] || { fail "$1: status $st"; tail -n 12 $R/err | grep -v '^Q' | cut -c1-200; return 1; }
     got=$($R/app/src/main 2>&1)
     [ "$got" = "$2" ] || fail "$1: printed '$got', wanted '$2'"
-    owed=$(grep -P '^Q\tobjects\t' $R/err | tail -1 | cut -f3)
+    owed=$(grep "$(printf '^Q\tobjects\t')" $R/err | tail -1 | cut -f3)
     echo "$1: ${owed:-0} object(s) owed"
 }
 B "cold" "n 2"
