@@ -1,0 +1,41 @@
+// A FILE'S SIGNATURE DIAGNOSTICS ARE ONE ANSWER: `sig_said` says what the signature rounds
+// said, over files with and without refusals. No source in this corpus makes a signing round
+// speak (every refusal tried is spoken by a later pass), so the equalities below pin the shape
+// of the answer, not a message.
+use compiler.{Workspace, sig_said}
+use compiler.host.{memory_host}
+use @std.avrac.testing.{test_workspace}
+
+const SS_MAIN: string = "/w/src/main.av"
+
+fn ss_workspace(source: string) -> Workspace {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        SS_MAIN: source,
+    }
+    test_workspace(memory_host(files, files.keys()), "/w")
+}
+
+fn ss_said(source: string) -> string {
+    let ws = ss_workspace(source)
+    [d.message for d in sig_said(ws, ws.file_id(SS_MAIN))].join("|")
+}
+
+fn ss_rounds(source: string) -> string {
+    let ws = ss_workspace(source)
+    [d.message for d in ws.sig_diagnostics(ws.file_id(SS_MAIN))].join("|")
+}
+
+spec "compiler/sig_said" {
+    then "a generic method's file says what the signature rounds said" {
+        let src = "type C = { n: int }\nimpl C {\n    mut fn f<T>(x: T) -> int { 1 }\n}\n2\n"
+        ss_said(src) == ss_rounds(src)
+    }
+    then "a file with an unknown field type says what the signature rounds said" {
+        let src = "type P = { x: Missing }\n1\n"
+        ss_said(src) == ss_rounds(src)
+    }
+    then "a clean file says nothing" {
+        ss_said("fn f(x: int) -> int { x }\nf(1)\n") == ""
+    }
+}
