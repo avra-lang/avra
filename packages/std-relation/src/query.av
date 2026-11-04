@@ -56,6 +56,7 @@ use @std.meta.{
     literal,
     as_code,
     bool_node,
+    int_node,
     refuse_as_at,
     code_hash,
 }
@@ -78,6 +79,9 @@ use stable.{
     named_with,
     text_spelled,
     int_spelled,
+    text_unspelled,
+    int_unspelled,
+    each_spelling,
     Writer,
     Reader,
 }
@@ -156,7 +160,7 @@ export fn query_known_db(_f: Named) {}
 /// its spelling — only a lasting query's, so a restore asks none of the process's own work.
 fn known_door(f: Fn) -> List<Directive> {
     let asks = named_by(f)
-    if !lasting(f) || asks.is_empty() { return [] }
+    if !outlives(f) || asks.is_empty() { return [] }
     let first = f.params[0]
     let seat = [quote { fn _(${first.name}: ${first.ty}) {} }]
     let door = "${f.name}_known"
@@ -185,7 +189,7 @@ fn known_door(f: Fn) -> List<Directive> {
 fn kept_source(f: Fn, kept: string) -> Decls {
     quote {
         once fn ${kept}() -> Answers<${f.answer}> {
-            answers(${literal(durable_name(f))}, ${literal(f.name)}, ${as_code(bool_node(keyed_densely(f)))}, ${as_code(bool_node(lasting(f)))})
+            answers(${literal(durable_name(f))}, ${literal(f.name)}, ${as_code(bool_node(keyed_densely(f)))}, ${as_code(bool_node(outlives(f)))})
         }
     }
 }
@@ -211,7 +215,7 @@ fn row_source(f: Fn) -> Decls {
 fn key_seat(f: Fn) -> string { if f.params.length == 2 { f.params[1].ty } else { "" } }
 
 /// Whether a query's answers outlive the process: saved through its record, and no fixpoint's.
-fn lasting(f: Fn) -> bool { saved(f) && fixpoint_words(f) == null }
+fn outlives(f: Fn) -> bool { saved(f) && fixpoint_words(f) == null }
 
 /// Whether a call is keyed by a dense number of the process's own.
 fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_field(it.kind) != null) }
@@ -222,6 +226,7 @@ fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_f
 /// scope is the ordinary refusal at the generated site; a scope that spells an id empty names
 /// that call nothing, so it stays in the process.
 fn named_by(f: Fn) -> List<Stmts> {
+    if f.params.length > 2 { return if spelled_by_name(f) { spelled_asks(f) } else { [] } }
     if f.params.length != 2 { return [] }
     let seat = f.params[1]
     let ctx = name(f.params[0].name)
@@ -246,6 +251,47 @@ fn named_by(f: Fn) -> List<Stmts> {
             }
         },
     ]
+}
+
+/// Whether a call of several plain seats is asked by its spelling: one that outlives the process
+/// over the `Db`, or through a context that wears `@lasting`.
+fn spelled_by_name(f: Fn) -> bool {
+    outlives(f) &&
+        (is_db(f.params[0].kind) || f.annotations.any((a: Annotation) -> a.name == "lasting"))
+}
+
+/// A call of several plain seats asked by its spelling: the tab-joined spelling cut back into
+/// the seats, a text unescaped, a number or a flag read — none when a seat has another kind.
+fn spelled_asks(f: Fn) -> List<Stmts> {
+    let seats = f.params.slice(1, f.params.length)
+    if plain_args(f) == null || seats.any(!spelled_back(it)) { return [] }
+    let ctx = name(f.params[0].name)
+    let count = as_code(int_node(seats.length))
+    let args = [seat_read(p, i) for i, p in seats]
+    [
+        quote {
+            held.asked_by_text(
+                (s: string) -> each_spelling(
+                    s,
+                    ${count},
+                    (parts: List<string>) -> {
+                        let _ = ${f.name}(${ctx}, ${..args})
+                    },
+                ),
+            )
+        },
+    ]
+}
+
+/// Whether a plain seat's spelling reads back into the seat.
+fn spelled_back(p: Param) -> bool { p.kind is .Str || p.kind is .Int || p.kind is .Bool }
+
+/// Seat `p` read from the `i`th part of a spelling.
+fn seat_read(p: Param, i: int) -> Code {
+    let part = quote { parts[${as_code(int_node(i))}] }
+    if p.kind is .Str { return quote { text_unspelled(${part}) } }
+    if p.kind is .Bool { return quote { ${part} == "1" } }
+    quote { int_unspelled(${part}) }
 }
 
 /// The reader a record answer needs, bound beside the call: a TYPED LET
@@ -401,6 +447,11 @@ export fn scoped_by(f: Fn, by: Fn) -> List<Diagnostic> {
     []
 }
 
+/// `@lasting`: a context query that outlives the process although nothing in its key names the
+/// context. The mark is the author's word that the body reads only recorded inputs, or pure
+/// functions of them, and each marked query states why at its site.
+export fn lasting(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "lasting")] } }
+
 /// `@recursive`: a call re-entered before it settles computes again — the smaller view.
 export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "recursive")] } }
 
@@ -470,10 +521,14 @@ fn opened(f: Fn) -> Code {
 /// recorded and its key names the same call in the next one — the `Db` alone as its first
 /// seat, every argument a stable encoding, an answer that reads back. Nothing declares it. A
 /// context's call is named past the process only by its scope, so a context query whose seats
-/// and answer are plain numbers and text names nothing of the context and stays in the process.
+/// and answer are plain numbers and text names nothing of the context and stays in the process
+/// unless it wears `@lasting`.
 fn saved(f: Fn) -> bool {
     let ctx = !is_db(f.params[0].kind)
-    (!ctx || scoped(f) || !coded(f).is_empty()) &&
+    (!ctx ||
+            scoped(f) ||
+            !coded(f).is_empty() ||
+            f.annotations.any((a: Annotation) -> a.name == "lasting")) &&
         f
             .params
             .slice(1, f.params.length)
@@ -694,6 +749,7 @@ fn seat_writes(f: Fn) -> List<Code> {
 /// and for a dense id under a scope, which the codec spells (through the scope).
 fn plain_spelled(p: Param, scoped: bool) -> Code? {
     if p.kind is .Str { return quote { text_spelled(${name(p.name)}) } }
+    if p.kind is .Bool { return quote { int_spelled(if ${name(p.name)} { 1 } else { 0 }) } }
     let n? = numbered(p) else { return null }
     if scoped && dense_field(p.kind) != null { return null }
     quote { int_spelled(${n}) }

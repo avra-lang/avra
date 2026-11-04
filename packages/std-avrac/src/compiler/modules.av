@@ -16,9 +16,10 @@ use core.{
     touch,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
-use @std.relation.{query}
+use @std.relation.{query, lasting}
 use features.{Decl, Import, nothing, table_of, Listed}
 use diagnostics.{Diag, loc_at, is_error}
+use compiler.host.{Manifest}
 use @std.testing.{words}
 
 impl Workspace {
@@ -56,7 +57,7 @@ impl Workspace {
     /// module of the one above it.
     fn module_files(m: ModulePath) -> List<string> {
         let pkg? = self.holder(m) else { return [] }
-        module_listed(self, pkg.src, m.text())
+        module_listed(self, pkg.root, pkg.src, pkg.ordinal == 0, m.text())
     }
 
     /// The files of `m` the program MET, in listing order — the files it registered.
@@ -81,15 +82,20 @@ impl Workspace {
 
     fn listed_files(m: ModulePath) -> List<string> {
         let pkg? = self.holder(m) else { return [] }
-        self.listed_under(pkg.src, m)
+        self.listed_under(pkg.root, pkg.src, pkg.ordinal == 0, m)
     }
 
-    /// A module's files under its package's source root `src`.
-    fn listed_under(src: string, m: ModulePath) -> List<string> {
+    /// A module's files under the source root `src` of the package rooted at `root`, which is
+    /// the root program's own when `as_root`: a pure function of those, the directory's listing
+    /// and the package's manifest.
+    fn listed_under(root: string, src: string, as_root: bool, m: ModulePath) -> List<string> {
         if self.crosses_package(src, m.local()) { return [] }
         let dir = m.dir_under(src)
         let entries = self.listing(dir)
-        if entries != null { return [joined_path(dir, e.name) for e in entries! if self.listed_source(dir, e.name)] }
+        if entries != null {
+            let mf = self.manifest_at(root)
+            return [joined_path(dir, e.name) for e in entries! if self.listed_in(mf, root, as_root, dir, e.name)]
+        }
         let file = m.file_under(src)
         if self.there(file) { return [file] }
         []
@@ -120,18 +126,21 @@ impl Workspace {
     /// manifest EXCLUDES.
     fn excluded(path: string) -> bool {
         let pkg = self.packages()[self.holder_of_path(path)]
-        self
-            .manifest(pkg.ordinal)
-            .excludes
-            .any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
+        excluded_in(self.manifest(pkg.ordinal), pkg.root, path)
     }
 
     /// A source file the package lists — `.av`, not excluded, and not a
     /// dependency's entry.
     fn listed_source(dir: string, f: string) -> bool {
+        let pkg = self.packages()[self.holder_of_path(joined_path(dir, f))]
+        self.listed_in(self.manifest(pkg.ordinal), pkg.root, pkg.ordinal == 0, dir, f)
+    }
+
+    /// `listed_source` for the package rooted at `root` with manifest `mf`.
+    fn listed_in(mf: Manifest, root: string, as_root: bool, dir: string, f: string) -> bool {
         is_source(f, dir) &&
-            !self.excluded(joined_path(dir, f)) &&
-            !self.entry_of_dependency(joined_path(dir, f))
+            !excluded_in(mf, root, joined_path(dir, f)) &&
+            !entry_in(mf, root, as_root, joined_path(dir, f))
     }
 
     /// A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
@@ -140,9 +149,7 @@ impl Workspace {
     /// the package, and its names are not the library's.
     fn entry_of_dependency(path: string) -> bool {
         let pkg = self.packages()[self.holder_of_path(path)]
-        if pkg.ordinal == 0 { return false }
-        let bin? = self.manifest(pkg.ordinal).bin else { return false }
-        path == joined_path(pkg.root, bin) && bin != self.manifest(pkg.ordinal).lib
+        entry_in(self.manifest(pkg.ordinal), pkg.root, pkg.ordinal == 0, path)
     }
 
     /// Whether a directory is a package root of its own.
@@ -591,7 +598,27 @@ fn module_in(prefix: string, src: string, per_file: bool, path: string) -> strin
 
 /// A module's files, through the host's listing, under the source root `src` of the package
 /// that holds it; a dependency's `module` names its key.
+/// LASTING because its key is the package's root, its source root, whether it is the root
+/// program's and the module: it reads the directory listing, the Exists of nested manifests and
+/// the package's own manifest, every one a recorded input, and nothing of the process's package
+/// table.
 @query
-fn module_listed(ws: Workspace, src: string, module: string) -> List<string> {
-    ws.listed_under(src, module_path(module.split(".")))
+@lasting
+fn module_listed(ws: Workspace, root: string, src: string, as_root: bool, module: string) -> List<
+    string,
+> {
+    ws.listed_under(root, src, as_root, module_path(module.split(".")))
+}
+
+/// Whether `path` is one its package's manifest EXCLUDES, the package rooted at `root`.
+fn excluded_in(mf: Manifest, root: string, path: string) -> bool {
+    mf.excludes.any(under_dir(path, joined_path(root, it)) || path == joined_path(root, it))
+}
+
+/// Whether `path` is a dependency's own program: the file its `[bin]` names, which runs only where
+/// the package is the root.
+fn entry_in(mf: Manifest, root: string, as_root: bool, path: string) -> bool {
+    if as_root { return false }
+    let bin? = mf.bin else { return false }
+    path == joined_path(root, bin) && bin != mf.lib
 }

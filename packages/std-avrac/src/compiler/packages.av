@@ -70,10 +70,13 @@ impl Workspace {
     /// through the input door, so a reader moves only when the value did. A root without a
     /// manifest reads as an empty one, quietly. A manifest's text is the one text the package
     /// graph is shaped by, so its cell is marked the first time it is asked.
-    fn manifest(i: int) -> Manifest {
-        let pkg = self.packages()[i]
-        if !self.has_manifest(pkg) { return empty_manifest() }
-        let path = joined_path(pkg.root, "avra.toml")
+    fn manifest(i: int) -> Manifest { self.manifest_at(self.packages()[i].root) }
+
+    /// The manifest of the package rooted at `root`: a pure function of that directory's
+    /// `avra.toml`, the one place a package's manifest is read.
+    fn manifest_at(root: string) -> Manifest {
+        let path = joined_path(root, "avra.toml")
+        if !self.there(path) { return empty_manifest() }
         let at = self.text_key(path)
         if !self.manifest_texts.get().contains(at) { self.manifest_texts.push(at) }
         manifest_in(self.text_staged(path), path)

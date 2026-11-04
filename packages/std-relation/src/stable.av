@@ -9,7 +9,7 @@
 //! on the way.
 
 use @std.errors.{Loc}
-use @std.text.{from_codepoint}
+use @std.text.{from_codepoint, parse_int}
 
 /// splitmix64's finalizer: a nonlinear 64-bit mix.
 export fn mix(x: int) -> int {
@@ -363,6 +363,20 @@ export fn text_spelled(s: string) -> string { s.replace("%", "%25").replace("\t"
 
 /// A number argument spelled for a call's key.
 export fn int_spelled(n: int) -> string { "${n}" }
+
+/// `text_spelled`'s inverse.
+export fn text_unspelled(s: string) -> string { s.replace("%09", "\t").replace("%25", "%") }
+
+/// `int_spelled`'s inverse; a text no number spells reads as zero, a call nothing asked.
+export fn int_unspelled(s: string) -> int { parse_int(s) ?? 0 }
+
+/// A call's spelling cut back into its `count` seats' spellings and asked, none when it holds
+/// another number.
+export fn each_spelling(s: string, count: int, ask: fn(List<string>) -> void) {
+    let parts = "${s}\t.".split("\t")
+    if parts.length != count + 1 { return }
+    ask(parts.slice(0, count))
+}
 
 /// The key a call's kept answer is filed under: its query's name and its arguments' spelling,
 /// folded — the one spelling the process interns the call by, so the two never disagree.
