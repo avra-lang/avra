@@ -51,7 +51,7 @@ impl Want {
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, how many times the records moved under it, and
 /// the attempts that gave way to it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], moved: int = 0, turned: int = 0, left: List<Left> = [], edit: string = "" }
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], turned: int = 0, left: List<Left> = [], edit: string = "" }
 
 /// The entry a derivation trims its root walk by: a build's, whose program is
 /// what the entry reaches; a check reads every file of the package.
@@ -88,29 +88,12 @@ impl Attempt {
 
     /// What the attempt asks, for a trace line.
     fn shown() -> string {
-        "moved ${self.moved} reading ${self.parse.length}"
+        "reading ${self.parse.length}"
     }
 
     /// Why this attempt gave way to `next`, as what `next` does that this did not.
     fn gave_way(root: string, next: Attempt) -> string {
-        turn_said(
-            root,
-            next.parse.slice(self.parse.length, next.parse.length),
-            next.moved > self.moved,
-        )
-    }
-
-    /// The attempt once more, the records having moved under it — twice, no more.
-    fn adrift(paths: List<string>) -> Turn {
-        if self.moved >= 2 {
-            Turn.Refused(records_adrift(paths))
-        } else {
-            Turn
-                .Again(
-                    (self with { moved: self.moved + 1 })
-                        .reading([ReadFile { path: path, why: Reads.Adrift } for path in paths]),
-                )
-        }
+        turn_said(root, next.parse.slice(self.parse.length, next.parse.length))
     }
 }
 
@@ -122,11 +105,9 @@ type Tried = { answer: Result<Derived, Turn>, spans: List<Phase>, ns: int }
 const TURN_NAMED: int = 3
 
 /// WHAT THE NEXT ATTEMPT DOES THAT THE ONE BEFORE DID NOT: the files it reads
-/// whatever the store holds, each with why; nothing held; the records
-/// read again.
-export fn turn_said(root: string, more: List<ReadFile>, adrift: bool) -> string {
-    let reads = if !more.is_empty() { ["reads ${more.length} more (${read_words(root, more)})"] } else { [] }
-    let said = reads.concat(if adrift { ["reads the records again, moved under it"] } else { [] })
+/// whatever the store holds, each with why.
+export fn turn_said(root: string, more: List<ReadFile>) -> string {
+    let said = if !more.is_empty() { ["reads ${more.length} more (${read_words(root, more)})"] } else { [] }
     if said.is_empty() { "asks the same again" } else { joined(said, "; ") }
 }
 
@@ -173,7 +154,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall>, find
 /// each file said kept. `program.ws` is the workspace the attempt that stood
 /// ran in.
 ///
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [], unreached: List<string> = [] }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, held: int, files: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [], unreached: List<string> = [] }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -197,11 +178,7 @@ impl Derived {
     /// each attempt that gave way to this one with what it spent, then the files a
     /// record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
-        let counted = [
-            "attempt ${self.turns}",
-            "discarded ${self.turned}",
-            "refused ${self.refused}",
-        ]
+        let counted = ["discarded ${self.turned}", "refused ${self.refused}"]
         let line = joined(
             [ph.shown() for ph in grouped_phases(self.program.ws.phases.get())]
                 .concat(counted)
@@ -336,11 +313,6 @@ impl Workspace {
 
     /// The program derived with nothing held — the hold's oracle.
     fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(Attempt { entry: entry, want: want }) }
-
-    /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
-    fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        want is .Diagnostics || s.has(Stored.Obj, okey)
-    }
 
     /// ONE FILE'S HOLD, as this package's derivation under `want` decided it:
     /// held, or read with why — and for a file nothing kept stands in for,
@@ -515,7 +487,6 @@ impl Workspace {
             unreached: [s.path for s in said if !reaches_file(self, reach, s.path)],
             held: 0,
             files: self.decls.file_count(),
-            turns: at.moved,
             turned: at.turned,
             left: at.left,
             spans: spans,
@@ -686,10 +657,6 @@ fn refusal_cause(why: string) -> string {
 
 fn nothing_held(why: string) -> string {
     "internal compiler error: ${why}, and nothing was held"
-}
-
-fn records_adrift(paths: List<string>) -> string {
-    "avra: interface records did not stabilize — still moving under ${joined(paths, ", ")}"
 }
 
 /// A list filed by the file each item belongs to, keyed by the file's index; items of no
