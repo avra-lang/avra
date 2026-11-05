@@ -620,6 +620,9 @@ export type Workspace = {
     settle_asks: Cell<List<SettleAsk>>,
     /// `settle_asks`' own name -> index (`settle_id`'s interning).
     settle_asks_index: Cell<Map<string, int>>,
+    /// The settlements that have spoken in the lowering pass now running: a
+    /// reused refusal stays silent only within the pass that already said it.
+    spoken_settles: Cell<List<int>>,
     /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
     records: Records,
     /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
@@ -693,10 +696,6 @@ enum LiftResult { Crossed(Lifted), Refused(Unsettled) }
 
 fn reused_lift(held: LiftResult) -> Result<Lifted, Unsettled> {
     match held { .Crossed(crossed) -> .Ok(crossed), .Refused(_) -> .Err(Unsettled.Spoken) }
-}
-
-fn reused_settlement(held: Settlement) -> Result<Settled, Unsettled> {
-    match held { .Held(value) -> .Ok(value), .Refused(_) -> .Err(Unsettled.Spoken) }
 }
 
 /// One package of the workspace: its key (the manifest's name; ""
@@ -1074,6 +1073,7 @@ fn built(
         lift_asks_index: Cell.new(no_lift_index),
         settle_asks: Cell.new(no_settles),
         settle_asks_index: Cell.new(no_settle_index),
+        spoken_settles: list_cell(),
         records: new_records(),
         keys: new_keys(),
         file_ids_of: Cell.new(no_file_ids_of),

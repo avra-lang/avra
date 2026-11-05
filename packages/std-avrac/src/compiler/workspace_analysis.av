@@ -841,7 +841,7 @@ impl Workspace {
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
         match self.relation(Family.Settled).ask(id) {
             .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
-            .Reuse(held) -> { return reused_settlement(settled_of(held)) },
+            .Reuse(held) -> { return self.reused_settlement(id, settled_of(held)) },
             .Compute -> self.relation(Family.Settled).begin(id),
         }
         let ask = self.settle_asks.get()[id]
@@ -855,8 +855,30 @@ impl Workspace {
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
         let _ = self.relation(Family.Settled).finish(id, DbRow.Settled(held), settlement_hash(held))
-        r
+        match r {
+            .Err(_) -> {
+                self.spoke(id)
+                r
+            },
+            .Ok(_) -> r,
+        }
     }
+
+    /// A reused settlement: a refusal re-speaks once in each lowering pass, then
+    /// collapses to `.Spoken`, so one pass never says the same thing twice.
+    fn reused_settlement(id: int, held: Settlement) -> Result<Settled, Unsettled> {
+        match held {
+            .Held(value) -> .Ok(value),
+            .Refused(why) -> if self.spoken_settles.get().contains(id) {
+                .Err(Unsettled.Spoken)
+            } else {
+                self.spoke(id)
+                .Err(why)
+            },
+        }
+    }
+
+    fn spoke(id: int) { self.spoken_settles.set(self.spoken_settles.get().concat([id])) }
 
     /// A HELD CONST'S VALUE IS THE RECORD'S, NEVER RE-EVALUATED: `analysis`
     /// would fold and type its whole file to read its own initializer, and
