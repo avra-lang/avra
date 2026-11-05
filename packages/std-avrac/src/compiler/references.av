@@ -126,7 +126,6 @@ impl Workspace {
         self.stand_after_typing()
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if self.reads_as_source(x.path)]
-        self.hold.held_refs.set({})
         let rows = flatten([file_refs_made(self, f).rows for f in files])
         RefsIndex {
             by_decl: Cell.new(grouped(rows, true)),
@@ -155,66 +154,6 @@ impl Workspace {
                 "defect: the references relation settles after typing, and something asked for it while a file was still typing; open: ${self.db.kernel.open_stack()}",
             )
         }
-    }
-
-    /// The references held files make to `target`, a path no held file answers to.
-    fn refs_into(store: Store, target: string) -> List<Ref> {
-        self.file_stands(target)
-        flatten(
-            [self.refs_of_source(store, source, target) for source in self.held_sources(target)],
-        )
-    }
-
-    /// The held files whose kept lines name a declaration of `target`.
-    fn held_sources(target: string) -> List<string> {
-        []
-    }
-
-    /// One held file's references to `target`.
-    fn refs_of_source(store: Store, source: string, target: string) -> List<Ref> {
-        let f? = self.decls.known_file_id(source) else { return [] }
-        flatten(
-            [some_list(self.resolved_ref(f, p)) for p in self.kept_ref_rows(store, source) if ref_target(p) == target],
-        )
-    }
-
-    /// The references held files make to `d`, restored from their records.
-    fn held_refs_to(d: DeclId) -> List<Ref> {
-        let store? = self.store.get() else { return [] }
-        let target? = self.held_target(d) else { return [] }
-        let known: List<Ref>? = self.hold.held_refs.get().get(target)
-        let into = known ?? self.refs_into(store, target)
-        if known == null { self.hold.held_refs.put(target, into) }
-        [r for r in into if same_decl(r.decl, d)]
-    }
-
-    /// The target whose held references name `d` on its own ask: the language's, or a held file.
-    fn held_target(d: DeclId) -> string? {
-        if self.decls.is_builtin(d) { return LANGUAGE_HOME }
-        let f = self.decls.decl(d).file
-        null
-    }
-
-    /// A file's `ref` lines, as its module's kept record holds them.
-    fn kept_ref_rows(store: Store, path: string) -> List<List<string>> {
-        let known = self.hold.kept_refs.get().get(path)
-        if known != null { return known! }
-        let rows = [p for p in file_lines(self, store, self.module_path_of(path), path) if is_ref_row(p)]
-        self.hold.kept_refs.put(path, rows)
-        rows
-    }
-
-    /// A file's declarations standing; a path no file answers to stands nothing.
-    fn file_stands(path: string) {
-        let g? = self.decls.known_file_id(path) else { return }
-        let _ = self.items(g)
-        let _ = self.decls.decls_of_file(g)
-    }
-
-    fn resolved_ref(f: FileId, p: List<string>) -> Ref? {
-        let kind? = use_kind_of_word(p[3]) else { return null }
-        let target? = self.decls.wire_decl(wire_fields(p[2], "~"), 0) else { return null }
-        Ref { decl: target.id, file: f, at: At.Stmt(StmtId { index: 0 }), kind: kind }
     }
 
     /// One file's own rows: every expression naming a declaration,
@@ -465,7 +404,7 @@ fn shapes_signature(word: string) -> bool {
 
 /// The inverse, by the one character — an unrecognized word decodes
 /// to nothing, the same "a stale row answers no row" law the caller
-/// (`resolved_ref`) already applies to a moved declaration name.
+/// (`file_refs`) already applies to a moved declaration name.
 fn use_kind_of_word(w: string) -> UseKind? {
     match w {
         "C" -> UseKind.Call,

@@ -751,135 +751,13 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
     }
 }
 
-// ── REBUILDING ──────────────────────────────────────────────────────
-
-/// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
-/// each file met once. A `use` may name ONE FILE of a directory module
-/// (`@std.http.frame`) — its record is the directory's, and every file that record
-/// places is met with it: a module is one namespace, so naming one registers them all.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_named(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    named: List<string>,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
-    let key = ws.record_key(m)
-    let first = ws.records.loaded_records.get().get(key) == null
-    ws.records.loaded_records.put(key, true)
-    // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
-    // a module whose importers are all held is met nowhere else, and a file never
-    // met is neither parsed nor linked.
-    let pr? = ws.producers_for(store, m) else {
-        ws.met_all(named)
-        return
+/// `kind_words` read back; null for words no kind writes.
+fn kind_of_words(word: string, name: string) -> CollectKind? {
+    match word {
+        "mark" -> CollectKind.Annotated(name),
+        "component" -> CollectKind.Component(name),
+        _ -> null,
     }
-    let here = ws.module_files(m)
-    let why = fault_of(pr, here)
-    if why != "" {
-        if first {
-            ws
-                .hold
-                .read_files
-                .set(
-                    ws
-                        .hold
-                        .read_files
-                        .get()
-                        .concat([ReadFile { path: f, why: Reads.Undecodable(why) } for f in here]),
-                )
-        }
-        ws.met_all(named)
-        return
-    }
-    if first { load_imports(ws, store, pr, entry, want, meet) }
-    // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
-    // this same module finds it.
-    // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
-    // directory registers them all, and a registered file never met is asked no hold —
-    // it parses on every run, whatever moved.
-    for f in named.concat([f for f in here if pr.placed.contains(f) && !named.contains(f)]) {
-        if ws.records.met_files.get().get(f) != null { continue }
-        // ON-DEMAND: a names-only walk registers the file so the program is whole,
-        // and leaves its interface to the module a suspect asks for.
-        if !meet {
-            let _ = ws.registered(f)
-            continue
-        }
-        ws.records.met_files.put(f, true)
-        meet_file(ws, store, m, f, record_places(ws, store, m).get(f), entry, want)
-    }
-    // A NAMES-ONLY WALK REGISTERS THE MODULE'S OTHER FILES TOO: one the record never placed
-    // is one the module gained, and it is read.
-    if !meet { for f in here { if !pr.placed.contains(f) && ws.reads_as_source(f) { let _ = ws.registered(f) } } }
-    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
-    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
-}
-
-/// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
-/// import under the record that keeps it, and where its impls and traits are named.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
-    // every module sees the prelude and none imports it
-    ws.ensure_package(prelude_key)
-    load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
-    // each module once, however many of this module's files import it; a line whose file moved
-    // admits nothing, and loads its module only where a package already stands for it
-    let lines = [p for p in pr.walk if p[0] == "import" && p.length > 1]
-    let standing = distinct([p[1] for p in lines if import_stands(ws, p)])
-    for name in distinct([p[1] for p in lines]) {
-        let imp = module_path(name.split("."))
-        let key = imp.package()
-        if key != null {
-            if standing.contains(name) { ws.ensure_package(key!) } else if !ws.packages().any(it.key == key!) { continue }
-        }
-        for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
-    }
-    for parts in pr.walk {
-        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
-    }
-    note_producers(ws, pr)
-}
-
-/// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
-/// record — as a read `collect` admits it — so a file nothing imports stands, held,
-/// beside the ones its imports reach. What the collector gathered is held to the set
-/// its record names, judged once the program is analysed (`gathered_moved`).
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(
-    ws: Workspace,
-    store: Store,
-    parts: List<string>,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
-    if parts.length < 3 {
-        ws.defect(gathers_collectorless())
-        return
-    }
-    let pkg? = ws.packages().find(it.key == parts[1]) else {
-        ws.defect(gathers_unadmitted(parts[1]))
-        return
-    }
-    let files = gathered_files(ws, pkg.src)
-    // a collector gone from its package holds nothing: where it went, its own record speaks
-    if !files.contains(parts[2]) { return }
-    let line = held_gather(parts, relative_path(ws.root, pkg.src))
-    // an import closure's members are whatever the program's imports reach: no package is loaded for it
-    if line == null || admits_package(line!.gathering.scope) {
-        for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
-    }
-    let held? = line else {
-        // NO LINE STANDS FOR THE COLLECT, so its collector is read: nothing recorded what
-        // it gathers, and a held file has no body to gather with.
-        ws.force_read(parts[2], Reads.GathersUnread)
-        return
-    }
-    if !ws.hold.gathered.get().any(it.collector == held.collector && it.digest == held.digest) { ws.hold.gathered.push(held) }
 }
 
 /// A `gathers` line read back as the collect it holds a file to; null for a line
@@ -903,10 +781,6 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
         digest: parts[7],
     }
 }
-
-/// A package's files a `collect` gathers from: every one that is not a test.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a source root in, the files out.
-fn gathered_files(ws: Workspace, src: string) -> List<string> { [path for path in ws.all_files(src) if !ws.is_test_path(path)] }
 
 /// A `gathers` line: the package, the collecting file, what it gathers by, in what
 /// order, what it reads of each member, the set, its scope and the collect's name.
@@ -983,21 +857,6 @@ fn scope_of_word(word: string) -> CollectScope? {
     match word { "package" -> CollectScope.Package, "closure" -> CollectScope.Closure, _ -> null }
 }
 
-/// `kind_words` read back; null for words no kind writes.
-fn kind_of_words(word: string, name: string) -> CollectKind? {
-    match word {
-        "mark" -> CollectKind.Annotated(name),
-        "component" -> CollectKind.Component(name),
-        _ -> null,
-    }
-}
-
-/// WHETHER A KEPT `import` LINE STILL SPEAKS FOR ITS FILE: the file that imports reads the text
-/// the line was written at. A moved file is read again, and its own `use` lines admit what it
-/// imports now.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a line in.
-fn import_stands(ws: Workspace, parts: List<string>) -> bool { parts.length > 3 && parts[3] == ws.text_digest(parts[2]) }
-
 /// Whether a kept `import` line stands for the next record: the file that imports stands in the
 /// module and was held, so its imports are still what its text says.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace, the module's files and a line in.
@@ -1011,25 +870,6 @@ fn kept_import(ws: Workspace, files: List<string>, line: string) -> bool {
 fn kept_gathers(ws: Workspace, line: string) -> bool {
     let parts = line.split("\t")
     parts[0] == "gathers" && parts.length > 3 && !ws.read_here(parts[2])
-}
-
-/// ONE FILE OF A RECORDED MODULE, MET: registered, held or not — a file the workspace
-/// never met is neither parsed nor linked — and read where the record's rows no longer
-/// stand in for it. A file it holds is marked by the hold once the whole read set stands.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a file in.
-fn meet_file(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    f: string,
-    at: Placed?,
-    entry: string?,
-    want: Want,
-) {
-    let _ = ws.file_id(f)
-    let is_entry = entry != null && f == entry!
-    let read? = read_why(ws, store, m, f, at, is_entry, want) else { return }
-    ws.force_read(f, read)
 }
 
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
@@ -1075,30 +915,6 @@ impl Reads {
             .Remembered(said) -> said,
         }
     }
-}
-
-/// Why a file a record knows is read — null when its hold may be asked. The entry
-/// is read: its law over every other file is spoken from its parse.
-// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
-fn read_why(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    f: string,
-    at: Placed?,
-    is_entry: bool,
-    want: Want,
-) -> Reads? {
-    if is_entry { return Reads.Entry }
-    let forced: Reads? = ws.hold.forced.get().get(f)
-    if forced != null { return forced! }
-    if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
-    if ws.reads_pending(store, m, f) { return null }
-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
-    let rows = file_rows(record_fields(ws, store, m), at)
-    if !rows.all(const_kept) { return Reads.Consts }
-    if !holdable(rows) { return Reads.Unholdable }
-    null
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
