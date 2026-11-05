@@ -160,15 +160,17 @@ export fn query_known_db(_f: Named) {}
 /// its spelling — only a lasting query's, so a restore asks none of the process's own work.
 fn known_door(f: Fn) -> List<Directive> {
     let asks = named_by(f)
-    if !outlives(f) || asks.is_empty() { return [] }
+    if fixpoint_words(f) != null || asks.is_empty() { return [] }
     let first = f.params[0]
     let seat = [quote { fn _(${first.name}: ${first.ty}) {} }]
     let door = "${f.name}_known"
+    let kept_as = quote { code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})) }
     let source = if is_db(first.kind) {
         quote {
             @query_known_db
             export fn ${door}(..${seat}) {
                 let held = ${kept_name(f)}().under(${db_code(f)})
+                held.kept_as(${kept_as})
                 ${asks}
             }
         }
@@ -177,6 +179,7 @@ fn known_door(f: Fn) -> List<Directive> {
             @query_known
             export fn ${door}(..${seat}) {
                 let held = ${kept_name(f)}().under(${db_code(f)})
+                held.kept_as(${kept_as})
                 ${asks}
             }
         }
@@ -716,7 +719,15 @@ export fn args_spelled(f: Fn) -> Code { plain_args(f) ?? spelled_writes(f) }
 
 /// A call's arguments as the name its answer is kept under: the in-process spelling, or none
 /// where an id among them names nothing past the process.
-fn args_named(f: Fn) -> Code { plain_args(f) ?? named_writes(f) }
+fn args_named(f: Fn) -> Code { plain_args(f) ?? dense_named(f) ?? named_writes(f) }
+
+/// A lone dense seat's name: its context's spelling of it, the name a reader's leaf gives the call.
+fn dense_named(f: Fn) -> Code? {
+    if f.params.length != 2 || is_db(f.params[0].kind) { return null }
+    let seat = f.params[1]
+    let field? = dense_field(seat.kind) else { return null }
+    quote { named_spelling(${name(f.params[0].name)}.query_scope().spelled(${literal(seat.ty)}, ${name(seat.name)}.${field})) }
+}
 
 /// The arguments spelled straight, none when a seat goes through the codec.
 fn plain_args(f: Fn) -> Code? {

@@ -49,6 +49,7 @@ use stable.{
     encoded_with,
     named_encoding,
     decoded_with,
+    reader,
     int_spelled,
     written_list,
     read_list,
@@ -114,6 +115,8 @@ export type Db = {
     /// Answers waiting to be kept until their reads can be judged whole, while `keeps_wait`.
     keeps_owed: Cell<List<fn() -> void>>,
     keeps_wait: Cell<bool>,
+    /// The calls whose records are being judged.
+    judging: Cell<Map<string, bool>>,
     /// The leaf each read of a cell no query settled names this revision, by family and argument.
     leaf_at_key: Cell<List<Cell<List<int>>>>,
     /// By leaf number this revision: 1 holds, 2 moved, 0 not judged; and the edge a read of it records, -1 none yet.
@@ -322,7 +325,14 @@ export type AnswerRef = {
     number: fn(int) -> int? = unnumbered,
     /// The call asked with a dense number, none when none was.
     numbered: fn(int) -> int? = unnumbered,
+    /// Whether a reader of these cells stands on what the cell read, when it read anything:
+    /// a family's digest names a process's tables, its reads name the program.
+    walked: bool = false,
+    /// The name these answers' records are kept under, none for answers with no record.
+    kept_name: fn() -> string? = no_kept_name,
 }
+
+fn no_kept_name() -> string? { null }
 
 /// No call is asked by a number.
 fn unnumbered(_n: int) -> int? { null }
@@ -458,6 +468,7 @@ fn made(durable: Durable) -> Db {
         leaf_chunks: map_cell(),
         keeps_owed: owed,
         keeps_wait: Cell.new(false),
+        judging: map_cell(),
         leaf_at_key: list_cell(),
         leaf_judged: list_cell(),
         leaf_edges: list_cell(),
@@ -788,6 +799,10 @@ impl Db {
             if named != null { return Step.Leaves(named!) }
         }
         let noted? = self.leaves.get().get("${edge_of(k)}") else {
+            if owner.walked {
+                let reads = self.engine().deps_of(k)
+                if !reads.is_empty() { return if self.first_walk(k, union) { Step.Reads(reads) } else { Step.Leaves([]) } }
+            }
             let named? = self.spelled_numbers(owner, k) else { return null }
             return Step.Leaves(named)
         }
@@ -952,7 +967,11 @@ impl Db {
         match self.leaf_table.leaf(n) {
             .Rows(name, digest) -> self.rows_digest(name) == digest,
             .Input(name, spelled, digest) -> {
-                let now? = self.input_digest(name, spelled) else { return self.unstaged(name) }
+                let now? = self.input_digest(name, spelled) else {
+                    if self.engine().tracing.get() { avra_qtrace("Q\tleaffail\t${name}\tunnamed\n") }
+                    return self.unstaged(name)
+                }
+                if self.engine().tracing.get() && now != digest { avra_qtrace("Q\tleaffail\t${name}\tmoved\t${spelled}\n") }
                 while judged.get().length <= n { judged.push(0) }
                 judged.set_at(n, if now == digest { 1 } else { 2 })
                 now == digest
@@ -993,10 +1012,30 @@ impl Db {
         let known = self.digests_known.get().get(id)
         if known != null { return known }
         let owner? = self.answer_named(name) else { return null }
+        let stood = self.record_digest(owner, spelled, id)
+        if stood != null {
+            self.digests_known.put(id, stood!)
+            return stood
+        }
         let arg? = owner.arg_of(spelled) else { return null }
         let made? = owner.hash_at(arg) else { return null }
         self.digests_known.put(id, made)
         made
+    }
+
+    /// The digest a call's record stands for while its every read holds: nothing is decoded,
+    /// minted or asked. None for no record, a moved read, or a call this judge is already inside.
+    fn record_digest(owner: AnswerRef, spelled: string, id: string) -> int? {
+        let query? = (owner.kept_name)() else { return null }
+        if self.judging.get().get(id) ?? false { return null }
+        let answer = self.durable.answer
+        let saved = self.saved_spelling(spelled)
+        let bytes? = answer(query, spelled_hash(query, saved)) else { return null }
+        let head? = match record_head(self, reader(bytes), saved) { .Ok(h) -> h, .Err(_) -> null } else { return null }
+        self.judging.put(id, true)
+        let holds = self.leaves_hold(head.leaves)
+        self.judging.put(id, false)
+        if holds { head.digest } else { null }
     }
 
     /// The tables of what this revision answered, emptied when the revision moved.
@@ -1284,6 +1323,8 @@ type AnswersUnder<V> = {
     /// Each int-keyed call's number, by its arg.
     numbers: Cell<List<int>>,
     named: Cell<DenseNames?>,
+    /// The name these answers' records are kept under, once the owner opened them.
+    kept_query: Cell<string?>,
     /// How a call keyed by one text is asked by that text, set by its first call: a leaf that
     /// names a call this process has not made is judged by asking it, as a dense one is.
     texted: Cell<List<fn(string) -> void>>,
@@ -1347,6 +1388,7 @@ impl Answers<V> {
                     in_process: !self.lasting,
                     number: (arg: int) -> held_number(slots, id, arg),
                     numbered: (n: int) -> held_numbered(slots, id, n),
+                    kept_name: () -> held_kept_name(slots, id),
                 },
             )
         made
@@ -1370,6 +1412,12 @@ fn held_spelled<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> st
 fn held_arg<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, spelled: string) -> int? {
     let h? = slots.get()[id] else { return null }
     h.durable_arg(spelled)
+}
+
+/// The name the answers under Db `id` are kept under.
+fn held_kept_name<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int) -> string? {
+    let h? = slots.get()[id] else { return null }
+    h.kept_query.get()
 }
 
 /// The dense number call `arg` was asked with.
@@ -1413,6 +1461,7 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnde
         dense: dense,
         numbers: list_cell(),
         named: Cell.new(none),
+        kept_query: Cell.new(no_kept_name()),
         texted: list_cell(),
         fixed: list_cell(),
         bodies: new_table(),
@@ -1427,14 +1476,28 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
     Kept<V>?,
     CodecFault,
 > {
-    let kept = r.text()?
-    if kept != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
-    let runs = read_list(r, read_run)?
-    let leaves = [db.run_leaves(run) for run in runs]
-    if leaves.any(it == null) { fail CodecFault.OtherArguments }
-    let numbers = [n for run in leaves for n in run!]
-    let held: Kept<V>? = if db.leaves_hold(numbers) { Kept { leaves: numbers, value: read(r)? } } else { null }
+    let head? = record_head(db, r, db.saved_spelling(spelled))? else {
+        let elsewhere: Kept<V>? = null
+        return elsewhere
+    }
+    let held: Kept<V>? = if db.leaves_hold(head.leaves) { Kept { leaves: head.leaves, value: read(r)? } } else { null }
     held
+}
+
+/// What a record says before its answer: its digest and its reads.
+type RecordHead = { digest: int, leaves: List<int> }
+
+/// A record's head, none when it was kept for other arguments or its chunk is gone.
+fn record_head(db: Db, r: Reader, saved: string) -> Result<RecordHead?, CodecFault> {
+    if r.text()? != saved { fail CodecFault.OtherArguments }
+    let digest = r.int()?
+    let leaves = [db.run_leaves(run) for run in read_list(r, read_run)?]
+    if leaves.any(it == null) { fail CodecFault.OtherArguments }
+    let head: RecordHead? = RecordHead {
+        digest: digest,
+        leaves: [n for run in leaves for n in run!],
+    }
+    head
 }
 
 /// A leaf's place: its chunk and its position there.
@@ -1615,6 +1678,9 @@ impl AnswersUnder<V> {
     /// How a dense-keyed query's calls are named past the process, set by its first call.
     fn durable_by(names: DenseNames) { self.named.set(names) }
 
+    /// These answers' records are kept under `name`.
+    fn kept_as(name: string?) { self.kept_query.set(name) }
+
     /// How a call keyed by one text is asked by it, once.
     fn asked_by_text(ask: fn(string) -> void) {
         if self.texted.get().is_empty() { self.texted.push(ask) }
@@ -1682,7 +1748,7 @@ impl AnswersUnder<V> {
     fn hash_asked(arg: int) -> int? {
         let key = self.memo.query_key(arg)
         let held = self.memo.kernel.value_hash_of(key)
-        if held != null || !self.lasting { return held }
+        if held != null { return held }
         let names? = self.named.get() else { return null }
         let n? = self.number_at(arg) else { return null }
         let ask = names.ask
@@ -1729,7 +1795,44 @@ impl AnswersUnder<V> {
     /// An open call computed: `body` run, its answer settled under the
     /// reads the kernel recorded.
     fn ran(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> V {
-        self.run(db, arg, body, again, digest).value
+        let done = self.run(db, arg, body, again, digest)
+        if !done.wrote && self.kept_query.get() != null { db.keeping(() -> self.keep_head(db, arg)) }
+        done.value
+    }
+
+    /// An in-process answer's record: its digest and its reads, and no answer — a reader's read
+    /// of it stands while they do, and only a moved read runs it.
+    fn keep_head(db: Db, arg: int) {
+        let query? = self.kept_query.get() else { return }
+        let spelled? = self.durable_at(arg) else { return }
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
+        self.keep_record(db, arg, query, spelled, leaves, (_w: Writer) -> no_word())
+    }
+
+    /// A call's record: its spelling, its digest, its reads by their places, then its answer.
+    fn keep_record(
+        db: Db,
+        arg: int,
+        query: string,
+        spelled: string,
+        leaves: List<int>,
+        answer: fn(Writer) -> void,
+    ) {
+        let places = db.placed_leaves(leaves)
+        let saved = db.saved_spelling(spelled)
+        let bytes? = named_encoding(
+            0,
+            (w, _v) -> {
+                w.text(saved)
+                w.int(db.engine().value_hash_of(self.memo.query_key(arg)) ?? 0)
+                written_list(w, runs_of(places), write_run)
+                answer(w)
+            },
+        ) else {
+            return
+        }
+        let keep = db.durable.keep
+        keep(query, spelled_hash(query, saved), bytes)
     }
 
     /// `ran`, for an answer that reads back: a call this process never
@@ -1751,8 +1854,10 @@ impl AnswersUnder<V> {
         let spelled? = named else { return self.ran(db, arg, body, again, digest) }
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
         let kept? = self.restored(db, query, record, spelled) else {
+            if db.engine().tracing.get() { avra_qtrace("Q\tlasting\tmiss\t${query.split("#")[0]}\n") }
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
+        if db.engine().tracing.get() { avra_qtrace("Q\tlasting\trestored\t${query.split("#")[0]}\n") }
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
         db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
@@ -1792,19 +1897,7 @@ impl AnswersUnder<V> {
     ) {
         let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
         if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
-        let places = db.placed_leaves(leaves)
-        let named? = named_encoding(
-            value,
-            (w, v) -> {
-                w.text(db.saved_spelling(spelled))
-                written_list(w, runs_of(places), write_run)
-                record.write(w, v)
-            },
-        ) else {
-            return
-        }
-        let keep = db.durable.keep
-        keep(query, spelled_hash(query, db.saved_spelling(spelled)), named)
+        self.keep_record(db, arg, query, spelled, leaves, (w: Writer) -> record.write(w, value))
     }
 
     /// Whether this process ever answered the call.
