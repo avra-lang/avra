@@ -376,6 +376,19 @@ impl TypeCx {
         self.plant_want(v, want)
     }
 
+    /// An `if` standing as a statement is a guard: nothing is its value,
+    /// unless it ends the program and answers.
+    mut fn guard_if(s: StmtId) {
+        let v? = self.view.store.stmt_value(s) else { return }
+        if !(self.view.store.expr(v) is .If) || self.ends_program(s, v) { return }
+        self.facts.mark_guard(v)
+    }
+
+    fn ends_program(s: StmtId, v: ExprId) -> bool {
+        let last? = runtime_stmts(self.view).last() else { return false }
+        self.view.store.answers(v) && last == s
+    }
+
     /// A statement's discarded value, kept by the `collect` it stands
     /// in — none keeps it from behind a lambda, and `void` is nothing
     /// to keep.

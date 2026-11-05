@@ -91,16 +91,9 @@ spec "core/nodes adversarial" {
             let c = s.alloc_expr(Expr.BoolLit(true))
             let a = s.alloc_stmt(Stmt.ExprStmt(v))
             let b = s.alloc_stmt(Stmt.ExprStmt(v))
-            let fell = s.alloc_expr(Expr.If(c, s.alloc_expr(Expr.Block([a, b], null)), null))
+            let fell = s.alloc_expr(Expr.If(c, s.alloc_expr(Expr.Block([a, b])), null))
             let split = s
-                .alloc_expr(
-                    Expr
-                        .If(
-                            c,
-                            s.alloc_expr(Expr.Block([a], null)),
-                            s.alloc_expr(Expr.Block([b], null)),
-                        ),
-                )
+                .alloc_expr(Expr.If(c, s.alloc_expr(Expr.Block([a])), s.alloc_expr(Expr.Block([b]))))
             s.expr_fingerprint(fell) != s.expr_fingerprint(split)
         }
         then "a map's pair is not two spreads" {
@@ -147,12 +140,12 @@ spec "core/nodes adversarial" {
                 )
             s.expr_fingerprint(l) != s.expr_fingerprint(r)
         }
-        then "a block's statements are not its tail" {
+        then "a block's statements fold in one by one" {
             mut s = new_node_store()
             let v = s.alloc_expr(Expr.IntLit(1))
             let a = s.alloc_stmt(Stmt.ExprStmt(v))
-            let held = s.alloc_expr(Expr.Block([a], v))
-            let left = s.alloc_expr(Expr.Block([a], null))
+            let held = s.alloc_expr(Expr.Block([a, a]))
+            let left = s.alloc_expr(Expr.Block([a]))
             s.expr_fingerprint(held) != s.expr_fingerprint(left)
         }
         then "an interpolation's text is not its holes" {

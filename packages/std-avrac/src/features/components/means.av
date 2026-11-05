@@ -54,9 +54,11 @@ fn said_again_note(word: string) -> string {
 /// statement.
 fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> List<StmtId> {
     match store.expr(body) {
-        .Block(stmts, _) -> {
-            let held? = store.tail_of(body) else { return stmts }
-            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
+        .Block(_) -> {
+            let held? = store.tail_of(body) else { return store.lead_of(body) }
+            store
+                .lead_of(body)
+                .concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
         },
         rest -> [store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, body, key)), at)],
     }
@@ -443,7 +445,7 @@ impl SyntaxArena {
     /// statements as a block.
     fn template_value(copied: List<StmtId>) -> ExprId {
         let lone: ExprId? = if copied.length == 1 { self.answer_of(copied[0]) } else { null }
-        lone ?? self.branch_value(copied) ?? self.alloc_expr(Expr.Block(copied, null))
+        lone ?? self.alloc_expr(Expr.Block(copied))
     }
 
     /// A user's node in the seat a hole stands in — as the expression
@@ -524,7 +526,7 @@ impl Mint {
         let loop_stmt = self
             .store
             .alloc_stmt(Stmt.ForEach(null, Scoped(binder), source, stmts), self.span)
-        let loop_block = self.store.alloc_expr(Expr.Block([loop_stmt], null), self.span)
+        let loop_block = self.store.alloc_expr(Expr.Block([loop_stmt]), self.span)
         self.instance([], [], loop_block, null)
     }
 }
