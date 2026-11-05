@@ -38,6 +38,7 @@ use engine.{
     Table,
     new_table,
     edge_of,
+    key_of,
     list_cell,
     map_cell,
 }
@@ -110,6 +111,14 @@ export type Db = {
     walks: Cell<List<Cell<List<int>>>>,
     /// Each leaf chunk this process wrote or read back, by its hash: its leaves' numbers.
     leaf_chunks: Cell<Map<string, List<int>>>,
+    /// Answers waiting to be kept until their reads can be judged whole, while `keeps_wait`.
+    keeps_owed: Cell<List<fn() -> void>>,
+    keeps_wait: Cell<bool>,
+    /// The leaf each read of a cell no query settled names this revision, by family and argument.
+    leaf_at_key: Cell<List<Cell<List<int>>>>,
+    /// By leaf number this revision: 1 holds, 2 moved, 0 not judged; and the edge a read of it records, -1 none yet.
+    leaf_judged: Cell<List<int>>,
+    leaf_edges: Cell<List<int>>,
 }
 
 /// THE LEAVES A PROCESS NAMED, NUMBERED: a leaf (its read and its digest) has one number, and
@@ -413,6 +422,7 @@ fn made(durable: Durable) -> Db {
     let relations: Cell<List<RelRef>> = Cell.new([])
     let answer_refs: Cell<List<AnswerRef>> = Cell.new([])
     let leaves: Cell<Map<string, Noted>> = Cell.new({})
+    let owed: Cell<List<fn() -> void>> = Cell.new([])
     let watched: Cell<Map<string, int>> = Cell.new({})
     let none: Kernel? = null
     Db {
@@ -446,6 +456,11 @@ fn made(durable: Durable) -> Db {
         law_named: map_cell(),
         walks: list_cell(),
         leaf_chunks: map_cell(),
+        keeps_owed: owed,
+        keeps_wait: Cell.new(false),
+        leaf_at_key: list_cell(),
+        leaf_judged: list_cell(),
+        leaf_edges: list_cell(),
     }
 }
 
@@ -793,11 +808,18 @@ impl Db {
         true
     }
 
-    /// A cell no query settled, named by its owner's spelling of its argument.
+    /// A cell no query settled, named by its owner's spelling of its argument, once a revision.
     fn spelled_numbers(owner: AnswerRef, k: Key) -> List<int>? {
+        self.known_now()
+        while self.leaf_at_key.get().length <= k.family { self.leaf_at_key.push(list_cell()) }
+        let row = self.leaf_at_key.get()[k.family]
+        if k.arg < row.get().length && row.get()[k.arg] >= 0 { return [row.get()[k.arg]] }
         let spelled? = owner.spelled_at(k.arg) else { return null }
         let digest? = owner.hash_at(k.arg) else { return null }
-        [self.leaf_table.number(Leaf.Input(owner.name, spelled, digest))]
+        let n = self.leaf_table.number(Leaf.Input(owner.name, spelled, digest))
+        while row.get().length <= k.arg { row.push(0 - 1) }
+        row.set_at(k.arg, n)
+        [n]
     }
 
     /// What the query at `edge` settled standing on.
@@ -823,6 +845,23 @@ impl Db {
             .Unnamed -> null,
             .Owed(key) -> self.numbers_of(self.engine().deps_of(key)),
         }
+    }
+
+    /// From here an answer is kept at `kept_owed`, its reads digested as they stand then: a
+    /// digest taken while the owner's tables fill names what is minted so far.
+    fn keeps_await() { self.keeps_wait.set(true) }
+
+    /// `keep` run, or owed while keeps wait.
+    fn keeping(keep: fn() -> void) {
+        if self.keeps_wait.get() { self.keeps_owed.push(keep) } else { keep() }
+    }
+
+    /// Every owed answer kept; an answer settling from here keeps at once.
+    fn kept_owed() {
+        self.keeps_wait.set(false)
+        let owed = self.keeps_owed.get()
+        self.keeps_owed.set([])
+        for keep in owed { keep() }
     }
 
     /// LEAVES ARE KEPT ONCE A PROCESS: each read a saved answer stands on is written into a
@@ -854,11 +893,11 @@ impl Db {
         for at, n in ns { self.leaf_table.placed(n, placed_at(chunk, at)) }
     }
 
-    /// The number of the leaf a saved answer names by its place; absent when its chunk is not kept.
-    fn leaf_at(p: LeafPlace) -> int? {
-        let chunk? = self.chunk_read(p.chunk) else { return null }
-        if p.at < 0 || p.at >= chunk.length { return null }
-        chunk[p.at]
+    /// The numbers of the leaves a saved answer names by a run; absent when its chunk is not kept.
+    fn run_leaves(run: PlaceRun) -> List<int>? {
+        let chunk? = self.chunk_read(run.chunk) else { return null }
+        if run.ats.any(it < 0 || it >= chunk.length) { return null }
+        [chunk[at] for at in run.ats]
     }
 
     /// A chunk read back once a process, its leaves numbered.
@@ -903,13 +942,19 @@ impl Db {
     }
 
     /// Whether every read still has the digest it was kept at.
-    fn leaves_hold(ns: List<int>) -> bool { ns.all((n) -> self.leaf_holds(self.leaf_table.leaf(n))) }
+    fn leaves_hold(ns: List<int>) -> bool { ns.all((n) -> self.number_holds(n)) }
 
-    fn leaf_holds(l: Leaf) -> bool {
-        match l {
+    /// Whether leaf `n` holds, judged once a revision once its digest can be read.
+    fn number_holds(n: int) -> bool {
+        self.known_now()
+        let judged = self.leaf_judged
+        if n < judged.get().length && judged.get()[n] != 0 { return judged.get()[n] == 1 }
+        match self.leaf_table.leaf(n) {
             .Rows(name, digest) -> self.rows_digest(name) == digest,
             .Input(name, spelled, digest) -> {
                 let now? = self.input_digest(name, spelled) else { return self.unstaged(name) }
+                while judged.get().length <= n { judged.push(0) }
+                judged.set_at(n, if now == digest { 1 } else { 2 })
                 now == digest
             },
         }
@@ -962,6 +1007,11 @@ impl Db {
         self.keys_known.set(no_keys)
         let no_digests: Map<string, int> = {}
         self.digests_known.set(no_digests)
+        let no_leaves: List<Cell<List<int>>> = []
+        self.leaf_at_key.set(no_leaves)
+        let none: List<int> = []
+        self.leaf_judged.set(none)
+        self.leaf_edges.set(none)
         self.known_at.set(rev)
     }
 
@@ -1015,7 +1065,7 @@ impl Db {
         for n in ns {
             match self.leaf_table.leaf(n) {
                 .Rows(name, _) -> self.read_rows_leaf(kernel, name),
-                .Input(name, spelled, _) -> self.read_input_leaf(kernel, name, spelled),
+                .Input(name, spelled, _) -> self.read_input_leaf(kernel, n, name, spelled),
             }
         }
     }
@@ -1025,8 +1075,16 @@ impl Db {
         if rel != null { kernel.record_at(rel!.family_now(), 0) } else { self.watch_reach(name) }
     }
 
-    fn read_input_leaf(kernel: Kernel, name: string, spelled: string) {
+    fn read_input_leaf(kernel: Kernel, n: int, name: string, spelled: string) {
+        self.known_now()
+        let edges = self.leaf_edges
+        if n < edges.get().length && edges.get()[n] >= 0 {
+            kernel.record_dep(key_of(edges.get()[n]))
+            return
+        }
         let k? = self.input_key(name, spelled) else { return }
+        while edges.get().length <= n { edges.push(0 - 1) }
+        edges.set_at(n, edge_of(k))
         kernel.record_at(k.family, k.arg)
     }
 
@@ -1366,16 +1424,17 @@ type Kept<V> = { leaves: List<int>, value: V }
 
 /// A kept record's answer, read back only when it was kept for `spelled`.
 fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, CodecFault>) -> Result<
-    Kept<V>,
+    Kept<V>?,
     CodecFault,
 > {
     let kept = r.text()?
     if kept != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
-    let places = [p for run in read_list(r, read_run)? for p in run]
-    let leaves = [db.leaf_at(p) for p in places]
+    let runs = read_list(r, read_run)?
+    let leaves = [db.run_leaves(run) for run in runs]
     if leaves.any(it == null) { fail CodecFault.OtherArguments }
-    let value = read(r)?
-    Kept { leaves: [l! for l in leaves], value: value }
+    let numbers = [n for run in leaves for n in run!]
+    let held: Kept<V>? = if db.leaves_hold(numbers) { Kept { leaves: numbers, value: read(r)? } } else { null }
+    held
 }
 
 /// A leaf's place: its chunk and its position there.
@@ -1401,16 +1460,16 @@ fn write_run(w: Writer, run: PlaceRun) {
     for i, at in run.ats { w.int(at - if i == 0 { 0 } else { run.ats[i - 1] }) }
 }
 
-fn read_run(r: Reader) -> Result<List<LeafPlace>, CodecFault> {
+fn read_run(r: Reader) -> Result<PlaceRun, CodecFault> {
     let chunk = r.int()?
     let n = r.count()?
     mut at = 0
-    mut out: List<LeafPlace> = []
+    mut out: List<int> = []
     for _i in 0..n {
         at = at + r.int()?
-        out.push(placed_at(chunk, at))
+        out.push(at)
     }
-    out
+    PlaceRun { chunk: chunk, ats: out }
 }
 
 fn write_leaf(w: Writer, l: Leaf) {
@@ -1694,9 +1753,6 @@ impl AnswersUnder<V> {
         let kept? = self.restored(db, query, record, spelled) else {
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
-        if !db.leaves_hold(kept.leaves) {
-            return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
-        }
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
         db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
@@ -1721,24 +1777,34 @@ impl AnswersUnder<V> {
         record: KeptRecord<V>,
     ) -> V {
         let done = self.run(db, arg, body, again, digest)
-        let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
-        if !done.wrote && leaves != null {
-            if db.engine().tracing.get() { db.in_process_reads(query, leaves!) }
-            let places = db.placed_leaves(leaves!)
-            let named? = named_encoding(
-                done.value,
-                (w, v) -> {
-                    w.text(db.saved_spelling(spelled))
-                    written_list(w, runs_of(places), write_run)
-                    record.write(w, v)
-                },
-            ) else {
-                return done.value
-            }
-            let keep = db.durable.keep
-            keep(query, spelled_hash(query, db.saved_spelling(spelled)), named)
-        }
+        if !done.wrote { db.keeping(() -> self.keep_lasting(db, arg, query, spelled, done.value, record)) }
         done.value
+    }
+
+    /// A call's answer kept with what it stood on, when every read has a name.
+    fn keep_lasting(
+        db: Db,
+        arg: int,
+        query: string,
+        spelled: string,
+        value: V,
+        record: KeptRecord<V>,
+    ) {
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
+        if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
+        let places = db.placed_leaves(leaves)
+        let named? = named_encoding(
+            value,
+            (w, v) -> {
+                w.text(db.saved_spelling(spelled))
+                written_list(w, runs_of(places), write_run)
+                record.write(w, v)
+            },
+        ) else {
+            return
+        }
+        let keep = db.durable.keep
+        keep(query, spelled_hash(query, db.saved_spelling(spelled)), named)
     }
 
     /// Whether this process ever answered the call.
@@ -1752,7 +1818,7 @@ impl AnswersUnder<V> {
         let answer = db.durable.answer
         let bytes? = answer(query, spelled_hash(query, db.saved_spelling(spelled))) else { return null }
         match decoded_with(bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
-            .Ok(value) -> value,
+            .Ok(kept) -> kept,
             .Err(_) -> null,
         }
     }

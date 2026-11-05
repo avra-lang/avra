@@ -451,11 +451,9 @@ type Records = {
     line_index: Cell<Map<string, Map<string, List<string>>>>,
     /// Each file's use lines as its parse said them this build, kept at its end.
     uses_seen: Cell<Map<string, string>>,
-    /// Each file's kept declaration wires by the name each declares, read once per build.
-    line_refs: Cell<Map<string, LineRefs>>,
-    /// A name's whole bucket as `named_refs` answers it, once it answers: a whole answer
-    /// stands for the build.
-    named_refs: Cell<Map<string, List<string>>>,
+    /// How many files stood when the program's names last stood whole: every file admitted and
+    /// expanded, so no writer is left to fill a name bucket.
+    names_stood: Cell<int>,
     /// A MODULE'S RE-EXPORTING FILES, keyed by record key: the files its record
     /// marks as re-exporting a name, read once per build however many
     /// modules see it.
@@ -494,7 +492,6 @@ type Records = {
 
 /// A file's kept declaration wires by the name each declares — `kept` false when no read of
 /// its text as it stands kept lines.
-type LineRefs = { kept: bool, by: Map<string, List<string>> }
 
 fn new_records() -> Records {
     let no_loaded: Map<string, bool> = {}
@@ -518,8 +515,7 @@ fn new_records() -> Records {
         record_files: Cell.new(no_files),
         line_index: map_cell(),
         uses_seen: map_cell(),
-        line_refs: map_cell(),
-        named_refs: map_cell(),
+        names_stood: Cell.new(-1),
         record_producers: Cell.new(no_producers_of),
         record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),

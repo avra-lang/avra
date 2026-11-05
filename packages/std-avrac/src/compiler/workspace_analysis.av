@@ -99,12 +99,15 @@ fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
     out
 }
 
-/// A const's type as the program answers it: its declaration's typing found it. Its value asking for its own type is the typing still open.
+/// A const's type as the program answers it: read off its literal, else its declaration's typing found it. Its value asking for its own type is the typing still open.
 @query
 @recursive
 fn const_typed(ws: Workspace, d: DeclId) -> ConstType {
     let x = ws.decls.decl(d)
     touch(ws.items(x.file))
+    touch(syntax_in(ws, d))
+    let literal = ws.decls.literal_const_type(x.file, x.stmt)
+    if literal != null { return ConstType.Known(literal!) }
     if ws.typing_of(d) { return ConstType.Cyclic }
     let ty? = ws.typed(d).const_type(x.stmt) else { return ConstType.Refused }
     ConstType.Known(ty)

@@ -1,0 +1,119 @@
+//! A SAVED ANSWER READ BACK SAYS WHAT A COLD RUN SAYS: one process checks a package over a store,
+//! the next checks it edited over that store, and its report is held to a third over an empty one.
+//! A read a saved answer did not record reads here as a report that differs.
+use @std.avrac.testing.{test_workspace}
+use @std.time.{now_ns}
+use compiler.host.{memory_host}
+use compiler.store.{Store, store_at}
+
+fn fresh_store() -> Store { store_at("/tmp/avra-warm-agrees-test/${now_ns()}") }
+
+/// The package with `files` under `src`, as one process reports it over `store`.
+fn reported(files: Map<string, string>, store: Store) -> string {
+    mut all: Map<string, string> = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    }
+    for path, text in files { all.set("/w/src/${path}", text) }
+    let ws = test_workspace(memory_host(all, all.keys()), "/w")
+    ws.attach_store(store)
+    ws.program(null).report()
+}
+
+/// The report of `after` read over the store `before` left.
+fn warm(before: Map<string, string>, after: Map<string, string>) -> string {
+    let s = fresh_store()
+    let _ = reported(before, s)
+    reported(after, s)
+}
+
+/// Whether the warm report of the edit is the cold one, and says `words`.
+fn agrees(before: Map<string, string>, after: Map<string, string>, words: string) -> bool {
+    let said = warm(before, after)
+    said == reported(after, fresh_store()) && said.contains(words)
+}
+
+const TWO: string = "export const K: int = 2\n"
+const READS_K: string = "export fn r() -> int {\n    let xs = [K, K + 1]\n    xs[K - 1]\n}\n"
+const WITH_M: string = "export type T = { x: int }\nimpl T {\n    fn m() -> int { 1 }\n}\n"
+const READS_N: string = "export fn r(t: T) -> int { t.n() }\n"
+const TRAIT: string = "export trait Tr {\n    fn m() -> int\n}\nexport type T = { x: int }\n"
+const NEEDS_TR: string = "export fn need<K: Tr>(k: K) -> int { k.m() }\nexport fn r(t: T) -> int { need(t) }\n"
+const ALONE: string = "export fn z() -> int { 1 }\n"
+const IMPLS_TR: string = "export fn z() -> int { 1 }\nimpl Tr for T {\n    fn m() -> int { 2 }\n}\n"
+
+spec "compiler/warm — a report read over a store is the report of an empty one" {
+    then "a literal const's type moved refuses its unchanged reader" {
+        agrees(
+            {"m/a.av": TWO, "m/b.av": READS_K},
+            {"m/a.av": "export const K: string = \"s\"\n", "m/b.av": READS_K},
+            "the body answers",
+        )
+    }
+    then "a name declared in a sibling stops its reader's refusal" {
+        agrees(
+            {"m/a.av": "export fn r() -> int { helper() }\n", "m/b.av": ALONE},
+            {
+                "m/a.av": "export fn r() -> int { helper() }\n",
+                "m/b.av": "fn helper() -> int { 2 }\n",
+            },
+            "",
+        )
+    }
+    then "a name deleted from a sibling refuses its reader" {
+        agrees(
+            {
+                "m/a.av": "export fn r() -> int { helper() }\n",
+                "m/b.av": "fn helper() -> int { 2 }\n",
+            },
+            {"m/a.av": "export fn r() -> int { helper() }\n", "m/b.av": ALONE},
+            "helper",
+        )
+    }
+    then "a type's field moved refuses its unchanged constructor" {
+        agrees(
+            {
+                "m/a.av": "export type T = { x: int }\n",
+                "m/b.av": "export fn mk() -> T { T { x: 1 } }\n",
+            },
+            {
+                "m/a.av": "export type T = { x: string }\n",
+                "m/b.av": "export fn mk() -> T { T { x: 1 } }\n",
+            },
+            "x",
+        )
+    }
+    then "a type renamed away refuses its unchanged reader" {
+        agrees(
+            {
+                "m/a.av": "export type T = { x: int }\n",
+                "m/b.av": "export fn mk() -> T { T { x: 1 } }\n",
+            },
+            {
+                "m/a.av": "export type U = { x: int }\n",
+                "m/b.av": "export fn mk() -> T { T { x: 1 } }\n",
+            },
+            "T",
+        )
+    }
+    then "a method joining a sibling's impl stops its reader's refusal" {
+        agrees(
+            {"m/a.av": WITH_M, "m/b.av": READS_N},
+            {"m/a.av": WITH_M.replace("fn m()", "fn n()"), "m/b.av": READS_N},
+            "",
+        )
+    }
+    then "a trait impl joining a third file stops the bound's refusal" {
+        agrees(
+            {"m/a.av": TRAIT, "m/b.av": NEEDS_TR, "m/c.av": ALONE},
+            {"m/a.av": TRAIT, "m/b.av": NEEDS_TR, "m/c.av": IMPLS_TR},
+            "",
+        )
+    }
+    then "a trait impl leaving a third file refuses the bound" {
+        agrees(
+            {"m/a.av": TRAIT, "m/b.av": NEEDS_TR, "m/c.av": IMPLS_TR},
+            {"m/a.av": TRAIT, "m/b.av": NEEDS_TR, "m/c.av": ALONE},
+            "Tr",
+        )
+    }
+}

@@ -6,6 +6,7 @@ use core.{
     TypeId,
     sorted_texts,
     fp_str,
+    touch,
     traced,
     DeclId,
     ExprId,
@@ -40,7 +41,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.family_hash(ordinal, arg),
         }
     }
 
@@ -95,7 +96,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.family_hash(ordinal, arg),
         }
     }
 
@@ -201,7 +202,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: spell,
             arg: find,
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.family_hash(ordinal, arg),
         }
     }
 
@@ -214,7 +215,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_file(arg),
             arg: (spelled: string) -> ws.file_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+            hash: (arg: int) -> ws.family_hash(ordinal, arg),
         }
     }
 
@@ -308,7 +309,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_lift(arg),
             arg: (spelled: string) -> ws.lift_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.family_hash(ordinal, arg),
         }
     }
 
@@ -335,17 +336,35 @@ impl Workspace {
             name: "Named",
             family: () -> ordinal,
             spelled: (arg: int) -> ws.decls.bucket_label(arg),
-            arg: (spelled: string) -> ws.decls.bucket_standing(spelled),
+            arg: (spelled: string) -> ws.decls.bucket_opened(spelled),
             hash: (arg: int) -> ws.bucket_digest(arg),
         }
     }
 
-    /// A bucket's digest is its members' identities, which another process names alike —
-    /// the whole bucket at any moment (`named_refs`), unread while a file cannot answer whole.
+    /// A bucket's digest is its members' identities, which another process names alike. It is
+    /// unread until the program's names stand whole: a fold of a table a writer is still filling
+    /// is a race recorded as a fact.
     fn bucket_digest(b: int) -> int? {
+        if !self.names_whole() { return null }
         let name? = self.decls.bucket_label(b) else { return null }
-        let refs? = self.named_refs(name) else { return null }
-        fp_str(joined(sorted_texts(refs), "\n"))
+        fp_str(
+            joined(
+                sorted_texts([self.decl_ref(x.id) for x in self.decls.named_standing(name)]),
+                "\n",
+            ),
+        )
+    }
+
+    /// A family's settled hash, the family asked first when it never settled here — heard by no
+    /// open frame, since a leaf's judge reads the answer and no reader of it does.
+    fn family_hash(ordinal: int, arg: int) -> int? {
+        let k = key_at(ordinal, arg)
+        let kernel = self.db.kernel
+        let held = kernel.hash_forced(k)
+        if held != null { return held }
+        if kernel.active(k) { return null }
+        kernel.unheard(() -> touch(dispatch_verified(self, ordinal, arg)))
+        kernel.hash_forced(k)
     }
 
     fn spelled_file(arg: int) -> string? {

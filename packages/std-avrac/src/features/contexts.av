@@ -432,18 +432,12 @@ export fn def_type_of(facts: TypeFacts, view: FileView, error_type: TypeId, s: S
 }
 
 impl Decls {
-    /// A const's type, by the file and statement that declare it: read
-    /// off a literal, else the program's answer through the const-type
-    /// query.
-    fn const_answer(f: FileId, s: StmtId) -> ConstType {
-        let literal: TypeId? = settled_type(self.store_of(f), self.types, s)
-        if literal != null { return ConstType.Known(literal!) }
-        self.const_type(f, s)
-    }
+    /// A literal const's type, read off what is written.
+    fn literal_const_type(f: FileId, s: StmtId) -> TypeId? { settled_type(self.store_of(f), self.types, s) }
 
     /// The type a const carries, when it carries one.
     fn type_of_const(f: FileId, s: StmtId) -> TypeId? {
-        match self.const_answer(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
+        match self.const_type(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
     }
 }
 
@@ -746,7 +740,7 @@ impl Decls {
     /// the READ can speak: a value that asks for its own type.
     fn declared_const_type(mut voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
         let x = self.decl(d)
-        match self.const_answer(x.file, x.stmt) {
+        match self.const_type(x.file, x.stmt) {
             .Known(t) -> t,
             .Refused -> error_type,
             .Cyclic -> {

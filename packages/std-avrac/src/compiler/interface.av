@@ -475,23 +475,17 @@ impl Decls {
     fn wire_siblings(f: FileId, kind: string, owner: string, name: string, maker: string) -> List<
         DeclId,
     > {
-        let ids = self.wire_rows(f)
+        // the rows are minted, and the read is UNRECORDED: the one edge the reader owes is below,
+        // so a name's bucket stands in for the whole file
+        (self.ensure_file.get())(f)
         let kept = self.wire_index.get().get("${f.index}")
-        let by = if kept != null && kept!.count == ids.length { kept!.by } else { self.wire_indexed(f, ids) }
+        let by = if kept != null && kept!.count == self.decl_count_of(f) { kept!.by } else { self.wire_indexed(f, self.decls_so_far(f)) }
         let b = self.name_bucket(name)
         if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
         self.bucket_moved(b)
         // a `main` is its own file's: the shared bucket holds one per file
         if kind == kind_word(DeclKind.Main) { self.rows_read(f) } else { self.record_kernel.record_at(self.record_names.get(), b) }
         by.get(wire_key(kind, owner, name, maker)) ?? []
-    }
-
-    /// `f`'s declaration ids for the wire index: the rows are minted, and
-    /// the read is UNRECORDED — `wire_siblings` records the one edge its
-    /// reader owes, so a name's bucket stands in for the whole file.
-    fn wire_rows(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
-        self.decls_so_far(f)
     }
 
     /// `f`'s declarations indexed by kind, owner and name, kept.

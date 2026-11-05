@@ -72,6 +72,10 @@ impl Workspace {
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
         self.timed("parse", t0)
+        let t_names = self.clock()
+        self.query_db().keeps_await()
+        self.names_settled()
+        self.timed("expand", t_names)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
@@ -87,8 +91,29 @@ impl Workspace {
         let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
         let out = [self.analysis(f) for f in ids]
         self.timed("bodies", t3)
+        let t4 = self.clock()
+        self.names_settled()
+        self.query_db().kept_owed()
+        self.timed("owed", t4)
         out
     }
+
+    /// THE PROGRAM'S NAMES, WHOLE: every file admitted and expanded, so no writer is left to
+    /// fill a name bucket. A file admitted later stands them down until they are settled again.
+    fn names_settled() {
+        if self.names_whole() { return }
+        let _ = self
+            .each_open_file(
+                (f: FileId) -> {
+                    let _ = self.items(f)
+                    self.admit_used(f)
+                    let _ = self.expanded(f)
+                },
+            )
+        self.records.names_stood.set(self.decls.file_count())
+    }
+
+    fn names_whole() -> bool { self.records.names_stood.get() == self.decls.file_count() }
 
     /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
     /// file's own resolve or its own body can admit a file none of this
