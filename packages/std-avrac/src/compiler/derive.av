@@ -382,7 +382,7 @@ impl Workspace {
     /// THE DERIVATION, straight through: hold what the store stands in for, read
     /// the rest, lower it, keep what was learned.
     fn tried(at: Attempt, mut clock: Marks) -> Result<Derived, Turn> {
-        let store = self.holding(at)?
+        let store = self.holding()?
         clock.next(PHASES)
         self.admit_all()
         clock.next(PHASES)
@@ -399,10 +399,9 @@ impl Workspace {
     /// hold asked, and the host told how much is about to be read — a host that
     /// must not do heavy work where it stands leaves there, having done none.
     /// From here a held file's declarations are minted when something reads them.
-    fn holding(at: Attempt) -> Result<Store, Turn> {
+    fn holding() -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
-        for rf in at.parse { self.hold.forced.put(rf.path, rf.why) }
         // INPUTS FIRST: every file's text is staged before any kept answer is judged.
         let staging = self.clock()
         for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
@@ -559,7 +558,6 @@ impl Workspace {
     /// A file this attempt now reads, its reason standing with it: the one door a read
     /// enters by, so the read set names every file the attempt took a text of.
     fn force_read(path: string, why: Reads) {
-        self.hold.forced.put(path, why)
         if !self.hold.read_files.get().any(it.path == path) {
             self.hold.read_files.push(ReadFile { path: path, why: why })
         }
