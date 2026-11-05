@@ -1,11 +1,9 @@
-//! THE DERIVATION — a program analysed and lowered over everything the store
-//! can stand in for. Every command asks here; what it WANTS decides what may
-//! stand in for a file it does not read.
+//! THE DERIVATION — every command's entry: a program parsed, typed, lowered and
+//! kept, and what it spent getting there.
 //!
-//! A held file is not parsed, resolved, typed or lowered: its declarations are
-//! minted from its module's record, its warnings and its object come from the
-//! store. The sources are the hold's oracle — a derivation that fails under a
-//! hold is answered again from the sources alone.
+//! Every attempt reads what it needs. What survives is what it KEPT — rows
+//! under keys that name their own inputs — so a later run re-reads and finds
+//! the same answers, never a stored answer trusted in place of a read.
 use core.debug.{db_verified_files, db_judging}
 use core.{
     distinct,
@@ -154,7 +152,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall>, find
 /// each file said kept. `program.ws` is the workspace the attempt that stood
 /// ran in.
 ///
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, held: int, files: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [], unreached: List<string> = [] }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [], unreached: List<string> = [] }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -178,7 +176,7 @@ impl Derived {
     /// each attempt that gave way to this one with what it spent, then the files a
     /// record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
-        let counted = ["discarded ${self.turned}", "refused ${self.refused}"]
+        let counted = ["discarded ${self.turned}"]
         let line = joined(
             [ph.shown() for ph in grouped_phases(self.program.ws.phases.get())]
                 .concat(counted)
@@ -485,8 +483,6 @@ impl Workspace {
                     .concat([s.warnings for s in said if reaches_file(self, reach, s.path)]),
             ),
             unreached: [s.path for s in said if !reaches_file(self, reach, s.path)],
-            held: 0,
-            files: self.decls.file_count(),
             turned: at.turned,
             left: at.left,
             spans: spans,
