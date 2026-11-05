@@ -116,7 +116,7 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
-use @std.relation.{query, recursive, codec, cycled_by, scoped_by}
+use @std.relation.{query, lasting, recursive, codec, cycled_by, scoped_by}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{
     Table,
@@ -846,10 +846,6 @@ fn raised_verified(ws: Workspace, arg: int) -> int {
     touch(ws.raised_by(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Raised, arg))
 }
-fn names_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.name_slice(decl_at_arg(arg)))
-    ws.db.changed_at(key(Family.Names, arg))
-}
 fn named_verified(ws: Workspace, arg: int) -> int {
     ws.decls.named_now(arg)
     ws.db.changed_at(key(Family.Named, arg))
@@ -879,7 +875,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Lifted -> lifted_verified(ws, arg),
         .Expanded -> expanded_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
-        .Names -> names_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
         .Named -> named_verified(ws, arg),
@@ -934,6 +929,13 @@ fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
 /// A declaration's own syntax: the fold of its range's node fingerprints.
 @query
 fn syntax_in(ws: Workspace, d: DeclId) -> int { ws.syntax_made(d) }
+
+/// A declaration's own slice of its file's names: the names its expression range reads.
+/// LASTING because its reads are all recorded inputs: the declaration's expression range
+/// and the file's resolved names, both read through the relation the frame records.
+@query
+@lasting
+fn names_in(ws: Workspace, d: DeclId) -> int { ws.name_slice_made(d) }
 
 /// What a file's top level sees, as its fold. A re-entry before it settles is a smaller view.
 @query
@@ -2220,20 +2222,17 @@ impl Workspace {
 
     /// A declaration's own slice of its file's names, DECLARATION-GRAIN
     /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
-    /// range. Recomputed with the file's `Resolved`, and cut off by
-    /// `settle` for every declaration whose slice folds the same.
-    fn name_slice(d: DeclId) -> int {
-        let k = key(Family.Names, d.index)
-        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
-        self.db.begin(k)
+    /// range. Recomputed with the file's `Resolved`.
+    fn name_slice(d: DeclId) -> int { names_in(self, d) }
+
+    /// A declaration's own slice, made once per declaration and kept past the process.
+    fn name_slice_made(d: DeclId) -> int {
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
-        self.db.settle(k, h)
-        h
+        name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
     }
 
     /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
-    /// `Names` (its cells) and one on the file's `Visible` (the
+    /// `names_in` and one on the file's `Visible` (the
     /// namespace), then the file's table read unrecorded — never the
     /// voices. The file's own passes ask `resolved`; so does a reader
     /// inside that resolve, whose view is still in flight.
@@ -2492,7 +2491,6 @@ export fn family_code_hash(f: Family) -> string {
         .Lifted -> code_hash(lifted_verified) ?? "",
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",
-        .Names -> code_hash(names_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
