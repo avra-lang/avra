@@ -336,7 +336,6 @@ fn filed_into(map: Cell<Map<string, List<string>>>, key: string, files: List<str
 
 @identity
 type Hold = {
-    forced: Cell<Map<string, Reads>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<RunRead>>>,
     read_gen: Cell<Map<string, int>>,
@@ -350,26 +349,14 @@ type Hold = {
     pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
     read_files: Cell<List<ReadFile>>,
-    /// The modules this attempt loaded for real: a file in one was read, so it is not held.
-    loaded_turn: Cell<Map<string, bool>>,
-    /// Whether THIS attempt holds at all: the unheld retry holds nothing, by definition.
-    minted: Cell<Map<string, bool>>,
-    row_filled: Table<bool>,
-    /// The files whose records' `ref` rows name each target file, by the target's path.
-    refs_by_target: Cell<Map<string, List<string>>>,
     /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
     /// The plain free fn names a module's forms moved by, from the forms a row stood on: per `module<TAB>digest`.
     forms_moved: Cell<Map<string, Map<string, bool>>>,
     /// Each judged file's run tokens off its module's row, decoded once per build.
     lite_runs: Cell<Map<string, List<string>>>,
     linked_by: Cell<List<string>>,
-    held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
-    // each held file's re-exports, read off its record as it loads
-    reexports: Cell<Map<string, List<Reexport>>>,
     settle_frames: Cell<List<Cell<List<KeptLine>>>>,
-    // each held collector, with the set its record says it gathered
-    gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
     /// The family a frame's gathered name reads stand under as one read, the groups minted
@@ -416,16 +403,10 @@ type KeptLine = {
 }
 
 fn new_hold() -> Hold {
-    let no_forced: Map<string, Reads> = {}
     let no_runs: Map<string, List<RunRead>> = {}
     let no_read_files: List<ReadFile> = []
-    let no_minted: Map<string, bool> = {}
-    let no_producers: Map<string, List<string>> = {}
-    let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
-    let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
-        forced: Cell.new(no_forced),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
         read_gen: map_cell(),
@@ -439,18 +420,11 @@ fn new_hold() -> Hold {
         pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
         read_files: Cell.new(no_read_files),
-        loaded_turn: map_cell(),
-        minted: Cell.new(no_minted),
-        row_filled: new_table<bool>(),
-        refs_by_target: Cell.new(no_producers),
         forms_moved: map_cell(),
         lite_runs: map_cell(),
         linked_by: list_cell(),
-        held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
-        reexports: Cell.new(no_reexports),
         settle_frames: list_cell(),
-        gathered: list_cell(),
         lowering: list_cell(),
         unit_asks: map_cell(),
         closure: Cell.new(0 - 1),

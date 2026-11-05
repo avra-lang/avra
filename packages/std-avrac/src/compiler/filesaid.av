@@ -304,37 +304,6 @@ impl Workspace {
         rows
     }
 
-    /// THE HELD SET: the files whose holds a derivation of this program confirmed standing
-    /// under this name and want — one line a file, so it is bounded by the program's own
-    /// files and rewritten only when the set moves. The name carries no count: a derivation
-    /// admits files as it walks, so a count in it is one the writer and the reader disagree
-    /// about — measured, it turned `holds 491 asked` into `holds 1276 asked`.
-    fn held_set_key(entry: string?, want: Want) -> string {
-        node_key(Stored.Fp, ["held-set", self.root, entry ?? "", want_word(want)])
-    }
-
-    /// The files the last derivation confirmed standing; null for one never confirmed, which
-    /// trusts no file.
-    fn held_set(store: Store, entry: string?, want: Want) -> Map<string, bool>? {
-        let row? = store.get(Stored.Fp, self.held_set_key(entry, want)) else { return null }
-        mut set: Map<string, bool> = {}
-        for line in row.split("\n") { if line != "" { set.set(line, true) } }
-        set
-    }
-
-    /// REMEMBER THE HELD SET. A row that stands on nothing is never suspect, so it is
-    /// rewritten only when the set itself moves — never an action frame per derivation.
-    fn keep_held_set(store: Store, entry: string?, want: Want, paths: List<string>) {
-        // A DERIVATION THAT HELD NOTHING REMEMBERS NOTHING: its row would name every file of
-        // the program as untrusted, and an absent row already says that. Writing it erases a
-        // set another program of this root confirmed, and the next edit then asks every file.
-        if paths.is_empty() { return }
-        let text = joined(sorted_texts(distinct(paths)), "\n")
-        let key = self.held_set_key(entry, want)
-        if store.get(Stored.Fp, key) == text { return }
-        let _ = store.keep(Stored.Fp, key, text, [])
-    }
-
     /// The read a file's module is seen through.
     fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(path) }
 
@@ -353,11 +322,6 @@ impl Workspace {
         let line? = lines.find(read_name(it) == read) else { return true }
         line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
     }
-}
-
-/// A want as the word its held set is filed under.
-fn want_word(want: Want) -> string {
-    match want { .Diagnostics -> "diagnostics", .Binary -> "binary" }
 }
 
 fn cheap_unsound(path: string) -> string {
