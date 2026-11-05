@@ -51,7 +51,7 @@ impl Want {
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, how many times the records moved under it, and
 /// the attempts that gave way to it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], moved: int = 0, turned: int = 0, left: List<Left> = [], sealed: List<string> = [], edit: string = "" }
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], moved: int = 0, turned: int = 0, left: List<Left> = [], edit: string = "" }
 
 /// The entry a derivation trims its root walk by: a build's, whose program is
 /// what the entry reaches; a check reads every file of the package.
@@ -116,7 +116,7 @@ impl Attempt {
 
 /// What one attempt answered, whether its workspace held any file, and what it
 /// spent: its phases and its whole time.
-type Tried = { answer: Result<Derived, Turn>, held: bool, spans: List<Phase>, ns: int }
+type Tried = { answer: Result<Derived, Turn>, spans: List<Phase>, ns: int }
 
 /// How many read files a turn names before it counts the rest.
 const TURN_NAMED: int = 3
@@ -201,7 +201,6 @@ impl Derived {
     /// record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
         let counted = [
-            "held ${self.held}/${self.files}",
             "attempt ${self.turns}",
             "discarded ${self.turned}",
             "refused ${self.refused}",
@@ -249,9 +248,8 @@ fn remember(store: Store, key: string, paths: List<string>) {
 /// baseline ratchet's own `--baseline_accept` prune, which needs the
 /// files a check REACHED and not merely what it found) falls back to
 /// building its own rather than forcing every `check` to pay for a
-/// Program it does not otherwise need. `held` names the files a derived
-/// answer stood in for from the store rather than read.
-export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [], held: List<string> = [] }
+/// Program it does not otherwise need.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [] }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -297,7 +295,6 @@ impl Workspace {
             program: d.program,
             licenses: said.licenses(),
             findings: said.findings(),
-            held: held_paths(d.program.ws),
         }
     }
 
@@ -394,13 +391,12 @@ impl Workspace {
         mut clock = fresh.marking()
         let began = clock.last
         let answer = fresh.tried(at, clock)
-        let held = !true
-        if answer is .Ok { return Tried { answer: answer, held: held, spans: [], ns: 0 } }
+        if answer is .Ok { return Tried { answer: answer, spans: [], ns: 0 } }
         // the phase it left in closes under its own name
         clock.next(PHASES)
         let spans = fresh.phases.get().concat(clock.spans)
         fresh.discarded()
-        Tried { answer: answer, held: held, spans: spans, ns: clock.last - began }
+        Tried { answer: answer, spans: spans, ns: clock.last - began }
     }
 
     /// What `at` answered: the derivation that stood, or the attempt it names,
@@ -422,9 +418,8 @@ impl Workspace {
         let store = self.holding(at)?
         clock.next(PHASES)
         self.admit_all()
-        self.presealed(at)
         clock.next(PHASES)
-        let p = self.analysed(at, store)?
+        let p = self.analysed(at)?
         clock.next(PHASES)
         let lo = self.bodies_lowered(at, p)?
         clock.next(PHASES)
@@ -467,13 +462,12 @@ impl Workspace {
 
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
     /// its held asks reach read beside it, or the attempt that reads them.
-    fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
+    fn analysed(at: Attempt) -> Result<Program, Turn> {
         let p = self.program(at.entry, built_entry(at))
         at.having_read(self.bodies_asked())?
         // a held collector judged against what it gathers now, before a stale set is refused
         at.having_read(self.gathered_moved([a.view.file for a in p.files]))?
         if !p.clean() { fail Turn.Refused(p.report()) }
-        self.layouts_judged(at, store, p)?
         p
     }
 
@@ -510,7 +504,6 @@ impl Workspace {
         spans: List<Phase>,
     ) -> Derived {
         let reach = reached_modules(self, store, p)
-        if at.want is .Diagnostics { self.keep_held_set(store, at.entry, at.want, held_paths(self)) }
         self.keep_docs_read(store)
         store.settle()
         Derived {
@@ -543,99 +536,6 @@ impl Workspace {
     fn reads_ahead() -> int {
         let held = 0
         if held == 0 { EVERY_FILE } else { self.decls.file_count() - held }
-    }
-
-    /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
-    /// ANY file, and a held file's seal is not re-met. So a record a held line keeps
-    /// flat and this attempt boxed, or one a parsed file's last record kept boxed and
-    /// this attempt did not, is a layout the stored objects and this analysis read
-    /// two ways — and only the sources whole can say which.
-    fn flat_moved() -> bool {
-        // peek, not the tracked read: this compares what typing just
-        // decided against what the store remembered, after the fact —
-        // never the ask a later write must answer to
-        !true && self.hold.held_flat.get().any((t) -> !self.decls.types.peek_flat(t))
-    }
-
-    /// The records a parsed file's last record kept boxed that this attempt left flat.
-    fn unsealed(store: Store, p: Program) -> List<DeclId> {
-        if true { return [] }
-        flatten(
-            [[d for d in self.kept_boxed(store, a.view.file) if !self.decls.types.peek_boxed_flat(self.decls.record_type(d))] for a in p.files],
-        )
-    }
-
-    /// THE SEALS A HELD DECLARATION KEEPS STAND. A record kept boxed that a held
-    /// `mut` seat still seals is boxed again before anything reads its layout, in
-    /// the attempt that follows; one nothing held seals has lost its sealer, and
-    /// only the sources whole can say what its layout is.
-    fn layouts_judged(at: Attempt, store: Store, p: Program) -> Result<int, Turn> {
-        if self.flat_moved() { fail at.unheld(sealed_layout_moved()) }
-        let loose = self.unsealed(store, p)
-        if loose.is_empty() { return .Ok(0) }
-        let keys = [self.seal_key(d) for d in loose]
-        if loose.any((d) -> !self.sealed_by_held(store, d)) ||
-            keys.any((k) -> at.sealed.contains(k)) {
-            fail at.unheld(sealed_layout_moved())
-        }
-        fail Turn.Again(at with { sealed: at.sealed.concat(keys) })
-    }
-
-    /// Whether a held fn seats this record under `mut`, or writes it as its receiver.
-    fn sealed_by_held(store: Store, d: DeclId) -> bool {
-        let t = self.decls.record_type(d)
-        held_paths(self).any((path) -> self.seals_in(store, path, t))
-    }
-
-    fn seals_in(store: Store, path: string, t: TypeId) -> bool {
-        let m = self.module_path_of(path)
-        let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
-        rows.any((parts) -> self.row_seals(parts, t))
-    }
-
-    fn row_seals(parts: List<string>, t: TypeId) -> bool {
-        let row? = read_row(parts) else { return false }
-        if !fn_shape(row.shape) { return false }
-        let marks = row.shaped().marks()
-        let bits = row.shaped().writes()
-        [j for j, w in row.shaped().items() if self.interface_type(w) == t]
-            .any(
-                (j) -> j < marks.length && marks[j].mutable ||
-                    j < bits.length && bits.char_code(j) == 49,
-            )
-    }
-
-    /// Records a previous attempt found sealed by a held declaration, sealed before typing reads them.
-    fn presealed(at: Attempt) {
-        for key in at.sealed {
-            let found? = self.sealed_record(key) else { continue }
-            self.decls.sealed(self.decls.record_type(found))
-        }
-    }
-
-    /// A record's durable key among the seals: its file, then its name.
-    fn seal_key(d: DeclId) -> string { "${self.decls.file(self.decl_at(d).file).path}\t${self.decl_at(d).name}" }
-
-    fn sealed_record(key: string) -> DeclId? {
-        let at = key.split("\t")
-        self
-            .decls
-            .decls_of_file(self.file_id(at[0]))
-            .find((d) -> self.decl_at(d).name == at[1] && self.decl_at(d).kind is .Record)
-    }
-
-    /// The records of a parsed file its module's last record kept BOXED, as they
-    /// are declared now — by name, since an edit moves ordinals.
-    fn kept_boxed(store: Store, f: FileId) -> List<DeclId> {
-        let path = self.decls.file(f).path
-        let found = [boxed_name(parts, path) for parts in record_fields(self, store, self.module_path_of(path))]
-        let names = [n! for n in found if n != null]
-        [d for d in self.decls.decls_of_file(f) if self.names_record(d, names)]
-    }
-
-    fn names_record(d: DeclId, names: List<string>) -> bool {
-        let x = self.decl_at(d)
-        x.kind is .Record && names.contains(x.name)
     }
 
     /// Every declared const of every parsed file, settled.
@@ -778,12 +678,6 @@ impl Workspace {
     }
 }
 
-/// A `boxed` row's name, when it names `path` — null for every other row.
-fn boxed_name(parts: List<string>, path: string) -> string? {
-    let row? = read_row(parts) else { return null }
-    if row.shape is .Boxed && row.path == path { row.name } else { null }
-}
-
 // ── The voices ──
 
 /// The law on one line: the phrase the cache-attack and hold-sweep tools
@@ -819,12 +713,5 @@ fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
         if f != null { out.set("${f!.index}", (out.get("${f!.index}") ?? []).concat([x])) }
     }
     out
-}
-
-fn sealed_layout_moved() -> string { "a sealed layout moved" }
-
-/// Whether a record row declares a fn.
-fn fn_shape(s: Shape) -> bool {
-    match s { .Fn or .Extern -> true, rest -> false }
 }
 
