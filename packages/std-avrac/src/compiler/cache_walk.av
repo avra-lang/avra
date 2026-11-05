@@ -80,7 +80,7 @@ enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
 fn keyed_by(f: Family) -> KeyedBy {
     match f {
         .Items or .Resolved or .Folded or .Expanded -> KeyedBy.File,
-        .Methods or .Raised or .Names or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
+        .Methods or .Raised or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
         .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
         .Input -> KeyedBy.Input,
@@ -261,9 +261,11 @@ impl Workspace {
     }
 
     /// Every settled answer keyed by this declaration: its key in each family
-    /// that keys by one.
+    /// that keys by one, and in every query a declaration's id keys.
     fn decl_answers(d: DeclId) -> List<Key> {
-        [key(f, d.index) for f in Family.all() if keyed_by_decl(f) && self.db.cell(key(f, d.index)) != null]
+        let declared = [key(f, d.index) for f in Family.all() if keyed_by_decl(f) && self.db.cell(key(f, d.index)) != null]
+        let queried = [Key { family: fam, arg: arg } for name in queries_keyed_by(IdKind.Decl) for fam in some_list(self.db.kernel.named_family(name)) for arg in some_list(self.call_of(fam, d.index)) if self.db.cell(Key { family: fam, arg: arg }) != null]
+        declared.concat(queried)
     }
 
     /// An answer with its digest.
