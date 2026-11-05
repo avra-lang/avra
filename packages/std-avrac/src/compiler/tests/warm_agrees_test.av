@@ -16,7 +16,8 @@ fn reported(files: Map<string, string>, store: Store) -> string {
     for path, text in files { all.set("/w/src/${path}", text) }
     let ws = test_workspace(memory_host(all, all.keys()), "/w")
     ws.attach_store(store)
-    ws.program(null).report()
+    let p = ws.program(null)
+    "${p.report()}\n${p.warnings()}"
 }
 
 /// The report of `after` read over the store `before` left.
@@ -32,6 +33,8 @@ fn agrees(before: Map<string, string>, after: Map<string, string>, words: string
     said == reported(after, fresh_store()) && said.contains(words)
 }
 
+const BEFORE_WARN: string = "export type P = { x: int }\nimpl P {\n    fn w() -> int {\n        self.x = 1\n        1\n    }\n}\n"
+const WARN_USER: string = "export fn u(p: P) -> int { p.w() }\n"
 const TWO: string = "export const K: int = 2\n"
 const READS_K: string = "export fn r() -> int {\n    let xs = [K, K + 1]\n    xs[K - 1]\n}\n"
 const WITH_M: string = "export type T = { x: int }\nimpl T {\n    fn m() -> int { 1 }\n}\n"
@@ -107,6 +110,43 @@ spec "compiler/warm — a report read over a store is the report of an empty one
             {"m/a.av": TRAIT, "m/b.av": NEEDS_TR, "m/c.av": ALONE},
             {"m/a.av": TRAIT, "m/b.av": NEEDS_TR, "m/c.av": IMPLS_TR},
             "",
+        )
+    }
+    then "a comment above a refused body moves the refusal's line" {
+        agrees(
+            {"m/a.av": "export fn r() -> int {\n    \"s\"\n}\n"},
+            {"m/a.av": "// note\n// note\nexport fn r() -> int {\n    \"s\"\n}\n"},
+            "a.av:4",
+        )
+    }
+    then "a comment above a warned call moves the warning's line" {
+        agrees(
+            {"m/a.av": BEFORE_WARN, "m/b.av": WARN_USER},
+            {"m/a.av": BEFORE_WARN, "m/b.av": "// note\n// note\n" + WARN_USER},
+            "b.av:3",
+        )
+    }
+    then "a comment inside a refused body moves the refusal's line" {
+        agrees(
+            {"m/a.av": "fn other() -> int { 1 }\nexport fn r() -> int {\n    \"s\"\n}\n"},
+            {
+                "m/a.av": "fn other() -> int { 1 }\nexport fn r() -> int {\n    // note\n    \"s\"\n}\n",
+            },
+            "a.av:4",
+        )
+    }
+    then "a declaration inserted above a refused body moves the refusal's line" {
+        agrees(
+            {"m/a.av": "export fn r() -> int {\n    \"s\"\n}\n"},
+            {"m/a.av": "fn up() -> int {\n    1\n}\nexport fn r() -> int {\n    \"s\"\n}\n"},
+            "a.av:5",
+        )
+    }
+    then "a declaration inserted above a warned call keeps the warning on the call" {
+        agrees(
+            {"m/a.av": BEFORE_WARN, "m/b.av": WARN_USER},
+            {"m/a.av": BEFORE_WARN, "m/b.av": "fn up() -> int { 1 }\n" + WARN_USER},
+            "b.av:2",
         )
     }
     then "a trait impl leaving a third file refuses the bound" {
