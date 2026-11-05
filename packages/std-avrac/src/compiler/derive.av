@@ -180,9 +180,6 @@ export type Derived = { entry: string?, want: Want, program: Program, lowered: L
 /// moved in its key since it was last kept.
 export type FileHold = { path: string, held: bool, why: Reads?, missing: List<string>, moved: List<PartMoved> }
 
-/// What an attempt that holds nothing is about to read, as a count.
-const EVERY_FILE: int = 1000000
-
 /// How many read files `--time` names before it counts the rest.
 const READ_NAMED: int = 12
 
@@ -440,7 +437,7 @@ impl Workspace {
         let staging = self.clock()
         for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
         self.timed("inputs", staging)
-        self.host.reads_ahead(self.reads_ahead())
+        self.host.reads_ahead(self.decls.file_count())
 
         store
     }
@@ -465,8 +462,6 @@ impl Workspace {
     fn analysed(at: Attempt) -> Result<Program, Turn> {
         let p = self.program(at.entry, built_entry(at))
         at.having_read(self.bodies_asked())?
-        // a held collector judged against what it gathers now, before a stale set is refused
-        at.having_read(self.gathered_moved([a.view.file for a in p.files]))?
         if !p.clean() { fail Turn.Refused(p.report()) }
         p
     }
@@ -530,13 +525,6 @@ impl Workspace {
 
     /// What names a program in the store: its entry, or the root it stands under.
     fn known_as(at: Attempt) -> string { at.entry ?? self.root }
-
-    /// How many files this attempt is about to read: the ones it has met and does
-    /// not hold — and, for all it can tell, EVERY file when it holds none.
-    fn reads_ahead() -> int {
-        let held = 0
-        if held == 0 { EVERY_FILE } else { self.decls.file_count() - held }
-    }
 
     /// Every declared const of every parsed file, settled.
     fn settle_consts(p: Program) {
