@@ -585,12 +585,20 @@ fn with_hole(acc: List<List<At>?>, hole: int, bound: List<At>) -> List<List<At>?
 /// name the SAME subtree, span-blind — same binder, same code.
 fn bound_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
     let seen: List<At>? = acc[hole]
-    if seen == null { return with_hole(acc, hole, [subject]) }
-    if store.subtree_fp(seen![0]) == store.subtree_fp(subject) &&
-        same_subtree(store, seen![0], subject) {
+    let at = standing(store, subject)
+    if seen == null { return with_hole(acc, hole, [at]) }
+    if store.subtree_fp(seen![0]) == store.subtree_fp(at) && same_subtree(store, seen![0], at) {
         acc
     } else {
         null
+    }
+}
+
+/// An expression statement stands as its expression, every other node as itself.
+fn standing(store: SyntaxArena, subject: At) -> At {
+    match subject {
+        .Stmt(s) -> match store.stmt(s) { .ExprStmt(v) -> At.Expr(v), rest -> subject },
+        .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> subject,
     }
 }
 
