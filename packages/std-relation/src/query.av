@@ -144,7 +144,8 @@ export fn query(f: Fn) -> Declared {
         ]
             .concat(held_door(f))
             .concat(seat_door(f))
-            .concat(known_door(f)),
+            .concat(known_door(f))
+            .concat(kept_door(f)),
         problems: [],
     }
 }
@@ -612,6 +613,35 @@ ${scope_bound(f)}
     ]
 }
 
+/// How a saved call's answer is kept.
+fn kept_record(f: Fn) -> Code {
+    quote { KeptRecord { query: if ${named_seats(f)} { code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})) } else { null }, write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
+}
+
+/// `<name>_kept(…)`: the answer a call's record holds, whatever its reads say now, none for no
+/// record — for an asker that has proved what it rests on. Computes and records nothing.
+fn kept_door(f: Fn) -> List<Directive> {
+    if !saved(f) || fixpoint_words(f) != null { return [] }
+    if f.answers is .Opt(_) { return [] }
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    [
+        Directive {
+            twin: "",
+            name: "${f.name}_kept",
+            at: f.at,
+            source: quote {
+                export fn ${"${f.name}_kept"}(..${seats}) -> ${f.answer}? {
+                    let held = ${kept_name(f)}().under(${db_code(f)})
+                    ${scope_bound(f)}
+                    ${named_by(f)}
+                    ${answer_reader(f)}
+                    held.kept_value(${db_code(f)}, ${args_named(f)}, ${kept_record(f)})
+                }
+            },
+        },
+    ]
+}
+
 /// `<name>_dropped(ctx)`: every answer, cell and re-ask of the query under the context's Db let
 /// go — what a one-shot owner does to end the closures that capture it.
 fn dropped_door(f: Fn) -> Decls {
@@ -677,7 +707,7 @@ fn wrapper(f: Fn) -> Decls {
         }
     }
     if saved(f) {
-        let record = quote { KeptRecord { query: if ${named_seats(f)} { code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})) } else { null }, write: ${write_each(f.answers, answer_owner(f))}, read: ${answer_read(f)} } }
+        let record = kept_record(f)
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})

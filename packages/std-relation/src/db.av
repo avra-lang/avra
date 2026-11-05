@@ -47,7 +47,8 @@ use stable.{
     Reader,
     CodecFault,
     encoded_with,
-    named_encoding,
+    named_encoding_from,
+    decoded_from,
     decoded_with,
     int_spelled,
     written_list,
@@ -1428,13 +1429,20 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
     CodecFault,
 > {
     let kept = r.text()?
-    if kept != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
+    if db.saved_spelling(kept) != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
     let runs = read_list(r, read_run)?
     let leaves = [db.run_leaves(run) for run in runs]
     if leaves.any(it == null) { fail CodecFault.OtherArguments }
     let numbers = [n for run in leaves for n in run!]
     let held: Kept<V>? = if db.leaves_hold(numbers) { Kept { leaves: numbers, value: read(r)? } } else { null }
     held
+}
+
+/// A kept record's answer, its reads passed over.
+fn unproved<V>(r: Reader, read: fn(Reader) -> Result<V, CodecFault>) -> Result<V, CodecFault> {
+    let _spelled = r.text()?
+    let _runs = read_list(r, read_run)?
+    read(r)
 }
 
 /// A leaf's place: its chunk and its position there.
@@ -1793,7 +1801,8 @@ impl AnswersUnder<V> {
         let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
         if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
         let places = db.placed_leaves(leaves)
-        let named? = named_encoding(
+        let named? = named_encoding_from(
+            db.home(),
             value,
             (w, v) -> {
                 w.text(db.saved_spelling(spelled))
@@ -1817,10 +1826,25 @@ impl AnswersUnder<V> {
     fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> Kept<V>? {
         let answer = db.durable.answer
         let bytes? = answer(query, spelled_hash(query, db.saved_spelling(spelled))) else { return null }
-        match decoded_with(bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
+        match decoded_from(db.home(), bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
             .Ok(kept) -> kept,
             .Err(_) -> null,
         }
+    }
+
+    /// The answer a call's record holds, its reads unasked; none for no record or one that
+    /// does not read back.
+    fn kept_value(db: Db, spelled: string?, record: KeptRecord<V>) -> V? {
+        let query? = record.query else { return null }
+        let named? = spelled else { return null }
+        let answer = db.durable.answer
+        let bytes? = answer(query, spelled_hash(query, db.saved_spelling(named))) else { return null }
+        let value: V? = match decoded_from(
+            db.home(),
+            bytes,
+            (r: Reader) -> unproved(r, record.read),
+        ) { .Ok(v) -> v, .Err(_) -> null }
+        value
     }
 
     fn run(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> Run<V> {

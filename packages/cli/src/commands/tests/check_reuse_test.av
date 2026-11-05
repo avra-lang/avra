@@ -20,7 +20,64 @@ fn two_file_pkg(name: string) -> string {
     r
 }
 
+/// A library whose `b.av` warns at its one call, `a` the type it writes through.
+fn warned_pkg(name: string) -> string {
+    let r = root(name)
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${r}/src/a.av", PAIR)
+    let _ = write_text("${r}/src/b.av", WARNS)
+    r
+}
+
+const PAIR: string = "export type P = { x: int }\nimpl P {\n    fn w() -> int {\n        self.x = 1\n        1\n    }\n}\n"
+const WARNS: string = "export fn u(p: P) -> int { p.w() }\n"
+
+/// `check` of `r` after `edit`, reused and saying `words`.
+fn reused_saying(r: string, words: string) -> bool {
+    match checked_at(r) { .Ok(c) -> c.reused && c.warnings.contains(words), .Err(_) -> false }
+}
+
 spec "cli check_reuse" {
+    given "a checked package, a comment added to one file" {
+        then "the check is reused and its warning prints on the line it moved to" {
+            let r = warned_pkg("comment-above")
+            let _ = checked_at(r)
+            let _ = write_text("${r}/src/b.av", "// note\n// note\n${WARNS}")
+            reused_saying(r, "b.av:3")
+        }
+        then "a comment in another file leaves the warning on its line" {
+            let r = warned_pkg("comment-beside")
+            let _ = checked_at(r)
+            let _ = write_text("${r}/src/a.av", "// note\n${PAIR}")
+            reused_saying(r, "b.av:1")
+        }
+        then "a comment at a clean file's end keeps it reused" {
+            let r = two_file_pkg("comment-end")
+            let _ = checked_at(r)
+            let _ = write_text("${r}/src/a.av", "export fn f() -> int {\n    1\n}\n// note\n")
+            match checked_at(r) { .Ok(c) -> c.reused, .Err(_) -> false }
+        }
+        then "a second comment edit is reused too" {
+            let r = warned_pkg("comment-twice")
+            let _ = checked_at(r)
+            let _ = write_text("${r}/src/b.av", "// one\n${WARNS}")
+            let _ = checked_at(r)
+            let _ = write_text("${r}/src/b.av", "// one\n// two\n// three\n${WARNS}")
+            reused_saying(r, "b.av:4")
+        }
+    }
+    given "a checked package, a token moved in a comment's clothes" {
+        then "a commented-out call is no comment edit: the check reads the file again" {
+            let r = warned_pkg("comment-out")
+            let _ = checked_at(r)
+            let _ = write_text("${r}/src/b.av", "export fn u(p: P) -> int { // p.w()\n    1\n}\n")
+            match checked_at(r) {
+                .Ok(c) -> !c.reused && !c.warnings.contains("writes through"),
+                .Err(_) -> false,
+            }
+        }
+    }
     given "a checked package, then checked again unchanged" {
         then "the second check reuses the whole-program answer" {
             let r = two_file_pkg("unchanged")

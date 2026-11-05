@@ -176,6 +176,8 @@ export type Writer = {
     named: Cell<Map<string, int>>,
     /// Whether an id was written that its scope names as nothing: what was written names no call.
     nameless: Cell<bool> = Cell.new(false),
+    /// The tree a text under it is spelled from, empty for none: a record names no checkout.
+    home: Cell<string> = Cell.new(""),
 }
 
 export fn writer() -> Writer {
@@ -249,7 +251,8 @@ impl Writer {
 
     fn count(n: int) { self.varint(n) }
 
-    fn text(s: string) {
+    fn text(written: string) {
+        let s = saved_in(self.home.get(), written)
         if s.length >= CHUNK { return self.octets(s.bytes()) }
         self.count(s.length)
         for i in 0..s.length { self.byte(s.char_code(i)) }
@@ -457,6 +460,27 @@ export fn named_encoding<T>(v: T, each: fn(Writer, T) -> void) -> Bytes? {
     w.bytes()
 }
 
+/// `named_encoding`, every text under `home` spelled from it.
+export fn named_encoding_from<T>(home: string, v: T, each: fn(Writer, T) -> void) -> Bytes? {
+    let w = writer()
+    w.home.set(home)
+    each(w, v)
+    if w.nameless.get() { return null }
+    w.bytes()
+}
+
+/// `decoded_with`, every text spelled from the tree read back under `home`.
+export fn decoded_from<T>(home: string, b: Bytes, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T,
+    CodecFault,
+> {
+    let r = reader(b)
+    r.home.set(home)
+    let v = each(r)?
+    if !r.done() { fail CodecFault.Trailing }
+    v
+}
+
 /// A record read back through its reader — one with octets to spare
 /// refused, never half read.
 export fn decoded_with<T>(b: Bytes, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
@@ -506,7 +530,7 @@ impl CodecFault {
 
 /// A record being read: its octets and the position reached. An
 /// IDENTITY, as a writer is: every holder reads on from one position.
-export type Reader = { b: Bytes, at: Cell<int>, known: Cell<List<int>> }
+export type Reader = { b: Bytes, at: Cell<int>, known: Cell<List<int>>, home: Cell<string> = Cell.new("") }
 
 export fn reader(b: Bytes) -> Reader {
     let known: Cell<List<int>> = Cell.new([])
@@ -574,7 +598,7 @@ impl Reader {
 
     fn text() -> Result<string, CodecFault> {
         let s? = (self.octets()?).text() else { fail CodecFault.NotText }
-        s
+        unsaved_in(self.home.get(), s)
     }
 
     /// A dense id of the type named `kind`, read back through the scope.
