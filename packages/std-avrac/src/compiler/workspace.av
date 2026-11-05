@@ -901,7 +901,11 @@ fn module_names_made(ws: Workspace, m: ModuleId) -> int { ws.names_made(m) }
 fn plain_made(ws: Workspace, f: FileId) -> Parsed { ws.clocked_parse(f) }
 
 /// A declaration's own syntax: the fold of its range's node fingerprints.
+/// LASTING because the fold is structural — two declarations of one shape fold
+/// alike wherever they sit — and every read it makes is recorded: the file's
+/// parse and the name buckets its block words resolve.
 @query
+@lasting
 fn syntax_in(ws: Workspace, d: DeclId) -> int { ws.syntax_made(d) }
 
 /// A declaration's own slice of its file's names: the names its expression range reads.
@@ -2199,10 +2203,17 @@ impl Workspace {
     /// range. Recomputed with the file's `Resolved`.
     fn name_slice(d: DeclId) -> int { names_in(self, d) }
 
-    /// A declaration's own slice, made once per declaration and kept past the process.
+    /// A declaration's own slice, made once per declaration and kept past the process:
+    /// its expressions and statements by their offset from its own window, so a slice
+    /// folds alike wherever the arena put it — the scope a body's facts cross under.
     fn name_slice_made(d: DeclId) -> int {
         let x = self.decls.decl(d)
-        name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
+        name_slice_fp(
+            self.resolved(x.file),
+            x.lo,
+            x.hi,
+            self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
+        )
     }
 
     /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
