@@ -146,7 +146,8 @@ fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -
 @recursive
 fn analysis_in(ws: Workspace, f: FileId) -> Analysis { ws.analyzed(f) }
 
-/// One unit lowered: kept by its want, so a restore brings the whole unit back.
+/// One unit lowered, remembered by its want for this process alone: a body's facts name
+/// nothing past it, so the record a restore would read could never stand.
 @query
 @recursive
 export fn lowered_unit_of(ws: Workspace, w: Wanted) -> Unit { ws.lowered_saved(w) }
@@ -451,9 +452,13 @@ impl Workspace {
         out
     }
 
-    /// A unit lowered for the saved answer: one that spoke is never kept, so it speaks again.
+    /// A unit lowered for the durable answer: one that spoke is never kept, so it speaks again
+    /// — and none of them is kept past the process, since a body is typed under facts that name
+    /// nothing outside it (a parsed file, a body's typing, a name bucket's members). A record
+    /// whose leaves can never verify is a write nobody reads.
     fn lowered_saved(w: Wanted) -> Unit {
         let out = self.lowering(w)
+        self.query_db().in_process_only()
         if !out.voices.list.is_empty() { self.query_db().unkept() }
         out
     }
