@@ -104,6 +104,8 @@ export type Db = {
     /// records, and its digest — asked once a revision however many saved answers name it.
     keys_known: Cell<Map<string, Key>>,
     digests_known: Cell<Map<string, int>>,
+    /// What a read whose record fell answers now.
+    digests_made: Cell<Map<string, int>>,
     known_at: Cell<int>,
     /// Every leaf this process named, numbered once.
     leaf_table: LeafTable,
@@ -501,6 +503,7 @@ fn made(durable: Durable) -> Db {
         cap: Cell.new(0),
         keys_known: map_cell(),
         digests_known: map_cell(),
+        digests_made: map_cell(),
         known_at: Cell.new(0 - 1),
         written: Cell.new(0),
         leaf_table: leaf_table(),
@@ -1038,6 +1041,14 @@ impl Db {
     /// From here a read outside what `seeds` reach stands unjudged.
     fn suspects_from(seeds: List<int>) { self.suspects.set(self.reached_from(seeds)) }
 
+    /// `seeds`' readers suspected too.
+    fn suspects_also(seeds: List<int>) {
+        let among? = self.suspects.get() else { return }
+        mut held = among
+        for k, v in self.reached_from(seeds) { held.set(k, v) }
+        self.suspects.set(held)
+    }
+
     /// Every kin some read of `seeds` reaches, by the readers on record.
     fn reached_from(seeds: List<int>) -> Map<string, bool> {
         let seen: Cell<Map<string, bool>> = map_cell()
@@ -1237,7 +1248,7 @@ impl Db {
     fn input_digest(name: string, spelled: string) -> int? {
         self.known_now()
         let id = "${name}\t${spelled}"
-        let known = self.digests_known.get().get(id)
+        let known = self.digests_known.get().get(id) ?? self.digests_made.get().get(id)
         if known != null { return known }
         let owner? = self.answer_named(name) else { return null }
         let stood = self.record_digest(owner, spelled, id)
@@ -1246,7 +1257,7 @@ impl Db {
         staging(spelled)
         let arg? = owner.arg_of(spelled) else { return null }
         let made? = owner.hash_at(arg) else { return null }
-        self.digests_known.put(id, made)
+        self.digests_made.put(id, made)
         made
     }
 
@@ -1312,6 +1323,7 @@ impl Db {
         self.keys_known.set(no_keys)
         let no_digests: Map<string, int> = {}
         self.digests_known.set(no_digests)
+        self.digests_made.set(no_digests)
         let no_leaves: List<Cell<List<int>>> = []
         self.leaf_at_key.set(no_leaves)
         let none: List<int> = []
@@ -2070,7 +2082,7 @@ impl AnswersUnder<V> {
     /// reads the kernel recorded.
     fn ran(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> V {
         let done = self.run(db, arg, body, again, digest)
-        if !done.wrote && self.kept_query.get() != null { db.keeping(() -> self.keep_head(db, arg)) }
+        if self.kept_query.get() != null { db.keeping(() -> self.keep_head(db, arg)) }
         done.value
     }
 
@@ -2147,7 +2159,7 @@ impl AnswersUnder<V> {
         record: KeptRecord<V>,
     ) -> V {
         let done = self.run(db, arg, body, again, digest)
-        if !done.wrote { db.keeping(() -> self.keep_lasting(db, arg, query, spelled, done.value, record)) }
+        db.keeping(() -> self.keep_lasting(db, arg, query, spelled, done, record))
         done.value
     }
 
@@ -2157,12 +2169,14 @@ impl AnswersUnder<V> {
         arg: int,
         query: string,
         spelled: string,
-        value: V,
+        done: Run<V>,
         record: KeptRecord<V>,
     ) {
         let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
+        if done.wrote { return db.readers_noted(db.kin_of(query.split("#")[0], spelled), leaves) }
         if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
-        self.keep_record(db, arg, query, spelled, leaves, (w: Writer) -> record.write(w, value))
+        self
+            .keep_record(db, arg, query, spelled, leaves, (w: Writer) -> record.write(w, done.value))
     }
 
     /// Whether this process ever answered the call.

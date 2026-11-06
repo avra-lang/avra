@@ -130,6 +130,44 @@ spec "cli check_reuse" {
             )
         }
     }
+    given "a law another file's body decides" {
+        then "a callee that starts parking refuses an unchanged deferred call" {
+            let parks = "extern fn avra_fiber_sleep(ms: int)\nexport fn wait() -> int {\n    avra_fiber_sleep(1)\n    1\n}\n"
+            attack(
+                "parks",
+                {
+                    "m/a.av": "extern fn avra_fiber_sleep(ms: int)\nexport fn wait() -> int {\n    1\n}\n",
+                    "m/b.av": "export fn clean() {\n    defer wait()\n}\n",
+                },
+                {"m/a.av": parks},
+                "refused",
+            )
+        }
+        then "a const's run moved refuses its unchanged file" {
+            let body = "export fn limit() -> int {\n    LIMIT\n}\n"
+            attack(
+                "settled",
+                {
+                    "m/a.av": body.replace("LIMIT", "1"),
+                    "m/b.av": "const SEAT: int = limit()\nexport fn seat() -> int {\n    SEAT\n}\n",
+                },
+                {"m/a.av": body.replace("LIMIT", "[1][5]")},
+                "out of bounds",
+            )
+        }
+        then "a generic's body moved refuses its unchanged instantiation" {
+            let body = "export fn first<T>(xs: List<T>) -> T {\n    BODY\n}\n"
+            attack(
+                "generic",
+                {
+                    "m/a.av": body.replace("BODY", "xs[0]"),
+                    "m/b.av": "export fn head() -> int {\n    first([1])\n}\n",
+                },
+                {"m/a.av": body.replace("BODY", "\"s\"")},
+                "refused",
+            )
+        }
+    }
     given "the tree moved around an unchanged reader" {
         then "a file added that declares the name a reader misses clears it" {
             attack(

@@ -312,6 +312,7 @@ export fn lower(a: Analysis) -> Lowered {
             false,
             false,
             true,
+            [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
         )
@@ -454,6 +455,7 @@ impl Decls {
         every: bool,
         programs: bool,
         hashed: bool,
+        moved: List<Wanted>,
         unit_of: fn(Wanted) -> Unit,
         is_program: fn(FileId) -> bool,
     ) -> Lowered {
@@ -494,7 +496,7 @@ impl Decls {
             statics = mu.statics
             hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
-        let d = drained(wants, unit_of, (w: Wanted) -> self.instantiated(w))
+        let d = drained(wants.concat(moved), unit_of, (w: Wanted) -> self.instantiated(w))
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         let laid_out = distinct_statics(statics.concat(d.statics))
@@ -764,6 +766,8 @@ fn program_main(a: Analysis) -> Wanted {
 export fn program_symbol(name: string) -> string {
     "program\$${name.replace("/", "_").replace(".", "_").replace(":", "_")}"
 }
+
+export fn unit_wants(a: Analysis) -> List<Wanted> { declared(a).concat([program_main(a)]) }
 
 fn declared(a: Analysis) -> List<Wanted> {
     let own = a.view.decls.decls_of_file(a.view.file)

@@ -63,9 +63,9 @@ use features.{
     declaring_decl,
     LANGUAGE_HOME,
 }
-use core.{Ids, same_file}
+use core.{Ids, same_file, sorted_by, fp_list}
 use compiler.families.{Family}
-use @std.relation.{query, codec, scoped_by}
+use @std.relation.{query, codec, scoped_by, lasting}
 use @std.relation.stable.{Scope}
 use compiler.store.{Store}
 
@@ -92,7 +92,6 @@ export fn file_refs_made(ws: Workspace, f: FileId) -> Uses {
 type RefsIndex = {
     by_decl: Cell<Map<string, Cell<List<Ref>>>>,
     by_file: Cell<Map<string, Cell<List<Ref>>>>,
-    incomplete: bool,
     digest: int,
 }
 
@@ -113,10 +112,30 @@ export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws
 @scoped_by(file_places)
 export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
 
+/// What a reader of `d`'s references stands on: their rows' fold, each row by durable name and
+/// the rows in any order, so an edit that moves no row of `d` moves no reader of it.
+@query
+@lasting
+fn refs_print(ws: Workspace, d: DeclId) -> int {
+    let _ = ws.references()
+    let rows: Cell<List<Ref>> = Cell.new([])
+    ws.db.kernel.unheard(() -> rows.set(ws.refs_rows(d)))
+    let ids = ws.decls.ids()
+    fp_list(sorted_by([ref_fp(ids, r) for r in rows.get()], (a, b) -> a < b))
+}
+
 impl Workspace {
+    /// The references to `d`, standing on their fold.
+    fn refs_to_now(d: DeclId) -> List<Ref> {
+        let _ = refs_print(self, d)
+        let rows: Cell<List<Ref>> = Cell.new([])
+        self.db.kernel.unheard(() -> rows.set(self.refs_rows(d)))
+        rows.get()
+    }
+
     /// The references to `d` as they stand: in a run on kept rows, what the last whole run kept,
     /// every file read again since by its own rows.
-    fn refs_to_now(d: DeclId) -> List<Ref> {
+    fn refs_rows(d: DeclId) -> List<Ref> {
         if self.records.read_again.get() == null { return refs_to(self, d).rows }
         let kept? = refs_to_kept(self, d) else { return refs_to(self, d).rows }
         let moved = self.records.refs_moved.get()
@@ -143,8 +162,7 @@ impl Workspace {
     /// Whether a held file left the references INCOMPLETE — a decl may be read from inside one.
     fn refs_incomplete() -> bool {
         if self.records.read_again.get() != null { return false }
-        if self.db.family_active(Family.Resolved.ordinal) { return true }
-        refs_index(self).incomplete
+        self.db.family_active(Family.Resolved.ordinal)
     }
 
     /// The gathering, run: every surveyed file's rows, indexed.
@@ -162,7 +180,6 @@ impl Workspace {
         RefsIndex {
             by_decl: Cell.new(grouped(rows, true)),
             by_file: Cell.new(grouped(rows, false)),
-            incomplete: false,
             digest: digest.get(),
         }
     }
@@ -484,4 +501,4 @@ fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl:
 /// Whether a declaration is read as a value anywhere, as the references pass settled it: a
 /// consumer of that one bit stands on this answer, so a use of another name leaves it standing.
 @query
-fn read_found(ws: Workspace, d: DeclId) -> bool { refs_to(ws, d).rows.any(it.kind is .Read) }
+fn read_found(ws: Workspace, d: DeclId) -> bool { ws.refs_to_now(d).any(it.kind is .Read) }

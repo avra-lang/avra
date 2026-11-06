@@ -64,14 +64,16 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, Body, Unit, CodeFacts, lower_unit}
+use compiler.lower.{Lowered, Body, Unit, CodeFacts, lower_unit, unit_wants}
 use compiler.memory.{memory}
-use @std.relation.{query, scoped_by, recursive}
+use @std.relation.{query, scoped_by, recursive, lasting}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
 /// How the bodies compile-time runs lowered are filed.
 const BODY_RUN: string = "body run"
+
+/// How the bodies compile-time runs lowered are filed.
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -151,11 +153,24 @@ fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -
 @recursive
 fn analysis_in(ws: Workspace, f: FileId) -> Analysis { ws.analyzed(f) }
 
-/// One unit lowered, remembered by its want for this process alone: a body's facts name
-/// nothing past it, so the record a restore would read could never stand.
+/// One unit lowered, remembered by its want. Its reads stand in `unit_laws`' record.
 @query
 @recursive
 export fn lowered_unit_of(ws: Workspace, w: Wanted) -> Unit { ws.lowered_saved(w) }
+
+/// What an instantiation wants instantiated: a unit's law is an answer, so what it reads names
+/// the units to lower again, and what it wants the walk that finds them.
+@query
+@recursive
+@lasting
+fn unit_laws(ws: Workspace, w: Wanted) -> List<Wanted> { ws.instantiated_by(ws.lowered(ws.spec_id(w))) }
+
+/// What a file's own units want instantiated. A plain fn's unit is its own file's.
+@query
+@lasting
+fn file_laws(ws: Workspace, f: FileId) -> List<Wanted> {
+    flatten([ws.instantiated_by(ws.lowered(ws.spec_id(w))) for w in unit_wants(ws.analysis(f))])
+}
 
 impl Workspace {
     /// The method-table clashes spoken in a file, asked as `method_clashes`, so the file's
@@ -460,13 +475,39 @@ impl Workspace {
         out
     }
 
-    /// A unit lowered for the durable answer: one that spoke is never kept, so it speaks again
-    /// — and none of them is kept past the process, since a body is typed under facts that name
-    /// nothing outside it (a parsed file, a body's typing, a name bucket's members). A record
-    /// whose leaves can never verify is a write nobody reads.
+    fn instantiated_by(u: Unit) -> List<Wanted> { [w for w in u.wants if self.decls.instantiated(w)] }
+
+    /// One unit of a whole program, an instantiation's law answered as it lowers.
+    fn program_unit(w: Wanted) -> Unit {
+        let u = self.lowered(self.spec_id(w))
+        if self.decls.instantiated(w) { let _ = unit_laws(self, w) }
+        u
+    }
+
+    /// Whether an instantiation's law stands on its record.
+    fn law_stands(w: Wanted) -> bool {
+        unit_laws_kept(self, w) != null && self.query_db().read_stands(unit_laws_key(self, w))
+    }
+
+    /// The instantiations the program still wants whose law no longer stands, walked from what
+    /// each file's record wants: a kept row's unit is lowered only when one of these names it.
+    fn laws_moved() -> List<Wanted> {
+        mut seen: Map<string, bool> = {}
+        mut todo = flatten([file_laws_kept(self, fi.id) ?? [] for fi in self.decls.all_files()])
+        mut moved: List<Wanted> = []
+        while !todo.is_empty() {
+            let w = todo.pop()
+            if seen.get(w.name) ?? false { continue }
+            seen.set(w.name, true)
+            let next = if self.law_stands(w) { unit_laws_kept(self, w) } else { null }
+            if next == null { moved.push(w) } else { todo = todo.concat(next!) }
+        }
+        moved
+    }
+
+    /// A unit lowered for the durable answer: one that spoke is never kept, so it speaks again.
     fn lowered_saved(w: Wanted) -> Unit {
         let out = self.lowering(w)
-        self.query_db().in_process_only()
         if !out.voices.list.is_empty() { self.query_db().unkept() }
         out
     }
@@ -485,10 +526,11 @@ impl Workspace {
         // range, or — for a program's entry, a body no declaration owns —
         // the whole file's parse, which is where that body lives. Without
         // it an entry's row stands while the values it reaches move.
-        if w.decl != null {
-            let _ = self.syntax(w.decl!)
-        } else if w.root == null {
-            if w.decl == null { let _ = self.parsed(w.file) } else { touch(self.syntax(w.decl!)) }
+        let owner = w.decl ?? self.root_owner(w.file, w.root ?? ExprId { index: 0 - 1 })
+        if owner != null {
+            touch(self.syntax(owner!))
+        } else {
+            touch(self.parsed(w.file))
         }
         self.lower_requested(w)
     }
@@ -544,8 +586,10 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
+        let owner = w.decl ?? self.root_owner(w.file, w.root ?? ExprId { index: 0 - 1 })
         let analysis = when {
-            w.decl == null -> self.analysis(w.file)
+            owner == null -> self.analysis(w.file)
+            w.decl == null -> if self.comptime_active() { self.analyzed_decl(w.file, owner!) } else { self.analysis(w.file) }
             self.lowers_from_own_range(w.decl!) -> self.ranged_analysis(w.file, w.decl!)
             self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
             _ -> self.analysis(w.file)
@@ -707,13 +751,20 @@ impl Workspace {
     /// write rides beside it: the module interface a reader follows even when the
     /// declaration it read stands unmoved.
     fn decl_read(f: FileId, d: DeclId?) -> RunRead {
+        let out = Cell.new(self.plain_read(self.decls.file(f).path))
+        if d == null { return out.get() }
+        // what a run read is named here, and read by the unit lowered from it
+        self.db.kernel.unheard(() -> out.set(self.read_of_decl(f, d!)))
+        out.get()
+    }
+
+    fn read_of_decl(f: FileId, d: DeclId) -> RunRead {
         let path = self.decls.file(f).path
-        if d == null { return self.plain_read(path) }
         RunRead {
             path: path,
             digest: self.text_digest(path),
             ref: self.decl_ref(d),
-            print: "${self.syntax(d!)}",
+            print: "${self.syntax(d)}",
             outline: "",
         }
     }
@@ -901,7 +952,12 @@ impl Workspace {
     fn settle_result(ask: SettleAsk) -> Result<Settled, Unsettled> {
         match ask.root {
             .Const(s) -> self
-                .settlement_of(ask.file, self.parsed(ask.file).store.const_value(s)!, ask.name, ask.seats),
+                .settlement_of(
+                    ask.file,
+                    self.parse_unrecorded(ask.file).store.const_value(s)!,
+                    ask.name,
+                    ask.seats,
+                ),
             .Expr(e) -> self.settlement_of(ask.file, e, ask.name, ask.seats),
         }
     }
