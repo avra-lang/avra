@@ -25,6 +25,7 @@ annot = "@expect" "(" token:STRING "," msg:STRING ")" @expect(")", "expected ')'
       | "@head" "(" label:NAME ")" @expect(")", "expected ')' to close @head") -> build_head(label)
       | "@trailer" "(" label:NAME ")" @expect(")", "expected ')' to close @trailer") -> build_trailer(label)
       | "@fold" "(" label:NAME ")" @expect(")", "expected ')' to close @fold") -> build_fold(label)
+      | "@alias" -> build_alias()
       | "@operators" "{" tiers:tier+ "}" @expect("}", "expected '}' to close @operators") -> build_operators(tiers)
 tier = assoc:assoc words:word+ ( "->" build:build )? suffixes:suffix_arm* -> build_tier(assoc, words, build, suffixes)
 suffix_arm = "suffix" word:STRING rule:NAME ( "->" build:build )? -> build_suffix(word, rule, build)
@@ -40,6 +41,17 @@ spec "grammar/parse" {
             p.diagnostics.is_empty() &&
                 p.built != null &&
                 render_grammar(p.built!) == render_grammar(grammar_of_grammars)
+        }
+    }
+    given "an alias branch" {
+        then "reads back marked, and renders as written" {
+            let p = parse_grammar("a = \"x\" -> E.A @alias | \"y\" -> E.A")
+            let g? = p.built else { return false }
+            let branches = g.rules[0].body.branches
+            p.diagnostics.is_empty() &&
+                branches[0].aliased &&
+                !branches[1].aliased &&
+                render_grammar(g).contains("@alias")
         }
     }
     given "parse_grammar's outcome contract" {
