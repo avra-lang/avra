@@ -63,20 +63,24 @@ use features.{
     declaring_decl,
     LANGUAGE_HOME,
 }
+use core.{Ids}
 use compiler.families.{Family}
-use @std.relation.{query, codec}
+use @std.relation.{query, codec, scoped_by}
+use @std.relation.stable.{Scope}
 use compiler.store.{Store}
 
 /// A set of references: the answer of the queries below, which cross by their codec.
 @codec
 export type Uses = { rows: List<Ref> }
 
-impl Uses {
-    fn fingerprint() -> int { fp(41, [fp_list([ref_fp(r) for r in self.rows])]) }
-}
+/// Where a reference stands in its own file, whose parse its reader stands on.
+fn file_places(ws: Workspace, _f: FileId) -> dyn Scope { ws.facts_scope(0, 0) }
+
+fn decl_places(ws: Workspace, _d: DeclId) -> dyn Scope { ws.facts_scope(0, 0) }
 
 /// One file's references, the rows its walk found: the answer a restore brings back whole.
 @query
+@scoped_by(file_places)
 export fn file_refs_made(ws: Workspace, f: FileId) -> Uses {
     ws.stand_after_typing()
     Uses { rows: ws.file_refs(f) }
@@ -101,10 +105,12 @@ fn refs_index(ws: Workspace) -> RefsIndex { ws.indexed_references() }
 
 /// The references to one declaration.
 @query
+@scoped_by(decl_places)
 export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}")?.get() ?? [] } }
 
 /// The references one file makes.
 @query
+@scoped_by(file_places)
 export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
 
 impl Workspace {
@@ -127,11 +133,17 @@ impl Workspace {
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if self.reads_as_source(x.path)]
         let rows = flatten([file_refs_made(self, f).rows for f in files])
+        // the rows' digest names what they say, and reads nothing of what they name
+        let digest = Cell.new(0)
+        self
+            .db
+            .kernel
+            .unheard(() -> digest.set(fp(43, [fp_list([ref_fp(self.decls.ids(), r) for r in rows])])))
         RefsIndex {
             by_decl: Cell.new(grouped(rows, true)),
             by_file: Cell.new(grouped(rows, false)),
             incomplete: false,
-            digest: fp(43, [fp_list([ref_fp(r) for r in rows])]),
+            digest: digest.get(),
         }
     }
 
@@ -366,8 +378,10 @@ fn type_use_decls(names: NameFacts, tparams: List<string>, t: TypeRef) -> List<D
 
 /// One row's own fingerprint — what the pass settles the whole
 /// relation's answer on.
-fn ref_fp(r: Ref) -> int {
-    fp(42, [r.decl.index, r.file.index, kind_ord(r.kind)])
+fn ref_fp(ids: Ids, r: Ref) -> int {
+    let by_decl = ids.decl
+    let by_file = ids.file
+    fp(42, [by_decl(r.decl.index), by_file(r.file.index), kind_ord(r.kind)])
 }
 
 fn kind_ord(k: UseKind) -> int {

@@ -115,6 +115,7 @@ fn const_typed(ws: Workspace, d: DeclId) -> ConstType {
 
 /// The scope a body's ids cross under: offsets from its own window as it stands now.
 fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
+    touch(ws.decls.store(d))
     let x = ws.decls.decl(d)
     ws.facts_scope(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo })
 }
@@ -436,11 +437,13 @@ impl Workspace {
         let w = self.asks.get()[id]
         let out = self.lowering(w)
         self.owned(w, out)
-        lowered_of(
+        let lowered = lowered_of(
             self
                 .relation(Family.LiftLowered)
                 .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> lowered_of(r).fingerprint()),
         )
+        self.family_settled(Family.LiftLowered, id)
+        lowered
     }
 
     /// A unit lowered, the units being lowered noted while it runs.
@@ -861,6 +864,7 @@ impl Workspace {
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
         let _ = self.relation(Family.Settled).finish(id, DbRow.Settled(held), settlement_hash(held))
+        self.family_settled(Family.Settled, id)
         match r {
             .Err(_) -> {
                 self.spoke(id)
@@ -1028,6 +1032,7 @@ impl Workspace {
             .Err(why) -> LiftResult.Refused(why),
         }
         let _ = self.relation(Family.Lifted).finish(id, DbRow.Lifted(held), lift_hash(held))
+        self.family_settled(Family.Lifted, id)
         r
     }
 

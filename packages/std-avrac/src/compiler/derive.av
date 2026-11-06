@@ -29,6 +29,8 @@ use features.{SettleRoot, Wanted, Analysed, FileInfo}
 use @std.path.{relative_path, joined_path}
 use @std.text.{text_before}
 use diagnostics.{Diag, render_among}
+use compiler.memory.{sound_checked}
+use core.{wreck}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
 use compiler.host.{no_source}
@@ -234,9 +236,10 @@ impl Workspace {
         self.timed("open", opening)
         let named = "check:${entry ?? ""}"
         let judging = self.clock()
-        let standing = if db_judging() { null } else { self.standing_verdict(store, named) }
+        let standing: CheckSaid? = if db_judging() { null } else { self.standing_verdict(store, named)? }
         self.timed("judge", judging)
         let kept? = standing else { return self.checked_anew(store, entry, named) }
+        if sound_checked() { self.held_to_a_run(store, entry, named, kept) }
         Checked {
             warnings: kept.warnings(),
             reused: true,
@@ -250,6 +253,15 @@ impl Workspace {
     }
 
     /// What `check` says when no verdict stands: the program derived, and its verdict kept.
+    /// Under the sound check a standing verdict is held to a run that stands on nothing kept
+    /// but what it judges itself.
+    fn held_to_a_run(store: Store, entry: string?, named: string, kept: CheckSaid) {
+        match self.checked_anew(store, entry, named) {
+            .Ok(ran) -> { if ran.warnings != kept.warnings() { wreck(verdict_disagrees(ran.warnings, kept.warnings())) } },
+            .Err(why) -> wreck(verdict_disagrees(why, kept.warnings())),
+        }
+    }
+
     fn checked_anew(store: Store, entry: string?, named: string) -> Result<Checked, string> {
         let d = self.derived(entry, Want.Diagnostics)?
         let said = d.program.ws.check_said(d)
@@ -447,6 +459,7 @@ impl Workspace {
     /// WHAT WAS LEARNED, KEPT: the records first — every key folds them — then what
     /// stands in for each read file, whole: what it said, and what its bodies ask.
     fn kept(at: Attempt, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, Turn> {
+        self.query_db().readers_kept()
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
         self.keep_uses(store)
@@ -664,3 +677,6 @@ fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
     out
 }
 
+fn verdict_disagrees(ran: string, kept: string) -> string {
+    "the sound check: a standing verdict disagrees with a run\n--- ran\n${ran}\n--- kept\n${kept}"
+}

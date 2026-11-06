@@ -49,6 +49,7 @@ use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     ConstType,
+    ItemLine,
     ExternNote,
     Listed,
     Ref,
@@ -451,6 +452,9 @@ type Records = {
     line_index: Cell<Map<string, Map<string, List<string>>>>,
     /// Each file's use lines as its parse said them this build, kept at its end.
     uses_seen: Cell<Map<string, string>>,
+    /// A run that reads kept rows: the texts it reads again, by path. Every other file's rows
+    /// are its kept lines, and it is parsed only when something reads its nodes.
+    read_again: Cell<Map<string, bool>?>,
     /// How many files stood when the program's names last stood whole: every file admitted and
     /// expanded, so no writer is left to fill a name bucket.
     names_stood: Cell<int>,
@@ -493,6 +497,8 @@ type Records = {
 /// A file's kept declaration wires by the name each declares — `kept` false when no read of
 /// its text as it stands kept lines.
 
+fn no_read_again() -> Map<string, bool>? { null }
+
 fn new_records() -> Records {
     let no_loaded: Map<string, bool> = {}
     let no_texts: Map<string, string> = {}
@@ -515,6 +521,7 @@ fn new_records() -> Records {
         record_files: Cell.new(no_files),
         line_index: map_cell(),
         uses_seen: map_cell(),
+        read_again: Cell.new(no_read_again()),
         names_stood: Cell.new(-1),
         record_producers: Cell.new(no_producers_of),
         record_stamps: map_cell(),
@@ -1459,7 +1466,9 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        parsed_in(self, f)
+        let p = parsed_in(self, f)
+        if self.rows_kept(f) { self.decls.store_met(f, p.store) }
+        p
     }
 
     /// A file parsed under NO block words — its own words alone: the
@@ -1836,15 +1845,59 @@ impl Workspace {
             .Compute -> nothing(),
         }
         self.decls.note_rows(f, 0)
-        let p = self.parsed(f)
-        let out = self.items_settled(f, self.decls.admit(f, p.store, p.stmts))
+        let kept = self.items_kept(f)
+        if kept != null {
+            self.decls.note_rows(f, 1)
+            return items_of(
+                self.relation(Family.Items).finish(f.index, DbRow.Items(kept!), self.rows_print(f)),
+            )
+        }
+        let out = self
+            .items_settled(
+                f,
+                self
+                    .decls
+                    .admitted(
+                        f,
+                        self.parsed(f).store,
+                        self.decls.admission(f, self.parsed(f).store, self.parsed(f).stmts),
+                    ),
+            )
         self.decls.note_rows(f, 1)
         out
     }
 
+    /// A file's rows from its kept lines, in a run that reads them; none where they must be read.
+    fn items_kept(f: FileId) -> List<DeclId>? {
+        let again? = self.records.read_again.get() else { return null }
+        let path = self.decls.file(f).path
+        if again.get(path) ?? false { return null }
+        let lines? = self.items_lines(path) else { return null }
+        self.mint_file(path, [p for p in lines if declares(p)], makers_in(lines, path))
+    }
+
+    /// Whether a file's rows came from its kept lines and its parse has not been needed.
+    fn rows_kept(f: FileId) -> bool {
+        let again? = self.records.read_again.get() else { return false }
+        !(again.get(self.decls.file(f).path) ?? false) && self.decls.admitted_store(f) == null
+    }
+
+    /// Whether a declaration's effects are its kept line's, in a run on kept rows.
+    fn effects_kept(d: DeclId) -> bool { self.effects_kept_file(self.decls.decl(d).file) }
+
+    /// Whether a file's rows and all they generated are its kept lines.
+    fn effects_kept_file(f: FileId) -> bool {
+        let again? = self.records.read_again.get() else { return false }
+        !(again.get(self.decls.file(f).path) ?? false)
+    }
+
     /// A file's `Items` settled: the top-level ids, hashed by every row the file minted.
     fn items_settled(f: FileId, ids: List<DeclId>) -> List<DeclId> {
-        items_of(self.relation(Family.Items).finish(f.index, DbRow.Items(ids), self.rows_print(f)))
+        let out = items_of(
+            self.relation(Family.Items).finish(f.index, DbRow.Items(ids), self.rows_print(f)),
+        )
+        self.family_settled(Family.Items, f.index)
+        out
     }
 
     /// Every row a file minted, as one hash.
@@ -2013,7 +2066,7 @@ impl Workspace {
                 .relation(Family.Resolved)
                 .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> resolved_of(r).fingerprint_in(ids)),
         )
-        if partial { self.relation(Family.Resolved).evict_call(f.index) }
+        if partial { self.relation(Family.Resolved).evict_call(f.index) } else { self.family_settled(Family.Resolved, f.index) }
         facts
     }
 
@@ -2117,7 +2170,8 @@ impl Workspace {
         // methods. The kernel's recursion guard makes the re-entry (a
         // target whose own file is resolving) answer the smaller view.
         let home = self.decls.decl(target).file
-        let _ = self.resolved(home)
+        // kept rows already hold what its expansion generated
+        if !self.effects_kept_file(home) { let _ = self.resolved(home) }
         let blocks = self.method_blocks(target)
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
@@ -2316,7 +2370,7 @@ impl Workspace {
         // settles on and the name its result is stored under are
         // one derivation").
         let ws = self
-        folded_of(
+        let out = folded_of(
             self
                 .relation(Family.Folded)
                 .finish_lazy(
@@ -2332,6 +2386,8 @@ impl Workspace {
                     ),
                 ),
         )
+        self.family_settled(Family.Folded, f.index)
+        out
     }
 
     /// A file's bodies to type: Main, then every declaration owning a

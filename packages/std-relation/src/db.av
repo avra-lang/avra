@@ -50,6 +50,7 @@ use stable.{
     named_encoding_from,
     decoded_from,
     decoded_with,
+    reader,
     int_spelled,
     written_list,
     read_list,
@@ -115,6 +116,19 @@ export type Db = {
     /// Answers waiting to be kept until their reads can be judged whole, while `keeps_wait`.
     keeps_owed: Cell<List<fn() -> void>>,
     keeps_wait: Cell<bool>,
+    /// Who read what, owed to the store: a read's kin to the kins of its readers.
+    readers_owed: Cell<Map<string, Cell<List<int>>>>,
+    /// Each leaf number's kin.
+    leaf_kins: Cell<List<int>>,
+    /// The kins some moved input may reach, once a run has asked; every other read stands.
+    suspects: Cell<Map<string, bool>?>,
+    /// What the owner stages before a call a record names is asked by its spelling.
+    staging: Cell<fn(string) -> void>,
+    /// The calls whose records are being judged.
+    judging: Cell<Map<string, Judging>>,
+    judge_depth: Cell<int>,
+    judge_low: Cell<int>,
+    digests_trusted: Cell<Map<string, int>>,
     /// The leaf each read of a cell no query settled names this revision, by family and argument.
     leaf_at_key: Cell<List<Cell<List<int>>>>,
     /// By leaf number this revision: 1 holds, 2 moved, 0 not judged; and the edge a read of it records, -1 none yet.
@@ -323,7 +337,43 @@ export type AnswerRef = {
     number: fn(int) -> int? = unnumbered,
     /// The call asked with a dense number, none when none was.
     numbered: fn(int) -> int? = unnumbered,
+    /// Whether these answers are a function of the program's declaration rows alone, whose
+    /// wires a run that asks for suspects has held still.
+    of_rows: bool = false,
+    /// The name these answers' records are kept under, none for answers with no record.
+    kept_name: fn() -> string? = no_kept_name,
 }
+
+fn no_kept_name() -> string? { null }
+
+fn no_suspects() -> Map<string, bool>? { null }
+
+fn no_staging(_spelled: string) {}
+
+fn distinct_ints(ns: List<int>) -> List<int> {
+    let seen: Cell<Map<string, bool>> = map_cell()
+    mut out: List<int> = []
+    for n in ns {
+        if seen.get().get("${n}") ?? false { continue }
+        seen.put("${n}", true)
+        out.push(n)
+    }
+    out
+}
+
+/// A call being judged: how deep, and the digest its record claims.
+type Judging = { depth: int, digest: int }
+
+const NOT_LOW: int = 4611686018427387904
+
+fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// A leaf whose kin is not yet asked, and one that has none.
+const NOT_ASKED: int = 0 - 1
+const NO_KIN: int = 0 - 2
+
+/// Where a read's readers are kept.
+const READERS: string = "readers"
 
 /// No call is asked by a number.
 fn unnumbered(_n: int) -> int? { null }
@@ -459,6 +509,14 @@ fn made(durable: Durable) -> Db {
         leaf_chunks: map_cell(),
         keeps_owed: owed,
         keeps_wait: Cell.new(false),
+        readers_owed: map_cell(),
+        leaf_kins: list_cell(),
+        suspects: Cell.new(no_suspects()),
+        staging: Cell.new(no_staging),
+        judging: map_cell(),
+        judge_depth: Cell.new(0),
+        judge_low: Cell.new(NOT_LOW),
+        digests_trusted: map_cell(),
         leaf_at_key: list_cell(),
         leaf_judged: list_cell(),
         leaf_edges: list_cell(),
@@ -865,6 +923,173 @@ impl Db {
         for keep in owed { keep() }
     }
 
+    /// A family cell's record: its digest and what it read, and no answer. Kept once its reads
+    /// can be digested; none for a cell that read nothing or a read with no name.
+    fn cell_settled(name: string, k: Key) { self.keeping(() -> self.keep_cell(name, k)) }
+
+    fn keep_cell(name: string, k: Key) {
+        let owner? = self.answer_named(name) else { return }
+        let query? = (owner.kept_name)() else { return }
+        let spelled? = owner.spelled_at(k.arg) else { return }
+        let reads = self.engine().deps_of(k)
+        if reads.is_empty() { return }
+        let digest? = owner.hash_at(k.arg) else { return }
+        let none: List<int>? = null
+        let leaves = Cell.new(none)
+        self.engine().unheard(() -> leaves.set(self.numbers_of(reads)))
+        let ns? = leaves.get() else { return }
+        self.record_kept(query, spelled, digest, ns, (_w: Writer) -> no_word())
+    }
+
+    /// A record: a call's spelling, its digest, its reads by their places, then its answer.
+    fn record_kept(
+        query: string,
+        spelled: string,
+        digest: int,
+        leaves: List<int>,
+        answer: fn(Writer) -> void,
+    ) {
+        self.readers_noted(self.kin_of(query.split("#")[0], spelled), leaves)
+        let places = self.placed_leaves(leaves)
+        let saved = self.saved_spelling(spelled)
+        let bytes? = named_encoding_from(
+            self.home(),
+            0,
+            (w, _v) -> {
+                w.text(saved)
+                w.int(digest)
+                written_list(w, runs_of(places), write_run)
+                answer(w)
+            },
+        ) else {
+            return
+        }
+        let keep = self.durable.keep
+        keep(query, spelled_hash(query, saved), bytes)
+    }
+
+    /// A call's one name past the process, whoever spells it.
+    fn kin_of(name: string, spelled: string) -> int { spelled_hash(name, self.saved_spelling(spelled)) }
+
+    /// Leaf `n`'s kin: its read apart from its digest. None for what a table's rows decide.
+    fn leaf_kin(n: int) -> int? {
+        let known = self.leaf_kins
+        if n < known.get().length && known.get()[n] != NOT_ASKED { return if known.get()[n] == NO_KIN { null } else { known.get()[n] } }
+        let made = match self.leaf_table.leaf(n) {
+            .Rows(_, _) -> NO_KIN,
+            .Input(name, spelled, _) -> if self.answer_named(name)?.of_rows ?? false { NO_KIN } else { self.kin_of(name, spelled) },
+        }
+        while known.get().length <= n { known.push(NOT_ASKED) }
+        known.set_at(n, made)
+        if made == NO_KIN { null } else { made }
+    }
+
+    /// `reader` read `leaves`.
+    fn readers_noted(reader: int, leaves: List<int>) {
+        for n in leaves {
+            let kin? = self.leaf_kin(n) else { continue }
+            let at = "${kin}"
+            let filed = self.readers_owed.get().get(at)
+            if filed != null {
+                filed!.push(reader)
+                continue
+            }
+            let made: Cell<List<int>> = Cell.new([kin, reader])
+            self.readers_owed.put(at, made)
+        }
+    }
+
+    /// The readers a read has on record.
+    fn readers_of(kin: int) -> List<int> {
+        let answer = self.durable.answer
+        let bytes? = answer(READERS, kin) else { return [] }
+        match decoded_with(bytes, (r: Reader) -> read_list(r, (x: Reader) -> x.int())) {
+            .Ok(ns) -> ns,
+            .Err(_) -> [],
+        }
+    }
+
+    /// Every read's new readers kept beside its old ones. A reader that no longer reads stays
+    /// filed: it is judged for nothing, never missed.
+    fn readers_kept() {
+        let owed = self.readers_owed.get()
+        let none: Map<string, Cell<List<int>>> = {}
+        self.readers_owed.set(none)
+        let keep = self.durable.keep
+        for _at, cell in owed {
+            let filed = cell.get()
+            let kin = filed[0]
+            let was = self.readers_of(kin)
+            let now = distinct_ints(was.concat(filed.drop(1)))
+            if now.length == was.length { continue }
+            keep(
+                READERS,
+                kin,
+                encoded_with(now, (w, v) -> written_list(w, v, (x: Writer, n: int) -> x.int(n))),
+            )
+        }
+    }
+
+    /// From here a read outside what `seeds` reach stands unjudged.
+    fn suspects_from(seeds: List<int>) {
+        let seen: Cell<Map<string, bool>> = map_cell()
+        mut todo = seeds
+        for s in seeds { seen.put("${s}", true) }
+        while !todo.is_empty() {
+            for r in self.readers_of(todo.pop()) {
+                if seen.get().get("${r}") ?? false { continue }
+                seen.put("${r}", true)
+                todo.push(r)
+            }
+        }
+        self.suspects.set(seen.get())
+    }
+
+    /// How many reads a moved input may reach.
+    fn suspect_count() -> int { self.suspects.get()?.length ?? 0 }
+
+    /// The kin of the call a key names.
+    fn kin_at(k: Key) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        let spelled? = owner.spelled_at(k.arg) else { return null }
+        self.kin_of(owner.name, spelled)
+    }
+
+    /// Whether the read a key names stands: not suspect, or its record's every read holds.
+    fn read_stands(k: Key) -> bool {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else {
+            return false
+        }
+        let spelled? = owner.spelled_at(k.arg) else {
+            return false
+        }
+        if !self.suspected(self.kin_of(owner.name, spelled)) { return true }
+        self.record_digest(owner, spelled, "${owner.name}\t${spelled}") != null
+    }
+
+    /// Whether the answer a key names is the one its record digests, its record's reads moved or
+    /// not: asked when they moved.
+    fn answer_stands(k: Key) -> bool {
+        if self.read_stands(k) { return true }
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return false }
+        let spelled? = owner.spelled_at(k.arg) else { return false }
+        let query? = (owner.kept_name)() else { return false }
+        let answer = self.durable.answer
+        let saved = self.saved_spelling(spelled)
+        let bytes? = answer(query, spelled_hash(query, saved)) else { return false }
+        let head? = match record_head(self, reader_from(self.home(), bytes), saved) {
+            .Ok(h) -> h,
+            .Err(_) -> null,
+        } else { return false }
+        owner.hash_at(k.arg) == head.digest
+    }
+
+    /// Whether a kin may have moved; every kin when no run has asked.
+    fn suspected(kin: int) -> bool {
+        let among? = self.suspects.get() else { return true }
+        among.get("${kin}") ?? false
+    }
+
     /// LEAVES ARE KEPT ONCE A PROCESS: each read a saved answer stands on is written into a
     /// chunk the first time any answer names it, and an answer names it by its place there.
     /// A chunk is named by its hash, so one written twice is one row.
@@ -950,10 +1175,17 @@ impl Db {
         self.known_now()
         let judged = self.leaf_judged
         if n < judged.get().length && judged.get()[n] != 0 { return judged.get()[n] == 1 }
+        if self.suspects.get() != null {
+            let kin = self.leaf_kin(n)
+            if kin == null || !self.suspected(kin!) { return true }
+        }
         match self.leaf_table.leaf(n) {
             .Rows(name, digest) -> self.rows_digest(name) == digest,
             .Input(name, spelled, digest) -> {
-                let now? = self.input_digest(name, spelled) else { return self.unstaged(name) }
+                let now? = self.input_digest(name, spelled) else {
+                    return self.unstaged(name)
+                }
+                if now == digest && self.judged_on_trust() { return true }
                 while judged.get().length <= n { judged.push(0) }
                 judged.set_at(n, if now == digest { 1 } else { 2 })
                 now == digest
@@ -994,11 +1226,71 @@ impl Db {
         let known = self.digests_known.get().get(id)
         if known != null { return known }
         let owner? = self.answer_named(name) else { return null }
+        let stood = self.record_digest(owner, spelled, id)
+        if stood != null { return stood }
+        let staging = self.staging.get()
+        staging(spelled)
         let arg? = owner.arg_of(spelled) else { return null }
         let made? = owner.hash_at(arg) else { return null }
         self.digests_known.put(id, made)
         made
     }
+
+    /// The digest a call's record stands for while its every read holds: nothing is decoded,
+    /// minted or asked. None for no record or a moved read. A call met again while it is judged
+    /// answers its record's digest on trust: what stood on that trust is only known to hold, and
+    /// only remembered, once the call the cycle opened at has held.
+    fn record_digest(owner: AnswerRef, spelled: string, id: string) -> int? {
+        let known = self.digests_known.get().get(id) ?? self.digests_trusted.get().get(id)
+        if known != null { return known }
+        let open = self.judging.get().get(id)
+        if open != null && open!.depth >= 0 {
+            self.judge_low.set(min_of(self.judge_low.get(), open!.depth))
+            return open!.digest
+        }
+        let query? = (owner.kept_name)() else { return null }
+        let answer = self.durable.answer
+        let saved = self.saved_spelling(spelled)
+        let bytes? = answer(query, spelled_hash(query, saved)) else {
+            return null
+        }
+        let head? = match record_head(self, reader_from(self.home(), bytes), saved) {
+            .Ok(h) -> h,
+            .Err(_) -> null,
+        } else {
+            return null
+        }
+        let depth = self.judge_depth.get()
+        let outer = self.judge_low.get()
+        self.judging.put(id, Judging { depth: depth, digest: head.digest })
+        self.judge_depth.set(depth + 1)
+        self.judge_low.set(NOT_LOW)
+        let holds = self.leaves_hold(head.leaves)
+        let low = self.judge_low.get()
+        self.judge_depth.set(depth)
+        self.judge_low.set(min_of(outer, low))
+        self.judging.put(id, Judging { depth: 0 - 1, digest: 0 })
+        if !holds {
+            self.trust_cleared()
+            return null
+        }
+        if low < depth {
+            self.digests_trusted.put(id, head.digest)
+            return head.digest
+        }
+        self.digests_known.put(id, head.digest)
+        for at, d in self.digests_trusted.get() { self.digests_known.put(at, d) }
+        self.trust_cleared()
+        head.digest
+    }
+
+    fn trust_cleared() {
+        let none: Map<string, int> = {}
+        self.digests_trusted.set(none)
+    }
+
+    /// Whether what a judge just found rests on no call still being judged.
+    fn judged_on_trust() -> bool { self.judge_low.get() < self.judge_depth.get() }
 
     /// The tables of what this revision answered, emptied when the revision moved.
     fn known_now() {
@@ -1285,6 +1577,8 @@ type AnswersUnder<V> = {
     /// Each int-keyed call's number, by its arg.
     numbers: Cell<List<int>>,
     named: Cell<DenseNames?>,
+    /// The name these answers' records are kept under, once the owner opened them.
+    kept_query: Cell<string?>,
     /// How a call keyed by one text is asked by that text, set by its first call: a leaf that
     /// names a call this process has not made is judged by asking it, as a dense one is.
     texted: Cell<List<fn(string) -> void>>,
@@ -1348,6 +1642,7 @@ impl Answers<V> {
                     in_process: !self.lasting,
                     number: (arg: int) -> held_number(slots, id, arg),
                     numbered: (n: int) -> held_numbered(slots, id, n),
+                    kept_name: () -> held_kept_name(slots, id),
                 },
             )
         made
@@ -1371,6 +1666,12 @@ fn held_spelled<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> st
 fn held_arg<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, spelled: string) -> int? {
     let h? = slots.get()[id] else { return null }
     h.durable_arg(spelled)
+}
+
+/// The name the answers under Db `id` are kept under.
+fn held_kept_name<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int) -> string? {
+    let h? = slots.get()[id] else { return null }
+    h.kept_query.get()
 }
 
 /// The dense number call `arg` was asked with.
@@ -1414,6 +1715,7 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnde
         dense: dense,
         numbers: list_cell(),
         named: Cell.new(none),
+        kept_query: Cell.new(no_kept_name()),
         texted: list_cell(),
         fixed: list_cell(),
         bodies: new_table(),
@@ -1428,19 +1730,34 @@ fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, C
     Kept<V>?,
     CodecFault,
 > {
-    let kept = r.text()?
-    if db.saved_spelling(kept) != db.saved_spelling(spelled) { fail CodecFault.OtherArguments }
-    let runs = read_list(r, read_run)?
-    let leaves = [db.run_leaves(run) for run in runs]
-    if leaves.any(it == null) { fail CodecFault.OtherArguments }
-    let numbers = [n for run in leaves for n in run!]
-    let held: Kept<V>? = if db.leaves_hold(numbers) { Kept { leaves: numbers, value: read(r)? } } else { null }
+    let head? = record_head(db, r, db.saved_spelling(spelled))? else {
+        let elsewhere: Kept<V>? = null
+        return elsewhere
+    }
+    let held: Kept<V>? = if db.leaves_hold(head.leaves) { Kept { leaves: head.leaves, value: read(r)? } } else { null }
     held
+}
+
+/// What a record says before its answer: its digest and its reads.
+type RecordHead = { digest: int, leaves: List<int> }
+
+/// A record's head, none when it was kept for other arguments or its chunk is gone.
+fn record_head(db: Db, r: Reader, saved: string) -> Result<RecordHead?, CodecFault> {
+    if db.saved_spelling(r.text()?) != saved { fail CodecFault.OtherArguments }
+    let digest = r.int()?
+    let leaves = [db.run_leaves(run) for run in read_list(r, read_run)?]
+    if leaves.any(it == null) { fail CodecFault.OtherArguments }
+    let head: RecordHead? = RecordHead {
+        digest: digest,
+        leaves: [n for run in leaves for n in run!],
+    }
+    head
 }
 
 /// A kept record's answer, its reads passed over.
 fn unproved<V>(r: Reader, read: fn(Reader) -> Result<V, CodecFault>) -> Result<V, CodecFault> {
     let _spelled = r.text()?
+    let _digest = r.int()?
     let _runs = read_list(r, read_run)?
     read(r)
 }
@@ -1623,6 +1940,9 @@ impl AnswersUnder<V> {
     /// How a dense-keyed query's calls are named past the process, set by its first call.
     fn durable_by(names: DenseNames) { self.named.set(names) }
 
+    /// These answers' records are kept under `name`.
+    fn kept_as(name: string?) { self.kept_query.set(name) }
+
     /// How a call keyed by one text is asked by it, once.
     fn asked_by_text(ask: fn(string) -> void) {
         if self.texted.get().is_empty() { self.texted.push(ask) }
@@ -1690,7 +2010,7 @@ impl AnswersUnder<V> {
     fn hash_asked(arg: int) -> int? {
         let key = self.memo.query_key(arg)
         let held = self.memo.kernel.value_hash_of(key)
-        if held != null || !self.lasting { return held }
+        if held != null { return held }
         let names? = self.named.get() else { return null }
         let n? = self.number_at(arg) else { return null }
         let ask = names.ask
@@ -1737,7 +2057,37 @@ impl AnswersUnder<V> {
     /// An open call computed: `body` run, its answer settled under the
     /// reads the kernel recorded.
     fn ran(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> V {
-        self.run(db, arg, body, again, digest).value
+        let done = self.run(db, arg, body, again, digest)
+        if !done.wrote && self.kept_query.get() != null { db.keeping(() -> self.keep_head(db, arg)) }
+        done.value
+    }
+
+    /// An in-process answer's record: its digest and its reads, and no answer — a reader's read
+    /// of it stands while they do, and only a moved read runs it.
+    fn keep_head(db: Db, arg: int) {
+        let query? = self.kept_query.get() else { return }
+        let spelled? = self.durable_at(arg) else { return }
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
+        self.keep_record(db, arg, query, spelled, leaves, (_w: Writer) -> no_word())
+    }
+
+    /// A call's record: its digest from its cell.
+    fn keep_record(
+        db: Db,
+        arg: int,
+        query: string,
+        spelled: string,
+        leaves: List<int>,
+        answer: fn(Writer) -> void,
+    ) {
+        db
+            .record_kept(
+                query,
+                spelled,
+                db.engine().value_hash_of(self.memo.query_key(arg)) ?? 0,
+                leaves,
+                answer,
+            )
     }
 
     /// `ran`, for an answer that reads back: a call this process never
@@ -1761,6 +2111,7 @@ impl AnswersUnder<V> {
         let kept? = self.restored(db, query, record, spelled) else {
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
+        if db.engine().tracing.get() { avra_qtrace("Q\tlasting\trestored\t${query.split("#")[0]}\n") }
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
         db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
@@ -1785,6 +2136,7 @@ impl AnswersUnder<V> {
         record: KeptRecord<V>,
     ) -> V {
         let done = self.run(db, arg, body, again, digest)
+        if done.wrote && db.engine().tracing.get() { avra_qtrace("Q\tlasting\twrote\t${query.split("#")[0]}\n") }
         if !done.wrote { db.keeping(() -> self.keep_lasting(db, arg, query, spelled, done.value, record)) }
         done.value
     }
@@ -1798,22 +2150,11 @@ impl AnswersUnder<V> {
         value: V,
         record: KeptRecord<V>,
     ) {
-        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
-        if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
-        let places = db.placed_leaves(leaves)
-        let named? = named_encoding_from(
-            db.home(),
-            value,
-            (w, v) -> {
-                w.text(db.saved_spelling(spelled))
-                written_list(w, runs_of(places), write_run)
-                record.write(w, v)
-            },
-        ) else {
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else {
             return
         }
-        let keep = db.durable.keep
-        keep(query, spelled_hash(query, db.saved_spelling(spelled)), named)
+        if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
+        self.keep_record(db, arg, query, spelled, leaves, (w: Writer) -> record.write(w, value))
     }
 
     /// Whether this process ever answered the call.

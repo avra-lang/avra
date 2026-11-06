@@ -65,7 +65,7 @@ impl Workspace {
         if self.db.family_active(Family.Resolved.ordinal) { return 4 }
         let k = key(Family.CancelBits, d.index)
         if !(self.db.ask(k) is .Compute) { return 4 }
-        if !self.cancel_member(d) { return self.cancel_held(d, k) }
+        if !self.cancel_member(d) || self.effects_kept(d) { return self.cancel_held(d, k) }
         if self.cancel_walking.get() { return 4 }
         self.cancel_walking.set(true)
         let walk = self.frame_in(self.cancel_walk_family)
@@ -90,7 +90,7 @@ impl Workspace {
 
     /// The members a member calls, whose bits the walk settles before its own — as this compile
     /// holds them: a kept survey names the members of the compile that kept it.
-    fn cancel_callees(d: DeclId) -> List<DeclId> { [g for g in once_each(cancel_evidence(self, d).callees) if self.cancel_member(g)] }
+    fn cancel_callees(d: DeclId) -> List<DeclId> { [g for g in once_each(cancel_evidence(self, d).callees) if self.cancel_member(g) && !self.effects_kept(g)] }
 
     /// One set's least fixpoint, recorded and settled: every member's cell stands on the
     /// evidence of the set and on the settled bits of what the set calls from outside.
@@ -116,6 +116,7 @@ impl Workspace {
             for x in members { touch(cancel_evidence(self, x)) }
             for c in outside { touch(self.cancel_bits_of(c)) }
             self.db.settle(k, cancel_word(self.decls.cancels_so_far(m)))
+            self.family_settled(Family.CancelBits, m.index)
         }
     }
 

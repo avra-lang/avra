@@ -42,6 +42,7 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.family_hash(ordinal, arg),
+            kept_name: () -> family_kept(name),
         }
     }
 
@@ -56,6 +57,7 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
+            of_rows: true,
             noted_by: Family.Methods.ordinal,
         }
     }
@@ -97,6 +99,7 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
             hash: (arg: int) -> ws.family_hash(ordinal, arg),
+            kept_name: () -> family_kept(name),
         }
     }
 
@@ -203,6 +206,7 @@ impl Workspace {
             spelled: spell,
             arg: find,
             hash: (arg: int) -> ws.family_hash(ordinal, arg),
+            kept_name: () -> family_kept(name),
         }
     }
 
@@ -216,8 +220,20 @@ impl Workspace {
             spelled: (arg: int) -> ws.spelled_file(arg),
             arg: (spelled: string) -> ws.file_arg(spelled),
             hash: (arg: int) -> ws.family_hash(ordinal, arg),
+            kept_name: () -> family_kept(name),
         }
     }
+
+    /// A call a record names asked by its spelling reads that path's text, if it spells one.
+    fn staged_for_judging(spelled: string) {
+        if (spelled.ends_with(".av") || spelled.ends_with(".toml")) && self.there(spelled) { let _ = self.text_staged(spelled) }
+    }
+
+    /// Whether a judge may ask a family: a run on kept rows never expands a file again.
+    fn family_askable(ordinal: int) -> bool { self.records.read_again.get() == null || ordinal != Family.Expanded.ordinal }
+
+    /// A family's cell settled: its record is owed.
+    fn family_settled(fam: Family, arg: int) { self.query_db().cell_settled(fam.name, key_at(fam.ordinal, arg)) }
 
     /// The families whose answers are named, registered with the declaration table's Db.
     fn answers_named() {
@@ -247,6 +263,7 @@ impl Workspace {
         rdb.answer_known(self.named_by_file("Folded", Family.Folded))
         rdb.answer_known(self.named_by_bucket())
         rdb.answer_known(self.named_closures())
+        rdb.staging.set((spelled: string) -> ws.staged_for_judging(spelled))
         self.known_opened()
     }
 
@@ -284,6 +301,7 @@ impl Workspace {
         let ordinal = Family.LiftLowered.ordinal
         AnswerRef {
             name: "LiftLowered",
+            kept_name: () -> family_kept("LiftLowered"),
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_spec(arg),
             arg: (spelled: string) -> ws.spec_arg(spelled),
@@ -305,22 +323,22 @@ impl Workspace {
     fn named_lifts() -> AnswerRef {
         let ws = self
         let ordinal = Family.Lifted.ordinal
+        let name = "Lifted"
         AnswerRef {
-            name: "Lifted",
+            name: name,
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_lift(arg),
             arg: (spelled: string) -> ws.lift_arg(spelled),
             hash: (arg: int) -> ws.family_hash(ordinal, arg),
+            kept_name: () -> family_kept(name),
         }
     }
 
     fn spelled_lift(arg: int) -> string? {
         if arg < 0 || arg >= self.lift_asks.get().length { return null }
         let ask = self.lift_asks.get()[arg]
-        let x = self.decls.decl(ask.decl)
-        let anchor = if x.stmt_lo < 0 { x.lo } else { x.stmt_lo }
-        // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
-        "${self.decl_ref(ask.decl)}|${x.name}|${ask.call.index - anchor}"
+        // LICENSED compiler.hand_sized_index: the call's place in its own file names the call.
+        "${self.decl_ref(ask.decl)}|${self.decls.file(ask.file).path}|${ask.call.index}"
     }
 
     fn lift_arg(spelled: string) -> int? {
@@ -339,6 +357,7 @@ impl Workspace {
             spelled: (arg: int) -> ws.decls.bucket_label(arg),
             arg: (spelled: string) -> ws.decls.bucket_opened(spelled),
             hash: (arg: int) -> ws.bucket_digest(arg),
+            of_rows: true,
         }
     }
 
@@ -363,7 +382,7 @@ impl Workspace {
         let kernel = self.db.kernel
         let held = kernel.hash_forced(k)
         if held != null { return held }
-        if kernel.active(k) { return null }
+        if kernel.active(k) || !self.family_askable(ordinal) { return null }
         kernel.unheard(() -> touch(dispatch_verified(self, ordinal, arg)))
         kernel.hash_forced(k)
     }
@@ -487,6 +506,9 @@ fn read_digest(line: string) -> string { line.substring(0, line.index_of(" ")) }
 fn read_name(line: string) -> string { line.substring(line.index_of(" ") + 1, line.length) }
 
 /// A family-numbered key at `arg` — the one spelling a saved answer's key wears.
+/// The name a family's cell records are kept under.
+fn family_kept(name: string) -> string? { "${name}#family" }
+
 fn key_at(family: int, arg: int) -> Key { Key { family: family, arg: arg } }
 
 /// A run of leaves as the reads a saved answer keeps.

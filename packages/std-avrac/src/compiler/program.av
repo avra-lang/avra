@@ -30,7 +30,8 @@ use core.{
 }
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
-use diagnostics.{Diag, DiagCode, has_errors, is_note, render_among, user_code}
+use compiler.lower.{Unit}
+use diagnostics.{no_voices, Diag, DiagCode, has_errors, is_note, render_among, user_code}
 use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
 use @std.grammar.{
     Captured,
@@ -684,8 +685,10 @@ impl Program {
         // reads it below as an ordinary dependency rather than
         // computing it lazily mid-lower. The test after a call reads
         // its callee's cancel bits, so that fact settles here too.
-        touch(ws.references())
-        ws.cancels_settled()
+        if ws.records.read_again.get() == null {
+            touch(ws.references())
+            ws.cancels_settled()
+        }
         let lo = memory(
             self
                 .ws
@@ -696,7 +699,7 @@ impl Program {
                     every,
                     programs,
                     hashed,
-                    (w: Wanted) -> ws.lowered(ws.spec_id(w)),
+                    (w: Wanted) -> if self.lowers(w) { ws.lowered(ws.spec_id(w)) } else { self.unread_unit() },
                     (f: FileId) -> ws.is_program_file(f),
                 ),
         ) with { libraries: ws.linked_packages() }
@@ -743,6 +746,21 @@ impl Program {
             )
         if !spoken.is_empty() { return .Err(self.rendered(spoken)) }
         .Ok(lo)
+    }
+
+    /// No unit: what a run on kept rows answers for a body it does not read.
+    fn unread_unit() -> Unit { Unit { bodies: [], wants: [], voices: no_voices(), statics: [] } }
+
+    /// Whether a unit is this run's to lower: on kept rows, only what a read file holds.
+    fn lowers(w: Wanted) -> bool {
+        self.ws.records.read_again.get() == null ||
+            self.files.any(it.view.file.index == w.file.index)
+    }
+
+    /// What lowering says of these files, nothing else settled: a law spoken at a body.
+    fn diagnosed() -> Result<int, string> {
+        let lo = self.lowered_bodies(null, true, true, false)
+        if lo.diagnostics.is_empty() { .Ok(0) } else { .Err(self.rendered(lo.diagnostics)) }
     }
 
     fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {

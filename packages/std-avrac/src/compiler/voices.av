@@ -823,6 +823,11 @@ fn text_scan_of(db: RelDb, path: string) -> TextScan { scan_text(file_text(db, p
 @query
 fn opens_block_in(db: RelDb, path: string) -> bool { text_scan_of(db, path).opens_block }
 
+/// What a file's block words are made of, as its tokens spell them: what a parse that takes
+/// them stands on, never the rest of its text.
+@query
+fn block_forms_in(db: RelDb, path: string) -> string { text_scan_of(db, path).forms }
+
 /// Whether a file declares a component.
 @query
 fn declares_component_in(db: RelDb, path: string) -> bool { text_scan_of(db, path).declares }
@@ -869,18 +874,45 @@ fn component_index_of(ws: Workspace, paths: List<string>) -> Map<string, List<st
 /// What one lex of a text answers: whether it may declare a block word, and the
 /// components it declares and the ones it exports — `component NAME` before its
 /// block or its head.
-type TextScan = { opens_block: bool, declares: bool, components: List<string>, exported: List<string> }
+type TextScan = { opens_block: bool, forms: string, declares: bool, components: List<string>, exported: List<string> }
+
+/// The tokens of every `component` and `grammar` declaration, and every exported name, joined.
+fn block_forms(tokens: List<Token>) -> string {
+    mut out: List<string> = []
+    mut depth = 0
+    mut inside = false
+    for j, t in tokens {
+        if !inside && (t.text == "component" || t.text == "grammar") { inside = true }
+        if inside {
+            out.push(t.text)
+            if t.text == "{" { depth = depth + 1 }
+            if t.text == "}" {
+                depth = depth - 1
+                if depth == 0 { inside = false }
+            }
+        }
+        if t.text == "export" && j + 2 < tokens.length { out.push(tokens[j + 2].text) }
+    }
+    joined(out, " ")
+}
 
 /// THE CHEAPEST GATE FIRST: no `grammar`/`component`/`export` substring anywhere, no
 /// token stream worth building.
 fn scan_text(text: string, keywords: List<string>) -> TextScan {
     if !(text.contains("grammar") || text.contains("component") || text.contains("export")) {
-        return TextScan { opens_block: false, declares: false, components: [], exported: [] }
+        return TextScan {
+            opens_block: false,
+            forms: "",
+            declares: false,
+            components: [],
+            exported: [],
+        }
     }
     let tokens = lex_source(text).tokens
     let named = [tokens[j + 1].text for j in 0..tokens.length - 2 if declares_component_at(tokens, j)]
     TextScan {
         opens_block: opens_block(tokens, keywords),
+        forms: block_forms(tokens),
         declares: !named.is_empty(),
         components: named,
         exported: [tokens[j + 1].text for j in 1..tokens.length - 2 if tokens[j - 1].lit_matches("export") && declares_component_at(tokens, j)],

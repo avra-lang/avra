@@ -1,6 +1,7 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
 use core.{
+    some_list,
     wire_fields,
     joined,
     flatten,
@@ -24,6 +25,7 @@ use core.{
 }
 use @std.text.{text_before}
 use features.{
+    ItemLine,
     Decl,
     Settlement,
     LANGUAGE_HOME,
@@ -92,52 +94,38 @@ impl Workspace {
     > {
         work_file_minted()
         let f = self.file_id(path)
+        let read = [r for p in rows for r in some_list(read_row(p))]
+        let lines = [l for r in read for l in some_list(self.item_line_of(path, r, makers))]
+        if lines.length != read.length { return [] }
         self.decls.held_opened(f, makers.values())
-        mut by_stmt = self.decls.decl_ids.get()[f.index].get()
-        mut top: List<DeclId> = []
-        for parts in rows {
-            let id: DeclId? = self.minted(f, path, parts, makers)
-            let row? = read_row(parts) else { continue }
-            by_stmt.grow_to(row.stmt + 1)
-            if id != null && by_stmt.get(row.stmt).decl == null { by_stmt.set(row.stmt, DeclAt { decl: id }) }
-            if id != null && row.item { top.push(id!) }
-        }
+        let ids = self.decls.mint_lines(f, lines, 0)
         self.decls.held_closed(f, makers.values())
-        self.decls.keep_stmt_decls(f, by_stmt)
-        top
+        // the cancel bit is read before any signature is asked, so it lands with the row
+        for j, r in read { if j < ids.length { self.decls.record_cancel(ids[j], r.shaped().reach()) } }
+        [ids[j] for j, l in lines if l.item]
     }
 
-    /// One record line as a declaration — null for a line that names nothing. A line
-    /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
-    /// sources answer.
-    fn minted(f: FileId, path: string, parts: List<string>, makers: Map<string, string>) -> DeclId? {
-        let row? = read_row(parts) else { return null }
-        let kind = declared_kind(row.shape, row.kind)
-        let facts = facts_unblocked(row.facts)
+    /// A kept line as the line minting reads — none, and a defect said, for one that does not decode.
+    fn item_line_of(path: string, r: Row, makers: Map<string, string>) -> ItemLine? {
+        let kind = declared_kind(r.shape, r.kind)
+        let facts = facts_unblocked(r.facts)
         if kind == null || facts == null {
             self.defect("a record line did not decode — ${path}")
             return null
         }
-        let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
-        let id = self
-            .decls
-            .mint_faced(
-                f,
-                StmtId { index: row.stmt },
-                row.name,
-                kind!,
-                row.exported,
-                row.owner,
-                null,
-                row.enclosing,
-                root,
-                makers.get("${row.ordinal}") ?? "",
-                facts!,
-            )
-        if kind! is .Main { self.decls.seat_main(f, id) }
-        // the cancel bit is read before any signature is asked, so it lands with the row
-        self.decls.record_cancel(id, row.shaped().reach())
-        id
+        ItemLine {
+            stmt: r.stmt,
+            name: r.name,
+            kind: kind!,
+            exported: r.exported,
+            owner: r.owner,
+            parent: r.parent_at,
+            enclosing: r.enclosing,
+            root: r.root,
+            item: r.item,
+            facts: facts!,
+            maker: makers.get("${r.ordinal}") ?? "",
+        }
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
@@ -512,6 +500,7 @@ impl Decls {
             "p" -> Type.Ptr,
             "v" -> Type.Void,
             "n" -> Type.Null,
+            "g" -> Type.Range,
             "e" -> Type.EmptyList,
             "h" -> Type.EmptyMap,
             "x" -> Type.Error,

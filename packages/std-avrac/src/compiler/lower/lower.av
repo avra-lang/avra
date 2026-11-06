@@ -190,12 +190,21 @@ export type HashAsk = { by: FileId?, target: string }
 impl Decls {
     /// The program's extern fns by symbol — what every emitter refuses
     /// an unknown callee against.
-    fn extern_names() -> List<string> { [n.name for n in self.extern_notes()] }
+    fn extern_names() -> List<string> { [x.name for x in self.standing_externs()] }
 
     /// The externs the program reached as registry rows: typing a call to an extern
     /// stood its module, so every callee has one, and a held module nothing called
     /// is no row.
-    fn extern_rows() -> List<RtSig> { [self.extern_row_of(d) for d in self.standing_externs()] }
+    /// A row is read only where a body calls its extern, and typing that body read the extern's
+    /// signature: unheard, a unit stands on the externs it calls and on no other.
+    fn extern_rows() -> List<RtSig> {
+        let none: List<RtSig> = []
+        let rows = Cell.new(none)
+        self
+            .record_kernel
+            .unheard(() -> rows.set([self.extern_row_of(d) for d in self.standing_externs()]))
+        rows.get()
+    }
 
     /// An extern's runtime row. The WIDTHS are read back from the
     /// program — the annotation the seat wrote — because the signature

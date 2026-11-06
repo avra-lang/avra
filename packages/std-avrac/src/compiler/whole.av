@@ -152,6 +152,19 @@ impl Workspace {
         for msg in self.decls.types.drain_stale() { self.defect(msg) }
     }
 
+    /// The program as far as `files` go.
+    fn program_of(files: List<Analysis>) -> Program {
+        Program {
+            ws: self,
+            files: files,
+            entry: null,
+            cache: self.db.stats(),
+            defects: self.defects.get(),
+            voices: self.packages_voiced(),
+            manifests: [self.manifest_source(pkg) for pkg in self.packages() if self.has_manifest(pkg)],
+        }
+    }
+
     /// The program rooted at `ws.root`, entered at one of its files — its root
     /// walk trimmed to what `built` reaches when a build of it asks (`entry_files`).
     fn program(entry: string?, built: string? = null) -> Program {
@@ -208,14 +221,33 @@ impl Workspace {
     /// minted inside a query that already read the relation.
     fn admit_used(f: FileId) {
         if self.lone { return }
+        let path = self.decls.file(f).path
+        let from = self.packages()[self.holder_of_path(path)]
+        if self.rows_kept(f) && !self.gathers(f) {
+            let kept = self.kept_uses(path)
+            if kept != null {
+                for u in kept!.uses { self.admit_module(from, qualified(module_path(u.path), from)) }
+                return
+            }
+        }
         let p = self.parsed(f)
-        let from = self.packages()[self.holder_of_path(p.source.file)]
         for s in p.stmts {
             let u = p.store.use_parts(s)
             if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
             let scope = p.store.collect_scope(s)
             if scope != null { self.decls.admit_scope(scope!, f) }
         }
+    }
+
+    /// Whether a file declares a `collect`, which admits the scope it gathers.
+    fn gathers(f: FileId) -> bool {
+        self
+            .decls
+            .decls_so_far(f)
+            .any(
+                (d) -> self.decls.raw_decl(d).kind is .Collect ||
+                    self.decls.raw_decl(d).kind is .CollectEnum,
+            )
     }
 
     /// A read file's `gathers` lines, one for each `collect` of it that gathers its

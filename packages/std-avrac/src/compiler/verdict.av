@@ -7,10 +7,14 @@
 //! tokens say (`shape_digest`). A text that moved and kept its shape leaves every answer
 //! standing but the places printed, so the files that point into it are said again from
 //! their facts rows, placed against a lex of the text now; nothing is parsed.
+use core.{FileId, sorted_texts, touch}
+use compiler.families.{Family}
+use compiler.host.{InputKind}
+use features.{FileInfo}
 use core.{digest_of, joined, flatten, distinct, hex, unhex, some_list}
 use @std.errors.{Loc}
 use grammar.{Token, LexResult}
-use @std.relation.engine.{list_cell}
+use @std.relation.engine.{list_cell, map_cell}
 use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
 use diagnostics.{Diag, SourceFile, new_source_file, render_among, located_files}
 use compiler.store.{Store, Stored, Reading, node_key, read_spelled}
@@ -351,23 +355,173 @@ impl Workspace {
 
     /// THE VERDICT THAT STANDS for `named`, its places said again wherever a text moved
     /// and kept its shape. None when it does not stand, or a moved place cannot be said again.
-    fn standing_verdict(store: Store, named: string) -> CheckSaid? {
+    fn standing_verdict(store: Store, named: string) -> Result<CheckSaid?, string> {
         let key = self.verdict_key(named)
+        let none: CheckSaid? = null
         let row? = self
             .standing_row(
                 store,
                 Stored.Unit,
                 key,
-                (r: Reading, moved: Cell<List<string>>) -> self.verdict_read_stands(r, moved),
+                (r: Reading, moved: Cell<List<string>>) -> self.check_read_stands(r, moved),
             ) else {
-            return null
+            return none
         }
-        let said? = verdict_of_wire(row.bytes) else { return null }
-        if row.moved.is_empty() { return said }
+        let said? = verdict_of_wire(row.bytes) else { return none }
+        if row.moved.is_empty() {
+            let stood: CheckSaid? = said
+            return stood
+        }
         self.attach_store(store)
-        let again? = self.said_again(said, row.moved) else { return null }
-        self.kept_again(store, Stored.Unit, row.key, verdict_wire(again))
-        again
+        let rewritten = [m.substring(REWRITTEN.length, m.length) for m in row.moved if m.starts_with(REWRITTEN)]
+        let moved = [m for m in row.moved if !m.starts_with(REWRITTEN)]
+        let spoken = if rewritten.is_empty() { Rechecked.Said(said) } else { self.rechecked(store, said, rewritten) }
+        match spoken {
+            .Anew -> none,
+            .Refused(why) -> .Err(why),
+            .Said(now) -> {
+                let again? = self.said_again(now, moved) else { return none }
+                self.query_db().readers_kept()
+                self.kept_again(store, Stored.Unit, row.key, verdict_wire(again))
+                store.settle()
+                let held: CheckSaid? = again
+                held
+            },
+        }
+    }
+
+    /// `verdict_read_stands`, for a check: a source whose shape moved stands too, named as
+    /// rewritten, and what it reaches is asked again.
+    fn check_read_stands(r: Reading, moved: Cell<List<string>>) -> bool {
+        if self.verdict_read_stands(r, moved) { return true }
+        let read? = verdict_read_of_word(r.name) else { return false }
+        match read {
+            .Shape(path) or .Lined(path) -> {
+                moved.push("${REWRITTEN}${path}")
+                true
+            },
+            .Compiler or .Closure(_) or .Files(_) or .Text(_) or .Embed(_) or .Object(_) -> false,
+        }
+    }
+
+    /// THE VERDICT ASKED AGAIN WHERE TEXTS WERE REWRITTEN: every other file's rows are its kept
+    /// lines, a read no moved input reaches stands unjudged, and only a file whose saying no
+    /// longer stands is analysed and lowered. A rewrite that moves what the program declares,
+    /// what a file generates or a generic's body is a run of its own.
+    fn rechecked(store: Store, said: CheckSaid, rewritten: List<string>) -> Rechecked {
+        let t0 = self.clock()
+        self.attach_store(store)
+        let rdb = self.query_db()
+        let again: Cell<Map<string, bool>> = map_cell()
+        for path in rewritten { again.put(path, true) }
+        self.records.read_again.set(again.get())
+        for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
+        rdb.suspects_from(flatten([self.text_kins(path) for path in rewritten]))
+        for path in self.entry_files(null) { let _ = self.file_id(path) }
+        self.admit_all()
+        self.records.names_stood.set(self.decls.file_count())
+        self.timed("rows", t0)
+        let t1 = self.clock()
+        if !rewritten.all((path) -> self.declares_alike(store, path)) { return Rechecked.Anew }
+        let files = self.decls.all_files()
+        let moved_parse = [fi.path for fi in files if !(again.get().get(fi.path) ?? false) &&
+            !(rdb.answer_stands(parsed_in_key(self, fi.id)) &&
+                rdb.read_stands(key_at(Family.Expanded.ordinal, fi.id.index)))]
+        if !moved_parse.is_empty() { return Rechecked.Anew }
+        let read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
+        self.timed("judge", t1)
+        if read.any((f) -> self.generates_or_generic(f)) { return Rechecked.Anew }
+        let t2 = self.clock()
+        let analyses = [self.analysis(f) for f in read]
+        self.report_layout_defects()
+        let p = self.program_of(analyses)
+        self.timed("bodies", t2)
+        if !rewritten.all((path) -> self.shaped_alike(store, path)) { return Rechecked.Anew }
+        if !p.clean() { return Rechecked.Refused(p.report()) }
+        let t3 = self.clock()
+        match p.diagnosed() {
+            .Err(why) -> { return Rechecked.Refused(why) },
+            .Ok(_) -> self.timed("lower", t3),
+        }
+        let parts = [self.said_now(f, Want.Diagnostics) for f in read]
+        if parts.any(it == null) { return Rechecked.Anew }
+        for path in rewritten { self.keep_rows(store, path) }
+        self.keep_uses(store)
+        let fresh = [file_spoke(s!, true, file_stale_lines(analyses[j], known_rule_ids())) for j, s in parts]
+        Rechecked
+            .Said(said with { files: [fresh.find(it.path == f.path) ?? f for f in said.files] })
+    }
+
+    /// A rewritten text's reads as the store files them.
+    fn text_kins(path: string) -> List<int> {
+        let rdb = self.query_db()
+        [rdb.kin_of("Input", "${kind_word(k)} ${path}") for k in [InputKind.Text, InputKind.Octets, InputKind.Exists]]
+            .concat([rdb.kin_of(FILE_TEXT_READ, path)])
+    }
+
+    /// Whether a rewritten file declares what its record says and imports what it did.
+    fn declares_alike(store: Store, path: string) -> bool {
+        let m = self.module_path_of(path)
+        let lines = record_cached(self, store, m).split("\n").map(read_fields(it))
+        let own = [p for p in lines if p.length > 1 && p[1] == path && items_line(p)]
+        if own.any(it[0] == "maker") { return false }
+        let f = self.file_id(path)
+        if self.has_declares(f) || self.has_marks(f) { return false }
+        let was = sorted_texts(line_wires(path, own))
+        let now = sorted_texts([self.decl_ref(d) for d in self.decls.decls_so_far(f)])
+        let imported = sorted_texts(
+            [p[1] for p in lines if p.length > 2 && p[0] == "import" && p[2] == path],
+        )
+        joined(was, "\n") == joined(now, "\n") &&
+            joined(imported, "\n") == joined(sorted_texts([d.text() for d in self.imported_by(path)]), "\n")
+    }
+
+    /// Whether a rewritten file's declarations still say what their lines kept: a body moved, and
+    /// no signature, seat, written bit or cancel reach. What moved them is a run of its own.
+    fn shaped_alike(store: Store, path: string) -> bool {
+        let lines = record_cached(self, store, self.module_path_of(path))
+            .split("\n")
+            .map(read_fields(it))
+        let own = [p for p in lines if p.length > 1 && p[1] == path && declares(p)]
+        let f = self.file_id(path)
+        for d in self.decls.decls_so_far(f) {
+            if self.cancel_member(d) { touch(self.cancel_bits_of(d)) }
+            if self.writes_member(d) { touch(self.writes_of(d)) }
+        }
+        let now = [read_fields(self.record_line(self.decls.decl(d), j, false)) for j, d in self.decls.decls_so_far(f)]
+        own.length == now.length && [j for j, p in own if !self.line_alike(p, now[j])].is_empty()
+    }
+
+    /// Whether one declaration's line says what it did: every word a body can move, and its
+    /// reach, read back from each.
+    fn line_alike(was: List<string>, now: List<string>) -> bool {
+        let old = shape_words(was)
+        let fresh = shape_words(now)
+        if old.length != fresh.length { return false }
+        let moved = [j for j, w in old if w != fresh[j] && !traced_only(old[0], j, w, fresh[j])]
+        moved.is_empty() && cancel_word_of(read_row(was)) == cancel_word_of(read_row(now))
+    }
+
+    /// Whether a file's part of the verdict is said again: its text was rewritten, it points
+    /// into a rewritten text, or its saying no longer stands.
+    fn says_again(said: CheckSaid, fi: FileInfo, rewritten: List<string>) -> bool {
+        if rewritten.contains(fi.path) { return true }
+        let part = said.files.find(it.path == fi.path)
+        if part != null && rewritten.any((path) -> part!.said.contains(path)) { return true }
+        !self.query_db().read_stands(file_said_key(self, fi.id))
+    }
+
+    /// Whether a read file generates declarations or holds a generic body that moved: what
+    /// another file instantiates is lowered with that file, which is not read.
+    fn generates_or_generic(f: FileId) -> bool {
+        let rdb = self.query_db()
+        self
+            .decls
+            .decls_so_far(f)
+            .any(
+                (d) -> !self.decls.raw_decl(d).maker.is_empty() ||
+                    !self.decls.tparams(d).is_empty() && !rdb.read_stands(typed_body_key(self, d)),
+            )
     }
 
     /// The newest of `key`'s kept answers that stands, in its slot, with the files whose text
@@ -503,6 +657,28 @@ fn facts_locs(d: Diag) -> List<Loc> {
     [f.loc! for f in [d.primary].concat(d.secondary) if f.loc != null]
         .concat([e.loc for s in d.suggestions for e in s.edits])
 }
+
+/// What a verdict asked again answers.
+enum Rechecked {
+    Said(CheckSaid)
+    Refused(string)
+    Anew
+}
+
+/// How a moved read names a source whose shape moved with its text.
+const REWRITTEN: string = "rewritten "
+
+/// A line's cancel reach as one word.
+fn cancel_word_of(row: Row?) -> int {
+    let r? = row else { return 0 - 1 }
+    let reach = r.shaped().reach()
+    if reach.parks { 1 } else { 0 } +
+        if reach.spins { 2 } else { 0 } +
+        if reach.links { 4 } else { 0 }
+}
+
+/// How a read of a staged text is named.
+const FILE_TEXT_READ: string = "file_text(RelDb,string) -> string"
 
 /// A saved answer's bytes, and the files whose text moved under it and kept their shape.
 type Standing = { key: string, bytes: string, moved: List<string> }

@@ -82,6 +82,8 @@ use @std.meta.{
     Stmts as MetaStmts,
 }
 use core.{
+    joined,
+    fp_str,
     Stmt,
     StmtId,
     Arm,
@@ -135,6 +137,11 @@ impl Workspace {
             .Reuse(value) -> { return expanded_of(value) },
             .Compute -> nothing(),
         }
+        if self.effects_kept_file(f) {
+            let kept = [d for d in self.decls.decls_so_far(f) if !self.decls.raw_decl(d).maker.is_empty()]
+            let _ = self.relation(Family.Expanded).finish(f.index, DbRow.Expanded(kept), 0)
+            return kept
+        }
         if reentrant { self.decls.reentry_begun(f) }
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
@@ -152,7 +159,8 @@ impl Workspace {
         self.hold_marks_to_a_reader(f, p, vis)
         self
             .relation(Family.Expanded)
-            .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
+            .finish(f.index, DbRow.Expanded(made), fp_str(joined([self.decl_ref(d) for d in made], "\n")))
+        self.family_settled(Family.Expanded, f.index)
         if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
     }

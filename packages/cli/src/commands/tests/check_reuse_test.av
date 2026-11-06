@@ -38,7 +38,147 @@ fn reused_saying(r: string, words: string) -> bool {
     match checked_at(r) { .Ok(c) -> c.reused && c.warnings.contains(words), .Err(_) -> false }
 }
 
+/// A library of `files` under a root of its own, checked once before `edit` lands and once
+/// after, beside a tree that only ever held the edit: what each says, its root spelled out.
+fn warm_and_cold(name: string, files: Map<string, string>, edit: Map<string, string>) -> List<
+    string,
+> {
+    let warm = attacked_pkg("${name}-warm", files)
+    let _ = said_at(warm)
+    for path, text in edit { let _ = write_text(in_tree(warm, path), text) }
+    let cold = attacked_pkg("${name}-cold", files)
+    for path, text in edit { let _ = write_text(in_tree(cold, path), text) }
+    [said_at(warm), said_at(cold)]
+}
+
+fn in_tree(root: string, path: string) -> string { if path == "avra.toml" { "${root}/${path}" } else { "${root}/src/${path}" } }
+
+fn attacked_pkg(name: string, files: Map<string, string>) -> string {
+    let r = root(name)
+    let _ = make_dirs("${r}/src/m")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"app\"\nversion = \"0.0.1\"\n")
+    for path, text in files { let _ = write_text("${r}/src/${path}", text) }
+    r
+}
+
+fn said_at(r: string) -> string {
+    match checked_at(r) {
+        .Ok(c) -> "ok ${c.warnings.replace(r, "<root>")}",
+        .Err(why) -> "refused ${why.replace(r, "<root>")}",
+    }
+}
+
+/// Whether the warm report of the edit is the cold one, and says `words`.
+fn attack(name: string, files: Map<string, string>, edit: Map<string, string>, words: string) -> bool {
+    let said = warm_and_cold(name, files, edit)
+    said[0] == said[1] && said[0].contains(words)
+}
+
+const CALLEE: string = "export fn one() -> int {\n    1\n}\n"
+const CALLER: string = "export fn two() -> int {\n    one() + 1\n}\n"
+
 spec "cli check_reuse" {
+    given "a body rewritten after a check" {
+        then "a literal moved stays clean" {
+            attack(
+                "literal",
+                {"m/a.av": CALLEE, "m/b.av": CALLER},
+                {"m/a.av": CALLEE.replace("1", "2")},
+                "ok",
+            )
+        }
+        then "a body gone wrong refuses at its line" {
+            attack(
+                "wrong",
+                {"m/a.av": CALLEE, "m/b.av": CALLER},
+                {"m/a.av": "// note\nexport fn one() -> int {\n    \"s\"\n}\n"},
+                "a.av:3",
+            )
+        }
+        then "a signature moved refuses its unchanged caller" {
+            attack(
+                "signature",
+                {"m/a.av": CALLEE, "m/b.av": CALLER},
+                {"m/a.av": "export fn one() -> string {\n    \"s\"\n}\n"},
+                "refused",
+            )
+        }
+        then "a body that starts writing warns at its unchanged caller" {
+            let p = "export type P = { x: int }\nimpl P {\n    fn w() -> int {\n        ${"\$"}{BODY}\n    }\n}\n"
+            attack(
+                "writes",
+                {"m/a.av": p.replace("${"\$"}{BODY}", "self.x"), "m/b.av": WARNS},
+                {"m/a.av": p.replace("${"\$"}{BODY}", "self.x = 1\n        1")},
+                "writes through",
+            )
+        }
+        then "a generic body moved reads what instantiates it" {
+            let g = "export fn id<T>(x: T) -> T {\n    x\n}\nexport fn u() -> int { id(1) }\n"
+            attack(
+                "generic",
+                {"m/a.av": g},
+                {"m/a.av": g.replace("    x\n", "    let y = x\n    y\n")},
+                "ok",
+            )
+        }
+        then "a const's value moved answers its readers anew" {
+            attack(
+                "const",
+                {"m/a.av": "export const K: int = 1\n", "m/b.av": "export fn r() -> int { K }\n"},
+                {"m/a.av": "export const K: int = 2\n"},
+                "ok",
+            )
+        }
+    }
+    given "the tree moved around an unchanged reader" {
+        then "a file added that declares the name a reader misses clears it" {
+            attack(
+                "added",
+                {"m/a.av": "export fn r() -> int { helper() }\n"},
+                {"m/b.av": "fn helper() -> int { 2 }\n"},
+                "ok",
+            )
+        }
+        then "a new file shadowing a name another file imports is refused or read alike" {
+            attack(
+                "shadow",
+                {"m/a.av": CALLEE, "m/b.av": CALLER},
+                {"m/c.av": "export fn one() -> int {\n    3\n}\n"},
+                "",
+            )
+        }
+        then "a manifest moved is read" {
+            attack(
+                "manifest",
+                {"m/a.av": CALLEE},
+                {"avra.toml": "[package]\nname = \"app\"\nversion = \"0.0.2\"\n"},
+                "ok",
+            )
+        }
+        then "a component's form moved refuses its unchanged instance" {
+            let form = "export component pane {\n    title: string = \"\"\n}\n"
+            let inst = "use m.pane.{pane}\nexport fn f() -> int {\n    pane top { title: \"a\" }\n    1\n}\n"
+            attack(
+                "words",
+                {"m/pane.av": form, "main.av": inst},
+                {"m/pane.av": "export component pane(title: string) {\n}\n"},
+                "refused",
+            )
+        }
+        then "a generating annotation's file rewritten reads generated declarations anew" {
+            let mk = "use @std.meta.{Fn, Declared, Directive}\nexport fn mk(f: Fn) -> Declared {\n    Declared { made: [Directive { twin: \"\", name: \"made_one\", at: f.at, source: quote { export fn ${"\$"}{\"made_one\"}() -> int { 1 } } }], problems: [] }\n}\n"
+            attack(
+                "generated",
+                {
+                    "m/g.av": mk,
+                    "m/a.av": "use m.g.{mk}\n@mk\nexport fn f() -> int { 1 }\n",
+                    "m/b.av": "export fn r() -> int { made_one() }\n",
+                },
+                {"m/g.av": mk.replace("made_one", "made_two")},
+                "made_one",
+            )
+        }
+    }
     given "a checked package, a comment added to one file" {
         then "the check is reused and its warning prints on the line it moved to" {
             let r = warned_pkg("comment-above")
@@ -86,12 +226,12 @@ spec "cli check_reuse" {
         }
     }
     given "a checked package, one file edited, checked a third time" {
-        then "the whole-program answer is not reused" {
+        then "a body rewritten answers from the verdict with only its file read again" {
             let r = two_file_pkg("one-edited")
             let _ = checked_at(r)
             let _ = checked_at(r)
             let _ = write_text("${r}/src/b.av", "export fn g() -> int {\n    f() + 2\n}\n")
-            match checked_at(r) { .Ok(c) -> !c.reused, .Err(_) -> false }
+            match checked_at(r) { .Ok(c) -> c.reused, .Err(_) -> false }
         }
         then "a further, truly unchanged check reuses the whole program again" {
             // the edit above is the standing content now

@@ -53,6 +53,23 @@ impl Workspace {
         let held? = held_gather(line, "") else { return true }
         self.gathered_set(held.gathering, self.file_id(path)) != held.digest
     }
+
+    /// A rewritten file's Items under its text as it stands.
+    fn keep_rows(store: Store, path: string) {
+        let text = joined(
+            ["items"].concat([l for l in self.lines_of(path) if items_line(read_fields(l))]),
+            "\n",
+        )
+        let _ = store
+            .keep(Stored.Unit, items_key(self.root, path, self.text_digest(path)), text, [])
+    }
+
+    /// A file's kept Items lines, split — none when no read of its text as it stands kept them.
+    fn items_lines(path: string) -> List<List<string>>? {
+        let store? = self.store.get() else { return null }
+        let text? = store.get(Stored.Unit, items_key(self.root, path, self.text_digest(path))) else { return null }
+        [read_fields(l) for l in text.split("\n").drop(1)]
+    }
 }
 
 impl RecordBodies {
