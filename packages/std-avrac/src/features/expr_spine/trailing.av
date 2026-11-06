@@ -1,0 +1,66 @@
+//! The two sugars a trailing block makes. `subject { … } else { … }` is the
+//! call so far taking the blocks as its last arguments, and `{ x -> … }` is a
+//! lambda — over the pronoun's one seat when it writes none and reads `it`.
+//! Each node keeps what was written and MEANS the call or the lambda.
+use core.{expr_node, Expr, ExprId, TypeId, Reg, Param, Minting, minting, pronoun_param, NodeFacts}
+use core.marks.{apart}
+use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
+
+/// `subject { … }` and `subject { … } else { … }` — only a call takes
+/// blocks, and never after a type literal or another block.
+@expr_node
+@apart
+export type Trailed = { subject: ExprId, blocks: List<ExprId> }
+
+impl NodeFacts for Trailed {
+    fn says(written: string) -> string? { "" }
+}
+
+impl Meaning for Trailed {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        if cx.store.spells_a_type(self.subject) { return .Err(block_after_literal()) }
+        if cx.store.ends_in_block(self.subject) { return .Err(second_block()) }
+        let before = cx.store.exprs.count()
+        let call = cx.store.trailed(self.subject, self.blocks, cx.span)?
+        .Ok(minting(cx.store.allocated_since(before, call)))
+    }
+}
+
+/// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a block: the
+/// written seats, or the pronoun's one seat when none is written and the
+/// body reads `it`.
+@expr_node
+@apart
+export type BlockLambda = { seats: List<Param>, body: ExprId }
+
+impl NodeFacts for BlockLambda {
+    fn says(written: string) -> string? { "" }
+}
+
+impl Meaning for BlockLambda {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
+    fn minted(cx: MeanCx) -> Result<Minting, string> {
+        let seats = if self.seats.is_empty() && cx.store.pronoun_rides(self.body) { [pronoun_param] } else { self.seats }
+        let closure = cx.store.alloc_expr(Expr.Lambda(seats, self.body), cx.span)
+        .Ok(minting([closure]))
+    }
+}
+
+// ── voices ──
+
+fn block_after_literal() -> string {
+    "a trailing block follows a type literal — a literal is no call, and a block belongs to one"
+}
+
+fn second_block() -> string {
+    "a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line"
+}

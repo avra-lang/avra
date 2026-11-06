@@ -1416,6 +1416,8 @@ impl SourceText {
                 parent,
             ),
             .ArmsBody(arms) -> self.arms_braced(arms, id, depth),
+            .Trailed(subject, _) -> self.expression(self.store.meant(id) ?? subject, parent, depth, c),
+            .BlockLambda(_, _) -> self.trailing_block(id, depth),
             .InstanceFn(_, _) -> self.instance_body(id, depth),
             .ChainCall(subject, name, args) -> grouped(
                 "${self.chain_subject(subject, depth, c)}?.${source_name(name.of)}${self.args_wrapped(args, depth)}",
@@ -2312,9 +2314,8 @@ impl SourceText {
     /// whole mechanism) whose seat prints inside the braces, never
     /// before them.
     mut fn trailing_block(id: ExprId, depth: int) -> string {
-        match self.store.expr(id) {
+        match self.store.expr(self.store.closure_of(id)) {
             .Lambda(params, body) -> self.trailing_lambda(params, body, id, depth),
-            .ArmsBody(arms) -> self.arms_braced(arms, id, depth),
             rest -> "{ ${self.expression(id, loosest_tier, depth)} }",
         }
     }

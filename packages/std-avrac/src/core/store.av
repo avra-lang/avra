@@ -303,6 +303,12 @@ impl SyntaxArena {
         self.expr_marks_at(e).is_trailing
     }
 
+    /// Whether `e` is a trailing block, or the closure a trailing block means.
+    fn written_as_block(e: ExprId) -> bool {
+        let sugar? = self.minted_for(e) else { return self.is_trailing(e) }
+        self.is_trailing(e) || self.is_trailing(sugar)
+    }
+
     /// The seat an argument names, when it is written `name: value`.
     fn arg_label(a: ExprId) -> string? {
         match self.expr(a) {
@@ -378,7 +384,7 @@ impl SyntaxArena {
 
     /// Whether this is a call whose last argument is a trailing block.
     fn ends_in_block(e: ExprId) -> bool {
-        match self.expr(e) {
+        match self.valued(e) {
             .Call(_, _, args) or .MethodCall(_, _, args) or .CallValue(_, args) -> {
                 let last: ExprId? = args.last()
                 last != null && self.is_trailing(last!)
@@ -920,7 +926,10 @@ impl SyntaxArena {
     /// as any argument written in its parentheses is seated. A free
     /// stage's own arguments ride the pronoun (`stage_args`). Null
     /// for every shape that is not a call.
-    fn called_on(stage: ExprId, value: ExprId) -> Expr? { self.expr(stage).called_on(self, stage, value) }
+    fn called_on(stage: ExprId, value: ExprId) -> Expr? {
+        let at = self.meant(stage) ?? stage
+        self.expr(at).called_on(self, at, value)
+    }
 
     /// A STAGE'S CALL BINDS THE PRONOUN AS A METHOD CALL DOES: the
     /// arguments written in a stage's parentheses each ride `it` —
@@ -1645,6 +1654,7 @@ impl SyntaxArena {
     /// template's body belongs to the code it generates, so only its
     /// holes are read here.
     fn pronoun_rides(id: ExprId) -> bool {
+        if self.body_fn(id) != null { return false }
         match self.expr(id) {
             .Ident(name) -> name == "it",
             .Lambda(_, _) -> false,
