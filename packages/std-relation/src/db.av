@@ -374,6 +374,9 @@ fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
 const NOT_ASKED: int = 0 - 1
 const NO_KIN: int = 0 - 2
 
+/// The name of a call a list holds, by its kin.
+const LISTED: string = "listed"
+
 /// Where a read's readers are kept.
 const READERS: string = "readers"
 
@@ -1039,24 +1042,21 @@ impl Db {
     }
 
     /// From here a read outside what `seeds` reach stands unjudged.
-    fn suspects_from(seeds: List<int>) { self.suspects.set(self.reached_from(seeds)) }
-
-    /// `seeds`' readers suspected too.
-    fn suspects_also(seeds: List<int>) {
-        let among? = self.suspects.get() else { return }
-        mut held = among
-        for k, v in self.reached_from(seeds) { held.set(k, v) }
-        self.suspects.set(held)
+    fn suspects_from(seeds: List<int>, unmoved: List<int>) {
+        self.suspects.set(self.reached_from(seeds, unmoved))
     }
 
-    /// Every kin some read of `seeds` reaches, by the readers on record.
-    fn reached_from(seeds: List<int>) -> Map<string, bool> {
+    /// Every kin some read of `seeds` reaches, by the readers on record; nothing is reached past
+    /// one of `ends`, whose answer stands — a seed among them is itself reached.
+    fn reached_from(seeds: List<int>, ends: List<int>) -> Map<string, bool> {
         let seen: Cell<Map<string, bool>> = map_cell()
-        mut todo = seeds
+        let ended: Cell<Map<string, bool>> = map_cell()
+        for e in ends { ended.put("${e}", true) }
+        mut todo = [s for s in seeds if !(ended.get().get("${s}") ?? false)]
         for s in seeds { seen.put("${s}", true) }
         while !todo.is_empty() {
             for r in self.readers_of(todo.pop()) {
-                if seen.get().get("${r}") ?? false { continue }
+                if seen.get().get("${r}") ?? false || ended.get().get("${r}") ?? false { continue }
                 seen.put("${r}", true)
                 todo.push(r)
             }
@@ -1088,8 +1088,10 @@ impl Db {
 
     /// Whether the answer a key names is the one its record digests, its record's reads moved or
     /// not: asked when they moved.
-    fn answer_stands(k: Key) -> bool {
-        if self.read_stands(k) { return true }
+    fn answer_stands(k: Key) -> bool { self.read_stands(k) || self.answer_unmoved(k) }
+
+    /// Whether the answer a key names digests as its record says, whatever it read.
+    fn answer_unmoved(k: Key) -> bool {
         let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return false }
         let spelled? = owner.spelled_at(k.arg) else { return false }
         let query? = (owner.kept_name)() else { return false }
@@ -1103,6 +1105,61 @@ impl Db {
             return false
         }
         owner.hash_at(k.arg) == head.digest
+    }
+
+    /// A call listed under `list`, by its name, for `listed_fell` to judge unasked.
+    fn read_listed(list: string, k: Key) {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return }
+        let spelled? = owner.spelled_at(k.arg) else { return }
+        let kin = self.kin_of(owner.name, spelled)
+        self.reader_filed(self.kin_of(list, ""), kin)
+        let keep = self.durable.keep
+        keep(
+            LISTED,
+            kin,
+            encoded_with(
+                [owner.name, self.saved_spelling(spelled)],
+                (w, ns) -> written_list(w, ns, (x: Writer, s: string) -> x.text(s)),
+            ),
+        )
+    }
+
+    /// Whether some call listed under `list` no longer stands on its record.
+    fn listed_fell(list: string) -> bool {
+        self
+            .readers_of(self.kin_of(list, ""))
+            .any((kin) -> self.suspected(kin) && !self.listed_stands(kin))
+    }
+
+    fn listed_stands(kin: int) -> bool {
+        let answer = self.durable.answer
+        let bytes? = answer(LISTED, kin) else { return false }
+        let named: List<string>? = match decoded_with(
+            bytes,
+            (r: Reader) -> read_list(r, (x: Reader) -> x.text()),
+        ) { .Ok(ns) -> ns, .Err(_) -> null }
+        let parts? = named else { return false }
+        let owner? = self.answer_named(parts[0]) else { return false }
+        self.record_digest(owner, parts[1], "${parts[0]}\t${parts[1]}") != null
+    }
+
+    /// The kin of a read a run knows moved: a reader compares what it answers now.
+    fn read_moved(k: Key) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        let spelled? = owner.spelled_at(k.arg) else { return null }
+        let made? = owner.hash_at(k.arg) else { return null }
+        self.known_now()
+        self.digests_made.put("${owner.name}\t${spelled}", made)
+        self.kin_of(owner.name, spelled)
+    }
+
+    /// What a run judged, judged again: its suspects grew.
+    fn judged_again(suspects: Map<string, bool>) {
+        self.suspects.set(suspects)
+        let none: List<int> = []
+        self.leaf_judged.set(none)
+        let no_digests: Map<string, int> = {}
+        self.digests_known.set(no_digests)
     }
 
     /// Whether a kin may have moved; every kin when no run has asked.

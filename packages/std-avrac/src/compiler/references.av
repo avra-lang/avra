@@ -105,19 +105,19 @@ fn refs_index(ws: Workspace) -> RefsIndex { ws.indexed_references() }
 /// The references to one declaration.
 @query
 @scoped_by(decl_places)
-export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}")?.get() ?? [] } }
+export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: ws.index_unheard().by_decl.get().get("${d.index}")?.get() ?? [] } }
 
 /// The references one file makes.
 @query
 @scoped_by(file_places)
-export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
+export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: ws.index_unheard().by_file.get().get("${f.index}")?.get() ?? [] } }
 
 /// What a reader of `d`'s references stands on: their rows' fold, each row by durable name and
-/// the rows in any order, so an edit that moves no row of `d` moves no reader of it.
+/// the rows in any order. It reads nothing: a run whose file's rows name `d` differently says so
+/// (`rows_moved`), so an edit that moves no row of `d` is nothing to its readers.
 @query
 @lasting
 fn refs_print(ws: Workspace, d: DeclId) -> int {
-    let _ = ws.references()
     let rows: Cell<List<Ref>> = Cell.new([])
     ws.db.kernel.unheard(() -> rows.set(ws.refs_rows(d)))
     let ids = ws.decls.ids()
@@ -125,6 +125,33 @@ fn refs_print(ws: Workspace, d: DeclId) -> int {
 }
 
 impl Workspace {
+    /// The index, as what its projections are made from: they name no read of every file's rows.
+    fn index_unheard() -> RefsIndex {
+        let held: Cell<RefsIndex?> = Cell.new(null)
+        self.db.kernel.unheard(() -> held.set(refs_index(self)))
+        held.get()!
+    }
+
+    /// The declarations whose references these files' rows moved since their record.
+    fn rows_moved(files: List<FileId>) -> List<DeclId> {
+        let ids = self.decls.ids()
+        mut folds: Map<string, int> = {}
+        mut named: List<DeclId> = []
+        for f in files {
+            for r in file_refs_made_kept(self, f)?.rows ?? [] {
+                let at = "${r.decl.index}"
+                if !folds.has(at) { named.push(r.decl) }
+                folds.set(at, (folds.get(at) ?? 0) + ref_fp(ids, r))
+            }
+            for r in file_refs_made(self, f).rows {
+                let at = "${r.decl.index}"
+                if !folds.has(at) { named.push(r.decl) }
+                folds.set(at, (folds.get(at) ?? 0) - ref_fp(ids, r))
+            }
+        }
+        [d for d in named if folds.get("${d.index}") ?? 0 != 0]
+    }
+
     /// The references to `d`, standing on their fold.
     fn refs_to_now(d: DeclId) -> List<Ref> {
         let _ = refs_print(self, d)

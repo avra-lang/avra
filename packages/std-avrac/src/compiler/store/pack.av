@@ -24,10 +24,10 @@ use @std.io.{
     truncate_to,
     env,
     open_beneath,
-    Opened,
     AppendFile,
 }
 use @std.path.{joined_path, dir_of, file_name}
+use compiler.store.mapped.{Mapped, mapped, mapped_at, mapped_close}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
@@ -181,7 +181,7 @@ export type Pack = {
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
     /// The value file, open once for the revision it was opened at (none or one handle).
-    val_open: Cell<List<Opened>>,
+    val_open: Cell<List<Mapped>>,
     val_open_rev: Cell<int>,
     /// This writer's own segment, open once for the path it was opened at (none or one handle).
     seg_open: Cell<List<AppendFile>>,
@@ -976,28 +976,29 @@ fn content_of(pack: Pack, digest: string) -> Bytes? {
 fn spilled(pack: Pack, digest: string) -> Bytes? {
     let slot? = pack.slots.get().get(digest) ?? sealed_slot(pack, digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
-    let o? = value_file(pack) else { return null }
-    let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+    let m? = value_file(pack, slot.at + slot.len) else { return null }
+    let raw = mapped_at(m, slot.at, slot.len) ?? "".bytes()
     if digest_of_octets(raw) != digest { return null }
     let t = pack.traffic.get()
     pack.traffic.set(t with { values: t.values + 1, bytes: t.bytes + slot.len })
     raw
 }
 
-/// The value file for the open revision, opened once and kept: a value is a seek and a read,
-/// never an open. A revision that moved closes the old handle first.
-fn value_file(pack: Pack) -> Opened? {
+/// The value file for the open revision, mapped once and kept: a value is a copy out of the
+/// mapping, never an open. A revision that moved, or a file grown past `reach`, maps it again.
+fn value_file(pack: Pack, reach: int) -> Mapped? {
     let rev = pack.val_rev.get()
     if pack.val_open_rev.get() == rev {
         let held = pack.val_open.get().first()
-        if held != null { return held }
+        if held != null && held!.len >= reach { return held }
     }
-    for old in pack.val_open.get() { old.close() }
-    // LICENSED input.store_io: the store's own value file, opened once to seek for its values
-    let o = match open_beneath(pack.dir, val_name(rev)) { .Ok(o) -> o, .Err(_) -> { return null } }
-    pack.val_open.set([o])
+    for old in pack.val_open.get() { mapped_close(old) }
+    pack.val_open.set([])
+    // LICENSED input.store_io: the store's own value file, mapped once to read its values
+    let m? = mapped(joined_path(pack.dir, val_name(rev))) else { return null }
+    pack.val_open.set([m])
     pack.val_open_rev.set(rev)
-    o
+    m
 }
 
 export fn pack_traffic(pack: Pack) -> Traffic { pack.traffic.get() }

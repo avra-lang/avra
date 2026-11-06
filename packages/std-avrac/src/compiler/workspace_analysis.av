@@ -73,7 +73,8 @@ use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 /// How the bodies compile-time runs lowered are filed.
 const BODY_RUN: string = "body run"
 
-/// How the bodies compile-time runs lowered are filed.
+/// How the instantiations whose law is an answer are listed.
+const LAWS_LISTED: string = "laws listed"
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -480,7 +481,10 @@ impl Workspace {
     /// One unit of a whole program, an instantiation's law answered as it lowers.
     fn program_unit(w: Wanted) -> Unit {
         let u = self.lowered(self.spec_id(w))
-        if self.decls.instantiated(w) { let _ = unit_laws(self, w) }
+        if self.decls.instantiated(w) {
+            let _ = unit_laws(self, w)
+            self.query_db().read_listed(LAWS_LISTED, unit_laws_key(self, w))
+        }
         u
     }
 
@@ -492,6 +496,7 @@ impl Workspace {
     /// The instantiations the program still wants whose law no longer stands, walked from what
     /// each file's record wants: a kept row's unit is lowered only when one of these names it.
     fn laws_moved() -> List<Wanted> {
+        if !self.query_db().listed_fell(LAWS_LISTED) { return [] }
         mut seen: Map<string, bool> = {}
         mut todo = flatten([file_laws_kept(self, fi.id) ?? [] for fi in self.decls.all_files()])
         mut moved: List<Wanted> = []

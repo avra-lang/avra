@@ -7,7 +7,7 @@
 //! tokens say (`shape_digest`). A text that moved and kept its shape leaves every answer
 //! standing but the places printed, so the files that point into it are said again from
 //! their facts rows, placed against a lex of the text now; nothing is parsed.
-use core.{FileId, sorted_texts, touch}
+use core.{FileId, sorted_texts, touch, same_file}
 use compiler.families.{Family}
 use compiler.host.{InputKind}
 use features.{FileInfo}
@@ -426,14 +426,22 @@ impl Workspace {
         for path in rewritten { again.put(path, true) }
         self.records.read_again.set(again.get())
         for fi in self.decls.files_standing() { let _ = self.text_staged(fi.path) }
-        rdb.suspects_from(flatten([self.text_kins(path) for path in rewritten]))
+        let texts = flatten([self.text_kins(path) for path in rewritten])
+        // what stands past a parse is known once it has parsed
+        let parses = [rdb.kin_at(parsed_in_key(self, fi.id)) ?? 0 for fi in self.decls.files_standing() if again.get().get(fi.path) ?? false]
+        rdb.suspects_from(texts.concat(parses), parses)
         for path in self.entry_files(null) { let _ = self.file_id(path) }
         self.admit_all()
         self.records.names_stood.set(self.decls.file_count())
         self.timed("rows", t0)
         let t1 = self.clock()
         if !rewritten.all((path) -> self.declares_alike(path)) { return Rechecked.Anew }
-        rdb.suspects_also(flatten([self.moved_bodies(path) for path in rewritten]))
+        let ends = flatten([self.unmoved_kins(self.file_id(path)) for path in rewritten])
+        self.records.refs_moved.set([self.file_id(path) for path in rewritten])
+        let seeds = texts
+            .concat(flatten([self.moved_bodies(path) for path in rewritten]))
+            .concat(self.refs_kins(self.records.refs_moved.get()))
+        rdb.suspects_from(seeds, ends)
         let files = self.decls.all_files()
         let moved_parse = [fi.path for fi in files if !(again.get().get(fi.path) ?? false) &&
             !(rdb.answer_stands(parsed_in_key(self, fi.id)) &&
@@ -441,8 +449,7 @@ impl Workspace {
         if !moved_parse.is_empty() { return Rechecked.Anew }
         self.timed("parses judged", t1)
         let t6 = self.clock()
-        self.records.refs_moved.set([self.file_id(path) for path in rewritten])
-        let read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
+        let read = self.files_said_again(said, files, rewritten, seeds, ends)
         self.timed("sayings judged", t6)
         if read.any((f) -> self.generates_or_generic(f)) { return Rechecked.Anew }
         let t2 = self.clock()
@@ -478,10 +485,60 @@ impl Workspace {
             .Said(said with { files: [fresh.find(it.path == f.path) ?? f for f in said.files] })
     }
 
+    /// The kins of the references these files' rows moved.
+    fn refs_kins(files: List<FileId>) -> List<int> {
+        let rdb = self.query_db()
+        [rdb.read_moved(refs_print_key(self, d)) ?? 0 for d in self.rows_moved(files)]
+    }
+
+    /// The files whose saying no longer stands: a file read for that may move another's references,
+    /// and that file's reader then falls too.
+    fn files_said_again(
+        said: CheckSaid,
+        files: List<FileInfo>,
+        rewritten: List<string>,
+        seeds: List<int>,
+        ends: List<int>,
+    ) -> List<FileId> {
+        let rdb = self.query_db()
+        mut known = seeds
+        mut seen = [self.file_id(path) for path in rewritten]
+        mut read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
+        while true {
+            let more = [f for f in read if !seen.any(same_file(it, f))]
+            if more.is_empty() { return read }
+            seen = seen.concat(more)
+            self.records.refs_moved.set(seen)
+            let moved = self.refs_kins(more)
+            if moved.is_empty() { return read }
+            known = known.concat(moved)
+            rdb.judged_again(rdb.reached_from(known, ends))
+            read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
+        }
+        read
+    }
+
     /// The bodies of a rewritten file whose syntax moved, by the name compile-time runs file them.
     fn moved_bodies(path: string) -> List<int> {
         let rdb = self.query_db()
-        [rdb.kin_of(BODY_RUN, self.decl_ref(d)) for d in self.decls.decls_so_far(self.file_id(path)) if !rdb.answer_stands(syntax_in_key(self, d))]
+        [rdb.kin_of(BODY_RUN, self.decl_ref(d)) for d in self.decls.decls_so_far(self.file_id(path)) if !rdb.answer_unmoved(syntax_in_key(self, d))]
+    }
+
+    /// What a rewritten file's parse feeds whose answer came out as its record says.
+    fn unmoved_kins(f: FileId) -> List<int> {
+        let own = flatten(
+            [[syntax_in_key(self, d), signed_key(self, d), names_in_key(self, d)] for d in self.decls.decls_so_far(f)],
+        )
+        let whole = [Family.Items, Family.Resolved, Family.Expanded]
+            .map(key_at(it.ordinal, f.index))
+        let rdb = self.query_db()
+        let path = self.decls.file(f).path
+        let words = [
+            file_visible_made_key(self, f),
+            declares_component_in_key(rdb, path),
+            block_forms_in_key(rdb, path),
+        ]
+        [rdb.kin_at(k) ?? 0 for k in own.concat(whole).concat(words) if rdb.answer_unmoved(k)]
     }
 
     /// A rewritten text's reads as the store files them.
