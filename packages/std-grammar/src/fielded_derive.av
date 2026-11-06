@@ -1,0 +1,31 @@
+//! `@derive(Fielded)` — the names of a record's authored fields, in order:
+//! `fields_of_<Record>()`. A field marked `@unwritten` is computed after
+//! the record is made and is no author's, so a writer spells the rest and
+//! cannot drop a field added later.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
+//! TYPES the file that declares it.
+use @std.meta.{Type as MetaType, Directive, literal}
+
+/// The mark a computed field wears.
+export const unwritten_mark: string = "unwritten"
+
+/// The derive for a record's authored field names.
+export trait Fielded {
+    /// A field computed rather than authored.
+    static fn marks(t: MetaType) -> List<string> { [unwritten_mark] }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        let names = [literal(f.name) for f in t.fields if f.marks.find(it.name == unwritten_mark) == null]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    export fn ${"fields_of_${t.name}"}() -> List<string> { [..${names}] }
+                },
+            },
+        ]
+    }
+}

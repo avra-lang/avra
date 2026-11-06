@@ -3,6 +3,7 @@
 //! own file is compiled; assembly then merges values and never parses
 //! text.
 use core.{
+    wreck,
     Expr,
     ExprId,
     TypeId,
@@ -20,6 +21,16 @@ use core.{
 use core.marks.{sequence}
 use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
 use @std.grammar.{
+    fields_of_Grammar,
+    fields_of_Rule,
+    fields_of_Alt,
+    fields_of_Seq,
+    fields_of_Item,
+    fields_of_Fixed,
+    fields_of_Tier,
+    fields_of_Suffix,
+    fields_of_Expect,
+    fields_of_Recover,
     Grammar,
     Rule,
     Alt,
@@ -89,7 +100,7 @@ fn grammar_expr(store: SyntaxArena, g: Grammar, sp: Span?) -> ExprId {
     lit_struct(
         store,
         "Grammar",
-        ["name", "start", "rules"],
+        fields_of_Grammar(),
         [text_expr(store, g.name, sp), text_expr(store, g.start, sp), list_expr(store, rules, sp)],
         sp,
     )
@@ -99,7 +110,7 @@ fn rule_expr(store: SyntaxArena, r: Rule, sp: Span?) -> ExprId {
     lit_struct(
         store,
         "Rule",
-        ["name", "body"],
+        fields_of_Rule(),
         [text_expr(store, r.name, sp), alt_expr(store, r.body, sp)],
         sp,
     )
@@ -107,7 +118,7 @@ fn rule_expr(store: SyntaxArena, r: Rule, sp: Span?) -> ExprId {
 
 fn alt_expr(store: SyntaxArena, a: Alt, sp: Span?) -> ExprId {
     let branches = [seq_expr(store, s, sp) for s in a.branches]
-    lit_struct(store, "Alt", ["branches"], [list_expr(store, branches, sp)], sp)
+    lit_struct(store, "Alt", fields_of_Alt(), [list_expr(store, branches, sp)], sp)
 }
 
 fn seq_expr(store: SyntaxArena, s: Seq, sp: Span?) -> ExprId {
@@ -115,7 +126,7 @@ fn seq_expr(store: SyntaxArena, s: Seq, sp: Span?) -> ExprId {
     lit_struct(
         store,
         "Seq",
-        ["items", "build", "recover", "operators", "fold", "seed", "aliased"],
+        fields_of_Seq(),
         [
             list_expr(store, items, sp),
             build_expr(store, s.build, sp),
@@ -136,7 +147,7 @@ fn item_expr(store: SyntaxArena, i: Item, sp: Span?) -> ExprId {
     lit_struct(
         store,
         "Item",
-        ["label", "prim", "rep", "expect", "head", "trailer"],
+        fields_of_Item(),
         [
             text_opt(store, i.label, sp),
             prim_expr(store, i.prim, sp),
@@ -212,20 +223,12 @@ fn build_expr(store: SyntaxArena, held: Build?, sp: Span?) -> ExprId {
 }
 
 fn fixed_expr(store: SyntaxArena, f: Fixed, sp: Span?) -> ExprId {
-    let stated? = f.term else {
-        return lit_struct(
-            store,
-            "Fixed",
-            ["name", "text"],
-            [text_expr(store, f.name, sp), text_expr(store, f.text, sp)],
-            sp,
-        )
-    }
+    let stated = if f.term == null { store.alloc_expr(Expr.NullLit, sp) } else { term_expr(store, f.term!, sp) }
     lit_struct(
         store,
         "Fixed",
-        ["name", "text", "term"],
-        [text_expr(store, f.name, sp), text_expr(store, f.text, sp), term_expr(store, stated, sp)],
+        fields_of_Fixed(),
+        [text_expr(store, f.name, sp), text_expr(store, f.text, sp), stated],
         sp,
     )
 }
@@ -260,7 +263,7 @@ fn tier_expr(store: SyntaxArena, t: Tier, sp: Span?) -> ExprId {
     lit_struct(
         store,
         "Tier",
-        ["assoc", "words", "suffixes", "build"],
+        fields_of_Tier(),
         [
             assoc_expr(store, t.assoc, sp),
             list_expr(store, words, sp),
@@ -275,7 +278,7 @@ fn suffix_expr(store: SyntaxArena, x: Suffix, sp: Span?) -> ExprId {
     lit_struct(
         store,
         "Suffix",
-        ["word", "rule", "build"],
+        fields_of_Suffix(),
         [text_expr(store, x.word, sp), text_expr(store, x.rule, sp), build_expr(store, x.build, sp)],
         sp,
     )
@@ -290,12 +293,12 @@ fn assoc_expr(store: SyntaxArena, a: Assoc, sp: Span?) -> ExprId {
 
 fn expect_expr(store: SyntaxArena, held: Expect?, sp: Span?) -> ExprId {
     if held == null { return store.alloc_expr(Expr.NullLit, sp) }
-    lit_struct(store, "Expect", ["message"], [text_expr(store, held!.message, sp)], sp)
+    lit_struct(store, "Expect", fields_of_Expect(), [text_expr(store, held!.message, sp)], sp)
 }
 
 fn recover_expr(store: SyntaxArena, held: Recover?, sp: Span?) -> ExprId {
     if held == null { return store.alloc_expr(Expr.NullLit, sp) }
-    lit_struct(store, "Recover", ["sync_to"], [text_expr(store, held!.sync_to, sp)], sp)
+    lit_struct(store, "Recover", fields_of_Recover(), [text_expr(store, held!.sync_to, sp)], sp)
 }
 
 // ── The four shapes every writer above spells ──
@@ -307,6 +310,7 @@ fn lit_struct(
     values: List<ExprId>,
     sp: Span?,
 ) -> ExprId {
+    if fields.length != values.length { wreck(arity_defect(name, fields.length, values.length)) }
     store.alloc_expr(Expr.StructLit(Nominal(name), [Plain(t) for t in fields], values), sp)
 }
 
@@ -338,4 +342,10 @@ fn text_opt(store: SyntaxArena, held: string?, sp: Span?) -> ExprId {
 
 fn list_expr(store: SyntaxArena, items: List<ExprId>, sp: Span?) -> ExprId {
     store.alloc_expr(Expr.ListLit(items), sp)
+}
+
+// ── voices ──
+
+fn arity_defect(name: string, fields: int, values: int) -> string {
+    "defect: the `${name}` literal writes ${values} values for ${fields} authored fields — a writer and its record disagree"
 }
