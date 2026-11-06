@@ -200,7 +200,7 @@ export fn written_dense(w: Writer, scope: dyn Scope, kind: string, index: int) {
     let spelled = scope.spelled(kind, index)
     if spelled.is_empty() { w.nameless.set(true) }
     w.varint(0)
-    w.text(spelled)
+    w.spelled_text(spelled)
     w.named.put(key, w.named.get().length + 1)
 }
 
@@ -251,8 +251,10 @@ impl Writer {
 
     fn count(n: int) { self.varint(n) }
 
-    fn text(written: string) {
-        let s = saved_in(self.home.get(), written)
+    fn text(written: string) { self.spelled_text(saved_in(self.home.get(), written)) }
+
+    /// A text its scope already spelled for any checkout.
+    fn spelled_text(s: string) {
         if s.length >= CHUNK { return self.octets(s.bytes()) }
         self.count(s.length)
         for i in 0..s.length { self.byte(s.char_code(i)) }
@@ -603,8 +605,13 @@ impl Reader {
     }
 
     fn text() -> Result<string, CodecFault> {
+        unsaved_in(self.home.get(), self.spelled_text()?)
+    }
+
+    /// A text as written, its scope's to read back.
+    fn spelled_text() -> Result<string, CodecFault> {
         let s? = (self.octets()?).text() else { fail CodecFault.NotText }
-        unsaved_in(self.home.get(), s)
+        s
     }
 
     /// A dense id of the type named `kind`, read back through the scope.
@@ -665,7 +672,7 @@ export fn dense_read<T>(r: Reader, scope: dyn Scope, kind: string, make: fn(int)
         if place > known.length { fail CodecFault.Unresolved }
         return .Ok(make(known[place - 1]))
     }
-    let spelling = r.text()?
+    let spelling = r.spelled_text()?
     let index? = scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
     r.known.push(index)
     .Ok(make(index))

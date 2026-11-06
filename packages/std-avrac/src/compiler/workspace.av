@@ -448,6 +448,10 @@ type Records = {
     line_index: Cell<Map<string, Map<string, List<string>>>>,
     /// Each file's use lines as its parse said them this build, kept at its end.
     uses_seen: Cell<Map<string, string>>,
+    /// The files read again since the last whole run, whose references are their own records.
+    refs_moved: Cell<List<FileId>>,
+    /// Each wire read back in a run on kept rows, whose rows stand still.
+    wire_ids: Cell<Map<string, int>>,
     /// The declaration each kept impl aims at, by its wire.
     kept_aims: Cell<Map<string, string>>,
     /// What each file's parse reached, kept beside its use lines.
@@ -521,6 +525,8 @@ fn new_records() -> Records {
         record_files: Cell.new(no_files),
         line_index: map_cell(),
         uses_seen: map_cell(),
+        refs_moved: list_cell(),
+        wire_ids: map_cell(),
         kept_aims: map_cell(),
         admits_seen: map_cell(),
         read_again: Cell.new(no_read_again()),
@@ -901,9 +907,17 @@ fn names_in(ws: Workspace, d: DeclId) -> int { ws.name_slice_made(d) }
 @recursive
 export fn file_visible_made(ws: Workspace, f: FileId) -> int { ws.visible_made(f) }
 
-/// A file's parse under the block words it stands under.
+/// A file's parse under the block words it stands under: a pure function of its text and of
+/// those words, which `block_words_print` stands for, so a provider's parse is read unheard
+/// and a provider's body edit moves no parse that takes its words.
 @query
-fn parsed_in(ws: Workspace, f: FileId) -> Parsed { ws.parsed_under_blocks(f) }
+fn parsed_in(ws: Workspace, f: FileId) -> Parsed {
+    touch(source_of(ws, f))
+    touch(block_words_print(ws, f))
+    let made: Cell<Parsed?> = Cell.new(null)
+    ws.db.kernel.unheard(() -> made.set(ws.parsed_under_blocks(f)))
+    made.get()!
+}
 
 /// A file's text as a source, over its Text input: its text and where each line starts.
 @query
@@ -1100,8 +1114,8 @@ fn built(
     ws
         .decls
         .arm_ref_rows(
-            (d: DeclId) -> refs_to(ws, d).rows,
-            (f: FileId) -> refs_from(ws, f).rows,
+            (d: DeclId) -> ws.refs_to_now(d),
+            (f: FileId) -> ws.refs_from_now(f),
             () -> ws.refs_incomplete(),
         )
     ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
@@ -1239,6 +1253,7 @@ impl Workspace {
     /// Runs the references pass and says so, or says it cannot: a whole-program pass
     /// never runs inside a resolve.
     fn refs_ensured() -> bool {
+        if self.records.read_again.get() != null { return true }
         if self.db.family_active(Family.Resolved.ordinal) || self.typing_open() { return false }
         let _ = self.references()
         true
@@ -1874,9 +1889,10 @@ impl Workspace {
         let again? = self.records.read_again.get() else { return null }
         let path = self.decls.file(f).path
         if again.get(path) ?? false { return null }
-        let lines? = self.items_lines(path) else { return null }
-        let rows = [p for p in lines if declares(p)]
-        let top = self.mint_file(path, rows, makers_in(lines, path))
+        // a verdict stood before this run began: only a text read again has moved
+        let lines? = self.last_lines(path) else { return null }
+        let rows = [p for p in lines.drop(1) if declares(p)]
+        let top = self.mint_file(path, rows, makers_in(lines.drop(1), path))
         for j, d in self.decls.decls_so_far(f) {
             if rows[j][0] == "aims" { self.records.kept_aims.put("${d.index}", rows[j][13]) }
         }

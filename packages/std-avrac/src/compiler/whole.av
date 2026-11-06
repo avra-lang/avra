@@ -197,9 +197,6 @@ impl Workspace {
     /// Every file the program knows, held or read.
     fn program_files() -> int { self.decls.file_count() }
 
-    /// MEET FILES: each enters the table, so it is read unless it is held.
-    fn met_all(paths: List<string>) { for path in paths { let _ = self.file_id(path) } }
-
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
     /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
     /// module's type, so every name must exist before any held shape is filled.
@@ -288,43 +285,6 @@ impl Workspace {
         digest_of(fields_wire([self.member_print(g, m) for m in members]))
     }
 
-    /// A CROSS-FILE COLLECT AS A NAMED READ — `collect:<module>.<name>`, digested by
-    /// the set it gathers: a value that folds a collect is a function of its members,
-    /// which no file's text shows. Absent for a declaration that is no such collect.
-    fn collect_read(d: DeclId) -> Reading? {
-        let x = self.decls.decl(d)
-        if !self.gathers_across(d) { return null }
-        let name = "collect:${self.decls.module_of(d)}.${x.name}"
-        let digest? = self.collect_digest(self.decls.file(x.file).path, x.name) else { return null }
-        Reading { name: name, digest: digest }
-    }
-
-    /// Whether `d` is a collect gathering across files — for a held file, whether its
-    /// record holds one.
-    fn gathers_across(d: DeclId) -> bool {
-        let x = self.decls.decl(d)
-        let path = self.decls.file(x.file).path
-        let scope? = self.parsed(x.file).store.collect_scope(x.stmt) else { return false }
-        gathers_across_files(scope)
-    }
-
-    /// A `collect:` read's digest now; absent for a name that names no cross-file collect.
-    fn collect_read_now(name: string) -> string? {
-        let parts = name.substring(8, name.length).split(".")
-        let gathers = parts.last() ?? ""
-        let files = self.module_files(module_path(parts.slice(0, parts.length - 1)))
-        let path? = files.find((p) -> self.collect_digest(p, gathers) != null) else { return null }
-        self.collect_digest(path, gathers)
-    }
-
-    /// The set the collect `name` in `path` gathers now — a held file's from its record,
-    /// since a held collector is one whose sets did not move.
-    fn collect_digest(path: string, name: string) -> string? {
-        let f = self.file_id(path)
-        let g? = self.gatherings(path).find(it.name == name) else { return null }
-        self.gathered_set(g, f)
-    }
-
     /// One member as its collect sees it: where it is declared, its name, the mark
     /// that gathered it, its shape, and what each projected field reads of it. An import
     /// closure's member is only WHICH it is: its shape and fields are read through its own
@@ -363,23 +323,12 @@ impl Workspace {
     /// The text a member is declared in, as one digest.
     fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
 
-    /// Whether a file this attempt does not hold gathers by `kind`, now or when its record was
-    /// written: a set gathered from held files alone stands as its collector's record says.
-    fn gathering_read(kind: CollectKind, read: List<FileId>) -> bool {
-        !self.producers_of(kind).is_empty() || read.any((f) -> self.gathers_in(kind, f))
-    }
-
     /// The files a module record says produce what `kind` gathers by.
     fn producers_of(kind: CollectKind) -> List<string> {
         match kind {
             .Component(w) -> self.envs.listed(Listed.Word(w)),
             .Annotated(w) -> self.envs.listed(Listed.Mark(w)),
         }
-    }
-
-    /// Whether a read file declares something `kind` gathers by.
-    fn gathers_in(kind: CollectKind, f: FileId) -> bool {
-        self.decls.decls_of_file(f).any((d) -> gathered_by(kind, self.decls.decl(d)))
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -1016,9 +965,4 @@ fn index_of_file(files: List<Analysis>, path: string) -> int? {
         if a.view.source.file == path { return i }
     }
     null
-}
-
-/// Whether `kind` gathers `d`: an instance of its component word, or a declaration wearing its mark.
-fn gathered_by(kind: CollectKind, d: Decl) -> bool {
-    match kind { .Component(w) -> d.word == w, .Annotated(w) -> d.marks.contains(w) }
 }

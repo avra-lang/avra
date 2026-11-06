@@ -85,9 +85,6 @@ impl Workspace {
             .noted(edge_of(k), [Leaf.Input("ImplSet", self.decl_ref(target), self.impl_set_hash(target))])
     }
 
-    /// A type's digest is its spelling, which another process spells alike.
-    fn type_digest(t: TypeId) -> int { fp_str(self.type_ref(t)) }
-
     /// The consts' types, spelled by the const's declaration and the seats it was asked
     /// under — the name `Settled` wears too.
     fn named_consts(name: string, fam: Family) -> AnswerRef {
@@ -490,16 +487,7 @@ impl Workspace {
 
 /// Why a kept row does not hold: the first read it was kept with that moved or cannot be
 /// read now, by the family it names; "new" for a row never kept.
-impl Workspace {
-    fn first_moved(store: Store, row: string, now_of: fn(string) -> string?) -> string {
-        let lines? = store.reads_of(Stored.Unit, row) else { return "new" }
-        let gone? = lines.find(now_of(read_name(it)) != read_digest(it)) else { return "unknown" }
-        let id = read_name(gone)
-        let now = now_of(id)
-        if traced() { eprintln("Q typedsaid moved ${id} was ${read_digest(gone)} now ${now ?? "-"}") }
-        "${id.split("\t")[1]} ${if now == null { "unreadable" } else { "moved" }}"
-    }
-}
+impl Workspace {}
 
 fn read_digest(line: string) -> string { line.substring(0, line.index_of(" ")) }
 
@@ -510,11 +498,6 @@ fn read_name(line: string) -> string { line.substring(line.index_of(" ") + 1, li
 fn family_kept(name: string) -> string? { "${name}#family" }
 
 fn key_at(family: int, arg: int) -> Key { Key { family: family, arg: arg } }
-
-/// A run of leaves as the reads a saved answer keeps.
-fn saved_reads(leaves: List<Leaf>) -> List<Reading> {
-    [Reading { name: l.id(), digest: l.digest_text() } for l in leaves]
-}
 
 /// A place that points nowhere, which a voice with no position says instead.
 fn no_place() -> Loc { Loc { file: null, lo: 0, hi: 0 } }

@@ -236,7 +236,13 @@ impl Workspace {
     /// never nested inside a wider tilde stream the way a type's own is.
     fn decl_from_ref(raw: string) -> DeclId? {
         if raw == "" { return null }
+        let kept_rows = self.records.read_again.get() != null
+        if kept_rows {
+            let known = self.records.wire_ids.get().get(raw)
+            if known != null { return DeclId { index: known! } }
+        }
         let wd? = self.decls.wire_decl(raw.split("~"), 0) else { return null }
+        if kept_rows { self.records.wire_ids.put(raw, wd.id.index) }
         wd.id
     }
 

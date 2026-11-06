@@ -63,7 +63,7 @@ use features.{
     declaring_decl,
     LANGUAGE_HOME,
 }
-use core.{Ids}
+use core.{Ids, same_file}
 use compiler.families.{Family}
 use @std.relation.{query, codec, scoped_by}
 use @std.relation.stable.{Scope}
@@ -114,6 +114,25 @@ export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws
 export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
 
 impl Workspace {
+    /// The references to `d` as they stand: in a run on kept rows, what the last whole run kept,
+    /// every file read again since by its own rows.
+    fn refs_to_now(d: DeclId) -> List<Ref> {
+        if self.records.read_again.get() == null { return refs_to(self, d).rows }
+        let kept? = refs_to_kept(self, d) else { return refs_to(self, d).rows }
+        let moved = self.records.refs_moved.get()
+        [r for r in kept.rows if !moved.any(same_file(it, r.file))]
+            .concat(
+                flatten(
+                    [[r for r in file_refs_made(self, f).rows if same_decl(r.decl, d)] for f in moved],
+                ),
+            )
+    }
+
+    /// The references one file makes as they stand.
+    fn refs_from_now(f: FileId) -> List<Ref> {
+        if self.records.read_again.get() == null { refs_from(self, f).rows } else { file_refs_made(self, f).rows }
+    }
+
     /// THE PASS: every admitted file's own rows, gathered — each surveyed file stands on
     /// its own `file_refs_made` answer, and this one reads those and the held files' kept rows.
     fn references() -> int {
@@ -123,6 +142,7 @@ impl Workspace {
 
     /// Whether a held file left the references INCOMPLETE — a decl may be read from inside one.
     fn refs_incomplete() -> bool {
+        if self.records.read_again.get() != null { return false }
         if self.db.family_active(Family.Resolved.ordinal) { return true }
         refs_index(self).incomplete
     }

@@ -983,16 +983,6 @@ fn decodable(parts: List<string>) -> bool {
 /// either is a MISS and parses. The honest boundary: the interface carries what it
 /// carries, and a fact it cannot is a rebuild, not a guess.
 
-fn holdable(rows: List<List<string>>) -> bool {
-    for parts in rows {
-        if parts.length >= 13 {
-            let f? = facts_unblocked(parts[12]) else { return false }
-            if f.is_grammar { return false }
-        }
-    }
-    true
-}
-
 /// A SEAT'S PROMISES as one character each, in a fixed order — the
 /// record's spelling of `SeatMark`, so every promise survives the trip.
 /// EVERY `SeatMark` FIELD GETS A CHARACTER: a field this word does not
@@ -1305,13 +1295,6 @@ impl Workspace {
             .pending_reads
             .set(self.hold.pending_reads.get().concat([PendingRead { reader: reader, read: read }]))
         "?${read.print}"
-    }
-
-    /// Whether `f`'s key carries a read whose declaration must be parsed before its
-    /// hold can be decided — the reader is a hold candidate until then.
-    fn reads_pending(store: Store, m: ModulePath, f: string) -> bool {
-        let _ = self.key_parts_cached(store, m, f)
-        self.hold.pending_reads.get().any(it.reader == f)
     }
 
     /// The modules a module's files see, each with its interface key and file
@@ -2024,12 +2007,4 @@ fn seen_modules(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
 // LICENSED compiler.free_state_verb: THE HELD WALK — a workspace and a store in, the modules worth loading out.
 export fn held_modules(ws: Workspace, store: Store, built: string?) -> List<ModulePath> {
     [m for m in [module_path(n.split(".")) for n in distinct([ws.module_of(p) for p in ws.entry_files(built)])] if record_cached(ws, store, m) != ""]
-}
-
-fn gathers_collectorless() -> string {
-    "a record's `gathers` line names no collecting file — a line this compiler never writes"
-}
-
-fn gathers_unadmitted(key: string) -> string {
-    "a record gathers package `${key}` whole, and this workspace has not admitted it — the collect's own package stands before its record is read"
 }

@@ -1156,14 +1156,6 @@ export fn kind_word(k: DeclKind) -> string {
 }
 
 impl Decls {
-    /// A type a declaration's expression carries, kept when it is a named type.
-    fn note_named(t: TypeId) {
-        let named = match self.types.shape_of(t) {
-            .Struct(_, _) or .Enum(_, _) -> true,
-            rest -> false,
-        }
-        if named { self.note_type(t) }
-    }
 
     /// A named type the typer resolved, kept in order.
     fn note_type(t: TypeId) {
@@ -2194,12 +2186,6 @@ impl Decls {
 
     fn held_value(d: DeclId) -> Settled? { self.held_values.get().get("${d.index}") }
 
-    fn remember_held_value(d: DeclId, value: Settled) { self.held_values.put("${d.index}", value) }
-
-    fn held_reach(d: DeclId) -> string? { self.held_reaches.get().get("${d.index}") }
-
-    fn remember_held_reach(d: DeclId, words: string) { self.held_reaches.put("${d.index}", words) }
-
     /// The workspace arms the lifting hook once.
     fn arm_lifter(
         lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>,
@@ -2592,20 +2578,6 @@ impl Decls {
         self
             .written_seats
             .set_at(d.index, Cell.new(filled(self.written_seats.get()[d.index].get().length, false)))
-    }
-
-    /// The pass starts over: every inferred bit falls, and the
-    /// fixpoint re-earns them.
-    fn clear_written() {
-        // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
-        // the receivers pass never surveys a held body, so wiping them loses the
-        // writer a caller's retain decision reads. The pass clears what it owns.
-        for x in self.unheld_decls() {
-            let j = x.id.index
-            self
-                .written_seats
-                .set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false)))
-        }
     }
 
     /// What a call to `d` may reach, recorded.

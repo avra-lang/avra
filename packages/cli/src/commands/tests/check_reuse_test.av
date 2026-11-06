@@ -1,7 +1,7 @@
 // `avra check`'s whole-program answer, kept across processes: each `checked_at`
 // mints a fresh Workspace, so two calls over one root are two processes sharing
 // only the store.
-use @std.io.{make_dirs, write_text}
+use @std.io.{make_dirs, write_text, remove}
 use @std.time.{stamp}
 use commands.{checked_at}
 
@@ -138,6 +138,15 @@ spec "cli check_reuse" {
                 {"m/b.av": "fn helper() -> int { 2 }\n"},
                 "ok",
             )
+        }
+        then "a file removed that declares what a reader reads refuses the reader" {
+            let files = {"m/a.av": CALLEE, "m/b.av": CALLER}
+            let warm = attacked_pkg("removed-warm", files)
+            let _ = said_at(warm)
+            let _ = remove(in_tree(warm, "m/a.av"))
+            let cold = attacked_pkg("removed-cold", {"m/b.av": CALLER})
+            let said = said_at(warm)
+            said == said_at(cold) && said.contains("refused")
         }
         then "a new file shadowing a name another file imports is refused or read alike" {
             attack(

@@ -73,7 +73,7 @@ fn source_read(path: string, lined: bool) -> VerdictRead {
 
 /// WHAT `check` SAID, AS DATA: the program's own voices and the files they point into, then
 /// each file's part, in file order.
-export type CheckSaid = { voices: string, voice_files: List<string>, files: List<FileSpoke>, settled: List<string> = [] }
+export type CheckSaid = { voices: string, voice_files: List<string>, files: List<FileSpoke>, settled: List<string> = [], moved_since: List<string> = [] }
 
 /// One file's part: its warnings as printed (empty where the program does not reach it),
 /// whether it is reached, its rule findings and its stale license lines.
@@ -124,6 +124,7 @@ export fn verdict_wire(v: CheckSaid) -> string {
     written_texts(w, v.voice_files)
     written_list(w, v.files, written_spoke)
     written_texts(w, v.settled)
+    written_texts(w, v.moved_since)
     hex(w.bytes())
 }
 
@@ -136,7 +137,14 @@ fn read_check_said(r: Reader) -> Result<CheckSaid, CodecFault> {
     let voices = tree_unsaved(r.text()?)
     let voice_files = read_texts(r)?
     let files = read_spokes(r)?
-    CheckSaid { voices: voices, voice_files: voice_files, files: files, settled: read_texts(r)? }
+    let settled = read_texts(r)?
+    CheckSaid {
+        voices: voices,
+        voice_files: voice_files,
+        files: files,
+        settled: settled,
+        moved_since: read_texts(r)?,
+    }
 }
 
 fn written_spoke(w: Writer, f: FileSpoke) {
@@ -424,7 +432,7 @@ impl Workspace {
         self.records.names_stood.set(self.decls.file_count())
         self.timed("rows", t0)
         let t1 = self.clock()
-        if !rewritten.all((path) -> self.declares_alike(store, path)) { return Rechecked.Anew }
+        if !rewritten.all((path) -> self.declares_alike(path)) { return Rechecked.Anew }
         let files = self.decls.all_files()
         let moved_parse = [fi.path for fi in files if !(again.get().get(fi.path) ?? false) &&
             !(rdb.answer_stands(parsed_in_key(self, fi.id)) &&
@@ -441,12 +449,16 @@ impl Workspace {
         self.timed("sayings judged", t6)
         if read.any((f) -> self.generates_or_generic(f)) { return Rechecked.Anew }
         let t2 = self.clock()
+        let moved_since = distinct(
+            said.moved_since.concat(rewritten).concat([self.decls.file(f).path for f in read]),
+        )
+        self.records.refs_moved.set([self.file_id(path) for path in moved_since])
         let analyses = [self.analysis(f) for f in read]
         self.report_layout_defects()
         let p = self.program_of(analyses)
         self.timed("bodies", t2)
         let t7 = self.clock()
-        if !rewritten.all((path) -> self.shaped_alike(store, path)) { return Rechecked.Anew }
+        if !rewritten.all((path) -> self.shaped_alike(path)) { return Rechecked.Anew }
         self.timed("shapes", t7)
         if !p.clean() { return Rechecked.Refused(p.report()) }
         let t3 = self.clock()
@@ -482,30 +494,25 @@ impl Workspace {
             .concat([rdb.kin_of(FILE_TEXT_READ, path)])
     }
 
-    /// Whether a rewritten file declares what its record says and imports what it did.
-    fn declares_alike(store: Store, path: string) -> bool {
-        let m = self.module_path_of(path)
-        let lines = record_cached(self, store, m).split("\n").map(read_fields(it))
-        let own = [p for p in lines if p.length > 1 && p[1] == path && items_line(p)]
+    /// Whether a rewritten file declares what its last read kept and imports what it did.
+    fn declares_alike(path: string) -> bool {
+        let lines? = self.last_lines(path) else { return false }
+        let own = [p for p in lines.drop(1) if items_line(p)]
         if own.any(it[0] == "maker") { return false }
         let f = self.file_id(path)
         if self.has_declares(f) || self.has_marks(f) { return false }
         let was = sorted_texts(line_wires(path, own))
         let now = sorted_texts([self.decl_ref(d) for d in self.decls.decls_so_far(f)])
-        let imported = sorted_texts(
-            [p[1] for p in lines if p.length > 2 && p[0] == "import" && p[2] == path],
-        )
+        let imported = sorted_texts([p[1] for p in lines if p[0] == "import"])
         joined(was, "\n") == joined(now, "\n") &&
             joined(imported, "\n") == joined(sorted_texts([d.text() for d in self.imported_by(path)]), "\n")
     }
 
     /// Whether a rewritten file's declarations still say what their lines kept: a body moved, and
     /// no signature, seat, written bit or cancel reach. What moved them is a run of its own.
-    fn shaped_alike(store: Store, path: string) -> bool {
-        let lines = record_cached(self, store, self.module_path_of(path))
-            .split("\n")
-            .map(read_fields(it))
-        let own = [p for p in lines if p.length > 1 && p[1] == path && declares(p)]
+    fn shaped_alike(path: string) -> bool {
+        let lines? = self.last_lines(path) else { return false }
+        let own = [p for p in lines.drop(1) if declares(p)]
         let f = self.file_id(path)
         for d in self.decls.decls_so_far(f) {
             if self.cancel_member(d) { touch(self.cancel_bits_of(d)) }

@@ -101,13 +101,6 @@ impl Workspace {
         []
     }
 
-    /// THE MODULES WHOSE RECORDS KEEP WHAT A PATH NAMES. A `use` may name ONE
-    /// FILE of a directory module (`@std.http.frame`), and a record is kept
-    /// under the name of the module that file belongs to.
-    fn record_modules(m: ModulePath) -> List<ModulePath> {
-        [module_path(name.split(".")) for name in distinct([self.module_of(f) for f in self.module_files(m)])]
-    }
-
     /// The modules ONE file imports, each path qualified against the file's own
     /// package — the spelling the resolver uses, so the record cannot mean a
     /// different module than the compiler does.
@@ -141,15 +134,6 @@ impl Workspace {
         is_source(f, dir) &&
             !excluded_in(mf, root, joined_path(dir, f)) &&
             !entry_in(mf, root, as_root, joined_path(dir, f))
-    }
-
-    /// A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
-    /// is that package's program, which runs only where the package is
-    /// the root — so it is no module file of a program that depends on
-    /// the package, and its names are not the library's.
-    fn entry_of_dependency(path: string) -> bool {
-        let pkg = self.packages()[self.holder_of_path(path)]
-        entry_in(self.manifest(pkg.ordinal), pkg.root, pkg.ordinal == 0, path)
     }
 
     /// Whether a directory is a package root of its own.
@@ -566,16 +550,6 @@ type Reexport = { name: string, from: ModulePath, item: string }
 /// A re-export as its record line.
 fn reexport_line(path: string, r: Reexport) -> string {
     "reexport\t${path}\t${r.name}\t${r.from.text()}\t${r.item}"
-}
-
-/// A record's re-export lines for one file, read back.
-fn reexports_in(fields: List<List<string>>, path: string) -> List<Reexport> {
-    [held_reexport(p) for p in fields if p.length >= 5 && p[0] == "reexport" && p[1] == path]
-}
-
-/// `reexport_line`'s inverse.
-fn held_reexport(p: List<string>) -> Reexport {
-    Reexport { name: p[2], from: module_path(p[3].split(".")), item: p[4] }
 }
 
 /// A `use` whose every item was refused as a whole.
