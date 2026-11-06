@@ -13,9 +13,13 @@ fn if_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .If(c, t, f) -> {
             cx.require_bool(c, "an `if` condition", "this decides the branch")
+            if cx.facts.guards(e) {
+                cx.facts.mark_guard(t)
+                if f != null { cx.facts.mark_guard(f!) }
+            }
             walk_branches(cx, c, t, f)
             let other? = f else { return cx.type(void) }
-            if cx.view.store.statement_if(e) { return cx.type(void) }
+            if cx.facts.guards(e) { return cx.type(void) }
             branch_type(cx, e, t, other)
         },
         _ -> cx.error_type,

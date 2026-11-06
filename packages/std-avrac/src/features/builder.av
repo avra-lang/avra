@@ -17,33 +17,20 @@ use core.{
     StmtId,
     Span,
     TypeRef,
-    named_ref,
     want,
     Param,
     Pat,
     PatId,
-    Arm,
-    Case,
-    UseItem,
-    FieldPat,
-    ProjField,
-    OrderKey,
-    Given,
-    FnSeat,
-    Mark,
-    Variant,
     CompClause,
     MapEntry,
     Refused,
-    CatchArm,
     flatten,
     some_list,
-    SeatMark,
-    plain_mark,
     Scoped,
     facet_table,
     BinOp,
     binop_of,
+    Carried,
 }
 use core.{Slots}
 use @std.meta.{Field, Node as MetaNode}
@@ -92,69 +79,9 @@ impl Slots for Builder {
         .Ok(!list_at(self.args, self.slot_of(label)?).is_empty())
     }
 
-    /// The seats the payload `label` carries.
-    fn params_of(label: string) -> Result<List<Param>, string> {
-        .Ok(params_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The enum variants the payload `label` carries.
-    fn variants_of(label: string) -> Result<List<Variant>, string> {
-        .Ok(variants_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The imported items the payload `label` carries.
-    fn use_items_of(label: string) -> Result<List<UseItem>, string> {
-        .Ok(use_items_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The `FnSeat` records the payload `label` carries.
-    fn fn_seats_of(label: string) -> Result<List<FnSeat>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(fn_seat_at(items, j)) for j in 0..items.length]))
-    }
-
-    /// The `given` groups the payload `label` carries.
-    fn givens_of(label: string) -> Result<List<Given>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(given_at(items, j)) for j in 0..items.length]))
-    }
-
-    /// The record-pattern fields the payload `label` carries.
-    fn field_pats_of(label: string) -> Result<List<FieldPat>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(field_pat_at(items, j)) for j in 0..items.length]))
-    }
-
-    /// The projected fields the payload `label` carries.
-    fn proj_fields_of(label: string) -> Result<List<ProjField>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(proj_field_at(items, j)) for j in 0..items.length]))
-    }
-
-    /// The `by` keys the payload `label` carries.
-    fn order_keys_of(label: string) -> Result<List<OrderKey>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(order_key_at(items, j)) for j in 0..items.length]))
-    }
-
-    /// The marks the payload `label` carries.
-    fn marks_of(label: string) -> Result<List<Mark>, string> {
-        .Ok(marks_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The match arms the payload `label` carries.
-    fn arms_of(label: string) -> Result<List<Arm>, string> {
-        .Ok(arms_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The comprehension clauses the payload `label` carries.
-    fn comp_clauses_of(label: string) -> Result<List<CompClause>, string> {
-        .Ok(comp_clauses_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The map entries the payload `label` carries.
-    fn map_entries_of(label: string) -> Result<List<MapEntry>, string> {
-        .Ok(map_entries_at(self.args, self.slot_of(label)?))
+    /// The records the payload `label` carries.
+    fn carried_of(label: string) -> Result<List<Carried>, string> {
+        .Ok(carried_at(self.args, self.slot_of(label)?))
     }
 
     /// Where each capture under `label` was written, in order.
@@ -203,16 +130,6 @@ impl Slots for Builder {
             (row.mark)(self.store, id)
         }
         self.mint(id)
-    }
-
-    /// The catch arms the payload `label` carries.
-    fn catch_arms_of(label: string) -> Result<List<CatchArm>, string> {
-        .Ok(catch_arms_at(self.args, self.slot_of(label)?))
-    }
-
-    /// The spec cases the payload `label` carries.
-    fn cases_of(label: string) -> Result<List<Case>, string> {
-        .Ok(cases_at(self.args, self.slot_of(label)?))
     }
 
     /// The statements the payload `label` carries.
@@ -422,12 +339,12 @@ impl Builder {
 
     /// One map entry, as data.
     fn make_map_entry(m: MapEntry) -> Result<LangNode, string> {
-        .Ok(LangNode.NMapEntry(m))
+        .Ok(LangNode.NCarried(Carried.MapEntry(m)))
     }
 
     /// One comprehension clause, as data.
     fn make_comp_clause(c: CompClause) -> Result<LangNode, string> {
-        .Ok(LangNode.NCompClause(c))
+        .Ok(LangNode.NCarried(Carried.CompClause(c)))
     }
 
     /// A new statement node, at the span its anchor names or the matched
@@ -526,11 +443,7 @@ impl Builder {
     /// other statement (or is empty) has none, and TYPING says what
     /// that means — void, or the fn's promise when the statement
     /// leaves. AN EXPLICIT SCOPE IS A NODE, even when its only content
-    /// is its value: the braces are the author's form, and returning
-    /// the value drops them (the printer cannot keep what the parse
-    /// never minted) — `tail_scoped` (core/store.av) is where a found
-    /// value gets wrapped back in, shared with `branch_value` so the
-    /// two cannot drift.
+    /// is its value: the braces are the author's form.
     fn block_of(stmts: List<StmtId>) -> ExprId { self.block_at(stmts, self.span) }
 
     /// `block_of` over a span of its own — the extent of the statements
@@ -609,119 +522,6 @@ export fn pat_ids_at(args: List<Captured<Token, LangNode>>, i: int) -> List<PatI
     flatten([some_list(pat_id_at(items, j)) for j in 0..items.length])
 }
 
-/// The repeated mark capture at `args[i]`, as marks — in source
-/// order, across every member the rule matched.
-export fn marks_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Mark> {
-    let items = list_at(args, i)
-    flatten([some_list(mark_of(items, j)) for j in 0..items.length])
-}
-
-fn mark_of(args: List<Captured<Token, LangNode>>, i: int) -> Mark? {
-    match args[i] { .Node(.NMark(m)) -> m, _ -> null }
-}
-
-/// The repeated seat capture at `args[i]`, as parameters.
-export fn params_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Param> {
-    let items = list_at(args, i)
-    flatten([some_list(param_of(items, j)) for j in 0..items.length])
-}
-
-fn param_of(args: List<Captured<Token, LangNode>>, i: int) -> Param? {
-    match args[i] { .Node(.NParam(p)) -> p, _ -> null }
-}
-
-/// The repeated variant capture at `args[i]`, as variants.
-export fn variants_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Variant> {
-    let items = list_at(args, i)
-    flatten([some_list(variant_of(items, j)) for j in 0..items.length])
-}
-
-fn variant_of(args: List<Captured<Token, LangNode>>, i: int) -> Variant? {
-    match args[i] { .Node(.NVariant(v)) -> v, _ -> null }
-}
-
-/// The repeated imported-item capture at `args[i]`, as items.
-export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<UseItem> {
-    let items = list_at(args, i)
-    flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
-}
-
-fn fn_seat_at(args: List<Captured<Token, LangNode>>, i: int) -> FnSeat? {
-    match args[i] { .Node(.NFnSeat(r)) -> r, _ -> null }
-}
-
-fn given_at(args: List<Captured<Token, LangNode>>, i: int) -> Given? {
-    match args[i] { .Node(.NGiven(g)) -> g, _ -> null }
-}
-
-fn field_pat_at(args: List<Captured<Token, LangNode>>, i: int) -> FieldPat? {
-    match args[i] { .Node(.NFieldPat(f)) -> f, _ -> null }
-}
-
-fn proj_field_at(args: List<Captured<Token, LangNode>>, i: int) -> ProjField? {
-    match args[i] { .Node(.NProjField(f)) -> f, _ -> null }
-}
-
-fn order_key_at(args: List<Captured<Token, LangNode>>, i: int) -> OrderKey? {
-    match args[i] { .Node(.NOrderKey(k)) -> k, _ -> null }
-}
-
-fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
-    match args[i] { .Node(.NUseItem(u)) -> u, _ -> null }
-}
-
-/// The repeated map-entry capture at `args[i]`, as entries.
-export fn map_entries_at(args: List<Captured<Token, LangNode>>, i: int) -> List<MapEntry> {
-    let items = list_at(args, i)
-    flatten([some_list(map_entry_at(items, j)) for j in 0..items.length])
-}
-
-fn map_entry_at(args: List<Captured<Token, LangNode>>, i: int) -> MapEntry? {
-    match args[i] { .Node(.NMapEntry(m)) -> m, _ -> null }
-}
-
-/// The repeated arm capture at `args[i]`, as arms.
-export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
-    let items = list_at(args, i)
-    flatten([some_list(arm_at(items, j)) for j in 0..items.length])
-}
-
-/// The repeated catch-arm capture at `args[i]`.
-export fn catch_arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CatchArm> {
-    let items = list_at(args, i)
-    flatten([some_list(catch_arm_at(items, j)) for j in 0..items.length])
-}
-
-fn catch_arm_at(args: List<Captured<Token, LangNode>>, i: int) -> CatchArm? {
-    match args[i] { .Node(.NCatchArm(a)) -> a, _ -> null }
-}
-
-/// The repeated case capture at `args[i]`, flattened — a `given`
-/// group's cases and a lone `then`'s alike.
-export fn cases_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Case> {
-    let items = list_at(args, i)
-    flatten([cases_of(items, j) for j in 0..items.length])
-}
-
-fn cases_of(args: List<Captured<Token, LangNode>>, i: int) -> List<Case> {
-    match args[i] { .Node(.NCases(cs)) -> cs, _ -> [] }
-}
-
-fn arm_at(args: List<Captured<Token, LangNode>>, i: int) -> Arm? {
-    match args[i] { .Node(.NArm(a)) -> a, _ -> null }
-}
-
-/// The comprehension clause at `args[i]`, when that capture is one.
-export fn comp_clause_at(args: List<Captured<Token, LangNode>>, i: int) -> CompClause? {
-    match args[i] { .Node(.NCompClause(c)) -> c, _ -> null }
-}
-
-/// The repeated comprehension clause capture at `args[i]`, as clauses.
-export fn comp_clauses_at(args: List<Captured<Token, LangNode>>, i: int) -> List<CompClause> {
-    let items = list_at(args, i)
-    flatten([some_list(comp_clause_at(items, j)) for j in 0..items.length])
-}
-
 /// The token at `args[i]`, when that capture is one.
 export fn token_at(args: List<Captured<Token, LangNode>>, i: int) -> Token? {
     match args[i] { .Terminal(t) -> t, _ -> null }
@@ -735,8 +535,15 @@ export fn scoped_at(t: Token?) -> Scoped? {
     Scoped(t!.text)
 }
 
-/// List delivery for the repeated capture at `args[i]` (scalar and
-/// absent normalize).
+/// The records riding the captures at `args[i]`, in written order.
+fn carried_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Carried> {
+    flatten([some_list(carried_in(c)) for c in list_at(args, i)])
+}
+
+fn carried_in(c: Captured<Token, LangNode>) -> Carried? {
+    match c { .Node(.NCarried(r)) -> r, _ -> null }
+}
+
 export fn list_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Captured<Token, LangNode>> {
     match args[i] {
         .Many(xs) -> xs,
@@ -799,7 +606,6 @@ fn expr_facet_rows() -> List<ExprFacetRow> {
         ExprFacetRow { side: "hole", mark: (st, id) -> st.mark_hole(id) },
         ExprFacetRow { side: "run_hole", mark: (st, id) -> st.mark_run_hole(id) },
         ExprFacetRow { side: "trailing", mark: (st, id) -> st.mark_trailing(id) },
-        ExprFacetRow { side: "statement_if", mark: (st, id) -> st.mark_statement_if(id) },
     ]
 }
 

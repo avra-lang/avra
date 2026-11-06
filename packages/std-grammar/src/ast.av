@@ -22,10 +22,13 @@
 //! token) are resolved at parse time into explicit fields (`start`,
 //! `Item.expect`), so consumers read structure, never conventions.
 
+use @std.meta.{derive}
+use fielded_derive.{Fielded}
 use util.{flatten, distinct, is_name_start}
 use diagnostics.{Want}
 /// A named bag of rules and which one parsing begins at. `start` always
 /// names a rule in `rules`.
+@derive(Fielded)
 export type Grammar = { name: string, start: string, rules: List<Rule> }
 
 impl Grammar {
@@ -54,10 +57,12 @@ fn item_words(x: Item) -> List<string> {
 }
 
 /// One `name = body` line: a name and its right-hand side.
+@derive(Fielded)
 export type Rule = { name: string, body: Alt }
 
 /// Alternatives separated by `|`, tried top to bottom; first match
 /// wins. A rule body is always an Alt, even with one branch.
+@derive(Fielded)
 export type Alt = { branches: List<Seq> }
 
 /// What a branch can BEGIN with, closed to terminals and in the order
@@ -90,15 +95,19 @@ export type BranchStart = {
 /// labeled `fold` and a repeated group, each branch of which (a TURN)
 /// builds a node reading the value so far under that label. A turn
 /// carries the label it reads as `seed`, resolved at parse so the
-/// notation says only `@fold(label)`.
+/// notation says only `@fold(label)`. `aliased` marks a branch that spells
+/// a node a second way: a host that derives a node's surface from its rules
+/// reads the other branches and skips this one.
+@derive(Fielded)
 export type Seq = {
     items: List<Item>,
     build: Build?,
     recover: Recover?,
-    start: BranchStart? = null,
+    @unwritten start: BranchStart? = null,
     operators: Operators? = null,
     fold: string? = null,
     seed: string? = null,
+    aliased: bool = false,
 }
 
 /// How a tier groups its own operators. `Single` leaves a second
@@ -110,11 +119,13 @@ export enum Assoc {
 
 /// An operator whose right side is a rule, not an operand (`is`). Its own
 /// `build` wins over its tier's.
+@derive(Fielded)
 export type Suffix = { word: string, rule: string, build: Build? = null }
 
 /// One precedence tier; the tiers of an `Operators` run loosest
 /// first. A word is the tokens of one operator, adjacent (`>` `>`).
 /// A tier's own `build` overrides the branch's.
+@derive(Fielded)
 export type Tier = { assoc: Assoc, words: List<List<string>>, suffixes: List<Suffix>, build: Build? }
 
 impl Tier {
@@ -162,7 +173,8 @@ export type Operators = {
 /// class, as its place in the ready grammar's `terms`, or a `.Lit` prim's
 /// text, as its place in `lits` — -1 until `ready` numbers it, and for any
 /// other prim.
-export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect?, head: bool = false, trailer: bool = false, listed: bool = false, slot: int = 0 - 1 }
+@derive(Fielded)
+export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect?, head: bool = false, trailer: bool = false, @unwritten listed: bool = false, @unwritten slot: int = 0 - 1 }
 
 /// THE LIST LAW: a label that can bind MORE THAN ONCE in one match
 /// COLLECTS, and one that binds once carries its value. `listed` is
@@ -378,6 +390,7 @@ export enum Slot {
 /// A payload the rule states rather than captures — `-> Expr.BoolLit(value = true)`.
 /// A word or literal is its `text`; a node built in place or a list is `term`,
 /// which `text` then leaves empty (`stated` reads either as one `Term`).
+@derive(Fielded)
 export type Fixed = { name: string, text: string, term: Term? = null }
 
 impl Fixed {
@@ -411,8 +424,10 @@ export fn node_builder_name(owner: string, variant: string) -> string {
 /// The error message a specific token owes when it is missing. Written
 /// `@expect(tok, msg)` trailing the branch; stored on the Item it
 /// names, so the token needs no field here.
+@derive(Fielded)
 export type Expect = { message: string }
 
 /// A branch's failure policy: skip ahead to `sync_to` and continue, so
 /// one parse reports every error, not just the first.
+@derive(Fielded)
 export type Recover = { sync_to: string }

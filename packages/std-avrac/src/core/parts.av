@@ -207,7 +207,7 @@ impl SyntaxArena {
     /// diverges — it answers nothing, so it joins with anything.
     fn leaves(e: ExprId) -> bool {
         match self.expr(e) {
-            .Block(stmts, _) -> self.tail_of(e) == null && stmts.last() != null && self.diverges(stmts.last()!),
+            .Block(stmts) -> self.tail_of(e) == null && stmts.last() != null && self.diverges(stmts.last()!),
             _ -> false,
         }
     }
@@ -272,9 +272,14 @@ impl SyntaxArena {
         [n! for n in notes if n != null && !n!.is_empty()]
     }
 
-    /// A block's statements, when the expression is one.
+    /// A block's statements, all of them, when the expression is one.
     fn block_stmts(e: ExprId) -> List<StmtId>? {
-        match self.expr(e) { .Block(stmts, _) -> stmts, _ -> null }
+        match self.expr(e) { .Block(stmts) -> stmts, _ -> null }
+    }
+
+    /// The statements a block walks before its answer.
+    fn lead_of(e: ExprId) -> List<StmtId> {
+        self.lead_stmts(self.block_stmts(e) ?? [])
     }
 
     /// A setting's field and value, when the statement is one.
@@ -304,6 +309,17 @@ impl SyntaxArena {
         }
     }
 
+    /// The lambda a call argument stands as: the closure itself, or the
+    /// one a sugar written in its place means.
+    fn closure_parts(e: ExprId) -> LambdaParts? {
+        let f? = self.body_fn(e) else { return null }
+        self.lambda_parts(f)
+    }
+
+    /// The expression a call argument's closure is: itself, or the lambda
+    /// a sugar in its place means.
+    fn closure_of(e: ExprId) -> ExprId { self.body_fn(e) ?? e }
+
     fn lambda_parts(e: ExprId) -> LambdaParts? {
         match self.expr(e) {
             .Lambda(params, body) -> LambdaParts { params: params, body: body },
@@ -323,7 +339,7 @@ impl SyntaxArena {
     /// — a body that IS its value.
     fn lone_value(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Block(stmts, _) -> if stmts.is_empty() { self.tail_of(e) } else { null },
+            .Block(stmts) -> if self.lead_of(e).is_empty() { self.tail_of(e) } else { null },
             _ -> null,
         }
     }
@@ -332,7 +348,7 @@ impl SyntaxArena {
     /// a statement. Every reader asks here, so where a value lives is
     /// one decision.
     fn tail_of(e: ExprId) -> ExprId? {
-        match self.expr(e) { .Block(_, value) -> value, _ -> null }
+        match self.expr(e) { .Block(stmts) -> self.tail_value(stmts), _ -> null }
     }
 
     /// A component declaration's pieces, when the statement is one.

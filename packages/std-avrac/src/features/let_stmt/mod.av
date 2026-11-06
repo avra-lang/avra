@@ -21,8 +21,10 @@ export fn let_stmt() -> LanguageFeature {
     LanguageFeature let_stmt {
         gram: grammar {
             stmt = "let" "_" "=" value:expression END -> Stmt.Discard
-            stmt = "let" name:NAME "?" "=" subject:expression ( trailing:trailing )? "else" "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.LetElse by let_else_written @head(subject)
-            stmt = "let" pat:destructure "=" subject:expression ( "else" "{" ( otherwise:stmt | BREAK )* "}" )? END -> Expr.LetPattern by let_pattern_written
+            stmt = "let" name:NAME "?" "=" subject:let_subject "else" "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.LetElse
+            let_subject = held:expression blocks:trailing @head(held) -> Expr.Trailed(subject = held, blocks = blocks) | value:expression @head(value) -> value
+            stmt = "let" pat:destructure "=" subject:expression "else" "{" ( otherwise:stmt | BREAK )* "}" END -> Stmt.ExprStmt(value = Expr.LetPattern(pat = pat, subject = subject, otherwise = Expr.Block(stmts = otherwise)))
+            stmt = "let" pat:destructure "=" subject:expression END -> Stmt.ExprStmt(value = Expr.LetPattern(pat = pat, subject = subject))
             stmt = "let" name:NAME ( ":" ty:type )? "=" value:expression END @recover(sync_to: "END") -> Stmt.Let
             stmt = is_state:STATE name:NAME ( ":" ty:type )? "=" value:expression END -> Stmt.MutLet
         }

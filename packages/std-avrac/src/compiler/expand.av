@@ -38,6 +38,7 @@ use core.{
     faceted,
 }
 use features.{
+    AnnotationFact,
     Unsettled,
     unsettled_label,
     MetaVal,
@@ -148,6 +149,7 @@ impl Workspace {
         let vis = self.visible(f)
         mut made: List<DeclId> = []
         let gatherers = self.decls.collect_enums()
+        let gathered = self.marks_gathered(f, p)
         for d in self.written_decls(f, p) { made = made.concat(self.derived_for(gatherers, d)) }
         for d in self.written_decls(f, p) {
             for w in self.declared_work(f, d, p, vis) {
@@ -156,7 +158,7 @@ impl Workspace {
             made = made.concat(self.composed(f, d, p, vis))
             made = made.concat(self.delegated(f, d, p, vis))
         }
-        self.hold_marks_to_a_reader(f, p, vis)
+        self.hold_marks_to_a_reader(f, p, vis, gathered)
         self
             .relation(Family.Expanded)
             .finish(f.index, DbRow.Expanded(made), fp_str(joined([self.decl_ref(d) for d in made], "\n")))
@@ -635,11 +637,12 @@ impl Workspace {
     /// statement, so a per-decl walk asks the same marks twice — once
     /// with the owner's claims and once with none, and the second run
     /// refuses what the first allowed.
-    fn hold_marks_to_a_reader(f: FileId, p: Parsed, vis: Namespace) {
-        for s in p.stmts { self.hold_the_marks_of(f, s, p, vis) }
+    fn hold_marks_to_a_reader(f: FileId, p: Parsed, vis: Namespace, gathered: List<DeclId>) {
+        for s in p.stmts { self.hold_the_marks_of(f, s, p, vis, gathered) }
     }
 
-    fn hold_the_marks_of(f: FileId, s: StmtId, p: Parsed, vis: Namespace) {
+    fn hold_the_marks_of(f: FileId, s: StmtId, p: Parsed, vis: Namespace, gathered: List<DeclId>) {
+        self.speak_unread_own_marks(f, s, p, vis, gathered)
         let worn = self.worn_marks(f, s, p)
         if worn.is_empty() { return }
         let owner? = self
@@ -656,6 +659,61 @@ impl Workspace {
         self
             .decls
             .speak_expansion(f, [self.unclaimed(w, claimed) for w in worn if !claimed.contains(w.mark.name)])
+    }
+
+    /// A declaration's OWN marks are data for the collect that gathers it, and one the
+    /// program does not export is gathered only from inside the build — so a mark on such a
+    /// declaration no collect of the build gathers, and its own derives do not claim, is
+    /// read by nothing — a gathered one's marks are its collect's to read. An exported
+    /// one may be gathered by a package outside the build, and is not judged here.
+    fn speak_unread_own_marks(
+        f: FileId,
+        s: StmtId,
+        p: Parsed,
+        vis: Namespace,
+        gathered: List<DeclId>,
+    ) {
+        let d? = self
+            .decls
+            .decls_of_file(f)
+            .find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else {
+            return
+        }
+        if self.decls.decl(d).exported { return }
+        let marks = self.decls.member_marks(d, null)
+        if marks.is_empty() { return }
+        let worn = self.decls.annotations_of(d)
+        if gathered.any((g: DeclId) -> same_decl(g, d)) { return }
+        let claimed? = self.claimed_marks(f, d, p, vis) ?? marks_alone(marks, worn) else { return }
+        let unread = [m for m in marks if !claimed.contains(m.name)]
+        self
+            .decls
+            .speak_expansion(f, [self.unclaimed(WornMark { mark: m, file: f }, claimed) for m in unread])
+    }
+
+    /// The declarations a collect of the build gathers by a mark. Asked only of a file holding
+    /// a declaration the program does not export that wears an annotation, and before the
+    /// file's expansion reads a declaration: gathering admits each collect's scope.
+    fn marks_gathered(f: FileId, p: Parsed) -> List<DeclId> {
+        if !self
+            .written_decls(f, p)
+            .any(
+                (d: DeclId) -> !self.decls.decl(d).exported &&
+                    !self.decls.annotations_of(d).is_empty(),
+            ) {
+            return []
+        }
+        flatten([self.gathered_by(c) for c in self.decls.collects()])
+    }
+
+    /// What one collect gathers, when it gathers by a mark.
+    fn gathered_by(c: Decl) -> List<DeclId> {
+        let store = self.parsed(c.file).store
+        let stmt = self.written_stmt(c.file, c.id)
+        let kind? = store.collect_parts(stmt)?.kind ?? store.collect_enum_parts(stmt)?.kind else { return [] }
+        let scope? = store.collect_scope(stmt) else { return [] }
+        if kind.mark() == null { return [] }
+        [m.id for m in self.decls.gathered_into(kind, scope, c.file)]
     }
 
     /// The marks a declaring statement wears, each with the file that
@@ -962,9 +1020,9 @@ impl Workspace {
         let stmts = self.copied(f, file, at, fills, HoleKind.Expression).stmts
         let store = self.decls.store_of(f)
         let last? = stmts.last() else { return store.alloc_expr(Expr.Error) }
-        let value? = store.answer_of(last) else { return store.alloc_expr(Expr.Block(stmts, null)) }
+        let value? = store.answer_of(last) else { return store.alloc_expr(Expr.Block(stmts)) }
         if stmts.length == 1 { return value }
-        store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value))
+        store.alloc_expr(Expr.Block(stmts))
     }
 
     /// A template's site with its file read back from the name the quote spelled it by.
@@ -1567,4 +1625,10 @@ fn written(p: Parsed, e: ExprId) -> string {
     let here: Span? = if p.store.spanned_elsewhere(e) { null } else { p.store.expr_span(e) }
     let at? = here else { return arg_text(p.store, e) }
     p.source.text.substring(at.lo, at.hi)
+}
+
+/// What a declaration wearing nothing but marks claims: the compiler's own words alone —
+/// no derive stands on it to read the rest. Unknowable when it wears anything else.
+fn marks_alone(marks: List<Mark>, worn: List<AnnotationFact>) -> List<string>? {
+    if marks.length == worn.length { own_marks() } else { null }
 }

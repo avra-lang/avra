@@ -278,7 +278,7 @@ fn fold_seed(mut cx: TypeCx, mc: MethodCall) -> TypeId? {
 fn fold_arrow(mut cx: TypeCx, f: ExprId, acc: TypeId, elem: TypeId) -> Arrow? {
     let fnty: TypeId = cx.retype_seated(f, [acc, elem], no_marks(2), acc) ?? cx.type_at(f)
     if cx.errored_ty(fnty) {
-        let parts: LambdaParts? = cx.view.store.lambda_parts(f)
+        let parts: LambdaParts? = cx.view.store.closure_parts(f)
         if parts != null && parts!.params.length != 2 { let _ = misseated_fold(cx, f, parts!.params.length) }
         return null
     }
@@ -487,7 +487,7 @@ fn predicate_seat(mut cx: TypeCx, mc: MethodCall, name: string) -> WalkSeat? {
 /// typed — the walk declares no answer for the block to hear.
 fn absent_tail(cx: TypeCx, mc: MethodCall) {
     let f? = mc.args.first() else { return }
-    let parts? = cx.view.store.lambda_parts(f) else { return }
+    let parts? = cx.view.store.closure_parts(f) else { return }
     if cx.view.store.is_sugar_match(parts.body) { cx.facts.mark_null_tail(parts.body) }
 }
 
@@ -510,7 +510,7 @@ fn walk_arg(
     if cx.errored_ty(fnty) {
         // a lambda with the wrong seat count could never be fed —
         // the walk says so; any other error already spoke
-        let parts: LambdaParts? = cx.view.store.lambda_parts(args[0])
+        let parts: LambdaParts? = cx.view.store.closure_parts(args[0])
         if parts != null && parts!.params.length != 1 {
             let _ = misseated_walk(cx, name, args[0], parts!.params.length)
         }

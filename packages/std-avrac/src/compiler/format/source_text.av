@@ -800,19 +800,16 @@ impl SourceText {
     mut fn block(body: ExprId, one_line: bool, depth: int) -> string {
         let end = self.block_end(body)
         match self.store.expr(body) {
-            .Block(stmts, _) -> self.braced("", stmts, self.store.tail_of(body), end, one_line, depth),
+            .Block(_) -> self
+                .braced("", self.store.lead_of(body), self.store.tail_of(body), end, one_line, depth),
             rest -> self.braced("", [], body, end, one_line, depth),
         }
     }
 
     /// A written `{ … }`'s own closing brace, as the printer's trailing-
-    /// trivia boundary — `tail_scoped` (core/store.av) narrows a
-    /// one-statement scope's SPAN to its lone value's, for a diagnostic
-    /// pointing at the answer, and keeps the brace's real offset beside
-    /// it (`written_close`) exactly for this: a comment sitting between
-    /// the value and `}` still reads as inside the scope that holds it.
+    /// trivia boundary.
     fn block_end(id: ExprId) -> int {
-        self.store.written_close(id) ?? end_of(self.store.expr_span(id))
+        end_of(self.store.expr_span(id))
     }
 
     /// A braced body: its statements, its value, and the remarks that
@@ -830,9 +827,9 @@ impl SourceText {
         depth: int,
     ) -> string {
         let body = flatten([self.statement(s, depth + 1) for s in stmts])
-        // AN ANNOTATED TAIL STAYS A STATEMENT (core/store.av's
-        // `tail_scoped`): its own answer becomes the block's `value`
-        // too, one node walked both ways. `stmts` already printed it
+        // AN ANNOTATED TAIL STAYS A STATEMENT (`lead_stmts`, core/store.av):
+        // its own answer is the block's `value` too, one node walked both
+        // ways. `stmts` already printed it
         // once; a second, unconditional value line would print it
         // twice.
         let lines = if value == null {
@@ -1164,11 +1161,7 @@ impl SourceText {
     }
 
     /// One case's `then` line, standing alone (its group is empty).
-    /// `c.span` covers the whole `then "name" { … }`, never `c.body`'s
-    /// own — a one-statement body's Block wears the ANSWER's span (so
-    /// a diagnostic about it points at the answer, never the braces:
-    /// `tail_scoped`, core/store.av), which reads a multi-line body as
-    /// flat whenever its one statement happens to fit one line itself.
+    /// `c.span` covers the whole `then "name" { … }`.
     mut fn then_line(c: Case, at: int) -> List<string> {
         self
             .trivia_before(start_of(c.span), at)
@@ -1333,7 +1326,11 @@ impl SourceText {
                 atom_tier,
                 parent,
             ),
-            .Block(stmts, _) -> grouped(self.block_expr(stmts, self.store.tail_of(id), id, depth), atom_tier, parent),
+            .Block(_) -> grouped(
+                self.block_expr(self.store.lead_of(id), self.store.tail_of(id), id, depth),
+                atom_tier,
+                parent,
+            ),
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Emit(value) -> grouped("yield ${self.expression(value, loosest_tier, depth, c)}", atom_tier, parent),
             .Produce(elem, cap, body) -> grouped(self.produce_group(elem, cap, body, id, depth), atom_tier, parent),
@@ -1419,6 +1416,9 @@ impl SourceText {
                 parent,
             ),
             .ArmsBody(arms) -> self.arms_braced(arms, id, depth),
+            .Trailed(subject, _) -> self.expression(self.store.meant(id) ?? subject, parent, depth, c),
+            .BlockLambda(_, _) -> self.trailing_block(id, depth),
+            .BracedHead(_, _, head, _, _) -> head,
             .InstanceFn(_, _) -> self.instance_body(id, depth),
             .ChainCall(subject, name, args) -> grouped(
                 "${self.chain_subject(subject, depth, c)}?.${source_name(name.of)}${self.args_wrapped(args, depth)}",
@@ -1728,9 +1728,9 @@ impl SourceText {
     /// block answers with.
     mut fn let_rest_lines(block: ExprId, depth: int) -> List<string> {
         match self.store.expr(block) {
-            .Block(stmts, value) -> {
-                let body = flatten([self.statement(s, depth) for s in stmts])
-                let v? = value else { return body }
+            .Block(_) -> {
+                let body = flatten([self.statement(s, depth) for s in self.store.lead_of(block)])
+                let v? = self.store.tail_of(block) else { return body }
                 body
                     .concat(self.trivia_before(start_of(self.store.expr_span(v)), depth))
                     .concat([source_line(depth, self.expression(v, loosest_tier, depth))])
@@ -2315,7 +2315,7 @@ impl SourceText {
     /// whole mechanism) whose seat prints inside the braces, never
     /// before them.
     mut fn trailing_block(id: ExprId, depth: int) -> string {
-        match self.store.expr(id) {
+        match self.store.expr(self.store.closure_of(id)) {
             .Lambda(params, body) -> self.trailing_lambda(params, body, id, depth),
             rest -> "{ ${self.expression(id, loosest_tier, depth)} }",
         }
@@ -2327,7 +2327,8 @@ impl SourceText {
             let one = self.span_flat(self.store.expr_span(id))
             let end = self.block_end(body)
             return match self.store.expr(body) {
-                .Block(stmts, _) -> self.braced(head, stmts, self.store.tail_of(body), end, one, depth),
+                .Block(_) -> self
+                    .braced(head, self.store.lead_of(body), self.store.tail_of(body), end, one, depth),
                 rest -> self.braced(head, [], body, end, one, depth),
             }
         }

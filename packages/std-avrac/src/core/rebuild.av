@@ -192,9 +192,7 @@ export fn quote_kind(store: SyntaxArena, e: ExprId) -> QuoteKind {
             if !arms.is_empty() { return QuoteKind.Arms }
             if ss.is_empty() { return QuoteKind.Stmts }
             if ss.all((s: StmtId) -> store.bare_hole(s)) { return QuoteKind.Holes }
-            if store.hole_stmt(ss.last()!) == null &&
-                store.stmt(ss.last()!) is .ExprStmt &&
-                !store.guard_stmt(ss.last()!) {
+            if store.hole_stmt(ss.last()!) == null && store.answer_of(ss.last()!) != null {
                 return QuoteKind.Expr
             }
             if ss.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
@@ -215,8 +213,8 @@ impl Rebuilder {
             if !self.copying { return e }
             return self.placed_fill(e, self.fill_expr(k!))
         }
-        let tail: int? = self.tail_hole(x)
-        if tail != null { return self.tail_block(e, x, tail!) }
+        let tail: int? = self.tail_hole(e)
+        if tail != null { return self.tail_block(e, tail!) }
         let known? = self.copy_of(e) else { return self.rebuilt_expr(e, x) }
         known
     }
@@ -243,32 +241,24 @@ impl Rebuilder {
         copy
     }
 
-    /// The hole a block's value is, when it is a lone one.
-    fn tail_hole(x: Expr) -> int? {
-        match x {
-            .Block(ss, value) -> {
-                let v? = value else { return null }
-                let k? = self.lone_hole(self.src.ident_name(v)) else { return null }
-                if self.runs[k] { null } else { k }
-            },
-            _ -> null,
-        }
+    /// The hole a block's tail statement is, when it is a lone one.
+    fn tail_hole(e: ExprId) -> int? {
+        let stmts? = self.src.block_stmts(e) else { return null }
+        let last? = stmts.last() else { return null }
+        let k? = self.src.hole_stmt(last) else { return null }
+        if self.runs[k] { null } else { k }
     }
 
     /// A block whose LAST statement is a lone hole: the fill is the
-    /// block's tail — statements join it and the last that answers is
-    /// its value, an expression is its value outright.
-    mut fn tail_block(e: ExprId, x: Expr, k: int) -> ExprId {
+    /// block's tail — statements join it, an expression is its value outright.
+    mut fn tail_block(e: ExprId, k: int) -> ExprId {
         self.classify(k, HoleKind.Tail)
-        let ss: List<StmtId> = match x { .Block(held, _) -> held, _ -> [] }
+        let init = self.src.block_stmts(e)!
         self.holed.push(false)
-        let init = self.stmts(ss)
+        let kept = self.stmts(init.slice(0, init.length - 1))
         let holed = self.holed.pop()
         if !self.copying { return e }
-        let all = init.concat(self.fill_tail(k))
-        let last? = all.last() else { return self.minted_expr(e, Expr.Block([], null), holed) }
-        let value? = self.dst.answer_of(last) else { return self.minted_expr(e, Expr.Block(all, null), holed) }
-        self.minted_expr(e, Expr.Block(all.slice(0, all.length - 1), value), holed)
+        self.minted_expr(e, Expr.Block(kept.concat(self.fill_tail(k))), holed)
     }
 
     mut fn expr_opt(e: ExprId?) -> ExprId? {

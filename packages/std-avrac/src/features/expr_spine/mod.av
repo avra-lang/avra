@@ -59,7 +59,7 @@ export fn expr_spine() -> LanguageFeature {
             catch_value = value:expression -> Record.CatchArm
             argument = name:NAME ":" value:expression -> Expr.Named | ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
             element = ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
-            trailing = "{" ( seats:trailing_seat ( "," seats:trailing_seat )* ","? "->" )? ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> Expr.Lambda by block_lambda_written
+            trailing = "{" ( seats:trailing_seat ( "," seats:trailing_seat )* ","? "->" )? ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> Expr.BlockLambda(seats = seats, body = Expr.Block(stmts = stmts))
             trailing_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME -> Record.ParamSyntax
             stmt = "|>" expression END -> Refusal.leading_pipe
             asked = "." name:NAME ( "(" ( args:asked_payload ( "," args:asked_payload )* ","? )? ")" )? -> Pat.Variant | name:NAME ":" ty:type_atom -> Pat.Typed
@@ -78,7 +78,7 @@ export fn expr_spine() -> LanguageFeature {
             } -> Expr.Binary
             unary = "!" value:unary -> Expr.Not | "-" value:unary -> Expr.Neg | "~" value:unary -> Expr.Bitnot | withed
             withed = subject:postfix "with" "{" BREAK? fields:NAME ":" values:expression ( "," BREAK? fields:NAME ":" values:expression )* ","? BREAK? "}" -> Expr.With | v:postfix
-            postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> Expr.TypeLiteral | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.MethodCall | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" else_block:trailing )? @trailer(blocks) -> Expr.Call by trailed_written )* @fold(subject) -> subject
+            postfix = subject:primary ( "." "type" "(" ty:type ")" @expect(")", "expected `)` to close the type literal") -> Expr.TypeLiteral | "?." "type" "(" ty:type ")" @expect(")", "expected `)` to close the chained type literal") -> Expr.ChainType | "." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.MethodCall | "." name:NAME -> Expr.Prop | "?." name:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainCall | "?." name:NAME -> Expr.Chain | "?." "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.ChainApply | "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.CallValue | "[" index:expression "]" @expect("]", "expected `]` to close the index") -> Expr.Index | "!" -> Expr.Force | "?" -> Expr.Propagate | blocks:trailing ( "else" blocks:trailing )? @trailer(blocks) -> Expr.Trailed )* @fold(subject) -> subject
             primary = bits:FRACTION -> Expr.FloatLit | value:INTEGER -> Expr.IntLit | name:NAME -> Expr.Ident | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
         }
         diags: codes

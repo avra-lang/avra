@@ -22,6 +22,9 @@ use features.{zip_defect_of}
 /// between them. A HOLE'S TOKENS ARE DEFERRED to after the closing brace
 /// in the stream (grammar/lexer.av), so the branch's own span ends at the
 /// last hole: the quote's span is its braces', read straight off the source.
+///
+/// STAYS A FUNCTION: it splits the body into source runs and holes by offset and merges arms
+/// with hole statements.
 @computed
 fn quote_written(s: dyn Slots) -> Result<Built, string> {
     let store = s.arena()
@@ -38,7 +41,7 @@ fn quote_written(s: dyn Slots) -> Result<Built, string> {
     let starts = [open.hi].concat([e.hi for e in ends])
     let stops = [b.lo for b in begins].concat([close.lo])
     let parts = [s.source().substring(starts[j], stops[j]) for j in 0..starts.length]
-    let body_stmts = if arms.is_empty() { store.answered(stmts) } else { [] }
+    let body_stmts = if arms.is_empty() { stmts } else { [] }
     let body_arms = if arms.is_empty() { [] } else { merged(store, arms, stmts) }
     let e = store
         .alloc_expr(

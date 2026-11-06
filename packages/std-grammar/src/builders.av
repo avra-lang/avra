@@ -66,6 +66,8 @@ export enum PendingAnnot {
     AOperators(tiers: List<Tier>)
     /// `@fold(label)` — the branch folds its repeated group's turns over the seed `label`.
     AFold(label: string)
+    /// `@alias` — the branch spells its node a second way.
+    AAlias
 }
 
 /// All-caps-and-underscores: the convention marking a lexer terminal
@@ -288,7 +290,7 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                 if rec != null { return .Err("duplicate @recover on one branch") }
                 rec = Recover { sync_to: sync_to }
             },
-            .AOperators(_) or .AFold(_) -> nothing_attached(),
+            .AOperators(_) or .AFold(_) or .AAlias -> nothing_attached(),
             .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? },
             .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? },
         }
@@ -305,6 +307,7 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
             recover: rec,
             operators: written_operators(blocks),
             fold: folded,
+            aliased: annots.any(is_alias(it)),
         },
     )
 }
@@ -322,11 +325,18 @@ fn seeded_prim(p: Prim, label: string) -> Prim {
     }
 }
 
+fn is_alias(an: PendingAnnot) -> bool {
+    match an {
+        .AAlias -> true,
+        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) or .AOperators(_) or .AFold(_) -> false,
+    }
+}
+
 /// The tiers an `@operators` annotation writes; none for any other.
 fn operator_blocks(an: PendingAnnot) -> List<List<Tier>> {
     match an {
         .AOperators(tiers) -> [tiers],
-        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) or .AFold(_) -> [],
+        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) or .AFold(_) or .AAlias -> [],
     }
 }
 
@@ -502,6 +512,7 @@ export fn grammar_build<T>(
             let label = tok_text(lex, args[0], "the fold's seed label")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.AFold(label)))
         },
+        "build_alias" -> ok<T>(GrammarNode.NAnnot(PendingAnnot.AAlias)),
         "build_operators" -> ok<T>(GrammarNode.NAnnot(PendingAnnot.AOperators(as_tiers(args[0])?))),
         "build_tier" -> {
             let a = want(node_of(args[0])?.as_assoc(), "an associativity")?

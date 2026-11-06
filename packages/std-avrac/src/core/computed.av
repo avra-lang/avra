@@ -7,27 +7,11 @@ use @std.meta.{Named}
 /// rule's `by` names, gathered by `computes` (features/node_scaffold.av).
 export fn computed(_f: Named) {}
 
-/// THE BLOCK LAW: statements as a scope answering with its tail.
-@computed
-fn block_written(s: dyn Slots) -> Result<Built, string> {
-    .Ok(Built.Expr(s.arena().block_over(s.stmts_of("stmts")?, s.built_at())))
-}
-
-/// A `for` head's `lo..hi`: the range node, printed bare by its loop. Its surface is
-/// the loop's, so the range's own one wording stays the parenthesised `(lo..hi)`.
-@computed
-fn counted_written(s: dyn Slots) -> Result<Built, string> {
-    .Ok(Built.Expr(s.made_expr(Expr.Range(s.expr_of("lo")?, s.expr_of("hi")?))?))
-}
-
-/// A pattern's `..`: the wildcard for what remains. `_` is the wildcard's one wording.
-@computed
-fn rest_wild_written(s: dyn Slots) -> Result<Built, string> {
-    .Ok(Built.Pat(s.arena().alloc_pat(Pat.Wild, s.built_at())))
-}
-
 /// An expression alone on a line, or an assignment when an `=` follows
 /// it: one parse of the expression serves both.
+///
+/// STAYS A FUNCTION: the statement is an assignment or an expression by what follows its head;
+/// two rules would parse every expression statement twice.
 @computed
 fn expr_stmt_written(s: dyn Slots) -> Result<Built, string> {
     let target = s.expr_of("target")?
@@ -35,26 +19,3 @@ fn expr_stmt_written(s: dyn Slots) -> Result<Built, string> {
     .Ok(Built.Stmt(s.made_stmt(Stmt.Assign(target, value))?))
 }
 
-/// `let x? = subject { … } else { … }` — the subject takes the one
-/// trailing block written before the `else`; the `else` is the let's own.
-@computed
-fn let_else_written(s: dyn Slots) -> Result<Built, string> {
-    let subject = s.arena().trailed(s.expr_of("subject")?, s.exprs_of("trailing")?, s.built_at())?
-    .Ok(
-        Built
-            .Stmt(s.made_stmt(Stmt.LetElse(Scoped(s.text_of("name")?), subject, s.stmts_of("stmts")?))?),
-    )
-}
-
-/// `let pattern = subject [else { … }]` — a node still waiting for its
-/// block, wrapped in the statement that evaluates the subject; the block
-/// the statement lands in folds the statements after it into the node.
-@computed
-fn let_pattern_written(s: dyn Slots) -> Result<Built, string> {
-    let store = s.arena()
-    let otherwise = s.stmts_of("otherwise")?
-    let held: ExprId? = if otherwise.is_empty() { null } else { store.block_over(otherwise, store.stmts_extent(otherwise)) }
-    let node = store
-        .alloc_expr(Expr.LetPattern(s.pat_of("pat")?, s.expr_of("subject")?, held, null), s.built_at())
-    .Ok(Built.Stmt(store.alloc_stmt(Stmt.ExprStmt(node), s.built_at())))
-}

@@ -14,9 +14,13 @@ use core.{
     Built,
     computed,
     named_ref,
+    worded_CollectScope,
 }
 
 /// `collect name: List<T> = kind in scope as Ty { field: it.path, … } by …`.
+///
+/// STAYS A FUNCTION: its kind, scope, projection and order fill payloads from words and nested
+/// records, not from nodes a rule builds.
 @computed
 fn collect_written(s: dyn Slots) -> Result<Built, string> {
     let proj = Projection { ty: named_ref(s.text_of("of")?), fields: s.proj_fields_of("fields")? }
@@ -36,6 +40,9 @@ fn collect_written(s: dyn Slots) -> Result<Built, string> {
 
 /// `collect enum Name: T = kind in scope by …` — no declared type and no
 /// projection; each `: T` the enum implements, a name read where written.
+///
+/// STAYS A FUNCTION: its kind, scope and order fill payloads from words, not from nodes a rule
+/// builds.
 @computed
 fn collect_enum_written(s: dyn Slots) -> Result<Built, string> {
     dense_made(
@@ -73,9 +80,4 @@ fn kind_of(s: dyn Slots) -> Result<CollectKind, string> {
     .Ok(CollectKind.Annotated(written.substring(1, written.length)))
 }
 
-fn scope_of(word: string) -> CollectScope {
-    if word == "self" { return CollectScope.Self }
-    if word == "package" { return CollectScope.Package }
-    if word == "closure" { return CollectScope.Closure }
-    CollectScope.UnknownScope(word)
-}
+fn scope_of(word: string) -> CollectScope { worded_CollectScope(word) ?? CollectScope.UnknownScope(word) }

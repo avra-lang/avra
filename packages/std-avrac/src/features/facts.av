@@ -77,15 +77,17 @@ impl FileView {
     /// Where an expression is — THE source position, every context
     /// forwards here. A GENERATED node is homed: a template's run
     /// points into the file that wrote the quote, a hole's at the
-    /// annotation that asked for the code.
+    /// annotation that asked for the code. A scope holding only its value
+    /// points at the value, never the braces.
     fn loc_of(e: ExprId) -> Loc? {
+        let lone = if self.store.lead_of(e).is_empty() { self.store.tail_of(e) } else { null }
         self
             .decls
             .homed(
                 self.file,
                 self.spanned_of(e),
                 self.decls.generation_of(self.file, e),
-                self.store.expr_span(e),
+                self.store.expr_span(lone ?? e),
             )
     }
 
@@ -305,6 +307,7 @@ const offer_bit = 64
 const spread_bit = 128
 const null_tail_bit = 256
 const heard_bit = 512
+const guard_bit = 1024
 
 /// The one per-statement flag: a `let` whose seed is boxed into a cell.
 const boxed_stmt_bit = 1
@@ -548,6 +551,15 @@ impl TypeFacts {
 
     fn mark_heard(e: ExprId) {
         self.set_flag(e, heard_bit)
+    }
+
+    /// Whether a statement list walks this `if` (or a block or `else if`
+    /// link of its chain) as a statement: its value is nothing, and its
+    /// branches need not agree.
+    fn guards(e: ExprId) -> bool { self.flag_at(e, guard_bit) }
+
+    fn mark_guard(e: ExprId) {
+        self.set_flag(e, guard_bit)
     }
 
     /// Whether a `collect` spreads this kept list — checking's one

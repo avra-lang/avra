@@ -366,7 +366,8 @@ impl TypeCx {
     /// each), and a lambda takes the seat's parameters, by field name
     /// where the seat offers a record.
     mut fn reheard(e: ExprId, want: TypeId) -> bool {
-        if !hears_want(self.view.store.expr(e)) { return false }
+        let heard = self.view.store.closure_of(e)
+        if !hears_want(self.view.store.expr(heard)) { return false }
         // a value already typed as the seat's present side hears nothing
         // new — and typed again, its body would say each mistake twice
         let present = self.view.types.carried(want) ?? want
@@ -374,6 +375,7 @@ impl TypeCx {
         let planted: TypeId? = self.want_at(e)
         if planted != null && !self.types_disagree(planted!, want) { return false }
         self.go_hungry(e)
+        self.go_hungry(heard)
         self.feed(e, want)
         true
     }
@@ -1485,7 +1487,8 @@ impl TypeCx {
     /// Where a call's written arguments stand, as its refusal says it
     /// — a piped call's first one stands left of the `|>`.
     fn arguments_from(e: ExprId) -> string {
-        if self.view.store.minted_for(e) != null { "the pipe and the parentheses give" } else { "the parentheses give" }
+        let sugar? = self.view.store.minted_for(e) else { return "the parentheses give" }
+        if self.view.store.expr(sugar) is .Pipe { "the pipe and the parentheses give" } else { "the parentheses give" }
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
@@ -2139,7 +2142,7 @@ impl TypeCx {
     }
 
     mut fn isolated_arg(a: ExprId, callee: string, seat: string) {
-        match self.view.store.expr(a) {
+        match self.view.store.valued(a) {
             .Lambda(_, _) -> self.isolated_lambda(a, callee, seat),
             rest -> { if !self.known_unshared(a) { self.isolated_unknown(a, callee, seat) } },
         }
