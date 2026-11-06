@@ -852,6 +852,33 @@ spec "collect's own laws" {
             ) == "Dot/flag Line/"
         }
     }
+    given "a declaration's own mark, with no collect gathering it" {
+        then "a private type's mark is read by nothing, and refused" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + "@flag\ntype T = {}\n1", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "a private fn's mark is refused alike" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + "@flag\nfn g() -> int { 1 }\ng()", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "an exported declaration's mark stands — a package outside the build may gather it" {
+            answered(provided(numbered_decl() + flag_decl() + "@flag\nexport type T = {}\n1", ui())) == "1"
+        }
+        then "a gathered declaration's marks are its collect's to hold, never its own voice's" {
+            let p = provided(
+                numbered_decl() +
+                    flag_decl() +
+                    "@numbered(0)\n@flag\ntype T = {}\ncollect enum E = @numbered in self by it.mark.args[0] dense\n1",
+                ui(),
+            )
+            refused_in(p, "which gathers this") &&
+                !refused_in(p, "nothing on this declaration reads it")
+        }
+    }
     given "a gathered payload is held to the slot law" {
         then "a void field is refused once, by its record, and its payload reads as nothing to bind" {
             refused_in(
