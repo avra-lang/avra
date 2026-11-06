@@ -424,15 +424,18 @@ impl TypeCx {
         answer: TypeId? = null,
     ) -> TypeId? {
         if !self.facts.hungry_at(a) { return null }
-        let parts? = self.view.store.lambda_parts(a) else { return null }
+        let lam? = self.view.store.body_fn(a) else { return null }
+        let parts? = self.view.store.lambda_parts(lam) else { return null }
         if parts.params.length != seats.length || takes_by_name(self, parts.params, seats) { return null }
         self.facts.absorb_hunger(a)
+        self.facts.absorb_hunger(lam)
         if answer != null { self.plant_want(parts.body, answer!) }
-        let ret = self.lambda_body(a, seats, marks, parts.body, self.promised(answer))
+        let ret = self.lambda_body(lam, seats, marks, parts.body, self.promised(answer))
         // the lambda wears the declared answer once its body is accepted
         // by it — the body's lift recorded like any seat's
         let worn = if answer != null && !self.errored_ty(ret) && self.accepts(parts.body, answer!) { answer! } else { ret }
         let ty = self.view.types.intern(Type.Fn(seats, marks, worn))
+        self.facts.set_type(lam, ty)
         self.facts.set_type(a, ty)
         ty
     }

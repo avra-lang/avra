@@ -432,7 +432,7 @@ impl LowerCx {
     /// its seat hands it, read by that name.
     fn offered_reg(lam: ExprId, i: int, ty: TypeId) -> Reg {
         let record = self.view.types.arrow_parts(self.concrete(self.facts.type_at(lam)))!.seats[0]
-        let name = self.view.store.lambda_parts(lam)!.params[i].name.of
+        let name = self.view.store.closure_parts(lam)!.params[i].name.of
         self.field_named(Reg { index: 1 }, record, name, ty)
     }
 
@@ -450,9 +450,10 @@ impl LowerCx {
     /// frame of its own — a `?`, a `catch` or a block of statements
     /// acts on the CALLER's frame once the body is inlined.
     fn can_inline(f: ExprId, seats: int = 1) -> bool {
-        let parts? = self.view.store.lambda_parts(f) else { return false }
-        if !(self.names.capture(f)?.names ?? []).is_empty() { return false }
-        if self.facts.takes_by_name(f) || parts.params.length != seats { return false }
+        let parts? = self.view.store.closure_parts(f) else { return false }
+        let lam = self.view.store.closure_of(f)
+        if !(self.names.capture(lam)?.names ?? []).is_empty() { return false }
+        if self.facts.takes_by_name(lam) || parts.params.length != seats { return false }
         let body? = self.inline_body(f) else { return false }
         self.inline_safe(body)
     }
@@ -461,7 +462,7 @@ impl LowerCx {
     /// one-expression scope a trailing block parses to. Null for a
     /// body that holds statements.
     fn inline_body(f: ExprId) -> ExprId? {
-        let parts? = self.view.store.lambda_parts(f) else { return null }
+        let parts? = self.view.store.closure_parts(f) else { return null }
         match self.view.store.expr(parts.body) {
             .Block(_) -> self.view.store.lone_value(parts.body),
             rest -> parts.body,
@@ -488,7 +489,7 @@ impl LowerCx {
     /// and no code pointer is called per element.
     mut fn inlined(lam: ExprId, regs: List<Reg>) -> Reg {
         let body? = self.inline_body(lam) else { return self.lower_defect(lam, "an inline seat without an inlinable lambda") }
-        self.inline_enter(InlineSeat { lam: lam, regs: regs })
+        self.inline_enter(InlineSeat { lam: self.view.store.closure_of(lam), regs: regs })
         let r = self.reg_of(body)
         self.inline_exit()
         r
