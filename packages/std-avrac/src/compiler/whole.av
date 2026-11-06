@@ -223,31 +223,22 @@ impl Workspace {
         if self.lone { return }
         let path = self.decls.file(f).path
         let from = self.packages()[self.holder_of_path(path)]
-        if self.rows_kept(f) && !self.gathers(f) {
-            let kept = self.kept_uses(path)
-            if kept != null {
-                for u in kept!.uses { self.admit_module(from, qualified(module_path(u.path), from)) }
-                return
-            }
-        }
-        let p = self.parsed(f)
-        for s in p.stmts {
-            let u = p.store.use_parts(s)
-            if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
-            let scope = p.store.collect_scope(s)
-            if scope != null { self.decls.admit_scope(scope!, f) }
-        }
+        let kept = if self.rows_kept(f) { self.kept_admits(path) } else { null }
+        let reached = kept ?? self.admits_of(f)
+        for m in reached.modules { self.admit_module(from, qualified(module_path(m), from)) }
+        if reached.gathers { self.decls.admit_package_of(f) }
+        if kept == null { self.records.admits_seen.put(path, reached) }
     }
 
-    /// Whether a file declares a `collect`, which admits the scope it gathers.
-    fn gathers(f: FileId) -> bool {
-        self
-            .decls
-            .decls_so_far(f)
-            .any(
-                (d) -> self.decls.raw_decl(d).kind is .Collect ||
-                    self.decls.raw_decl(d).kind is .CollectEnum,
-            )
+    /// What a file's parse reaches: the modules its `use` lines name, and whether a `collect`
+    /// of it gathers its package.
+    fn admits_of(f: FileId) -> Admits {
+        let p = self.parsed(f)
+        Admits {
+            modules: [u.path for u in p.store.built_uses()],
+            gathers: p.stmts.any((s) -> admits_package(p.store.collect_scope(s) ?? CollectScope.Self)),
+            exports: uses_wire([u for u in p.store.built_uses() if p.store.is_exported(u.stmt)]),
+        }
     }
 
     /// A read file's `gathers` lines, one for each `collect` of it that gathers its
@@ -375,8 +366,7 @@ impl Workspace {
     /// Whether a file this attempt does not hold gathers by `kind`, now or when its record was
     /// written: a set gathered from held files alone stands as its collector's record says.
     fn gathering_read(kind: CollectKind, read: List<FileId>) -> bool {
-        self.producers_of(kind).any((path) -> !self.held_path(path)) ||
-            read.any((f) -> self.gathers_in(kind, f))
+        !self.producers_of(kind).is_empty() || read.any((f) -> self.gathers_in(kind, f))
     }
 
     /// The files a module record says produce what `kind` gathers by.

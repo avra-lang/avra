@@ -2,6 +2,7 @@
 //! is made under and checks (`Workspace.parsed_under_blocks`).
 use core.{UseParts, StmtId, joined, wire_fields}
 use compiler.store.{Store, Stored, node_key}
+use @std.relation.{codec}
 
 impl Workspace {
     /// The use lines a file's last parse said, when a store keeps them.
@@ -15,17 +16,34 @@ impl Workspace {
     /// Every file's use lines its parse said this build, kept for its next parse to guess its
     /// words by.
     fn keep_uses(store: Store) {
+        for path, a in self.records.admits_seen.get() {
+            let _ = store
+                .keep_octets(Stored.Unit, self.admits_key(path), a.encoded_in(self.query_scope()), [])
+        }
         for path, wire in self.records.uses_seen.get() {
             let key = self.uses_key(path)
             if store.get(Stored.Unit, key) != wire { let _ = store.keep(Stored.Unit, key, wire, []) }
         }
     }
 
+    /// What a file's last parse reached, when a read of its text as it stands kept it.
+    fn kept_admits(path: string) -> Admits? {
+        let store? = self.store.get() else { return null }
+        let bytes? = store.get_octets(Stored.Unit, self.admits_key(path)) else { return null }
+        match Admits.decoded_in(self.query_scope(), bytes) { .Ok(a) -> a, .Err(_) -> null }
+    }
+
+    fn admits_key(path: string) -> string { node_key(Stored.Unit, ["admits", self.root, path, self.text_digest(path)]) }
+
     /// WHERE A FILE'S USE LINES ARE KEPT: under its text, so a guess is only ever the lines
     /// that very text said — a file at the same path with other text, in another tree or after
     /// an edit, admits nothing its own lines do not name.
     fn uses_key(path: string) -> string { node_key(Stored.Unit, ["uses", self.root, path, self.text_digest(path)]) }
 }
+
+/// What a file reaches past itself: what an admission walks without its parse.
+@codec
+export type Admits = { modules: List<List<string>>, gathers: bool, exports: string }
 
 /// What a file that declares a component keeps in place of its use lines: no guess.
 const DECLARES: string = "declares"

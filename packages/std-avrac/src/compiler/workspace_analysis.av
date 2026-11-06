@@ -70,6 +70,9 @@ use @std.relation.{query, scoped_by, recursive}
 use @std.relation.stable.{Scope}
 use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
 
+/// How the bodies compile-time runs lowered are filed.
+const BODY_RUN: string = "body run"
+
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
 /// `index` here, so the caller's own miss branch need only push the
@@ -361,7 +364,7 @@ impl Workspace {
         if !self.decls.owns_a_range(d) { return self.analysis(f) }
         let own = self.typed(d)
         let hole = self.decls.types.intern(Type.Error)
-        let store = self.parsed(f).store
+        let store = self.parse_unrecorded(f).store
         mut out = new_type_facts(0, store.exprs.count(), 0 - 1, 0, store.stmts.count(), hole)
         out.absorb(own)
         self.analysis_over(f, out with { voices: own.voices })
@@ -373,7 +376,7 @@ impl Workspace {
 
     /// An analysis of `f` whose body facts are `facts`.
     fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis {
-        let p = self.parsed(f)
+        let p = self.parse_unrecorded(f)
         let names = self.resolved(f)
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
@@ -443,6 +446,7 @@ impl Workspace {
                 .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> lowered_of(r).fingerprint()),
         )
         self.family_settled(Family.LiftLowered, id)
+        self.run_filed(id)
         lowered
     }
 
@@ -484,7 +488,7 @@ impl Workspace {
         if w.decl != null {
             let _ = self.syntax(w.decl!)
         } else if w.root == null {
-            let _ = self.parsed(w.file)
+            if w.decl == null { let _ = self.parsed(w.file) } else { touch(self.syntax(w.decl!)) }
         }
         self.lower_requested(w)
     }
@@ -593,7 +597,6 @@ impl Workspace {
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
         if reader != null { self.read_by(reader!, self.hold.settle_reads.get().get("${id}") ?? []) }
-        self.logged_const_read(f, root, seats, r)
         r
     }
 
@@ -711,7 +714,7 @@ impl Workspace {
             digest: self.text_digest(path),
             ref: self.decl_ref(d),
             print: "${self.syntax(d!)}",
-            outline: self.outline(path),
+            outline: "",
         }
     }
 
@@ -788,7 +791,7 @@ impl Workspace {
         let ws = self
         let reader = self.decls.file(f).path
         self.hold.settling.set(self.hold.settling.get().concat([reader]))
-        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.logged_unit(w), refuses_hash))
+        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.unit_for_run(w), refuses_hash))
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
         l
@@ -897,9 +900,28 @@ impl Workspace {
     /// record; ask for that row, never the file's analysis.
     fn settle_result(ask: SettleAsk) -> Result<Settled, Unsettled> {
         match ask.root {
-            .Const(s) -> self.const_settlement(ask, s),
+            .Const(s) -> self
+                .settlement_of(ask.file, self.parsed(ask.file).store.const_value(s)!, ask.name, ask.seats),
             .Expr(e) -> self.settlement_of(ask.file, e, ask.name, ask.seats),
         }
+    }
+
+    /// A compile-time unit filed as a reader of the body it was lowered from, by that body's
+    /// own name: a settlement stands on the bodies its run lowered, and on no signature's readers.
+    fn run_filed(id: int) {
+        let w = self.asks.get()[id]
+        let d? = w.decl ?? self.root_owner(w.file, w.root ?? ExprId { index: 0 - 1 }) else { return }
+        let spelled? = self.spelled_spec(id) else { return }
+        let rdb = self.query_db()
+        rdb.reader_filed(rdb.kin_of(BODY_RUN, self.decl_ref(d)), rdb.kin_of("LiftLowered", spelled))
+    }
+
+    /// A unit for a run, and every settlement its lowering asks, asked again.
+    fn unit_for_run(w: Wanted) -> Unit {
+        let id = self.spec_id(w)
+        let u = self.lowered_for_eval(id)
+        for ask in self.asks_of(id) { let _ = self.settled_replay(ask.file, ask.root, ask.seats) }
+        u
     }
 
     /// One settlement run: the initializer lowered as a program, its
@@ -949,7 +971,7 @@ impl Workspace {
             .decls
             .settlement_until(
                 entry_wanted(f, root, name, seats),
-                (w: Wanted) -> ws.logged_unit(w),
+                (w: Wanted) -> ws.unit_for_run(w),
                 (b: Body) -> reaches_world(b, true),
             )
         let open = self.hold.settling.get()

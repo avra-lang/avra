@@ -73,7 +73,7 @@ fn source_read(path: string, lined: bool) -> VerdictRead {
 
 /// WHAT `check` SAID, AS DATA: the program's own voices and the files they point into, then
 /// each file's part, in file order.
-export type CheckSaid = { voices: string, voice_files: List<string>, files: List<FileSpoke> }
+export type CheckSaid = { voices: string, voice_files: List<string>, files: List<FileSpoke>, settled: List<string> = [] }
 
 /// One file's part: its warnings as printed (empty where the program does not reach it),
 /// whether it is reached, its rule findings and its stale license lines.
@@ -123,6 +123,7 @@ export fn verdict_wire(v: CheckSaid) -> string {
     w.text(tree_saved(v.voices))
     written_texts(w, v.voice_files)
     written_list(w, v.files, written_spoke)
+    written_texts(w, v.settled)
     hex(w.bytes())
 }
 
@@ -134,7 +135,8 @@ export fn verdict_of_wire(raw: string) -> CheckSaid? {
 fn read_check_said(r: Reader) -> Result<CheckSaid, CodecFault> {
     let voices = tree_unsaved(r.text()?)
     let voice_files = read_texts(r)?
-    CheckSaid { voices: voices, voice_files: voice_files, files: read_spokes(r)? }
+    let files = read_spokes(r)?
+    CheckSaid { voices: voices, voice_files: voice_files, files: files, settled: read_texts(r)? }
 }
 
 fn written_spoke(w: Writer, f: FileSpoke) {
@@ -428,28 +430,49 @@ impl Workspace {
             !(rdb.answer_stands(parsed_in_key(self, fi.id)) &&
                 rdb.read_stands(key_at(Family.Expanded.ordinal, fi.id.index)))]
         if !moved_parse.is_empty() { return Rechecked.Anew }
+        // a settlement is read by lowering, so no saying names it: one a moved declaration
+        // reaches is a run's
+        let bodies = flatten([self.moved_bodies(path) for path in rewritten])
+        let reached = rdb.reached_from(bodies)
+        if said.settled.any((name) -> reached.get("${rdb.kin_of(SETTLED, name)}") ?? false) { return Rechecked.Anew }
+        self.timed("parses judged", t1)
+        let t6 = self.clock()
         let read = [fi.id for fi in files if self.says_again(said, fi, rewritten)]
-        self.timed("judge", t1)
+        self.timed("sayings judged", t6)
         if read.any((f) -> self.generates_or_generic(f)) { return Rechecked.Anew }
         let t2 = self.clock()
         let analyses = [self.analysis(f) for f in read]
         self.report_layout_defects()
         let p = self.program_of(analyses)
         self.timed("bodies", t2)
+        let t7 = self.clock()
         if !rewritten.all((path) -> self.shaped_alike(store, path)) { return Rechecked.Anew }
+        self.timed("shapes", t7)
         if !p.clean() { return Rechecked.Refused(p.report()) }
         let t3 = self.clock()
         match p.diagnosed() {
             .Err(why) -> { return Rechecked.Refused(why) },
             .Ok(_) -> self.timed("lower", t3),
         }
+        let t4 = self.clock()
         let parts = [self.said_now(f, Want.Diagnostics) for f in read]
+        self.timed("said", t4)
         if parts.any(it == null) { return Rechecked.Anew }
+        let t5 = self.clock()
         for path in rewritten { self.keep_rows(store, path) }
+        self.timed("rows kept", t5)
+        let t8 = self.clock()
         self.keep_uses(store)
+        self.timed("uses kept", t8)
         let fresh = [file_spoke(s!, true, file_stale_lines(analyses[j], known_rule_ids())) for j, s in parts]
         Rechecked
             .Said(said with { files: [fresh.find(it.path == f.path) ?? f for f in said.files] })
+    }
+
+    /// The bodies of a rewritten file whose syntax moved, by the name compile-time runs file them.
+    fn moved_bodies(path: string) -> List<int> {
+        let rdb = self.query_db()
+        [rdb.kin_of(BODY_RUN, self.decl_ref(d)) for d in self.decls.decls_so_far(self.file_id(path)) if !rdb.answer_stands(syntax_in_key(self, d))]
     }
 
     /// A rewritten text's reads as the store files them.
@@ -630,6 +653,7 @@ impl Workspace {
             voices: p.warned(p.voices),
             voice_files: distinct(flatten([located_files(v) for v in voiced])),
             files: [file_spoke(s, !d.unreached.contains(s.path), stale.get(s.path) ?? []) for s in d.said],
+            settled: some_lists([self.spelled_settle(i) for i in 0..self.settle_asks.get().length]),
         }
     }
 }
@@ -676,6 +700,11 @@ fn cancel_word_of(row: Row?) -> int {
         if reach.spins { 2 } else { 0 } +
         if reach.links { 4 } else { 0 }
 }
+
+/// How a settlement's read is named.
+const SETTLED: string = "Settled"
+
+fn some_lists(names: List<string?>) -> List<string> { [n! for n in names if n != null] }
 
 /// How a read of a staged text is named.
 const FILE_TEXT_READ: string = "file_text(RelDb,string) -> string"

@@ -988,15 +988,20 @@ impl Db {
     fn readers_noted(reader: int, leaves: List<int>) {
         for n in leaves {
             let kin? = self.leaf_kin(n) else { continue }
-            let at = "${kin}"
-            let filed = self.readers_owed.get().get(at)
-            if filed != null {
-                filed!.push(reader)
-                continue
-            }
-            let made: Cell<List<int>> = Cell.new([kin, reader])
-            self.readers_owed.put(at, made)
+            self.reader_filed(kin, reader)
         }
+    }
+
+    /// `reader` read what `kin` names, whatever else it read.
+    fn reader_filed(kin: int, reader: int) {
+        let at = "${kin}"
+        let filed = self.readers_owed.get().get(at)
+        if filed != null {
+            filed!.push(reader)
+            return
+        }
+        let made: Cell<List<int>> = Cell.new([kin, reader])
+        self.readers_owed.put(at, made)
     }
 
     /// The readers a read has on record.
@@ -1031,7 +1036,10 @@ impl Db {
     }
 
     /// From here a read outside what `seeds` reach stands unjudged.
-    fn suspects_from(seeds: List<int>) {
+    fn suspects_from(seeds: List<int>) { self.suspects.set(self.reached_from(seeds)) }
+
+    /// Every kin some read of `seeds` reaches, by the readers on record.
+    fn reached_from(seeds: List<int>) -> Map<string, bool> {
         let seen: Cell<Map<string, bool>> = map_cell()
         mut todo = seeds
         for s in seeds { seen.put("${s}", true) }
@@ -1042,7 +1050,7 @@ impl Db {
                 todo.push(r)
             }
         }
-        self.suspects.set(seen.get())
+        seen.get()
     }
 
     /// How many reads a moved input may reach.
@@ -1080,7 +1088,9 @@ impl Db {
         let head? = match record_head(self, reader_from(self.home(), bytes), saved) {
             .Ok(h) -> h,
             .Err(_) -> null,
-        } else { return false }
+        } else {
+            return false
+        }
         owner.hash_at(k.arg) == head.digest
     }
 
@@ -1168,7 +1178,11 @@ impl Db {
     }
 
     /// Whether every read still has the digest it was kept at.
-    fn leaves_hold(ns: List<int>) -> bool { ns.all((n) -> self.number_holds(n)) }
+    fn leaves_hold(ns: List<int>) -> bool {
+        let holds = Cell.new(false)
+        self.engine().unheard(() -> holds.set(ns.all((n) -> self.number_holds(n))))
+        holds.get()
+    }
 
     /// Whether leaf `n` holds, judged once a revision once its digest can be read.
     fn number_holds(n: int) -> bool {
@@ -1251,9 +1265,7 @@ impl Db {
         let query? = (owner.kept_name)() else { return null }
         let answer = self.durable.answer
         let saved = self.saved_spelling(spelled)
-        let bytes? = answer(query, spelled_hash(query, saved)) else {
-            return null
-        }
+        let bytes? = answer(query, spelled_hash(query, saved)) else { return null }
         let head? = match record_head(self, reader_from(self.home(), bytes), saved) {
             .Ok(h) -> h,
             .Err(_) -> null,
@@ -2111,7 +2123,6 @@ impl AnswersUnder<V> {
         let kept? = self.restored(db, query, record, spelled) else {
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
-        if db.engine().tracing.get() { avra_qtrace("Q\tlasting\trestored\t${query.split("#")[0]}\n") }
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
         db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
@@ -2136,7 +2147,6 @@ impl AnswersUnder<V> {
         record: KeptRecord<V>,
     ) -> V {
         let done = self.run(db, arg, body, again, digest)
-        if done.wrote && db.engine().tracing.get() { avra_qtrace("Q\tlasting\twrote\t${query.split("#")[0]}\n") }
         if !done.wrote { db.keeping(() -> self.keep_lasting(db, arg, query, spelled, done.value, record)) }
         done.value
     }
@@ -2150,9 +2160,7 @@ impl AnswersUnder<V> {
         value: V,
         record: KeptRecord<V>,
     ) {
-        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else {
-            return
-        }
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
         if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
         self.keep_record(db, arg, query, spelled, leaves, (w: Writer) -> record.write(w, value))
     }
