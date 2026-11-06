@@ -109,32 +109,52 @@ impl Slots for Builder {
 
     /// The `FnSeat` records the payload `label` carries.
     fn fn_seats_of(label: string) -> Result<List<FnSeat>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(fn_seat_at(items, j)) for j in 0..items.length]))
+        .Ok(
+            carried_in(
+                list_at(self.args, self.slot_of(label)?),
+                (n) -> match n { .NFnSeat(r) -> r, _ -> null },
+            ),
+        )
     }
 
     /// The `given` groups the payload `label` carries.
     fn givens_of(label: string) -> Result<List<Given>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(given_at(items, j)) for j in 0..items.length]))
+        .Ok(
+            carried_in(
+                list_at(self.args, self.slot_of(label)?),
+                (n) -> match n { .NGiven(r) -> r, _ -> null },
+            ),
+        )
     }
 
     /// The record-pattern fields the payload `label` carries.
     fn field_pats_of(label: string) -> Result<List<FieldPat>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(field_pat_at(items, j)) for j in 0..items.length]))
+        .Ok(
+            carried_in(
+                list_at(self.args, self.slot_of(label)?),
+                (n) -> match n { .NFieldPat(r) -> r, _ -> null },
+            ),
+        )
     }
 
     /// The projected fields the payload `label` carries.
     fn proj_fields_of(label: string) -> Result<List<ProjField>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(proj_field_at(items, j)) for j in 0..items.length]))
+        .Ok(
+            carried_in(
+                list_at(self.args, self.slot_of(label)?),
+                (n) -> match n { .NProjField(r) -> r, _ -> null },
+            ),
+        )
     }
 
     /// The `by` keys the payload `label` carries.
     fn order_keys_of(label: string) -> Result<List<OrderKey>, string> {
-        let items = list_at(self.args, self.slot_of(label)?)
-        .Ok(flatten([some_list(order_key_at(items, j)) for j in 0..items.length]))
+        .Ok(
+            carried_in(
+                list_at(self.args, self.slot_of(label)?),
+                (n) -> match n { .NOrderKey(r) -> r, _ -> null },
+            ),
+        )
     }
 
     /// The marks the payload `label` carries.
@@ -642,26 +662,6 @@ export fn use_items_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Us
     flatten([some_list(use_item_of(items, j)) for j in 0..items.length])
 }
 
-fn fn_seat_at(args: List<Captured<Token, LangNode>>, i: int) -> FnSeat? {
-    match args[i] { .Node(.NFnSeat(r)) -> r, _ -> null }
-}
-
-fn given_at(args: List<Captured<Token, LangNode>>, i: int) -> Given? {
-    match args[i] { .Node(.NGiven(g)) -> g, _ -> null }
-}
-
-fn field_pat_at(args: List<Captured<Token, LangNode>>, i: int) -> FieldPat? {
-    match args[i] { .Node(.NFieldPat(f)) -> f, _ -> null }
-}
-
-fn proj_field_at(args: List<Captured<Token, LangNode>>, i: int) -> ProjField? {
-    match args[i] { .Node(.NProjField(f)) -> f, _ -> null }
-}
-
-fn order_key_at(args: List<Captured<Token, LangNode>>, i: int) -> OrderKey? {
-    match args[i] { .Node(.NOrderKey(k)) -> k, _ -> null }
-}
-
 fn use_item_of(args: List<Captured<Token, LangNode>>, i: int) -> UseItem? {
     match args[i] { .Node(.NUseItem(u)) -> u, _ -> null }
 }
@@ -733,6 +733,15 @@ export fn scoped_at(t: Token?) -> Scoped? {
 
 /// List delivery for the repeated capture at `args[i]` (scalar and
 /// absent normalize).
+/// The records among `items`, each read out of the node that carries it by `pick`.
+fn carried_in<T>(items: List<Captured<Token, LangNode>>, pick: fn(LangNode) -> T?) -> List<T> {
+    flatten([some_list(pick(n)) for c in items for n in some_list(node_in(c))])
+}
+
+fn node_in(c: Captured<Token, LangNode>) -> LangNode? {
+    match c { .Node(n) -> n, _ -> null }
+}
+
 export fn list_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Captured<Token, LangNode>> {
     match args[i] {
         .Many(xs) -> xs,
