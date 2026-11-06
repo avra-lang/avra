@@ -771,6 +771,11 @@ code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 turn-memory-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/turn_memory_attack.sh
 
+# A BUILD AFTER THE TREE'S CACHE WAS CLEARED: the machine's store names objects the tree's cache
+# no longer holds. It CLEARS the tree's cache, as the attacks above do.
+object-gone-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/object_gone_attack.sh
+
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"
 census:

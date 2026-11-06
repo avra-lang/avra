@@ -670,7 +670,7 @@ impl Workspace {
         let main = m.main(d.lowered.types)
         let asked = program_asked_key(d, main, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
-        if !d.unlowered.is_empty() && !d.store.has(Stored.Unit, buckets_key(asked)) {
+        if !d.unlowered.is_empty() && !buckets_stand(d.store, asked) {
             let whole = diagnosed(self.whole(d, []))?
             return whole.linked(m, under, binary, tools)
         }
@@ -929,6 +929,13 @@ fn buckets_text(made: List<Made>) -> string { joined([bucket_line(o) for o in ma
 
 fn bucket_line(o: Made) -> string {
     match o.which { .Bucket(i, _) -> "${i}\t${o.key}", .Whole or .File(_) or .Program -> "" }
+}
+
+/// Whether a build of these asks kept its buckets AND their objects still stand: the list lives
+/// in the machine's store and the objects in the tree's, so one can outlast the other.
+fn buckets_stand(store: Store, asked: string) -> bool {
+    let kept? = store.get(Stored.Unit, buckets_key(asked)) else { return false }
+    buckets_of(kept).all((k: BucketKey) -> store.has(Stored.Obj, k.key))
 }
 
 /// A kept list back as (index, key) pairs.
