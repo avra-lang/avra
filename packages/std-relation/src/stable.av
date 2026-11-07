@@ -223,8 +223,14 @@ export fn written_place(w: Writer, scope: dyn Scope, l: Loc) {
 /// The length from which a counted run of octets is kept as a chunk of its own.
 const CHUNK: int = 32
 
+/// The most single octets held pending: each costs a word until it closes into a chunk.
+const PENDING: int = 4096
+
 impl Writer {
-    fn byte(v: int) { self.out.push(v & 255) }
+    fn byte(v: int) {
+        self.out.push(v & 255)
+        if self.out.get().length >= PENDING { self.settle_pending() }
+    }
 
     /// Unsigned LEB128 over all 64 bits: seven at a time, low first.
     fn varint(v: int) {
