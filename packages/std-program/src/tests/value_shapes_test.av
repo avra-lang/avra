@@ -1,0 +1,127 @@
+// The one reading of a value's type: plain values, wrappings from the outside in, a name read
+// through, an id standing for its node, a map's entries, a result's sides, and values with no
+// bytes, which have no shape. And the schema it projects to, as a tape lies.
+use @std.meta.{Annotation, Field, Kind, Type as MetaType, Variant as MetaVariant}
+use tape_schema.{lying, node_path}
+use value_shapes.{FieldRole, Reading}
+
+fn field(name: string, kind: Kind) -> Field { Field { name: name, ty: kind.spelled(), at: null, kind: kind } }
+
+fn record(name: string, fields: List<Field>) -> MetaType {
+    MetaType { name: name, fields: fields, variants: [], at: null, module: "m" }
+}
+
+/// `type m.Label = string`
+fn label() -> MetaType { MetaType { name: "Label", fields: [], variants: [], at: null, module: "m", over: Kind.Str } }
+
+/// `@indexes(Leaf) type m.LeafId = { index: int }`
+fn leaf_id() -> MetaType {
+    record("LeafId", [field("index", Kind.Int)]) with { annotations: [Annotation { name: "indexes", args: ["Leaf"], at: null }] }
+}
+
+/// `enum m.Tree { Bare  Branch(leaves: List<LeafId>, tags: Map<string, Tree>) }`
+fn tree() -> MetaType {
+    MetaType {
+        name: "Tree",
+        fields: [],
+        variants: [
+            MetaVariant { name: "Bare", payload: [], at: null },
+            MetaVariant {
+                name: "Branch",
+                payload: [],
+                at: null,
+                fields: [
+                    field("leaves", Kind.List(Kind.Named("LeafId", []))),
+                    field("tags", Kind.Map(Kind.Str, Kind.Named("Tree", []))),
+                ],
+            },
+        ],
+        at: null,
+        module: "m",
+    }
+}
+
+/// `type m.Leaf = { name: Label, act: fn() -> int, hidden: int }`
+fn leaf() -> MetaType {
+    record(
+        "Leaf",
+        [
+            field("name", Kind.Named("Label", [])),
+            field("act", Kind.Fn([], Kind.Int)),
+            field("hidden", Kind.Int),
+        ],
+    )
+}
+
+fn declared(name: string) -> MetaType? {
+    match name {
+        "Label" -> label(),
+        "Leaf" -> leaf(),
+        "LeafId" -> leaf_id(),
+        "Tree" -> tree(),
+        _ -> null,
+    }
+}
+
+/// A language that keeps `hidden` off its tapes.
+fn tiny() -> Reading { Reading { declared: declared, role: role_of } }
+
+fn role_of(f: Field) -> FieldRole { if f.name == "hidden" { .Carried } else { .Written } }
+
+/// How a value of `kind` lies on a tape, spelled, or "none" when it has no shape.
+fn lies(kind: Kind) -> string {
+    let shape? = tiny().shape_of(kind) else { return "none" }
+    lying(shape).spelled()
+}
+
+fn has_shape(kind: Kind) -> bool { tiny().shape_of(kind) != null }
+
+spec "value shapes" {
+    given "plain values" {
+        then "each lies as what it is" { lies(Kind.Int) == "int" && lies(Kind.Str) == "string" && lies(Kind.Bytes) == "Bytes" }
+    }
+    given "wrappings" {
+        then "they read from the outside in, and a cell adds none" { lies(Kind.List(Kind.Opt(Kind.Cell(Kind.Int)))) == "List<int?>" }
+    }
+    given "a name over a shape" {
+        then "it's renamed, and lies as the shape" {
+            tiny().shape_of(Kind.Named("Label", []))! is .Renamed &&
+                lies(Kind.Named("Label", [])) == "string"
+        }
+    }
+    given "an id" {
+        then "it stands for the node it names, by its whole path" { lies(Kind.Named("LeafId", [])) == "m.Leaf" }
+    }
+    given "a map" {
+        then "it lies as a list of its entries, a type its spelling names" { lies(Kind.Map(Kind.Str, Kind.Int)) == "List<Map<string, int>>" }
+        then "of nodes, it names them whole" {
+            node_path(tiny().shape_of(Kind.Map(Kind.Str, Kind.List(Kind.Named("LeafId", []))))!) == "Map<string, List<m.Leaf>>"
+        }
+        then "whose values have no bytes, it has no shape" { !has_shape(Kind.Map(Kind.Str, Kind.Fn([], Kind.Int))) }
+    }
+    given "a result" {
+        then "it's a node of two sides" { lies(Kind.Result(Kind.Int, Kind.Str)) == "Result<int, string>" }
+    }
+    given "a value with no bytes" {
+        then "it has no shape" { !has_shape(Kind.Fn([], Kind.Int)) && !has_shape(Kind.Ptr) }
+    }
+    given "a declared record" {
+        then "it's declared, by its whole path, and its variant keeps the fields written down" {
+            let variant = tiny().variants_of(leaf())[0]
+            lies(Kind.Named("Leaf", [])) == "m.Leaf" &&
+                variant.name == "Leaf" &&
+                [f.field.name for f in variant.fields].join(" ") == "name act" &&
+                variant.shapes().length == 1
+        }
+    }
+    given "a root reaching itself, a map and another root" {
+        then "its schema holds itself and the map once, and names the other root" {
+            let reached = tiny().root_schema(tree())
+            [s.type_path for s in reached.schema.types].join(" ") == "Map<string, m.Tree> m.Tree" &&
+                reached.roots_reached.join(" ") == "Leaf"
+        }
+    }
+    given "a name nothing declares" {
+        then "it has no shape" { !has_shape(Kind.Named("Gone", [])) }
+    }
+}

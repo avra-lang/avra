@@ -1,0 +1,348 @@
+//! `@derive(Saved)`: a record or an enum written to and read from a saved answer, generated from
+//! its declaration so no field can be forgotten. Each field takes one slot of one record, read
+//! through `value_shapes`, the one reading every writer shares. Anything with bytes has a form; a
+//! field with none, like a fn or a pointer, and an id, which names a node in one run only, are
+//! refused by name.
+use @std.meta.{
+    Arms,
+    Code,
+    Declared,
+    Decls,
+    Diagnostic,
+    Directive,
+    Stmts,
+    Field,
+    Kind,
+    Type as MetaType,
+    Variant as MetaVariant,
+    as_code,
+    int_node,
+    name,
+    refuse,
+    type_named,
+}
+use saved_layout.{
+    SavedBytes,
+    SavedLayoutWriter,
+    SavedList,
+    SavedRecord,
+    SavedSlot,
+    SavedSlots,
+    SavedSource,
+    float_bits,
+    saved_layout_writer,
+    saved_map,
+    saved_root_record,
+}
+use value_shapes.{FieldRole, Reading, ValueShape}
+
+/// What generated code calls the writer it's handed. Saved fields are spliced into templates
+/// written elsewhere, so it's bound and read through a hole.
+const WRITER_NAME: string = "writer"
+
+/// The writer, in generated code.
+fn writer_code() -> Code { name(WRITER_NAME) }
+
+/// A slot's number, in generated code.
+export fn slot_number(slot: int) -> Code { as_code(int_node(slot)) }
+
+/// Generated statements answering the bytes of one record of `slots`.
+export fn saved_record_statements(slots: List<Code>) -> Stmts {
+    quote {
+        let ${WRITER_NAME} = saved_layout_writer()
+        ${writer_code()}.finished(${written_record(0, slots)})
+    }
+}
+
+/// How a value of `kind` is saved, absent when it has no bytes or holds an id.
+export fn saved_shape(kind: Kind) -> ValueShape? {
+    let shape? = saved_reading().shape_of(kind) else { return null }
+    if holds_an_id(shape) { null } else { shape }
+}
+
+/// A saved answer is written from the declarations as the build sees them, every field of them.
+fn saved_reading() -> Reading { Reading { declared: type_named, role: (_f: Field) -> FieldRole.Written } }
+
+/// Whether a value holds an id anywhere.
+fn holds_an_id(shape: ValueShape) -> bool {
+    match shape {
+        .Id(_, _, _) -> true,
+        .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> holds_an_id(inner),
+        .Entries(key, value) or .Sides(key, value) -> holds_an_id(key) || holds_an_id(value),
+        .Int or .Float or .Bool or .Text or .Octets or .Declared(_, _) -> false,
+    }
+}
+
+export trait Saved {
+    /// Generates the type's save and load methods, or says which field can't be saved.
+    static fn derive(t: MetaType) -> Declared {
+        let problems = [no_bytes(t.name, f) for f in every_field(t) if saved_shape(f.kind) == null]
+        if !problems.is_empty() { return Declared { made: [], problems: problems } }
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote { impl ${t} { ${saved_methods(t)} } },
+                },
+            ],
+        }
+    }
+}
+
+/// Every field of a record, and of each variant of an enum.
+fn every_field(t: MetaType) -> List<Field> {
+    t.fields.concat([f for v in t.variants for f in v.fields])
+}
+
+/// A field's shape, once `Saved` has refused every field without one.
+fn shape_of_field(f: Field) -> ValueShape { saved_shape(f.kind)! }
+
+/// The generated methods: a value to and from its bytes, and in place inside a bigger answer.
+fn saved_methods(t: MetaType) -> Decls {
+    quote {
+        fn saved_bytes() -> Bytes {
+            let writer = saved_layout_writer()
+            writer.finished(self.written_into(writer))
+        }
+
+        static fn from_saved_bytes(bytes: Bytes) -> ${t} {
+            ${name(t.name)}.read_from(saved_fields(bytes))
+        }
+
+        fn written_into(${WRITER_NAME}: SavedLayoutWriter) -> int { ${written_body(t)} }
+
+        static fn read_from(record: SavedRecord) -> ${t} { ${read_body(t)} }
+
+        ${[field_door(f, slot) for slot, f in t.fields]}
+    }
+}
+
+/// `<field>_in(record)` reads one field of a saved record without the others, and a field holding a
+/// list, a record or octets also has `<field>_in_place(record)`, which copies nothing.
+fn field_door(f: Field, slot: int) -> Decls {
+    let number = slot_number(slot)
+    let shape = shape_of_field(f)
+    let read = quote {
+        static fn ${"${f.name}_in"}(record: SavedRecord) -> ${f.ty} { ${slot_read(shape, quote { record }, number)} }
+    }
+    match shape {
+        .Listed(_) -> quote {
+            ${read}
+            static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedList { record.list_at(${number})! }
+        },
+        .Declared(_, _) -> quote {
+            ${read}
+            static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedRecord { record.record_at(${number})! }
+        },
+        .Octets -> quote {
+            ${read}
+            static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedBytes { record.octets_in_place_at(${number})! }
+        },
+        .Int or .Float or .Bool or .Text or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Id(_, _, _) -> read,
+    }
+}
+
+/// Saving: a record writes one slot per field; an enum picks its variant, then does the same.
+fn written_body(t: MetaType) -> Code {
+    if !t.variants.is_empty() {
+        let arms: List<Arms> = [written_variant(v, at) for at, v in t.variants]
+        return quote { match self { ${arms} } }
+    }
+    written_record(0, [slot_written(shape_of_field(f), quote { self.${f.name} }) for f in t.fields])
+}
+
+/// One match arm saving one enum variant, its number recording which variant it was.
+fn written_variant(v: MetaVariant, at: int) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${written_record(at, [])} } }
+    let binders = [f.name for f in v.fields]
+    quote { .${v}(${binders}) -> ${written_record(at, [slot_written(shape_of_field(f), name(f.name)) for f in v.fields])} }
+}
+
+/// Generated code writing one record of `slots`, answering where it starts.
+fn written_record(variant: int, slots: List<Code>) -> Code {
+    quote { ${writer_code()}.write_record(${variant}, [..${slots}]) }
+}
+
+/// How one shape of value is saved and read back, in generated code. The two halves are one
+/// definition, so a shape can't gain a way in without a way out.
+type SavedForm = { written: fn(Code) -> Code, read: fn(Code, Code) -> Code }
+
+/// The form of one shape. A number sits in its slot; anything else is a child node. An absent
+/// number can't be told from a present one inside a slot, so a present one rides a record of its
+/// own.
+fn saved_form(shape: ValueShape) -> SavedForm {
+    match shape {
+        .Int -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Number(${value}) },
+            read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) },
+        },
+        .Float -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Number(float_bits(${value})) },
+            read: (node: Code, slot: Code) -> quote { ${node}.float_at(${slot}) },
+        },
+        .Bool -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Number(if ${value} { 1 } else { 0 }) },
+            read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) == 1 },
+        },
+        .Text -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Child(${writer_code()}.write_text(${value})) },
+            read: (node: Code, slot: Code) -> quote { ${node}.text_at(${slot})! },
+        },
+        .Octets -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Child(${writer_code()}.write_octets(${value})) },
+            read: (node: Code, slot: Code) -> quote { ${node}.octets_at(${slot})! },
+        },
+        .Listed(element) -> SavedForm {
+            written: (value: Code) -> {
+                let item_written = slot_written(element, quote { item })
+                quote { SavedSlot.Child(${writer_code()}.write_list([${item_written} for item in ${value}])) }
+            },
+            read: (node: Code, slot: Code) -> {
+                let item_read = slot_read(element, quote { items }, quote { position })
+                quote { read_saved_list(${node}.list_at(${slot})!, (items, position) -> ${item_read}) }
+            },
+        },
+        .Entries(key, value) -> entries_form(key, value),
+        .Sides(ok, err) -> sides_form(ok, err),
+        .Celled(inner) -> SavedForm {
+            written: (value: Code) -> slot_written(inner, quote { ${value}.get() }),
+            read: (node: Code, slot: Code) -> quote { Cell.new(${slot_read(inner, node, slot)}) },
+        },
+        .Renamed(type_name, over) -> SavedForm {
+            written: (value: Code) -> slot_written(over, quote { ${value}.of }),
+            read: (node: Code, slot: Code) -> quote { ${type_name}(${slot_read(over, node, slot)}) },
+        },
+        .Optional(inner) -> if rides_a_record(inner) { optional_record_form(inner) } else { optional_child_form(inner) },
+        .Declared(type_name, _) -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Child(${value}.written_into(${writer_code()})) },
+            read: (node: Code, slot: Code) -> quote { ${name(type_name)}.read_from(${node}.record_at(${slot})!) },
+        },
+        .Id(_, _, _) -> SavedForm {
+            written: (_value: Code) -> quote { an_id_has_no_saved_form() },
+            read: (_node: Code, _slot: Code) -> quote { an_id_has_no_saved_form() },
+        },
+    }
+}
+
+/// A map is its keys and its values, two lists in its order, since a map's order is part of it.
+fn entries_form(key: ValueShape, held: ValueShape) -> SavedForm {
+    let keys = ValueShape.Listed(key)
+    let values = ValueShape.Listed(held)
+    SavedForm {
+        written: (value: Code) -> {
+            let keys_written = slot_written(keys, quote { ${value}.keys() })
+            let values_written = slot_written(values, quote { ${value}.values() })
+            quote { SavedSlot.Child(${written_record(0, [keys_written, values_written])}) }
+        },
+        read: (node: Code, slot: Code) -> {
+            let held_record = quote { ${node}.record_at(${slot})! }
+            let keys_read = slot_read(keys, held_record, slot_number(0))
+            let values_read = slot_read(values, held_record, slot_number(1))
+            quote { saved_map(${keys_read}, ${values_read}) }
+        },
+    }
+}
+
+/// A result is a record of one slot, its variant saying which side it holds.
+fn sides_form(ok: ValueShape, err: ValueShape) -> SavedForm {
+    SavedForm {
+        written: (value: Code) -> {
+            let ok_record = written_record(0, [slot_written(ok, quote { held_ok })])
+            let err_record = written_record(1, [slot_written(err, quote { held_err })])
+            quote {
+                SavedSlot.Child(match ${value} {
+                    .Ok(held_ok) -> ${ok_record},
+                    .Err(held_err) -> ${err_record},
+                })
+            }
+        },
+        read: (node: Code, slot: Code) -> {
+            let held = quote { ${node}.record_at(${slot})! }
+            let ok_read = slot_read(ok, held, slot_number(0))
+            let err_read = slot_read(err, held, slot_number(0))
+            quote { if ${held}.variant_within(2) == 0 { .Ok(${ok_read}) } else { .Err(${err_read}) } }
+        },
+    }
+}
+
+fn optional_record_form(inner: ValueShape) -> SavedForm {
+    SavedForm {
+        written: (value: Code) -> {
+            let present = written_record(0, [slot_written(inner, quote { ${value}! })])
+            quote { if ${value} == null { SavedSlot.NoChild } else { SavedSlot.Child(${present}) } }
+        },
+        read: (node: Code, slot: Code) -> {
+            let present = slot_read(inner, quote { ${node}.record_at(${slot})! }, slot_number(0))
+            quote { if ${node}.holds_child_at(${slot}) { ${present} } else { null } }
+        },
+    }
+}
+
+fn optional_child_form(inner: ValueShape) -> SavedForm {
+    SavedForm {
+        written: (value: Code) -> {
+            let present = slot_written(inner, quote { ${value}! })
+            quote { if ${value} == null { SavedSlot.NoChild } else { ${present} } }
+        },
+        read: (node: Code, slot: Code) -> {
+            let present = slot_read(inner, node, slot)
+            quote { if ${node}.holds_child_at(${slot}) { ${present} } else { null } }
+        },
+    }
+}
+
+/// Whether a present value needs a record of its own to be told from an absent one: a number sits in
+/// its slot and can't say it's absent, and an absent nullable would read as the outer one's absence.
+fn rides_a_record(shape: ValueShape) -> bool {
+    match shape {
+        .Int or .Float or .Bool or .Optional(_) -> true,
+        .Celled(inner) or .Renamed(_, inner) -> rides_a_record(inner),
+        .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> false,
+    }
+}
+
+/// Generated code for the slot one value takes.
+export fn slot_written(shape: ValueShape, value: Code) -> Code { (saved_form(shape).written)(value) }
+
+/// Generated code reading one value back from slot `slot` of `node`.
+export fn slot_read(shape: ValueShape, node: Code, slot: Code) -> Code { (saved_form(shape).read)(node, slot) }
+
+/// Loading: a record reads each field from its slot; an enum matches on its variant number.
+fn read_body(t: MetaType) -> Code {
+    if t.variants.is_empty() {
+        let fields = [field_read(f, at) for at, f in t.fields]
+        return quote { ${t} { ..${fields} } }
+    }
+    let arms: List<Arms> = [read_variant(t, v, at) for at, v in t.variants]
+    quote { match record.variant_within(${t.variants.length}) { ${arms} } }
+}
+
+/// One field of the record literal being rebuilt, read from slot `slot`.
+fn field_read(f: Field, slot: int) -> Code {
+    quote { Record { ${f.name}: ${slot_read(shape_of_field(f), quote { record }, slot_number(slot))} } }
+}
+
+/// One match arm rebuilding one variant. `variant_within` has already refused a number past the
+/// last, so the last arm answers the rest.
+fn read_variant(t: MetaType, v: MetaVariant, at: int) -> Arms {
+    let reads = [slot_read(shape_of_field(f), quote { record }, slot_number(slot)) for slot, f in v.fields]
+    let value = if v.fields.is_empty() { quote { ${name(t.name)}.${v.name} } } else { quote { ${name(t.name)}.${v.name}(..${reads}) } }
+    if at == t.variants.length - 1 { return quote { _ -> ${value} } }
+    quote { ${at} -> ${value} }
+}
+
+/// The root record of saved bytes.
+export fn saved_fields(bytes: Bytes) -> SavedRecord { saved_root_record(SavedSource.InMemory(bytes), bytes.length) }
+
+/// A saved list read back, item by item.
+export fn read_saved_list<T>(items: SavedList, read: fn(SavedList, int) -> T) -> List<T> {
+    [read(items, position) for position in 0..items.length]
+}
+
+fn no_bytes(type_name: string, f: Field) -> Diagnostic {
+    refuse(
+        "`${type_name}.${f.name}` holds a `${f.kind.spelled()}`, which has no bytes to save, or an id, which names a node in one run only",
+    )
+}

@@ -1,0 +1,139 @@
+// `@query` and `@input` over a store in memory: plain functions, remembered, with arguments and
+// answers of any savable type, and a reader of one part standing when other parts change.
+use answer_parts.{AnswerParts, NamedValue, answer_parts}
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
+
+once fn the_world() -> Cell<Map<string, string>> {
+    let world: Map<string, string> = {}
+    Cell.new(world)
+}
+
+@input
+fn file_text(_engine: QueryEngine, path: string) -> string { the_world().get().get(path) ?? "" }
+
+/// A module's names: one part per word of its file.
+@parted_query
+fn module_names(engine: QueryEngine, path: string) -> AnswerParts {
+    answer_parts(
+        [NamedValue { name: word, value: word.bytes() } for word in file_text(engine, path).split(" ")],
+    )
+}
+
+@query
+fn is_named(engine: QueryEngine, path: string, word: string) -> bool {
+    module_names_part(engine, path, word) != null
+}
+
+/// A file's first word and its whole text, as two parts.
+@parted_query
+fn file_parts(engine: QueryEngine, path: string) -> AnswerParts {
+    let text = file_text(engine, path)
+    answer_parts(
+        [
+            NamedValue { name: "first", value: text.split(" ")[0].bytes() },
+            NamedValue { name: "whole", value: text.bytes() },
+        ],
+    )
+}
+
+@query
+fn first_word_length(engine: QueryEngine, path: string) -> int { file_parts_part(engine, path, "first")!.length }
+
+@query
+fn word_lengths(_engine: QueryEngine, words: List<string>, extra: int?) -> List<int> {
+    [word.length + (extra ?? 0) for word in words]
+}
+
+collect listed_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn process(store: StoreInMemory) -> QueryEngine { query_engine(store, definitions_of(listed_queries)) }
+
+/// Asked and answering kinds a field can hold.
+@query
+fn counted_ratio(_engine: QueryEngine, counts: Map<string, int>, ratio: float) -> Map<string, float> {
+    let answer: Map<string, float> = {"${counts.length}": ratio + 1.0}
+    answer
+}
+
+spec "saved_query — plain functions, remembered" {
+    given "a map and a float, asked and answered" {
+        then "they cross, and asking again runs nothing" {
+            let store = store_in_memory()
+            let counts: Map<string, int> = {"a": 1, "b": 2}
+            let first = counted_ratio(process(store), counts, 1.5)
+            let later = process(store)
+            let again = counted_ratio(later, counts, 1.5)
+            first.get("2") == 2.5 && again.get("2") == 2.5 && later.computed_count.get() == 0
+        }
+    }
+    given "a query with several kinds of argument and answer" {
+        then "it answers as the plain function would" {
+            let lengths = word_lengths(process(store_in_memory()), ["a", "bb"], 10)
+            lengths[0] == 11 && lengths[1] == 12
+        }
+        then "an absent argument is its own question" {
+            let store = store_in_memory()
+            word_lengths(process(store), ["a"], null)[0] == 1 &&
+                word_lengths(process(store), ["a"], 1)[0] == 2
+        }
+    }
+    given "a second process with nothing changed" {
+        then "only the input runs" {
+            let store = store_in_memory()
+            the_world().put("m.av", "alpha beta")
+            let first = process(store)
+            let _ = is_named(first, "m.av", "alpha")
+            let second = process(store)
+            is_named(second, "m.av", "alpha") && second.computed_count.get() == 1
+        }
+    }
+    given "a reader of one part" {
+        then "it stands when another part appears" {
+            let store = store_in_memory()
+            the_world().put("m.av", "alpha beta")
+            let _ = is_named(process(store), "m.av", "alpha")
+            the_world().put("m.av", "alpha beta gamma")
+            let later = process(store)
+            // the input and the table run; the reader of `alpha` stands
+            is_named(later, "m.av", "alpha") && later.computed_count.get() == 2
+        }
+        then "a reader that found nothing reruns when its part appears" {
+            let store = store_in_memory()
+            the_world().put("m.av", "alpha")
+            !is_named(process(store), "m.av", "gamma") &&
+                {
+                    the_world().put("m.av", "alpha gamma")
+                    let later = process(store)
+                    is_named(later, "m.av", "gamma") && later.computed_count.get() == 3
+                }
+        }
+        then "it reruns when its own part's value changes" {
+            let store = store_in_memory()
+            the_world().put("m.av", "alpha beta")
+            let _ = first_word_length(process(store), "m.av")
+            the_world().put("m.av", "pi beta")
+            let later = process(store)
+            first_word_length(later, "m.av") == 2 && later.computed_count.get() == 3
+        }
+        then "it stands when another part's value changes" {
+            let store = store_in_memory()
+            the_world().put("m.av", "alpha beta")
+            let _ = first_word_length(process(store), "m.av")
+            the_world().put("m.av", "alpha gamma")
+            let later = process(store)
+            first_word_length(later, "m.av") == 5 && later.computed_count.get() == 2
+        }
+        then "going back finds the earlier answers" {
+            let store = store_in_memory()
+            the_world().put("m.av", "alpha")
+            let _ = is_named(process(store), "m.av", "alpha")
+            the_world().put("m.av", "alpha gamma")
+            let _ = is_named(process(store), "m.av", "alpha")
+            the_world().put("m.av", "alpha")
+            let later = process(store)
+            is_named(later, "m.av", "alpha") && later.computed_count.get() == 1
+        }
+    }
+}

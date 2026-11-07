@@ -1,0 +1,89 @@
+// A schema: one byte form whatever order its types come in, a hash that moves with any shape, and
+// the questions a tape's writer and reader ask of it.
+use tape_schema.{
+    FieldSchema,
+    Holds,
+    Lying,
+    TapeSchema,
+    TypeSchema,
+    VariantSchema,
+    Wrapping,
+    tape_schema,
+}
+
+fn field(name: string, wrapped: List<Wrapping>, holds: Holds) -> FieldSchema {
+    FieldSchema { name: name, lies: Lying { wrapped: wrapped, holds: holds } }
+}
+
+/// `type a.Pair = { left: a.Side, names: List<string?> }`
+fn pair() -> TypeSchema {
+    TypeSchema {
+        type_path: "a.Pair",
+        variants: [
+            VariantSchema {
+                name: "Pair",
+                fields: [field("left", [], .Node("a.Side")), field("names", [.List, .Optional], .Text)],
+            },
+        ],
+    }
+}
+
+/// `enum a.Side { Near  Far(distance: int) }`
+fn side() -> TypeSchema {
+    TypeSchema {
+        type_path: "a.Side",
+        variants: [
+            VariantSchema { name: "Near", fields: [] },
+            VariantSchema { name: "Far", fields: [field("distance", [], .Int)] },
+        ],
+    }
+}
+
+/// `side`, its one field wrapped differently.
+fn side_far_optional() -> TypeSchema {
+    TypeSchema {
+        type_path: "a.Side",
+        variants: [
+            VariantSchema { name: "Near", fields: [] },
+            VariantSchema { name: "Far", fields: [field("distance", [.Optional], .Int)] },
+        ],
+    }
+}
+
+/// A type named as `pair` is, in another module.
+fn other_pair() -> TypeSchema { TypeSchema { type_path: "b.Pair", variants: [] } }
+
+fn round_trip(schema: TapeSchema) -> TapeSchema { TapeSchema.from_saved_bytes(schema.saved_bytes()) }
+
+spec "tape schema" {
+    given "types in either order" {
+        then "they make one schema" { tape_schema([pair(), side()]).hash().same_as(tape_schema([side(), pair()]).hash()) }
+    }
+    given "a field wrapped differently" {
+        then "the hash moves" {
+            !tape_schema([pair(), side()])
+                .hash()
+                .same_as(tape_schema([pair(), side_far_optional()]).hash())
+        }
+    }
+    given "two types of one name in two modules" {
+        then "each is found by its path" {
+            let schema = tape_schema([pair(), other_pair()])
+            schema.type_at("a.Pair")?.variants?.length == 1 &&
+                schema.type_at("b.Pair")?.variants?.length == 0
+        }
+    }
+    given "a path the schema lacks" {
+        then "no type is found" { tape_schema([pair()]).type_at("a.Side") == null }
+    }
+    given "a record and an enum" {
+        then "only the enum says which variant" { !pair().has_choice() && side().has_choice() }
+        then "a variant goes by its place" { side().variant_number("Far") == 1 && side().variant_number("Gone") == null }
+    }
+    given "a saved schema" {
+        then "it reads back whole" {
+            let schema = tape_schema([pair(), side()])
+            round_trip(schema).hash().same_as(schema.hash())
+        }
+    }
+}

@@ -3214,6 +3214,48 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A run of statements in the middle of a block
+
+`packages/std-program/src/tape_derive.av` gathers every run of generated statements into one list
+(`[..choice, ..fields]`) because a hole holding statements stands only last in its block, and any
+other place answers the defect "a hole typing accepted lowers no fill" from the derive that used it.
+The site wants `${statements}` anywhere a statement stands, or a refusal at the quote saying where
+it may go.
+
+### A delegate that doesn't need its signature's types named
+
+`collect enum E: T` generates `impl T for E` in the enum's own file, spelling the trait's signature, so
+that file must import every type the signature names, though it never reads them:
+`packages/std-program/src/tests/support/tiny_tree.av` imports `TapeWriter` for this alone. A delegate
+wants to wear the trait's signature as already resolved.
+
+### A derived view of a record read in place
+
+`SectionsView` (`packages/std-program/src/syntax_tape.av`) and `MappedPack`
+(`packages/std-program/src/disk_store.av`) each spell a record of views and fill it field by field
+from `<field>_in_place` doors, so a table's label is read once. Two copies wait here; the third
+wants `@derive(Saved)` to generate the view beside the doors.
+
+### Appending a run to a list in place
+
+`packages/std-program/src/syntax_tape.av`'s writer grows one octet buffer for a whole tape, and adding
+a float's eight octets or a text's run is a `push` loop, licensed, because `xs.concat(ys)` answers a
+new list and copies the buffer every time. The want: `xs.push_all(ys)` (or `xs.push(..ys)`), which
+writes in place and reads as one statement.
+
+### A shift that brings in zeros
+
+`packages/std-program/src/syntax_tape.av` writes a number seven bits at a time and reads its sign back
+from the lowest bit, and both need the high bits to come in as zeros. `>>` keeps the sign, so the file
+spells `shifted_down` with a mask. The want: a logical shift (`>>>`, or `x.shifted_down(n)` on `int`).
+
+### A set of named bits
+
+`packages/std-program/src/token_columns.av` spells each token role as a numbered const and tests it
+with `(x & role) != 0`, because an enum can't say "several of these at once". The want: a declared
+set whose members are bits, stored in an octet column, with a membership test, so a role can't be
+given a number twice.
+
 ### A bound on a type's own parameter
 
 `type SideTable<K: Dense, V>` is "expected `=`": a bound lands on a free fn's parameters only. So a

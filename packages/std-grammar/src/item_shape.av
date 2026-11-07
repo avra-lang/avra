@@ -1,0 +1,171 @@
+//! WHAT A GRAMMAR'S RULES SAY ABOUT A FILE'S ITEMS, read off their shape, so nothing is declared
+//! twice and a rule added to a grammar shapes items the day it's written. The start rule repeats
+//! one rule beside a separator, and that rule's branches are items:
+//!
+//!     file   = ( s:item | BREAK )* EOF
+//!     item   = "impl" target:NAME "{" ( fns:item | BREAK )* "}"   // holds members
+//!            | "fn" name:NAME body:block END                      // its body can wait
+//!            | name:MARK BREAK? decl:item                         // attached to the item below
+//!     block  = "{" ( s:item | BREAK )* "}"
+//!
+//! A word holds members when, in every branch it opens, a bracket pair holds nothing but a repeat of
+//! rules and the separator.
+//! A body can wait when a branch ends in a rule that's a bracket pair and nothing else. A branch
+//! declares a name by labeling it `name`, and the word before it is its declaring word.
+use ast.{Grammar, Rep, Seq, closer_of}
+use util.{distinct, flatten, is_name_start, some_list}
+
+/// What a branch labels the name it declares.
+const NAME_LABEL: string = "name"
+
+export type ItemShape = {
+    /// The rule a file repeats, absent in a grammar that repeats none.
+    item_rule: string? = null,
+    /// The classes and the words opening a line that belongs to the item below.
+    attached_classes: List<string> = [],
+    attached_words: List<string> = [],
+    /// The word before each declared name, so the token after it is the name.
+    declaring_words: List<string> = [],
+    /// The words of branches that hold members.
+    holder_words: List<string> = [],
+    /// The words of branches whose body can wait.
+    deferred_words: List<string> = [],
+    /// The literals opening a body or a holder's members.
+    body_openers: List<string> = [],
+}
+
+/// What `g` says about items.
+export fn item_shape(g: Grammar) -> ItemShape {
+    let start? = g.rules.find(it.name == g.start) else { return ItemShape {} }
+    let file_branch? = start.body.branches.first() else { return ItemShape {} }
+    let repeated? = file_branch.items.find(it.rep == Rep.Star) else { return ItemShape {} }
+    let parts = repeated.prim.group_alt()?.branches ?? []
+    let item_rule? = first_named(parts, (part) -> part.only_prim()?.rule()) else { return ItemShape {} }
+    let separator? = first_named(parts, (part) -> part.only_prim()?.class()) else { return ItemShape {} }
+    let reader = ShapeReader { g: g, item_rule: item_rule, separator: separator }
+    let branches = reader.item_branches()
+    ItemShape {
+        item_rule: item_rule,
+        attached_classes: gathered(branches, (s) -> reader.attached_class(s)),
+        attached_words: gathered(branches, (s) -> reader.attached_word(s)),
+        declaring_words: gathered(branches, (s) -> word_before_name(s)),
+        holder_words: reader.holder_words(branches),
+        deferred_words: gathered(branches, (s) -> reader.deferred_word(s)),
+        body_openers: gathered(branches, (s) -> reader.body_opener(s)),
+    }
+}
+
+/// The first name `read` finds among `parts`.
+fn first_named(parts: List<Seq>, read: fn(Seq) -> string?) -> string? {
+    [name for part in parts for name in some_list(read(part))].first()
+}
+
+/// What `read` finds in each branch, each once.
+fn gathered(branches: List<Seq>, read: fn(Seq) -> List<string>) -> List<string> { distinct(flatten([read(s) for s in branches])) }
+
+fn is_word(text: string) -> bool { !text.is_empty() && is_name_start(text.char_code(0)) }
+
+/// The first word a branch spells.
+fn first_word(s: Seq) -> List<string> { [m.prim.literal() ?? "" for m in s.items].filter(is_word(it)).slice(0, 1) }
+
+/// The word right before a branch's `name`.
+fn word_before_name(s: Seq) -> List<string> {
+    [s.items[at - 1].prim.literal() ?? "" for at in 1..s.items.length if s.items[at].label == NAME_LABEL]
+        .filter(is_word(it))
+        .slice(0, 1)
+}
+
+/// What opens a rule that's a bracket pair and nothing else, in every branch.
+fn bracket_openers(branches: List<Seq>) -> List<string> {
+    let openers = [s.items[0].prim.literal() ?? "" for s in branches if closes_what_it_opens(s)]
+    if openers.length == branches.length { openers } else { [] }
+}
+
+/// Whether a branch opens a bracket and closes it.
+fn closes_what_it_opens(s: Seq) -> bool {
+    let first? = s.items.first() else { return false }
+    let closer? = closer_of(first.prim.literal() ?? "") else { return false }
+    s.items.any(it.prim.literal() == closer)
+}
+
+type ShapeReader = { g: Grammar, item_rule: string, separator: string }
+
+impl ShapeReader {
+    /// The branches of the item rule and of every rule held as members, however deep.
+    fn item_branches() -> List<Seq> {
+        mut seen = [self.item_rule]
+        mut branches: List<Seq> = []
+        mut at = 0
+        while at < seen.length {
+            for s in self.branches_of(seen[at]) {
+                branches.push(s)
+                seen = distinct(seen.concat(self.held_rules(s)))
+            }
+            at = at + 1
+        }
+        branches
+    }
+
+    /// A rule's branches, none when there's no such rule.
+    fn branches_of(rule_name: string) -> List<Seq> {
+        let rule? = self.g.rules.find(it.name == rule_name) else { return [] }
+        rule.body.branches
+    }
+
+    /// The words every branch of which holds members, since a word only some of them hold with
+    /// can't tell an item's shape from its first token.
+    fn holder_words(branches: List<Seq>) -> List<string> {
+        let holds = (s: Seq) -> !self.held_rules(s).is_empty()
+        gathered(branches.filter(holds), first_word)
+            .filter(
+                (word) -> {
+                    branches.filter((s) -> first_word(s).first() == word).all(holds)
+                },
+            )
+    }
+
+    /// The rules a branch holds as members: a bracket pair around a repeat of rules and the separator.
+    fn held_rules(s: Seq) -> List<string> { flatten([self.held_at(s, at) for at in 1..s.items.length - 1]) }
+
+    fn held_at(s: Seq, at: int) -> List<string> {
+        let closer? = closer_of(s.items[at - 1].prim.literal() ?? "") else { return [] }
+        if s.items[at + 1].prim.literal() != closer || s.items[at].rep != Rep.Star { return [] }
+        let parts = s.items[at].prim.group_alt()?.branches ?? []
+        if !parts.all(it.only_prim()?.rule() != null || it.only_prim()?.class() == self.separator) { return [] }
+        [rule for part in parts for rule in some_list(part.only_prim()?.rule())]
+    }
+
+    /// The class opening a branch that attaches to the item below.
+    fn attached_class(s: Seq) -> List<string> { if self.attaches(s) { some_list(s.items[0].prim.class()) } else { [] } }
+
+    /// The word opening a branch that attaches to the item below.
+    fn attached_word(s: Seq) -> List<string> { if self.attaches(s) { some_list(s.items[0].prim.literal()) } else { [] } }
+
+    /// Whether a branch ends in an optional separator and an item.
+    fn attaches(s: Seq) -> bool {
+        let last = s.items.length - 1
+        last >= 2 &&
+            s.items[last].prim.rule() == self.item_rule &&
+            s.items[last - 1].prim.class() == self.separator &&
+            s.items[last - 1].rep == Rep.Opt
+    }
+
+    /// What opens the bracketed rule a branch ends in, past its end terminal.
+    fn deferred_openers(s: Seq) -> List<string> {
+        let body? = s.items.filter(it.prim.class() == null).last() else { return [] }
+        bracket_openers(self.branches_of(body.prim.rule() ?? ""))
+    }
+
+    /// The word of a branch whose body can wait.
+    fn deferred_word(s: Seq) -> List<string> {
+        if self.deferred_openers(s).is_empty() { return [] }
+        let named = word_before_name(s)
+        if named.is_empty() { first_word(s) } else { named }
+    }
+
+    /// The literal opening a branch's held members, or its deferred body.
+    fn body_opener(s: Seq) -> List<string> {
+        let held = [s.items[at - 1].prim.literal() ?? "" for at in 1..s.items.length - 1 if !self.held_at(s, at).is_empty()]
+        if held.is_empty() { self.deferred_openers(s) } else { held }
+    }
+}

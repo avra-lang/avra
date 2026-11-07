@@ -1,0 +1,263 @@
+// A saved answer read where it lies: empty values first, every slot width, one large field
+// widening nothing else in a record, one byte form per value, and a mapped file answering exactly
+// what the same bytes in memory answer.
+use @std.hash.{blake3_hex}
+use @std.io.{make_dirs, write_bytes}
+use @std.time.{stamp}
+use saved_layout.{
+    SavedRecord,
+    SavedSlot,
+    SavedSlots,
+    SavedSource,
+    saved_layout_writer,
+    saved_root_record,
+}
+
+extern fn avra_mmap_open(path: string) -> ptr?
+
+/// An answer whose root holds an empty text, a long text, a list, a mixed record and a number.
+fn sample_answer() -> Bytes {
+    let w = saved_layout_writer()
+    let empty_text = w.write_text("")
+    let long_text = w.write_text("a text longer than the thirty-two octets kept whole")
+    let numbers = w
+        .write_list([SavedSlot.Number(-1), SavedSlot.Number(0), SavedSlot.Number(5000000000)])
+    let mixed = w
+        .write_record(
+            3,
+            [
+                SavedSlot.Number(1),
+                SavedSlot.Number(5000000000),
+                SavedSlot.NoChild,
+                SavedSlot.Number(-3),
+            ],
+        )
+    let root = w
+        .write_record(
+            2,
+            [
+                SavedSlot.Child(empty_text),
+                SavedSlot.Child(long_text),
+                SavedSlot.Child(numbers),
+                SavedSlot.Child(mixed),
+                SavedSlot.Number(1000),
+            ],
+        )
+    w.finished(root)
+}
+
+/// Everything `sample_answer` holds, read back from `source`.
+fn read_back(source: SavedSource, end: int) -> string {
+    let root = saved_root_record(source, end)
+    let numbers = root.list_at(2)!
+    let mixed = root.record_at(3)!
+    let texts = "[${root.text_at(0) ?? "none"}] ${root.text_at(1) ?? "none"}"
+    let list_read = "${numbers.length} ${numbers.number_at(0)} ${numbers.number_at(1)} ${numbers.number_at(2)}"
+    let record_read = "${mixed.variant} ${mixed.number_at(0)} ${mixed.number_at(1)} ${mixed.record_at(2) == null} ${mixed.number_at(3)}"
+    "${root.variant} ${root.field_count} ${texts} | ${list_read} | ${record_read} | ${root.number_at(4)}"
+}
+
+const SAMPLE_READ_BACK: string = "2 5 [] a text longer than the thirty-two octets kept whole | 3 -1 0 5000000000 | 3 1 5000000000 true -3 | 1000"
+
+fn record_of(answer: Bytes) -> SavedRecord { saved_root_record(SavedSource.InMemory(answer), answer.length) }
+
+fn one_record(slots: List<SavedSlot>) -> Bytes {
+    let w = saved_layout_writer()
+    let root = w.write_record(0, slots)
+    w.finished(root)
+}
+
+fn one_list(slots: List<SavedSlot>) -> Bytes {
+    let w = saved_layout_writer()
+    let list = w.write_list(slots)
+    w.finished(w.write_record(0, [SavedSlot.Child(list)]))
+}
+
+/// Whether searching for every number, and each number's neighbours, agrees with walking the list.
+fn search_agrees_with_a_walk(numbers: List<int>) -> bool {
+    let answer = one_list([SavedSlot.Number(n) for n in numbers])
+    let read = saved_root_record(SavedSource.InMemory(answer), answer.length).list_at(0)!
+    let wanted = flat_neighbours(numbers).concat([-9223372036854775807, 0, 9223372036854775807])
+    wanted.all((word) -> read.first_at_or_after(word) == walked_to(numbers, word))
+}
+
+fn flat_neighbours(numbers: List<int>) -> List<int> {
+    mut around: List<int> = []
+    for n in numbers {
+        around.push(n)
+        if n > -9223372036854775807 { around.push(n - 1) }
+        if n < 9223372036854775807 { around.push(n + 1) }
+    }
+    around
+}
+
+fn walked_to(numbers: List<int>, word: int) -> int {
+    mut position = 0
+    while position < numbers.length && numbers[position] < word { position = position + 1 }
+    position
+}
+
+spec "program/saved_layout — an answer read where it lies" {
+    given "the empty values" {
+        then "an empty record, list and text are present and read back empty" {
+            let w = saved_layout_writer()
+            let empty_text = w.write_text("")
+            let empty_record = w.write_record(0, [])
+            let empty_list = w.write_list([])
+            let root = w
+                .write_record(
+                    0,
+                    [
+                        SavedSlot.Child(empty_text),
+                        SavedSlot.Child(empty_record),
+                        SavedSlot.Child(empty_list),
+                    ],
+                )
+            let read = record_of(w.finished(root))
+            read.text_at(0) == "" &&
+                read.record_at(1)!.field_count == 0 &&
+                read.list_at(2)!.length == 0
+        }
+        then "no child is absent, and a zero number is a number" {
+            let read = record_of(one_record([SavedSlot.NoChild, SavedSlot.Number(0)]))
+            read.record_at(0) == null &&
+                read.list_at(0) == null &&
+                read.text_at(0) == null &&
+                read.number_at(1) == 0
+        }
+    }
+    given "numbers at every width" {
+        then "a record's extremes read back in place, across more than one word of size codes" {
+            let values = [
+                0,
+                1,
+                -1,
+                127,
+                128,
+                -128,
+                255,
+                256,
+                65535,
+                65536,
+                4294967295,
+                4294967296,
+                9223372036854775807,
+                -9223372036854775807,
+            ]
+            let slots = [SavedSlot.Number(v) for v in values.concat(values).concat(values)]
+            let read = record_of(one_record(slots))
+            (0..slots.length).all((i) -> read.number_at(i) == values[i % values.length])
+        }
+        then "a list's extremes read back in place" {
+            let values = [
+                0,
+                1,
+                -1,
+                255,
+                65536,
+                4294967296,
+                9223372036854775807,
+                -9223372036854775807,
+            ]
+            let answer = one_list([SavedSlot.Number(v) for v in values])
+            let read = saved_root_record(SavedSource.InMemory(answer), answer.length).list_at(0)!
+            (0..values.length).all((i) -> read.number_at(i) == values[i])
+        }
+    }
+    given "a sorted list of numbers searched" {
+        then "the answer agrees with a walk, for an empty list, a tiny one, spread words and repeats" {
+            let lists = [
+                [],
+                [5],
+                [5, 5, 5],
+                [-3, 0, 0, 7],
+                [
+                    -9223372036854775807,
+                    -4611686018427387904,
+                    0,
+                    4611686018427387904,
+                    9223372036854775807,
+                ],
+                [i * 1000 for i in 0..500],
+                [i * 36893488147419103 - 9223372036854775000 for i in 0..500],
+            ]
+            lists.all((numbers) -> search_agrees_with_a_walk(numbers))
+        }
+    }
+    given "a record with many fields" {
+        then "every field reads back, past each load of size codes" {
+            let w = saved_layout_writer()
+            let read = record_of(
+                w.finished(w.write_record(0, [SavedSlot.Number(i * i * i) for i in 0..100])),
+            )
+            (0..100).all((i) -> read.number_at(i) == i * i * i)
+        }
+    }
+    given "records around the size codes a label's load brings" {
+        then "each field count reads back" {
+            (0..40)
+                .all(
+                    (count) -> {
+                        let w = saved_layout_writer()
+                        let read = record_of(
+                            w
+                                .finished(w.write_record(0, [SavedSlot.Number(i * 300) for i in 0..count])),
+                        )
+                        (0..count).all((i) -> read.number_at(i) == i * 300) &&
+                            read.field_count == count
+                    },
+                )
+        }
+    }
+    given "labels too big for their first octet" {
+        then "a large variant and a long list read back" {
+            let w = saved_layout_writer()
+            let long_list = w.write_list([SavedSlot.Number(i) for i in 0..1000])
+            let root = w.write_record(5000, [SavedSlot.Child(long_list)])
+            let read = record_of(w.finished(root))
+            read.variant == 5000 &&
+                read.list_at(0)!.length == 1000 &&
+                read.list_at(0)!.number_at(999) == 999
+        }
+        then "a tiny record costs one octet of label" {
+            one_record([SavedSlot.Number(1)]).length == 1 + 1 + 1 + 8
+        }
+    }
+    given "a record with one large field" {
+        then "the other fields stay small" {
+            let small = one_record([SavedSlot.Number(1), SavedSlot.Number(2), SavedSlot.Number(3)])
+                .length
+            let mixed = one_record(
+                [SavedSlot.Number(1), SavedSlot.Number(5000000000), SavedSlot.Number(3)],
+            )
+                .length
+            mixed - small == 7
+        }
+    }
+    given "a list with one large item" {
+        then "every item takes its width, so any item is one jump" {
+            let small = one_list([SavedSlot.Number(1), SavedSlot.Number(2), SavedSlot.Number(3)])
+                .length
+            let wide = one_list(
+                [SavedSlot.Number(1), SavedSlot.Number(5000000000), SavedSlot.Number(3)],
+            )
+                .length
+            wide - small == 21
+        }
+    }
+    given "one value written twice" {
+        then "its bytes are the same" { blake3_hex(sample_answer()) == blake3_hex(sample_answer()) }
+    }
+    given "the same answer in memory and in a mapped file" {
+        then "each reads back what was written" {
+            let dir = "/tmp/avra-saved-layout/${stamp()}"
+            let _ = make_dirs(dir)
+            let path = "${dir}/answer"
+            let answer = sample_answer()
+            let _ = write_bytes(path, answer)
+            let mapping = avra_mmap_open(path)!
+            read_back(SavedSource.InMemory(answer), answer.length) == SAMPLE_READ_BACK &&
+                read_back(SavedSource.Mapped(mapping), answer.length) == SAMPLE_READ_BACK
+        }
+    }
+}

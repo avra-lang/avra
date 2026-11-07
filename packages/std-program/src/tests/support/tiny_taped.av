@@ -1,0 +1,61 @@
+// The trait a language writes around the generated body: its own tree in its own signature.
+use @std.meta.{Directive, Field, Type as MetaType, type_named}
+use syntax_tape.{TapeWriter}
+use tape_derive.{TAPE_NAME, TREE_NAME, root_schema_declarations, taped_body}
+use value_shapes.{FieldRole, Reading, indexes}
+
+export trait Taped {
+    fn taped(tree: TinyTree, mut tape: TapeWriter)
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl Taped for ${t} {
+                        fn taped(${TREE_NAME}: TinyTree, mut ${TAPE_NAME}: TapeWriter) { ${taped_body(t, tiny_reading())} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// The tiny tree as declared, with `unwritten` kept off its tapes.
+fn tiny_reading() -> Reading { Reading { declared: type_named, role: role_of } }
+
+fn role_of(f: Field) -> FieldRole { if f.name == "unwritten" { .Carried } else { .Written } }
+
+/// A root of the tiny tree's tapes: its schema, worked out while the tests build, and its nodes'
+/// writer, which says which of its variants each is.
+export trait TinyRoot {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        ${root_schema_declarations(t, tiny_reading())}
+
+                        fn taped_node(${TREE_NAME}: TinyTree, mut ${TAPE_NAME}: TapeWriter) { ${taped_body(t, tiny_reading())} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// A node's number in its tree, which on a tape is the node itself, placed where it was written.
+@indexes(TinyNode)
+export type TinyId = { index: int }
+
+impl Taped for TinyId {
+    fn taped(tree: TinyTree, mut tape: TapeWriter) {
+        let _ = tape.place(self.index, 1)
+        tree.nodes[self.index].taped_node(tree, tape)
+    }
+}

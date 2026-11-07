@@ -11,11 +11,15 @@
 // `NodeFacts` delegation writes `means`'s answer here
 use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
+use @std.program.syntax_tape.{TapeWriter}
+use @std.program.tape_schema.{FieldSchema, Holds, Lying, TypeSchema, VariantSchema, Wrapping}
+use @std.program.value_shapes.{indexes}
 use @std.relation.{relation, arena, codec}
 
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
 @dense
+@indexes(Expr)
 export type ExprId = { index: int }
 
 impl ExprId {
@@ -32,6 +36,7 @@ export fn same_expr(a: ExprId, b: ExprId) -> bool {
 
 /// Typed index into the statement arena.
 @dense
+@indexes(Stmt)
 export type StmtId = { index: int }
 
 impl StmtId {
@@ -216,6 +221,7 @@ export fn binds_type(kind: DeclKind) -> bool {
 /// written name alone (a declaration's annotations are a fact of
 /// the declaration, not a word a component index minted).
 @derive(Identity)
+@derive(Taped)
 export enum CollectKind {
     Component(word: string)
     Annotated(name: string)
@@ -232,6 +238,7 @@ impl CollectKind {
 /// Where a `collect` gathers from.
 @derive(Identity)
 @derive(Worded)
+@derive(Taped)
 export enum CollectScope {
     Self
     Package
@@ -246,6 +253,7 @@ export enum CollectScope {
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type ProjField = { field: Plain, path: List<Plain> = [] }
 
 /// One `by` key as written: its `it.a.b` segments, and the `[i]` it reads
@@ -266,6 +274,7 @@ impl OrderKey {
 
 /// A collect's projection: the type it builds, and each field's fill.
 @derive(Identity)
+@derive(Taped)
 export type Projection = { ty: TypeRef, fields: List<ProjField> }
 
 /// A MODULE's identity — a directory under the root, interned. `@dense`:
@@ -285,6 +294,7 @@ export type ModuleId = { index: int }
 @derive(Identity)
 @derive(Fingerprint)
 @codec
+@derive(Taped)
 export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor, Shl, Shr }
 
 /// A jump's surface word — THE one projection: `continue` starts the
@@ -384,6 +394,7 @@ export type Nominal = string
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export enum CompClause {
     Head(index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?)
     Filter(cond: ExprId)
@@ -394,6 +405,7 @@ export enum CompClause {
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export enum MapEntry {
     Pair(key: ExprId, value: ExprId)
     Spread(from: ExprId)
@@ -491,6 +503,7 @@ export fn stmt_makers() -> List<Maker<Stmt>> {
 @derive(Makes)
 @relation
 @arena
+@derive(TapeRoot)
 export collect enum Expr: Identity, Kids, Heirs, NodeFacts, Surfaced = @expr_node in package by it.name
 
 /// Marks a record as `Expr`'s variant at `rank` — its fields are the
@@ -569,6 +582,7 @@ export type BodyParts = { word: string, parts: List<string>, holes: List<ExprId>
 /// A body's PARSED form and EXPANSION — a FIXED payload set, so the
 /// derives read it by type like any other. `None` is the honest empty
 /// for a body with no parsed form (`text`), never an empty list.
+@derive(Taped)
 export enum BodyView {
     None
     /// A quote's body as written: its placeholders are its own.
@@ -642,6 +656,7 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 @derive(Grammar)
 @derive(Fingerprint)
 @derive(Makes)
+@derive(Taped)
 export type TypeRef = {
     name: string,
     applied: List<TypeRef>,
@@ -671,6 +686,7 @@ export enum Built {
 @derive(Grammar)
 @derive(Fingerprint)
 @derive(Makes)
+@derive(Taped)
 export type FnSeat = { ty: TypeRef, mutable: bool = false, settled: bool = false }
 
 impl FnSeat {
@@ -768,6 +784,7 @@ export const pronoun_param: Param = Param {
 // (workspace's claim law) rather than falling through.
 @derive(Identity)
 @derive(Grammar)
+@derive(Taped)
 export type Mark = {
     name: string,
     args: List<string>,
@@ -778,6 +795,7 @@ export type Mark = {
 
 /// An argument a mark names: its label and the words of its value.
 @derive(Identity)
+@derive(Taped)
 export type MarkArg = { label: string, value: string }
 
 /// A handler an instance hears an event with: the event it names,
@@ -807,12 +825,14 @@ export enum Unheard {
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
 @derive(Identity)
+@derive(Taped)
 export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null, prop: bool = false, spread: SeatSpread? = null }
 
 /// What a seat standing for MANY says it is: the call's remaining arguments
 /// (`..rest: List<T>`), or a template hole that fills with whole entries
 /// (`..${xs}`), the hole's index.
 @derive(Identity)
+@derive(Taped)
 export enum SeatSpread {
     Rest
     Hole(index: int)
@@ -868,6 +888,7 @@ export const pronoun_param_id: ParamId = ParamId { index: -1 }
 
 /// A pattern's identity in the store's pattern table.
 @dense
+@indexes(Pat)
 export type PatId = { index: int }
 
 impl PatId {
@@ -893,6 +914,7 @@ export fn same_pat(a: PatId, b: PatId) -> bool {
 @derive(Matchable)
 @derive(Exact)
 @derive(Makes)
+@derive(TapeRoot)
 export collect enum Pat: Surfaced = @pat_node in package by it.name
 
 /// Marks a record as `Pat`'s variant at `rank` — its fields are the
@@ -909,10 +931,12 @@ export fn pat_node(_node: Named) {}
 /// end — which is why the mark reads there as a statement of what the
 /// hole does rather than a change to it.
 @derive(Identity)
+@derive(Taped)
 export type Hole = { name: string, ty: TypeRef?, greedy: bool }
 
 /// A hole and the literal text that follows it.
 @derive(Identity)
+@derive(Taped)
 export type FormatPart = { hole: Hole, piece: string }
 
 /// The format a `grammar` declaration read. Its holes became the
@@ -946,6 +970,7 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type CatchArm = { variant: Plain = Plain(""), bind: Scoped = Scoped(""), value: ExprId }
 
 /// One match arm: its alternatives (`a or b`), an optional guard, and
@@ -954,12 +979,14 @@ export type CatchArm = { variant: Plain = Plain(""), bind: Scoped = Scoped(""), 
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
 /// single positional payload, or named fields — and the marks
 /// written before it.
 @derive(Identity)
+@derive(Taped)
 export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? = null, marks: List<Mark> = [] }
 
 /// One imported item: its name, and the name it binds under when it
@@ -969,11 +996,13 @@ export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? =
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type FieldPat = { name: Plain, pat: PatId }
 
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type UseItem = { name: string, rename: string? = null }
 
 /// A `given` group as written: its name and its cases — a lone `then`
@@ -981,6 +1010,7 @@ export type UseItem = { name: string, rename: string? = null }
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type Given = { name: string, cases: List<Case> }
 
 /// One test case: its `given` group's name, its own name (the
@@ -988,6 +1018,7 @@ export type Given = { name: string, cases: List<Case> }
 @derive(Identity)
 @derive(Grammar)
 @derive(Makes)
+@derive(Taped)
 export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.
@@ -1027,6 +1058,7 @@ impl UseParts {
 @derive(Makes)
 @relation
 @arena
+@derive(TapeRoot)
 export collect enum Stmt: Identity, Surfaced = @stmt_node in package by it.name
 
 /// Marks a record as `Stmt`'s variant at `rank` — its fields are the

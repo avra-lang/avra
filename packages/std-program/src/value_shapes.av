@@ -1,0 +1,136 @@
+//! THE ONE READING OF A VALUE'S TYPE, for everything that writes values down. A saved answer, a
+//! tape and a tape's schema all read a type through this, so none of them can disagree about what
+//! a value is made of.
+//!
+//! A value is plain, or it wraps others: an option, a list, a cell, a name over a shape, a map's
+//! entries, a result's sides. A declared record or enum writes itself. An id marked
+//! `@indexes(Node)` stands for the node it names. A value with no bytes, as a fn or a pointer has
+//! none, has no shape.
+use @std.meta.{Field, Kind, Named, Type as MetaType, Variant as MetaVariant}
+
+/// Marks a dense id: a value of it names one node of `node`, declared in the id's own module, so
+/// whatever writes the id down writes that node.
+export fn indexes(_t: MetaType, _node: Named) {}
+
+/// What a value is made of.
+export enum ValueShape {
+    Int
+    Float
+    Bool
+    Text
+    Octets
+    /// Absent, or holding `inner`.
+    Optional(inner: ValueShape)
+    /// Any number of `inner`, in order.
+    Listed(inner: ValueShape)
+    /// `inner` in a cell: read with `get`, made with `Cell.new`.
+    Celled(inner: ValueShape)
+    /// A name over a shape: read with `of`, made with `Name(value)`.
+    Renamed(type_name: string, over: ValueShape)
+    /// A map's entries in order, each a key and a value.
+    Entries(key: ValueShape, value: ValueShape)
+    /// A result: one side or the other.
+    Sides(ok: ValueShape, err: ValueShape)
+    /// A declared record or enum, which writes itself. `path` is its whole path.
+    Declared(type_name: string, path: string)
+    /// An id, standing for the node it names: `node` as the id's module names it, and its whole path.
+    Id(type_name: string, node: string, node_path: string)
+}
+
+/// What a language does with a field: writes it down, carries it in the value without writing it,
+/// or keeps it apart from the value, as a side table does.
+export enum FieldRole {
+    Written
+    Carried
+    Apart
+}
+
+/// What a language tells the reading: its declarations, and what it does with each field.
+export type Reading = { declared: fn(string) -> MetaType?, role: fn(Field) -> FieldRole }
+
+/// A field that's written down, with its shape: absent when it has no bytes.
+export type ShapedField = { field: Field, shape: ValueShape? }
+
+/// A variant and its fields that are written down, in order. A record is one variant, named as
+/// the type is.
+export type ShapedVariant = { name: string, fields: List<ShapedField> }
+
+impl Reading {
+    /// What a value of `kind` is made of, absent when it has no bytes.
+    fn shape_of(kind: Kind) -> ValueShape? {
+        match kind {
+            .Int -> .Int,
+            .Float -> .Float,
+            .Bool -> .Bool,
+            .Str -> .Text,
+            .Bytes -> .Octets,
+            .Opt(inner) -> .Optional(self.shape_of(inner)?),
+            .List(inner) -> .Listed(self.shape_of(inner)?),
+            .Cell(inner) -> .Celled(self.shape_of(inner)?),
+            .Map(key, value) -> .Entries(self.shape_of(key)?, self.shape_of(value)?),
+            .Result(ok, err) -> .Sides(self.shape_of(ok)?, self.shape_of(err)?),
+            .Named(type_name, args) -> self.named_shape(type_name, args),
+            .Ptr or .Void or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+        }
+    }
+
+    /// A declared record's one variant, or an enum's variants, each with the fields written down.
+    fn variants_of(t: MetaType) -> List<ShapedVariant> { [self.shaped(v) for v in declared_variants(t)] }
+
+    /// A name: an id, a name over a shape, or a declared record or enum. Absent when nothing
+    /// declares it.
+    fn named_shape(type_name: string, args: List<Kind>) -> ValueShape? {
+        let declared? = self.declaration_of(type_name) else { return null }
+        let node = node_indexed(declared)
+        if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
+        let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }
+        .Renamed(type_name, self.shape_of(over)?)
+    }
+
+    fn shaped(v: MetaVariant) -> ShapedVariant {
+        ShapedVariant {
+            name: v.name,
+            fields: [ShapedField { field: f, shape: self.shape_of(f.kind) } for f in v.fields if self.is_written(f)],
+        }
+    }
+
+    fn declaration_of(type_name: string) -> MetaType? { (self.declared)(type_name) }
+
+    fn is_written(f: Field) -> bool {
+        match self.role_of(f) { .Written -> true, .Carried or .Apart -> false }
+    }
+
+    /// Whether a value of the type holds the field, as a variant's payload does.
+    fn is_carried(f: Field) -> bool {
+        match self.role_of(f) { .Written or .Carried -> true, .Apart -> false }
+    }
+
+    fn role_of(f: Field) -> FieldRole { (self.role)(f) }
+}
+
+impl ShapedField {
+    /// The field's shape, or none when it has no bytes.
+    fn shapes() -> List<ValueShape> {
+        let shape? = self.shape else { return [] }
+        [shape]
+    }
+}
+
+impl ShapedVariant {
+    /// The shapes of the fields with bytes, in order.
+    fn shapes() -> List<ValueShape> { [shape for f in self.fields for shape in f.shapes()] }
+}
+
+/// The node a dense id names, absent for any other type.
+fn node_indexed(declared: MetaType) -> string? { declared.annotations.find(it.name == "indexes")?.args?.first() }
+
+/// A declared record's one variant, or an enum's variants.
+fn declared_variants(t: MetaType) -> List<MetaVariant> {
+    if t.variants.is_empty() { [MetaVariant { name: t.name, payload: [], at: null, fields: t.fields }] } else { t.variants }
+}
+
+/// A declared type's whole path, with its arguments when it has any.
+export fn path_of(t: MetaType, args: List<Kind>) -> string { path_in(t.module, t.name, args) }
+
+/// The whole path of the type `type_name` declares in `module`.
+fn path_in(module: string, type_name: string, args: List<Kind>) -> string { "${module}.${Kind.Named(type_name, args).spelled()}" }

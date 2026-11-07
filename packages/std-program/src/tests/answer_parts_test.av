@@ -1,0 +1,90 @@
+// Parts found in place: the empty table first, a table big enough to sort, and a name that isn't
+// there. Each answer is shaped as a query saves it, a record whose one field is the table.
+use answer_parts.{
+    AnswerPart,
+    AnswerParts,
+    NamedValue,
+    answer_parts,
+    part_hash_seen,
+    part_in_saved_parts,
+}
+use answer_record.{ContentHash, content_hash}
+use saved_layout.{SavedBytes, SavedSlot, saved_bytes_in_memory, saved_layout_writer}
+
+fn saved_as_a_query_saves(parts: AnswerParts) -> SavedBytes {
+    let writer = saved_layout_writer()
+    let field = parts.written_into(writer)
+    saved_bytes_in_memory(writer.finished(writer.write_record(0, [SavedSlot.Child(field)])))
+}
+
+fn table_of(count: int) -> SavedBytes {
+    saved_as_a_query_saves(
+        answer_parts(
+            [NamedValue { name: "name ${i}", value: "value ${i}".bytes() } for i in 0..count],
+        ),
+    )
+}
+
+fn value_of(saved: SavedBytes, name: string) -> string? {
+    let part? = part_in_saved_parts(saved, content_hash(name.bytes())) else { return null }
+    part.value.text()
+}
+
+fn part_named(low_word: int, value: string) -> AnswerPart {
+    AnswerPart {
+        part_name: ContentHash { high_word: 5, low_word: low_word },
+        part_hash: content_hash(value.bytes()),
+        value: value.bytes(),
+    }
+}
+
+fn sharing_a_high_word() -> AnswerParts {
+    AnswerParts {
+        name_high_words: [5, 5],
+        parts: [part_named(1, "first"), part_named(2, "second")],
+    }
+}
+
+spec "answer_parts — parts found in place" {
+    given "an empty table" {
+        then "no name is found" { value_of(table_of(0), "name 0") == null }
+    }
+    given "a table of one" {
+        then "its name is found" { value_of(table_of(1), "name 0") == "value 0" }
+    }
+    given "a table big enough to sort" {
+        then "every name is found, with its own value" {
+            let saved = table_of(1000)
+            (0..1000).all((i) -> value_of(saved, "name ${i}") == "value ${i}")
+        }
+        then "a name that isn't there isn't found" { value_of(table_of(1000), "name 1000") == null }
+    }
+    given "the same values in another order" {
+        then "the table's bytes are the same" {
+            let forward = answer_parts(
+                [
+                    NamedValue { name: "a", value: "1".bytes() },
+                    NamedValue { name: "b", value: "2".bytes() },
+                ],
+            )
+            let backward = answer_parts(
+                [
+                    NamedValue { name: "b", value: "2".bytes() },
+                    NamedValue { name: "a", value: "1".bytes() },
+                ],
+            )
+            forward.saved_bytes().text_lossy() == backward.saved_bytes().text_lossy()
+        }
+    }
+    given "two names whose hashes share a high word" {
+        then "each finds its own part, and a third with that word finds none" {
+            let saved = saved_as_a_query_saves(sharing_a_high_word())
+            let found = part_in_saved_parts(saved, ContentHash { high_word: 5, low_word: 2 })!
+            found.value.text() == "second" &&
+                part_in_saved_parts(saved, ContentHash { high_word: 5, low_word: 3 }) == null
+        }
+    }
+    given "the hash a read sees" {
+        then "absence is no empty value's hash" { !part_hash_seen(null).same_as(content_hash("".bytes())) }
+    }
+}

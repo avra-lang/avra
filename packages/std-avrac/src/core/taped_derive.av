@@ -1,0 +1,59 @@
+//! Avra's tree on a tape: `Taped` writes a node that isn't a root, and `TapeRoot` writes a root's
+//! nodes, saying which of its variants each is, and works out its schema. The generators are
+//! `@std/program`'s and know no language; this names Avra's tree and which fields belong on a tape.
+use @std.meta.{Field, Type as MetaType, Directive, type_named}
+use @std.program.syntax_tape.{TapeWriter}
+use @std.program.tape_derive.{TAPE_NAME, TREE_NAME, root_schema_declarations, taped_body}
+use @std.program.value_shapes.{FieldRole, Reading}
+
+/// The compiler's derive for a node's tape.
+export trait Taped {
+    fn taped(tree: SyntaxArena, mut tape: TapeWriter)
+
+    /// `@local` and `@facet` fields aren't on the node's tape.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl Taped for ${t} {
+                        fn taped(${TREE_NAME}: SyntaxArena, mut ${TAPE_NAME}: TapeWriter) { ${taped_body(t, avra_reading())} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// A root of Avra's tapes: its nodes' writer, and its schema with the types only it reaches, worked
+/// out while the compiler builds. `AVRA_TAPE_SCHEMA` gathers every root's.
+export trait TapeRoot {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        ${root_schema_declarations(t, avra_reading())}
+
+                        fn taped_node(${TREE_NAME}: SyntaxArena, mut ${TAPE_NAME}: TapeWriter) { ${taped_body(t, avra_reading())} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// Avra's tree as the build declares it: a `@local` field rides its node and stays off the tape, and a
+/// `@facet` field lives in its side table.
+fn avra_reading() -> Reading { Reading { declared: type_named, role: role_on_tape } }
+
+fn role_on_tape(f: Field) -> FieldRole {
+    match field_route(f) { .Plain -> .Written, .Local -> .Carried, .Facet(_) -> .Apart }
+}

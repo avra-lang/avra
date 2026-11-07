@@ -1,0 +1,231 @@
+//! THE SHAPE OF A LANGUAGE'S TREE, as its types say it. A tape written by a schema saves only
+//! what a type can't say: which variant a node is when its type has more than one, whether an
+//! optional field holds anything, how long a list is, and the values. Everything else is known
+//! before a byte is read, so nothing on the tape frames it.
+//!
+//! A variant's bool fields and the presence of its optional fields come first, a bit each in
+//! field order, the first lowest, sixty-three to a number. Then its fields, in order: an optional
+//! one only when present, and a bool not again. Inside a list, an optional or a bool says itself,
+//! a number each.
+//!
+//! A schema is saved once, and its hash names the shape of every tape written by it. A type named
+//! the same in two modules is two types here, since each goes by its whole path. A map is a list
+//! of entries and a result one of two sides, so each is a node of a type no declaration names,
+//! which goes by its spelling.
+use answer_record.{ContentHash, content_hash}
+use @std.meta.{derive, Type as MetaType}
+use saved_derive.{Saved}
+use sorted.{sorted_by}
+use @std.text.{text_before}
+use value_shapes.{Reading, ShapedVariant, ValueShape, path_of}
+
+/// What a field holds once it's unwrapped.
+@derive(Saved)
+export enum Holds {
+    /// A node of the type with this path. Its variant leads it when the type has more than one.
+    Node(type_path: string)
+    Int
+    /// A float, saved as its bits.
+    Float
+    Bool
+    /// A text, numbered among the tape's texts.
+    Text
+    /// Octets, saved as their length and each octet.
+    Bytes
+}
+
+impl Holds {
+    /// What a field holds, as a type is spelled.
+    fn spelled() -> string {
+        match self {
+            .Node(type_path) -> type_path,
+            .Int -> "int",
+            .Float -> "float",
+            .Bool -> "bool",
+            .Text -> "string",
+            .Bytes -> "Bytes",
+        }
+    }
+}
+
+/// What wraps what a field holds.
+@derive(Saved)
+export enum Wrapping {
+    /// Absent or present.
+    Optional
+    /// A length, then that many values.
+    List
+}
+
+/// How a value lies on a tape: its wrappings from the outside in, and what they wrap.
+@derive(Saved)
+export type Lying = { wrapped: List<Wrapping>, holds: Holds }
+
+/// One field: its name and how it lies.
+@derive(Saved)
+export type FieldSchema = { name: string, lies: Lying }
+
+/// One variant of a type and its fields, in the order they're saved.
+@derive(Saved)
+export type VariantSchema = { name: string, fields: List<FieldSchema> }
+
+/// A type's shape. A record is one variant, named as the type is.
+@derive(Saved)
+export type TypeSchema = { type_path: string, variants: List<VariantSchema> }
+
+/// Every type a language's tapes hold, ordered by path, so one set of types has one byte form.
+@derive(Saved)
+export type TapeSchema = { types: List<TypeSchema> }
+
+/// The schema of `types`, in whatever order they come.
+export fn tape_schema(types: List<TypeSchema>) -> TapeSchema {
+    TapeSchema { types: sorted_by(types, (a, b) -> text_before(a.type_path, b.type_path)) }
+}
+
+impl TapeSchema {
+    /// The hash naming this schema, and so the shape of every tape written by it.
+    fn hash() -> ContentHash { content_hash(self.saved_bytes()) }
+
+    /// The type at `type_path`, absent when the schema has none.
+    fn type_at(type_path: string) -> TypeSchema? { self.types.find(it.type_path == type_path) }
+}
+
+impl TypeSchema {
+    /// Whether a node of this type says which variant it is.
+    fn has_choice() -> bool { self.variants.length > 1 }
+
+    /// The number a variant is saved as: its place among the type's variants.
+    fn variant_number(name: string) -> int? { self.variants.find_index(it.name == name) }
+}
+
+impl Lying {
+    /// How a value lies, spelled as a type with names whole: `List<m.Leaf?>`.
+    fn spelled() -> string { spelled_within(self.wrapped, self.holds.spelled()) }
+}
+
+fn spelled_within(wrapped: List<Wrapping>, inner: string) -> string {
+    let outer? = wrapped.first() else { return inner }
+    let inside = spelled_within(wrapped.drop(1), inner)
+    match outer { .Optional -> "${inside}?", .List -> "List<${inside}>" }
+}
+
+/// How a value of `shape` lies on a tape. A cell and a name over a shape add nothing.
+export fn lying(shape: ValueShape) -> Lying {
+    match shape {
+        .Int -> plain(.Int),
+        .Float -> plain(.Float),
+        .Bool -> plain(.Bool),
+        .Text -> plain(.Text),
+        .Octets -> plain(.Bytes),
+        .Optional(inner) -> wrapped_in(.Optional, lying(inner)),
+        .Listed(inner) -> wrapped_in(.List, lying(inner)),
+        .Celled(inner) or .Renamed(_, inner) -> lying(inner),
+        .Entries(_, _) -> wrapped_in(.List, plain(.Node(node_path(shape)!))),
+        .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> plain(.Node(node_path(shape)!)),
+    }
+}
+
+/// The path of the node type a shape is, absent for a shape that isn't a node. A map's node is
+/// one of its entries.
+export fn node_path(shape: ValueShape) -> string? {
+    match shape {
+        .Entries(key, value) -> "Map<${lying(key).spelled()}, ${lying(value).spelled()}>",
+        .Sides(ok, err) -> "Result<${lying(ok).spelled()}, ${lying(err).spelled()}>",
+        .Declared(_, path) -> path,
+        .Id(_, _, node_path) -> node_path,
+        .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
+    }
+}
+
+/// The outermost nodes a shape holds.
+fn nodes_within(shape: ValueShape) -> List<ValueShape> {
+    match shape {
+        .Int or .Float or .Bool or .Text or .Octets -> [],
+        .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> nodes_within(inner),
+        .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> [shape],
+    }
+}
+
+/// A node type's schema, and the nodes its fields hold.
+type NodeType = { schema: TypeSchema, holding: List<ValueShape> }
+
+/// A root's schema with every type only it reaches, and the names of the other roots it reaches,
+/// as its module names them.
+export type RootSchema = { schema: TapeSchema, roots_reached: List<string> }
+
+impl Reading {
+    /// The schema of `root` and of every type its fields reach, stopping at the other roots.
+    fn root_schema(root: MetaType) -> RootSchema {
+        let own = self.declared_type(root, path_of(root, []))
+        mut found: Map<string, TypeSchema> = {}
+        found.set(own.schema.type_path, own.schema)
+        mut roots: Map<string, string> = {}
+        mut waiting = [..own.holding]
+        while !waiting.is_empty() {
+            let shape = waiting.pop()
+            let path = node_path(shape)!
+            if found.has(path) || roots.has(path) { continue }
+            let node? = self.node_type(shape) else {
+                roots.set(path, root_named(shape)!)
+                continue
+            }
+            found.set(path, node.schema)
+            waiting = waiting.concat(node.holding)
+        }
+        RootSchema { schema: tape_schema(found.values()), roots_reached: roots.values() }
+    }
+
+    /// The node type a node shape is, absent for an id, whose node is a root of its own.
+    fn node_type(shape: ValueShape) -> NodeType? {
+        match shape {
+            .Declared(type_name, path) -> self.declared_type(self.declaration_of(type_name)!, path),
+            .Entries(key, value) -> spelled_type(
+                shape,
+                [side("Entry", [field_schema("key", key), field_schema("value", value)])],
+                [key, value],
+            ),
+            .Sides(ok, err) -> spelled_type(
+                shape,
+                [side("Ok", [field_schema("value", ok)]), side("Err", [field_schema("value", err)])],
+                [ok, err],
+            ),
+            .Id(_, _, _) or .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
+        }
+    }
+
+    fn declared_type(t: MetaType, path: string) -> NodeType {
+        let variants = self.variants_of(t)
+        NodeType {
+            schema: TypeSchema { type_path: path, variants: [variant_schema(v) for v in variants] },
+            holding: [node for v in variants for shape in v.shapes() for node in nodes_within(shape)],
+        }
+    }
+}
+
+/// A node type no declaration names, from its variants and the shapes they hold.
+fn spelled_type(shape: ValueShape, variants: List<VariantSchema>, holds: List<ValueShape>) -> NodeType {
+    NodeType {
+        schema: TypeSchema { type_path: node_path(shape)!, variants: variants },
+        holding: [node for held in holds for node in nodes_within(held)],
+    }
+}
+
+/// The root an id stands for, as its module names it.
+fn root_named(shape: ValueShape) -> string? {
+    match shape { .Id(_, node, _) -> node, rest -> null }
+}
+
+fn variant_schema(v: ShapedVariant) -> VariantSchema {
+    VariantSchema {
+        name: v.name,
+        fields: [field_schema(f.field.name, shape) for f in v.fields for shape in f.shapes()],
+    }
+}
+
+fn side(name: string, fields: List<FieldSchema>) -> VariantSchema { VariantSchema { name: name, fields: fields } }
+
+fn field_schema(name: string, shape: ValueShape) -> FieldSchema { FieldSchema { name: name, lies: lying(shape) } }
+
+fn plain(holds: Holds) -> Lying { Lying { wrapped: [], holds: holds } }
+
+fn wrapped_in(wrapping: Wrapping, inner: Lying) -> Lying { inner with { wrapped: [wrapping, ..inner.wrapped] } }

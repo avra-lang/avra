@@ -1,0 +1,44 @@
+// A small real grammar and a token per character, so tests over items run the code the real thing runs.
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Lexeme, ready}
+use token_columns.{TokenColumns, TokenRoles, token_columns, token_roles}
+
+/// One character of a spelled file. Quoted text is data, so a `"` token matches no literal.
+type SpelledToken = { text: string, at: int }
+
+const TERMINALS: List<string> = ["NAME", "BREAK", "END", "EOF", "MARK"]
+
+/// `f w {…}` defers its body and declares `w`, `h w {…}` holds members and `k w = w` declares `w`,
+/// and `@` attaches, with or without a pair after it. Anything else is an item of a single name.
+fn spelled_grammar() -> Grammar {
+    grammar {
+        file = ( items:thing | BREAK )* EOF
+        thing = name:MARK ( "(" ")" )? BREAK? decl:thing
+            | "f" name:NAME body:block END
+            | "h" target:NAME "{" ( members:thing | BREAK )* "}" END
+            | "k" name:NAME "=" value:NAME END
+            | line:NAME END
+        block = "{" ( items:thing | BREAK )* "}"
+    }
+}
+
+once fn spelled_roles() -> TokenRoles { token_roles(ready(spelled_grammar(), TERMINALS)) }
+
+fn spelled_lexeme() -> Lexeme<SpelledToken> {
+    Lexeme {
+        lit_matches: (token: SpelledToken, text: string) -> token.text == text,
+        is_eof: (_token: SpelledToken) -> false,
+        ends_statement: (token: SpelledToken) -> token.text == ";",
+        kind_of: (term: string) -> TERMINALS.index_of(term),
+        wears_kind: (token: SpelledToken, kind: int) -> kind == TERMINALS.index_of("MARK") && token.text == "@",
+        text: (token: SpelledToken) -> token.text,
+        loc: (token: SpelledToken) -> Loc { file: null, lo: token.at, hi: token.at + token.text.length },
+        stated: (text: string, _loc: Loc?) -> SpelledToken { text: text, at: 0 },
+    }
+}
+
+/// One token per character. A space or `~` is no token; `~` stands for a comment's text. `;` ends an item.
+export fn spelled_columns(spelled: string) -> TokenColumns {
+    let tokens = [SpelledToken { text: spelled.substring(at, at + 1), at: at } for at in 0..spelled.length if spelled.char_code(at) != 32 && spelled.char_code(at) != 126]
+    token_columns(spelled, tokens, spelled_roles(), spelled_lexeme())
+}

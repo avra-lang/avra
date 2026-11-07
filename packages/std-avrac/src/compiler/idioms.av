@@ -1798,3 +1798,25 @@ fn fixed_tmp_path_found(lit: Code) -> Fix {
             ),
         )
 }
+
+/// A fn held in a field is called where it's read — `(self.f)(x)` — never bound to a name first
+/// only so it can be called.
+@fixes("{\n    let f = self.f\n    f(x)\n}", "{\n    (self.f)(x)\n}")
+@keeps("{\n    let f = self.f\n    f(x)\n    f(y)\n}")
+@keeps("{\n    let f = self.f\n    g(f)\n}")
+@keeps("{\n    let f = pick()\n    f(x)\n}")
+export rule fn_field_pinned {
+    quote {
+        {
+            ${..head}
+            let ${f} = ${field}
+            ${callee}(${..args})
+        }
+    } if callee == f && field.prop_name() != null -> fn_field_called(head, field, args),
+}
+
+/// The block with its last call reading the field it called.
+fn fn_field_called(head: List<Code>, field: Code, args: List<Code>) -> Fix {
+    let leading = [c.text() + "\n" for c in head].join("")
+    Fix.Rewrite(name("{\n${leading}(${field.text()})(${[a.text() for a in args].join(", ")})\n}"))
+}

@@ -1,0 +1,186 @@
+//! WHAT SOURCE FILES SAY, for any language with a grammar. A file's text is an input, read once
+//! into its items. What the read learned is projected three ways, each standing on its own: hashes
+//! in parts, one per item and aspect, so editing one body leaves every reader of the others
+//! standing; the list of part names, which moves only when an item is added, removed or renamed;
+//! and where each item sits, which moves with anything above it and is read by nothing that only
+//! wants to know what an item says.
+use address.{SourceFileAddress}
+use answer_parts.{AnswerParts, NamedValue, answer_parts}
+use answer_record.{ContentHash}
+use item_hashes.{HashedItem, hashed_items}
+use @std.meta.{derive}
+use query_engine.{QueryDefinition, QueryEngine}
+use saved_derive.{Saved}
+use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
+use source_items.{item_name, source_items}
+use token_columns.{TokenColumns}
+
+/// Where sources come from and how they're read.
+export type SourceWorld = {
+    /// A file's text, absent when there's none.
+    read_file: fn(SourceFileAddress) -> string?,
+    /// Names the language's reader, so answers from another version of it are never reused.
+    language_print: string,
+    /// A text's tokens, as its language's grammar says they work.
+    columns_in: fn(string) -> TokenColumns,
+}
+
+once fn world_cell() -> Cell<SourceWorld?> {
+    let no_world: SourceWorld? = null
+    Cell.new(no_world)
+}
+
+/// Sets the world a process's source facts read.
+export fn use_source_world(world: SourceWorld) { world_cell().set(world) }
+
+/// The world this process set. Asking before setting one is the caller's defect.
+fn current_world() -> SourceWorld { world_cell().get()! }
+
+@input
+fn language_print(_engine: QueryEngine) -> string { current_world().language_print }
+
+@input
+fn source_text(_engine: QueryEngine, file: SourceFileAddress) -> string? {
+    (current_world().read_file)(file)
+}
+
+/// One item: what its part is called, and the hashes of what it says.
+@derive(Saved)
+type WrittenItem = { part_name: string, signature: ContentHash, body: ContentHash?, above: ContentHash }
+
+/// Where one item sits in its file's text.
+@derive(Saved)
+export type ItemPlace = { part_name: string, start: int, end: int, body_start: int? }
+
+/// What reading a file learned. A file with no text has no items.
+@derive(Saved)
+type ReadItems = { items: List<WrittenItem>, places: List<ItemPlace> }
+
+/// One read: projected below, so a change this answer carries reaches only who it concerns.
+@query
+fn read_items(engine: QueryEngine, file: SourceFileAddress) -> ReadItems {
+    let _ = language_print(engine)
+    let text? = source_text(engine, file) else { return ReadItems { items: [], places: [] } }
+    let columns_in = current_world().columns_in
+    let columns = columns_in(text)
+    let named = named_apart(columns, hashed_items(columns, source_items(columns)), "")
+    ReadItems {
+        items: [written_item(item) for item in named],
+        places: [item_place(columns, item) for item in named],
+    }
+}
+
+/// An item under the name of its part.
+type NamedItem = { part_name: string, hashed: HashedItem }
+
+/// Items with their parts' names, members after their holders. Same-named ones in one place are
+/// numbered in the order they're written.
+fn named_apart(columns: TokenColumns, items: List<HashedItem>, holder: string) -> List<NamedItem> {
+    mut seen: Map<string, int> = {}
+    mut named: List<NamedItem> = []
+    for hashed in items {
+        let name = item_name(columns, hashed.item)
+        let index = seen.get(name) ?? 0
+        seen.set(name, index + 1)
+        let part_name = "${holder}${declaration_part(name, index)}"
+        named.push(NamedItem { part_name: part_name, hashed: hashed })
+        named = named.concat(named_apart(columns, hashed.members, "${part_name}/"))
+    }
+    named
+}
+
+fn written_item(named: NamedItem) -> WrittenItem {
+    WrittenItem {
+        part_name: named.part_name,
+        signature: named.hashed.signature,
+        body: named.hashed.body,
+        above: named.hashed.above,
+    }
+}
+
+fn item_place(columns: TokenColumns, named: NamedItem) -> ItemPlace {
+    let item = named.hashed.item
+    let opener = item.body.opener()
+    ItemPlace {
+        part_name: named.part_name,
+        start: item.start_in(columns),
+        end: item.end_in(columns),
+        body_start: if opener == null { null } else { columns.starts[opener!] },
+    }
+}
+
+/// What a part is called: a declaration's name and which one it is among those sharing it.
+export fn declaration_part(name: string, same_name_index: int) -> string { "${name}#${same_name_index}" }
+
+/// One thing an item says, each in a part of its own, so a reader of one stands when another moves.
+export enum ItemAspect {
+    Signature
+    Body
+    Above
+}
+
+impl ItemAspect {
+    /// What this aspect of the item with part `item_part` is called.
+    fn part_of(item_part: string) -> string {
+        match self {
+            .Signature -> "${item_part}:signature",
+            .Body -> "${item_part}:body",
+            .Above -> "${item_part}:above",
+        }
+    }
+}
+
+/// Every item's hashes, one part per item and aspect. An item with no body has no such part.
+@parted_query
+fn written_items(engine: QueryEngine, file: SourceFileAddress) -> AnswerParts {
+    answer_parts([value for item in read_items(engine, file).items for value in aspects_of(item)])
+}
+
+fn aspects_of(item: WrittenItem) -> List<NamedValue> {
+    let always = [
+        NamedValue {
+            name: ItemAspect.Signature.part_of(item.part_name),
+            value: item.signature.saved_bytes(),
+        },
+        NamedValue {
+            name: ItemAspect.Above.part_of(item.part_name),
+            value: item.above.saved_bytes(),
+        },
+    ]
+    if item.body == null { return always }
+    always
+        .concat(
+            [
+                NamedValue {
+                    name: ItemAspect.Body.part_of(item.part_name),
+                    value: item.body!.saved_bytes(),
+                },
+            ],
+        )
+}
+
+/// One aspect's hash, read alone, absent when the item has no such aspect.
+export fn item_hash(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item_part: string,
+    aspect: ItemAspect,
+) -> ContentHash? {
+    let saved? = written_items_part(engine, file, aspect.part_of(item_part)) else { return null }
+    ContentHash.from_saved_bytes(saved)
+}
+
+/// What a file declares, each as the name of its part. Moves only when one is added, removed or renamed.
+@query
+export fn declared_part_names(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
+    [item.part_name for item in read_items(engine, file).items]
+}
+
+/// Where a file's items sit. Moves with anything above them.
+@query
+export fn item_places(engine: QueryEngine, file: SourceFileAddress) -> List<ItemPlace> { read_items(engine, file).places }
+
+collect listed_source_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries this module defines, for a process to hand its engine.
+export fn source_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_source_facts) }

@@ -1,0 +1,271 @@
+//! THE ENGINE: asks questions and remembers the answers. A question is a query's name, a hash of
+//! its code and its arguments' bytes. While a query runs, every question it asks is recorded as a
+//! read, so no read can be forgotten. Asked again in a later process, an answer whose record still stands is reused
+//! without running anything, and a recomputed answer that comes out the same leaves its readers
+//! standing. Nothing here knows what the queries are about.
+use answer_parts.{AnswerPart, part_hash_seen, part_in_saved_parts}
+use defect.{defect}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use saved_layout.{SavedBytes}
+use answer_record.{
+    AnswerRecord,
+    ContentHash,
+    PartSeen,
+    Question,
+    RecordedRead,
+    content_hash,
+    question,
+}
+
+/// How a query runs.
+export type QueryDefinition = {
+    query_name: string,
+    /// A hash of the query's code and everything it calls. Empty where it can't be known, and
+    /// then its answers are never reused.
+    code_hash: string,
+    /// An input reads the outside world, so it runs once in every process, is never reused, and
+    /// its bytes aren't kept.
+    is_input: bool,
+    compute: fn(QueryEngine, Bytes) -> Bytes,
+}
+
+impl QueryDefinition {
+    /// The question a call of this query asks.
+    fn question_about(arguments: Bytes) -> Question { question(self.query_name, self.code_hash, arguments) }
+}
+
+/// Where answers outlive a process. A question may hold several records, one per set of reads
+/// that answered it, so going back to an earlier state finds its earlier answer.
+export trait AnswerStore {
+    fn records_of(question: ContentHash) -> List<AnswerRecord>
+
+    fn keep_record(asked: Question, record: AnswerRecord)
+
+    /// The question a hash stands for, absent when nothing is kept about it.
+    fn question_known_as(question: ContentHash) -> Question?
+
+    /// An answer's bytes where they lie, by their hash, absent when they aren't kept.
+    fn answer_bytes(answer: ContentHash) -> SavedBytes?
+
+    fn keep_answer_bytes(answer: ContentHash, bytes: Bytes)
+
+    /// An answer's bytes for this process alone, for what the next process reads afresh anyway.
+    fn hold_answer_bytes(answer: ContentHash, bytes: Bytes)
+}
+
+/// A question being answered, and the reads it has made so far.
+type OpenQuestion = { question: ContentHash, reads: HashKeyedTable<RecordedRead> }
+
+/// A question this process knows the answer to, and what it read to get there.
+type SettledAnswer = { asked: Question, answer: ContentHash, reads: List<RecordedRead> }
+
+/// What this process has learned so far. An identity: every holder asks through the one engine.
+export type QueryEngine = {
+    store: dyn AnswerStore,
+    definitions: Cell<Map<string, QueryDefinition>>,
+    /// The answer to each question settled in this process.
+    settled_answers: HashKeyedTable<SettledAnswer>,
+    /// The questions being answered now, innermost last.
+    open_questions: Cell<List<OpenQuestion>>,
+    /// How many queries ran in this process, which is what a budget test counts.
+    computed_count: Cell<int>,
+}
+
+export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition>) -> QueryEngine {
+    let by_name: Map<string, QueryDefinition> = {}
+    let settled_answers: HashKeyedTable<SettledAnswer> = hash_keyed_table()
+    let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
+    let engine = QueryEngine {
+        store: store,
+        definitions: Cell.new(by_name),
+        settled_answers: settled_answers,
+        open_questions: open_questions,
+        computed_count: Cell.new(0),
+    }
+    for definition in definitions {
+        if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
+        engine.definitions.put(definition.query_name, definition)
+    }
+    engine
+}
+
+impl QueryEngine {
+    /// The answer's bytes where they lie, recorded as a read of the whole answer.
+    fn answer_to(asked: Question) -> SavedBytes {
+        self.answer_bytes_of(asked, self.hash_of_answer_to(asked))
+    }
+
+    /// An answer's bytes. A record may stand with its bytes no longer kept, and then it runs.
+    fn answer_bytes_of(asked: Question, answer: ContentHash) -> SavedBytes {
+        self.store.answer_bytes(answer) ?? self.store.answer_bytes(self.computed_answer(asked))!
+    }
+
+    /// The hash of the answer, recorded as a read of whoever is asking. Nothing is decoded.
+    fn hash_of_answer_to(asked: Question) -> ContentHash {
+        let answer = self.settled_answer(asked)
+        self
+            .record_read(RecordedRead { question: asked.known_as, whole_answer: answer, part: null })
+        answer
+    }
+
+    /// What this process knows the answer is, reusing a record that stands, or running the query.
+    fn settled_answer(asked: Question) -> ContentHash {
+        self.settled_answers.get(asked.known_as)?.answer ?? self.reused_answer(asked) ?? self
+            .computed_answer(asked)
+    }
+
+    /// The answer of a record whose reads all still see what they saw. An input is read fresh in
+    /// every process, and a query whose code has no hash can't tell its old answers from new ones.
+    fn reused_answer(asked: Question) -> ContentHash? {
+        let definition = self.definition_of(asked)
+        if definition.is_input || definition.code_hash.is_empty() { return null }
+        let records = self.store.records_of(asked.known_as)
+        let standing? = records
+            .filter(it.deep)
+            .concat(records.filter(!it.deep))
+            .find((record) -> self.stands_now(record)) else {
+            return null
+        }
+        self.settled(asked, standing.answer, standing.reads)
+    }
+
+    /// Whether every read of a record still sees what it saw.
+    fn stands_now(record: AnswerRecord) -> bool { record.reads.all((read) -> self.read_holds(read)) }
+
+    /// Whether a read still sees what it saw. A question nobody can ask now never holds.
+    fn read_holds(read: RecordedRead) -> bool {
+        let settled? = self.settled_now(read.question) else { return false }
+        if settled.answer.same_as(read.whole_answer) { return true }
+        let part? = read.part else { return false }
+        part_hash_seen(self.part_in(settled.asked, settled.answer, part.part_name))
+            .same_as(part.part_hash)
+    }
+
+    /// What this process says a question's answer is, settling it if it must, absent for a
+    /// question nobody can ask now. What's settled was asked by today's code, so it isn't rechecked.
+    fn settled_now(question: ContentHash) -> SettledAnswer? {
+        self.settled_answers.get(question) ?? self.settled_by_asking(question)
+    }
+
+    fn settled_by_asking(question: ContentHash) -> SettledAnswer? {
+        let asked? = self.store.question_known_as(question) else { return null }
+        let definition? = self.definitions.get().get(asked.query_name) else { return null }
+        if definition.code_hash != asked.code_hash { return null }
+        let _ = self.settled_answer(asked)
+        self.settled_answers.get(question)
+    }
+
+    /// One part of an answer, absent when there's no such part.
+    fn part_in(asked: Question, answer: ContentHash, part_name: ContentHash) -> AnswerPart? {
+        part_in_saved_parts(self.answer_bytes_of(asked, answer), part_name)
+    }
+
+    /// Runs the query, keeps what came out, and answers its hash.
+    fn computed_answer(asked: Question) -> ContentHash {
+        let reads: HashKeyedTable<RecordedRead> = hash_keyed_table()
+        let bytes = self.run_recording(asked, reads)
+        let answer = content_hash(bytes)
+        if self.store.answer_bytes(answer) == null { self.keep_or_hold(asked, answer, bytes) }
+        let record = AnswerRecord { answer: answer, reads: reads.values() }
+        if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.store.keep_record(asked, record) }
+        self.settled(asked, answer, record.reads)
+    }
+
+    /// An input's bytes are read afresh in every process, so only this process holds them.
+    fn keep_or_hold(asked: Question, answer: ContentHash, bytes: Bytes) {
+        if self.definition_of(asked).is_input {
+            self.store.hold_answer_bytes(answer, bytes)
+        } else {
+            self.store.keep_answer_bytes(answer, bytes)
+        }
+    }
+
+    /// The query's answer, with every question it asks recorded in `reads`.
+    fn run_recording(asked: Question, reads: HashKeyedTable<RecordedRead>) -> Bytes {
+        let outer = self.open_questions.get()
+        if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked)) }
+        self.open_questions.push(OpenQuestion { question: asked.known_as, reads: reads })
+        self.computed_count.set(self.computed_count.get() + 1)
+        let compute = self.definition_of(asked).compute
+        let bytes = compute(self, asked.arguments)
+        self.open_questions.set(outer)
+        bytes
+    }
+
+    /// One part of the answer, recorded as a read of that part alone, absent when there's none.
+    fn part_of_answer_to(asked: Question, part_name: string) -> Bytes? {
+        let name_hash = content_hash(part_name.bytes())
+        let answer = self.settled_answer(asked)
+        let part = self.part_in(asked, answer, name_hash)
+        let seen = PartSeen { part_name: name_hash, part_hash: part_hash_seen(part) }
+        self
+            .record_read(RecordedRead { question: asked.known_as, whole_answer: answer, part: seen })
+        part?.value
+    }
+
+    /// Whoever is asking now has made this read. With nobody asking, the question is a root, and
+    /// its answer is what the next process wants to reach fastest.
+    fn record_read(read: RecordedRead) {
+        let asker? = self.open_questions.get().last() else { return self.deep_record_kept(read.question) }
+        asker.reads.put(read.read_key(), read)
+    }
+
+    /// Keeps the deep form of a settled question's answer, unless it's kept already. A query with
+    /// no code hash can't vouch for its old answers, so nothing reaching one gets a deep record.
+    fn deep_record_kept(question: ContentHash) {
+        let root? = self.settled_answers.get(question) else { return }
+        let reached: HashKeyedTable<RecordedRead> = hash_keyed_table()
+        let seen: HashKeyedTable<bool> = hash_keyed_table()
+        if !self.inputs_gathered(root, reached, seen) { return }
+        let record = AnswerRecord { answer: root.answer, reads: reached.values(), deep: true }
+        if !self.store.records_of(question).any(it.same_as(record)) { self.store.keep_record(root.asked, record) }
+    }
+
+    /// Gathers every input a settled answer reached, each once, and says whether all of it could.
+    fn inputs_gathered(
+        settled: SettledAnswer,
+        reached: HashKeyedTable<RecordedRead>,
+        seen: HashKeyedTable<bool>,
+    ) -> bool {
+        for read in settled.reads {
+            if seen.get(read.question) != null { continue }
+            seen.put(read.question, true)
+            let below? = self.settled_answers.get(read.question) else { return false }
+            let definition = self.definition_of(below.asked)
+            if definition.code_hash.is_empty() { return false }
+            if definition.is_input {
+                reached
+                    .put(
+                        read.question,
+                        RecordedRead {
+                            question: read.question,
+                            whole_answer: below.answer,
+                            part: null,
+                        },
+                    )
+            } else if !self.inputs_gathered(below, reached, seen) {
+                return false
+            }
+        }
+        true
+    }
+
+    /// Remembers the answer for the rest of this process, and answers it.
+    fn settled(asked: Question, answer: ContentHash, reads: List<RecordedRead>) -> ContentHash {
+        self
+            .settled_answers
+            .put(asked.known_as, SettledAnswer { asked: asked, answer: answer, reads: reads })
+        answer
+    }
+
+    /// How a question's query runs. Asking a query nobody defined is the caller's defect.
+    fn definition_of(asked: Question) -> QueryDefinition { self.definitions.get().get(asked.query_name)! }
+}
+
+fn asked_while_being_answered(asked: Question) -> string {
+    "`${asked.query_name}` was asked while it was being answered"
+}
+
+fn two_queries_named(definition: QueryDefinition) -> string {
+    "two queries are named `${definition.query_name}`, so their saved answers would collide"
+}

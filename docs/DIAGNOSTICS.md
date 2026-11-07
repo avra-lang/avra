@@ -6171,7 +6171,7 @@ error[type.mismatch]: argument 1 of `f` wants `int`, found `int?`
   ·   ┬
   ·   ╰── this is `int?`
 ──╯
-help: `v` may be null — `v ?? <default>` supplies a value, `if let n? = v { … }` branches, and `!` asserts presence
+help: `v` may be null — `v ?? <default>` supplies a value, `if let n? = v { … } else { … }` branches, and `!` asserts presence
 fix (low): assert it is present — `v!` (traps when it is null)
   v!
 ```

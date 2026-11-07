@@ -1,0 +1,146 @@
+// Nodes writing themselves to a tape through the generated body, read back in the order the schema
+// says: the variant, the flags, then each field, a node's children parents first.
+use syntax_tape.{TapeReader, TapeWriter, tape_reader, tape_writer}
+use tape_schema.{TypeSchema}
+use tests.support.tiny_tree.{TinyNode, TinyTree}
+use tests.support.tiny_taped.{Taped, TinyId}
+
+fn id(index: int) -> TinyId { TinyId { index: index } }
+
+fn leaf(number: int) -> TinyNode { .Leaf(number, "x", 1.5, true) }
+
+/// The tape of a tree, written from its last node.
+fn tape_of(nodes: List<TinyNode>) -> TapeWriter {
+    let tree = TinyTree { nodes: nodes }
+    mut tape = tape_writer()
+    id(nodes.length - 1).taped(tree, tape)
+    tape
+}
+
+fn read_back(nodes: List<TinyNode>) -> TapeReader { tape_reader(tape_of(nodes).finished()) }
+
+fn root() -> TypeSchema {
+    mut found: Map<string, TypeSchema> = {}
+    TinyNode.tape_types_into(found)
+    found.values().find(it.type_path.ends_with(".TinyNode"))!
+}
+
+/// Whether the next node is the tiny tree's `variant`.
+fn is_next(tape: TapeReader, variant: string) -> bool { tape.count() == root().variant_number(variant)! }
+
+/// Whether the next node is `leaf(number)`.
+fn is_leaf(tape: TapeReader, number: int) -> bool {
+    is_next(tape, "Leaf") &&
+        tape.flags(1)[0] &&
+        tape.int() == number &&
+        tape.text() == "x" &&
+        tape.float() == 1.5
+}
+
+fn means_the_same(a: List<TinyNode>, b: List<TinyNode>) -> bool {
+    tape_of(a).finished().meaning_hash.same_as(tape_of(b).finished().meaning_hash)
+}
+
+fn runs(plain_a: List<int>, plain_b: List<int>, nodes_a: List<TinyId>, nodes_b: List<TinyId>) -> List<
+    TinyNode,
+> {
+    [leaf(1), .Runs(plain_a, plain_b, nodes_a, nodes_b)]
+}
+
+fn shapes(child_outcome: Result<TinyId, string>) -> List<TinyNode> {
+    let named: Map<string, int> = {"t": 4}
+    let child_named: Map<string, TinyId> = {"k": id(0)}
+    [
+        leaf(1),
+        .Shapes(
+            Cell.new(2),
+            Cell.new(id(0)),
+            named,
+            child_named,
+            .Ok(3),
+            child_outcome,
+            "hi".bytes(),
+        ),
+    ]
+}
+
+spec "a generated node" {
+    given "a leaf" {
+        then "its variant, its one flag, then its other fields in order, and nothing else" {
+            let tape = read_back([leaf(7)])
+            is_leaf(tape, 7) && tape.is_done()
+        }
+        then "it's placed where its id says" {
+            let place = read_back([leaf(7)]).place()!
+            place.offset == 0 && place.width == 1
+        }
+    }
+    given "a pair of leaves" {
+        then "each child follows its parent, in the order declared, each placed" {
+            let tape = read_back([leaf(1), leaf(2), .Pair(id(0), id(1))])
+            let offsets = ["${tape.place()!.offset}" for _node in 0..3].join(" ")
+            is_next(tape, "Pair") &&
+                is_leaf(tape, 1) &&
+                is_leaf(tape, 2) &&
+                tape.is_done() &&
+                offsets == "2 0 1"
+        }
+    }
+    given "fields whose types are names over plain values" {
+        then "they're read through the name, an absent one only flagged, each text numbered once" {
+            let tape = read_back([leaf(1), .Labelled("a", null, ["b", "a"], id(0))])
+            is_next(tape, "Labelled") &&
+                !tape.flags(1)[0] &&
+                tape.text() == "a" &&
+                tape.count() == 2 &&
+                tape.text() == "b" &&
+                tape.text() == "a" &&
+                is_leaf(tape, 1) &&
+                tape.is_done()
+        }
+    }
+    given "a node with an absent child, a list, an enum and optional values" {
+        then "presence leads as flags, and inside a list each says its own" {
+            let tape = read_back([leaf(1), .Group(null, [id(0)], .Far(9), ["a", null], 5)])
+            let is_group = is_next(tape, "Group")
+            let flags = tape.flags(2)
+            is_group &&
+                !flags[0] &&
+                flags[1] &&
+                tape.count() == 1 &&
+                is_leaf(tape, 1) &&
+                tape.count() == 1 &&
+                tape.int() == 9 &&
+                tape.count() == 2 &&
+                tape.flag() &&
+                tape.text() == "a" &&
+                !tape.flag() &&
+                tape.int() == 5 &&
+                tape.is_done()
+        }
+    }
+    given "an item moved between two runs" {
+        then "plain values mean something else" { !means_the_same(runs([1], [], [], []), runs([], [1], [], [])) }
+        then "nodes mean something else" { !means_the_same(runs([], [], [id(0)], []), runs([], [], [], [id(0)])) }
+    }
+    given "every other shape with bytes" {
+        then "they're written and no bytes are missing" { tape_of(shapes(.Ok(id(0)))).holds_only_bytes() }
+        then "each side of a result means something else" { !means_the_same(shapes(.Ok(id(0))), shapes(.Err("no"))) }
+    }
+    given "a value with no bytes" {
+        then "the tape says so, and the fields around it are still written" {
+            let written = tape_of([.Opaque((n) -> n, 8)])
+            let tape = tape_reader(written.finished())
+            !written.holds_only_bytes() &&
+                is_next(tape, "Opaque") &&
+                tape.int() == 8 &&
+                tape.is_done()
+        }
+    }
+    given "a field a language keeps off the tape" {
+        then "it leaves nothing" {
+            let tape = read_back([.Marked(6, 7)])
+            is_next(tape, "Marked") && tape.int() == 6 && tape.is_done()
+        }
+    }
+}

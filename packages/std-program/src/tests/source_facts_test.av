@@ -1,0 +1,232 @@
+// Source facts over a small real grammar. `ka=b` declares `a`, `fa{w}` declares `a` with a body,
+// `ha{…}` holds members, `;` ends an item, `~` is a comment's text. What's held is who reruns when
+// a file changes.
+use address.{SourceFileAddress}
+use answer_record.{ContentHash}
+use query_engine.{QueryEngine, query_engine}
+use saved_query.{query, query_definition}
+use source_facts.{
+    ItemAspect,
+    SourceWorld,
+    declaration_part,
+    declared_part_names,
+    item_hash,
+    item_places,
+    source_fact_definitions,
+    use_source_world,
+}
+use tests.support.spelled_tokens.{spelled_columns}
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+
+once fn files() -> Cell<Map<string, string>> {
+    let held: Map<string, string> = {}
+    Cell.new(held)
+}
+
+fn read_held(file: SourceFileAddress) -> string? { files().get().get(file.path_in_package) }
+
+fn set_world(language: string) {
+    use_source_world(
+        SourceWorld { read_file: read_held, language_print: language, columns_in: spelled_columns },
+    )
+}
+
+fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: "@test/p", path_in_package: path } }
+
+fn low_word_of(hash: ContentHash?) -> int { hash?.low_word ?? 0 }
+
+/// Stands for any fact made from one item's signature, like its type.
+@query
+fn signature_read(engine: QueryEngine, file: SourceFileAddress, item_part: string) -> int {
+    low_word_of(item_hash(engine, file, item_part, ItemAspect.Signature))
+}
+
+/// Stands for any fact made from one item's body.
+@query
+fn body_read(engine: QueryEngine, file: SourceFileAddress, item_part: string) -> int {
+    low_word_of(item_hash(engine, file, item_part, ItemAspect.Body))
+}
+
+/// Stands for any fact made from where items sit, like a printed line number.
+@query
+fn places_read(engine: QueryEngine, file: SourceFileAddress) -> int { item_places(engine, file).length }
+
+fn process(store: StoreInMemory) -> QueryEngine {
+    query_engine(
+        store,
+        source_fact_definitions()
+            .concat([signature_read_definition(), body_read_definition(), places_read_definition()]),
+    )
+}
+
+/// A later process asking, and how many queries ran. Two inputs always do.
+fn ran_asking(store: StoreInMemory, ask: fn(QueryEngine) -> int) -> int {
+    let engine = process(store)
+    let _ = ask(engine)
+    engine.computed_count.get()
+}
+
+fn ran_reading_signature(store: StoreInMemory, path: string) -> int {
+    ran_asking(store, (engine) -> signature_read(engine, file_at(path), "a#0"))
+}
+
+fn ran_reading_body(store: StoreInMemory, path: string) -> int {
+    ran_asking(store, (engine) -> body_read(engine, file_at(path), "a#0"))
+}
+
+fn ran_reading_places(store: StoreInMemory, path: string) -> int {
+    ran_asking(store, (engine) -> places_read(engine, file_at(path)))
+}
+
+fn fresh_store(path: string, text: string) -> StoreInMemory {
+    set_world("v1")
+    files().put(path, text)
+    store_in_memory()
+}
+
+spec "source_facts — who reruns when a file changes" {
+    given "nothing changed" {
+        then "only the inputs run" {
+            let store = fresh_store("same.x", "ka=b;kc=d")
+            let _ = ran_reading_signature(store, "same.x")
+            ran_reading_signature(store, "same.x") == 2
+        }
+    }
+    given "a comment between items" {
+        then "the file is read again and its parts remade, and a reader of the signature stands" {
+            let store = fresh_store("note.x", "ka=b;kc=d")
+            let _ = ran_reading_signature(store, "note.x")
+            files().put("note.x", "~~;ka=b;kc=d")
+            // the two inputs, the read and the parts
+            ran_reading_signature(store, "note.x") == 4
+        }
+    }
+    given "another item changed" {
+        then "this one's reader stands" {
+            let store = fresh_store("other.x", "ka=b;kc=d")
+            let _ = ran_reading_signature(store, "other.x")
+            files().put("other.x", "ka=b;kc=e")
+            ran_reading_signature(store, "other.x") == 4
+        }
+    }
+    given "an item's signature changed" {
+        then "its reader reruns" {
+            let store = fresh_store("own.x", "ka=b")
+            let _ = ran_reading_signature(store, "own.x")
+            files().put("own.x", "ka=c")
+            ran_reading_signature(store, "own.x") == 5
+        }
+    }
+    given "whitespace inside a signature" {
+        then "its reader reruns, since bytes decide and a parse's result cuts off" {
+            let store = fresh_store("space.x", "ka=b")
+            let _ = ran_reading_signature(store, "space.x")
+            files().put("space.x", "ka = b")
+            ran_reading_signature(store, "space.x") == 5
+        }
+    }
+    given "an item's body changed" {
+        then "a reader of its signature stands" {
+            let store = fresh_store("sig.x", "fa{w}")
+            let _ = ran_reading_signature(store, "sig.x")
+            files().put("sig.x", "fa{ww}")
+            ran_reading_signature(store, "sig.x") == 4
+        }
+        then "a reader of its body reruns" {
+            let store = fresh_store("body.x", "fa{w}")
+            let _ = ran_reading_body(store, "body.x")
+            files().put("body.x", "fa{ww}")
+            ran_reading_body(store, "body.x") == 5
+        }
+    }
+    given "an item moved down" {
+        then "its reader stands, and a reader of where items sit reruns" {
+            let store = fresh_store("moved.x", "ka=b")
+            let _ = ran_reading_signature(store, "moved.x")
+            let _ = ran_reading_places(store, "moved.x")
+            files().put("moved.x", "~~~;ka=b")
+            let signature_runs = ran_reading_signature(store, "moved.x")
+            files().put("moved.x", "~~~~;ka=b")
+            signature_runs == 4 && ran_reading_places(store, "moved.x") == 5
+        }
+    }
+    given "the language's reader changed" {
+        then "the file is read anew by it, and a reader of the same hashes stands" {
+            let store = fresh_store("lang.x", "ka=b")
+            let _ = ran_reading_signature(store, "lang.x")
+            set_world("v2")
+            ran_reading_signature(store, "lang.x") == 3
+        }
+    }
+    given "the list of what a file declares" {
+        then "it stands when a body changes, and moves when one is added" {
+            let store = fresh_store("list.x", "fa{w}")
+            let first = declared_part_names(process(store), file_at("list.x"))
+            files().put("list.x", "fa{ww}")
+            let body_changed = process(store)
+            let same = declared_part_names(body_changed, file_at("list.x"))
+            files().put("list.x", "fa{ww};kb=c")
+            let added = declared_part_names(process(store), file_at("list.x"))
+            // the two inputs, the read and the list, which comes out the same
+            first.join(",") == "a#0" &&
+                same.join(",") == "a#0" &&
+                added.join(",") == "a#0,b#0" &&
+                body_changed.computed_count.get() == 4
+        }
+    }
+    given "members of a holder" {
+        then "each has a part inside its holder's" {
+            let store = fresh_store("held.x", "ha{;kb=c;kb=d;}")
+            declared_part_names(process(store), file_at("held.x")).join(",") == "h a#0,h a#0/b#0,h a#0/b#1"
+        }
+    }
+    given "two items sharing a name" {
+        then "each has its own part" {
+            let store = fresh_store("twice.x", "ka=b;ka=c")
+            let engine = process(store)
+            !item_hash(engine, file_at("twice.x"), declaration_part("a", 0), ItemAspect.Signature)!
+                .same_as(
+                    item_hash(
+                        engine,
+                        file_at("twice.x"),
+                        declaration_part("a", 1),
+                        ItemAspect.Signature,
+                    )!,
+                )
+        }
+    }
+    given "an item with no body" {
+        then "it has no body's hash" {
+            let store = fresh_store("plain.x", "ka=b")
+            item_hash(process(store), file_at("plain.x"), "a#0", ItemAspect.Body) == null
+        }
+    }
+    given "where an item sits" {
+        then "it's its range, with its body's start" {
+            let store = fresh_store("place.x", "~~fa{w}")
+            let place = item_places(process(store), file_at("place.x"))[0]
+            place.start == 2 && place.end == 7 && place.body_start == 4
+        }
+    }
+    given "a file that isn't there" {
+        then "it declares nothing, and its reader sees it once it appears" {
+            let store = store_in_memory()
+            set_world("v1")
+            let before = signature_read(process(store), file_at("late.x"), "a#0")
+            files().put("late.x", "ka=b")
+            before == 0 && signature_read(process(store), file_at("late.x"), "a#0") != 0
+        }
+    }
+    given "an empty file" {
+        then "it declares nothing" {
+            let store = fresh_store("empty.x", "")
+            declared_part_names(process(store), file_at("empty.x")).is_empty()
+        }
+    }
+    given "brackets that don't balance" {
+        then "the whole file is one item" {
+            let store = fresh_store("broken.x", "ka=b;(")
+            declared_part_names(process(store), file_at("broken.x")).length == 1
+        }
+    }
+}

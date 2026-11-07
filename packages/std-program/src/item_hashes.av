@@ -1,0 +1,51 @@
+//! WHETHER AN ITEM NEEDS PARSING, from its exact bytes. Each item has a hash for its signature, one
+//! for its body, and one for the text above it, so editing a body leaves its signature's parse
+//! standing and editing a comment between items parses nothing. Bytes decide only whether to parse:
+//! a parse's own result decides whether anything after it must rerun. Offsets are never hashed, so
+//! moving an item moves no hash.
+use answer_record.{ContentHash, content_hash}
+use source_items.{SourceItem}
+use token_columns.{TokenColumns}
+
+/// An item's hashes, with those of its members. `signature` is everything before the body, and a
+/// holder's members are hashed alone, so adding one leaves its holder's signature standing.
+export type HashedItem = {
+    item: SourceItem,
+    signature: ContentHash,
+    /// Absent when there's nothing deferred.
+    body: ContentHash?,
+    /// The text between the previous item and this one, comments and all.
+    above: ContentHash,
+    members: List<HashedItem>,
+}
+
+/// The hashes of a file's items.
+export fn hashed_items(columns: TokenColumns, items: List<SourceItem>) -> List<HashedItem> { hashed_from(columns, items, 0) }
+
+fn hashed_from(columns: TokenColumns, items: List<SourceItem>, gap_start: int) -> List<HashedItem> {
+    [hashed_item(
+        columns,
+        item,
+        if position == 0 { gap_start } else { items[position - 1].end_in(columns) },
+    ) for position, item in items]
+}
+
+fn hashed_item(columns: TokenColumns, item: SourceItem, gap_start: int) -> HashedItem {
+    let start = item.start_in(columns)
+    let item_end = item.end_in(columns)
+    let opener = item.body.opener()
+    let without_body = HashedItem {
+        item: item,
+        signature: hash_of(columns, start, if opener == null { item_end } else { columns.ends[opener! - 1] }),
+        body: null,
+        above: hash_of(columns, gap_start, start),
+        members: [],
+    }
+    match item.body {
+        .Nothing -> without_body,
+        .Deferred(body_opener) -> without_body with { body: hash_of(columns, columns.starts[body_opener], item_end) },
+        .Members(members_opener, members) -> without_body with { members: hashed_from(columns, members, columns.ends[members_opener]) },
+    }
+}
+
+fn hash_of(columns: TokenColumns, from: int, to: int) -> ContentHash { content_hash(columns.text.substring(from, to).bytes()) }

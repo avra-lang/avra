@@ -1,0 +1,231 @@
+// Tapes written and read back in order: the empty tape first, numbers of every size, flags past one
+// number, texts once, octets, places, and which changes move which hash.
+use answer_record.{content_hash}
+use saved_derive.{saved_fields}
+use syntax_tape.{SectionsView, SyntaxTape, TapeWriter, sections_view, tape_reader, tape_writer}
+
+const ONE_COLUMN: int = 3
+const OTHER_COLUMN: int = 5
+
+fn sections(tape: SyntaxTape) -> SectionsView { sections_view(saved_fields(tape.saved_bytes())) }
+
+/// A tape of these counts.
+fn counted(values: List<int>) -> SyntaxTape {
+    mut writer = tape_writer()
+    for value in values { writer.count(value) }
+    writer.finished()
+}
+
+/// One node naming a text, placed at `offset` in an item starting at `item_start`.
+fn named_in(text: string, offset: int, item_start: int) -> SyntaxTape {
+    mut writer = tape_writer(item_start)
+    let _ = writer.place(offset, text.length)
+    writer.text(text)
+    writer.finished()
+}
+
+fn named(text: string, offset: int) -> SyntaxTape { named_in(text, offset, 0) }
+
+/// One node, unplaced.
+fn one_node(mut writer: TapeWriter) -> int {
+    let node = writer.unplaced()
+    writer.count(1)
+    node
+}
+
+fn plain() -> SyntaxTape {
+    mut writer = tape_writer()
+    let _ = one_node(writer)
+    writer.finished()
+}
+
+fn meaning_fact_of(word: int) -> SyntaxTape {
+    mut writer = tape_writer()
+    writer.meaning_fact(ONE_COLUMN, one_node(writer), [word])
+    writer.finished()
+}
+
+fn above_fact_of(text: string) -> SyntaxTape {
+    mut writer = tape_writer()
+    let node = one_node(writer)
+    writer.above_fact(ONE_COLUMN, node, [writer.above_text(text)])
+    writer.finished()
+}
+
+fn place_fact() -> SyntaxTape {
+    mut writer = tape_writer()
+    writer.place_fact(ONE_COLUMN, one_node(writer), [9])
+    writer.finished()
+}
+
+/// Two nodes with a fact on each, written in the order given.
+fn facts_written(first: int, second: int) -> SyntaxTape {
+    mut writer = tape_writer()
+    let _ = writer.unplaced()
+    let _ = writer.unplaced()
+    writer.meaning_fact(ONE_COLUMN, first, [first + 10, 7])
+    writer.meaning_fact(ONE_COLUMN, second, [second + 10, 7])
+    writer.finished()
+}
+
+spec "syntax_tape — a tree as its types say it" {
+    given "an empty tape" {
+        then "there's nothing to read" {
+            let tape = tape_writer().finished()
+            tape_reader(tape).is_done() &&
+                tape.meaning.structure.length == 0 &&
+                tape.places.places.length == 0
+        }
+    }
+    given "numbers" {
+        then "a small one takes one octet" { counted([0, 127]).meaning.structure.length == 2 }
+        then "a larger one takes seven bits an octet" { counted([128, 1099511627776]).meaning.structure.length == 8 }
+        then "each reads back" {
+            let tape = tape_reader(counted([0, 127, 128, 1099511627776]))
+            tape.count() == 0 &&
+                tape.count() == 127 &&
+                tape.count() == 128 &&
+                tape.count() == 1099511627776 &&
+                tape.is_done()
+        }
+        then "any int reads back, a small negative one in one octet" {
+            mut writer = tape_writer()
+            for value in [-1, 0, 63, -9223372036854775807 - 1, 9223372036854775807] { writer.int(value) }
+            let tape = writer.finished()
+            let back = tape_reader(tape)
+            tape.meaning.structure.at(0) == 1 &&
+                back.int() == -1 &&
+                back.int() == 0 &&
+                back.int() == 63 &&
+                back.int() == -9223372036854775807 - 1 &&
+                back.int() == 9223372036854775807 &&
+                back.is_done()
+        }
+        then "a float reads back exactly" {
+            mut writer = tape_writer()
+            writer.float(1.5)
+            writer.float(0.0 - 2.25)
+            let back = tape_reader(writer.finished())
+            back.float() == 1.5 && back.float() == 0.0 - 2.25 && back.is_done()
+        }
+    }
+    given "flags" {
+        then "none take nothing" {
+            mut writer = tape_writer()
+            writer.flags([])
+            writer.finished().meaning.structure.length == 0
+        }
+        then "more than one number holds read back, each in its place" {
+            mut writer = tape_writer()
+            writer.flags([at % 3 == 0 for at in 0..70])
+            let back = tape_reader(writer.finished())
+            let flags = back.flags(70)
+            flags.length == 70 && (0..70).all(flags[it] == (it % 3 == 0)) && back.is_done()
+        }
+    }
+    given "a text written twice" {
+        then "it's kept once, and both read back" {
+            mut writer = tape_writer()
+            writer.text("same")
+            writer.text("other")
+            writer.text("same")
+            let tape = writer.finished()
+            let back = tape_reader(tape)
+            tape.meaning.texts.length == 11 &&
+                back.text() == "same" &&
+                back.text() == "other" &&
+                back.text() == "same"
+        }
+    }
+    given "an empty text and empty octets" {
+        then "they read back as empty" {
+            mut writer = tape_writer()
+            writer.text("")
+            writer.octets("".bytes())
+            writer.octets("hi".bytes())
+            let back = tape_reader(writer.finished())
+            back.text() == "" &&
+                back.octets().length == 0 &&
+                back.octets().text() == "hi" &&
+                back.is_done()
+        }
+    }
+    given "places" {
+        then "each node standing for an id reads back its own, or none" {
+            mut writer = tape_writer()
+            let first = writer.place(40, 3)
+            let second = writer.unplaced()
+            let third = writer.place(12, 0)
+            let back = tape_reader(writer.finished())
+            let at_first = back.place()!
+            let at_second = back.place()
+            let at_third = back.place()!
+            first == 0 &&
+                second == 1 &&
+                third == 2 &&
+                at_first.offset == 40 &&
+                at_first.width == 3 &&
+                at_second == null &&
+                at_third.offset == 12 &&
+                at_third.width == 0
+        }
+        then "they're no part of the meaning" { named("a", 0).meaning_hash.same_as(named("a", 40).meaning_hash) }
+        then "an item further into its file has the tape it had nearer" {
+            let moved = named_in("a", 140, 100)
+            tape_reader(moved).place()!.offset == 40 &&
+                content_hash(moved.saved_bytes())
+                    .same_as(content_hash(named("a", 40).saved_bytes()))
+        }
+    }
+    given "another text" {
+        then "the meaning's hash moves" { !named("a", 0).meaning_hash.same_as(named("b", 0).meaning_hash) }
+    }
+    given "a tape with no facts" {
+        then "every column is empty" {
+            let found = sections(plain()).facts
+            found.nodes_in(ONE_COLUMN).is_empty() && found.words_of(ONE_COLUMN, 0) == null
+        }
+    }
+    given "facts about some nodes" {
+        then "each node's words read back, and another node has none" {
+            let found = sections(facts_written(0, 1)).facts
+            found.words_of(ONE_COLUMN, 0)!.length == 2 &&
+                found.words_of(ONE_COLUMN, 0)![0] == 10 &&
+                found.words_of(ONE_COLUMN, 1)![0] == 11 &&
+                found.words_of(ONE_COLUMN, 1)![1] == 7 &&
+                found.words_of(ONE_COLUMN, 9) == null &&
+                found.words_of(OTHER_COLUMN, 0) == null
+        }
+        then "the nodes come ascending" {
+            let nodes = sections(facts_written(1, 0)).facts.nodes_in(ONE_COLUMN)
+            nodes[0] == 0 && nodes[1] == 1
+        }
+        then "written in another order, the tape is the same" { facts_written(0, 1).meaning_hash.same_as(facts_written(1, 0).meaning_hash) }
+    }
+    given "a fact in the meaning" {
+        then "it moves the meaning's hash" {
+            !plain().meaning_hash.same_as(meaning_fact_of(1).meaning_hash) &&
+                !meaning_fact_of(1).meaning_hash.same_as(meaning_fact_of(2).meaning_hash)
+        }
+    }
+    given "a fact above" {
+        then "it moves the hash above and leaves the meaning's standing" {
+            let doc = above_fact_of("a doc")
+            let other = above_fact_of("another doc")
+            plain().meaning_hash.same_as(doc.meaning_hash) &&
+                !plain().above_hash.same_as(doc.above_hash) &&
+                !doc.above_hash.same_as(other.above_hash)
+        }
+        then "its text reads back from its own section" {
+            let above = sections(above_fact_of("a doc")).above
+            above.text_numbered(above.words_of(ONE_COLUMN, 0)![0]) == "a doc"
+        }
+    }
+    given "a fact about a place" {
+        then "it moves neither hash" {
+            plain().meaning_hash.same_as(place_fact().meaning_hash) &&
+                plain().above_hash.same_as(place_fact().above_hash) &&
+                sections(place_fact()).places.words_of(ONE_COLUMN, 0)![0] == 9
+        }
+    }
+}

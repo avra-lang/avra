@@ -1,0 +1,182 @@
+//! `@query` AND `@input`: a plain function becomes a remembered one. Its arguments and its answer
+//! are saved by the same generated code a `@derive(Saved)` field uses, so any type a field can
+//! hold can be asked or answered. Its first seat is the engine, and its body asks other queries
+//! by calling them. A module's queries are listed by one `collect`: see `ListedQuery`.
+use @std.meta.{
+    Code,
+    Declared,
+    Decls,
+    Diagnostic,
+    Directive,
+    Fn,
+    Named,
+    Param,
+    bool_node,
+    as_code,
+    code_hash,
+    literal,
+    name,
+    refuse,
+    wrapped,
+}
+use query_engine.{QueryDefinition, QueryEngine}
+use saved_derive.{
+    read_saved_list,
+    saved_fields,
+    saved_record_statements,
+    saved_shape,
+    slot_number,
+    slot_read,
+    slot_written,
+}
+use saved_layout.{SavedSlot, SavedSlots, saved_layout_writer}
+
+/// Marks a generated fn answering a query's definition, for a `collect` to list.
+export fn query_definition(_f: Named) {}
+
+/// A generated definition, as a `collect` lists it. `collect queries: List<ListedQuery> =
+/// @query_definition in self as ListedQuery { definition: it } by it.name` lists a module's queries.
+export type ListedQuery = { definition: fn() -> QueryDefinition }
+
+/// The definitions of what a `collect` listed.
+export fn definitions_of(listed: List<ListedQuery>) -> List<QueryDefinition> { [(q.definition)() for q in listed] }
+
+/// `@query`: remembered across processes.
+export fn query(f: Fn) -> Declared { remembered(f, false, []) }
+
+/// `@input`: reads the outside world, so it runs once in every process, and its readers stand
+/// when it comes out the same.
+export fn input(f: Fn) -> Declared { remembered(f, true, []) }
+
+/// `@parted_query`: a query answering `AnswerParts`, which also answers one part at a time through
+/// `<name>_part(engine, …, part_name)`. A reader of one part stands when other parts change.
+export fn parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f)) }
+
+fn remembered(f: Fn, is_input: bool, also_made: List<Directive>) -> Declared {
+    let problems = problems_of(f)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    let made = [
+        Directive { twin: "", name: f.name, at: f.at, wraps: true, source: asking_wrapper(f) },
+        generated(f, arguments_door(f), arguments_writer(f)),
+        generated(f, compute_door(f), computing_door(f)),
+        generated(f, definition_door(f), definition_of(f, is_input)),
+        generated(f, known_door(f), known_answer_door(f)),
+    ]
+    Declared { made: made.concat(also_made), problems: [] }
+}
+
+/// A query's first seat is the engine that remembers it, and what it's asked and answers can be saved.
+fn problems_of(f: Fn) -> List<Diagnostic> {
+    if f.params.first()?.ty != "QueryEngine" { return [no_engine_seat(f)] }
+    let seats = [no_bytes_in_seat(f, p) for p in argument_seats(f) if saved_shape(p.kind) == null]
+    if saved_shape(f.answers) != null { seats } else { seats.concat([no_bytes_in_answer(f)]) }
+}
+
+fn generated(f: Fn, door: string, source: Decls) -> Directive { Directive { twin: "", name: door, at: f.at, source: source } }
+
+fn arguments_door(f: Fn) -> string { "${f.name}_arguments" }
+
+fn compute_door(f: Fn) -> string { "${f.name}_compute" }
+
+fn definition_door(f: Fn) -> string { "${f.name}_definition" }
+
+fn known_door(f: Fn) -> string { "${f.name}_is_known" }
+
+/// A generated fn's seat.
+fn seat(seat_name: string, seat_type: string) -> Decls { quote { fn _(${seat_name}: ${seat_type}) {} } }
+
+fn seats_of(f: Fn) -> List<Decls> { [seat(p.name, p.ty) for p in f.params] }
+
+/// The function callers call: saves its arguments, asks the engine, reads the answer back.
+fn asking_wrapper(f: Fn) -> Decls {
+    quote {
+        fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
+            let record = ${engine_of(f)}.answer_to(${question_of(f)}).root()
+            ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
+        }
+    }
+}
+
+/// A call's arguments as saved bytes. The engine's seat is no part of them.
+fn arguments_writer(f: Fn) -> Decls {
+    let slots = [slot_written(saved_shape(p.kind)!, name(p.name)) for p in argument_seats(f)]
+    quote {
+        fn ${arguments_door(f)}(..${seats_of(f)}) -> Bytes {
+            ${saved_record_statements(slots)}
+        }
+    }
+}
+
+/// What the engine runs: reads the arguments back, calls the written body, saves the answer.
+fn computing_door(f: Fn) -> Decls {
+    let reads = [slot_read(saved_shape(p.kind)!, quote { record }, slot_number(slot)) for slot, p in argument_seats(f)]
+    let call_arguments = [name("engine")].concat(reads)
+    let seats = [seat("engine", "QueryEngine"), seat("arguments", "Bytes")]
+    quote {
+        fn ${compute_door(f)}(..${seats}) -> Bytes {
+            let record = saved_fields(${name("arguments")})
+            let answer = ${wrapped(f)}(..${call_arguments})
+            ${saved_record_statements([slot_written(saved_shape(f.answers)!, quote { answer })])}
+        }
+    }
+}
+
+fn definition_of(f: Fn, is_input: bool) -> Decls {
+    quote {
+        @query_definition
+        export once fn ${definition_door(f)}() -> QueryDefinition {
+            QueryDefinition {
+                query_name: ${literal(f.name)},
+                code_hash: code_hash(${name(wrapped(f).name)}) ?? "",
+                is_input: ${as_code(bool_node(is_input))},
+                compute: ${name(compute_door(f))},
+            }
+        }
+    }
+}
+
+/// `<name>_is_known(engine, …)`: whether anything is kept about this call, asking nothing.
+fn known_answer_door(f: Fn) -> Decls {
+    quote {
+        export fn ${known_door(f)}(..${seats_of(f)}) -> bool {
+            ${engine_of(f)}.store.question_known_as(${question_of(f)}.known_as) != null
+        }
+    }
+}
+
+/// `<name>_part(engine, …, part_name)`: one part of the answer.
+fn part_door(f: Fn) -> List<Directive> {
+    let door = "${f.name}_part"
+    let source = quote {
+        export fn ${door}(..${seats_of(f).concat([seat("part_name", "string")])}) -> Bytes? {
+            ${engine_of(f)}.part_of_answer_to(${question_of(f)}, ${name("part_name")})
+        }
+    }
+    [generated(f, door, source)]
+}
+
+fn engine_of(f: Fn) -> Code { name(f.params[0].name) }
+
+fn argument_seats(f: Fn) -> List<Param> { f.params.slice(1, f.params.length) }
+
+/// The question a call asks: this query's, about these arguments saved.
+fn question_of(f: Fn) -> Code {
+    let arguments = [name(p.name) for p in f.params]
+    quote { ${definition_door(f)}().question_about(${arguments_door(f)}(..${arguments})) }
+}
+
+fn no_bytes_in_seat(f: Fn, p: Param) -> Diagnostic {
+    refuse(
+        "`${f.name}` is remembered by what it's asked, and `${p.name}` holds a `${p.kind.spelled()}`, which has no bytes to save",
+    )
+}
+
+fn no_bytes_in_answer(f: Fn) -> Diagnostic {
+    refuse(
+        "`${f.name}` is remembered by what it answers, and a `${f.answers.spelled()}` has no bytes to save",
+    )
+}
+
+fn no_engine_seat(f: Fn) -> Diagnostic {
+    refuse("`${f.name}` is remembered by the engine, so its first seat is `engine: QueryEngine`")
+}

@@ -1,0 +1,56 @@
+// A tree in the shape a compiler's is: nodes in an arena, gathered into one enum, each writing itself
+// to a tape through a derive that any language could write.
+use @std.meta.{Named, derive}
+use syntax_tape.{TapeWriter}
+use tape_schema.{FieldSchema, Holds, Lying, TypeSchema, VariantSchema, Wrapping}
+
+export type TinyTree = { nodes: List<TinyNode> }
+
+export fn tiny_node(_t: Named) {}
+
+@derive(TinyRoot)
+export collect enum TinyNode = @tiny_node in package by it.name
+
+@tiny_node
+export type Leaf = { number: int, label: string, ratio: float, ready: bool }
+
+export type Label = string
+
+@tiny_node
+export type Labelled = { name: Label, nickname: Label?, others: List<Label>, inner: TinyId }
+
+@tiny_node
+export type Pair = { left: TinyId, right: TinyId }
+
+@tiny_node
+export type Group = { first: TinyId?, rest: List<TinyId>, side: Side, tags: List<string?>, seen: int? }
+
+/// Two runs of plain values and two of nodes, side by side, so an item can move between them.
+@tiny_node
+export type Runs = { plain_a: List<int>, plain_b: List<int>, nodes_a: List<TinyId>, nodes_b: List<TinyId> }
+
+/// Every other shape with bytes, each as words and as a child.
+@tiny_node
+export type Shapes = {
+    held: Cell<int>,
+    held_child: Cell<TinyId>,
+    named: Map<string, int>,
+    child_named: Map<string, TinyId>,
+    outcome: Result<int, string>,
+    child_outcome: Result<TinyId, string>,
+    octets: Bytes,
+}
+
+/// A value with no bytes, which is allowed on a node.
+@tiny_node
+export type Opaque = { act: fn(int) -> int, after: int }
+
+/// A field a language keeps off the tape.
+@tiny_node
+export type Marked = { kept: int, unwritten: int }
+
+@derive(Taped)
+export enum Side {
+    Near
+    Far(distance: int)
+}

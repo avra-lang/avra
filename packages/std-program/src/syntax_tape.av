@@ -1,0 +1,406 @@
+//! WHAT AN ITEM MEANS, written as its types say it, for any language. A node's type is known
+//! before it's read, so a tape holds only what a type can't say (see `tape_schema`): its nodes in
+//! order, parents first, as plain numbers. A number takes seven bits an octet, so most take one.
+//!
+//! Three runs of octets make a tape: the structure, the texts it numbers (each once), and where
+//! its nodes were written. Places are kept apart from what the item means, and the meaning's
+//! hash covers the meaning alone, so reformatting a body leaves that hash standing, and everything
+//! downstream stands with it.
+//!
+//! Facts about some nodes sit in sparse columns: sorted node numbers beside runs of words, so a
+//! column with nothing in it costs nothing, and a search is a few loads.
+use answer_record.{ContentHash, content_hash}
+use defect.{defect}
+use @std.meta.{derive}
+use saved_derive.{Saved}
+use saved_layout.{SavedList, SavedRecord, SavedSlots, float_bits, float_of_bits}
+use sorted.{sorted_by}
+
+/// The flags one number holds.
+const FLAGS_PER_NUMBER: int = 63
+
+const LARGEST_INT: int = 9223372036854775807
+
+/// One sparse column: the nodes with a fact, ascending, and each one's run of words.
+@derive(Saved)
+type TapeColumn = { column: int, nodes: List<int>, word_ends: List<int>, words: List<int> }
+
+/// Columns with anything in them, ascending, and the texts their words number.
+@derive(Saved)
+type TapeSection = { columns: List<TapeColumn>, texts: List<string> }
+
+/// What an item means: its structure, the texts it numbers, and the facts that belong to it.
+@derive(Saved)
+type TapeMeaning = { structure: Bytes, texts: Bytes, facts: TapeSection }
+
+/// Where an item's nodes were written: for each node standing for an id, in order, its width and
+/// how far its offset is from the last one's, or that it has no place. Offsets count from the
+/// item's first byte, so an item that moves keeps its tape.
+@derive(Saved)
+type TapePlaces = { places: Bytes, facts: TapeSection }
+
+/// An item's tape. `meaning_hash` and `above_hash` stand for their sections, computed once.
+@derive(Saved)
+export type SyntaxTape = {
+    meaning_hash: ContentHash,
+    meaning: TapeMeaning,
+    above_hash: ContentHash,
+    above: TapeSection,
+    places: TapePlaces,
+}
+
+/// One fact, waiting to be put in order.
+type PendingFact = { column: int, node: int, words: List<int> }
+
+/// Texts numbered in the order they're first met, each once.
+type NumberedTexts = { texts: List<string> = [], numbers: Map<string, int> = {} }
+
+impl NumberedTexts {
+    /// The number `text` goes by.
+    fn number(text: string) -> int {
+        let known? = self.numbers.get(text) else {
+            let number = self.texts.length
+            self.texts.push(text)
+            self.numbers.set(text, number)
+            return number
+        }
+        known
+    }
+}
+
+/// One section's facts and texts being written, in any order.
+type SectionWriter = { pending: List<PendingFact> = [], texts: NumberedTexts = NumberedTexts {} }
+
+impl SectionWriter {
+    /// The fact `words` about `node`, in `column`. A node has one fact per column.
+    fn fact(column: int, node: int, words: List<int>) {
+        self.pending.push(PendingFact { column: column, node: node, words: words })
+    }
+
+    /// The section, in one byte form however it was written.
+    fn finished() -> TapeSection {
+        let facts = sorted_by(self.pending, fact_comes_before)
+        mut columns: List<TapeColumn> = []
+        mut from = 0
+        for at, fact in facts {
+            if at + 1 == facts.length || facts[at + 1].column != fact.column {
+                columns.push(column_of(facts.slice(from, at + 1)))
+                from = at + 1
+            }
+        }
+        TapeSection { columns: columns, texts: self.texts.texts }
+    }
+}
+
+fn fact_comes_before(a: PendingFact, b: PendingFact) -> bool {
+    a.column < b.column || a.column == b.column && a.node < b.node
+}
+
+/// One column from its facts, in order.
+fn column_of(facts: List<PendingFact>) -> TapeColumn {
+    mut ends: List<int> = []
+    mut total = 0
+    for at, fact in facts {
+        if at > 0 && facts[at - 1].node == fact.node { defect(two_facts_of_one_node(fact)) }
+        total = total + fact.words.length
+        ends.push(total)
+    }
+    TapeColumn {
+        column: facts[0].column,
+        nodes: [fact.node for fact in facts],
+        word_ends: ends,
+        words: [word for fact in facts for word in fact.words],
+    }
+}
+
+fn two_facts_of_one_node(fact: PendingFact) -> string { "node ${fact.node} has two facts in column ${fact.column}" }
+
+/// A tape being written, parents before children, for the item whose text starts at `item_start`.
+export type TapeWriter = {
+    item_start: int,
+    structure: List<int> = [],
+    texts: NumberedTexts = NumberedTexts {},
+    places: List<int> = [],
+    last_offset: int = 0,
+    nodes_numbered: int = 0,
+    facts: SectionWriter = SectionWriter {},
+    above: SectionWriter = SectionWriter {},
+    place_facts: SectionWriter = SectionWriter {},
+    only_bytes: bool = true,
+}
+
+export fn tape_writer(item_start: int = 0) -> TapeWriter { TapeWriter { item_start: item_start } }
+
+impl TapeWriter {
+    /// A number that's never negative: a length, a variant, a count.
+    fn count(value: int) { number_into(self.structure, value) }
+
+    /// Any number, a small negative one kept small.
+    fn int(value: int) { self.count(zigzag(value)) }
+
+    /// A float, as its bits, so every float reads back exactly: an infinity, a NaN, a negative zero.
+    fn float(value: float) {
+        let bits = float_bits(value)
+        // LICENSED loops.push_loop: the structure grows in place, where a concat copies it whole
+        for k in 0..8 { self.structure.push((bits >> 8 * k) & 255) }
+    }
+
+    fn flag(value: bool) { self.count(if value { 1 } else { 0 }) }
+
+    /// Flags, sixty-three to a number, the first lowest.
+    fn flags(values: List<bool>) {
+        for first in 0..numbers_holding(values.length) {
+            self
+                .count(
+                    [1.wrapping_shl(bit % FLAGS_PER_NUMBER) for bit, set in values if set && bit / FLAGS_PER_NUMBER == first]
+                        .sum(),
+                )
+        }
+    }
+
+    /// A text, as its number among the item's texts.
+    fn text(text: string) { self.count(self.texts.number(text)) }
+
+    /// Octets: their length, then each one.
+    fn octets(octets: Bytes) { octets_into(self.structure, octets) }
+
+    /// Says the next node standing for an id was written `width` bytes from `offset` in the item's
+    /// file, answering its number, which facts about it go by.
+    fn place(offset: int, width: int) -> int {
+        let from_item = offset - self.item_start
+        number_into(self.places, width + 1)
+        number_into(self.places, zigzag(from_item - self.last_offset))
+        self.last_offset = from_item
+        self.numbered()
+    }
+
+    /// Says the next node standing for an id has no place, answering its number.
+    fn unplaced() -> int {
+        number_into(self.places, 0)
+        self.numbered()
+    }
+
+    /// The number of the node just placed: nodes standing for ids count from zero, in order.
+    fn numbered() -> int {
+        let number = self.nodes_numbered
+        self.nodes_numbered = number + 1
+        number
+    }
+
+    /// Says something on the tree has no bytes, so this tape can't stand for it.
+    fn met_no_bytes() { self.only_bytes = false }
+
+    /// Whether everything on the tree had bytes, so the tape stands for it.
+    fn holds_only_bytes() -> bool { self.only_bytes }
+
+    /// A fact that belongs to what the item means, so changing it moves the meaning's hash.
+    fn meaning_fact(column: int, node: int, words: List<int>) { self.facts.fact(column, node, words) }
+
+    /// A fact said above the item, like a doc comment, which moves only the hash above.
+    fn above_fact(column: int, node: int, words: List<int>) { self.above.fact(column, node, words) }
+
+    /// A fact about where something was written, which moves no hash.
+    fn place_fact(column: int, node: int, words: List<int>) { self.place_facts.fact(column, node, words) }
+
+    /// The number `text` goes by among what's said above the item.
+    fn above_text(text: string) -> int { self.above.texts.number(text) }
+
+    /// The tape of everything written.
+    fn finished() -> SyntaxTape {
+        let meaning = TapeMeaning {
+            structure: self.structure.bytes()!,
+            texts: octets_of_texts(self.texts.texts),
+            facts: self.facts.finished(),
+        }
+        let above = self.above.finished()
+        SyntaxTape {
+            meaning_hash: content_hash(meaning.saved_bytes()),
+            meaning: meaning,
+            above_hash: content_hash(above.saved_bytes()),
+            above: above,
+            places: TapePlaces { places: self.places.bytes()!, facts: self.place_facts.finished() },
+        }
+    }
+}
+
+/// How many numbers hold `length` flags.
+fn numbers_holding(length: int) -> int { (length + FLAGS_PER_NUMBER - 1) / FLAGS_PER_NUMBER }
+
+/// `value` as seven bits an octet, the lowest first, each octet but the last with its top bit set.
+fn number_into(mut octets: List<int>, value: int) {
+    mut rest = value
+    while rest < 0 || rest >= 128 {
+        octets.push((rest & 127) | 128)
+        rest = shifted_down(rest, 7)
+    }
+    octets.push(rest)
+}
+
+/// Octets as their length, then each one.
+fn octets_into(mut octets: List<int>, value: Bytes) {
+    number_into(octets, value.length)
+    // LICENSED loops.push_loop: the run grows in place, where a concat copies it whole
+    for at in 0..value.length { octets.push(value.at(at)) }
+}
+
+/// Texts as one run: each one's length, then its octets.
+fn octets_of_texts(texts: List<string>) -> Bytes {
+    mut octets: List<int> = []
+    for text in texts { octets_into(octets, text.bytes()) }
+    octets.bytes()!
+}
+
+/// A number with its sign moved to the lowest bit, so a small negative one stays small.
+fn zigzag(value: int) -> int { value.wrapping_shl(1) ^ (value >> 63) }
+
+fn unzigzag(stored: int) -> int { shifted_down(stored, 1) ^ 0 - (stored & 1) }
+
+/// `value` shifted down `by` bits with zeros coming in at the top, so its bits read as a whole
+/// number's even when it's negative.
+fn shifted_down(value: int, by: int) -> int { (value >> by) & (LARGEST_INT >> by - 1) }
+
+/// Where a node was written: an offset into its item's text, and how many bytes.
+export type TapePlace = { offset: int, width: int }
+
+/// A tape being read back, in the order it was written.
+export type TapeReader = {
+    structure: Bytes,
+    texts: List<string>,
+    places: Bytes,
+    at: Cell<int> = Cell.new(0),
+    place_at: Cell<int> = Cell.new(0),
+    last_offset: Cell<int> = Cell.new(0),
+}
+
+/// A reader of `tape`, from its first node.
+export fn tape_reader(tape: SyntaxTape) -> TapeReader {
+    TapeReader {
+        structure: tape.meaning.structure,
+        texts: texts_of(tape.meaning.texts),
+        places: tape.places.places,
+    }
+}
+
+impl TapeReader {
+    fn count() -> int { number_from(self.structure, self.at) }
+
+    fn int() -> int { unzigzag(self.count()) }
+
+    fn float() -> float {
+        let from = self.at.get()
+        self.at.set(from + 8)
+        float_of_bits(
+            (0..8).fold(0, (bits, k) -> bits | self.structure.at(from + k).wrapping_shl(8 * k)),
+        )
+    }
+
+    fn flag() -> bool { self.count() == 1 }
+
+    /// `length` flags, as `TapeWriter.flags` wrote them.
+    fn flags(length: int) -> List<bool> {
+        let numbers = [self.count() for _number in 0..numbers_holding(length)]
+        [(numbers[bit / FLAGS_PER_NUMBER] >> bit % FLAGS_PER_NUMBER) & 1 == 1 for bit in 0..length]
+    }
+
+    fn text() -> string { self.texts[self.count()] }
+
+    fn octets() -> Bytes {
+        let length = self.count()
+        let from = self.at.get()
+        self.at.set(from + length)
+        self.structure.slice(from, from + length)
+    }
+
+    /// Where the next node standing for an id was written, absent when it has no place.
+    fn place() -> TapePlace? {
+        let stored = number_from(self.places, self.place_at)
+        if stored == 0 { return null }
+        let offset = self.last_offset.get() + unzigzag(number_from(self.places, self.place_at))
+        self.last_offset.set(offset)
+        TapePlace { offset: offset, width: stored - 1 }
+    }
+
+    /// Whether every octet of the structure has been read.
+    fn is_done() -> bool { self.at.get() == self.structure.length }
+}
+
+/// The number at `at` in `octets`, moving `at` past it.
+fn number_from(octets: Bytes, at: Cell<int>) -> int {
+    mut value = 0
+    mut shift = 0
+    mut position = at.get()
+    while octets.at(position) >= 128 {
+        value = value | (octets.at(position) & 127).wrapping_shl(shift)
+        shift = shift + 7
+        position = position + 1
+    }
+    at.set(position + 1)
+    value | octets.at(position).wrapping_shl(shift)
+}
+
+/// The texts a tape numbers, in their order.
+fn texts_of(octets: Bytes) -> List<string> {
+    let at: Cell<int> = Cell.new(0)
+    mut texts: List<string> = []
+    while at.get() < octets.length {
+        let length = number_from(octets, at)
+        let from = at.get()
+        at.set(from + length)
+        texts.push(octets.slice(from, from + length).text()!)
+    }
+    texts
+}
+
+/// A saved section, read where it lies.
+export type SectionView = { columns: SavedList, texts: SavedList }
+
+fn section_view(record: SavedRecord) -> SectionView {
+    SectionView {
+        columns: TapeSection.columns_in_place(record),
+        texts: TapeSection.texts_in_place(record),
+    }
+}
+
+impl SectionView {
+    /// The nodes with a fact in `column`, ascending.
+    fn nodes_in(column: int) -> List<int> {
+        let found? = self.column_record(column) else { return [] }
+        let nodes = TapeColumn.nodes_in_place(found)
+        [nodes.number_at(at) for at in 0..nodes.length]
+    }
+
+    /// The words of `node`'s fact in `column`, absent when it has none. A fact may have no words.
+    fn words_of(column: int, node: int) -> List<int>? {
+        let found? = self.column_record(column) else { return null }
+        let nodes = TapeColumn.nodes_in_place(found)
+        let at = nodes.first_at_or_after(node)
+        if at == nodes.length || nodes.number_at(at) != node { return null }
+        let ends = TapeColumn.word_ends_in_place(found)
+        let words = TapeColumn.words_in_place(found)
+        let start = if at == 0 { 0 } else { ends.number_at(at - 1) }
+        [words.number_at(word) for word in start..ends.number_at(at)]
+    }
+
+    /// The text a word numbers.
+    fn text_numbered(number: int) -> string { self.texts.text_at(number)! }
+
+    fn column_record(column: int) -> SavedRecord? {
+        let at? = (0..self.columns.length)
+            .find((at) -> TapeColumn.column_in(self.columns.record_at(at)!) == column) else {
+            return null
+        }
+        self.columns.record_at(at)
+    }
+}
+
+/// The sections of a saved tape, read where they lie.
+export type SectionsView = { facts: SectionView, above: SectionView, places: SectionView }
+
+/// The sections of the tape saved in `record`.
+export fn sections_view(record: SavedRecord) -> SectionsView {
+    SectionsView {
+        facts: section_view(TapeMeaning.facts_in_place(SyntaxTape.meaning_in_place(record))),
+        above: section_view(SyntaxTape.above_in_place(record)),
+        places: section_view(TapePlaces.facts_in_place(SyntaxTape.places_in_place(record))),
+    }
+}

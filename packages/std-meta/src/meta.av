@@ -82,6 +82,8 @@ export enum Kind {
     /// error absorber. Never a silent absence: a rule over `Kind`
     /// that meets one must SAY so.
     Unspelled(text: string)
+    /// octets
+    Bytes
 }
 
 /// A fn seat: what it carries, and what the callee may do through
@@ -114,6 +116,7 @@ impl Kind {
             .Dyn(name) -> "dyn ${name}",
             .Var(name) -> name,
             .Unspelled(text) -> text,
+            .Bytes -> "Bytes",
         }
     }
 }
@@ -271,6 +274,13 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// splices where they mean something — absent for a declaration that
 /// holds none. `impls` is the traits an `impl … for` it can see names.
 export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], body: Stmts? = null, impls: List<string> = [] }
+
+impl Type {
+    /// The shape a `type Name = shape` stands over, absent for a record or an enum.
+    fn shape_over() -> Kind? {
+        match self.over { .Unspelled(_) -> null, shape -> shape }
+    }
+}
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
@@ -608,7 +618,7 @@ fn holds_under(owner: Type, k: Kind, atom: fn(string) -> bool, seen: List<string
                 .Enum(variants) -> variants.any(it.fields.any(holds_under(owner, it.kind, atom, entered))),
             }
         },
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> false,
     }
 }
 
@@ -794,7 +804,7 @@ export type Derived = { made: List<Directive> }
 ///
 /// `derive` takes the declaration (`Type` for a record or enum, `Fn`
 /// for a fn, `Named` for any) and answers the code to splice beside
-/// it. `marks` names the field and variant marks it reads, and a mark
+/// it, or `Declared` to also refuse a shape it can't generate for. `marks` names the field and variant marks it reads, and a mark
 /// no derive claims is refused (F2092). The trait stands in its own
 /// file: its `derive` is typed while the annotated file is still
 /// being made.

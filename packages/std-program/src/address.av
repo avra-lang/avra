@@ -1,0 +1,40 @@
+//! WHERE A THING LIVES: a name that means the same in every run, on every machine.
+//! Never a memory position, an absolute path, or a time.
+use @std.meta.{derive}
+use saved_derive.{Saved}
+
+/// A source file: its package and its path inside that package.
+@derive(Saved)
+export type SourceFileAddress = { package_name: string, path_in_package: string }
+
+/// A module: its package and its dotted path.
+@derive(Saved)
+export type ModuleAddress = { package_name: string, module_path: List<string> }
+
+/// How a declaration came to exist.
+@derive(Saved)
+export enum DeclarationOrigin {
+    /// Part of the language itself, with no source text.
+    BuiltIn
+    /// Written in a file's text.
+    WrittenInFile(file: SourceFileAddress)
+    /// Made by a generator running over another declaration.
+    GeneratedFrom(source_declaration: DeclarationAddress, generator_name: string)
+}
+
+/// A declaration: where it came from, what it sits inside, its name, and which one it is among
+/// same-named declarations in that place. An `impl` is named by its head: `impl Show for Row`.
+@derive(Saved)
+export type DeclarationAddress = {
+    origin: DeclarationOrigin,
+    enclosing_names: List<string>,
+    name: string,
+    same_name_index: int,
+}
+
+/// One compiled version of a declaration: the declaration plus its type arguments.
+@derive(Saved)
+export type InstantiationAddress = {
+    declaration: DeclarationAddress,
+    type_arguments: List<string>,
+}

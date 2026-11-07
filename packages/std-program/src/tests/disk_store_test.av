@@ -1,0 +1,282 @@
+// Separate stores over one directory stand in for separate processes. What matters is what a later
+// process finds: answers that stand aren't run, and damage to the directory costs work, never a
+// wrong answer.
+use @std.io.{exists, list_dir, read_bytes, remove, write_bytes}
+use @std.time.{stamp}
+use answer_parts.{AnswerParts, NamedValue, answer_parts}
+use disk_store.{DiskStore, disk_store_at}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use worked_ahead.{WorkAhead, store_worked_ahead}
+use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
+
+once fn disk_world() -> Cell<Map<string, string>> {
+    let world: Map<string, string> = {}
+    Cell.new(world)
+}
+
+@input
+fn disk_text(_engine: QueryEngine, path: string) -> string { disk_world().get().get(path) ?? "" }
+
+@parted_query
+fn disk_names(engine: QueryEngine, path: string) -> AnswerParts {
+    answer_parts(
+        [NamedValue { name: word, value: word.bytes() } for word in disk_text(engine, path).split(" ")],
+    )
+}
+
+@query
+fn disk_is_named(engine: QueryEngine, path: string, word: string) -> bool { disk_names_part(engine, path, word) != null }
+
+@query
+fn disk_length(engine: QueryEngine, path: string) -> int { disk_text(engine, path).length }
+
+@query
+fn disk_echo(_engine: QueryEngine, text: string) -> string { text }
+
+collect disk_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn definitions_listed() -> List<QueryDefinition> { definitions_of(disk_queries) }
+
+fn numbered(count: int) -> List<string> { ["text ${i}" for i in 0..count] }
+
+fn work_on(items: List<string>, process_count: int) -> WorkAhead<string, string> {
+    WorkAhead {
+        items: items,
+        is_known: disk_echo_is_known,
+        ask: disk_echo,
+        process_count: process_count,
+    }
+}
+
+fn engine_over(store: DiskStore) -> QueryEngine { query_engine(store, definitions_of(disk_queries)) }
+
+fn fresh_directory(label: string) -> string { "/tmp/avra-disk-store/${stamp()}-${label}" }
+
+/// A whole process: opens the store, asks, publishes, and says how many queries ran.
+fn process_asking(directory: string, path: string, word: string) -> int {
+    let store = disk_store_at(directory)
+    let engine = engine_over(store)
+    let _ = disk_is_named(engine, path, word)
+    let _ = store.saved()
+    engine.computed_count.get()
+}
+
+fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
+
+spec "disk_store — answers outlive the process" {
+    given "an input's text" {
+        then "it stays out of the store, and a later process still reuses what read it" {
+            let directory = fresh_directory("input")
+            disk_world().put("kept.x", "a text worth not saving twice")
+            let first = disk_store_at(directory)
+            let first_engine = engine_over(first)
+            let length = disk_length(first_engine, "kept.x")
+            let _ = first.saved()
+            let packed = [(read_bytes("${directory}/${file}") catch "".bytes()).text_lossy() for file in pack_files(directory)]
+            let later = engine_over(disk_store_at(directory))
+            let reused = disk_length(later, "kept.x")
+            length == 29 &&
+                reused == 29 &&
+                later.computed_count.get() == 1 &&
+                !packed.any(it.contains("worth not saving"))
+        }
+    }
+    given "a directory that isn't there" {
+        then "the store is empty, and publishing nothing makes nothing" {
+            let directory = fresh_directory("none")
+            let store = disk_store_at(directory)
+            (store.saved() catch -1) == 0 && !exists(directory)
+        }
+    }
+    given "a second process with nothing changed" {
+        then "only the input runs" {
+            let directory = fresh_directory("second")
+            disk_world().put("a.av", "alpha beta")
+            process_asking(directory, "a.av", "alpha") == 3 &&
+                process_asking(directory, "a.av", "alpha") == 1
+        }
+        then "it writes nothing" {
+            let directory = fresh_directory("quiet")
+            disk_world().put("b.av", "alpha")
+            let _ = process_asking(directory, "b.av", "alpha")
+            let before = pack_files(directory).length
+            let store = disk_store_at(directory)
+            let _ = disk_is_named(engine_over(store), "b.av", "alpha")
+            (store.saved() catch -1) == 0 && pack_files(directory).length == before
+        }
+    }
+    given "an empty answer" {
+        then "it is found again, and isn't taken for a missing one" {
+            let directory = fresh_directory("empty")
+            let first = disk_store_at(directory)
+            let _ = disk_echo(engine_over(first), "")
+            let _ = first.saved()
+            let later = engine_over(disk_store_at(directory))
+            disk_echo(later, "") == "" && later.computed_count.get() == 0
+        }
+    }
+    given "a reader of one part, across processes" {
+        then "it stands when another part appears" {
+            let directory = fresh_directory("part")
+            disk_world().put("c.av", "alpha")
+            let _ = process_asking(directory, "c.av", "alpha")
+            disk_world().put("c.av", "alpha gamma")
+            process_asking(directory, "c.av", "alpha") == 2
+        }
+    }
+    given "going back to an earlier state" {
+        then "its answers are still found, across every pack" {
+            let directory = fresh_directory("back")
+            disk_world().put("d.av", "alpha")
+            let _ = process_asking(directory, "d.av", "alpha")
+            disk_world().put("d.av", "alpha gamma")
+            let _ = process_asking(directory, "d.av", "gamma")
+            disk_world().put("d.av", "alpha")
+            process_asking(directory, "d.av", "alpha") == 1
+        }
+    }
+    given "many processes, each learning something" {
+        then "packs stay few and nothing is lost" {
+            let directory = fresh_directory("many")
+            for i in 0..64 {
+                disk_world().put("many${i}.av", "word${i}")
+                let _ = process_asking(directory, "many${i}.av", "word${i}")
+            }
+            pack_files(directory).length <= 7 &&
+                (0..64).all((i) -> process_asking(directory, "many${i}.av", "word${i}") == 1)
+        }
+    }
+    given "two processes at once" {
+        then "a later one finds what each published" {
+            let directory = fresh_directory("two")
+            disk_world().put("e.av", "alpha")
+            disk_world().put("f.av", "beta")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let _ = disk_is_named(engine_over(one), "e.av", "alpha")
+            let _ = disk_is_named(engine_over(other), "f.av", "beta")
+            let _ = one.saved()
+            let _ = other.saved()
+            process_asking(directory, "e.av", "alpha") == 1 &&
+                process_asking(directory, "f.av", "beta") == 1
+        }
+    }
+    given "damage to the directory" {
+        then "a file that isn't a pack is ignored, whatever its size" {
+            let directory = fresh_directory("junk")
+            disk_world().put("g.av", "alpha")
+            let _ = process_asking(directory, "g.av", "alpha")
+            let _ = write_bytes("${directory}/empty.pack", "".bytes())
+            let _ = write_bytes("${directory}/short.pack", "x".bytes())
+            let _ = write_bytes("${directory}/seal.pack", "avrapak1".bytes())
+            let _ = write_bytes(
+                "${directory}/junk.pack",
+                "not a pack, and long enough to read".bytes(),
+            )
+            process_asking(directory, "g.av", "alpha") == 1
+        }
+        then "a pack that lost its tail is ignored, and the answer is worked out again" {
+            let directory = fresh_directory("torn")
+            disk_world().put("h.av", "alpha")
+            let _ = process_asking(directory, "h.av", "alpha")
+            let path = "${directory}/${pack_files(directory)[0]}"
+            let whole = read_bytes(path) catch "".bytes()
+            let _ = write_bytes(path, whole.slice(0, whole.length / 2))
+            process_asking(directory, "h.av", "alpha") == 3
+        }
+        then "a pack removed while it's being read still answers" {
+            let directory = fresh_directory("gone")
+            disk_world().put("i.av", "alpha")
+            let _ = process_asking(directory, "i.av", "alpha")
+            let store = disk_store_at(directory)
+            for file_name in pack_files(directory) { let _ = remove("${directory}/${file_name}") }
+            let engine = engine_over(store)
+            disk_is_named(engine, "i.av", "alpha") && engine.computed_count.get() == 1
+        }
+        then "with every pack gone, the answer is worked out again" {
+            let directory = fresh_directory("wiped")
+            disk_world().put("j.av", "alpha")
+            let _ = process_asking(directory, "j.av", "alpha")
+            for file_name in pack_files(directory) { let _ = remove("${directory}/${file_name}") }
+            process_asking(directory, "j.av", "alpha") == 3
+        }
+    }
+    given "too few unknown items to be worth a fork" {
+        then "nothing is worked ahead, and the store is empty" {
+            let directory = fresh_directory("few")
+            let store = store_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(["a"], 8),
+            )
+            store.packs.get().is_empty()
+        }
+    }
+    given "no items" {
+        then "nothing is worked ahead" {
+            let directory = fresh_directory("no-items")
+            store_worked_ahead<string, string>(directory, definitions_listed(), work_on([], 8))
+                .packs
+                .get()
+                .is_empty()
+        }
+    }
+    given "one process asked for" {
+        then "nothing forks" {
+            let directory = fresh_directory("one")
+            store_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(64), 1),
+            )
+                .packs
+                .get()
+                .is_empty()
+        }
+    }
+    given "many unknown items" {
+        then "a process finds every answer without running anything, in one pack" {
+            let directory = fresh_directory("ahead")
+            let store = store_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(64), 4),
+            )
+            let engine = engine_over(store)
+            numbered(64).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count.get() == 0 &&
+                pack_files(directory).length == 1
+        }
+        then "more processes than items still answers them all" {
+            let directory = fresh_directory("wide")
+            let store = store_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(16), 32),
+            )
+            let engine = engine_over(store)
+            numbered(16).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count.get() == 0
+        }
+    }
+    given "a second run over what was worked ahead" {
+        then "nothing forks and nothing runs" {
+            let directory = fresh_directory("again")
+            let _ = store_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(32), 4),
+            )
+            let before = pack_files(directory).join(",")
+            let store = store_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(32), 4),
+            )
+            let engine = engine_over(store)
+            numbered(32).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count.get() == 0 &&
+                pack_files(directory).join(",") == before
+        }
+    }
+}

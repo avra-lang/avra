@@ -1,0 +1,195 @@
+//! A node written to a tape, and a root's schema, generated from declarations, so no field can be
+//! forgotten and the writer and the schema can't disagree: both read a type through `Reading`. A
+//! language's own trait wraps the body in an impl naming its own tree, and writes the impl for each
+//! of its ids, which follows the id to its node and says where that was written.
+use @std.meta.{Arms, Code, Decls, Stmts, Type as MetaType, Variant as MetaVariant, literal, name}
+use tape_schema.{Holds, Lying, FieldSchema, TypeSchema, VariantSchema, Wrapping}
+use value_shapes.{Reading, ShapedField, ShapedVariant, ValueShape, path_of}
+
+/// What generated code calls the tree and the writer it's handed. The body is spliced into a
+/// language's own impl, so they're bound there and read here through holes.
+export const TREE_NAME: string = "tree"
+export const TAPE_NAME: string = "tape"
+
+fn tape() -> Code { name(TAPE_NAME) }
+
+/// Generated statements writing `t` as one node, parents first: its variant when it has more than
+/// one, its flags, then its fields.
+export fn taped_body(t: MetaType, reading: Reading) -> Stmts {
+    let variants = reading.variants_of(t)
+    if !t.variants.is_empty() {
+        let arms: List<Arms> = [variant_written(reading, t.variants[at], v, at, variants.length > 1) for at, v in variants]
+        return quote { match self { ${arms} } }
+    }
+    let record = variants[0]
+    let fields = something_written(
+        fields_written([quote { self.${f.field.name} } for f in record.fields], record),
+    )
+    quote { ${fields} }
+}
+
+/// One match arm writing one variant. Its payload binds under names no generated code uses, and a
+/// field kept off the tape binds as unread.
+fn variant_written(
+    reading: Reading,
+    declared: MetaVariant,
+    v: ShapedVariant,
+    at: int,
+    has_choice: bool,
+) -> Arms {
+    let choice: List<Stmts> = if has_choice { [quote { ${tape()}.count(${at}) }] } else { [] }
+    let written = [f.field.name for f in v.fields]
+    let binders = [if written.contains(f.name) { "held_${f.name}" } else { "_${f.name}" } for f in declared.fields if reading.is_carried(f)]
+    let body = something_written(
+        [..choice, ..fields_written([name("held_${f.field.name}") for f in v.fields], v)],
+    )
+    if binders.is_empty() { return quote { .${declared} -> { ${body} } } }
+    quote { .${declared}(${binders}) -> { ${body} } }
+}
+
+/// Generated statements writing a variant's fields, each from its value: the flags first.
+fn fields_written(values: List<Code>, v: ShapedVariant) -> List<Stmts> {
+    let flags = [flag for at, f in v.fields for shape in f.shapes() for flag in flag_of(shape, values[at])]
+    let leading: List<Stmts> = if flags.is_empty() { [] } else { [quote { ${tape()}.flags([..${flags}]) }] }
+    leading.concat([statement for at, f in v.fields for statement in field_written(f, values[at])])
+}
+
+/// Statements that say something, so a block of them is never read as an empty map.
+fn something_written(statements: List<Stmts>) -> List<Stmts> {
+    if statements.is_empty() { [quote { let _ = ${tape()} }] } else { statements }
+}
+
+/// A field after the flags: a bool is written, an optional value only when present, and a field
+/// with no bytes says the tape can't stand for its node.
+fn field_written(f: ShapedField, value: Code) -> List<Stmts> {
+    let shape? = f.shape else { return [quote { ${tape()}.met_no_bytes() }] }
+    after_flag(shape, value)
+}
+
+/// The flag a value leads its variant with: a bool, or whether an optional value is present.
+fn flag_of(shape: ValueShape, value: Code) -> List<Code> {
+    match shape {
+        .Bool -> [value],
+        .Optional(_) -> [quote { ${value} != null }],
+        .Celled(inner) -> flag_of(inner, quote { ${value}.get() }),
+        .Renamed(_, inner) -> flag_of(inner, quote { ${value}.of }),
+        .Int or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> [],
+    }
+}
+
+/// What's left of a value once its flag is written.
+fn after_flag(shape: ValueShape, value: Code) -> List<Stmts> {
+    match shape {
+        .Bool -> [],
+        .Optional(inner) -> [quote { if ${value} != null { ${written(inner, quote { ${value}! }, 0)} } }],
+        .Celled(inner) -> after_flag(inner, quote { ${value}.get() }),
+        .Renamed(_, inner) -> after_flag(inner, quote { ${value}.of }),
+        .Int or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> [written(shape, value, 0)],
+    }
+}
+
+/// Generated statements writing a value. `depth` names the binders of the walks it's inside.
+fn written(shape: ValueShape, value: Code, depth: int) -> Stmts {
+    match shape {
+        .Int -> quote { ${tape()}.int(${value}) },
+        .Float -> quote { ${tape()}.float(${value}) },
+        .Bool -> quote { ${tape()}.flag(${value}) },
+        .Text -> quote { ${tape()}.text(${value}) },
+        .Octets -> quote { ${tape()}.octets(${value}) },
+        .Optional(inner) -> quote {
+            if ${value} == null { ${tape()}.flag(false) } else {
+                ${tape()}.flag(true)
+                ${written(inner, quote { ${value}! }, depth)}
+            }
+        },
+        .Listed(inner) -> {
+            let item = "item_${depth}"
+            quote {
+                ${tape()}.count(${value}.length)
+                for ${item} in ${value} { ${written(inner, name(item), depth + 1)} }
+            }
+        },
+        .Celled(inner) -> written(inner, quote { ${value}.get() }, depth),
+        .Renamed(_, inner) -> written(inner, quote { ${value}.of }, depth),
+        .Entries(key, held) -> {
+            let key_name = "key_${depth}"
+            let held_name = "value_${depth}"
+            let pair = [
+                written(key, name(key_name), depth + 1),
+                written(held, name(held_name), depth + 1),
+            ]
+            quote {
+                ${tape()}.count(${value}.length)
+                for ${key_name}, ${held_name} in ${value} { ${pair} }
+            }
+        },
+        .Sides(ok, err) -> {
+            let ok_name = "ok_${depth}"
+            let err_name = "err_${depth}"
+            quote {
+                match ${value} {
+                    .Ok(${ok_name}) -> {
+                        ${tape()}.count(0)
+                        ${written(ok, name(ok_name), depth + 1)}
+                    },
+                    .Err(${err_name}) -> {
+                        ${tape()}.count(1)
+                        ${written(err, name(err_name), depth + 1)}
+                    },
+                }
+            }
+        },
+        .Declared(_, _) or .Id(_, _, _) -> quote { ${value}.taped(${name(TREE_NAME)}, ${tape()}) },
+    }
+}
+
+/// Generated: a root's `tape_types_into`, putting the schema of the root and the types only it
+/// reaches into `found`, then asking each other root it reaches to do the same. A root already there
+/// is left, so roots reaching each other stop. The schema is worked out while the program builds and
+/// written as the code that makes it, so nothing is decoded when it runs.
+export fn root_schema_declarations(root: MetaType, reading: Reading) -> Decls {
+    let reached = reading.root_schema(root)
+    let schemas = [type_schema_code(s) for s in reached.schema.types]
+    let others = [quote { ${name(other)}.tape_types_into(found) } for other in reached.roots_reached]
+    quote {
+        static fn tape_types_into(mut found: Map<string, TypeSchema>) {
+            if found.has(${literal(path_of(root, []))}) { return }
+            for each in [..${schemas}] { found.set(each.type_path, each) }
+            ${others}
+        }
+    }
+}
+
+fn type_schema_code(s: TypeSchema) -> Code {
+    let variants = [variant_schema_code(v) for v in s.variants]
+    quote { TypeSchema { type_path: ${literal(s.type_path)}, variants: [..${variants}] } }
+}
+
+fn variant_schema_code(v: VariantSchema) -> Code {
+    let fields = [field_schema_code(f) for f in v.fields]
+    quote { VariantSchema { name: ${literal(v.name)}, fields: [..${fields}] } }
+}
+
+fn field_schema_code(f: FieldSchema) -> Code {
+    quote { FieldSchema { name: ${literal(f.name)}, lies: ${lying_code(f.lies)} } }
+}
+
+fn lying_code(l: Lying) -> Code {
+    let wrapped = [wrapping_code(w) for w in l.wrapped]
+    quote { Lying { wrapped: [..${wrapped}], holds: ${holds_code(l.holds)} } }
+}
+
+fn wrapping_code(w: Wrapping) -> Code {
+    match w { .Optional -> quote { Wrapping.Optional }, .List -> quote { Wrapping.List } }
+}
+
+fn holds_code(h: Holds) -> Code {
+    match h {
+        .Node(type_path) -> quote { Holds.Node(${literal(type_path)}) },
+        .Int -> quote { Holds.Int },
+        .Float -> quote { Holds.Float },
+        .Bool -> quote { Holds.Bool },
+        .Text -> quote { Holds.Text },
+        .Bytes -> quote { Holds.Bytes },
+    }
+}

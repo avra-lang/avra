@@ -27,7 +27,7 @@
 //! whoever tokenizes, `N` to whoever supplies the builders. A `T`'s
 //! whole contract is its `Lexeme<T>` value, carried on the context
 //! (`cx.lex`) rather than a trait bound (lexeme.av says why).
-use util.{flatten, filled, distinct, is_end}
+use util.{flatten, filled, distinct, is_end, some_list}
 use ast.{
     Grammar,
     Alt,
@@ -45,7 +45,9 @@ use ast.{
     Assoc,
     listed_grammar,
     node_builder_name,
+    closer_of,
 }
+use item_shape.{ItemShape, item_shape}
 use first.{with_branch_starts}
 use diagnostics.{Cause, Diagnostic, Failure, Voice, defect, told, spoken, Want, want_merged}
 use lexeme.{Lexeme}
@@ -130,12 +132,54 @@ type MatchContext<T, N> = {
     miss: MatchResult<T, N>,
 }
 
-/// The memo: one table of `rules x (tokens + 1) x 2` slots — a rule
-/// at a cursor, capped or open — a slot holding one past the index
-/// of its answer in `results` (0 is unanswered), so a rule attempt
-/// costs two reads and no key is ever spelled. A struct because a
-/// write reaches a place through its field.
-type Memo<T, N> = { slots: List<int>, results: List<MatchResult<T, N>>, stride: int }
+/// The memo: an open-addressed table from a rule at a cursor, capped or open, to one past the
+/// index of its answer in `results`. Each slot is a key and a value side by side, a key of zero
+/// meaning free. It grows with the attempts a parse makes, never with rules times tokens. A
+/// struct because a write reaches a place through its field.
+type Memo<T, N> = { slots: List<int>, results: List<MatchResult<T, N>>, mask: int, used: int }
+
+/// The slots a parse of `tokens` tokens starts with, a power of two.
+fn memo_slot_count(tokens: int) -> int {
+    mut count = 64
+    while count < tokens * 8 { count = count * 2 }
+    count
+}
+
+impl Memo<T, N> {
+    /// Where `key` sits in `slots`, or the free slot it would take.
+    fn slot_of(key: int) -> int {
+        let mixed = key * 40503
+        mut slot = (mixed ^ (mixed >> 15)) & self.mask
+        while self.slots[slot * 2] != 0 && self.slots[slot * 2] != key { slot = slot + 1 & self.mask }
+        slot * 2
+    }
+
+    /// What's known under `key`: one past an answer's index, or zero.
+    fn known(key: int) -> int { self.slots[self.slot_of(key) + 1] }
+
+    /// `value` under a key not yet here.
+    mut fn remember(key: int, value: int) {
+        if (self.used + 1) * 2 > self.mask + 1 { self.grow() }
+        let slot = self.slot_of(key)
+        self.slots.set(slot, key)
+        self.slots.set(slot + 1, value)
+        self.used = self.used + 1
+    }
+
+    /// Twice the slots, every key moved across.
+    mut fn grow() {
+        let old = self.slots
+        self.slots = filled((self.mask + 1) * 4, 0)
+        self.mask = (self.mask + 1) * 2 - 1
+        for at in 0..old.length / 2 {
+            if old[at * 2] != 0 {
+                let slot = self.slot_of(old[at * 2])
+                self.slots.set(slot, old[at * 2])
+                self.slots.set(slot + 1, old[at * 2 + 1])
+            }
+        }
+    }
+}
 
 impl MatchContext<T, N> {
     /// What a miss at `cursor` would have taken — told only to a run that tracks.
@@ -384,8 +428,8 @@ fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, cappe
     N,
 > {
     let ordinal? = cx.ordinals.get(name) else { return undefined_rule<T, N>(cx, name, cursor) }
-    let at = (ordinal * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
-    let known = cx.memo.slots[at]
+    let key = (ordinal * (cx.tokens.length + 1) + cursor) * 2 + if capped { 2 } else { 1 }
+    let known = cx.memo.known(key)
     if known > 0 { return cx.memo.results[known - 1] }
     let fresh = match_alt<T, N>(
         cx,
@@ -398,11 +442,11 @@ fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, cappe
         cursor,
     )
     if plain_miss<T, N>(fresh) {
-        cx.memo.slots.set(at, 1)
+        cx.memo.remember(key, 1)
         return fresh
     }
     cx.memo.results.push(fresh)
-    cx.memo.slots.set(at, cx.memo.results.length)
+    cx.memo.remember(key, cx.memo.results.length)
     fresh
 }
 
@@ -448,8 +492,11 @@ fn has_bit(words: List<int>, b: int) -> bool {
 /// A token's bits for the branch check: bit `s` when it wears the class of slot `s`, bit 62
 /// when it closes a body. Slots past 61 are asked the long way.
 fn token_mask<T>(lex: Lexeme<T>, kinds: List<int>, t: T) -> int {
-    let bits = [1 << s for s in 0..kinds.length if s < 62 && lex.wears_kind(t, kinds[s])]
-    bits.fold(if closes_body(lex, t) { 1 << 62 } else { 0 }, (acc, b) -> acc | b)
+    mut bits = if closes_body(lex, t) { 1 << 62 } else { 0 }
+    for s, kind in kinds {
+        if s < 62 && lex.wears_kind(t, kind) { bits = bits | (1 << s) }
+    }
+    bits
 }
 
 /// The slot of the grammar literal a token spells, or -1 — a literal matches by text alone.
@@ -745,7 +792,7 @@ fn consumed_loc<T>(lex: Lexeme<T>, tokens: List<T>, from: int, until: int) -> Lo
 /// parentheses, brackets or braces a head's cap no longer holds.
 fn opens(p: Prim) -> bool {
     match p {
-        .Lit(text) -> text == "(" || text == "[" || text == "{",
+        .Lit(text) -> closer_of(text) != null,
         .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> false,
     }
 }
@@ -1041,6 +1088,8 @@ export type Ready = {
     // every literal the grammar spells, by its text: a `.Lit` atom's slot
     lit_slots: Map<string, int>,
     defects: List<Diagnostic>,
+    // what the rules say about a file's items, for reading one without parsing it
+    items: ItemShape,
 }
 
 /// A grammar prepared: validated, numbered, and answered ONCE. `known_terminals` is the
@@ -1049,9 +1098,9 @@ export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
     mut ordinals: Map<string, int> = {}
     for j, r in g.rules { ordinals.set(r.name, j) }
     let prims = flatten([terminals_of(r.body) for r in g.rules])
-    let terms = distinct([term for p in prims for term in named_term(p)])
+    let terms = distinct([term for p in prims for term in some_list(p.class())])
     mut lit_slots: Map<string, int> = {}
-    for j, text in distinct([text for p in prims for text in lit_term(p)]) { lit_slots.set(text, j) }
+    for j, text in distinct([text for p in prims for text in some_list(p.literal())]) { lit_slots.set(text, j) }
     Ready {
         g: listed_grammar(with_start_bits(with_branch_starts(slotted(g, terms, lit_slots)))),
         ordinals: ordinals,
@@ -1059,17 +1108,8 @@ export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
         terms: terms,
         lit_slots: lit_slots,
         defects: g.defects(known_terminals),
+        items: item_shape(g),
     }
-}
-
-/// A terminal's class name, when it is a class.
-fn named_term(p: Prim) -> List<string> {
-    match p { .Named(term) -> [term], .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [] }
-}
-
-/// A terminal's text, when it is a literal.
-fn lit_term(p: Prim) -> List<string> {
-    match p { .Lit(text) -> [text], .Named(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [] }
 }
 
 /// Every terminal item slotted — a class by its place in `terms`, a literal by its
@@ -1188,7 +1228,7 @@ fn run_as<T, N>(
     }
     let g = rd.g
     let kinds: List<int> = [lex.kind_of(term) for term in rd.terms]
-    let stride = tokens.length + 1
+    let slot_count = memo_slot_count(tokens.length + 1)
     let silence: List<Failure> = []
     let miss = MatchResult<T, N> {
         status: MatchStatus.Miss,
@@ -1199,9 +1239,10 @@ fn run_as<T, N>(
         farthest: null,
     }
     let memo = Memo<T, N> {
-        slots: filled(g.rules.length * stride * 2, 0),
+        slots: filled(slot_count * 2, 0),
         results: [miss],
-        stride: stride,
+        mask: slot_count - 1,
+        used: 0,
     }
     mut cx = MatchContext<T, N> {
         g: g,

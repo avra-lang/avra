@@ -1,0 +1,77 @@
+// Columns over the empty file, nesting, and every way brackets can fail to pair.
+use tests.support.spelled_tokens.{spelled_columns}
+use token_columns.{ATTACHES, DECLARES, DEFERS_BODY, ENDS_ITEM, HOLDS_MEMBERS, OPENS_BODY}
+
+spec "token_columns — a file's tokens, one list per fact" {
+    given "no tokens" {
+        then "the columns are empty and balanced" {
+            let columns = spelled_columns("")
+            columns.length() == 0 && columns.partners.is_empty() && columns.balanced
+        }
+    }
+    given "a plain token" {
+        then "its range is in its columns, it has no role and no partner" {
+            let columns = spelled_columns("  w")
+            columns.starts[0] == 2 &&
+                columns.ends[0] == 3 &&
+                columns.roles.at(0) == 0 &&
+                columns.partner_of(0) == null &&
+                columns.text_of(0) == "w"
+        }
+    }
+    given "words the grammar's rules give roles" {
+        then "each holds what its rules say" {
+            let columns = spelled_columns("fhk@;{")
+            columns.has_role(0, DEFERS_BODY) &&
+                columns.has_role(0, DECLARES) &&
+                !columns.has_role(0, HOLDS_MEMBERS) &&
+                columns.has_role(1, HOLDS_MEMBERS) &&
+                !columns.has_role(1, DECLARES) &&
+                columns.has_role(2, DECLARES) &&
+                !columns.has_role(2, DEFERS_BODY) &&
+                columns.has_role(3, ATTACHES) &&
+                columns.has_role(4, ENDS_ITEM) &&
+                columns.has_role(5, OPENS_BODY)
+        }
+    }
+    given "nested brackets" {
+        then "each finds its own partner, both ways" {
+            let columns = spelled_columns("(w[])")
+            columns.partner_of(0) == 4 &&
+                columns.partner_of(4) == 0 &&
+                columns.partner_of(2) == 3 &&
+                columns.partner_of(3) == 2 &&
+                columns.partner_of(1) == null &&
+                columns.balanced
+        }
+        then "passing a token jumps over its pair" {
+            let columns = spelled_columns("(w[])")
+            columns.past_token(0) == 5 && columns.past_token(1) == 2 && columns.past_token(4) == 5
+        }
+    }
+    given "a bracket at position zero" {
+        then "its partner is told from having none" { spelled_columns("()").partner_of(1) == 0 }
+    }
+    given "a bracket never closed" {
+        then "it has no partner and the file isn't balanced" {
+            let columns = spelled_columns("(w")
+            columns.partner_of(0) == null && !columns.balanced
+        }
+    }
+    given "a closer with nothing open" {
+        then "it has no partner and the file isn't balanced" {
+            let columns = spelled_columns(")")
+            columns.partner_of(0) == null && !columns.balanced
+        }
+    }
+    given "a closer of the wrong pair" {
+        then "neither bracket takes a partner" {
+            let columns = spelled_columns("(]")
+            columns.partner_of(0) == null && columns.partner_of(1) == null && !columns.balanced
+        }
+        then "the opener still takes the right closer after it, and the file stays unbalanced" {
+            let columns = spelled_columns("(])")
+            columns.partner_of(0) == 2 && columns.partner_of(1) == null && !columns.balanced
+        }
+    }
+}

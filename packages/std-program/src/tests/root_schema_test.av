@@ -1,0 +1,35 @@
+// A root's generated schema, gathered when the program runs: every type its fields reach once, by
+// path, with fields a tape doesn't hold left out.
+use tape_schema.{TapeSchema, TypeSchema, tape_schema}
+use tests.support.tiny_tree.{TinyNode}
+
+fn tiny_schema() -> TapeSchema {
+    mut found: Map<string, TypeSchema> = {}
+    TinyNode.tape_types_into(found)
+    tape_schema(found.values())
+}
+
+fn root() -> TypeSchema { tiny_schema().types.find(it.type_path.ends_with(".TinyNode"))! }
+
+fn field_names(variant_name: string) -> string {
+    [f.name for f in root().variants.find(it.name == variant_name)!.fields].join(" ")
+}
+
+spec "root schema" {
+    given "the tiny tree's root" {
+        then "it gathers itself, its enum, and the maps and results its fields hold" {
+            tiny_schema().types.length == 6 &&
+                tiny_schema().types.any(it.type_path.ends_with(".Side"))
+        }
+        then "each node is a variant of the root" { field_names("Pair") == "left right" }
+        then "a field with no bytes is left out" { field_names("Opaque") == "after" }
+        then "a field the language keeps off its tapes is left out" { field_names("Marked") == "kept" }
+        then "an id holds the root" {
+            root().variants.find(it.name == "Pair")!.fields[0]
+                .lies
+                .holds
+                .spelled()
+                .ends_with(".TinyNode")
+        }
+    }
+}

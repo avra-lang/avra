@@ -1,0 +1,38 @@
+//! A store in memory, standing in for the one on disk, shared by the engine's tests.
+use answer_record.{AnswerRecord, ContentHash, Question}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use query_engine.{AnswerStore}
+use saved_layout.{SavedBytes, saved_bytes_in_memory}
+
+export type StoreInMemory = {
+    records: HashKeyedTable<List<AnswerRecord>>,
+    questions: HashKeyedTable<Question>,
+    answers: HashKeyedTable<Bytes>,
+}
+
+export fn store_in_memory() -> StoreInMemory {
+    let records: HashKeyedTable<List<AnswerRecord>> = hash_keyed_table()
+    let questions: HashKeyedTable<Question> = hash_keyed_table()
+    let answers: HashKeyedTable<Bytes> = hash_keyed_table()
+    StoreInMemory { records: records, questions: questions, answers: answers }
+}
+
+impl AnswerStore for StoreInMemory {
+    fn records_of(question: ContentHash) -> List<AnswerRecord> { self.records.get(question) ?? [] }
+
+    fn keep_record(asked: Question, record: AnswerRecord) {
+        self.questions.put(asked.known_as, asked)
+        self.records.put(asked.known_as, self.records_of(asked.known_as).concat([record]))
+    }
+
+    fn question_known_as(question: ContentHash) -> Question? { self.questions.get(question) }
+
+    fn answer_bytes(answer: ContentHash) -> SavedBytes? {
+        let bytes? = self.answers.get(answer) else { return null }
+        saved_bytes_in_memory(bytes)
+    }
+
+    fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) { self.answers.put(answer, bytes) }
+
+    fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.answers.put(answer, bytes) }
+}

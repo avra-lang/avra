@@ -1,0 +1,185 @@
+// `@derive(Saved)` over the program's addresses: every shape survives being saved and read back,
+// a generated address carries its source inside it, and two addresses that split their text
+// differently never share bytes.
+use @std.hash.{blake3_hex}
+use @std.meta.{derive}
+use saved_derive.{Saved}
+use address.{
+    DeclarationAddress,
+    DeclarationOrigin,
+    InstantiationAddress,
+    ModuleAddress,
+    SourceFileAddress,
+}
+
+@derive(Saved)
+type EveryKind = {
+    ratio: float,
+    maybe_ratio: float?,
+    counts: Map<string, int>,
+    nested: Map<string, List<string>>,
+    outcome: Result<int, string>,
+    held: Cell<int>,
+    maybe_counts: Map<string, int>?,
+}
+
+fn every_kind(ratio: float, counts: Map<string, int>, outcome: Result<int, string>) -> EveryKind {
+    let nested: Map<string, List<string>> = {"a": ["x", "y"], "b": []}
+    EveryKind {
+        ratio: ratio,
+        maybe_ratio: null,
+        counts: counts,
+        nested: nested,
+        outcome: outcome,
+        held: Cell.new(7),
+        maybe_counts: null,
+    }
+}
+
+type Label = string
+
+@derive(Saved)
+type Labelled = { name: Label, nickname: Label?, others: List<Label> }
+
+fn read_back(value: EveryKind) -> EveryKind { EveryKind.from_saved_bytes(value.saved_bytes()) }
+
+fn plain_kind() -> EveryKind { every_kind(1.5, {"one": 1}, .Ok(1)) }
+
+fn outcome_words(outcome: Result<int, string>) -> string {
+    match outcome { .Ok(number) -> "ok ${number}", .Err(words) -> "err ${words}" }
+}
+
+fn sample_file() -> SourceFileAddress { SourceFileAddress { package_name: "cli", path_in_package: "src/shared.av" } }
+
+fn written_declaration() -> DeclarationAddress {
+    DeclarationAddress {
+        origin: DeclarationOrigin.WrittenInFile(sample_file()),
+        enclosing_names: ["impl Show for Row", "inner"],
+        name: "here",
+        same_name_index: 1,
+    }
+}
+
+fn origin_words(origin: DeclarationOrigin) -> string {
+    match origin {
+        .BuiltIn -> "built in",
+        .WrittenInFile(file) -> "written ${file.package_name} ${file.path_in_package}",
+        .GeneratedFrom(source, generator) -> "generated ${source.name} by ${generator}",
+    }
+}
+
+spec "program/saved_derive — addresses saved and read back" {
+    given "each way a declaration can come to exist" {
+        then "a built-in reads back built in" {
+            let address = DeclarationAddress {
+                origin: DeclarationOrigin.BuiltIn,
+                enclosing_names: [],
+                name: "int",
+                same_name_index: 0,
+            }
+            let back = DeclarationAddress.from_saved_bytes(address.saved_bytes())
+            origin_words(back.origin) == "built in" &&
+                back.name == "int" &&
+                back.enclosing_names.is_empty()
+        }
+        then "a written declaration reads back whole" {
+            let back = DeclarationAddress.from_saved_bytes(written_declaration().saved_bytes())
+            origin_words(back.origin) == "written cli src/shared.av" &&
+                back.enclosing_names.join("/") == "impl Show for Row/inner" &&
+                back.name == "here" &&
+                back.same_name_index == 1
+        }
+        then "a generated declaration carries its source" {
+            let address = DeclarationAddress {
+                origin: DeclarationOrigin.GeneratedFrom(written_declaration(), "derive Show"),
+                enclosing_names: [],
+                name: "show",
+                same_name_index: 0,
+            }
+            let back = DeclarationAddress.from_saved_bytes(address.saved_bytes())
+            origin_words(back.origin) == "generated here by derive Show" && back.name == "show"
+        }
+    }
+    given "an instantiation" {
+        then "its declaration and type arguments read back" {
+            let address = InstantiationAddress {
+                declaration: written_declaration(),
+                type_arguments: ["int", "string"],
+            }
+            let back = InstantiationAddress.from_saved_bytes(address.saved_bytes())
+            back.declaration.name == "here" && back.type_arguments.join(",") == "int,string"
+        }
+    }
+    given "the same text split differently" {
+        then "the bytes differ" {
+            let first = SourceFileAddress { package_name: "a.b", path_in_package: "c" }
+            let second = SourceFileAddress { package_name: "a", path_in_package: "b.c" }
+            blake3_hex(first.saved_bytes()) != blake3_hex(second.saved_bytes())
+        }
+    }
+    given "one address saved twice" {
+        then "its bytes are the same" {
+            blake3_hex(written_declaration().saved_bytes()) == blake3_hex(written_declaration().saved_bytes())
+        }
+    }
+}
+
+spec "saved_derive — every kind with bytes reads back" {
+    given "floats" {
+        then "ordinary, infinite and negative ones read back exactly" {
+            read_back(plain_kind()).ratio == 1.5 &&
+                read_back(every_kind(1.0 / 0.0, {}, .Ok(1))).ratio == 1.0 / 0.0 &&
+                read_back(every_kind(-2.25, {}, .Ok(1))).ratio == -2.25
+        }
+        then "a present zero isn't an absent one" {
+            let back = read_back(plain_kind() with { maybe_ratio: 0.0 })
+            back.maybe_ratio == 0.0 && read_back(plain_kind()).maybe_ratio == null
+        }
+    }
+    given "an empty map" {
+        then "it reads back empty" { read_back(every_kind(1.5, {}, .Ok(1))).counts.is_empty() }
+        then "it isn't an absent one" {
+            let empty: Map<string, int> = {}
+            let back = read_back(plain_kind() with { maybe_counts: empty })
+            back.maybe_counts != null &&
+                back.maybe_counts!.is_empty() &&
+                read_back(plain_kind()).maybe_counts == null
+        }
+    }
+    given "a map" {
+        then "its order and values read back" {
+            let back = read_back(every_kind(1.5, {"z": 1, "a": 2}, .Ok(1))).counts
+            back.keys().join(",") == "z,a" && back.get("a") == 2
+        }
+        then "its values may be lists" {
+            read_back(plain_kind()).nested.get("a")!.join(",") == "x,y" &&
+                read_back(plain_kind()).nested.get("b")!.is_empty()
+        }
+        then "the same entries in another order are other bytes" {
+            let one = every_kind(1.5, {"z": 1, "a": 2}, .Ok(1)).saved_bytes()
+            let other = every_kind(1.5, {"a": 2, "z": 1}, .Ok(1)).saved_bytes()
+            blake3_hex(one) != blake3_hex(other)
+        }
+    }
+    given "a result" {
+        then "each side reads back" {
+            outcome_words(read_back(plain_kind()).outcome) == "ok 1" &&
+                outcome_words(read_back(every_kind(1.5, {}, .Err("no"))).outcome) == "err no"
+        }
+    }
+    given "fields whose types are names over plain values" {
+        then "they read back through the name" {
+            let saved = Labelled { name: Label("a"), nickname: null, others: [Label("b")] }
+            let back = Labelled.from_saved_bytes(saved.saved_bytes())
+            back.name.of == "a" && back.nickname == null && back.others[0].of == "b"
+        }
+    }
+    given "a cell" {
+        then "what it held reads back, in a cell of its own" {
+            let value = plain_kind()
+            let back = read_back(value)
+            back.held.set(8)
+            value.held.get() == 7 && back.held.get() == 8
+        }
+    }
+}

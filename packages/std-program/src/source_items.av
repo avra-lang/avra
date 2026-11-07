@@ -1,0 +1,146 @@
+//! A FILE'S ITEMS, found from its tokens alone: a top-level declaration, or one member of a
+//! declaration that holds members. Nothing is parsed, so finding them costs one walk, and a closed
+//! bracket pair is jumped in one read. What each token does comes from the grammar's rules.
+use token_columns.{
+    ATTACHES,
+    DECLARES,
+    DEFERS_BODY,
+    ENDS_ITEM,
+    HOLDS_MEMBERS,
+    OPENS_BODY,
+    TokenColumns,
+}
+
+/// What an item keeps in brackets, each opener's position included.
+export enum ItemBody {
+    Nothing
+    /// Text that can wait until something asks for it.
+    Deferred(opener: int)
+    Members(opener: int, members: List<SourceItem>)
+}
+
+/// A run of tokens, `end` being one past the last. Members lie inside their holder's run.
+export type SourceItem = { first: int, end: int, body: ItemBody }
+
+impl SourceItem {
+    /// Where the item's text starts.
+    fn start_in(columns: TokenColumns) -> int { columns.starts[self.first] }
+
+    /// Where the item's text ends.
+    fn end_in(columns: TokenColumns) -> int { columns.ends[self.end - 1] }
+}
+
+impl ItemBody {
+    /// The bracket opening the body, absent when there's none.
+    fn opener() -> int? {
+        match self { .Nothing -> null, .Deferred(opener) or .Members(opener, _) -> opener }
+    }
+}
+
+/// The items of a whole file, in the order they're written. Columns that don't balance can't be
+/// split, so a file holding them is one item, and a whole parse tells what's in it.
+export fn source_items(columns: TokenColumns) -> List<SourceItem> {
+    if columns.balanced { return items_between(columns, 0, columns.length()) }
+    [SourceItem { first: 0, end: columns.length(), body: ItemBody.Nothing }]
+}
+
+fn items_between(columns: TokenColumns, from: int, to: int) -> List<SourceItem> {
+    mut items: List<SourceItem> = []
+    mut position = after_item_ends(columns, from, to)
+    while position < to {
+        let end = item_end(columns, position, to)
+        items.push(SourceItem { first: position, end: end, body: body_of(columns, position, end) })
+        position = after_item_ends(columns, end, to)
+    }
+    items
+}
+
+/// One past the last token of the item starting at `first`: its line, with any lines attached above it.
+fn item_end(columns: TokenColumns, first: int, to: int) -> int {
+    mut start = first
+    mut end = line_end(columns, start, to)
+    while end < to && is_attached_line(columns, start, end) {
+        start = after_item_ends(columns, end, to)
+        end = line_end(columns, start, to)
+    }
+    end
+}
+
+/// Where the token ending the line at `from` stands. A bracket pair is passed over whole.
+fn line_end(columns: TokenColumns, from: int, to: int) -> int {
+    mut position = from
+    while position < to && !columns.has_role(position, ENDS_ITEM) { position = columns.past_token(position) }
+    position
+}
+
+fn after_item_ends(columns: TokenColumns, from: int, to: int) -> int {
+    mut position = from
+    while position < to && columns.has_role(position, ENDS_ITEM) { position = position + 1 }
+    position
+}
+
+/// Whether the line holds nothing but the attached token and at most one bracket pair.
+fn is_attached_line(columns: TokenColumns, start: int, end: int) -> bool {
+    if !columns.has_role(start, ATTACHES) { return false }
+    let after = columns.past_token(start)
+    after >= end || columns.partner_of(after) != null && columns.past_token(after) >= end
+}
+
+/// The tokens from `first` up to `end` that aren't inside a bracket pair.
+fn outermost_between(columns: TokenColumns, first: int, end: int) -> List<int> {
+    mut positions: List<int> = []
+    mut position = first
+    while position < end {
+        positions.push(position)
+        position = columns.past_token(position)
+    }
+    positions
+}
+
+/// What the item keeps. A holding word claims the first body after it; otherwise a deferring word
+/// claims the pair the item ends on. A parse that disagrees sends the file to a whole parse.
+fn body_of(columns: TokenColumns, first: int, end: int) -> ItemBody {
+    let outermost = outermost_between(columns, first, end)
+    let opener? = members_opener(columns, outermost) else { return deferred_body(columns, outermost, end) }
+    ItemBody
+        .Members(opener, items_between(columns, opener + 1, columns.partner_of(opener) ?? opener + 1))
+}
+
+/// The first body after a holding word.
+fn members_opener(columns: TokenColumns, outermost: List<int>) -> int? {
+    let holder? = outermost.find((at) -> columns.has_role(at, HOLDS_MEMBERS)) else { return null }
+    outermost.find((at) -> at > holder && columns.has_role(at, OPENS_BODY))
+}
+
+/// The body the item ends on, when a deferring word claims it.
+fn deferred_body(columns: TokenColumns, outermost: List<int>, end: int) -> ItemBody {
+    if !outermost.any((at) -> columns.has_role(at, DEFERS_BODY)) { return ItemBody.Nothing }
+    let opener? = columns.partner_of(end - 1) else { return ItemBody.Nothing }
+    if opener < end - 1 && columns.has_role(opener, OPENS_BODY) { ItemBody.Deferred(opener) } else { ItemBody.Nothing }
+}
+
+/// What an item is called: the token after the run of declaring words opening its last line, past
+/// any attached lines, so `collect enum E` is `E`. An item that opens by holding members without
+/// declaring, or declares nothing, is called by the tokens before its first bracket, each as
+/// written, one space apart, as an `impl` is by its head.
+export fn item_name(columns: TokenColumns, item: SourceItem) -> string {
+    let outermost = outermost_between(columns, last_line_of(columns, item), item.end)
+    let opening? = outermost.find((at) -> columns.has_role(at, DECLARES | HOLDS_MEMBERS)) else { return head_of(columns, outermost) }
+    if !columns.has_role(opening, DECLARES) { return head_of(columns, outermost) }
+    mut word = opening
+    while word + 1 < item.end && columns.has_role(word + 1, DECLARES) { word = word + 1 }
+    if word + 1 < item.end { columns.text_of(word + 1) } else { "" }
+}
+
+/// Where the item's last line starts: past every attached line above it.
+fn last_line_of(columns: TokenColumns, item: SourceItem) -> int {
+    let line_ends = outermost_between(columns, item.first, item.end)
+        .filter((at) -> columns.has_role(at, ENDS_ITEM))
+    (line_ends.last() ?? item.first - 1) + 1
+}
+
+fn head_of(columns: TokenColumns, outermost: List<int>) -> string {
+    let first_bracket = outermost.find((at) -> columns.partner_of(at) != null)
+    [columns.text_of(at) for at in outermost if first_bracket == null || at < first_bracket!]
+        .join(" ")
+}

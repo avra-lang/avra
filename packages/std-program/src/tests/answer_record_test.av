@@ -1,0 +1,116 @@
+// A record survives being saved, with the empty cases first, and hashes compare by what they hash.
+use answer_record.{
+    AnswerRecord,
+    ContentHash,
+    PartSeen,
+    Question,
+    RecordedRead,
+    content_hash,
+    question,
+}
+
+fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
+
+fn record_reading(reads: List<RecordedRead>) -> AnswerRecord {
+    AnswerRecord { answer: hash_of("an int"), reads: reads }
+}
+
+spec "answer_record — what's remembered about an answer" {
+    given "hashes" {
+        then "the same bytes hash alike and different bytes don't" {
+            hash_of("one").same_as(hash_of("one")) && !hash_of("one").same_as(hash_of("two"))
+        }
+        then "empty bytes have a hash" { !hash_of("").same_as(hash_of("one")) }
+        then "one hash comes before another, and not after it" {
+            let first = ContentHash { high_word: 1, low_word: 9 }
+            let second = ContentHash { high_word: 2, low_word: 0 }
+            first.comes_before(second) && !second.comes_before(first)
+        }
+    }
+    given "a question" {
+        then "a name and its arguments can't trade octets" {
+            !question("ab", "code", "c".bytes())
+                .known_as
+                .same_as(question("a", "code", "bc".bytes()).known_as)
+        }
+        then "another code is another question" {
+            !question("a", "one", "b".bytes())
+                .known_as
+                .same_as(question("a", "two", "b".bytes()).known_as)
+        }
+    }
+    given "a question saved and read back" {
+        then "its arguments survive, and an empty one is empty" {
+            let empty = Question.from_saved_bytes(question("q", "code", "".bytes()).saved_bytes())
+            let full = Question
+                .from_saved_bytes(question("q", "code", "here".bytes()).saved_bytes())
+            empty.arguments.length == 0 && full.arguments.text() == "here"
+        }
+    }
+    given "two records" {
+        then "the same answer and reads are the same record" {
+            let read = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: null,
+            }
+            record_reading([read]).same_as(record_reading([read])) &&
+                record_reading([]).same_as(record_reading([]))
+        }
+        then "different reads of the same count aren't" {
+            let one = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: null,
+            }
+            let other = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("c"),
+                part: null,
+            }
+            !record_reading([one]).same_as(record_reading([other]))
+        }
+    }
+    given "a read's key" {
+        then "a part read is apart from its whole read and from another part" {
+            let whole = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: null,
+            }
+            let part_a = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: PartSeen { part_name: hash_of("x"), part_hash: hash_of("y") },
+            }
+            let part_b = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: PartSeen { part_name: hash_of("z"), part_hash: hash_of("y") },
+            }
+            !whole.read_key().same_as(part_a.read_key()) &&
+                !part_a.read_key().same_as(part_b.read_key())
+        }
+    }
+    given "a record saved and read back" {
+        then "with no reads it is whole" {
+            let back = AnswerRecord.from_saved_bytes(record_reading([]).saved_bytes())
+            back.reads.is_empty() && back.answer.same_as(hash_of("an int"))
+        }
+        then "a whole-answer read and a part read both survive" {
+            let whole_read = RecordedRead {
+                question: hash_of("sig a"),
+                whole_answer: hash_of("one"),
+                part: null,
+            }
+            let part_read = RecordedRead {
+                question: hash_of("names m"),
+                whole_answer: hash_of("table"),
+                part: PartSeen { part_name: hash_of("helper"), part_hash: hash_of("absent") },
+            }
+            let back = AnswerRecord
+                .from_saved_bytes(record_reading([whole_read, part_read]).saved_bytes())
+            back.reads[0].part == null && back.reads[1].part!.part_name.same_as(hash_of("helper"))
+        }
+    }
+}

@@ -1,0 +1,100 @@
+//! WHAT THE ENGINE REMEMBERS ABOUT ONE ANSWER: which question it answered, a hash of the answer,
+//! and every answer it read to get there. The answer's own bytes live apart, under their hash, so
+//! a record can be checked without touching them. A record stands only while every read still
+//! holds; a question with no record has no answer, and is computed.
+use @std.hash.{blake3}
+use @std.meta.{derive}
+use saved_derive.{Saved}
+use saved_layout.{SavedList, SavedRecord, SavedSlots, word_in}
+
+/// The first sixteen octets of a BLAKE3 hash, as two numbers: what a question or an answer's bytes
+/// are known by. Two numbers compare in two instructions.
+@derive(Saved)
+export type ContentHash = { high_word: int, low_word: int }
+
+impl ContentHash {
+    /// An order over hashes, for keeping them sorted.
+    fn comes_before(other: ContentHash) -> bool {
+        self.high_word < other.high_word ||
+            self.high_word == other.high_word && self.low_word < other.low_word
+    }
+
+    fn same_as(other: ContentHash) -> bool { self.high_word == other.high_word && self.low_word == other.low_word }
+}
+
+/// The hash of `octets`.
+export fn content_hash(octets: Bytes) -> ContentHash {
+    let hash = blake3(octets)
+    ContentHash { high_word: word_in(hash, 0), low_word: word_in(hash, 8) }
+}
+
+/// The entry keyed by `wanted` in a table sorted by hash and held in place: a list of the keys'
+/// high words beside a list of entries, each entry's first field its key. A search touches the
+/// list of numbers, and opens only the entries it might have found.
+export fn entry_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> SavedRecord? {
+    mut position = high_words.first_at_or_after(wanted.high_word)
+    while position < high_words.length && high_words.number_at(position) == wanted.high_word {
+        let entry = entries.record_at(position)!
+        if ContentHash.read_from(entry.record_at(0)!).same_as(wanted) { return entry }
+        position = position + 1
+    }
+    null
+}
+
+/// A question: which query, a hash of its code, and its arguments as bytes.
+@derive(Saved)
+export type Question = { query_name: string, code_hash: string, arguments: Bytes, known_as: ContentHash }
+
+/// A question, with what it's known by across processes. Its code's hash is part of that, so a
+/// changed query never finds its old answers. The name and the code are counted, so they can't
+/// trade octets with the arguments.
+export fn question(query_name: string, code_hash: string, arguments: Bytes) -> Question {
+    let counted = "${query_name.length}:${query_name}${code_hash.length}:${code_hash}".bytes()
+    Question {
+        query_name: query_name,
+        code_hash: code_hash,
+        arguments: arguments,
+        known_as: content_hash(counted.concat(arguments)),
+    }
+}
+
+/// The part of an answer a read looked at, and the hash of what it saw there.
+@derive(Saved)
+export type PartSeen = { part_name: ContentHash, part_hash: ContentHash }
+
+/// One answer read while computing another: which question was asked, the hash of its whole
+/// answer then, and the part looked at if it was only a part. A part that wasn't there is recorded
+/// too, as the hash of absence, so it moves when the part appears. An answer whose whole hash
+/// hasn't moved proves every part of it, so most reads are checked without opening the answer.
+@derive(Saved)
+export type RecordedRead = { question: ContentHash, whole_answer: ContentHash, part: PartSeen? }
+
+/// One way a question was answered: the hash that finds the answer's bytes, and everything read to
+/// get there. A DEEP record reads only inputs, however many queries stood between them and the
+/// answer. It's the same claim made shorter: checking one touches no other question, so an unchanged
+/// program costs its inputs and nothing more.
+@derive(Saved)
+export type AnswerRecord = { answer: ContentHash, reads: List<RecordedRead>, deep: bool = false }
+
+impl AnswerRecord {
+    /// Whether two records say the same thing, so keeping both would add nothing.
+    fn same_as(other: AnswerRecord) -> bool {
+        self.answer.same_as(other.answer) &&
+            self.deep == other.deep &&
+            self.reads.length == other.reads.length &&
+            (self.reads.is_empty() ||
+                content_hash(self.saved_bytes()).same_as(content_hash(other.saved_bytes())))
+    }
+}
+
+impl RecordedRead {
+    /// What makes this read one read: its question, and its part if it looked at one. A reader
+    /// that reads the same thing twice has one read.
+    fn read_key() -> ContentHash {
+        let part? = self.part else { return self.question }
+        ContentHash {
+            high_word: self.question.high_word.wrapping_shl(1) ^ part.part_name.high_word,
+            low_word: self.question.low_word.wrapping_shl(1) ^ part.part_name.low_word,
+        }
+    }
+}

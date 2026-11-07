@@ -293,6 +293,18 @@ export enum Prim {
     NotChar(inner: Prim)
 }
 
+/// A bracket pair a grammar nests with: inside one, a head's cap no longer holds.
+export type Delimiter = { opener: string, closer: string }
+
+export const DELIMITERS: List<Delimiter> = [
+    Delimiter { opener: "(", closer: ")" },
+    Delimiter { opener: "[", closer: "]" },
+    Delimiter { opener: "{", closer: "}" },
+]
+
+/// The literal closing what `text` opens, absent when `text` opens nothing.
+export fn closer_of(text: string) -> string? { DELIMITERS.find(it.opener == text)?.closer }
+
 impl Prim {
     /// The token this atom answers to by name — what an `@expect`
     /// names. Rules, groups, and a lexicon's character atom have no
@@ -302,6 +314,21 @@ impl Prim {
             .Lit(text) or .Named(text) -> text,
             .Ref(_) or .Group(_) or .NotChar(_) -> null,
         }
+    }
+
+    /// The text of a literal.
+    fn literal() -> string? {
+        match self { .Lit(text) -> text, .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> null }
+    }
+
+    /// The name of a token class.
+    fn class() -> string? {
+        match self { .Named(term) -> term, .Ref(_) or .Lit(_) or .Group(_) or .NotChar(_) -> null }
+    }
+
+    /// The name of a rule referred to.
+    fn rule() -> string? {
+        match self { .Ref(name) -> name, .Lit(_) or .Named(_) or .Group(_) or .NotChar(_) -> null }
     }
 
     /// The alternation a group opens; nothing else opens one.
@@ -320,6 +347,9 @@ impl Prim {
 }
 
 impl Seq {
+    /// What this branch is, when it's one thing and nothing else.
+    fn only_prim() -> Prim? { if self.items.length == 1 { self.items[0].prim } else { null } }
+
     /// This branch, then every branch nested in its groups.
     fn seqs() -> List<Seq> {
         [self].concat(flatten([group_seqs(m.prim) for m in self.items]))

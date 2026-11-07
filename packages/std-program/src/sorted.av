@@ -1,0 +1,38 @@
+//! SORTING. Merges runs of doubling width, stably, and answers a new list.
+
+/// `items` in the order `comes_before` says. Items it can't tell apart keep their order.
+export fn sorted_by<T>(items: List<T>, comes_before: fn(T, T) -> bool) -> List<T> {
+    mut sorted = items
+    mut width = 1
+    while width < items.length {
+        mut merged: List<T> = []
+        for start in 0..items.length {
+            if start % (2 * width) == 0 { merge_runs(sorted, start, width, comes_before, merged) }
+        }
+        sorted = merged
+        width = width * 2
+    }
+    sorted
+}
+
+/// The run of `width` items from `start`, merged with the run after it, onto `merged`.
+fn merge_runs<T>(
+    items: List<T>,
+    start: int,
+    width: int,
+    comes_before: fn(T, T) -> bool,
+    mut merged: List<T>,
+) {
+    let middle = smaller_of(start + width, items.length)
+    let end = smaller_of(start + 2 * width, items.length)
+    mut first = start
+    mut second = middle
+    while first < middle || second < end {
+        let takes_first = second >= end ||
+            first < middle && !comes_before(items[second], items[first])
+        merged.push(if takes_first { items[first] } else { items[second] })
+        if takes_first { first = first + 1 } else { second = second + 1 }
+    }
+}
+
+fn smaller_of(a: int, b: int) -> int { if a < b { a } else { b } }

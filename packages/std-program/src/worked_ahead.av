@@ -1,0 +1,97 @@
+//! WORK AHEAD ACROSS CORES. When a store knows too little, forked processes answer shards of the
+//! work and publish packs, and the asking process then finds those answers like any others. The
+//! store already lets many processes publish at once, so nothing is shared but the directory, and
+//! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
+//! didn't work ahead reaches the same ones by itself.
+use disk_store.{DiskStore, disk_store_at}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+
+extern fn avra_cores_online() -> int
+extern fn avra_cores_group(count: int) -> int
+extern fn avra_cores_fork(group: int, serving: int) -> int
+extern fn avra_cores_leave(group: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_end_fd(group: int, core: int) -> int
+extern fn avra_cores_heard(group: int, core: int) -> int
+extern fn avra_cores_result(group: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// Below this many unanswered items a fork costs more than it saves.
+const WORTH_FORKING: int = 16
+
+/// How long a wait for a core lasts before it looks again.
+const WAIT_MS: int = 1000
+
+/// No descriptor for a core to keep open.
+const NO_DESCRIPTOR: int = -1
+
+/// How many processes this machine runs at once.
+export fn cores_online() -> int { avra_cores_online() }
+
+/// What to work out ahead: the items, whether an item's answer is already kept, how to ask for it,
+/// and how many processes to use.
+export type WorkAhead<T, R> = {
+    items: List<T>,
+    is_known: fn(QueryEngine, T) -> bool,
+    ask: fn(QueryEngine, T) -> R,
+    process_count: int,
+}
+
+/// The store at `directory`, with every unknown item answered across processes first when there
+/// are enough to be worth it.
+export fn store_worked_ahead<T, R>(
+    directory: string,
+    definitions: List<QueryDefinition>,
+    work: WorkAhead<T, R>,
+) -> DiskStore {
+    let before = disk_store_at(directory)
+    if !forked_for<T, R>(before, definitions, work) { return before }
+    let after = disk_store_at(directory)
+    let _ = after.merged()
+    after
+}
+
+/// Answers every unknown item across processes, and says whether any process ran.
+fn forked_for<T, R>(store: DiskStore, definitions: List<QueryDefinition>, work: WorkAhead<T, R>) -> bool {
+    let known_by = work.is_known
+    let engine = query_engine(store, definitions)
+    let unknown = work.items.filter((item) -> !known_by(engine, item))
+    if unknown.length < WORTH_FORKING || work.process_count < 2 { return false }
+    let group = avra_cores_group(work.process_count)
+    if group < 0 { return false }
+    let core = avra_cores_fork(group, NO_DESCRIPTOR)
+    if core < 0 { return false }
+    if core < work.process_count {
+        answered_and_gone<T, R>(
+            store,
+            definitions,
+            [item for at, item in unknown if at % work.process_count == core],
+            work.ask,
+            group,
+            core,
+        )
+    }
+    waited_for(group, work.process_count)
+}
+
+/// A forked process's whole life: answers its share, publishes, and leaves without tidying up.
+fn answered_and_gone<T, R>(
+    store: DiskStore,
+    definitions: List<QueryDefinition>,
+    share: List<T>,
+    ask: fn(QueryEngine, T) -> R,
+    group: int,
+    core: int,
+) {
+    let engine = query_engine(store, definitions)
+    let answered = [ask(engine, item) for item in share].length
+    let _ = store.saved_alone()
+    let _ = avra_cores_leave(group, core, answered, 0)
+}
+
+/// Waits until every process has ended, and says whether they all answered.
+fn waited_for(group: int, process_count: int) -> bool {
+    for core in 0..process_count {
+        while avra_cores_heard(group, core) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(group, core), 0, WAIT_MS) }
+    }
+    avra_cores_result(group) >= 0
+}
