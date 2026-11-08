@@ -1,32 +1,14 @@
-//! The ids a node holds: on a tape an id is the node it names, placed where that was written.
-use @std.program.syntax_tape.{TapeWriter}
+//! Where an id's node was written, as a tape says it and as Avra's tree does: a span.
+use @std.program.syntax_tape.{TapePlace}
 
-/// Says where the next node was written, or that it has no place.
-fn placed(mut tape: TapeWriter, span: Span?) {
-    let written? = span else {
-        let _ = tape.unplaced()
-        return
-    }
-    let _ = tape.place(written.lo, written.hi - written.lo)
+/// The place a span says, absent with it.
+fn tape_place(span: Span?) -> TapePlace? {
+    let written? = span else { return null }
+    TapePlace { offset: written.lo, width: written.hi - written.lo }
 }
 
-impl Taped for ExprId {
-    fn taped(tree: SyntaxArena, mut tape: TapeWriter) {
-        placed(tape, tree.expr_span(self))
-        tree.expr(self).taped_node(tree, tape)
-    }
-}
-
-impl Taped for StmtId {
-    fn taped(tree: SyntaxArena, mut tape: TapeWriter) {
-        placed(tape, tree.stmt_span(self))
-        tree.stmt(self).taped_node(tree, tape)
-    }
-}
-
-impl Taped for PatId {
-    fn taped(tree: SyntaxArena, mut tape: TapeWriter) {
-        placed(tape, tree.pat_span(self))
-        tree.pat(self).taped_node(tree, tape)
-    }
+/// The span a place says, absent with it.
+fn tape_span(place: TapePlace?) -> Span? {
+    let written? = place else { return null }
+    span_of(written.offset, written.offset + written.width)
 }

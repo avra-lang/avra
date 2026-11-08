@@ -1,0 +1,54 @@
+// Avra's own tree on a tape: each statement written, read back into a fresh arena, and written
+// again is the same tape, every node where it was, with every octet read.
+use compiler.{parse_source}
+use core.{SyntaxArena, Stmt, StmtId, new_node_store}
+use @std.program.answer_record.{content_hash}
+use @std.program.syntax_tape.{SyntaxTape, tape_reader, tape_writer}
+
+fn tape_of(store: SyntaxArena, s: StmtId) -> SyntaxTape {
+    mut tape = tape_writer()
+    Stmt.taped_id(store, tape, s)
+    tape.finished()
+}
+
+fn stmt_round_trips(store: SyntaxArena, fresh: SyntaxArena, s: StmtId) -> bool {
+    let first = tape_of(store, s)
+    let reader = tape_reader(first)
+    let again = tape_of(fresh, Stmt.untaped_id(fresh, reader))
+    reader.is_done() &&
+        again.meaning_hash.same_as(first.meaning_hash) &&
+        content_hash(again.places.places).same_as(content_hash(first.places.places))
+}
+
+fn round_trips(text: string) -> bool {
+    let parsed = parse_source(text)
+    let fresh = new_node_store()
+    !parsed.stmts.is_empty() && parsed.stmts.all((s) -> stmt_round_trips(parsed.store, fresh, s))
+}
+
+spec "an Avra statement read back from its tape" {
+    given "a fn with seats, defaults and a body" {
+        then "it writes the same tape" { round_trips("fn add(a: int, mut b: int = 2) -> int {\n    b = a + b\n    b\n}\n") }
+    }
+    given "records, enums and their payloads" {
+        then "they write the same tape" {
+            round_trips(
+                "type P = { x: int, y: string? = null }\n\nenum Shape {\n    Dot\n    Box(w: int, h: int)\n}\n",
+            )
+        }
+    }
+    given "a match, a lambda and a comprehension" {
+        then "they write the same tape" {
+            round_trips(
+                "fn f(xs: List<int>) -> string {\n    let ys = [x * 2 for x in xs if x > 0]\n    let g = (n: int) -> n + 1\n    match ys.length {\n        0 -> \"none\",\n        n -> \"some\".repeat(g(n)),\n    }\n}\n",
+            )
+        }
+    }
+    given "generics, an impl and a trait" {
+        then "they write the same tape" {
+            round_trips(
+                "trait Named {\n    fn name() -> string\n}\n\ntype Box<T> = { held: T }\n\nimpl Box<T> {\n    fn get() -> T { self.held }\n}\n",
+            )
+        }
+    }
+}

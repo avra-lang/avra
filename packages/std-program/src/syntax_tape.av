@@ -147,6 +147,9 @@ impl TapeWriter {
 
     fn flag(value: bool) { self.count(if value { 1 } else { 0 }) }
 
+    /// Which of a type's variants, or a result's sides, a value is.
+    fn choice(at: int) { self.count(at) }
+
     /// Flags, sixty-three to a number, the first lowest.
     fn flags(values: List<bool>) {
         for first in 0..numbers_holding(values.length) {
@@ -172,6 +175,12 @@ impl TapeWriter {
         number_into(self.places, zigzag(from_item - self.last_offset))
         self.last_offset = from_item
         self.numbered()
+    }
+
+    /// Says where the next node standing for an id was written, if anywhere, answering its number.
+    fn placed(place: TapePlace?) -> int {
+        let written? = place else { return self.unplaced() }
+        self.place(written.offset, written.width)
     }
 
     /// Says the next node standing for an id has no place, answering its number.
@@ -296,6 +305,13 @@ impl TapeReader {
 
     fn flag() -> bool { self.count() == 1 }
 
+    /// Which of `choices` variants comes next. A tape naming one past the last isn't this type's.
+    fn choice(choices: int) -> int {
+        let at = self.count()
+        if at >= choices { defect(unknown_choice(at, choices)) }
+        at
+    }
+
     /// `length` flags, as `TapeWriter.flags` wrote them.
     fn flags(length: int) -> List<bool> {
         let numbers = [self.count() for _number in 0..numbers_holding(length)]
@@ -323,6 +339,8 @@ impl TapeReader {
     /// Whether every octet of the structure has been read.
     fn is_done() -> bool { self.at.get() == self.structure.length }
 }
+
+fn unknown_choice(at: int, choices: int) -> string { "a tape holds variant ${at} of a type with ${choices}" }
 
 /// The number at `at` in `octets`, moving `at` past it.
 fn number_from(octets: Bytes, at: Cell<int>) -> int {

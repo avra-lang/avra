@@ -9,13 +9,13 @@ use @std.meta.{
     Declared,
     Decls,
     Diagnostic,
-    Directive,
     Stmts,
     Field,
     Kind,
     Type as MetaType,
     Variant as MetaVariant,
     as_code,
+    beside,
     int_node,
     name,
     refuse,
@@ -34,7 +34,8 @@ use saved_layout.{
     saved_map,
     saved_root_record,
 }
-use value_shapes.{FieldRole, Reading, ValueShape}
+use defect.{defect}
+use value_shapes.{FieldRole, Reading, ValueShape, Wrapper}
 
 /// What generated code calls the writer it's handed. Saved fields are spliced into templates
 /// written elsewhere, so it's bound and read through a hole.
@@ -67,9 +68,7 @@ fn saved_reading() -> Reading { Reading { declared: type_named, role: (_f: Field
 fn holds_an_id(shape: ValueShape) -> bool {
     match shape {
         .Id(_, _, _) -> true,
-        .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> holds_an_id(inner),
-        .Entries(key, value) or .Sides(key, value) -> holds_an_id(key) || holds_an_id(value),
-        .Int or .Float or .Bool or .Text or .Octets or .Declared(_, _) -> false,
+        .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) -> shape.children().any((child) -> holds_an_id(child)),
     }
 }
 
@@ -78,16 +77,7 @@ export trait Saved {
     static fn derive(t: MetaType) -> Declared {
         let problems = [no_bytes(t.name, f) for f in every_field(t) if saved_shape(f.kind) == null]
         if !problems.is_empty() { return Declared { made: [], problems: problems } }
-        Declared {
-            made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote { impl ${t} { ${saved_methods(t)} } },
-                },
-            ],
-        }
+        Declared { made: [beside(t, quote { impl ${t} { ${saved_methods(t)} } })] }
     }
 }
 
@@ -206,23 +196,28 @@ fn saved_form(shape: ValueShape) -> SavedForm {
         },
         .Entries(key, value) -> entries_form(key, value),
         .Sides(ok, err) -> sides_form(ok, err),
-        .Celled(inner) -> SavedForm {
-            written: (value: Code) -> slot_written(inner, quote { ${value}.get() }),
-            read: (node: Code, slot: Code) -> quote { Cell.new(${slot_read(inner, node, slot)}) },
-        },
-        .Renamed(type_name, over) -> SavedForm {
-            written: (value: Code) -> slot_written(over, quote { ${value}.of }),
-            read: (node: Code, slot: Code) -> quote { ${type_name}(${slot_read(over, node, slot)}) },
-        },
+        .Celled(_) or .Renamed(_, _) -> wrapped_form(shape.wrapper()!),
         .Optional(inner) -> if rides_a_record(inner) { optional_record_form(inner) } else { optional_child_form(inner) },
         .Declared(type_name, _) -> SavedForm {
             written: (value: Code) -> quote { SavedSlot.Child(${value}.written_into(${writer_code()})) },
             read: (node: Code, slot: Code) -> quote { ${name(type_name)}.read_from(${node}.record_at(${slot})!) },
         },
-        .Id(_, _, _) -> SavedForm {
-            written: (_value: Code) -> quote { an_id_has_no_saved_form() },
-            read: (_node: Code, _slot: Code) -> quote { an_id_has_no_saved_form() },
-        },
+        .Id(_, _, _) -> no_form_for_an_id(),
+    }
+}
+
+/// `Saved` refuses an id before it writes anything, so reaching for its form is the derive's own
+/// mistake.
+fn no_form_for_an_id() -> SavedForm {
+    defect(an_id_reached_a_form())
+    SavedForm { written: (value: Code) -> value, read: (node: Code, _slot: Code) -> node }
+}
+
+/// A cell or a name over a shape is saved as what it wraps.
+fn wrapped_form(w: Wrapper) -> SavedForm {
+    SavedForm {
+        written: (value: Code) -> slot_written(w.inner, (w.opened)(value)),
+        read: (node: Code, slot: Code) -> (w.closed)(slot_read(w.inner, node, slot)),
     }
 }
 
@@ -340,6 +335,8 @@ export fn saved_fields(bytes: Bytes) -> SavedRecord { saved_root_record(SavedSou
 export fn read_saved_list<T>(items: SavedList, read: fn(SavedList, int) -> T) -> List<T> {
     [read(items, position) for position in 0..items.length]
 }
+
+fn an_id_reached_a_form() -> string { "an id reached `Saved`'s forms, though `Saved` refuses every field holding one" }
 
 fn no_bytes(type_name: string, f: Field) -> Diagnostic {
     refuse(

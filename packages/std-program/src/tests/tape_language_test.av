@@ -1,0 +1,54 @@
+// A field a node's value holds and its tape doesn't is read back as its default, or fresh from the
+// tree when its type says the tree mints it; a field neither makes is refused by name.
+use @std.meta.{Annotation, Code, Field, Kind, Type as MetaType}
+use tape_derive.{TapeLanguage, TreeVerbs, taped_declared}
+use value_shapes.{FieldRole, Reading}
+
+fn field(name: string, kind: Kind) -> Field { Field { name: name, ty: kind.spelled(), at: null, kind: kind } }
+
+fn record(name: string, fields: List<Field>) -> MetaType {
+    MetaType { name: name, fields: fields, variants: [], at: null, module: "m" }
+}
+
+/// `@made_by("seat") type m.Seat = { index: int }`
+fn seat() -> MetaType {
+    record("Seat", [field("index", Kind.Int)]) with { annotations: [Annotation { name: "made_by", args: ["seat"], at: null }] }
+}
+
+fn declared(name: string) -> MetaType? { if name == "Seat" { seat() } else { null } }
+
+/// A language that keeps `off` off its tapes.
+fn role_of(f: Field) -> FieldRole { if f.name == "off" { .Carried } else { .Written } }
+
+fn unchanged(code: Code, _node: string) -> Code { code }
+
+fn language() -> TapeLanguage {
+    TapeLanguage {
+        tree: "Tree",
+        reading: Reading { declared: declared, role: role_of },
+        verbs: TreeVerbs {
+            node: (_tree: Code, id: Code, node: string) -> unchanged(id, node),
+            place: (_tree: Code, id: Code, node: string) -> unchanged(id, node),
+            added: (_tree: Code, node: Code, _place: Code, name: string) -> unchanged(node, name),
+        },
+    }
+}
+
+fn refusals(off: Field) -> List<string> {
+    [d.message for d in taped_declared(record("Node", [field("kept", Kind.Int), off]), language()).problems]
+}
+
+spec "a field the tape doesn't hold" {
+    given "no default, and a type the tree doesn't mint" {
+        then "the derive refuses it, naming it" {
+            let words = refusals(field("off", Kind.Int))
+            words.length == 1 && words[0].contains("`Node.off`")
+        }
+    }
+    given "a default" {
+        then "nothing is refused" { refusals(field("off", Kind.Int) with { default: quote { 0 } }).is_empty() }
+    }
+    given "a type marked `@made_by` the tree" {
+        then "nothing is refused" { refusals(field("off", Kind.Named("Seat", []))).is_empty() }
+    }
+}

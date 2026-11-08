@@ -1,12 +1,43 @@
 // A tree in the shape a compiler's is: nodes in an arena, gathered into one enum, each writing itself
 // to a tape through a derive that any language could write.
 use @std.meta.{Named, derive}
-use syntax_tape.{TapeWriter}
+use syntax_tape.{TapePlace, TapeReader, TapeWriter}
+use value_shapes.{indexes}
 use tape_schema.{FieldSchema, Holds, Lying, TypeSchema, VariantSchema, Wrapping}
 
-export type TinyTree = { nodes: List<TinyNode> }
+/// An identity: every holder of a tree reads and adds to the one arena, each node beside where it
+/// was written.
+export type TinyTree = { nodes: Cell<List<TinyNode>>, places: Cell<List<TapePlace?>> }
+
+/// A tree of `nodes`, each written one byte wide at its own index.
+export fn tiny_tree(nodes: List<TinyNode>) -> TinyTree {
+    TinyTree { nodes: Cell.new(nodes), places: Cell.new([written_at(at) for at, _node in nodes]) }
+}
+
+fn written_at(offset: int) -> TapePlace? { TapePlace { offset: offset, width: 1 } }
+
+impl TinyTree {
+    fn node(index: int) -> TinyNode { self.nodes.get()[index] }
+
+    fn place(index: int) -> TapePlace? { self.places.get()[index] }
+
+    fn all() -> List<TinyNode> { self.nodes.get() }
+
+    fn all_places() -> List<TapePlace?> { self.places.get() }
+
+    /// `node` put in the tree where it was written, and its id.
+    fn added(node: TinyNode, place: TapePlace?) -> TinyId {
+        self.nodes.push(node)
+        self.places.push(place)
+        TinyId { index: self.nodes.get().length - 1 }
+    }
+}
 
 export fn tiny_node(_t: Named) {}
+
+/// A node's number in its tree, which on a tape is the node itself, placed where it was written.
+@indexes(TinyNode)
+export type TinyId = { index: int }
 
 @derive(TinyRoot)
 export collect enum TinyNode = @tiny_node in package by it.name
@@ -43,11 +74,13 @@ export type Shapes = {
 
 /// A value with no bytes, which is allowed on a node.
 @tiny_node
-export type Opaque = { act: fn(int) -> int, after: int }
+export type Opaque = { act: fn(int) -> int = unchanged, after: int }
+
+fn unchanged(n: int) -> int { n }
 
 /// A field a language keeps off the tape.
 @tiny_node
-export type Marked = { kept: int, unwritten: int }
+export type Marked = { kept: int, unwritten: int = 0 }
 
 @derive(Taped)
 export enum Side {

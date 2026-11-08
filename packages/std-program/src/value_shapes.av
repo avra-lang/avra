@@ -6,11 +6,15 @@
 //! entries, a result's sides. A declared record or enum writes itself. An id marked
 //! `@indexes(Node)` stands for the node it names. A value with no bytes, as a fn or a pointer has
 //! none, has no shape.
-use @std.meta.{Field, Kind, Named, Type as MetaType, Variant as MetaVariant}
+use @std.meta.{Code, Field, Kind, Named, Type as MetaType, Variant as MetaVariant}
 
 /// Marks a dense id: a value of it names one node of `node`, declared in the id's own module, so
 /// whatever writes the id down writes that node.
 export fn indexes(_t: MetaType, _node: Named) {}
+
+/// Marks a value a tree mints, as a seat's identity is: a field of it kept off a tape is read back
+/// as `tree.<verb>()`, a fresh one.
+export fn made_by(_t: MetaType, _verb: string) {}
 
 /// What a value is made of.
 export enum ValueShape {
@@ -105,7 +109,53 @@ impl Reading {
         match self.role_of(f) { .Written or .Carried -> true, .Apart -> false }
     }
 
+    /// The fields a variant's value holds, in order: what's written down and what's carried.
+    fn carried_fields(v: MetaVariant) -> List<Field> { [f for f in v.fields if self.is_carried(f)] }
+
     fn role_of(f: Field) -> FieldRole { (self.role)(f) }
+
+    /// The tree's verb minting a value of `kind`, absent unless its type is marked `@made_by`.
+    fn made_by(kind: Kind) -> string? {
+        let declared? = self.declared_kind(kind) else { return null }
+        marked(declared, "made_by")
+    }
+
+    fn declared_kind(kind: Kind) -> MetaType? {
+        match kind { .Named(type_name, _) -> self.declaration_of(type_name), rest -> null }
+    }
+}
+
+/// A cell, or a name over a shape, which adds nothing to how a value is written down: what it
+/// wraps, generated code reading the wrapped value through it, and making one around a value.
+export type Wrapper = { inner: ValueShape, opened: fn(Code) -> Code, closed: fn(Code) -> Code }
+
+impl ValueShape {
+    /// The wrapper this shape is, absent for any other.
+    fn wrapper() -> Wrapper? {
+        match self {
+            .Celled(inner) -> Wrapper {
+                inner: inner,
+                opened: (value: Code) -> quote { ${value}.get() },
+                closed: (value: Code) -> quote { Cell.new(${value}) },
+            },
+            .Renamed(type_name, over) -> Wrapper {
+                inner: over,
+                opened: (value: Code) -> quote { ${value}.of },
+                closed: (value: Code) -> quote { ${type_name}(${value}) },
+            },
+            .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> null,
+        }
+    }
+
+    /// The shapes this one is made of: none for a plain value, nor for a declared one, which writes
+    /// itself.
+    fn children() -> List<ValueShape> {
+        match self {
+            .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> [inner],
+            .Entries(key, value) or .Sides(key, value) -> [key, value],
+            .Int or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) -> [],
+        }
+    }
 }
 
 impl ShapedField {
@@ -122,10 +172,13 @@ impl ShapedVariant {
 }
 
 /// The node a dense id names, absent for any other type.
-fn node_indexed(declared: MetaType) -> string? { declared.annotations.find(it.name == "indexes")?.args?.first() }
+fn node_indexed(declared: MetaType) -> string? { marked(declared, "indexes") }
+
+/// The first argument of a marker on a declaration, absent when it isn't marked.
+fn marked(declared: MetaType, marker: string) -> string? { declared.annotations.find(it.name == marker)?.args?.first() }
 
 /// A declared record's one variant, or an enum's variants.
-fn declared_variants(t: MetaType) -> List<MetaVariant> {
+export fn declared_variants(t: MetaType) -> List<MetaVariant> {
     if t.variants.is_empty() { [MetaVariant { name: t.name, payload: [], at: null, fields: t.fields }] } else { t.variants }
 }
 

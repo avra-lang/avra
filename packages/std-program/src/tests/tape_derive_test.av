@@ -1,19 +1,22 @@
 // Nodes writing themselves to a tape through the generated body, read back in the order the schema
-// says: the variant, the flags, then each field, a node's children parents first.
+// says: the variant, the flags, then each field, a node's children parents first. Then whole trees
+// read back through the generated reader, which writes the same tape again.
+use answer_record.{content_hash}
 use syntax_tape.{TapeReader, TapeWriter, tape_reader, tape_writer}
 use tape_schema.{TypeSchema}
-use tests.support.tiny_tree.{TinyNode, TinyTree}
-use tests.support.tiny_taped.{Taped, TinyId}
+use tests.support.tiny_tree.{TinyId, TinyNode, TinyTree, tiny_tree}
+use tests.support.tiny_taped.{Taped}
 
 fn id(index: int) -> TinyId { TinyId { index: index } }
 
 fn leaf(number: int) -> TinyNode { .Leaf(number, "x", 1.5, true) }
 
-/// The tape of a tree, written from its last node.
-fn tape_of(nodes: List<TinyNode>) -> TapeWriter {
-    let tree = TinyTree { nodes: nodes }
+/// The tape of a tree of `nodes`, written from its last node.
+fn tape_of(nodes: List<TinyNode>) -> TapeWriter { written_from(tiny_tree(nodes)) }
+
+fn written_from(tree: TinyTree) -> TapeWriter {
     mut tape = tape_writer()
-    id(nodes.length - 1).taped(tree, tape)
+    TinyNode.taped_id(tree, tape, id(tree.all().length - 1))
     tape
 }
 
@@ -39,6 +42,26 @@ fn is_leaf(tape: TapeReader, number: int) -> bool {
 
 fn means_the_same(a: List<TinyNode>, b: List<TinyNode>) -> bool {
     tape_of(a).finished().meaning_hash.same_as(tape_of(b).finished().meaning_hash)
+}
+
+/// The tree a tape reads back into: each node put in as it's read, the root last.
+fn read_into_tree(nodes: List<TinyNode>) -> TinyTree {
+    let tree = tiny_tree([])
+    let _ = TinyNode.untaped_id(tree, read_back(nodes))
+    tree
+}
+
+/// Whether the tree read back from a tape writes the same tape, every node where it was, with every
+/// octet read.
+fn round_trips(nodes: List<TinyNode>) -> bool {
+    let tape = read_back(nodes)
+    let tree = tiny_tree([])
+    let _ = TinyNode.untaped_id(tree, tape)
+    let first = tape_of(nodes).finished()
+    let again = written_from(tree).finished()
+    tape.is_done() &&
+        again.meaning_hash.same_as(first.meaning_hash) &&
+        content_hash(again.places.places).same_as(content_hash(first.places.places))
 }
 
 fn runs(plain_a: List<int>, plain_b: List<int>, nodes_a: List<TinyId>, nodes_b: List<TinyId>) -> List<
@@ -141,6 +164,34 @@ spec "a generated node" {
         then "it leaves nothing" {
             let tape = read_back([.Marked(6, 7)])
             is_next(tape, "Marked") && tape.int() == 6 && tape.is_done()
+        }
+    }
+    given "a tree read back from its tape" {
+        then "a leaf's every field comes back" {
+            match read_into_tree([leaf(7)]).node(0) {
+                .Leaf(number, label, ratio, ready) -> number == 7 && label == "x" && ratio == 1.5 && ready,
+                _ -> false,
+            }
+        }
+        then "a pair writes the same tape again" { round_trips([leaf(1), leaf(2), .Pair(id(0), id(1))]) }
+        then "names over plain values, an absent one, and a list of them" {
+            round_trips([leaf(1), .Labelled("a", null, ["b", "a"], id(0))])
+        }
+        then "an absent child, a list, an enum with a payload and optional values" {
+            round_trips([leaf(1), .Group(null, [id(0)], .Far(9), ["a", null], 5)])
+        }
+        then "a present child, empty lists and an enum without one" {
+            round_trips([leaf(1), .Group(id(0), [], .Near, [], null)])
+        }
+        then "runs of values and of nodes" { round_trips(runs([1, 2], [3], [id(0)], [id(0)])) }
+        then "cells, maps, each side of a result, and octets" {
+            round_trips(shapes(.Ok(id(0)))) && round_trips(shapes(.Err("no")))
+        }
+        then "a field kept off the tape comes back as its default" {
+            match read_into_tree([.Marked(6, 7)]).node(0) {
+                .Marked(kept, unwritten) -> kept == 6 && unwritten == 0,
+                _ -> false,
+            }
         }
     }
 }
