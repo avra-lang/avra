@@ -17,7 +17,10 @@ use saved_layout.{SavedList, SavedRecord, SavedSlots, float_bits, float_of_bits}
 use sorted.{sorted_by}
 
 /// The flags one number holds.
-const FLAGS_PER_NUMBER: int = 63
+export const FLAGS_PER_NUMBER: int = 63
+
+/// Where flag `bit` sits in its number, the first lowest.
+export fn flag_mask(bit: int) -> int { 1.wrapping_shl(bit % FLAGS_PER_NUMBER) }
 
 const LARGEST_INT: int = 9223372036854775807
 
@@ -155,7 +158,7 @@ impl TapeWriter {
         for first in 0..numbers_holding(values.length) {
             self
                 .count(
-                    [1.wrapping_shl(bit % FLAGS_PER_NUMBER) for bit, set in values if set && bit / FLAGS_PER_NUMBER == first]
+                    [flag_mask(bit) for bit, set in values if set && bit / FLAGS_PER_NUMBER == first]
                         .sum(),
                 )
         }
@@ -315,7 +318,7 @@ impl TapeReader {
     /// `length` flags, as `TapeWriter.flags` wrote them.
     fn flags(length: int) -> List<bool> {
         let numbers = [self.count() for _number in 0..numbers_holding(length)]
-        [(numbers[bit / FLAGS_PER_NUMBER] >> bit % FLAGS_PER_NUMBER) & 1 == 1 for bit in 0..length]
+        [numbers[bit / FLAGS_PER_NUMBER] & flag_mask(bit) != 0 for bit in 0..length]
     }
 
     fn text() -> string { self.texts[self.count()] }
@@ -344,9 +347,15 @@ fn unknown_choice(at: int, choices: int) -> string { "a tape holds variant ${at}
 
 /// The number at `at` in `octets`, moving `at` past it.
 fn number_from(octets: Bytes, at: Cell<int>) -> int {
+    let from = at.get()
+    let first = octets.at(from)
+    if first < 128 {
+        at.set(from + 1)
+        return first
+    }
     mut value = 0
     mut shift = 0
-    mut position = at.get()
+    mut position = from
     while octets.at(position) >= 128 {
         value = value | (octets.at(position) & 127).wrapping_shl(shift)
         shift = shift + 7

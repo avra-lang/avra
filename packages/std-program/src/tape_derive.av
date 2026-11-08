@@ -18,6 +18,7 @@ use @std.meta.{
     name,
     refuse,
 }
+use syntax_tape.{FLAGS_PER_NUMBER, flag_mask}
 use tape_schema.{Holds, Lying, FieldSchema, TypeSchema, VariantSchema, Wrapping}
 use value_shapes.{
     Reading,
@@ -211,11 +212,12 @@ fn laid(reading: Reading, declared: MetaVariant, held: List<Field>, v: ShapedVar
     let forms = [led_of(f) for f in v.fields]
     let numbers = [[form for form in forms.take(at) if form != null].length for at, _form in forms]
     let fields = [LaidField { shaped: f, led: led_numbered(forms[at], numbers[at]) } for at, f in v.fields]
+    let flag_count = [form for form in forms if form != null].length
     Layout {
         declared: declared,
-        held: [Held { field: f, read: held_read(reading, fields, f) } for f in held],
+        held: [Held { field: f, read: held_read(reading, fields, flag_count, f) } for f in held],
         fields: fields,
-        flag_count: [form for form in forms if form != null].length,
+        flag_count: flag_count,
     }
 }
 
@@ -238,9 +240,19 @@ fn fields_written(values: List<Code>, layout: Layout) -> List<Stmts> {
 }
 
 /// The statement reading a variant's flags, when it has any.
+/// Flags that fit one number are read as it, and tested bit by bit.
 fn flags_read(layout: Layout) -> List<Stmts> {
     if layout.flag_count == 0 { return [] }
+    if in_one_number(layout.flag_count) { return [quote { let ${FLAGS_NAME} = ${tape()}.count() }] }
     [quote { let ${FLAGS_NAME} = ${tape()}.flags(${layout.flag_count}) }]
+}
+
+fn in_one_number(flag_count: int) -> bool { flag_count <= FLAGS_PER_NUMBER }
+
+/// Generated code reading flag `number` of a variant's `flag_count`.
+fn flag_read(flag_count: int, number: int) -> Code {
+    if in_one_number(flag_count) { return quote { (${name(FLAGS_NAME)} & ${flag_mask(number)}) != 0 } }
+    quote { ${name(FLAGS_NAME)}[${number}] }
 }
 
 /// Statements that say something, so a block of them is never read as an empty map.
@@ -258,11 +270,11 @@ fn field_written(f: LaidField, value: Code) -> List<Stmts> {
 
 /// A field's value read back: a flagged one from its flag, the rest whole, and one the tape doesn't
 /// hold, being carried or having no bytes, made without it.
-fn held_read(reading: Reading, fields: List<LaidField>, f: Field) -> Code? {
+fn held_read(reading: Reading, fields: List<LaidField>, flag_count: int, f: Field) -> Code? {
     let laid? = fields.find(it.shaped.field.name == f.name) else { return unheld_value(reading, f) }
     let shape? = laid.shaped.shape else { return unheld_value(reading, f) }
     let led? = laid.led else { return read(shape, 0) }
-    (led.form.rest_read)(quote { ${name(FLAGS_NAME)}[${led.number}] })
+    (led.form.rest_read)(flag_read(flag_count, led.number))
 }
 
 /// A field the tape doesn't hold, read back: its default, or a fresh one from the tree when its
