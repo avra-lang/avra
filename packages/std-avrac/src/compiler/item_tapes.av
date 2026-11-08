@@ -2,29 +2,41 @@
 //! own text, its refusals among what it keeps, and a file's tree put back together from its items'
 //! tapes.
 use core.{SyntaxArena, Stmt, StmtId, new_node_store}
+use diagnostics.{new_source_file}
 use grammar.{avra_lexeme, lex_source}
-use @std.program.address.{SourceFileAddress}
-use @std.program.source_facts.{PlacedTape, SourceWorld}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition}
+use @std.program.source_facts.{PlacedTape, SourceWorld, source_fact_definitions}
 use @std.program.syntax_tape.{SyntaxTape, tape_reader, tape_writer}
 use @std.program.token_columns.{TokenColumns, token_columns}
 
-/// Avra as the program layer reads it: files from `read_file`, under the reader `language_print`.
-export fn avra_source_world(read_file: fn(SourceFileAddress) -> string?, language_print: string) -> SourceWorld {
+/// Avra as the program layer reads it: files from `read_file`, directories from `list_directory`,
+/// under the reader `language_print`.
+export fn avra_source_world(
+    read_file: fn(SourceFileAddress) -> string?,
+    list_directory: fn(DirectoryAddress) -> List<string>?,
+    language_print: string,
+) -> SourceWorld {
     SourceWorld {
         read_file: read_file,
+        list_directory: list_directory,
         language_print: language_print,
         columns_in: avra_columns,
+        context_of: avra_context,
         item_tape: avra_item_tape,
     }
 }
 
+/// The queries Avra's world reads through, for a process to hand its engine.
+export fn avra_fact_definitions() -> List<QueryDefinition> { source_fact_definitions().concat(context_fact_definitions()) }
+
 /// A text's tokens, as Avra's grammar says they work.
 export fn avra_columns(text: string) -> TokenColumns { token_columns(text, lex_source(text).tokens, avra().roles, avra_lexeme()) }
 
-/// One item's tree on a tape, read from its text alone: its statements, then what its file keeps
-/// of it, its refusals among them.
-export fn avra_item_tape(item_text: string) -> SyntaxTape {
-    let parsed = parse_source(item_text)
+/// One item's tree on a tape, read from its text under its file's words: its statements, then
+/// what its file keeps of it, its refusals among them.
+export fn avra_item_tape(item_text: string, context: Bytes) -> SyntaxTape {
+    let parsed = parse_program(avra(), new_source_file("<item>", item_text), context_words(context))
     mut tape = tape_writer()
     tape.count(parsed.stmts.length)
     for s in parsed.stmts { Stmt.taped_id(parsed.store, tape, s) }

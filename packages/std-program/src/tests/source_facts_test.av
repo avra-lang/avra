@@ -1,16 +1,19 @@
 // Source facts over a small real grammar. `ka=b` declares `a`, `fa{w}` declares `a` with a body,
 // `ha{…}` holds members, `;` ends an item, `~` is a comment's text. What's held is who reruns when
 // a file changes.
-use address.{SourceFileAddress}
+use address.{DirectoryAddress, SourceFileAddress}
 use answer_record.{ContentHash}
 use query_engine.{QueryEngine, query_engine}
 use saved_query.{query, query_definition}
 use source_facts.{
     ItemAspect,
+    PlacedTape,
     SourceWorld,
     declaration_part,
     declared_part_names,
     file_tapes,
+    listed,
+    source_text,
     item_hash,
     item_places,
     source_fact_definitions,
@@ -27,39 +30,76 @@ once fn files() -> Cell<Map<string, string>> {
 
 fn read_held(file: SourceFileAddress) -> string? { files().get().get(file.path_in_package) }
 
-fn set_world(language: string) {
-    use_source_world(
-        SourceWorld {
-            read_file: read_held,
-            language_print: language,
-            columns_in: spelled_columns,
-            item_tape: untaped,
-        },
-    )
+/// A package's root lists the names of every file held.
+fn list_held(dir: DirectoryAddress) -> List<string>? { if dir.path_in_package == "" { files().get().keys() } else { null } }
+
+fn world(
+    language: string,
+    context_of: fn(QueryEngine, SourceFileAddress) -> Bytes,
+    item_tape: fn(string, Bytes) -> SyntaxTape,
+) -> SourceWorld {
+    SourceWorld {
+        read_file: read_held,
+        list_directory: list_held,
+        language_print: language,
+        columns_in: spelled_columns,
+        context_of: context_of,
+        item_tape: item_tape,
+    }
+}
+
+fn set_world(language: string) { use_source_world(world(language, no_context, untaped)) }
+
+fn no_bytes() -> Bytes {
+    let none: List<int> = []
+    none.bytes()!
+}
+
+/// A language whose items read under nothing but their text.
+fn no_context(_engine: QueryEngine, _file: SourceFileAddress) -> Bytes { no_bytes() }
+
+/// A language whose items read under `ctx.x`'s text and the names its package holds.
+fn held_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes {
+    let named = source_text(engine, file_at("ctx.x")) ?? ""
+    let names = listed(
+        engine,
+        DirectoryAddress { package_name: file.package_name, path_in_package: "" },
+    ) ?? []
+    "${named}|${names.join(",")}".bytes()
 }
 
 /// A world whose tests read no tapes: every item's is empty.
-fn untaped(_item_text: string) -> SyntaxTape { tape_writer().finished() }
+fn untaped(_item_text: string, _context: Bytes) -> SyntaxTape { tape_writer().finished() }
 
-/// A world whose tape of an item holds the item's text, so a test sees how a file was cut.
-fn text_taped(item_text: string) -> SyntaxTape {
+/// How many items a test's world has read.
+once fn reads() -> Cell<int> { Cell.new(0) }
+
+/// A world whose tape of an item holds the item's text and its context, so a test sees how a file
+/// was cut and what it was read under.
+fn text_taped(item_text: string, context: Bytes) -> SyntaxTape {
+    reads().set(reads().get() + 1)
     mut tape = tape_writer()
     tape.text(item_text)
+    tape.octets(context)
     tape.finished()
 }
 
 /// The texts a file was cut into, in order.
 fn item_texts(path: string, text: string) -> List<string> {
-    use_source_world(
-        SourceWorld {
-            read_file: read_held,
-            language_print: "v1",
-            columns_in: spelled_columns,
-            item_tape: text_taped,
-        },
-    )
+    use_source_world(world("v1", no_context, text_taped))
     files().put(path, text)
     [tape_reader(p.tape).text() for p in file_tapes(process(store_in_memory()), file_at(path))]
+}
+
+/// What each of a file's items was read under, in order.
+fn contexts_read(engine: QueryEngine, path: string) -> List<string> {
+    [context_text(p) for p in file_tapes(engine, file_at(path))]
+}
+
+fn context_text(p: PlacedTape) -> string {
+    let reader = tape_reader(p.tape)
+    let _ = reader.text()
+    reader.octets().text() ?? ""
 }
 
 fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: "@test/p", path_in_package: path } }
@@ -94,7 +134,7 @@ fn process(store: StoreInMemory) -> QueryEngine {
 fn ran_asking(store: StoreInMemory, ask: fn(QueryEngine) -> int) -> int {
     let engine = process(store)
     let _ = ask(engine)
-    engine.computed_count.get()
+    engine.computed_count()
 }
 
 fn ran_reading_signature(store: StoreInMemory, path: string) -> int {
@@ -202,7 +242,7 @@ spec "source_facts — who reruns when a file changes" {
             first.join(",") == "a#0" &&
                 same.join(",") == "a#0" &&
                 added.join(",") == "a#0,b#0" &&
-                body_changed.computed_count.get() == 4
+                body_changed.computed_count() == 4
         }
     }
     given "members of a holder" {
@@ -274,5 +314,42 @@ spec "source_facts — a file's items partition its text" {
     }
     given "an empty file" {
         then "it is one empty item" { item_texts("empty.x", "").length == 1 }
+    }
+}
+
+spec "source_facts — an item reads under its file's context" {
+    given "a context made of another file and a listing" {
+        then "an item's tape holds what it was read under" {
+            use_source_world(world("v1", held_context, text_taped))
+            files().set({"a.x": "ka=b", "ctx.x": "one"})
+            contexts_read(process(store_in_memory()), "a.x").join(";") == "one|a.x,ctx.x"
+        }
+        then "the other file changed, an unchanged item is read again under the new context" {
+            use_source_world(world("v1", held_context, text_taped))
+            files().set({"a.x": "ka=b", "ctx.x": "one"})
+            let store = store_in_memory()
+            let _ = contexts_read(process(store), "a.x")
+            files().put("ctx.x", "two")
+            contexts_read(process(store), "a.x").join(";") == "two|a.x,ctx.x"
+        }
+        then "a file added to the listing it reads, it's read again" {
+            use_source_world(world("v1", held_context, text_taped))
+            files().set({"a.x": "ka=b", "ctx.x": "one"})
+            let store = store_in_memory()
+            let _ = contexts_read(process(store), "a.x")
+            files().put("b.x", "kc=d")
+            contexts_read(process(store), "a.x").join(";") == "one|a.x,b.x,ctx.x"
+        }
+    }
+    given "two files saying one item under one context" {
+        then "it's read once" {
+            use_source_world(world("v1", no_context, text_taped))
+            files().set({"a.x": "ka=b", "b.x": "ka=b"})
+            reads().set(0)
+            let engine = process(store_in_memory())
+            let _ = file_tapes(engine, file_at("a.x"))
+            let _ = file_tapes(engine, file_at("b.x"))
+            reads().get() == 1
+        }
     }
 }

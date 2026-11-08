@@ -4,7 +4,7 @@
 //! standing; the list of part names, which moves only when an item is added, removed or renamed;
 //! and where each item sits, which moves with anything above it and is read by nothing that only
 //! wants to know what an item says.
-use address.{SourceFileAddress}
+use address.{DirectoryAddress, SourceFileAddress}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{ContentHash}
 use item_hashes.{HashedItem, hashed_items}
@@ -14,6 +14,8 @@ use saved_derive.{Saved}
 use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
 use source_items.{item_name, source_items}
 use syntax_tape.{SyntaxTape}
+use sorted.{sorted_by}
+use @std.text.{text_before}
 use token_columns.{TokenColumns}
 
 /// Where sources come from and how they're read.
@@ -22,10 +24,15 @@ export type SourceWorld = {
     read_file: fn(SourceFileAddress) -> string?,
     /// Names the language's reader, so answers from another version of it are never reused.
     language_print: string,
+    /// The names in a directory of a package, absent when there's none.
+    list_directory: fn(DirectoryAddress) -> List<string>?,
     /// A text's tokens, as its language's grammar says they work.
     columns_in: fn(string) -> TokenColumns,
-    /// One item's tree on a tape, read from its own text alone.
-    item_tape: fn(string) -> SyntaxTape,
+    /// What reading a file's items depends on besides their text, as the language says it, asked
+    /// with the engine so every read it makes is recorded.
+    context_of: fn(QueryEngine, SourceFileAddress) -> Bytes,
+    /// One item's tree on a tape, read from its own text under its file's context.
+    item_tape: fn(string, Bytes) -> SyntaxTape,
 }
 
 once fn world_cell() -> Cell<SourceWorld?> {
@@ -42,9 +49,18 @@ fn current_world() -> SourceWorld { world_cell().get()! }
 @input
 fn language_print(_engine: QueryEngine) -> string { current_world().language_print }
 
+/// A file's text, absent when there's none.
 @input
-fn source_text(_engine: QueryEngine, file: SourceFileAddress) -> string? {
+export fn source_text(_engine: QueryEngine, file: SourceFileAddress) -> string? {
     (current_world().read_file)(file)
+}
+
+/// The names in a directory, absent when there's none, in one order whatever order the host
+/// lists them in.
+@input
+export fn listed(_engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
+    let names? = (current_world().list_directory)(dir) else { return null }
+    sorted_by(names, text_before)
 }
 
 /// One item: what its part is called, and the hashes of what it says.
@@ -173,39 +189,52 @@ export fn item_hash(
     ContentHash.from_saved_bytes(saved)
 }
 
-/// An item's tape, keyed by its exact bytes, so an item that reads the same anywhere, in any
-/// file, is read once.
+/// What reading a file's items depends on besides their text, as its language says it.
 @query
-export fn item_tape(engine: QueryEngine, item_text: string) -> SyntaxTape {
+export fn file_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes {
     let _ = language_print(engine)
-    (current_world().item_tape)(item_text)
+    (current_world().context_of)(engine, file)
+}
+
+/// An item's tape, keyed by its exact bytes and the context it's read under, so an item that
+/// reads the same under the same context, in any file, is read once.
+@query
+export fn item_tape(engine: QueryEngine, item_text: string, context: Bytes) -> SyntaxTape {
+    let _ = language_print(engine)
+    (current_world().item_tape)(item_text, context)
 }
 
 /// Where an item's text starts in its file, and its tape: its places count from there.
 @derive(Saved)
 export type PlacedTape = { start: int, tape: SyntaxTape }
 
-/// The tape of each item of a file, in order. Items partition the text: each runs from the end of
-/// the one before, so the docs and comments above it are its own, and the last runs to the file's
-/// end; a file with none is one item. So every byte, its header and its last comment among them,
-/// is on a tape. An unchanged file answers with no reading at all; an edited one is lexed again,
-/// and only the items whose bytes moved are read.
+/// Where one item's text starts and ends in its file.
+@derive(Saved)
+export type ItemSpan = { start: int, end: int }
+
+/// The items of a text, partitioning it: each runs from the end of the one before, so the docs and
+/// comments above it are its own, and the last runs to the text's end; a text with none is one
+/// item. So every byte, its header and its last comment among them, is some item's.
+export fn item_spans(columns: TokenColumns, text_length: int) -> List<ItemSpan> {
+    let item_ends = [item.end_in(columns) for item in source_items(columns)]
+    let starts = [0].concat(item_ends).take(if item_ends.is_empty() { 1 } else { item_ends.length })
+    [ItemSpan {
+        start: start,
+        end: if at + 1 < starts.length { starts[at + 1] } else { text_length },
+    } for at, start in starts]
+}
+
+/// The tape of each item of a file, in order, under the file's context (`item_spans`). An
+/// unchanged file answers with no reading at all; an edited one is lexed again, and only the items
+/// whose bytes moved are read.
 @query
 export fn file_tapes(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
     let text? = source_text(engine, file) else { return [] }
-    let columns = (current_world().columns_in)(text)
-    let item_ends = [item.end_in(columns) for item in source_items(columns)]
-    let starts = [0].concat(item_ends).take(if item_ends.is_empty() { 1 } else { item_ends.length })
-    [placed_tape(
-        engine,
-        text,
-        start,
-        if at + 1 < starts.length { starts[at + 1] } else { text.length },
-    ) for at, start in starts]
-}
-
-fn placed_tape(engine: QueryEngine, text: string, start: int, end: int) -> PlacedTape {
-    PlacedTape { start: start, tape: item_tape(engine, text.substring(start, end)) }
+    let context = file_context(engine, file)
+    [PlacedTape {
+        start: span.start,
+        tape: item_tape(engine, text.substring(span.start, span.end), context),
+    } for span in item_spans((current_world().columns_in)(text), text.length)]
 }
 
 /// What a file declares, each as the name of its part. Moves only when one is added, removed or renamed.

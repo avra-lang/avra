@@ -1,12 +1,13 @@
 // A file's items on tapes, through the program layer's engine and a store on disk: a later process
 // reads an unchanged file with no item read at all, an edited one reads only the items that moved,
 // and the tree put back together is the one a parse makes.
-use compiler.{avra_source_world, parse_source, read_back}
+use core.{distinct}
+use compiler.{ReadBack, avra_fact_definitions, avra_source_world, parse_source, read_back}
 use @std.io.{make_dirs}
-use @std.program.address.{SourceFileAddress}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
-use @std.program.source_facts.{PlacedTape, file_tapes, source_fact_definitions, use_source_world}
+use @std.program.source_facts.{PlacedTape, file_tapes, use_source_world}
 use @std.time.{stamp}
 
 once fn files() -> Cell<Map<string, string>> {
@@ -15,6 +16,16 @@ once fn files() -> Cell<Map<string, string>> {
 }
 
 fn read_held(file: SourceFileAddress) -> string? { files().get().get(file.path_in_package) }
+
+/// A directory's names: the held files directly in it, and the directories holding the rest.
+fn list_held(dir: DirectoryAddress) -> List<string>? {
+    let prefix = if dir.path_in_package.is_empty() { "" } else { "${dir.path_in_package}/" }
+    let under = [path.substring(prefix.length, path.length) for path in files().get().keys() if path.starts_with(prefix)]
+    if under.is_empty() { return null }
+    distinct(
+        [if rest.contains("/") { rest.substring(0, rest.index_of("/")) } else { rest } for rest in under],
+    )
+}
 
 fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: "@test/p", path_in_package: path } }
 
@@ -26,19 +37,19 @@ fn store_dir(name: string) -> string {
 }
 
 /// One process: its engine over the store at `dir`, the tapes it answers for `path`, then what it
-/// learned published. Answers how many queries ran.
-fn process(dir: string, path: string) -> int {
-    use_source_world(avra_source_world(read_held, "avra-test"))
+/// learned published. Answers the queries it ran, in order.
+fn process(dir: string, path: string) -> string {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
     let store = disk_store_at(dir)
-    let engine = query_engine(store, source_fact_definitions())
+    let engine = query_engine(store, avra_fact_definitions())
     let _ = file_tapes(engine, file_at(path))
     let _ = store.saved()
-    engine.computed_count.get()
+    engine.computed_queries().join(" ")
 }
 
 fn tapes_of(dir: string, path: string) -> List<PlacedTape> {
-    use_source_world(avra_source_world(read_held, "avra-test"))
-    file_tapes(query_engine(disk_store_at(dir), source_fact_definitions()), file_at(path))
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    file_tapes(query_engine(disk_store_at(dir), avra_fact_definitions()), file_at(path))
 }
 
 const THREE: string = "/// Adds.\nexport fn add(a: int, b: int) -> int { a + b }\n\nfn twice(x: int) -> int {\n    let y = add(x, x)\n    y\n}\n\ntype P = { x: int, y: string? = null }\n"
@@ -56,28 +67,83 @@ fn reads_back_as_parsed(dir: string, path: string) -> bool {
 
 spec "a file's items on tapes" {
     given "a file read once" {
-        then "the first process reads each of its three items, and a later one only its inputs" {
+        then "the first process reads its text, its words' shapes and each of its three items" {
+            files().set({"src/a.av": THREE})
+            process(store_dir("first"), "src/a.av") == "file_tapes source_text file_context language_print listed module_declared package_facts source_text source_text file_words item_tape item_tape item_tape"
+        }
+        then "a later process asks only its inputs: the file, its directory, its manifest and the module file it isn't" {
             let dir = store_dir("unchanged")
-            files().put("a.av", THREE)
-            let first = process(dir, "a.av")
-            first == 6 && process(dir, "a.av") == 2
+            files().set({"src/a.av": THREE})
+            let _ = process(dir, "src/a.av")
+            process(dir, "src/a.av") == "source_text language_print listed source_text source_text"
         }
     }
     given "one item's body edited" {
-        then "the file's tapes are made again, and only that item is read" {
+        then "the file's tapes and its words are made again, its words stand, and only that item is read" {
             let dir = store_dir("edited")
-            files().put("b.av", THREE)
-            let _ = process(dir, "b.av")
-            files().put("b.av", ONE_BODY_EDITED)
-            process(dir, "b.av") == 4
+            files().set({"src/b.av": THREE})
+            let _ = process(dir, "src/b.av")
+            files().put("src/b.av", ONE_BODY_EDITED)
+            process(dir, "src/b.av") == "source_text file_tapes language_print listed source_text source_text file_words item_tape"
         }
     }
     given "the tapes of a file" {
         then "they read back as the tree a parse makes" {
             let dir = store_dir("back")
-            files().put("c.av", THREE)
-            let _ = process(dir, "c.av")
-            reads_back_as_parsed(dir, "c.av")
+            files().set({"src/c.av": THREE})
+            let _ = process(dir, "src/c.av")
+            reads_back_as_parsed(dir, "src/c.av")
+        }
+    }
+}
+
+/// A component in another module, its fn's body `body`, with `head` written before its block.
+fn tally(head: string, body: string) -> string {
+    "export component tally${head} {\n    extra: int = 0\n    fn total() -> int {\n        ${body}\n    }\n}\n"
+}
+
+const CONSUMER: string = "use lib.{tally}\n\nfn f() -> int {\n    1\n}\n\ntally counter {\n    extra: 3\n}\n"
+
+/// The package with `tally` in `src/lib` and its consumer at `src/main.av`.
+fn tallied(provider: string) {
+    files().set({"src/lib/tally.av": provider, "src/main.av": CONSUMER})
+}
+
+/// The consumer's statements read back from its tapes.
+fn consumer_back(dir: string) -> ReadBack { read_back("src/main.av", tapes_of(dir, "src/main.av")) }
+
+spec "an item read under its file's words" {
+    given "a named instance of a record with no head, imported from another module" {
+        then "it reads as the binding of its name, meaning nothing until its component is at hand" {
+            tallied(tally("", "self.extra"))
+            let back = consumer_back(store_dir("shaped"))
+            let instance = back.stmts[back.stmts.length - 1]
+            back.store.let_name(instance) == "counter" &&
+                back.store.meant(back.store.stmt_value(instance)!) == null
+        }
+    }
+    given "the template's body edited" {
+        then "the provider's one item is read again, and the consumer's words and tapes stand" {
+            let dir = store_dir("body")
+            tallied(tally("", "self.extra"))
+            let _ = process(dir, "src/main.av")
+            tallied(tally("", "self.extra + 1"))
+            let ran = process(dir, "src/main.av").split(" ")
+            ran.filter(it == "item_tape").length == 1 &&
+                !ran.contains("file_context") &&
+                !ran.contains("file_tapes")
+        }
+    }
+    given "the component given a head" {
+        then "its words' shapes moved, so the instance is read again and no longer binds its name" {
+            let dir = store_dir("head")
+            tallied(tally("", "self.extra"))
+            let _ = process(dir, "src/main.av")
+            tallied(tally("(n: int)", "self.extra"))
+            let ran = process(dir, "src/main.av").split(" ")
+            let back = consumer_back(dir)
+            ran.contains("item_tape") &&
+                back.store.let_name(back.stmts[back.stmts.length - 1]) == null
         }
     }
 }

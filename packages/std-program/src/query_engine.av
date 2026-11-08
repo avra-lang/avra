@@ -67,20 +67,22 @@ export type QueryEngine = {
     settled_answers: HashKeyedTable<SettledAnswer>,
     /// The questions being answered now, innermost last.
     open_questions: Cell<List<OpenQuestion>>,
-    /// How many queries ran in this process, which is what a budget test counts.
-    computed_count: Cell<int>,
+    /// The query each question this process computed belongs to, in the order they ran: what a
+    /// budget test reads.
+    computed: Cell<List<string>>,
 }
 
 export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition>) -> QueryEngine {
     let by_name: Map<string, QueryDefinition> = {}
     let settled_answers: HashKeyedTable<SettledAnswer> = hash_keyed_table()
     let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
+    let computed: Cell<List<string>> = Cell.new([])
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
         settled_answers: settled_answers,
         open_questions: open_questions,
-        computed_count: Cell.new(0),
+        computed: computed,
     }
     for definition in definitions {
         if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
@@ -160,6 +162,12 @@ impl QueryEngine {
         part_in_saved_parts(self.answer_bytes_of(asked, answer), part_name)
     }
 
+    /// How many questions this process computed.
+    fn computed_count() -> int { self.computed.get().length }
+
+    /// The query of each question this process computed, in the order they ran.
+    fn computed_queries() -> List<string> { self.computed.get() }
+
     /// Runs the query, keeps what came out, and answers its hash.
     fn computed_answer(asked: Question) -> ContentHash {
         let reads: HashKeyedTable<RecordedRead> = hash_keyed_table()
@@ -185,8 +193,9 @@ impl QueryEngine {
         let outer = self.open_questions.get()
         if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked)) }
         self.open_questions.push(OpenQuestion { question: asked.known_as, reads: reads })
-        self.computed_count.set(self.computed_count.get() + 1)
-        let compute = self.definition_of(asked).compute
+        let definition = self.definition_of(asked)
+        self.computed.push(definition.query_name)
+        let compute = definition.compute
         let bytes = compute(self, asked.arguments)
         self.open_questions.set(outer)
         bytes
