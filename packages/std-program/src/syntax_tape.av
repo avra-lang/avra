@@ -11,6 +11,7 @@
 //! column with nothing in it costs nothing, and a search is a few loads.
 use answer_record.{ContentHash, content_hash}
 use defect.{defect}
+use dense_window.{DenseWindow, dense_window}
 use @std.meta.{derive}
 use saved_derive.{Saved}
 use saved_layout.{SavedList, SavedRecord, SavedSlots, float_bits, float_of_bits}
@@ -130,7 +131,12 @@ export type TapeWriter = {
     above: SectionWriter = SectionWriter {},
     place_facts: SectionWriter = SectionWriter {},
     only_bytes: bool = true,
+    /// Each kind of node met, and the number each of its nodes was written as.
+    written: List<WrittenNodes> = [],
 }
+
+/// The nodes of one kind on a tape: by each one's index in its tree, the number it was written as.
+type WrittenNodes = { kind: string, numbers: DenseWindow }
 
 export fn tape_writer(item_start: int = 0) -> TapeWriter { TapeWriter { item_start: item_start } }
 
@@ -202,6 +208,28 @@ impl TapeWriter {
         self.nodes_numbered = number + 1
         number
     }
+
+    /// The number the node at `index` of `kind` was written as, absent when it's not on the tape yet.
+    fn number_of(kind: string, index: int) -> int? {
+        let nodes? = self.written.find(it.kind == kind) else { return null }
+        nodes.numbers.get(index)
+    }
+
+    /// The node at `index` of `kind` is written as `number`, so a later mention of it refers to it.
+    fn wrote(kind: string, index: int, number: int) {
+        let nodes = self.written.find(it.kind == kind) ?? self.kind_met(kind)
+        nodes.numbers.put(index, number)
+    }
+
+    /// A kind of node met for the first time.
+    fn kind_met(kind: string) -> WrittenNodes {
+        let nodes = WrittenNodes { kind: kind, numbers: dense_window() }
+        self.written.push(nodes)
+        nodes
+    }
+
+    /// How far back the node numbered `number` stands from the next: one for the node just numbered.
+    fn back_to(number: int) -> int { self.nodes_numbered - number }
 
     /// Says something on the tree has no bytes, so this tape can't stand for it.
     fn met_no_bytes() { self.only_bytes = false }
@@ -288,7 +316,11 @@ export type TapeReader = {
     at: Cell<int> = Cell.new(0),
     place_at: Cell<int> = Cell.new(0),
     last_offset: Cell<int> = Cell.new(0),
+    /// By number, the index each node was made at, -1 while it's still being read.
+    made: Cell<List<int>> = Cell.new(no_nodes_made()),
 }
+
+fn no_nodes_made() -> List<int> { [] }
 
 /// A reader of `tape`, from its first node, for an item starting `item_start` bytes into its file.
 export fn tape_reader(tape: SyntaxTape, item_start: int = 0) -> TapeReader {
@@ -337,13 +369,30 @@ impl TapeReader {
         self.structure.slice(from, from + length)
     }
 
-    /// Where the next node standing for an id was written, absent when it has no place.
+    /// Where the next node standing for an id was written, absent when it has no place. Numbers it.
     fn place() -> TapePlace? {
+        self.made.push(0 - 1)
         let stored = number_from(self.places, self.place_at)
         if stored == 0 { return null }
         let offset = self.last_offset.get() + unzigzag(number_from(self.places, self.place_at))
         self.last_offset.set(offset)
         TapePlace { offset: self.item_start + offset, width: stored - 1 }
+    }
+
+    /// The number of the node whose place was read last.
+    fn numbered() -> int { self.made.get().length - 1 }
+
+    /// The node numbered `number` was made at `index`.
+    fn made_at(number: int, index: int) { self.made.set_at(number, index) }
+
+    /// The index of the node `back` numbers before the next, which a tape refers to again.
+    fn referred(back: int) -> int {
+        let made = self.made.get()
+        let number = made.length - back
+        if back < 1 || number < 0 { defect(no_node_back(back, made.length)) }
+        let index = made[number]
+        if index < 0 { defect(node_still_read(number)) }
+        index
     }
 
     /// An offset `TapeWriter.offset` wrote.
@@ -354,6 +403,10 @@ impl TapeReader {
 }
 
 fn unknown_choice(at: int, choices: int) -> string { "a tape holds variant ${at} of a type with ${choices}" }
+
+fn no_node_back(back: int, numbered: int) -> string { "a tape refers to the node ${back} back, with ${numbered} numbered" }
+
+fn node_still_read(number: int) -> string { "a tape refers to node ${number} while it's still being read" }
 
 /// The number at `at` in `octets`, moving `at` past it.
 fn number_from(octets: Bytes, at: Cell<int>) -> int {

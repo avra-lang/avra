@@ -10,12 +10,14 @@ use @std.meta.{
     Decls,
     Diagnostic,
     Field,
+    Kind,
     Stmts,
     Type as MetaType,
     Variant as MetaVariant,
     beside,
     literal,
     name,
+    nothing_made,
     refuse,
 }
 use syntax_tape.{FLAGS_PER_NUMBER, flag_mask}
@@ -66,28 +68,65 @@ const FLAGS_NAME: string = "flags"
 
 /// `@derive` of a language's trait on a node type: its writer and its reader, or the fields the
 /// reader can't make, named.
-export fn taped_declared(t: MetaType, language: TapeLanguage) -> Declared { node_declared(t, language, []) }
+export fn taped_declared(t: MetaType, language: TapeLanguage) -> Declared {
+    let layouts = laid_out(t, language.reading)
+    let unmade = unmade_fields(t, layouts)
+    if !unmade.is_empty() { return nothing_made(unmade) }
+    let reader = quote {
+        static fn untaped(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${t} { ${untaped_body(t, layouts)} }
+    }
+    node_declared(t, language, layouts, [reader])
+}
 
-/// `@derive` of a language's root: its nodes' writer and reader, which say which of its variants
-/// each is, its id's, and its schema. Its id is the one its own nodes hold.
+/// `@derive` of a language's root: its nodes' writer, which says which of its variants each is, its
+/// id's writer and reader, and its schema. Its id is the one its own nodes hold, and a node of it is
+/// only ever read through that id.
 export fn root_declared(t: MetaType, language: TapeLanguage) -> Declared {
-    let id? = own_id(t, language.reading) else { return Declared { made: [], problems: [no_own_id(t)] } }
+    let id? = own_id(t, language.reading) else { return nothing_made([no_own_id(t)]) }
+    let declared_id? = language.reading.declared(id) else { return nothing_made([no_own_id(t)]) }
+    let index? = index_field(declared_id) else { return nothing_made([not_one_index(declared_id)]) }
+    let layouts = laid_out(t, language.reading)
+    let unmade = unmade_fields(t, layouts)
+    if !unmade.is_empty() { return nothing_made(unmade) }
     node_declared(
         t,
         language,
-        [id_methods(id, t.name, language), root_schema_declarations(t, language.reading)],
+        layouts,
+        [
+            id_methods(RootId { type_name: id, index: index }, t, layouts, language),
+            root_schema_declarations(t, language.reading),
+        ],
     )
 }
 
-fn node_declared(t: MetaType, language: TapeLanguage, beside_them: List<Decls>) -> Declared {
-    let layouts = laid_out(t, language.reading)
-    let problems = [unmade(t, h.field) for layout in layouts for h in layout.held if h.read == null]
-    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+/// The id naming a root's nodes, and the name of the one number it holds.
+type RootId = { type_name: string, index: string }
+
+/// The one field of an id, which numbers its node: absent when the id isn't one number.
+fn index_field(id: MetaType) -> string? {
+    if id.fields.length != 1 || !is_int(id.fields[0].kind) { return null }
+    id.fields[0].name
+}
+
+fn is_int(k: Kind) -> bool {
+    match k { .Int -> true, rest -> false }
+}
+
+/// The fields a node's value holds that nothing reads back, each refused.
+fn unmade_fields(t: MetaType, layouts: List<Layout>) -> List<Diagnostic> {
+    [unmade(t, h.field) for layout in layouts for h in layout.held if h.read == null]
+}
+
+/// A node type's writer and the readers handed in, beside the type.
+fn node_declared(
+    t: MetaType,
+    language: TapeLanguage,
+    layouts: List<Layout>,
+    beside_them: List<Decls>,
+) -> Declared {
     let source = quote {
         impl ${t} {
             fn taped(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter) { ${taped_body(t, layouts)} }
-
-            static fn untaped(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${t} { ${untaped_body(t, layouts)} }
 
             ${beside_them}
         }
@@ -111,29 +150,59 @@ fn ids_naming(shape: ValueShape, node: string) -> List<string> {
 
 /// An id on a tape is the node it names, placed where that was written, then what the tree keeps
 /// beside it: its writer follows it to the node, and its reader puts the node read back in the
-/// tree. Both are the root's, so an id keeps no seat of its own and stays as flat as it's declared.
-fn id_methods(id_type: string, node: string, language: TapeLanguage) -> Decls {
+/// tree. A node the tape already holds, as a meaning holds the nodes its sugar was written with,
+/// is written again as how far back it stands, past the root's last variant, so a tree that
+/// shares a node reads back sharing it, and a node written once costs nothing more. Both are the
+/// root's, so an id keeps no seat of its own and stays as flat as it's declared.
+fn id_methods(id: RootId, root: MetaType, layouts: List<Layout>, language: TapeLanguage) -> Decls {
     let verbs = language.verbs
-    let id = name(ID_NAME)
-    let read_node = quote { ${name(node)}.untaped(${tree()}, ${tape()}) }
+    let node = root.name
+    let kind = literal(node)
+    let variants = layouts.length
+    let id_name = name(ID_NAME)
+    let index = quote { ${id_name}.${id.index} }
+    let read_node = quote { ${name(node)}.untaped_variant(${tree()}, ${tape()}, ${name(LEAD_NAME)}) }
     let added = (verbs.added)(tree(), read_node, name(PLACE_NAME), node)
-    let facts_written = (verbs.facts_written)(tree(), tape(), id, node)
-    let facts_read = (verbs.facts_read)(tree(), tape(), id, node)
+    let facts_written = (verbs.facts_written)(tree(), tape(), id_name, node)
+    let facts_read = (verbs.facts_read)(tree(), tape(), id_name, node)
+    let chosen_seat = if says_its_variant(layouts) { LEAD_NAME } else { "_${LEAD_NAME}" }
+    let lone_variant: List<Stmts> = if says_its_variant(layouts) { [] } else { [quote { ${tape()}.choice(0) }] }
     quote {
-        static fn taped_id(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter, ${ID_NAME}: ${id_type}) {
-            let _ = ${tape()}.placed(${(verbs.place)(tree(), id, node)})
-            ${(verbs.node)(tree(), id, node)}.taped(${tree()}, ${tape()})
-            ${facts_written}
+        static fn taped_id(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter, ${ID_NAME}: ${id.type_name}) {
+            let earlier = ${tape()}.number_of(${kind}, ${index})
+            if earlier != null {
+                ${tape()}.count(${variants} + ${tape()}.back_to(earlier!) - 1)
+            } else {
+                let number = ${tape()}.placed(${(verbs.place)(tree(), id_name, node)})
+                ${tape()}.wrote(${kind}, ${index}, number)
+                ${lone_variant}
+                ${(verbs.node)(tree(), id_name, node)}.taped(${tree()}, ${tape()})
+                ${facts_written}
+            }
         }
 
-        static fn untaped_id(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${id_type} {
-            let ${PLACE_NAME} = ${tape()}.place()
-            let ${ID_NAME} = ${added}
-            ${facts_read}
-            ${id}
+        static fn untaped_variant(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader, ${chosen_seat}: int) -> ${root} {
+            ${untaped_chosen(root, layouts, name(LEAD_NAME))}
         }
+
+        static fn untaped_id(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${id.type_name} {
+            let ${LEAD_NAME} = ${tape()}.count()
+            if ${name(LEAD_NAME)} >= ${variants} {
+                return ${id.type_name} { ${id.index}: ${tape()}.referred(${name(LEAD_NAME)} - ${variants} + 1) }
+            }
+            let ${PLACE_NAME} = ${tape()}.place()
+            let number = ${tape()}.numbered()
+            let ${ID_NAME} = ${added}
+            ${tape()}.made_at(number, ${index})
+            ${facts_read}
+            ${id_name}
+        }
+
     }
 }
+
+/// What generated code calls the number leading a node an id reaches.
+const LEAD_NAME: string = "lead"
 
 /// Generated statements writing `t` as one node, parents first: its variant when it has more than
 /// one, its flags, then its fields.
@@ -152,6 +221,11 @@ fn taped_body(t: MetaType, layouts: List<Layout>) -> Stmts {
 /// Generated statements reading one node of `t` back, in the order `taped_body` wrote it, and
 /// answering it.
 fn untaped_body(t: MetaType, layouts: List<Layout>) -> List<Stmts> {
+    untaped_chosen(t, layouts, quote { ${tape()}.choice(${layouts.length}) })
+}
+
+/// `untaped_body` with the variant `chosen` says, which is read only when the type has more than one.
+fn untaped_chosen(t: MetaType, layouts: List<Layout>, chosen: Code) -> List<Stmts> {
     if t.variants.is_empty() {
         let record = layouts[0]
         let inits = [quote { Record { ${h.field.name}: ${h.read!} } } for h in record.held]
@@ -161,7 +235,7 @@ fn untaped_body(t: MetaType, layouts: List<Layout>) -> List<Stmts> {
     if !says_its_variant(layouts) { return made[0] }
     let last = made.length - 1
     let arms: List<Arms> = [if at == last { quote { _ -> { ${read} } } } else { quote { ${at} -> { ${read} } } } for at, read in made]
-    [quote { match ${tape()}.choice(${made.length}) { ${arms} } }]
+    [quote { match ${chosen} { ${arms} } }]
 }
 
 /// Whether a node of a type with these variants says which it is.
@@ -490,6 +564,7 @@ fn wrapping_code(w: Wrapping) -> Code {
 fn holds_code(h: Holds) -> Code {
     match h {
         .Node(type_path) -> quote { Holds.Node(${literal(type_path)}) },
+        .Reached(type_path) -> quote { Holds.Reached(${literal(type_path)}) },
         .Int -> quote { Holds.Int },
         .Float -> quote { Holds.Float },
         .Bool -> quote { Holds.Bool },
@@ -501,6 +576,10 @@ fn holds_code(h: Holds) -> Code {
 
 fn unmade(t: MetaType, f: Field) -> Diagnostic {
     refuse("`${t.name}.${f.name}` isn't on its tape, so reading it back needs a default")
+}
+
+fn not_one_index(id: MetaType) -> Diagnostic {
+    refuse("`${id.name}` names a node, so it's one int, the node's number")
 }
 
 fn no_own_id(root: MetaType) -> Diagnostic {

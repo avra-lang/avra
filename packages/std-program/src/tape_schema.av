@@ -24,6 +24,10 @@ use value_shapes.{Reading, ShapedVariant, ValueShape, path_of}
 export enum Holds {
     /// A node of the type with this path. Its variant leads it when the type has more than one.
     Node(type_path: string)
+    /// A node an id reaches, of the root with this path. Its variant leads it, zero for a root of
+    /// one; a number past the last variant says the node is one already on the tape, that many
+    /// back from the next, less one.
+    Reached(type_path: string)
     Int
     /// A float, saved as its bits.
     Float
@@ -40,7 +44,7 @@ impl Holds {
     /// What a field holds, as a type is spelled.
     fn spelled() -> string {
         match self {
-            .Node(type_path) -> type_path,
+            .Node(type_path) or .Reached(type_path) -> type_path,
             .Int -> "int",
             .Float -> "float",
             .Bool -> "bool",
@@ -124,7 +128,8 @@ export fn lying(shape: ValueShape) -> Lying {
         .Listed(inner) -> wrapped_in(.List, lying(inner)),
         .Celled(inner) or .Renamed(_, inner) -> lying(inner),
         .Entries(_, _) -> wrapped_in(.List, plain(.Node(node_path(shape)!))),
-        .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> plain(.Node(node_path(shape)!)),
+        .Sides(_, _) or .Declared(_, _) -> plain(.Node(node_path(shape)!)),
+        .Id(_, _, root_path) -> plain(.Reached(root_path)),
         .Placed(_, _) -> plain(.Place),
     }
 }

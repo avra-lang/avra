@@ -174,6 +174,38 @@ spec "a generated node" {
             is_next(tape, "Marked") && tape.int() == 6 && noteless(tape) && tape.is_done()
         }
     }
+    given "a node held twice" {
+        then "the second holding is one number: past the last variant, by the one node back" {
+            let tape = read_back([leaf(1), .Pair(id(0), id(0))])
+            is_next(tape, "Pair") &&
+                is_leaf(tape, 1) &&
+                tape.count() == root().variants.length &&
+                noteless(tape) &&
+                tape.is_done()
+        }
+        then "it reads back as one node, held twice" {
+            let back = read_into_tree([leaf(1), .Pair(id(0), id(0))])
+            match back.node(1) {
+                .Pair(left, right) -> back.all().length == 2 && left.index == 0 && right.index == 0,
+                _ -> false,
+            }
+        }
+        then "a node held by two lists and a parent's child reads back once" {
+            let back = read_into_tree(
+                [leaf(1), leaf(2), .Pair(id(0), id(1)), .Runs([], [], [id(2), id(0)], [id(1)])],
+            )
+            match back.node(back.all().length - 1) {
+                .Runs(_, _, nodes_a, nodes_b) -> back.all().length == 4 &&
+                    ["${n.index}" for n in nodes_a.concat(nodes_b)].join(" ") == "2 0 1",
+                _ -> false,
+            }
+        }
+        then "a tree sharing nodes writes the same tape again" {
+            round_trips(
+                [leaf(1), leaf(2), .Pair(id(0), id(1)), .Runs([], [], [id(2), id(0)], [id(1)])],
+            )
+        }
+    }
     given "a tree read back from its tape" {
         then "a leaf's every field comes back" {
             match read_into_tree([leaf(7)]).node(0) {
@@ -200,7 +232,7 @@ spec "a generated node" {
             tree.noted(0, "first")
             let back = tiny_tree([])
             let _ = TinyNode.untaped_id(back, tape_reader(written_from(tree).finished()))
-            [back.note(i) ?? "-" for i in 0..back.all().length].join(" ") == "first first -"
+            [back.note(i) ?? "-" for i in 0..back.all().length].join(" ") == "first -"
         }
         then "a seat comes back where it was written" {
             let tree = tiny_tree([])

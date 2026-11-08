@@ -1,0 +1,58 @@
+//! NUMBERS KEPT BY SMALL KEYS THAT SIT CLOSE TOGETHER, as the ids of one item's nodes do: an array
+//! offset by the lowest key met, so a lookup is one bounds check and one load, nothing is hashed,
+//! and the array is as wide as the keys are spread. It grows to either side by doubling, so a key
+//! met out of order costs amortized constant time. An identity: every holder sees one window.
+
+/// What a window holds. Values are never negative.
+export type DenseWindow = {
+    /// The key slot zero stands for.
+    lowest: Cell<int>,
+    /// Each slot holds one more than its key's value, or zero when it holds none.
+    slots: Cell<List<int>>,
+}
+
+export fn dense_window() -> DenseWindow {
+    let slots: Cell<List<int>> = Cell.new([])
+    DenseWindow { lowest: Cell.new(0), slots: slots }
+}
+
+impl DenseWindow {
+    /// The value under `key`, absent when there's none.
+    fn get(key: int) -> int? {
+        let at = key - self.lowest.get()
+        let slots = self.slots.get()
+        if at < 0 || at >= slots.length { return null }
+        let held = slots[at]
+        if held == 0 { return null }
+        held - 1
+    }
+
+    /// `value` under `key`, in place of any before it.
+    fn put(key: int, value: int) {
+        self.reach(key)
+        self.slots.set_at(key - self.lowest.get(), value + 1)
+    }
+
+    /// The window widened to hold `key`: at least doubled on the side it grows.
+    fn reach(key: int) {
+        let width = self.slots.get().length
+        if width == 0 {
+            self.lowest.set(key)
+            self.slots.set(free_slots(1))
+            return
+        }
+        let lowest = self.lowest.get()
+        if key < lowest {
+            let added = max_of(lowest - key, width)
+            self.slots.set(free_slots(added).concat(self.slots.get()))
+            self.lowest.set(lowest - added)
+            return
+        }
+        let past = key - lowest - width + 1
+        if past > 0 { self.slots.set(self.slots.get().concat(free_slots(max_of(past, width)))) }
+    }
+}
+
+fn free_slots(count: int) -> List<int> { [0 for _slot in 0..count] }
+
+fn max_of(a: int, b: int) -> int { if a > b { a } else { b } }
