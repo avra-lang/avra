@@ -43,12 +43,17 @@ export type TreeVerbs = {
     place: fn(Code, Code, string) -> Code,
     /// A node read back, put in the tree where it was written, answering its id.
     added: fn(Code, Code, Code, string) -> Code,
+    /// What the tree keeps beside the node an id names, written after the node: handed the tree,
+    /// the tape and the id.
+    facts_written: fn(Code, Code, Code, string) -> Stmts,
+    /// Those read back onto the id just made.
+    facts_read: fn(Code, Code, Code, string) -> Stmts,
 }
 
 /// What generated code calls the tree and the tape it's handed, an id it follows, and where a node
 /// read back was written.
-const TREE_NAME: string = "tree"
-const TAPE_NAME: string = "tape"
+export const TREE_NAME: string = "tree"
+export const TAPE_NAME: string = "tape"
 const PLACE_NAME: string = "place"
 const ID_NAME: string = "id"
 
@@ -104,27 +109,28 @@ fn ids_naming(shape: ValueShape, node: string) -> List<string> {
     }
 }
 
-/// An id on a tape is the node it names, placed where that was written: its writer follows it to
-/// the node, and its reader puts the node read back in the tree. Both are the root's, so an id keeps
-/// no seat of its own and stays as flat as it's declared.
+/// An id on a tape is the node it names, placed where that was written, then what the tree keeps
+/// beside it: its writer follows it to the node, and its reader puts the node read back in the
+/// tree. Both are the root's, so an id keeps no seat of its own and stays as flat as it's declared.
 fn id_methods(id_type: string, node: string, language: TapeLanguage) -> Decls {
     let verbs = language.verbs
     let id = name(ID_NAME)
-    let added = (verbs.added)(
-        tree(),
-        quote { ${name(node)}.untaped(${tree()}, ${tape()}) },
-        name(PLACE_NAME),
-        node,
-    )
+    let read_node = quote { ${name(node)}.untaped(${tree()}, ${tape()}) }
+    let added = (verbs.added)(tree(), read_node, name(PLACE_NAME), node)
+    let facts_written = (verbs.facts_written)(tree(), tape(), id, node)
+    let facts_read = (verbs.facts_read)(tree(), tape(), id, node)
     quote {
         static fn taped_id(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter, ${ID_NAME}: ${id_type}) {
             let _ = ${tape()}.placed(${(verbs.place)(tree(), id, node)})
             ${(verbs.node)(tree(), id, node)}.taped(${tree()}, ${tape()})
+            ${facts_written}
         }
 
         static fn untaped_id(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${id_type} {
             let ${PLACE_NAME} = ${tape()}.place()
-            ${added}
+            let ${ID_NAME} = ${added}
+            ${facts_read}
+            ${id}
         }
     }
 }
@@ -200,22 +206,17 @@ type Led = { form: FlagLed, number: int }
 /// Each variant of `t` laid out: a record is one, named as the type is.
 fn laid_out(t: MetaType, reading: Reading) -> List<Layout> {
     let shaped = reading.variants_of(t)
-    [laid(
-        reading,
-        v,
-        if t.variants.is_empty() { t.fields } else { reading.carried_fields(v) },
-        shaped[at],
-    ) for at, v in declared_variants(t)]
+    [laid(v, if t.variants.is_empty() { t.fields } else { reading.carried_fields(v) }, shaped[at]) for at, v in declared_variants(t)]
 }
 
-fn laid(reading: Reading, declared: MetaVariant, held: List<Field>, v: ShapedVariant) -> Layout {
+fn laid(declared: MetaVariant, held: List<Field>, v: ShapedVariant) -> Layout {
     let forms = [led_of(f) for f in v.fields]
     let numbers = [[form for form in forms.take(at) if form != null].length for at, _form in forms]
     let fields = [LaidField { shaped: f, led: led_numbered(forms[at], numbers[at]) } for at, f in v.fields]
     let flag_count = [form for form in forms if form != null].length
     Layout {
         declared: declared,
-        held: [Held { field: f, read: held_read(reading, fields, flag_count, f) } for f in held],
+        held: [Held { field: f, read: held_read(fields, flag_count, f) } for f in held],
         fields: fields,
         flag_count: flag_count,
     }
@@ -269,19 +270,12 @@ fn field_written(f: LaidField, value: Code) -> List<Stmts> {
 }
 
 /// A field's value read back: a flagged one from its flag, the rest whole, and one the tape doesn't
-/// hold, being carried or having no bytes, made without it.
-fn held_read(reading: Reading, fields: List<LaidField>, flag_count: int, f: Field) -> Code? {
-    let laid? = fields.find(it.shaped.field.name == f.name) else { return unheld_value(reading, f) }
-    let shape? = laid.shaped.shape else { return unheld_value(reading, f) }
+/// hold, being carried or having no bytes, its default.
+fn held_read(fields: List<LaidField>, flag_count: int, f: Field) -> Code? {
+    let laid? = fields.find(it.shaped.field.name == f.name) else { return f.default }
+    let shape? = laid.shaped.shape else { return f.default }
     let led? = laid.led else { return read(shape, 0) }
     (led.form.rest_read)(flag_read(flag_count, led.number))
-}
-
-/// A field the tape doesn't hold, read back: its default, or a fresh one from the tree when its
-/// type is `@made_by` it. Absent when neither makes one.
-fn unheld_value(reading: Reading, f: Field) -> Code? {
-    let verb? = reading.made_by(f.kind) else { return f.default }
-    f.default ?? quote { ${tree()}.${verb}() }
 }
 
 /// How one shape of value is written to a tape and read back, in generated code. The two halves
@@ -290,6 +284,12 @@ fn unheld_value(reading: Reading, f: Field) -> Code? {
 type TapeForm = { written: fn(Code, int) -> Stmts, read: fn(int) -> Code }
 
 fn written(shape: ValueShape, value: Code, depth: int) -> Stmts { (tape_form(shape).written)(value, depth) }
+
+/// Generated code writing one value of `shape`, where `tree` and `tape` are bound.
+export fn value_written(shape: ValueShape, value: Code) -> Stmts { written(shape, value, 0) }
+
+/// Generated code reading one value of `shape` back.
+export fn value_read(shape: ValueShape) -> Code { read(shape, 0) }
 
 fn read(shape: ValueShape, depth: int) -> Code { (tape_form(shape).read)(depth) }
 
@@ -340,6 +340,10 @@ fn tape_form(shape: ValueShape) -> TapeForm {
         .Declared(type_name, _) -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${value}.taped(${tree()}, ${tape()}) },
             read: (_depth: int) -> quote { ${name(type_name)}.untaped(${tree()}, ${tape()}) },
+        },
+        .Placed(from, to) -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { let _ = ${tape()}.placed(${tree()}.${to}(${value})) },
+            read: (_depth: int) -> quote { ${tree()}.${from}(${tape()}.place()) },
         },
         .Id(_, node, _) -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${name(node)}.taped_id(${tree()}, ${tape()}, ${value}) },
@@ -427,7 +431,7 @@ fn flag_led(shape: ValueShape) -> FlagLed? {
             rest_read: (flag: Code) -> quote { if ${flag} { ${read(inner, 0)} } else { null } },
         },
         .Celled(_) or .Renamed(_, _) -> led_through(shape.wrapper()!),
-        .Int or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> null,
+        .Int or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> null,
     }
 }
 
@@ -491,13 +495,12 @@ fn holds_code(h: Holds) -> Code {
         .Bool -> quote { Holds.Bool },
         .Text -> quote { Holds.Text },
         .Bytes -> quote { Holds.Bytes },
+        .Place -> quote { Holds.Place },
     }
 }
 
 fn unmade(t: MetaType, f: Field) -> Diagnostic {
-    refuse(
-        "`${t.name}.${f.name}` isn't on its tape, so reading it back needs a default, or a type marked `@made_by` the tree",
-    )
+    refuse("`${t.name}.${f.name}` isn't on its tape, so reading it back needs a default")
 }
 
 fn no_own_id(root: MetaType) -> Diagnostic {

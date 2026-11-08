@@ -1,6 +1,6 @@
 // Avra's own tree on a tape: each statement written, read back into a fresh arena, and written
 // again is the same tape, every node where it was, with every octet read.
-use compiler.{parse_source}
+use compiler.{avra, parse_source, sugar_door}
 use core.{SyntaxArena, Stmt, StmtId, new_node_store}
 use @std.program.answer_record.{content_hash}
 use @std.program.syntax_tape.{SyntaxTape, tape_reader, tape_writer}
@@ -11,13 +11,19 @@ fn tape_of(store: SyntaxArena, s: StmtId) -> SyntaxTape {
     tape.finished()
 }
 
+/// Whether a statement read back into `fresh` writes the same tape, every node where it was, with
+/// every octet read, and is the same statement to the compiler: its fingerprint folds its facts.
 fn stmt_round_trips(store: SyntaxArena, fresh: SyntaxArena, s: StmtId) -> bool {
     let first = tape_of(store, s)
     let reader = tape_reader(first)
-    let again = tape_of(fresh, Stmt.untaped_id(fresh, reader))
+    let since = fresh.marks()
+    let back = Stmt.untaped_id(fresh, reader)
+    fresh.settled_since(since, sugar_door(avra()))
+    let again = tape_of(fresh, back)
     reader.is_done() &&
         again.meaning_hash.same_as(first.meaning_hash) &&
-        content_hash(again.places.places).same_as(content_hash(first.places.places))
+        content_hash(again.places.places).same_as(content_hash(first.places.places)) &&
+        fresh.stmt_fingerprint(back) == store.stmt_fingerprint(s)
 }
 
 fn round_trips(text: string) -> bool {
@@ -41,6 +47,20 @@ spec "an Avra statement read back from its tape" {
         then "they write the same tape" {
             round_trips(
                 "fn f(xs: List<int>) -> string {\n    let ys = [x * 2 for x in xs if x > 0]\n    let g = (n: int) -> n + 1\n    match ys.length {\n        0 -> \"none\",\n        n -> \"some\".repeat(g(n)),\n    }\n}\n",
+            )
+        }
+    }
+    given "docs, annotations and marks" {
+        then "they come back with the statement" {
+            round_trips(
+                "/// Adds.\n/// Twice.\n@inline\nexport fn add(a: int) -> int { a + a }\n\nexport mut fn bump(mut n: int) -> int { n }\n",
+            )
+        }
+    }
+    given "sugars" {
+        then "each means what it meant" {
+            round_trips(
+                "fn f(xs: List<int?>) -> int {\n    let a = xs.first()?.abs() ?? 0\n    for x in xs { let _ = x }\n    a\n}\n",
             )
         }
     }

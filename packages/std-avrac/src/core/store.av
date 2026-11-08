@@ -26,6 +26,7 @@ export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> Result<Minting, string
 /// The forms an expression was written in: a lambda as a trailing block,
 /// a string as `"""raw"""`, a name inside a type literal (a hole), and a
 /// `${..name}` hole that binds a run of siblings rather than one node.
+@derive(Taped)
 export type ExprMarks = { is_trailing: bool, is_raw: bool, is_hole: bool, is_run_hole: bool }
 
 fn no_expr_marks() -> ExprMarks {
@@ -45,6 +46,7 @@ export type InstanceFacts = { provided: Provided, expansion: Expansion? = null }
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
+@derive(Taped)
 export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool, is_asset: bool }
 
 fn no_stmt_marks() -> StmtMarks {
@@ -128,7 +130,7 @@ export type SyntaxArena = {
     @copied_by_hand("the param walk: alloc_param_id") param_spans: Cell<List<Span?>>,
     // the forms an expression was written in, by id — one record, so a
     // template copy carries them all through `wear_expr`
-    @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
+    @copied(expr, wear_expr, taped_expr_marks) expr_marks: Cell<List<ExprMarks>>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
     // a record's `..R` entries, by its statement
@@ -164,7 +166,7 @@ export type SyntaxArena = {
     @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") instance_owners: Cell<List<StmtId?>>,
     // what an instance stands on, by the instance: its component as the
     // file read it, then the literal its meaning minted
-    @copied(expr, wear_instance) instances: Cell<List<InstanceFacts?>>,
+    @copied(expr, wear_instance) @not_taped("an instance's facts name a component another file provides") instances: Cell<List<InstanceFacts?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
@@ -294,6 +296,10 @@ impl SyntaxArena {
 
     /// A lambda written as a TRAILING BLOCK — the mark is part of the
     /// node: the block's refusals speak in the block's words.
+    /// An expression's marks as a tape holds them: a trailing block is marked by the meaning of
+    /// the sugar holding it, which is minted again once the tape is read.
+    fn taped_expr_marks(e: ExprId) -> ExprMarks { self.expr_marks_at(e) with { is_trailing: false } }
+
     fn mark_trailing(e: ExprId) {
         self.update_expr_marks(e, (m) -> m with { is_trailing: true })
         self.expr_fingerprints.set_at(e.index, fp(111, [self.expr_fingerprints.get()[e.index]]))
@@ -1056,7 +1062,7 @@ impl SyntaxArena {
     /// The one seat-allocation seam: a fresh `ParamId` for its span
     /// alone — a `Param` never lives in an arena, so this is the
     /// STORE's only fact about it.
-    fn alloc_param_id(span: Span? = null) -> ParamId {
+    fn alloc_param_id(span: Span?) -> ParamId {
         self.param_spans.push(span)
         ParamId { index: self.param_spans.get().length - 1 }
     }
@@ -1179,8 +1185,20 @@ impl SyntaxArena {
     /// must not be cut off by the parsed-program memo. Lines never
     /// contain a newline, so the joined text is a lossless key.
     fn document(s: StmtId, lines: List<string>, at: int) {
+        self.record_doc(s, lines, at)
+        self.stamp_doc(s)
+    }
+
+    /// A statement's docs, kept without touching its identity yet.
+    fn record_doc(s: StmtId, lines: List<string>, at: int) {
         self.docs.set_at(s.index, lines)
         self.doc_ats.set_at(s.index, at)
+    }
+
+    /// A statement's docs folded into its identity, once its tree stands: what holds it folded it
+    /// without them.
+    fn stamp_doc(s: StmtId) {
+        let lines? = self.doc_comment(s) else { return }
         self
             .stmt_fingerprints
             .set_at(s.index, fp(115, [self.stmt_fingerprints.get()[s.index], fp_str(lines.join("\n"))]))
@@ -1301,15 +1319,18 @@ impl SyntaxArena {
 
     /// Gives `s` every keyword `worn` records, each through its own verb
     /// so the fingerprint follows — the one door a copy uses, so a new
-    /// bit is added here and a template copy never forgets it.
+    /// bit is added here and a template copy never forgets it. A
+    /// fingerprint is a chain of stamps, so they land in the order a
+    /// parse stamps them: the declaration's own words, then `export`,
+    /// which wraps it.
     fn wear(s: StmtId, worn: StmtMarks) {
-        if worn.is_exported { self.mark_exported(s) }
         if worn.is_mutating { self.mark_mutating(s) }
         if worn.is_once { self.mark_once(s) }
         if worn.is_static { self.mark_static(s) }
         if worn.is_state { self.mark_state(s) }
         if worn.is_module_state { self.mark_module_state(s) }
         if worn.is_host { self.mark_host(s) }
+        if worn.is_exported { self.mark_exported(s) }
     }
 
     /// `mut fn` crossed this declaration — it says its receiver is

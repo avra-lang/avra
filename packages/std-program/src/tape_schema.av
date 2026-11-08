@@ -32,6 +32,8 @@ export enum Holds {
     Text
     /// Octets, saved as their length and each octet.
     Bytes
+    /// Nothing in the structure: where the value was written, among the places.
+    Place
 }
 
 impl Holds {
@@ -44,6 +46,7 @@ impl Holds {
             .Bool -> "bool",
             .Text -> "string",
             .Bytes -> "Bytes",
+            .Place -> "place",
         }
     }
 }
@@ -122,6 +125,7 @@ export fn lying(shape: ValueShape) -> Lying {
         .Celled(inner) or .Renamed(_, inner) -> lying(inner),
         .Entries(_, _) -> wrapped_in(.List, plain(.Node(node_path(shape)!))),
         .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> plain(.Node(node_path(shape)!)),
+        .Placed(_, _) -> plain(.Place),
     }
 }
 
@@ -133,7 +137,7 @@ export fn node_path(shape: ValueShape) -> string? {
         .Sides(ok, err) -> "Result<${lying(ok).spelled()}, ${lying(err).spelled()}>",
         .Declared(_, path) -> path,
         .Id(_, _, node_path) -> node_path,
-        .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
+        .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Placed(_, _) -> null,
     }
 }
 
@@ -186,7 +190,7 @@ impl Reading {
                 [side("Ok", [field_schema("value", ok)]), side("Err", [field_schema("value", err)])],
                 [ok, err],
             ),
-            .Id(_, _, _) or .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
+            .Id(_, _, _) or .Placed(_, _) or .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
         }
     }
 

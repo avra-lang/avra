@@ -27,12 +27,18 @@ export trait TapeRoot {
 fn avra_language() -> TapeLanguage {
     TapeLanguage {
         tree: "SyntaxArena",
-        reading: Reading { declared: type_named, role: role_on_tape },
+        reading: avra_reading(),
         verbs: TreeVerbs {
             node: (tree: Code, id: Code, node: string) -> quote { ${tree}.${arena_word(node)}(${id}) },
-            place: (tree: Code, id: Code, node: string) -> quote { tape_place(${tree}.${"${arena_word(node)}_span"}(${id})) },
+            place: (tree: Code, id: Code, node: string) -> quote { ${tree}.span_place(${tree}.${"${arena_word(node)}_span"}(${id})) },
             added: (tree: Code, read: Code, place: Code, node: string) -> quote {
-                ${tree}.${"alloc_${arena_word(node)}"}(${read}, tape_span(${place}))
+                ${tree}.${"alloc_${arena_word(node)}"}(${read}, ${tree}.placed_span(${place}))
+            },
+            facts_written: (tree: Code, tape: Code, id: Code, node: string) -> quote {
+                SyntaxArena.${"tape_${arena_word(node)}_tables"}(${tree}, ${tape}, ${id})
+            },
+            facts_read: (tree: Code, tape: Code, id: Code, node: string) -> quote {
+                SyntaxArena.${"untape_${arena_word(node)}_tables"}(${tree}, ${tape}, ${id})
             },
         },
     }
@@ -40,6 +46,9 @@ fn avra_language() -> TapeLanguage {
 
 /// The word an arena's verbs are named by: its node's name, lowered.
 fn arena_word(node: string) -> string { ascii_lower(node) }
+
+/// Avra's tree as the build declares it, read for a tape.
+export fn avra_reading() -> Reading { Reading { declared: type_named, role: role_on_tape, places: true } }
 
 fn role_on_tape(f: Field) -> FieldRole {
     match field_route(f) { .Plain -> .Written, .Local -> .Carried, .Facet(_) -> .Apart }

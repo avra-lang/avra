@@ -2,7 +2,7 @@
 // says: the variant, the flags, then each field, a node's children parents first. Then whole trees
 // read back through the generated reader, which writes the same tape again.
 use answer_record.{content_hash}
-use syntax_tape.{TapeReader, TapeWriter, tape_reader, tape_writer}
+use syntax_tape.{TapePlace, TapeReader, TapeWriter, tape_reader, tape_writer}
 use tape_schema.{TypeSchema}
 use tests.support.tiny_tree.{TinyId, TinyNode, TinyTree, tiny_tree}
 use tests.support.tiny_taped.{Taped}
@@ -31,14 +31,18 @@ fn root() -> TypeSchema {
 /// Whether the next node is the tiny tree's `variant`.
 fn is_next(tape: TapeReader, variant: string) -> bool { tape.count() == root().variant_number(variant)! }
 
-/// Whether the next node is `leaf(number)`.
+/// Whether the next node is `leaf(number)`, with no note after it.
 fn is_leaf(tape: TapeReader, number: int) -> bool {
     is_next(tape, "Leaf") &&
         tape.flags(1)[0] &&
         tape.int() == number &&
         tape.text() == "x" &&
-        tape.float() == 1.5
+        tape.float() == 1.5 &&
+        noteless(tape)
 }
+
+/// Whether a node just read has no note after it.
+fn noteless(tape: TapeReader) -> bool { !tape.flag() }
 
 fn means_the_same(a: List<TinyNode>, b: List<TinyNode>) -> bool {
     tape_of(a).finished().meaning_hash.same_as(tape_of(b).finished().meaning_hash)
@@ -105,6 +109,7 @@ spec "a generated node" {
             is_next(tape, "Pair") &&
                 is_leaf(tape, 1) &&
                 is_leaf(tape, 2) &&
+                noteless(tape) &&
                 tape.is_done() &&
                 offsets == "2 0 1"
         }
@@ -119,6 +124,7 @@ spec "a generated node" {
                 tape.text() == "b" &&
                 tape.text() == "a" &&
                 is_leaf(tape, 1) &&
+                noteless(tape) &&
                 tape.is_done()
         }
     }
@@ -139,6 +145,7 @@ spec "a generated node" {
                 tape.text() == "a" &&
                 !tape.flag() &&
                 tape.int() == 5 &&
+                noteless(tape) &&
                 tape.is_done()
         }
     }
@@ -157,13 +164,14 @@ spec "a generated node" {
             !written.holds_only_bytes() &&
                 is_next(tape, "Opaque") &&
                 tape.int() == 8 &&
+                noteless(tape) &&
                 tape.is_done()
         }
     }
     given "a field a language keeps off the tape" {
         then "it leaves nothing" {
             let tape = read_back([.Marked(6, 7)])
-            is_next(tape, "Marked") && tape.int() == 6 && tape.is_done()
+            is_next(tape, "Marked") && tape.int() == 6 && noteless(tape) && tape.is_done()
         }
     }
     given "a tree read back from its tape" {
@@ -186,6 +194,26 @@ spec "a generated node" {
         then "runs of values and of nodes" { round_trips(runs([1, 2], [3], [id(0)], [id(0)])) }
         then "cells, maps, each side of a result, and octets" {
             round_trips(shapes(.Ok(id(0)))) && round_trips(shapes(.Err("no")))
+        }
+        then "a node's note comes back beside it" {
+            let tree = tiny_tree([leaf(1), .Pair(id(0), id(0))])
+            tree.noted(0, "first")
+            let back = tiny_tree([])
+            let _ = TinyNode.untaped_id(back, tape_reader(written_from(tree).finished()))
+            [back.note(i) ?? "-" for i in 0..back.all().length].join(" ") == "first first -"
+        }
+        then "a seat comes back where it was written" {
+            let tree = tiny_tree([])
+            let seat = tree.seat_at(TapePlace { offset: 40, width: 3 })
+            let _ = tree.added(.Seated(5, seat), TapePlace { offset: 0, width: 1 })
+            let back = tiny_tree([])
+            let tape = tape_reader(written_from(tree).finished())
+            let read = TinyNode.untaped_id(back, tape)
+            let place = match back.node(read.index) {
+                .Seated(kept, back_seat) -> if kept == 5 { back.seat_place(back_seat) } else { null },
+                _ -> null,
+            }
+            tape.is_done() && place != null && place!.offset == 40 && place!.width == 3
         }
         then "a field kept off the tape comes back as its default" {
             match read_into_tree([.Marked(6, 7)]).node(0) {

@@ -13,7 +13,7 @@ use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
 use @std.program.syntax_tape.{TapeReader, TapeWriter}
 use @std.program.tape_schema.{FieldSchema, Holds, Lying, TypeSchema, VariantSchema, Wrapping}
-use @std.program.value_shapes.{indexes, made_by}
+use @std.program.value_shapes.{indexes, placed}
 use @std.relation.{relation, arena, codec}
 
 /// Typed index into the expression arena. A single-field struct, not
@@ -646,6 +646,7 @@ export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool, 
 /// it at compile time. The callee is an ident NODE and the arguments
 /// are expression nodes, so resolution and typing read them as any
 /// expression — no second name law.
+@derive(Taped)
 export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
 
 /// `spliced` marks a type that came through a template's HOLE: it
@@ -663,7 +664,7 @@ export type TypeRef = {
     optional: bool,
     dynamic: bool,
     arrow: bool,
-    @local span: Span? = null,
+    @local span: Span?,
     seats: List<FnSeat> = [],
     answer: TypeRef? = null,
     spliced: bool = false,
@@ -802,9 +803,11 @@ export type MarkArg = { label: string, value: string }
 /// whether the `on` sugar wrote it (a setting that names an event hears
 /// it too, and is printed as it was written), and why the instance's
 /// component cannot hear it, when it cannot.
+@derive(Taped)
 export type OnHandler = { event: string, sugar: bool = true, unheard: Unheard? = null }
 
 /// Why a component cannot hear a handler written for it.
+@derive(Taped)
 export enum Unheard {
     /// It declares no such event — these are the ones it does.
     Undeclared(declared: List<string>)
@@ -872,7 +875,7 @@ export type VariantSyntax = { marks: List<Mark> = [], name: Scoped, payloads: Li
 /// once per construction (never carried unchanged through a
 /// rebuild), so a splice's own copy gets its own slot rather than
 /// sharing the template's.
-@made_by("alloc_param_id")
+@placed("param_at", "param_place")
 export type ParamId = { index: int }
 
 /// Seat identity — two ids name one seat when their indexes agree.
@@ -943,6 +946,7 @@ export type FormatPart = { hole: Hole, piece: string }
 /// The format a `grammar` declaration read. Its holes became the
 /// record's fields, and a record cannot say what text it reads —
 /// so the format is kept beside the statement that declared it.
+@derive(Taped)
 export type GrammarSpec = { head: string, parts: List<FormatPart> }
 
 /// One name a pattern binds, and the pattern node it binds under.

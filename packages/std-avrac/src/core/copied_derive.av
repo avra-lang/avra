@@ -8,18 +8,53 @@
 //! the three, or more than one, is refused where it is declared, so a
 //! table added tomorrow cannot be forgotten by the copier silently.
 //!
+//! A tape is a copy whose source is a tape, so the same marks write a
+//! node's tables beside it and read them back through the same verbs,
+//! then hand over to `tape_<kind>_by_hand`, which does what a copier's
+//! own walk does. A third word, `@copied(expr, verb, projection)`, names
+//! what a tape holds of the element where part of it is minted again.
+//!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Field, Declared, Diagnostic, Code, beside}
+use @std.meta.{
+    Type as MetaType,
+    Field,
+    Declared,
+    Diagnostic,
+    Code,
+    Decls,
+    Kind,
+    Stmts,
+    beside,
+    name,
+}
+use core.{avra_reading}
+use @std.program.tape_derive.{TAPE_NAME, TREE_NAME, value_read, value_written}
+use @std.program.syntax_tape.{TapeReader, TapeWriter}
+use @std.program.value_shapes.{ValueShape}
 
 const copied_word = "copied"
 const by_hand_word = "copied_by_hand"
 const not_copied_word = "not_copied"
+const not_taped_word = "not_taped"
 const expr_kind = "expr"
 const stmt_kind = "stmt"
 
+/// Each kind of node a table may be indexed by, and the id naming one.
+/// Each kind of node a table may be indexed by, the id naming one, and whether its tape carries
+/// what a copier's own walk does (`tape_<kind>_by_hand`).
+type NodeKind = { word: string, id: string, by_hand: bool }
+
+fn node_kinds() -> List<NodeKind> {
+    [
+        NodeKind { word: expr_kind, id: "ExprId", by_hand: true },
+        NodeKind { word: stmt_kind, id: "StmtId", by_hand: true },
+        NodeKind { word: "pat", id: "PatId", by_hand: false },
+    ]
+}
+
 /// The compiler's derive for how an arena's tables are copied.
 export trait Copied {
-    static fn marks(t: MetaType) -> List<string> { [copied_word, by_hand_word, not_copied_word] }
+    static fn marks(t: MetaType) -> List<string> { [copied_word, by_hand_word, not_copied_word, not_taped_word] }
 
     static fn derive(t: MetaType) -> Declared {
         let tables = [f for f in t.fields if is_table(f)]
@@ -38,11 +73,19 @@ export trait Copied {
                                 ${[stmt_call(f) for f in tables if kind_of(f) == stmt_kind]}
                                 let _ = id
                             }
+
+                            ${[taped_tables(t, tables, k) for k in node_kinds()]}
                         }
                     },
                 ),
             ],
-            problems: [unclassified(f) for f in tables if classes(f) != 1],
+            problems: [unclassified(f) for f in tables if classes(f) != 1]
+                .concat(
+                    [no_tape_form(f) for f in tables if kind_of(f) != "" && is_taped(f) && element_shape(f) == null],
+                )
+                .concat(
+                    [no_presence(f) for f in tables if kind_of(f) != "" && !is_taped(f) && presence(f, quote { held }) == null],
+                ),
         }
     }
 }
@@ -68,7 +111,92 @@ fn expr_call(f: Field) -> Code { quote { dst.${verb_of(f)}(id, self.${f.name}.ge
 
 fn stmt_call(f: Field) -> Code { quote { dst.${verb_of(f)}(id, self.${f.name}.get()[s.index]) } }
 
+/// A node's tables on its tape, and read back onto the id the node was made as.
+fn taped_tables(t: MetaType, tables: List<Field>, kind: NodeKind) -> Decls {
+    let own = [f for f in tables if kind_of(f) == kind.word && is_taped(f) && element_shape(f) != null]
+    let held_off = [f for f in tables if kind_of(f) == kind.word && !is_taped(f)]
+    let tree = name(TREE_NAME)
+    let tape = name(TAPE_NAME)
+    let refused: List<Stmts> = [quote { if ${presence(f, quote { ${tree}.${f.name}.get()[at.index] })!} { ${tape}.met_no_bytes() } } for f in held_off]
+    let values: List<Stmts> = [value_written(element_shape(f)!, held_on_tape(f)) for f in own]
+    let read: List<Stmts> = [quote { ${tree}.${verb_of(f)}(at, ${value_read(element_shape(f)!)}) } for f in own]
+    let written_by_hand: List<Stmts> = if kind.by_hand { [quote { ${name(t.name)}.${"tape_${kind.word}_by_hand"}(${tree}, ${tape}, at) }] } else { [] }
+    let read_by_hand: List<Stmts> = if kind.by_hand { [quote { ${tree}.${"untape_${kind.word}_by_hand"}(${tape}, at) }] } else { [] }
+    let written = [..refused, ..values, ..written_by_hand]
+    let writer = if written.is_empty() {
+        quote {
+        static fn ${"tape_${kind.word}_tables"}(_tree: ${t}, _tape: TapeWriter, _at: ${kind.id}) {}
+    }
+    } else {
+        quote {
+        static fn ${"tape_${kind.word}_tables"}(${TREE_NAME}: ${t}, mut ${TAPE_NAME}: TapeWriter, at: ${kind.id}) { ${written} }
+    }
+    }
+    let all_read = [..read, ..read_by_hand]
+    let reader = if all_read.is_empty() {
+        quote {
+        static fn ${"untape_${kind.word}_tables"}(_tree: ${t}, _tape: TapeReader, _at: ${kind.id}) {}
+    }
+    } else {
+        quote {
+        static fn ${"untape_${kind.word}_tables"}(${TREE_NAME}: ${t}, ${TAPE_NAME}: TapeReader, at: ${kind.id}) { ${all_read} }
+    }
+    }
+    quote {
+        ${writer}
+
+        ${reader}
+    }
+}
+
+/// Generated code answering a table's element as a tape holds it: through the projection its
+/// `@copied` mark names third, or as it stands.
+fn held_on_tape(f: Field) -> Code {
+    let tree = name(TREE_NAME)
+    let projection? = (f.marks.find(it.name == copied_word)?.args ?? []).drop(2).first() else { return quote { ${tree}.${f.name}.get()[at.index] } }
+    quote { ${tree}.${projection}(at) }
+}
+
+/// Whether a table goes on a tape; one that doesn't leaves a node with anything in it unsaved.
+fn is_taped(f: Field) -> bool { !f.marks.any(it.name == not_taped_word) }
+
+/// Generated code asking whether a table's element holds anything, absent for an element that
+/// can't say.
+fn presence(f: Field, value: Code) -> Code? {
+    match element_kind(f.kind) {
+        .Opt(_) -> quote { ${value} != null },
+        .List(_) -> quote { !${value}.is_empty() },
+        .Bool -> value,
+        rest -> null,
+    }
+}
+
+/// How one element of a table lies on a tape, absent when it has no bytes.
+fn element_shape(f: Field) -> ValueShape? { avra_reading().shape_of(element_kind(f.kind)) }
+
+fn element_kind(k: Kind) -> Kind {
+    match k { .Cell(.List(element)) -> element, rest -> k }
+}
+
 // ── voices ──
+
+/// A table kept off tapes whose element can't say it holds nothing.
+fn no_presence(f: Field) -> Diagnostic {
+    Diagnostic {
+        message: "`${f.name}` is kept off tapes, and its element can't say whether it holds anything",
+        help: "a table kept off tapes is a nullable, a list or a bool, so a node with nothing in it is still saved",
+        at: f.at,
+    }
+}
+
+/// A copied table whose element a tape can't hold.
+fn no_tape_form(f: Field) -> Diagnostic {
+    Diagnostic {
+        message: "`${f.name}` is copied with each node, and its element has no bytes for a tape",
+        help: "a tape is a copy, so what a copy carries a tape must hold",
+        at: f.at,
+    }
+}
 
 /// A table the copier has no word about.
 fn unclassified(f: Field) -> Diagnostic {

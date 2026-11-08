@@ -1,14 +1,93 @@
-//! Where an id's node was written, as a tape says it and as Avra's tree does: a span.
-use @std.program.syntax_tape.{TapePlace}
+//! Where a node was written, as a tape says it and as Avra's tree does: a span. A seat's identity
+//! is minted where it was written, so on a tape it's that place.
+use @std.program.syntax_tape.{TapePlace, TapeReader, TapeWriter}
 
-/// The place a span says, absent with it.
-fn tape_place(span: Span?) -> TapePlace? {
-    let written? = span else { return null }
-    TapePlace { offset: written.lo, width: written.hi - written.lo }
+impl SyntaxArena {
+    /// The place a span says, absent with it.
+    fn span_place(span: Span?) -> TapePlace? {
+        let written? = span else { return null }
+        TapePlace { offset: written.lo, width: written.hi - written.lo }
+    }
+
+    /// The span a place says, absent with it.
+    fn placed_span(place: TapePlace?) -> Span? {
+        let written? = place else { return null }
+        span_of(written.offset, written.offset + written.width)
+    }
+
+    /// Where a seat was written.
+    fn param_place(id: ParamId) -> TapePlace? { self.span_place(self.param_id_span(id)) }
+
+    /// A seat's identity, minted where it was written.
+    fn param_at(place: TapePlace?) -> ParamId { self.alloc_param_id(self.placed_span(place)) }
 }
 
-/// The span a place says, absent with it.
-fn tape_span(place: TapePlace?) -> Span? {
-    let written? = place else { return null }
-    span_of(written.offset, written.offset + written.width)
+/// What a copier's own walk does, on a tape: a statement's annotations, stamped outermost last as
+/// a parse files them, then its docs, stamped once the tree stands; an expression's sugar note, the types a struct literal was given, and
+/// where a sublanguage's body starts. A sugar's meaning is minted again once its item is read, and
+/// a quote is named by where it now stands. Roots an extension copied can't be put on a tape yet.
+impl SyntaxArena {
+    static fn tape_stmt_by_hand(tree: SyntaxArena, mut tape: TapeWriter, at: StmtId) {
+        let annotations = tree.annotations_of(at)
+        tape.count(annotations.length)
+        for a in annotations { a.taped(tree, tape) }
+        let docs = tree.doc_comment(at)
+        tape.flag(docs != null)
+        if docs != null {
+            tape.count(docs!.length)
+            for line in docs! { tape.text(line) }
+            tape.offset(tree.doc_at(at))
+        }
+    }
+
+    fn untape_stmt_by_hand(tape: TapeReader, at: StmtId) {
+        let annotations = [Annotation.untaped(self, tape) for _a in 0..tape.count()]
+        for a in reversed(annotations) { self.annotate_before(at, a) }
+        if tape.flag() {
+            let lines = [tape.text() for _line in 0..tape.count()]
+            self.record_doc(at, lines, tape.offset())
+        }
+    }
+
+    static fn tape_expr_by_hand(tree: SyntaxArena, mut tape: TapeWriter, at: ExprId) {
+        if !tree.extensions.get()[at.index].is_empty() { tape.met_no_bytes() }
+        let note = tree.means_note(at)
+        tape.flag(note != null)
+        if note != null { tape.text(note!) }
+        let targs = tree.struct_targs_of(at)
+        tape.count(targs.length)
+        for a in targs { a.taped(tree, tape) }
+        if is_sublanguage(tree.expr(at)) { tape.offset(tree.body_start(at)) }
+    }
+
+    fn untape_expr_by_hand(tape: TapeReader, at: ExprId) {
+        if tape.flag() { self.means_notes.set_at(at.index, tape.text()) }
+        let targs = [TypeRef.untaped(self, tape) for _a in 0..tape.count()]
+        if !targs.is_empty() { self.mark_struct_targs(at, targs) }
+        let node = self.expr(at)
+        if is_quote(node) { self.mark_quote_at(at) }
+        if is_sublanguage(node) { self.mark_sublang(at, tape.offset()) }
+    }
+}
+
+/// Whether a node is a `quote` body, which is named by where it stands.
+fn is_quote(e: Expr) -> bool {
+    let body? = e.body_of() else { return false }
+    body.word == "quote"
+}
+
+/// Whether a node is a sublanguage's body, which is neither a quote nor text.
+fn is_sublanguage(e: Expr) -> bool {
+    let body? = e.body_of() else { return false }
+    body.word != "quote" && body.word != "text"
+}
+
+impl SyntaxArena {
+    /// What a parse does once its tree stands, for the nodes a tape added after `since`: each
+    /// statement's docs folded into it, and each sugar meaning what `door` mints for it again.
+    fn settled_since(since: ArenaMarks, door: Means) {
+        for at in since.stmts..self.stmts.count() { self.stamp_doc(StmtId { index: at }) }
+        let read = [sugar for sugar in self.sugars() if sugar.index >= since.exprs]
+        for sugar in read { let _ = self.mean(sugar, self.means_note(sugar)!, door) }
+    }
 }

@@ -2,17 +2,31 @@
 // to a tape through a derive that any language could write.
 use @std.meta.{Named, derive}
 use syntax_tape.{TapePlace, TapeReader, TapeWriter}
-use value_shapes.{indexes}
+use value_shapes.{indexes, placed}
 use tape_schema.{FieldSchema, Holds, Lying, TypeSchema, VariantSchema, Wrapping}
 
 /// An identity: every holder of a tree reads and adds to the one arena, each node beside where it
-/// was written.
-export type TinyTree = { nodes: Cell<List<TinyNode>>, places: Cell<List<TapePlace?>> }
-
-/// A tree of `nodes`, each written one byte wide at its own index.
-export fn tiny_tree(nodes: List<TinyNode>) -> TinyTree {
-    TinyTree { nodes: Cell.new(nodes), places: Cell.new([written_at(at) for at, _node in nodes]) }
+/// was written and the note kept about it, and the seats minted where they were written.
+export type TinyTree = {
+    nodes: Cell<List<TinyNode>>,
+    places: Cell<List<TapePlace?>>,
+    notes: Cell<List<string?>>,
+    seats: Cell<List<TapePlace?>>,
 }
+
+/// A tree of `nodes`, each written one byte wide at its own index, with no notes.
+export fn tiny_tree(nodes: List<TinyNode>) -> TinyTree {
+    TinyTree {
+        nodes: Cell.new(nodes),
+        places: Cell.new([written_at(at) for at, _node in nodes]),
+        notes: Cell.new([no_note() for _node in nodes]),
+        seats: Cell.new(no_seats()),
+    }
+}
+
+fn no_note() -> string? { null }
+
+fn no_seats() -> List<TapePlace?> { [] }
 
 fn written_at(offset: int) -> TapePlace? { TapePlace { offset: offset, width: 1 } }
 
@@ -29,9 +43,37 @@ impl TinyTree {
     fn added(node: TinyNode, place: TapePlace?) -> TinyId {
         self.nodes.push(node)
         self.places.push(place)
+        self.notes.push(null)
         TinyId { index: self.nodes.get().length - 1 }
     }
+
+    fn note(index: int) -> string? { self.notes.get()[index] }
+
+    fn noted(index: int, note: string) { self.notes.set_at(index, note) }
+
+    /// The note kept beside a node, after the node on its tape.
+    fn taped_facts(mut tape: TapeWriter, id: TinyId) {
+        let note = self.note(id.index)
+        tape.flag(note != null)
+        if note != null { tape.text(note!) }
+    }
+
+    fn untaped_facts(tape: TapeReader, id: TinyId) {
+        if tape.flag() { self.noted(id.index, tape.text()) }
+    }
+
+    /// A seat minted where it was written.
+    fn seat_at(place: TapePlace?) -> TinySeat {
+        self.seats.push(place)
+        TinySeat { index: self.seats.get().length - 1 }
+    }
+
+    fn seat_place(seat: TinySeat) -> TapePlace? { self.seats.get()[seat.index] }
 }
+
+/// A seat's identity, which its tree mints, so on a tape it's where it was written.
+@placed("seat_at", "seat_place")
+export type TinySeat = { index: int }
 
 export fn tiny_node(_t: Named) {}
 
@@ -77,6 +119,10 @@ export type Shapes = {
 export type Opaque = { act: fn(int) -> int = unchanged, after: int }
 
 fn unchanged(n: int) -> int { n }
+
+/// A node holding a seat.
+@tiny_node
+export type Seated = { kept: int, seat: TinySeat }
 
 /// A field a language keeps off the tape.
 @tiny_node

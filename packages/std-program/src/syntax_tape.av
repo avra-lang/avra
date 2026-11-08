@@ -170,6 +170,10 @@ impl TapeWriter {
     /// Octets: their length, then each one.
     fn octets(octets: Bytes) { octets_into(self.structure, octets) }
 
+    /// An offset into the item's file, kept from the item's first byte, so an item that moves keeps
+    /// its tape.
+    fn offset(at: int) { self.int(at - self.item_start) }
+
     /// Says the next node standing for an id was written `width` bytes from `offset` in the item's
     /// file, answering its number, which facts about it go by.
     fn place(offset: int, width: int) -> int {
@@ -276,6 +280,8 @@ export type TapePlace = { offset: int, width: int }
 
 /// A tape being read back, in the order it was written.
 export type TapeReader = {
+    /// Where the item starts in its file now, which offsets and places are read from.
+    item_start: int = 0,
     structure: Bytes,
     texts: List<string>,
     places: Bytes,
@@ -284,9 +290,10 @@ export type TapeReader = {
     last_offset: Cell<int> = Cell.new(0),
 }
 
-/// A reader of `tape`, from its first node.
-export fn tape_reader(tape: SyntaxTape) -> TapeReader {
+/// A reader of `tape`, from its first node, for an item starting `item_start` bytes into its file.
+export fn tape_reader(tape: SyntaxTape, item_start: int = 0) -> TapeReader {
     TapeReader {
+        item_start: item_start,
         structure: tape.meaning.structure,
         texts: texts_of(tape.meaning.texts),
         places: tape.places.places,
@@ -336,8 +343,11 @@ impl TapeReader {
         if stored == 0 { return null }
         let offset = self.last_offset.get() + unzigzag(number_from(self.places, self.place_at))
         self.last_offset.set(offset)
-        TapePlace { offset: offset, width: stored - 1 }
+        TapePlace { offset: self.item_start + offset, width: stored - 1 }
     }
+
+    /// An offset `TapeWriter.offset` wrote.
+    fn offset() -> int { self.item_start + self.int() }
 
     /// Whether every octet of the structure has been read.
     fn is_done() -> bool { self.at.get() == self.structure.length }

@@ -12,9 +12,10 @@ use @std.meta.{Code, Field, Kind, Named, Type as MetaType, Variant as MetaVarian
 /// whatever writes the id down writes that node.
 export fn indexes(_t: MetaType, _node: Named) {}
 
-/// Marks a value a tree mints, as a seat's identity is: a field of it kept off a tape is read back
-/// as `tree.<verb>()`, a fresh one.
-export fn made_by(_t: MetaType, _verb: string) {}
+/// Marks a value that says where something was written, as a span does, or that its tree mints
+/// there, as a seat's identity is: on a tape it's that place, `tree.<to>(value)`, and it reads back
+/// as `tree.<from>(place)`. Either verb takes the value absent too.
+export fn placed(_t: MetaType, _from: string, _to: string) {}
 
 /// What a value is made of.
 export enum ValueShape {
@@ -39,6 +40,8 @@ export enum ValueShape {
     Declared(type_name: string, path: string)
     /// An id, standing for the node it names: `node` as the id's module names it, and its whole path.
     Id(type_name: string, node: string, node_path: string)
+    /// A value standing for where it was written: `from` makes one at a place, `to` says a value's.
+    Placed(from: string, to: string)
 }
 
 /// What a language does with a field: writes it down, carries it in the value without writing it,
@@ -49,8 +52,9 @@ export enum FieldRole {
     Apart
 }
 
-/// What a language tells the reading: its declarations, and what it does with each field.
-export type Reading = { declared: fn(string) -> MetaType?, role: fn(Field) -> FieldRole }
+/// What a language tells the reading: its declarations, what it does with each field, and whether
+/// places stand apart from what's written, as they do on a tape.
+export type Reading = { declared: fn(string) -> MetaType?, role: fn(Field) -> FieldRole, places: bool = false }
 
 /// A field that's written down, with its shape: absent when it has no bytes.
 export type ShapedField = { field: Field, shape: ValueShape? }
@@ -68,7 +72,7 @@ impl Reading {
             .Bool -> .Bool,
             .Str -> .Text,
             .Bytes -> .Octets,
-            .Opt(inner) -> .Optional(self.shape_of(inner)?),
+            .Opt(inner) -> self.optional_shape(self.shape_of(inner)?),
             .List(inner) -> .Listed(self.shape_of(inner)?),
             .Cell(inner) -> .Celled(self.shape_of(inner)?),
             .Map(key, value) -> .Entries(self.shape_of(key)?, self.shape_of(value)?),
@@ -87,6 +91,8 @@ impl Reading {
         let declared? = self.declaration_of(type_name) else { return null }
         let node = node_indexed(declared)
         if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
+        let verbs = if self.places { declared.annotations.find(it.name == "placed")?.args ?? [] } else { [] }
+        if verbs.length == 2 { return .Placed(verbs[0], verbs[1]) }
         let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }
         .Renamed(type_name, self.shape_of(over)?)
     }
@@ -94,7 +100,7 @@ impl Reading {
     fn shaped(v: MetaVariant) -> ShapedVariant {
         ShapedVariant {
             name: v.name,
-            fields: [ShapedField { field: f, shape: self.shape_of(f.kind) } for f in v.fields if self.is_written(f)],
+            fields: [ShapedField { field: f, shape: self.shape_of(f.kind) } for f in v.fields if self.is_on_tape(f)],
         }
     }
 
@@ -102,6 +108,21 @@ impl Reading {
 
     fn is_written(f: Field) -> bool {
         match self.role_of(f) { .Written -> true, .Carried or .Apart -> false }
+    }
+
+    /// Whether a field is written down: one the language writes, or a place it carries, which
+    /// goes among the places.
+    fn is_on_tape(f: Field) -> bool { self.is_written(f) || self.is_carried(f) && self.is_place(f.kind) }
+
+    /// Whether a value of `kind` is a place.
+    fn is_place(kind: Kind) -> bool {
+        let shape? = self.shape_of(kind) else { return false }
+        match shape { .Placed(_, _) -> true, rest -> false }
+    }
+
+    /// An absent place is a place, its verbs taking absence; any other absent value is an option.
+    fn optional_shape(inner: ValueShape) -> ValueShape {
+        match inner { .Placed(_, _) -> inner, rest -> .Optional(inner) }
     }
 
     /// Whether a value of the type holds the field, as a variant's payload does.
@@ -114,15 +135,6 @@ impl Reading {
 
     fn role_of(f: Field) -> FieldRole { (self.role)(f) }
 
-    /// The tree's verb minting a value of `kind`, absent unless its type is marked `@made_by`.
-    fn made_by(kind: Kind) -> string? {
-        let declared? = self.declared_kind(kind) else { return null }
-        marked(declared, "made_by")
-    }
-
-    fn declared_kind(kind: Kind) -> MetaType? {
-        match kind { .Named(type_name, _) -> self.declaration_of(type_name), rest -> null }
-    }
 }
 
 /// A cell, or a name over a shape, which adds nothing to how a value is written down: what it
@@ -143,7 +155,7 @@ impl ValueShape {
                 opened: (value: Code) -> quote { ${value}.of },
                 closed: (value: Code) -> quote { ${type_name}(${value}) },
             },
-            .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) -> null,
+            .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> null,
         }
     }
 
@@ -153,7 +165,7 @@ impl ValueShape {
         match self {
             .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> [inner],
             .Entries(key, value) or .Sides(key, value) -> [key, value],
-            .Int or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) -> [],
+            .Int or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> [],
         }
     }
 }
