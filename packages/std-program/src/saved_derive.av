@@ -36,7 +36,7 @@ use saved_layout.{
     saved_root_record,
 }
 use defect.{defect}
-use value_shapes.{FieldRole, Reading, ValueShape, Wrapper}
+use value_shapes.{FieldRole, Reading, ValueShape, Wrapper, tag_made, tag_number}
 
 /// What generated code calls the writer it's handed. Saved fields are spliced into templates
 /// written elsewhere, so it's bound and read through a hole.
@@ -69,7 +69,7 @@ fn saved_reading() -> Reading { Reading { declared: type_named, role: (_f: Field
 fn holds_an_id(shape: ValueShape) -> bool {
     match shape {
         .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> true,
-        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) -> shape.children().any((child) -> holds_an_id(child)),
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Tags(_, _, _) -> shape.children().any((child) -> holds_an_id(child)),
     }
 }
 
@@ -131,7 +131,7 @@ fn field_door(f: Field, slot: int) -> Decls {
             ${read}
             static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedBytes { record.octets_in_place_at(${number})! }
         },
-        .Int or .Offset or .Float or .Bool or .Text or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> read,
+        .Int or .Offset or .Float or .Bool or .Text or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) or .Tags(_, _, _) -> read,
     }
 }
 
@@ -172,6 +172,14 @@ fn saved_form(shape: ValueShape) -> SavedForm {
         .Float -> SavedForm {
             written: (value: Code) -> quote { SavedSlot.Number(float_bits(${value})) },
             read: (node: Code, slot: Code) -> quote { ${node}.float_at(${slot}) },
+        },
+        .Tags(type_name, _, variants) -> SavedForm {
+            written: (value: Code) -> quote { SavedSlot.Number(${tag_number(value, variants)}) },
+            read: (node: Code, slot: Code) -> tag_made(
+                type_name,
+                variants,
+                quote { ${node}.number_at(${slot}) },
+            ),
         },
         .Bool -> SavedForm {
             written: (value: Code) -> quote { SavedSlot.Number(if ${value} { 1 } else { 0 }) },
@@ -293,7 +301,7 @@ fn optional_child_form(inner: ValueShape) -> SavedForm {
 /// its slot and can't say it's absent, and an absent nullable would read as the outer one's absence.
 fn rides_a_record(shape: ValueShape) -> bool {
     match shape {
-        .Int or .Offset or .Float or .Bool or .Optional(_) -> true,
+        .Int or .Offset or .Float or .Bool or .Optional(_) or .Tags(_, _, _) -> true,
         .Celled(inner) or .Renamed(_, inner) -> rides_a_record(inner),
         .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> false,
     }

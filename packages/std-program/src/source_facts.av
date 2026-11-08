@@ -24,12 +24,9 @@ export type SourceWorld = {
     language_print: string,
     /// A text's tokens, as its language's grammar says they work.
     columns_in: fn(string) -> TokenColumns,
-    /// One item's tree on a tape, read from its own text alone; absent where the tape can't stand
-    /// for it, which then is read again where it's needed.
-    item_tape: fn(string) -> SyntaxTape? = no_tape,
+    /// One item's tree on a tape, read from its own text alone.
+    item_tape: fn(string) -> SyntaxTape,
 }
-
-fn no_tape(_item_text: string) -> SyntaxTape? { null }
 
 once fn world_cell() -> Cell<SourceWorld?> {
     let no_world: SourceWorld? = null
@@ -179,26 +176,32 @@ export fn item_hash(
 /// An item's tape, keyed by its exact bytes, so an item that reads the same anywhere, in any
 /// file, is read once.
 @query
-export fn item_tape(engine: QueryEngine, item_text: string) -> SyntaxTape? {
+export fn item_tape(engine: QueryEngine, item_text: string) -> SyntaxTape {
     let _ = language_print(engine)
     (current_world().item_tape)(item_text)
 }
 
-/// Where an item's text starts in its file, and its tape: its places count from there. An item's
-/// text runs from the end of the one before it, so the docs and comments above it are its own.
+/// Where an item's text starts in its file, and its tape: its places count from there.
 @derive(Saved)
-export type PlacedTape = { start: int, tape: SyntaxTape? }
+export type PlacedTape = { start: int, tape: SyntaxTape }
 
-/// The tape of each item of a file, in order. An unchanged file answers with no reading at all;
-/// an edited one is lexed again, and only the items whose bytes moved are read. What a file says
-/// outside its items, as its header, stays with the file's own read.
+/// The tape of each item of a file, in order. Items partition the text: each runs from the end of
+/// the one before, so the docs and comments above it are its own, and the last runs to the file's
+/// end; a file with none is one item. So every byte, its header and its last comment among them,
+/// is on a tape. An unchanged file answers with no reading at all; an edited one is lexed again,
+/// and only the items whose bytes moved are read.
 @query
 export fn file_tapes(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
     let text? = source_text(engine, file) else { return [] }
     let columns = (current_world().columns_in)(text)
-    let items = source_items(columns)
-    let ends = [0].concat([item.end_in(columns) for item in items])
-    [placed_tape(engine, text, ends[at], item.end_in(columns)) for at, item in items]
+    let item_ends = [item.end_in(columns) for item in source_items(columns)]
+    let starts = [0].concat(item_ends).take(if item_ends.is_empty() { 1 } else { item_ends.length })
+    [placed_tape(
+        engine,
+        text,
+        start,
+        if at + 1 < starts.length { starts[at + 1] } else { text.length },
+    ) for at, start in starts]
 }
 
 fn placed_tape(engine: QueryEngine, text: string, start: int, end: int) -> PlacedTape {

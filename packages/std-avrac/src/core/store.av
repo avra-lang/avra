@@ -189,8 +189,7 @@ export type SyntaxArena = {
     // runs their actions minted, with the library each names
     @copied_by_hand("minted_expr: a block is named by its new offset") @remade("body_start_read: a block is filed with its body's start") sublangs: Cell<List<ExprId>>,
     @copied_by_hand("minted_expr: a block is named by its new offset") @taped(expr, body_start_read) @offset body_starts: Cell<List<int?>>,
-    @not_copied("the file's own parse refusals") @taped_with_item(block_voices_read) block_voices: Cell<List<BlockVoice>>,
-    @not_copied("the file's own parse refusals") @taped_with_item(refused_read) refused: Cell<List<Refused>>,
+    @not_copied("the file's own parse refusals") @taped_with_item(refusals_read) refusals: Cell<List<ParseRefusal>>,
     // where each node minted from another file's text was written, by the
     // node; null for a node written here
     @not_copied("a copy files where its nodes came from as it makes them") @taped(expr, expr_origin_read) expr_origins: Cell<List<ForeignOrigin?>>,
@@ -239,8 +238,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         quotes_at: map_cell(),
         sublangs: list_cell(),
         body_starts: list_cell(),
-        block_voices: list_cell(),
-        refused: list_cell(),
+        refusals: list_cell(),
         expr_origins: list_cell(),
         stmt_origins: list_cell(),
         pat_origins: list_cell(),
@@ -813,8 +811,10 @@ impl SyntaxArena {
 
     fn body_start(e: ExprId) -> int { self.body_starts.get()[e.index] ?? 0 }
 
-    fn speak_block(v: BlockVoice) { self.block_voices.push(v) }
-    fn refuse(r: Refused) { self.refused.push(r) }
+    fn refuse(r: ParseRefusal) { self.refusals.push(r) }
+
+    /// What the parse refused, in the order it refused it.
+    fn refusals() -> List<ParseRefusal> { self.refusals.get() }
 
     /// The arenas' counts now.
     fn marks() -> ArenaMarks { ArenaMarks { exprs: self.exprs.count(), stmts: self.stmts.count(), pats: self.pat_count() } }

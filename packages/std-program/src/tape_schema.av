@@ -134,7 +134,7 @@ export fn lying(shape: ValueShape) -> Lying {
         .Listed(inner) -> wrapped_in(.List, lying(inner)),
         .Celled(inner) or .Renamed(_, inner) -> lying(inner),
         .Entries(_, _) -> wrapped_in(.List, plain(.Node(node_path(shape)!))),
-        .Sides(_, _) or .Declared(_, _) -> plain(.Node(node_path(shape)!)),
+        .Sides(_, _) or .Declared(_, _) or .Tags(_, _, _) -> plain(.Node(node_path(shape)!)),
         .Id(_, _, root_path) -> plain(.Reached(root_path)),
         .Placed(_, _) -> plain(.Place),
         .Offset -> plain(.Offset),
@@ -148,7 +148,7 @@ export fn node_path(shape: ValueShape) -> string? {
     match shape {
         .Entries(key, value) -> "Map<${lying(key).spelled()}, ${lying(value).spelled()}>",
         .Sides(ok, err) -> "Result<${lying(ok).spelled()}, ${lying(err).spelled()}>",
-        .Declared(_, path) -> path,
+        .Declared(_, path) or .Tags(_, path, _) -> path,
         .Id(_, _, node_path) -> node_path,
         .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Placed(_, _) or .Nested(_, _) -> null,
     }
@@ -192,7 +192,7 @@ impl Reading {
     /// The node type a node shape is, absent for an id, whose node is a root of its own.
     fn node_type(shape: ValueShape) -> NodeType? {
         match shape {
-            .Declared(type_name, path) -> self.declared_type(self.declaration_of(type_name)!, path),
+            .Declared(type_name, path) or .Tags(type_name, path, _) -> self.declared_type(self.declaration_of(type_name)!, path),
             .Entries(key, value) -> spelled_type(
                 shape,
                 [side("Entry", [field_schema("key", key), field_schema("value", value)])],

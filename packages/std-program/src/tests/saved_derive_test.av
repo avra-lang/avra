@@ -12,6 +12,15 @@ use address.{
     SourceFileAddress,
 }
 
+/// An enum whose variants hold nothing, with no derive of its own.
+enum Shade {
+    Light
+    Dark
+}
+
+@derive(Saved)
+type Shaded = { shade: Shade, maybe: Shade?, all: List<Shade> }
+
 @derive(Saved)
 type EveryKind = {
     ratio: float,
@@ -120,6 +129,19 @@ spec "program/saved_derive — addresses saved and read back" {
     given "one address saved twice" {
         then "its bytes are the same" {
             blake3_hex(written_declaration().saved_bytes()) == blake3_hex(written_declaration().saved_bytes())
+        }
+    }
+}
+
+spec "saved_derive — an enum whose variants hold nothing" {
+    given "one alone, absent and in a list" {
+        then "each reads back as written" {
+            let back = Shaded
+                .from_saved_bytes(Shaded { shade: .Dark, maybe: null, all: [.Light, .Dark] }.saved_bytes())
+            back.shade == .Dark &&
+                back.maybe == null &&
+                back.all.length == 2 &&
+                back.all[0] == .Light
         }
     }
 }

@@ -6,6 +6,7 @@
 //! as a parsed child does, and every range law holds.
 use core.{
     Expr,
+    loc_span,
     Stmt,
     ExprId,
     SyntaxArena,
@@ -14,21 +15,14 @@ use core.{
     hole_name,
     flatten,
     some_list,
-    BlockVoice,
+    ParseRefusal,
     Scoped,
     BodyView,
 }
 use @std.errors.{Loc}
 use features.{LangNode, Builder, zip_defect_of}
-use @std.grammar.{run_from, Captured, Grammar, Seq, Item, Build}
+use @std.grammar.{run_from, Captured, Cause, Grammar, Seq, Item, Build}
 use grammar.{lex_body, runs, TokenKind, Token, avra_lexeme}
-
-/// The engine's own Loc, worn as this store's Span — the sublanguage's
-/// grammar runs over a byte range inside ITS file, never another.
-fn loc_span(l: Loc?) -> Span? {
-    if l == null { return null }
-    span_of(l!.lo, l!.hi)
-}
 
 fn build_sublang(b: Builder) -> Result<LangNode, string> {
     let w = b.token(0)?
@@ -62,15 +56,7 @@ fn expanded(b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprI
     for x in lexed.errors {
         b
             .store
-            .speak_block(
-                BlockVoice {
-                    message: x.message,
-                    lo: x.span.lo + at,
-                    hi: x.span.hi + at,
-                    expected: [],
-                    in_rule: "(lexing)",
-                },
-            )
+            .refuse(ParseRefusal.Grammar(Cause.Block, x.message, x.span.shifted(at), [], "(lexing)"))
     }
     if !lexed.errors.is_empty() { return null }
     let since = b.store.marks()
@@ -84,14 +70,15 @@ fn expanded(b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprI
     for d in o.diagnostics {
         b
             .store
-            .speak_block(
-                BlockVoice {
-                    message: d.message,
-                    lo: d.loc?.lo ?? at,
-                    hi: d.loc?.hi ?? at,
-                    expected: d.expected,
-                    in_rule: d.in_rule,
-                },
+            .refuse(
+                ParseRefusal
+                    .Grammar(
+                        Cause.Block,
+                        d.message,
+                        span_of(d.loc?.lo ?? at, d.loc?.hi ?? at),
+                        d.expected,
+                        d.in_rule,
+                    ),
             )
     }
     if !o.diagnostics.is_empty() || o.result == null { return null }

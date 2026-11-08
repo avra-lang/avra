@@ -30,6 +30,8 @@ use value_shapes.{
     Wrapper,
     declared_variants,
     path_of,
+    tag_made,
+    tag_number,
 }
 
 /// What a language tells the tape derive: its tree's type, how it reads its declarations, and how an
@@ -386,6 +388,7 @@ fn tape_form(shape: ValueShape) -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${tape()}.offset(${value}) },
             read: (_depth: int) -> quote { ${tape()}.offset() },
         },
+        .Tags(type_name, _, variants) -> tags_form(type_name, variants),
         .Nested(to, from) -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${tape()}.nested(${tree()}.${to}(${value})) },
             read: (_depth: int) -> quote { ${tree()}.${from}(${tape()}.nested()) },
@@ -474,6 +477,20 @@ fn entries_form(key: ValueShape, held: ValueShape) -> TapeForm {
 }
 
 /// A result is which side it is, then that side.
+/// An enum whose variants hold nothing lies as which one it is, when it has more than one.
+fn tags_form(type_name: string, variants: List<string>) -> TapeForm {
+    TapeForm {
+        written: (value: Code, _depth: int) -> tag_written(value, variants),
+        read: (_depth: int) -> if variants.length < 2 { quote { ${name(type_name)}.${variants[0]} } } else { tag_made(type_name, variants, quote { ${tape()}.choice(${variants.length}) }) },
+    }
+}
+
+fn tag_written(value: Code, variants: List<string>) -> Stmts {
+    if variants.length < 2 { return quote { let _ = ${value} } }
+    let number = tag_number(value, variants)
+    quote { ${tape()}.choice(${number}) }
+}
+
 fn sides_form(ok: ValueShape, err: ValueShape) -> TapeForm {
     TapeForm {
         written: (value: Code, depth: int) -> {
@@ -517,7 +534,7 @@ fn flag_led(shape: ValueShape) -> FlagLed? {
             rest_read: (flag: Code) -> quote { if ${flag} { ${read(inner, 0)} } else { null } },
         },
         .Celled(_) or .Renamed(_, _) -> led_through(shape.wrapper()!),
-        .Int or .Offset or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> null,
+        .Int or .Offset or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) or .Tags(_, _, _) -> null,
     }
 }
 

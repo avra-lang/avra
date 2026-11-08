@@ -10,11 +10,13 @@ use source_facts.{
     SourceWorld,
     declaration_part,
     declared_part_names,
+    file_tapes,
     item_hash,
     item_places,
     source_fact_definitions,
     use_source_world,
 }
+use syntax_tape.{SyntaxTape, tape_reader, tape_writer}
 use tests.support.spelled_tokens.{spelled_columns}
 use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
 
@@ -27,8 +29,37 @@ fn read_held(file: SourceFileAddress) -> string? { files().get().get(file.path_i
 
 fn set_world(language: string) {
     use_source_world(
-        SourceWorld { read_file: read_held, language_print: language, columns_in: spelled_columns },
+        SourceWorld {
+            read_file: read_held,
+            language_print: language,
+            columns_in: spelled_columns,
+            item_tape: untaped,
+        },
     )
+}
+
+/// A world whose tests read no tapes: every item's is empty.
+fn untaped(_item_text: string) -> SyntaxTape { tape_writer().finished() }
+
+/// A world whose tape of an item holds the item's text, so a test sees how a file was cut.
+fn text_taped(item_text: string) -> SyntaxTape {
+    mut tape = tape_writer()
+    tape.text(item_text)
+    tape.finished()
+}
+
+/// The texts a file was cut into, in order.
+fn item_texts(path: string, text: string) -> List<string> {
+    use_source_world(
+        SourceWorld {
+            read_file: read_held,
+            language_print: "v1",
+            columns_in: spelled_columns,
+            item_tape: text_taped,
+        },
+    )
+    files().put(path, text)
+    [tape_reader(p.tape).text() for p in file_tapes(process(store_in_memory()), file_at(path))]
 }
 
 fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: "@test/p", path_in_package: path } }
@@ -228,5 +259,20 @@ spec "source_facts — who reruns when a file changes" {
             let store = fresh_store("broken.x", "ka=b;(")
             declared_part_names(process(store), file_at("broken.x")).length == 1
         }
+    }
+}
+
+spec "source_facts — a file's items partition its text" {
+    given "items, a comment between them and one after the last" {
+        then "the second runs from the end of the first to the file's end" {
+            item_texts("cut.x", "ka=b;~~;kc=d;~~").join("|") == "ka=b|;~~;kc=d;~~"
+        }
+        then "the items' texts join back into the file" { item_texts("cut.x", "ka=b;~~;kc=d;~~").join("") == "ka=b;~~;kc=d;~~" }
+    }
+    given "a file of nothing but a comment" {
+        then "it is one item" { item_texts("note.x", "~~").join("|") == "~~" }
+    }
+    given "an empty file" {
+        then "it is one empty item" { item_texts("empty.x", "").length == 1 }
     }
 }

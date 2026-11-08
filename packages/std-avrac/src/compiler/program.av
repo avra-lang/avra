@@ -3,6 +3,7 @@
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{
     SyntaxArena,
+    loc_span,
     new_node_store,
     Stmt,
     StmtId,
@@ -16,7 +17,7 @@ use core.{
     TypeRef,
     TypeId,
     flatten,
-    BlockVoice,
+    ParseRefusal,
     DeclId,
     FileId,
     joined,
@@ -171,42 +172,17 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
     store.keep_remarks(lexed.remarks)
     attach_docs(store, lexed.docs)
     if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
-    // what a block's grammar refused speaks with the parse, at the block
-    let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
-    let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors]
-        .concat(o.diagnostics)
-        .concat(blocked)
+    for e in lexed.errors { store.refuse(ParseRefusal.Grammar(Cause.Lex, e.message, e.span, [], "(lexing)")) }
+    for d in o.diagnostics {
+        store
+            .refuse(ParseRefusal.Grammar(d.cause, d.message, loc_span(d.loc), d.expected, d.in_rule))
+    }
     Parsed {
         store: store,
         stmts: [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls()),
         source: src,
-        voices: Voices {
-            list: project_all(engine, src.file, lang.rows.codes)
-                .concat(refusals_spoken(store.refused.get(), src.file, lang.rows.codes)),
-        },
+        voices: Voices { list: refusals_spoken(store.refusals(), src.file, lang.rows.codes) },
     }
-}
-
-/// A block grammar's refusal as the engine's diagnostic it was.
-fn block_diagnostic(v: BlockVoice) -> Diagnostic {
-    Diagnostic {
-        cause: Cause.Block,
-        message: v.message,
-        loc: Loc { file: null, lo: v.lo, hi: v.hi },
-        expected: v.expected,
-        in_rule: v.in_rule,
-    }
-}
-
-/// The engine's own Loc, worn as this store's Span.
-fn loc_span(l: Loc?) -> Span? {
-    if l == null { return null }
-    span_of(l!.lo, l!.hi)
-}
-
-/// A byte range in this file, worn as the engine's own Loc.
-fn span_loc(s: Span) -> Loc {
-    Loc { file: null, lo: s.lo, hi: s.hi }
 }
 
 /// A type SPELLING (`List<ExprId>?`) as the written type it spells —
