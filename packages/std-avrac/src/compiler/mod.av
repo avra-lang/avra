@@ -27,6 +27,7 @@
 //!   host/      the filesystem seam and the manifest
 //!   format/    the AST's source projection (`avra fmt`)
 //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
+use @std.program.token_columns.{TokenRoles, token_roles}
 use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor}
 use @std.meta.{Field}
 use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
@@ -110,6 +111,9 @@ export type Language = {
     // what the printer reads of a node's rule, by `Owner.Variant`
     wordings: Map<string, Wording>,
     keywords: List<string>,
+    // what the grammar's rules say its tokens do: which open and close a
+    // pair, and which end an item
+    roles: TokenRoles,
     rows: LanguageRows,
     dispatch: Dispatch,
     diagnostics: List<Diag>,
@@ -150,6 +154,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
         syntax: rd,
         wordings: wordings.found,
         keywords: reserved_words(features, g),
+        roles: token_roles(rd),
         rows: rows_of(features, codes),
         dispatch: new_dispatch(),
         diagnostics: [],
@@ -269,6 +274,7 @@ fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> La
         syntax: null,
         wordings: {},
         keywords: [],
+        roles: TokenRoles { literals: {}, attached_classes: [] },
         rows: rows_of(features, []),
         dispatch: new_dispatch(),
         diagnostics: as_defects(defects),

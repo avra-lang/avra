@@ -34,7 +34,7 @@ use core.{
 }
 use core.{Slots}
 use @std.meta.{Field, Node as MetaNode}
-use @std.grammar.{Captured, Ready}
+use @std.grammar.{Captured, Cause, Ready}
 use grammar.{Token}
 /// One build call's world: the store, the captured arguments in
 /// grammar order, the engine-attributed span of the branch that
@@ -56,6 +56,29 @@ impl BlockWords {
 
     /// The component a file's imports open `word` with.
     fn component(word: string) -> ComponentWord? { self.components.find(it.word == word) }
+}
+
+/// Every instance a parse of shapes alone wrote into `store` since `since`, meaning what its
+/// component makes of it under `words`, inner ones first: what each refuses is said at the
+/// instance.
+export fn instances_expanded(store: SyntaxArena, text: string, words: BlockWords, since: ArenaMarks) {
+    let built = Builder { store: store, args: [], span: null, text: text, words: words }
+    let written = [ExprId { index: at } for at in since.exprs..store.exprs.count()]
+    for e in written {
+        if store.instance_word(e) != null && store.provided_of(e) == null { built.expanded_at(e) }
+    }
+}
+
+impl Builder {
+    /// An instance's meaning minted, or its refusal said where it stands.
+    fn expanded_at(e: ExprId) {
+        match self.minted_beside(e) {
+            .Ok(_) -> nothing(),
+            .Err(words) -> self
+                .store
+                .refuse(ParseRefusal.Grammar(Cause.Builder, words, self.store.expr_span(e), [], "")),
+        }
+    }
 }
 
 impl Slots for Builder {
@@ -360,9 +383,26 @@ impl Builder {
     }
 
     /// `id` as this build's node, with what it means minted beside it when
-    /// it is a sugar. A sugar whose shape means nothing refuses in its own
-    /// words.
+    /// it is a sugar. An instance whose word is known by its shape alone
+    /// means once its component is at hand (`instances_expanded`).
     fn mint(id: ExprId) -> Result<ExprId, string> {
+        if self.shaped_instance(id) { return .Ok(id) }
+        self.minted_beside(id)
+    }
+
+    /// Whether `id` is an instance whose word this parse knows by its shape alone.
+    fn shaped_instance(id: ExprId) -> bool {
+        let word? = self.store.instance_word(id) else { return false }
+        let found? = self.words.component(word) else { return false }
+        match found.form {
+            .Shaped(_) -> true,
+            .Template(_) or .Record(_) or .Refused(_) or .Spoken or .Unread -> false,
+        }
+    }
+
+    /// What `id` means, minted beside it. A sugar whose shape means nothing
+    /// refuses in its own words.
+    fn minted_beside(id: ExprId) -> Result<ExprId, string> {
         self.provide(id)
         let minted = (self.words.door)(self.store, id)?
         if !minted.nodes.is_empty() { self.store.means_as(id, minted, self.said(id, self.store.expr(id))) }
