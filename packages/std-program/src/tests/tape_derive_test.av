@@ -4,7 +4,7 @@
 use answer_record.{content_hash}
 use syntax_tape.{TapePlace, TapeReader, TapeWriter, tape_reader, tape_writer}
 use tape_schema.{TypeSchema}
-use tests.support.tiny_tree.{TinyBox, TinyId, TinyNode, TinyTree, tiny_tree}
+use tests.support.tiny_tree.{TinyId, TinyNode, TinyTree, tiny_tree}
 use tests.support.tiny_taped.{Taped}
 
 fn id(index: int) -> TinyId { TinyId { index: index } }
@@ -207,26 +207,6 @@ spec "a generated node" {
                 tape.is_done()
         }
         then "it reads back as written" { round_trips([.Moody(.Loud, .Calm, [.Quiet])]) }
-    }
-    given "a node holding a tree of its own" {
-        then "its tree lies as a tape of its own, and reads back into the reading tree" {
-            let other = tiny_tree([leaf(9)])
-            let tree = tiny_tree([])
-            let _ = tree
-                .added(.Boxed(4, TinyBox { tree: other, root: id(0) }), TapePlace { offset: 0, width: 1 })
-            let back = tiny_tree([])
-            let tape = tape_reader(written_from(tree).finished())
-            let read = TinyNode.untaped_id(back, tape)
-            let inner = match back.node(read.index) {
-                .Boxed(kept, held) -> if kept == 4 { held.root } else { null },
-                _ -> null,
-            }
-            let leaf_back = match back.node(inner!.index) {
-                .Leaf(number, _, _, _) -> number == 9,
-                _ -> false,
-            }
-            tape.is_done() && back.all().length == 2 && leaf_back
-        }
     }
     given "a node saying where in its file something stands" {
         then "it's kept from the item's first byte, and reads back moved with the item" {

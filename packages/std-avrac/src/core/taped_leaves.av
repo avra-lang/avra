@@ -1,6 +1,6 @@
 //! Where a node was written, as a tape says it and as Avra's tree does: a span. A seat's identity
 //! is minted where it was written, so on a tape it's that place.
-use @std.program.syntax_tape.{SyntaxTape, TapePlace, tape_reader, tape_writer}
+use @std.program.syntax_tape.{TapePlace}
 
 impl SyntaxArena {
     /// The place a span says, absent with it.
@@ -50,7 +50,7 @@ impl SyntaxArena {
 
     fn extensions_read(sugar: ExprId, roots: List<ExprId>) { if !roots.is_empty() { self.extended_with(sugar, roots) } }
 
-    fn instance_read(e: ExprId, facts: InstanceFacts?) { self.instances.set_at(e.index, facts) }
+    fn expansion_read(e: ExprId, expansion: Expansion?) { self.expansions.set_at(e.index, expansion) }
 
     fn struct_targs_read(e: ExprId, targs: List<TypeRef>) { if !targs.is_empty() { self.mark_struct_targs(e, targs) } }
 
@@ -80,22 +80,6 @@ impl SyntaxArena {
     /// What an expression read back makes again: a quote is named by where it now stands.
     fn remade_expr(e: ExprId) { if is_quote(self.expr(e)) { self.mark_quote_at(e) } }
 
-    /// A template's statements, on a tape of their own: the store they stand in is theirs.
-    fn template_body_taped(body: TemplateBody) -> SyntaxTape {
-        mut tape = tape_writer()
-        tape.count(body.stmts.length)
-        for s in body.stmts { Stmt.taped_id(body.store, tape, s) }
-        tape.finished()
-    }
-
-    /// A template's statements read back into a store of their own.
-    fn template_body_untaped(tape: SyntaxTape) -> TemplateBody {
-        let store = new_node_store()
-        let reader = tape_reader(tape)
-        let stmts = [Stmt.untaped_id(store, reader) for _s in 0..reader.count()]
-        store.settled_since(ArenaMarks { exprs: 0, stmts: 0, pats: 0 })
-        TemplateBody { stmts: stmts, store: store }
-    }
 }
 
 /// Whether a node is a `quote` body, which is named by where it stands.

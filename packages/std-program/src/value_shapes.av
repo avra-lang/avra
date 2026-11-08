@@ -45,17 +45,10 @@ export enum ValueShape {
     /// An int saying where in its item's file something stands, a field marked `@offset`: where
     /// places stand apart it counts from the item, so it reads back moved with it.
     Offset
-    /// A value holding a tree of its own, as a template does: where places stand apart it lies as
-    /// a tape of its own, `tree.<to>(value)`, and reads back as `tree.<from>(tape)`.
-    Nested(to: string, from: string)
     /// An enum whose variants hold nothing: a number, which of `variants` it is. `path` is its
     /// whole path.
     Tags(type_name: string, path: string, variants: List<string>)
 }
-
-/// Marks a type whose value holds a tree of its own: on a tape it's a tape of its own, written by
-/// `tree.<to>(value)` and read back by `tree.<from>(tape)`.
-export fn nested_tape(_t: MetaType, _to: string, _from: string) {}
 
 /// Marks an int field that says where in its file something stands.
 export const OFFSET_MARK: string = "offset"
@@ -109,8 +102,6 @@ impl Reading {
         if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
         let verbs = if self.places { declared.annotations.find(it.name == "placed")?.args ?? [] } else { [] }
         if verbs.length == 2 { return .Placed(verbs[0], verbs[1]) }
-        let nested = if self.places { declared.annotations.find(it.name == "nested_tape")?.args ?? [] } else { [] }
-        if nested.length == 2 { return .Nested(nested[0], nested[1]) }
         if is_tags(declared) { return .Tags(type_name, path_of(declared, args), [v.name for v in declared.variants]) }
         let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }
         .Renamed(type_name, self.shape_of(over)?)
@@ -182,7 +173,7 @@ impl ValueShape {
                 opened: (value: Code) -> quote { ${value}.of },
                 closed: (value: Code) -> quote { ${type_name}(${value}) },
             },
-            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) or .Tags(_, _, _) -> null,
+            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Tags(_, _, _) -> null,
         }
     }
 
@@ -192,7 +183,7 @@ impl ValueShape {
         match self {
             .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> [inner],
             .Entries(key, value) or .Sides(key, value) -> [key, value],
-            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) or .Tags(_, _, _) -> [],
+            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Tags(_, _, _) -> [],
         }
     }
 }

@@ -38,9 +38,6 @@ fn no_expr_marks() -> ExprMarks {
 /// file read it, and what its meaning minted — the literal or template copy
 /// that stands in place, and the `check` call over it when the component
 /// judges its instances.
-@derive(Taped)
-export type InstanceFacts = { provided: Provided, expansion: Expansion? = null }
-
 /// A declaration's leading `///` lines and where the group began.
 @derive(Taped)
 export type DocGroup = { lines: List<string>, @offset at: int }
@@ -175,7 +172,10 @@ export type SyntaxArena = {
     @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") @taped(stmt, owned_instance_read) owned_instances: Cell<List<ExprId?>>,
     // what an instance stands on, by the instance: its component as the
     // file read it, then the literal its meaning minted
-    @copied(expr, wear_instance) @taped(expr, instance_read) instances: Cell<List<InstanceFacts?>>,
+    @copied(expr, wear_provided) @remade("an expansion hands it again from its component's declaration") provided: Cell<List<Provided?>>,
+    // the literal an instance's meaning minted and the `check` over it, by
+    // the instance
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, expansion_read) expansions: Cell<List<Expansion?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
@@ -233,7 +233,8 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         extensions: list_cell(),
         instance_owners: list_cell(),
         owned_instances: list_cell(),
-        instances: list_cell(),
+        provided: list_cell(),
+        expansions: list_cell(),
         struct_targs: list_cell(),
         quotes_at: map_cell(),
         sublangs: list_cell(),
@@ -325,7 +326,8 @@ impl SyntaxArena {
         self.means_notes.push(null)
         self.extensions.push([])
         self.instance_owners.push(null)
-        self.instances.push(null)
+        self.provided.push(null)
+        self.expansions.push(null)
         self.struct_targs.push([])
         self.on_handlers.push(null)
         self.body_starts.push(null)
@@ -882,43 +884,33 @@ impl SyntaxArena {
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
             .Body(_, _, _, view) -> view.expansion(),
-            .Component(_, _, _, _, _, _) -> self.instances.get()[e.index]?.expansion?.literal,
+            .Component(_, _, _, _, _, _) -> self.expansions.get()[e.index]?.literal,
             _ -> null,
         }
     }
 
     /// The component an instance's word names, as its file read it.
-    fn provided_of(e: ExprId) -> Provided? {
-        self.instances.get()[e.index]?.provided
-    }
+    fn provided_of(e: ExprId) -> Provided? { self.provided.get()[e.index] }
 
-    /// `provided` as what the instance `e` stands on; its minted nodes are
-    /// kept when it is minted again.
-    fn provide(e: ExprId, provided: Provided) {
-        let held = self.instances.get()[e.index]
-        self
-            .instances
-            .set_at(e.index, InstanceFacts { provided: provided, expansion: held?.expansion })
-    }
+    /// `provided` as what the instance `e` stands on.
+    fn provide(e: ExprId, provided: Provided) { self.provided.set_at(e.index, provided) }
 
     /// The literal an instance's meaning minted, and the `check` call over
     /// it when the component judges its instances.
     fn expanded_as(e: ExprId, expansion: Expansion) {
-        let held? = self.instances.get()[e.index] else { return }
-        self.instances.set_at(e.index, held with { expansion: expansion })
+        if self.provided_of(e) == null { return }
+        self.expansions.set_at(e.index, expansion)
     }
 
     /// The `check` call an instance's component judges it by; null for a
     /// component that declares none.
-    fn checked_by(e: ExprId) -> ExprId? {
-        self.instances.get()[e.index]?.expansion?.check
-    }
+    fn checked_by(e: ExprId) -> ExprId? { self.expansions.get()[e.index]?.check }
 
     /// Gives `e` the component `worn` names — the door a copy uses, so an
     /// instance's meaning is minted again from what it stood on.
-    fn wear_instance(e: ExprId, worn: InstanceFacts?) {
-        let facts? = worn else { return }
-        self.provide(e, facts.provided)
+    fn wear_provided(e: ExprId, worn: Provided?) {
+        let provided? = worn else { return }
+        self.provide(e, provided)
     }
 
     /// The expressions a body's view holds, for the complete walk: a
