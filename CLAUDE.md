@@ -1649,6 +1649,7 @@ Syntax the grammar lacks:
 - A bare `table { … }` reads as a struct literal ("no `type table` is declared"); write `table<Row> { id | name … }` with a pipe header.
 - A record literal as a component instance's head stands in parentheses (`tally (Span { n: 2 }) { extra: 3 }`); bare, the brace opens the block — pinned by features/components/tests/components_head_test.av, not by this section.
 - A semicolon between statements is "unexpected character `;`"; a one-line body is `{ a }`.
+- A field's mark on its own line inside a type literal is "expected `}` while parsing `stmt`"; write it on the field's line (`{ @local at: int }`).
 - `if let v? = e { … }` takes an `else`: without one it is "expected BREAK" at the `let`; a guard is `let v? = e else { … }`, and a present-only test is `if e != null { … }`.
 - A range takes methods (`any`, `find`, `map`, `all`) but has no `.length`.
 - A `once fn` takes no type parameters ("expected `(`"), no arguments, and answers a managed value ("`once fn seed` answers `int`, which the runtime cannot keep").

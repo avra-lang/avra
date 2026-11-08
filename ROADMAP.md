@@ -3214,6 +3214,14 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### A field's mark on a line of its own
+
+A type literal takes a mark only on its field's line: `{ @offset at: int }` parses and
+`{\n    @offset\n    at: int,\n}` is "expected `}` while parsing `stmt`". `SyntaxArena`'s tables in
+`packages/std-avrac/src/core/store.av` wear two or three marks each, so every one is a line past the
+width the rest of the file keeps. The site wants a mark on its own line before its field, as a
+statement's annotation stands before its statement.
+
 ### A run of statements in the middle of a block
 
 `packages/std-program/src/tape_derive.av` gathers every run of generated statements into one list
