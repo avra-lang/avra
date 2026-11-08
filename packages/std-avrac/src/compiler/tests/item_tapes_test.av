@@ -1,0 +1,83 @@
+// A file's items on tapes, through the program layer's engine and a store on disk: a later process
+// reads an unchanged file with no item read at all, an edited one reads only the items that moved,
+// and the tree put back together is the one a parse makes.
+use compiler.{avra_source_world, parse_source, read_back}
+use @std.io.{make_dirs}
+use @std.program.address.{SourceFileAddress}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.source_facts.{PlacedTape, file_tapes, source_fact_definitions, use_source_world}
+use @std.time.{stamp}
+
+once fn files() -> Cell<Map<string, string>> {
+    let held: Map<string, string> = {}
+    Cell.new(held)
+}
+
+fn read_held(file: SourceFileAddress) -> string? { files().get().get(file.path_in_package) }
+
+fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: "@test/p", path_in_package: path } }
+
+/// A store of its own for each case.
+fn store_dir(name: string) -> string {
+    let dir = "/tmp/avra-item-tapes-test/${stamp()}/${name}"
+    let _ = make_dirs(dir)
+    dir
+}
+
+/// One process: its engine over the store at `dir`, the tapes it answers for `path`, then what it
+/// learned published. Answers how many queries ran.
+fn process(dir: string, path: string) -> int {
+    use_source_world(avra_source_world(read_held, "avra-test"))
+    let store = disk_store_at(dir)
+    let engine = query_engine(store, source_fact_definitions())
+    let _ = file_tapes(engine, file_at(path))
+    let _ = store.saved()
+    engine.computed_count.get()
+}
+
+fn tapes_of(dir: string, path: string) -> List<PlacedTape> {
+    use_source_world(avra_source_world(read_held, "avra-test"))
+    file_tapes(query_engine(disk_store_at(dir), source_fact_definitions()), file_at(path))
+}
+
+const THREE: string = "/// Adds.\nexport fn add(a: int, b: int) -> int { a + b }\n\nfn twice(x: int) -> int {\n    let y = add(x, x)\n    y\n}\n\ntype P = { x: int, y: string? = null }\n"
+
+const ONE_BODY_EDITED: string = "/// Adds.\nexport fn add(a: int, b: int) -> int { a + b }\n\nfn twice(x: int) -> int {\n    let y = add(x, x) + 1\n    y\n}\n\ntype P = { x: int, y: string? = null }\n"
+
+/// Whether the tree read back from `path`'s tapes is the one a parse of its text makes.
+fn reads_back_as_parsed(dir: string, path: string) -> bool {
+    let back? = read_back(path, tapes_of(dir, path)) else { return false }
+    let parsed = parse_source(files().get().get(path)!)
+    back.stmts.length == parsed.stmts.length &&
+        [at for at, s in back.stmts if back.store.stmt_fingerprint(s) != parsed.store.stmt_fingerprint(parsed.stmts[at])]
+            .is_empty()
+}
+
+spec "a file's items on tapes" {
+    given "a file read once" {
+        then "the first process reads each of its three items, and a later one only its inputs" {
+            let dir = store_dir("unchanged")
+            files().put("a.av", THREE)
+            let first = process(dir, "a.av")
+            first == 6 && process(dir, "a.av") == 2
+        }
+    }
+    given "one item's body edited" {
+        then "the file's tapes are made again, and only that item is read" {
+            let dir = store_dir("edited")
+            files().put("b.av", THREE)
+            let _ = process(dir, "b.av")
+            files().put("b.av", ONE_BODY_EDITED)
+            process(dir, "b.av") == 4
+        }
+    }
+    given "the tapes of a file" {
+        then "they read back as the tree a parse makes" {
+            let dir = store_dir("back")
+            files().put("c.av", THREE)
+            let _ = process(dir, "c.av")
+            reads_back_as_parsed(dir, "c.av")
+        }
+    }
+}
