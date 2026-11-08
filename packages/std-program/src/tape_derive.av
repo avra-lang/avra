@@ -23,8 +23,8 @@ use @std.meta.{
 use syntax_tape.{FLAGS_PER_NUMBER, flag_mask}
 use tape_schema.{Holds, Lying, FieldSchema, TypeSchema, VariantSchema, Wrapping}
 use value_shapes.{
+    OFFSET_MARK,
     Reading,
-    ShapedField,
     ShapedVariant,
     ValueShape,
     Wrapper,
@@ -51,6 +51,9 @@ export type TreeVerbs = {
     /// Those read back onto the id just made.
     facts_read: fn(Code, Code, Code, string) -> Stmts,
 }
+
+/// The field marks every language's tape derive takes: `@offset`.
+export fn tape_marks() -> List<string> { [OFFSET_MARK] }
 
 /// What generated code calls the tree and the tape it's handed, an id it follows, and where a node
 /// read back was written.
@@ -112,10 +115,17 @@ fn is_int(k: Kind) -> bool {
     match k { .Int -> true, rest -> false }
 }
 
-/// The fields a node's value holds that nothing reads back, each refused.
+/// The fields a node's value holds that nothing reads back, and those it writes with no bytes,
+/// each refused: a tape holds everything its tree does.
 fn unmade_fields(t: MetaType, layouts: List<Layout>) -> List<Diagnostic> {
-    [unmade(t, h.field) for layout in layouts for h in layout.held if h.read == null]
+    [no_bytes(t, f) for layout in layouts for f in layout.shapeless]
+        .concat(
+            [unmade(t, h.field) for layout in layouts for h in layout.held if h.read == null && !layout.shapeless.any(it.name == h.field.name)],
+        )
 }
+
+/// A field and its shape, once it's known to have one.
+type ShapedValue = { field: Field, shape: ValueShape }
 
 /// A node type's writer and the readers handed in, beside the type.
 fn node_declared(
@@ -213,7 +223,7 @@ fn taped_body(t: MetaType, layouts: List<Layout>) -> Stmts {
     }
     let record = layouts[0]
     let fields = something_written(
-        fields_written([quote { self.${f.shaped.field.name} } for f in record.fields], record),
+        fields_written([quote { self.${f.field.name} } for f in record.fields], record),
     )
     quote { ${fields} }
 }
@@ -246,7 +256,7 @@ fn says_its_variant(layouts: List<Layout>) -> bool { layouts.length > 1 }
 fn variant_written(layout: Layout, at: int, has_choice: bool) -> Arms {
     let choice: List<Stmts> = if has_choice { [quote { ${tape()}.choice(${at}) }] } else { [] }
     let binders = [if layout.writes(h.field) { "held_${h.field.name}" } else { "_${h.field.name}" } for h in layout.held]
-    let values = [name("held_${f.shaped.field.name}") for f in layout.fields]
+    let values = [name("held_${f.field.name}") for f in layout.fields]
     let body = something_written([..choice, ..fields_written(values, layout)])
     let declared = layout.declared
     if binders.is_empty() { return quote { .${declared} -> { ${body} } } }
@@ -265,14 +275,14 @@ fn variant_read(t: MetaType, layout: Layout) -> List<Stmts> {
 /// How one variant lies on a tape, worked out once for its writer, its reader and its refusals: the
 /// fields its value holds, each field written in order with the flag it leads with, and how many
 /// flags there are.
-type Layout = { declared: MetaVariant, held: List<Held>, fields: List<LaidField>, flag_count: int }
+type Layout = { declared: MetaVariant, held: List<Held>, fields: List<LaidField>, flag_count: int, shapeless: List<Field> }
 
 /// A field a variant's value holds, and the generated code reading it back: from the tape, or made
 /// without it. Absent when nothing makes one.
 type Held = { field: Field, read: Code? }
 
-/// A field written, and the flag it leads with, if it does.
-type LaidField = { shaped: ShapedField, led: Led? }
+/// A field written, how it lies, and the flag it leads with, if it does.
+type LaidField = { field: Field, shape: ValueShape, led: Led? }
 
 /// A field leading with a flag: how, and which of the variant's flags is its.
 type Led = { form: FlagLed, number: int }
@@ -284,21 +294,23 @@ fn laid_out(t: MetaType, reading: Reading) -> List<Layout> {
 }
 
 fn laid(declared: MetaVariant, held: List<Field>, v: ShapedVariant) -> Layout {
-    let forms = [led_of(f) for f in v.fields]
+    let shaped = [ShapedValue { field: f.field, shape: f.shape! } for f in v.fields if f.shape != null]
+    let forms = [flag_led(f.shape) for f in shaped]
     let numbers = [[form for form in forms.take(at) if form != null].length for at, _form in forms]
-    let fields = [LaidField { shaped: f, led: led_numbered(forms[at], numbers[at]) } for at, f in v.fields]
+    let fields = [LaidField { field: f.field, shape: f.shape, led: led_numbered(forms[at], numbers[at]) } for at, f in shaped]
     let flag_count = [form for form in forms if form != null].length
     Layout {
         declared: declared,
         held: [Held { field: f, read: held_read(fields, flag_count, f) } for f in held],
         fields: fields,
         flag_count: flag_count,
+        shapeless: [f.field for f in v.fields if f.shape == null],
     }
 }
 
 impl Layout {
     /// Whether a field's value is written on the tape, so the writer reads it.
-    fn writes(f: Field) -> bool { self.fields.any(it.shaped.field.name == f.name) }
+    fn writes(f: Field) -> bool { self.fields.any(it.field.name == f.name) }
 }
 
 fn led_numbered(form: FlagLed?, number: int) -> Led? {
@@ -335,20 +347,17 @@ fn something_written(statements: List<Stmts>) -> List<Stmts> {
     if statements.is_empty() { [quote { let _ = ${tape()} }] } else { statements }
 }
 
-/// A field after the flags: what's left of a flagged one, and the rest whole. A field with no bytes
-/// says the tape can't stand for its node.
+/// A field after the flags: what's left of a flagged one, and the rest whole.
 fn field_written(f: LaidField, value: Code) -> List<Stmts> {
-    let shape? = f.shaped.shape else { return [quote { ${tape()}.met_no_bytes() }] }
-    let led? = f.led else { return [written(shape, value, 0)] }
+    let led? = f.led else { return [written(f.shape, value, 0)] }
     (led.form.rest_written)(value)
 }
 
 /// A field's value read back: a flagged one from its flag, the rest whole, and one the tape doesn't
 /// hold, being carried or having no bytes, its default.
 fn held_read(fields: List<LaidField>, flag_count: int, f: Field) -> Code? {
-    let laid? = fields.find(it.shaped.field.name == f.name) else { return f.default }
-    let shape? = laid.shaped.shape else { return f.default }
-    let led? = laid.led else { return read(shape, 0) }
+    let laid? = fields.find(it.field.name == f.name) else { return f.default }
+    let led? = laid.led else { return read(laid.shape, 0) }
     (led.form.rest_read)(flag_read(flag_count, led.number))
 }
 
@@ -372,6 +381,14 @@ fn tape_form(shape: ValueShape) -> TapeForm {
         .Int -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${tape()}.int(${value}) },
             read: (_depth: int) -> quote { ${tape()}.int() },
+        },
+        .Offset -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.offset(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.offset() },
+        },
+        .Nested(to, from) -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.nested(${tree()}.${to}(${value})) },
+            read: (_depth: int) -> quote { ${tree()}.${from}(${tape()}.nested()) },
         },
         .Float -> TapeForm {
             written: (value: Code, _depth: int) -> quote { ${tape()}.float(${value}) },
@@ -485,11 +502,6 @@ fn sides_form(ok: ValueShape, err: ValueShape) -> TapeForm {
 /// statements writing what's left of it after the flags, and that read back from the flag.
 type FlagLed = { flag: fn(Code) -> Code, rest_written: fn(Code) -> List<Stmts>, rest_read: fn(Code) -> Code }
 
-fn led_of(f: ShapedField) -> FlagLed? {
-    let shape? = f.shape else { return null }
-    flag_led(shape)
-}
-
 fn flag_led(shape: ValueShape) -> FlagLed? {
     match shape {
         .Bool -> FlagLed {
@@ -505,7 +517,7 @@ fn flag_led(shape: ValueShape) -> FlagLed? {
             rest_read: (flag: Code) -> quote { if ${flag} { ${read(inner, 0)} } else { null } },
         },
         .Celled(_) or .Renamed(_, _) -> led_through(shape.wrapper()!),
-        .Int or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> null,
+        .Int or .Offset or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> null,
     }
 }
 
@@ -565,6 +577,8 @@ fn holds_code(h: Holds) -> Code {
     match h {
         .Node(type_path) -> quote { Holds.Node(${literal(type_path)}) },
         .Reached(type_path) -> quote { Holds.Reached(${literal(type_path)}) },
+        .Offset -> quote { Holds.Offset },
+        .Tape -> quote { Holds.Tape },
         .Int -> quote { Holds.Int },
         .Float -> quote { Holds.Float },
         .Bool -> quote { Holds.Bool },
@@ -576,6 +590,12 @@ fn holds_code(h: Holds) -> Code {
 
 fn unmade(t: MetaType, f: Field) -> Diagnostic {
     refuse("`${t.name}.${f.name}` isn't on its tape, so reading it back needs a default")
+}
+
+fn no_bytes(t: MetaType, f: Field) -> Diagnostic {
+    refuse(
+        "`${t.name}.${f.name}` holds a `${f.kind.spelled()}`, which has no bytes, so a tape can't hold its node",
+    )
 }
 
 fn not_one_index(id: MetaType) -> Diagnostic {

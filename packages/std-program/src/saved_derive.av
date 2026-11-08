@@ -68,8 +68,8 @@ fn saved_reading() -> Reading { Reading { declared: type_named, role: (_f: Field
 /// Whether a value holds an id anywhere.
 fn holds_an_id(shape: ValueShape) -> bool {
     match shape {
-        .Id(_, _, _) or .Placed(_, _) -> true,
-        .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) -> shape.children().any((child) -> holds_an_id(child)),
+        .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> true,
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) -> shape.children().any((child) -> holds_an_id(child)),
     }
 }
 
@@ -131,7 +131,7 @@ fn field_door(f: Field, slot: int) -> Decls {
             ${read}
             static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedBytes { record.octets_in_place_at(${number})! }
         },
-        .Int or .Float or .Bool or .Text or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Id(_, _, _) or .Placed(_, _) -> read,
+        .Int or .Offset or .Float or .Bool or .Text or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> read,
     }
 }
 
@@ -165,7 +165,7 @@ type SavedForm = { written: fn(Code) -> Code, read: fn(Code, Code) -> Code }
 /// own.
 fn saved_form(shape: ValueShape) -> SavedForm {
     match shape {
-        .Int -> SavedForm {
+        .Int or .Offset -> SavedForm {
             written: (value: Code) -> quote { SavedSlot.Number(${value}) },
             read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) },
         },
@@ -203,7 +203,7 @@ fn saved_form(shape: ValueShape) -> SavedForm {
             written: (value: Code) -> quote { SavedSlot.Child(${value}.written_into(${writer_code()})) },
             read: (node: Code, slot: Code) -> quote { ${name(type_name)}.read_from(${node}.record_at(${slot})!) },
         },
-        .Id(_, _, _) or .Placed(_, _) -> no_form_for_an_id(),
+        .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> no_form_for_an_id(),
     }
 }
 
@@ -293,9 +293,9 @@ fn optional_child_form(inner: ValueShape) -> SavedForm {
 /// its slot and can't say it's absent, and an absent nullable would read as the outer one's absence.
 fn rides_a_record(shape: ValueShape) -> bool {
     match shape {
-        .Int or .Float or .Bool or .Optional(_) -> true,
+        .Int or .Offset or .Float or .Bool or .Optional(_) -> true,
         .Celled(inner) or .Renamed(_, inner) -> rides_a_record(inner),
-        .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> false,
+        .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> false,
     }
 }
 

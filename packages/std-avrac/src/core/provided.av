@@ -2,6 +2,7 @@
 //! stands in place, read off its provider's parse. The door that mints an
 //! instance's meaning hands this in, never the registry it was found in.
 use @std.meta.{derive}
+use @std.program.value_shapes.{nested_tape}
 use core.{
     SyntaxArena,
     StmtId,
@@ -19,6 +20,7 @@ use core.{
 /// stands in place, the file its provider declared it in, and
 /// whether the file's own module declares it — a word that opens an
 /// instance only where it names one.
+@derive(Taped)
 export type ComponentWord = { word: string, declared: string, form: Instancing, origin: string, own: bool = false }
 
 /// How an instance stands in place: by its TEMPLATE, as a literal of
@@ -27,6 +29,7 @@ export type ComponentWord = { word: string, declared: string, form: Instancing, 
 /// instance stands as a hole, and points at that refusal. UNREAD is a word known by its name alone — its own
 /// module's, in the parse its form is read off: the instance parses
 /// as one and stands as a hole, with nothing said.
+@derive(Taped)
 export enum Instancing {
     Template(template: Template)
     Record(record: Record)
@@ -46,6 +49,7 @@ export enum Instancing {
 /// `events` are what an instance may hear.
 @derive(Fingerprint)
 @derive(Exemplar)
+@derive(Taped)
 export type Record = {
     head: List<string>,
     slots: List<ChildSlot>,
@@ -61,12 +65,14 @@ export type Record = {
 /// bare statements in an instance's block are its handler (`@default`).
 @derive(Fingerprint)
 @derive(Exemplar)
+@derive(Taped)
 export type Event = { name: string, says: List<string>, default: bool = false }
 
 /// A `List` field children fill, and the name its elements are
 /// written with — a child instance of that component lands here.
 @derive(Fingerprint)
 @derive(Exemplar)
+@derive(Taped)
 export type ChildSlot = { name: string, of: string, gathers: bool = true }
 
 impl Record {
@@ -95,15 +101,22 @@ impl ChildSlot {
 
 /// An `expand` of ONE `quote`: the head's fields in order, the field
 /// the block fills, the field each hole reads, the quote's statements
-/// and the store its provider parsed them in, and the head fields that
+/// in the store its provider parsed them in, and the head fields that
 /// are PATTERNS (`Format`) — each read as its text where a value stands
 /// and as its record where a type does.
-export type Template = { head: List<string>, block: string, reads: List<string>, stmts: List<StmtId>, store: SyntaxArena, formats: List<string> = [] }
+@derive(Taped)
+export type Template = { head: List<string>, block: string, reads: List<string>, body: TemplateBody, formats: List<string> = [] }
+
+/// A template's statements and the store they stand in, its provider's: a tree of its own.
+@nested_tape("template_body_taped", "template_body_untaped")
+export type TemplateBody = { stmts: List<StmtId>, store: SyntaxArena }
 
 /// A named instance a record's body may list by its name alone: the
 /// name, and the component it instances.
+@derive(Taped)
 export type Instanced = { name: string, declared: string }
 
 /// What the door hands an instance's meaning: the component its word
 /// names, and the named instances its file lists by name alone.
+@derive(Taped)
 export type Provided = { word: ComponentWord, instances: List<Instanced> = [] }

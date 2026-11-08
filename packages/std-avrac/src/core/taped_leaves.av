@@ -1,6 +1,6 @@
 //! Where a node was written, as a tape says it and as Avra's tree does: a span. A seat's identity
 //! is minted where it was written, so on a tape it's that place.
-use @std.program.syntax_tape.{TapePlace, TapeReader, TapeWriter}
+use @std.program.syntax_tape.{SyntaxTape, TapePlace, tape_reader, tape_writer}
 
 impl SyntaxArena {
     /// The place a span says, absent with it.
@@ -22,51 +22,81 @@ impl SyntaxArena {
     fn param_at(place: TapePlace?) -> ParamId { self.alloc_param_id(self.placed_span(place)) }
 }
 
-/// What a copier's own walk does, on a tape: a statement's annotations, stamped outermost last as
-/// a parse files them, then its docs, stamped once the tree stands; an expression's sugar note, the types a struct literal was given, and
-/// where a sublanguage's body starts. A sugar's meaning is minted again once its item is read, and
-/// a quote is named by where it now stands. Roots an extension copied can't be put on a tape yet.
+/// Each table read back off a tape, through the verb its route names: what the tree keeps beside
+/// a node, a file's own lists, and what's made again while reading.
 impl SyntaxArena {
-    static fn tape_stmt_by_hand(tree: SyntaxArena, mut tape: TapeWriter, at: StmtId) {
-        let annotations = tree.annotations_of(at)
-        tape.count(annotations.length)
-        for a in annotations { a.taped(tree, tape) }
-        let docs = tree.doc_comment(at)
-        tape.flag(docs != null)
-        if docs != null {
-            tape.count(docs!.length)
-            for line in docs! { tape.text(line) }
-            tape.offset(tree.doc_at(at))
-        }
+    /// A statement's annotations, stamped outermost last, as a parse files them.
+    fn annotations_read(s: StmtId, annotations: List<Annotation>) {
+        for a in reversed(annotations) { self.annotate_before(s, a) }
     }
 
-    fn untape_stmt_by_hand(tape: TapeReader, at: StmtId) {
-        let annotations = [Annotation.untaped(self, tape) for _a in 0..tape.count()]
-        for a in reversed(annotations) { self.annotate_before(at, a) }
-        if tape.flag() {
-            let lines = [tape.text() for _line in 0..tape.count()]
-            self.record_doc(at, lines, tape.offset())
-        }
+    /// A statement's docs, stamped once its tree stands (`settled_since`).
+    fn docs_read(s: StmtId, group: DocGroup?) {
+        let held? = group else { return }
+        self.record_doc(s, held.lines, held.at)
     }
 
-    static fn tape_expr_by_hand(tree: SyntaxArena, mut tape: TapeWriter, at: ExprId) {
-        if !tree.extensions.get()[at.index].is_empty() { tape.met_no_bytes() }
-        let note = tree.means_note(at)
-        tape.flag(note != null)
-        if note != null { tape.text(note!) }
-        let targs = tree.struct_targs_of(at)
-        tape.count(targs.length)
-        for a in targs { a.taped(tree, tape) }
-        if is_sublanguage(tree.expr(at)) { tape.offset(tree.body_start(at)) }
+    /// The instance a statement wraps, and that it answers for the statement.
+    fn owned_instance_read(s: StmtId, wrapped: ExprId?) {
+        let instance? = wrapped else { return }
+        self.mark_instance_owner(instance, s)
     }
 
-    fn untape_expr_by_hand(tape: TapeReader, at: ExprId) {
-        if tape.flag() { self.means_notes.set_at(at.index, tape.text()) }
-        let targs = [TypeRef.untaped(self, tape) for _a in 0..tape.count()]
-        if !targs.is_empty() { self.mark_struct_targs(at, targs) }
-        let node = self.expr(at)
-        if is_quote(node) { self.mark_quote_at(at) }
-        if is_sublanguage(node) { self.mark_sublang(at, tape.offset()) }
+    fn mints_read(sugar: ExprId, nodes: List<ExprId>) { if !nodes.is_empty() { self.note_minted(sugar, nodes) } }
+
+    fn meaning_read(sugar: ExprId, root: ExprId?) { self.meaning.set_at(sugar.index, root) }
+
+    fn means_note_read(sugar: ExprId, note: string?) { self.means_notes.set_at(sugar.index, note) }
+
+    fn extensions_read(sugar: ExprId, roots: List<ExprId>) { if !roots.is_empty() { self.extended_with(sugar, roots) } }
+
+    fn instance_read(e: ExprId, facts: InstanceFacts?) { self.instances.set_at(e.index, facts) }
+
+    fn struct_targs_read(e: ExprId, targs: List<TypeRef>) { if !targs.is_empty() { self.mark_struct_targs(e, targs) } }
+
+    /// Where a sublanguage's body starts, which files the block too.
+    fn body_start_read(e: ExprId, at: int?) {
+        let start? = at else { return }
+        self.mark_sublang(e, start)
+    }
+
+    fn expr_origin_read(e: ExprId, origin: ForeignOrigin?) { self.expr_origins.set_at(e.index, origin) }
+
+    fn stmt_origin_read(s: StmtId, origin: ForeignOrigin?) { self.stmt_origins.set_at(s.index, origin) }
+
+    fn pat_origin_read(p: PatId, origin: ForeignOrigin?) { self.pat_origins.set_at(p.index, origin) }
+
+    fn hoisted_read(stmts: List<StmtId>) { for s in stmts { self.hoist(s) } }
+
+    fn file_doc_read(lines: List<string>?) {
+        let held? = lines else { return }
+        self.document_file(held)
+    }
+
+    fn remarks_read(remarks: List<Remark>) { self.remarks.set(self.remarks.get().concat(remarks)) }
+
+    fn block_voices_read(voices: List<BlockVoice>) { self.block_voices.set(self.block_voices.get().concat(voices)) }
+
+    fn refused_read(refused: List<Refused>) { self.refused.set(self.refused.get().concat(refused)) }
+
+    /// What an expression read back makes again: a quote is named by where it now stands.
+    fn remade_expr(e: ExprId) { if is_quote(self.expr(e)) { self.mark_quote_at(e) } }
+
+    /// A template's statements, on a tape of their own: the store they stand in is theirs.
+    fn template_body_taped(body: TemplateBody) -> SyntaxTape {
+        mut tape = tape_writer()
+        tape.count(body.stmts.length)
+        for s in body.stmts { Stmt.taped_id(body.store, tape, s) }
+        tape.finished()
+    }
+
+    /// A template's statements read back into a store of their own.
+    fn template_body_untaped(tape: SyntaxTape) -> TemplateBody {
+        let store = new_node_store()
+        let reader = tape_reader(tape)
+        let stmts = [Stmt.untaped_id(store, reader) for _s in 0..reader.count()]
+        store.settled_since(ArenaMarks { exprs: 0, stmts: 0, pats: 0 })
+        TemplateBody { stmts: stmts, store: store }
     }
 }
 
@@ -83,11 +113,9 @@ fn is_sublanguage(e: Expr) -> bool {
 }
 
 impl SyntaxArena {
-    /// What a parse does once its tree stands, for the nodes a tape added after `since`: each
-    /// statement's docs folded into it, and each sugar meaning what `door` mints for it again.
-    fn settled_since(since: ArenaMarks, door: Means) {
+    /// What a parse does once its tree stands, for the statements a tape added after `since`:
+    /// each one's docs folded into it.
+    fn settled_since(since: ArenaMarks) {
         for at in since.stmts..self.stmts.count() { self.stamp_doc(StmtId { index: at }) }
-        let read = [sugar for sugar in self.sugars() if sugar.index >= since.exprs]
-        for sugar in read { let _ = self.mean(sugar, self.means_note(sugar)!, door) }
     }
 }

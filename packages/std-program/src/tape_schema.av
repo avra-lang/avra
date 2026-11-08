@@ -38,6 +38,10 @@ export enum Holds {
     Bytes
     /// Nothing in the structure: where the value was written, among the places.
     Place
+    /// A place in the item's file, counted from the item's first byte.
+    Offset
+    /// A tape of its own, as octets: a value holding a tree of its own.
+    Tape
 }
 
 impl Holds {
@@ -51,6 +55,8 @@ impl Holds {
             .Text -> "string",
             .Bytes -> "Bytes",
             .Place -> "place",
+            .Offset -> "offset",
+            .Tape -> "tape",
         }
     }
 }
@@ -131,6 +137,8 @@ export fn lying(shape: ValueShape) -> Lying {
         .Sides(_, _) or .Declared(_, _) -> plain(.Node(node_path(shape)!)),
         .Id(_, _, root_path) -> plain(.Reached(root_path)),
         .Placed(_, _) -> plain(.Place),
+        .Offset -> plain(.Offset),
+        .Nested(_, _) -> plain(.Tape),
     }
 }
 
@@ -142,7 +150,7 @@ export fn node_path(shape: ValueShape) -> string? {
         .Sides(ok, err) -> "Result<${lying(ok).spelled()}, ${lying(err).spelled()}>",
         .Declared(_, path) -> path,
         .Id(_, _, node_path) -> node_path,
-        .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Placed(_, _) -> null,
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Placed(_, _) or .Nested(_, _) -> null,
     }
 }
 
@@ -195,7 +203,7 @@ impl Reading {
                 [side("Ok", [field_schema("value", ok)]), side("Err", [field_schema("value", err)])],
                 [ok, err],
             ),
-            .Id(_, _, _) or .Placed(_, _) or .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
+            .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) or .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) -> null,
         }
     }
 

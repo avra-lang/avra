@@ -1,8 +1,8 @@
 // A tree in the shape a compiler's is: nodes in an arena, gathered into one enum, each writing itself
 // to a tape through a derive that any language could write.
 use @std.meta.{Named, derive}
-use syntax_tape.{TapePlace, TapeReader, TapeWriter}
-use value_shapes.{indexes, placed}
+use syntax_tape.{SyntaxTape, TapePlace, TapeReader, TapeWriter, tape_reader, tape_writer}
+use value_shapes.{indexes, nested_tape, placed}
 use tape_schema.{FieldSchema, Holds, Lying, TypeSchema, VariantSchema, Wrapping}
 
 /// An identity: every holder of a tree reads and adds to the one arena, each node beside where it
@@ -69,7 +69,21 @@ impl TinyTree {
     }
 
     fn seat_place(seat: TinySeat) -> TapePlace? { self.seats.get()[seat.index] }
+
+    /// A box's own tree, on a tape of its own.
+    fn box_taped(b: TinyBox) -> SyntaxTape {
+        mut tape = tape_writer()
+        TinyNode.taped_id(b.tree, tape, b.root)
+        tape.finished()
+    }
+
+    /// A box read back into this tree.
+    fn box_untaped(tape: SyntaxTape) -> TinyBox { TinyBox { tree: self, root: TinyNode.untaped_id(self, tape_reader(tape)) } }
 }
+
+/// A node of another tree, held whole, as a template holds its own statements.
+@nested_tape("box_taped", "box_untaped")
+export type TinyBox = { tree: TinyTree, root: TinyId }
 
 /// A seat's identity, which its tree mints, so on a tape it's where it was written.
 @placed("seat_at", "seat_place")
@@ -114,15 +128,17 @@ export type Shapes = {
     octets: Bytes,
 }
 
-/// A value with no bytes, which is allowed on a node.
-@tiny_node
-export type Opaque = { act: fn(int) -> int = unchanged, after: int }
-
-fn unchanged(n: int) -> int { n }
-
 /// A node holding a seat.
 @tiny_node
 export type Seated = { kept: int, seat: TinySeat }
+
+/// A node holding a box.
+@tiny_node
+export type Boxed = { kept: int, held: TinyBox }
+
+/// Where in its file a node says something stands.
+@tiny_node
+export type Pinned = { @offset at: int, @offset also: List<int> }
 
 /// A field a language keeps off the tape.
 @tiny_node

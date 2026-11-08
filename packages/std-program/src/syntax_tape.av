@@ -130,7 +130,6 @@ export type TapeWriter = {
     facts: SectionWriter = SectionWriter {},
     above: SectionWriter = SectionWriter {},
     place_facts: SectionWriter = SectionWriter {},
-    only_bytes: bool = true,
     /// Each kind of node met, and the number each of its nodes was written as.
     written: List<WrittenNodes> = [],
 }
@@ -175,6 +174,9 @@ impl TapeWriter {
 
     /// Octets: their length, then each one.
     fn octets(octets: Bytes) { octets_into(self.structure, octets) }
+
+    /// A tape of its own, for a value holding a tree of its own: its saved bytes.
+    fn nested(tape: SyntaxTape) { self.octets(tape.saved_bytes()) }
 
     /// An offset into the item's file, kept from the item's first byte, so an item that moves keeps
     /// its tape.
@@ -230,12 +232,6 @@ impl TapeWriter {
 
     /// How far back the node numbered `number` stands from the next: one for the node just numbered.
     fn back_to(number: int) -> int { self.nodes_numbered - number }
-
-    /// Says something on the tree has no bytes, so this tape can't stand for it.
-    fn met_no_bytes() { self.only_bytes = false }
-
-    /// Whether everything on the tree had bytes, so the tape stands for it.
-    fn holds_only_bytes() -> bool { self.only_bytes }
 
     /// A fact that belongs to what the item means, so changing it moves the meaning's hash.
     fn meaning_fact(column: int, node: int, words: List<int>) { self.facts.fact(column, node, words) }
@@ -368,6 +364,9 @@ impl TapeReader {
         self.at.set(from + length)
         self.structure.slice(from, from + length)
     }
+
+    /// A tape of its own, as `TapeWriter.nested` wrote it.
+    fn nested() -> SyntaxTape { SyntaxTape.from_saved_bytes(self.octets()) }
 
     /// Where the next node standing for an id was written, absent when it has no place. Numbers it.
     fn place() -> TapePlace? {

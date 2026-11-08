@@ -1,8 +1,7 @@
 //! Avra's items on tapes, for the program layer: Avra's source world, an item's tape read from its
 //! own text, and a file's tree put back together from its items' tapes. An item whose parse speaks
 //! has no tape, so what it says is said by a parse every time. An item is read with no block
-//! words, so a file whose imports declare some is read whole until items are read with their
-//! file's.
+//! words, so a file whose imports declare some is read whole.
 use core.{SyntaxArena, Stmt, StmtId, new_node_store}
 use grammar.{avra_lexeme, lex_source}
 use @std.program.address.{SourceFileAddress}
@@ -25,14 +24,15 @@ export fn avra_columns(text: string) -> TokenColumns { token_columns(text, lex_s
 
 once fn avra_roles() -> TokenRoles { token_roles(avra().syntax!) }
 
-/// One item's tree on a tape, read from its text alone: absent when the parse speaks, when the
-/// text holds other than one statement, or when the tape can't stand for it.
+/// One item's tree on a tape, read from its text alone: its statements, then what its file keeps
+/// of it. Absent when the parse speaks.
 export fn avra_item_tape(item_text: string) -> SyntaxTape? {
     let parsed = parse_source(item_text)
-    if !parsed.voices.list.is_empty() || parsed.stmts.length != 1 { return null }
+    if !parsed.voices.list.is_empty() { return null }
     mut tape = tape_writer()
-    Stmt.taped_id(parsed.store, tape, parsed.stmts[0])
-    if !tape.holds_only_bytes() { return null }
+    tape.count(parsed.stmts.length)
+    for s in parsed.stmts { Stmt.taped_id(parsed.store, tape, s) }
+    SyntaxArena.tape_item_tables(parsed.store, tape)
     tape.finished()
 }
 
@@ -42,13 +42,15 @@ export type ReadBack = { store: SyntaxArena, stmts: List<StmtId> }
 export fn read_back(file: string, placed: List<PlacedTape>) -> ReadBack? {
     if placed.any(it.tape == null) { return null }
     let store = new_node_store(file)
-    ReadBack { store: store, stmts: [item_read_back(store, p) for p in placed] }
+    ReadBack { store: store, stmts: [s for p in placed for s in item_read_back(store, p)] }
 }
 
-/// One item read back into `store`, settled as a parse leaves it.
-fn item_read_back(store: SyntaxArena, p: PlacedTape) -> StmtId {
+/// One item's statements read back into `store`, settled as a parse leaves them.
+fn item_read_back(store: SyntaxArena, p: PlacedTape) -> List<StmtId> {
     let since = store.marks()
-    let stmt = Stmt.untaped_id(store, tape_reader(p.tape!, p.start))
-    store.settled_since(since, sugar_door(avra()))
-    stmt
+    let reader = tape_reader(p.tape!, p.start)
+    let stmts = [Stmt.untaped_id(store, reader) for _s in 0..reader.count()]
+    SyntaxArena.untape_item_tables(store, reader)
+    store.settled_since(since)
+    stmts
 }

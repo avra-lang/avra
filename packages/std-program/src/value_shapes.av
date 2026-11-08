@@ -42,7 +42,20 @@ export enum ValueShape {
     Id(type_name: string, node: string, node_path: string)
     /// A value standing for where it was written: `from` makes one at a place, `to` says a value's.
     Placed(from: string, to: string)
+    /// An int saying where in its item's file something stands, a field marked `@offset`: where
+    /// places stand apart it counts from the item, so it reads back moved with it.
+    Offset
+    /// A value holding a tree of its own, as a template does: where places stand apart it lies as
+    /// a tape of its own, `tree.<to>(value)`, and reads back as `tree.<from>(tape)`.
+    Nested(to: string, from: string)
 }
+
+/// Marks a type whose value holds a tree of its own: on a tape it's a tape of its own, written by
+/// `tree.<to>(value)` and read back by `tree.<from>(tape)`.
+export fn nested_tape(_t: MetaType, _to: string, _from: string) {}
+
+/// Marks an int field that says where in its file something stands.
+export const OFFSET_MARK: string = "offset"
 
 /// What a language does with a field: writes it down, carries it in the value without writing it,
 /// or keeps it apart from the value, as a side table does.
@@ -93,6 +106,8 @@ impl Reading {
         if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
         let verbs = if self.places { declared.annotations.find(it.name == "placed")?.args ?? [] } else { [] }
         if verbs.length == 2 { return .Placed(verbs[0], verbs[1]) }
+        let nested = if self.places { declared.annotations.find(it.name == "nested_tape")?.args ?? [] } else { [] }
+        if nested.length == 2 { return .Nested(nested[0], nested[1]) }
         let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }
         .Renamed(type_name, self.shape_of(over)?)
     }
@@ -100,8 +115,16 @@ impl Reading {
     fn shaped(v: MetaVariant) -> ShapedVariant {
         ShapedVariant {
             name: v.name,
-            fields: [ShapedField { field: f, shape: self.shape_of(f.kind) } for f in v.fields if self.is_on_tape(f)],
+            fields: [ShapedField { field: f, shape: self.field_shape(f) } for f in v.fields if self.is_on_tape(f)],
         }
+    }
+
+    /// What a field's value is made of: its type's shape, an offset's ints counting from the item
+    /// where places stand apart.
+    fn field_shape(f: Field) -> ValueShape? {
+        let shape? = self.shape_of(f.kind) else { return null }
+        if !self.places || !f.marks.any(it.name == OFFSET_MARK) { return shape }
+        offset_within(shape)
     }
 
     fn declaration_of(type_name: string) -> MetaType? { (self.declared)(type_name) }
@@ -155,7 +178,7 @@ impl ValueShape {
                 opened: (value: Code) -> quote { ${value}.of },
                 closed: (value: Code) -> quote { ${type_name}(${value}) },
             },
-            .Int or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> null,
+            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> null,
         }
     }
 
@@ -165,7 +188,7 @@ impl ValueShape {
         match self {
             .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> [inner],
             .Entries(key, value) or .Sides(key, value) -> [key, value],
-            .Int or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> [],
+            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Nested(_, _) -> [],
         }
     }
 }
@@ -199,3 +222,13 @@ export fn path_of(t: MetaType, args: List<Kind>) -> string { path_in(t.module, t
 
 /// The whole path of the type `type_name` declares in `module`.
 fn path_in(module: string, type_name: string, args: List<Kind>) -> string { "${module}.${Kind.Named(type_name, args).spelled()}" }
+
+/// An offset's shape over an int's: absent for any other, which no offset is.
+fn offset_within(shape: ValueShape) -> ValueShape? {
+    match shape {
+        .Int -> .Offset,
+        .Optional(inner) -> .Optional(offset_within(inner)?),
+        .Listed(inner) -> .Listed(offset_within(inner)?),
+        rest -> null,
+    }
+}

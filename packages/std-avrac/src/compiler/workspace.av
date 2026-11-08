@@ -87,7 +87,7 @@ use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
 use core.{
     EmbedKind,
     EmbedBase,
-    ForeignRange,
+    ForeignOrigin,
     StmtId,
     ModulePath,
     watched_kernel,
@@ -1583,21 +1583,21 @@ impl Workspace {
         p
     }
 
-    /// Each run of nodes written elsewhere — a template's, a sublanguage's, a builder's —
-    /// filed under the file that wrote it, so its names resolve there.
+    /// The nodes written elsewhere — a template's, a sublanguage's, a builder's — filed under the
+    /// file that wrote them, so their names resolve there.
     fn noted_origins(f: FileId, p: Parsed) -> Parsed {
-        for r in p.store.foreign.get() {
-            let origin? = self.written_file(r) else { continue }
-            if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
+        for held in p.store.foreign_nodes() {
+            let origin? = self.written_file(held.origin) else { continue }
+            if !same_file(origin, f) { self.decls.note_origins(f, held.exprs, held.stmts, held.pats, origin) }
         }
         p
     }
 
-    /// The file a run was written in: its path, or — for a builder that names a
+    /// The file nodes were written in: its path, or — for a builder that names a
     /// module — that module's first file, its package admitted.
-    fn written_file(r: ForeignRange) -> FileId? {
-        if r.module.is_empty() { return self.file_id(r.path) }
-        let m = module_path(r.module.split("."))
+    fn written_file(o: ForeignOrigin) -> FileId? {
+        if o.module.is_empty() { return self.file_id(o.path) }
+        let m = module_path(o.module.split("."))
         let key? = m.package() else { return null }
         if !self.std_admitted(key) && !self.packages().any(it.key == key) { return null }
         let first? = self.module_files(m).first() else { return null }
