@@ -20,11 +20,12 @@ use @std.meta.{
     Declared,
     Diagnostic,
     Decls,
-    Code,
     name,
     wrapped,
     refuse_as_at,
     literal,
+    declares,
+    Code,
 }
 use stable.{stable_hasher}
 use db.{Answers, answers}
@@ -37,14 +38,13 @@ export fn input(f: Fn) -> Declared {
     let store = store_name(f)
     Declared {
         made: [
-            Directive {
-                twin: "",
-                name: store,
-                at: f.at,
-                source: quote { once fn ${store}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}, false, true) } },
-            },
+            declares(
+                store,
+                f.at,
+                quote { once fn ${store}() -> Answers<${f.answer}> { answers(${literal(durable_name(f))}, ${literal(f.name)}, false, true) } },
+            ),
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: accessor(f) },
-            Directive { twin: "", name: setter_name(f), at: f.at, source: setter(f) },
+            declares(setter_name(f), f.at, setter(f)),
         ],
         problems: [],
     }

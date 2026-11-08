@@ -38,11 +38,12 @@ use @std.meta.{
     Code,
     Arms,
     Kind,
-    Held,
     payload_of,
     holds,
     name,
     refuse_as_at,
+    beside,
+    Held,
 }
 
 /// The compiler's derive for the structural matcher.
@@ -52,11 +53,9 @@ export trait Matchable {
         if !problems.is_empty() { return Declared { made: [refused_shape(t)], problems: problems } }
         Declared {
             made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote {
+                beside(
+                    t,
+                    quote {
                 impl SyntaxArena {
                     fn ${shallow_of(t.name)}(node: ${t}) -> int {
                         match node { ${[shallow_case(t, v) for v in t.variants]} }
@@ -70,7 +69,7 @@ export trait Matchable {
                     fn ${ids_of(t.name)}() -> List<int> { ${known_ids(t)} }
                 }
             },
-                },
+                ),
             ],
             problems: [],
         }
@@ -114,11 +113,9 @@ fn collisions(t: MetaType) -> List<Diagnostic> {
 /// wrote — the build is already refused, so no caller is blamed for a
 /// method that was never made.
 fn refused_shape(t: MetaType) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             impl SyntaxArena {
                 fn ${shallow_of(t.name)}(_node: ${t}) -> int { 0 }
                 fn ${kids_of(t.name)}(_node: ${t}) -> List<At> { [] }
@@ -126,7 +123,7 @@ fn refused_shape(t: MetaType) -> Directive {
                 fn ${ids_of(t.name)}() -> List<int> { [] }
             }
         },
-    }
+    )
 }
 
 // ── voices ──

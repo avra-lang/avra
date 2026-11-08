@@ -7,7 +7,7 @@
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
 //! TYPES the file that declares it.
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Stmts, Arms, literal}
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Stmts, Arms, literal, beside}
 use @std.text.{ascii_lower}
 
 /// The mark a variant spells its own word with.
@@ -19,30 +19,26 @@ export trait Worded {
     static fn marks(t: MetaType) -> List<string> { [word_mark] }
 
     static fn derive(t: MetaType) -> List<Directive> {
-        let reading = Directive {
-            twin: "",
-            name: t.name,
-            at: t.at,
-            source: quote {
+        let reading = beside(
+            t,
+            quote {
                 export fn ${"worded_${t.name}"}(text: string) -> ${t}? {
                     ${chain([arm(v) for v in t.variants.filter(it.fields.is_empty())])}
                     null
                 }
             },
-        }
+        )
         if !t.variants.all(it.fields.is_empty()) { return [reading] }
         [
             reading,
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
+            beside(
+                t,
+                quote {
                     export fn ${"word_of_${t.name}"}(v: ${t}) -> string {
                         match v { ${[word_arm(v) for v in t.variants]} }
                     }
                 },
-            },
+            ),
         ]
     }
 }

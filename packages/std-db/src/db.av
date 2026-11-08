@@ -40,6 +40,8 @@ use @std.meta.{
     flat,
     flat_field,
     refuse_as_at,
+    beside,
+    declares,
 }
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
@@ -60,14 +62,8 @@ export type Many<T> = {}
 export trait Model {
     static fn derive(t: Type) -> List<Directive> {
         let read = stripped(t, claimed(t))
-        [
-            Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
-            Directive { twin: "", name: t.name, at: t.at, source: checks(read) },
-            Directive { twin: "", name: t.name, at: t.at, source: decodes(read) },
-        ]
-            .concat(
-                [Directive { twin: "", name: filter_name(t, f), at: t.at, source: filter_enum(t, f) } for f in filtered_fields(t)],
-            )
+        [beside(t, generated(t)), beside(t, checks(read)), beside(t, decodes(read))]
+            .concat([declares(filter_name(t, f), t.at, filter_enum(t, f)) for f in filtered_fields(t)])
     }
 
     /// The marks this derive reads: `@unique` makes a column unique,

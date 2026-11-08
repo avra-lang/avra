@@ -8,23 +8,30 @@
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
 //! TYPES the file that declares it.
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, literal, name}
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Code,
+    literal,
+    name,
+    beside,
+}
 
 /// The compiler's derive for a node enum's makers.
 export trait Makes {
     static fn derive(t: MetaType) -> List<Directive> {
         if t.variants.is_empty() { return [record_maker(t)] }
         [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
+            beside(
+                t,
+                quote {
             export fn ${"makers_${t.name}"}() -> List<Maker<${t}>> {
                 ${as_list_expr([maker_row(t, v) for v in t.variants.filter(makeable(it))])}
             }
         },
-            },
+            ),
         ]
             .concat([made(t, v) for v in t.variants.filter(makeable(it))])
     }
@@ -37,16 +44,14 @@ export trait Makes {
 /// A record's maker: the record built from its fields' labels.
 fn record_maker(t: MetaType) -> Directive {
     let inits = [quote { W { ${f.name}: ${slot(f)} } } for f in t.fields if carried(f)]
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             export fn ${"make_${t.name}"}(s: dyn Slots) -> Result<${t}, string> {
                 .Ok(${t} { ..${inits} })
             }
         },
-    }
+    )
 }
 
 /// A variant is made when every payload is one a `Slots` accessor reads,
@@ -112,16 +117,14 @@ fn maker_row(t: MetaType, v: MetaVariant) -> Code {
 
 /// One variant's maker fn: the variant built from its payloads' labels.
 fn made(t: MetaType, v: MetaVariant) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             fn ${made_name(t, v)}(s: dyn Slots) -> Result<${t}, string> {
                 ${construction(v)}
             }
         },
-    }
+    )
 }
 
 /// The variant's constructor, its payloads read by label. A `@facet`

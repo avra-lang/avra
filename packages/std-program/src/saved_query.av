@@ -18,6 +18,7 @@ use @std.meta.{
     name,
     refuse,
     wrapped,
+    declares,
 }
 use query_engine.{QueryDefinition, QueryEngine}
 use saved_derive.{
@@ -57,10 +58,10 @@ fn remembered(f: Fn, is_input: bool, also_made: List<Directive>) -> Declared {
     if !problems.is_empty() { return Declared { made: [], problems: problems } }
     let made = [
         Directive { twin: "", name: f.name, at: f.at, wraps: true, source: asking_wrapper(f) },
-        generated(f, arguments_door(f), arguments_writer(f)),
-        generated(f, compute_door(f), computing_door(f)),
-        generated(f, definition_door(f), definition_of(f, is_input)),
-        generated(f, known_door(f), known_answer_door(f)),
+        declares(arguments_door(f), f.at, arguments_writer(f)),
+        declares(compute_door(f), f.at, computing_door(f)),
+        declares(definition_door(f), f.at, definition_of(f, is_input)),
+        declares(known_door(f), f.at, known_answer_door(f)),
     ]
     Declared { made: made.concat(also_made), problems: [] }
 }
@@ -71,8 +72,6 @@ fn problems_of(f: Fn) -> List<Diagnostic> {
     let seats = [no_bytes_in_seat(f, p) for p in argument_seats(f) if saved_shape(p.kind) == null]
     if saved_shape(f.answers) != null { seats } else { seats.concat([no_bytes_in_answer(f)]) }
 }
-
-fn generated(f: Fn, door: string, source: Decls) -> Directive { Directive { twin: "", name: door, at: f.at, source: source } }
 
 fn arguments_door(f: Fn) -> string { "${f.name}_arguments" }
 
@@ -152,7 +151,7 @@ fn part_door(f: Fn) -> List<Directive> {
             ${engine_of(f)}.part_of_answer_to(${question_of(f)}, ${name("part_name")})
         }
     }
-    [generated(f, door, source)]
+    [declares(door, f.at, source)]
 }
 
 fn engine_of(f: Fn) -> Code { name(f.params[0].name) }

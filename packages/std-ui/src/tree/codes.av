@@ -3,7 +3,7 @@
 //! on the variant, declared ONCE: the serializer asks `code()`, the reader
 //! of an echo asks `coded_as(n)`, and whatever writes a host's copy asks
 //! `coded()` for every variant with its word — so no table is kept twice.
-use @std.meta.{Type, Variant, Directive, Declared, Diagnostic, literal, refuse_as_at}
+use @std.meta.{Type, Variant, Directive, Declared, Diagnostic, literal, refuse_as_at, beside}
 use @std.text.{parse_int, codepoints, from_codepoints}
 
 /// One variant as a host reads it: its word and its number.
@@ -25,11 +25,9 @@ export trait Codes {
         let rows = [quote { Coded { word: ${literal(snake(w.name))}, code: ${w.code} } } for w in coded]
         Declared {
             made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote {
+                beside(
+                    t,
+                    quote {
                         impl ${t} {
                             fn code() -> int { match self { ${arms} } }
 
@@ -41,7 +39,7 @@ export trait Codes {
                             }
                         }
                     },
-                },
+                ),
             ],
             problems: [],
         }
@@ -54,11 +52,9 @@ export trait Codes {
 /// anyone wrote and no variant — the build is already refused, so none of
 /// them runs, and no caller is blamed for a method that was never made.
 fn refused_codes(t: Type) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             impl ${t} {
                 fn code() -> int { 0 }
 
@@ -67,7 +63,7 @@ fn refused_codes(t: Type) -> Directive {
                 static fn coded_as(code: int) -> ${t}? { null }
             }
         },
-    }
+    )
 }
 
 /// The mark a variant's number is written under.

@@ -47,6 +47,8 @@ use @std.meta.{
     type_exported,
     type_named,
     composes,
+    beside,
+    declares,
 }
 use tree.node.{Node, Prim, Attribute, Action, Handler}
 use tree.dom_event.{DomEvent}
@@ -94,18 +96,16 @@ export trait View {
         }
         Declared {
             made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote {
+                beside(
+                    t,
+                    quote {
                         impl View for ${t} {
                             fn stand() -> Stand { stand_of(self.key, self.site) }
 
                             fn describe(at: Standing) -> List<Node> { [${node}] }
                         }
                     },
-                },
+                ),
             ]
                 .concat([said.seat_row(t, f) for f in t.fields if f.says != null]),
         }
@@ -121,18 +121,16 @@ fn unmade(t: Type, problems: List<Diagnostic>) -> Declared { Declared { made: [r
 /// refusal is the one thing said and no user of the view is blamed for a
 /// method that was never made.
 fn refused_view(t: Type) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             impl View for ${t} {
                 fn stand() -> Stand { Stand {} }
 
                 fn describe(at: Standing) -> List<Node> { [] }
             }
         },
-    }
+    )
 }
 
 /// A view's tree standing ALONE: no paint came before it and none
@@ -193,11 +191,9 @@ fn composition(said: Vocabulary, t: Type) -> Declared {
     let stateful = t.fields.any(it.state)
     let me = if stateful { said.standing_instance(t, seat) } else { quote { self } }
     let made = [
-        Directive {
-            twin: "",
-            name: t.name,
-            at: t.at,
-            source: quote {
+        beside(
+            t,
+            quote {
                 impl ${t} {
                     fn ${composed}() -> List<dyn View> {
                         let made = gathered {
@@ -207,12 +203,10 @@ fn composition(said: Vocabulary, t: Type) -> Declared {
                     }
                 }
             },
-        },
-        Directive {
-            twin: "",
-            name: t.name,
-            at: t.at,
-            source: quote {
+        ),
+        beside(
+            t,
+            quote {
                 impl View for ${t} {
                     fn stand() -> Stand { stand_of(self.key, self.site) }
 
@@ -222,17 +216,16 @@ fn composition(said: Vocabulary, t: Type) -> Declared {
                     }
                 }
             },
-        },
+        ),
     ]
     if !stateful { return Declared { made: made } }
     Declared {
         made: [
-            Directive {
-                twin: "",
-                name: seat,
-                at: t.at,
-                source: quote { once fn ${seat}() -> Kept<${t}> { kept(${literal(t.name)}) } },
-            },
+            declares(
+                seat,
+                t.at,
+                quote { once fn ${seat}() -> Kept<${t}> { kept(${literal(t.name)}) } },
+            ),
         ]
             .concat(made),
     }
@@ -450,15 +443,14 @@ impl Vocabulary {
                 prim: Prim.${prim_word(t) ?? ""},
             }
         }
-        Directive {
-            twin: "",
-            name: named,
-            at: t.at,
-            source: quote {
+        declares(
+            named,
+            t.at,
+            quote {
                 @seat
                 export const ${named}: SeatRow = ${row}
             },
-        }
+        )
     }
 
     /// The variant a platform's setting names, as the code that spells it.

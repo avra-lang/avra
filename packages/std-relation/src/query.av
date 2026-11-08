@@ -59,6 +59,7 @@ use @std.meta.{
     int_node,
     refuse_as_at,
     code_hash,
+    declares,
 }
 use db.{Db, Answers, answers, KeptRecord, code_keyed, DenseNames, named_spelling}
 use engine.{Key}
@@ -136,11 +137,11 @@ export fn query(f: Fn) -> Declared {
     let kept = kept_name(f)
     Declared {
         made: [
-            Directive { twin: "", name: kept, at: f.at, source: kept_source(f, kept) },
+            declares(kept, f.at, kept_source(f, kept)),
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
-            Directive { twin: "", name: key_name(f), at: f.at, source: key_door(f) },
-            Directive { twin: "", name: "${f.name}_dropped", at: f.at, source: dropped_door(f) },
-            Directive { twin: "", name: row_name(f), at: f.at, source: row_source(f) },
+            declares(key_name(f), f.at, key_door(f)),
+            declares("${f.name}_dropped", f.at, dropped_door(f)),
+            declares(row_name(f), f.at, row_source(f)),
         ]
             .concat(held_door(f))
             .concat(seat_door(f))
@@ -185,7 +186,7 @@ fn known_door(f: Fn) -> List<Directive> {
             }
         }
     }
-    [Directive { twin: "", name: door, at: f.at, source: source }]
+    [declares(door, f.at, source)]
 }
 
 /// Where a query's answers are kept: a dense-keyed one is named past the process only by its
@@ -346,18 +347,7 @@ export fn over(f: Fn, lister: Fn) -> Declared {
     let problems = over_problems(f, lister)
     if !problems.is_empty() { return nothing_made(problems) }
     Declared {
-        made: base
-            .made
-            .concat(
-                [
-                    Directive {
-                        twin: "",
-                        name: listed_name(f),
-                        at: f.at,
-                        source: listed_source(f, lister),
-                    },
-                ],
-            ),
+        made: base.made.concat([declares(listed_name(f), f.at, listed_source(f, lister))]),
         problems: [],
     }
 }
@@ -601,18 +591,17 @@ fn held_door(f: Fn) -> List<Directive> {
     if f.answers is .Opt(_) { return [] }
     let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
     [
-        Directive {
-            twin: "",
-            name: "${f.name}_held",
-            at: f.at,
-            source: quote {
+        declares(
+            "${f.name}_held",
+            f.at,
+            quote {
                 export fn ${"${f.name}_held"}(..${seats}) -> ${f.answer}? {
                     let held = ${kept_name(f)}().under(${db_code(f)})
 ${scope_bound(f)}
                     held.peeked(${arg_code(f)})
                 }
             },
-        },
+        ),
     ]
 }
 
@@ -628,11 +617,10 @@ fn kept_door(f: Fn) -> List<Directive> {
     if f.answers is .Opt(_) { return [] }
     let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
     [
-        Directive {
-            twin: "",
-            name: "${f.name}_kept",
-            at: f.at,
-            source: quote {
+        declares(
+            "${f.name}_kept",
+            f.at,
+            quote {
                 export fn ${"${f.name}_kept"}(..${seats}) -> ${f.answer}? {
                     let held = ${kept_name(f)}().under(${db_code(f)})
                     ${scope_bound(f)}
@@ -641,7 +629,7 @@ fn kept_door(f: Fn) -> List<Directive> {
                     held.kept_value(${db_code(f)}, ${args_named(f)}, ${kept_record(f)})
                 }
             },
-        },
+        ),
     ]
 }
 
@@ -669,18 +657,17 @@ fn seat_door(f: Fn) -> List<Directive> {
         quote { ${seat.ty} { ..${[quote { W { ${field}: n } }]} } }
     }
     [
-        Directive {
-            twin: "",
-            name: "${f.name}_seat_of",
-            at: f.at,
-            source: quote {
+        declares(
+            "${f.name}_seat_of",
+            f.at,
+            quote {
                 export fn ${"${f.name}_seat_of"}(..${[quote { fn _(${first.name}: ${first.ty}) {} }, quote { fn _(k: Key) {} }]}) -> ${seat.ty}? {
                     let seat: fn(int) -> ${seat.ty} = (n: int) -> ${made}
                     let found? = ${kept_name(f)}().under(${db_code(f)}).number_of(k) else { return null }
                     seat(found)
                 }
             },
-        },
+        ),
     ]
 }
 
