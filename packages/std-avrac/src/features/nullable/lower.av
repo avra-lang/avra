@@ -91,9 +91,7 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx
         .region(cx.okness_of(r), e) { cx -> cx.payload_of(r, cx.type_at(e)) } else { cx ->
-            let leaving = cx.propagated(r)
-            cx.failing()
-            cx.emit(Ins.FnExit(leaving))
+            cx.fail_exit(cx.propagated(r))
             cx.hollow_of(cx.type_at(e))
         }
 }
@@ -101,8 +99,7 @@ fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
 /// The absent arm's whole story: the enclosing fn answers absence.
 fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
     let ret? = cx.enclosing_ret() else { return cx.lower_defect(e, "a propagation without an enclosing fn survived typing") }
-    cx.leaving(null)
-    cx.emit(Ins.FnExit(cx.absent_of(ret)))
+    cx.answer_exit(cx.absent_of(ret))
     cx.hollow_of(cx.type_at(e))
 }
 

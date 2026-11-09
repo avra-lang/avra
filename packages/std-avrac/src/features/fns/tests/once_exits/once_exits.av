@@ -1,0 +1,105 @@
+// proves: a `once fn` keeps its answer whichever exit its body leaves
+// by — an early `return`, the tail, a `return` nested in a loop and in
+// a match, a `defer` before an early `return`, a `null` answered by a
+// `return` and by a `?`, and a failure by `fail`, by `?` and by a
+// `catch` that does not handle it — each body runs once, the second
+// call answering what the first kept.
+enum Oops {
+    lost
+    gone
+}
+
+enum Pick {
+    left
+    right
+}
+
+fn pick() -> Pick {
+    Pick.right
+}
+
+fn nothing() -> string? {
+    null
+}
+
+fn broke() -> Result<int, Oops> {
+    fail Oops.gone
+}
+
+once fn early() -> List<int> {
+    println("early")
+    if true { return [1] }
+    [2]
+}
+
+once fn tail() -> List<int> {
+    println("tail")
+    [2]
+}
+
+once fn looped() -> List<int> {
+    println("looped")
+    mut i = 0
+    while i < 5 {
+        i = i + 1
+        if i == 3 { return [i] }
+    }
+    [0]
+}
+
+once fn matched() -> List<int> {
+    println("matched")
+    match pick() { .left -> { return [4] }, .right -> { return [5] } }
+    [0]
+}
+
+once fn deferred() -> List<int> {
+    defer println("deferred")
+    println("body")
+    if true { return [6] }
+    [0]
+}
+
+once fn none() -> string? {
+    println("none")
+    if true { return null }
+    "x"
+}
+
+once fn absent() -> string? {
+    println("absent")
+    let v = nothing()?
+    v
+}
+
+once fn failed() -> Result<List<int>, Oops> {
+    println("failed")
+    if true { fail Oops.lost }
+    [0]
+}
+
+once fn passed() -> Result<List<int>, Oops> {
+    println("passed")
+    let v = broke()?
+    [v]
+}
+
+once fn caught() -> Result<List<int>, Oops> {
+    println("caught")
+    let v = broke() catch .lost -> 1
+    [v]
+}
+
+fn told(r: Result<List<int>, Oops>) -> string {
+    match r { .Ok(xs) -> "${xs[0]}", .Err(e) -> if e is .lost { "lost" } else { "gone" } }
+}
+
+fn twice() -> string {
+    let a = "${early()[0]}${early()[0]} ${tail()[0]}${tail()[0]} ${looped()[0]}${looped()[0]}"
+    let b = "${matched()[0]}${matched()[0]} ${deferred()[0]}${deferred()[0]}"
+    let c = "${none() == null}${none() == null} ${absent() == null}${absent() == null}"
+    let d = "${told(failed())}${told(failed())} ${told(passed())}${told(passed())} ${told(caught())}${told(caught())}"
+    "${a} ${b} ${c} ${d}"
+}
+
+twice()
