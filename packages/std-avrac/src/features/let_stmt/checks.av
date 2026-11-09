@@ -4,18 +4,18 @@ use core.{Checking, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeRef}
 use core.stmt.{Let, MutLet}
 
 impl StmtChecks for Let {
-    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value) }
+    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value, true) }
 }
 
 impl StmtChecks for MutLet {
-    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value) }
+    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value, false) }
 }
 
 /// `value` checked against `annotation` when one is written, and `name` bound to the annotation's
-/// type, else to the value's.
-fn bound_to(mut cx: Checking, name: string, annotation: TypeRef?, value: ExprId) {
+/// type, else to the value's; a `let` narrows, a `mut` can be written again and doesn't.
+fn bound_to(mut cx: Checking, name: string, annotation: TypeRef?, value: ExprId, narrowable: bool) {
     let declared: SignedType? = if annotation == null { null } else { cx.written(annotation!) }
     let read = cx
         .check(value, if declared == null { Expected.Free } else { Expected.Exactly(declared!) })
-    cx.bind(name, declared ?? read)
+    cx.bind(name, declared ?? read, narrowable)
 }

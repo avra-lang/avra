@@ -1,6 +1,6 @@
-//! The typing rules of the literals and names this feature reads.
-use core.{Checking, Checks, ExprId, SignedType, Expected, owned_type}
-use core.expr.{FloatLit, Ident, IntLit}
+//! The typing rules of the literals, names and operators this feature reads.
+use core.{BinOp, Checking, Checks, ExprId, SignedType, Expected, TypeHead, owned_type}
+use core.expr.{Binary, FloatLit, Ident, IntLit, Not}
 
 impl Checks for IntLit {
     /// An integer literal is an `int`.
@@ -15,4 +15,76 @@ impl Checks for FloatLit {
 impl Checks for Ident {
     /// A name is what it's bound to here: a local, a parameter, or what the program names by it.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.read(self.name.of) }
+}
+
+impl Checks for Not {
+    /// `!` takes a `bool` and is one.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let _ = cx.check(self.value, Expected.Exactly(owned_type("bool")))
+        owned_type("bool")
+    }
+}
+
+impl Checks for Binary {
+    /// `&&` and `||` take `bool`s; a comparison is a `bool`, a name beside `null` asking whether it's
+    /// present; arithmetic is its operands' type when they're one of the language's numbers (or `+`
+    /// over text). An operation over anything else waits for its rule.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        match self.op {
+            .And or .Or -> {
+                let _ = cx.check(self.left, Expected.Exactly(owned_type("bool")))
+                let _ = cx.check(self.right, Expected.Exactly(owned_type("bool")))
+                owned_type("bool")
+            },
+            .Eq or .Ne -> compared(cx, e, self.op == BinOp.Ne, self.left, self.right),
+            .Lt or .Le or .Gt or .Ge -> {
+                let both = operands(cx, self.left, self.right)
+                if both == "int" || both == "float" { owned_type("bool") } else { null }
+            },
+            .Add -> {
+                let both = operands(cx, self.left, self.right)
+                if both == "int" || both == "float" || both == "string" { owned_type(both!) } else { null }
+            },
+            .Sub or .Mul or .Div or .Mod -> {
+                let both = operands(cx, self.left, self.right)
+                if both == "int" || both == "float" { owned_type(both!) } else { null }
+            },
+            .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> {
+                if operands(cx, self.left, self.right) == "int" { owned_type("int") } else { null }
+            },
+        }
+    }
+}
+
+/// `==` or `!=`: a `bool`. A name of optional type beside `null` is a presence test, recorded so the
+/// `if` it decides can narrow the name.
+fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right: ExprId) -> SignedType? {
+    let l = cx.check(left, Expected.Free)
+    let r = cx.check(right, Expected.Free)
+    let asked = if cx.store.null_literal(right) { left } else if cx.store.null_literal(left) { right } else { null }
+    if asked == null { return if l != null && r != null { owned_type("bool") } else { null } }
+    let subject = if asked! == left { l } else { r }
+    if subject == null || !subject!.optional { return null }
+    let name = cx.store.ident_name(asked!)
+    if name != null { cx.asked(e, name!, asks_present) }
+    owned_type("bool")
+}
+
+/// The one plain type of the language's own both operands are, checked against nothing; absent
+/// when they differ or either isn't one.
+fn operands(mut cx: Checking, left: ExprId, right: ExprId) -> string? {
+    let l = cx.check(left, Expected.Free)
+    let r = cx.check(right, Expected.Free)
+    let a = plain_owned(l)
+    if a == null || a != plain_owned(r) { null } else { a }
+}
+
+/// The name of a type the language owns with nothing applied, nothing optional; absent otherwise.
+fn plain_owned(ty: SignedType?) -> string? {
+    let t? = ty else { return null }
+    if t.optional || t.dynamic || !t.args.is_empty() { return null }
+    match t.head {
+        .Owned(name) -> name,
+        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function -> null,
+    }
 }

@@ -18,9 +18,14 @@ export enum Expected {
 /// body's file, absent when it names none; and a type written in the body, resolved where it stands.
 export type CheckedProgram = { value_named: fn(string) -> SignedType?, written: fn(TypeRef) -> SignedType }
 
-/// A name bound in a body, and its type when it's known: a binding whose type isn't known still
-/// stands in front of every name further out.
-export type Local = { ty: SignedType? }
+/// A name bound in a body, its type when it's known, and whether it may narrow: a binding whose type
+/// isn't known still stands in front of every name further out, and only one that can't be written
+/// again (a `let`, a parameter) narrows where a test proves it present.
+export type Local = { ty: SignedType?, narrowable: bool }
+
+/// A presence test a condition makes: the name it asks of, and whether it's true when the name is
+/// present.
+export type Ask = { name: string, on_present: bool }
 
 /// One scope of a body: the names bound in it, and whether a statement in it with no rule of its
 /// own may have bound names it doesn't hold, so a name further out can't be read through it.
@@ -37,6 +42,8 @@ export type Checking = {
     /// How many nodes with no rule of their own the check stands under: any of them may bind a name
     /// no scope here holds.
     unruled: Cell<int>,
+    /// The presence test each condition makes, by its node's index.
+    asks: Cell<Map<string, Ask>>,
 }
 
 /// A body of `store` to check against `program`.
@@ -44,7 +51,15 @@ export fn checking(store: SyntaxArena, program: CheckedProgram) -> Checking {
     let unchecked: SignedType? = null
     let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
     let scopes: Cell<List<CheckScope>> = Cell.new([open_scope()])
-    Checking { store: store, program: program, types: types, scopes: scopes, unruled: Cell.new(0) }
+    let asks: Cell<Map<string, Ask>> = Cell.new({})
+    Checking {
+        store: store,
+        program: program,
+        types: types,
+        scopes: scopes,
+        unruled: Cell.new(0),
+        asks: asks,
+    }
 }
 
 impl Checking {
@@ -67,12 +82,20 @@ impl Checking {
     fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
 
     /// The type a name read here has, absent when it can't be known yet: under a node with no rule,
-    /// which may bind the name itself, or bound to an optional type, which a condition around the
-    /// read may have narrowed.
+    /// which may bind the name itself.
     fn read(name: string) -> SignedType? {
         if self.unruled.get() > 0 { return null }
-        let ty? = self.bound(name) else { return null }
-        if ty.optional { null } else { ty }
+        self.bound(name)
+    }
+
+    /// The binding a name has in this body's scopes, absent when the body binds it nowhere in view.
+    fn local(name: string) -> Local? {
+        for scope in reversed(self.scopes.get()) {
+            let local = scope.names.get(name)
+            if local != null { return local }
+            if scope.opaque { return null }
+        }
+        null
     }
 
     /// The type a name has here: the innermost binding of it, else what the program names by it;
@@ -86,12 +109,32 @@ impl Checking {
         (self.program.value_named)(name)
     }
 
-    /// `name` bound in the innermost scope, to `ty` when it's known.
-    mut fn bind(name: string, ty: SignedType?) {
+    /// `name` bound in the innermost scope, to `ty` when it's known; `narrowable` when nothing can
+    /// write it again.
+    mut fn bind(name: string, ty: SignedType?, narrowable: bool = false) {
         let scopes = self.scopes.get()
         mut innermost = scopes.last()!
-        innermost.names.set(name, Local { ty: ty })
+        innermost.names.set(name, Local { ty: ty, narrowable: narrowable })
         self.scopes.set_at(scopes.length - 1, innermost)
+    }
+
+    /// The condition `e` asks whether `name` is present, true when it is if `on_present`.
+    mut fn asked(e: ExprId, name: string, on_present: bool) { self.asks.put("${e.index}", Ask { name: name, on_present: on_present }) }
+
+    /// The presence test the condition `e` makes, absent when it makes none.
+    fn ask_of(e: ExprId) -> Ask? { self.asks.get().get("${e.index}") }
+
+    /// `branch` checked against `expected` with `name` proven present, when it can narrow: in a scope
+    /// of its own, the name bound to what it holds.
+    mut fn check_narrowed(branch: ExprId, expected: Expected, name: string) -> SignedType? {
+        let local = self.local(name)
+        let held = local?.ty
+        if local == null || !local!.narrowable || held == null || !held!.optional { return self.check(branch, expected) }
+        self.opened()
+        self.bind(name, held! with { optional: false }, true)
+        let ty = self.check(branch, expected)
+        self.closed()
+        ty
     }
 
     /// A scope opened inside the current one.
