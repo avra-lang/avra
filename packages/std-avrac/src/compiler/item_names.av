@@ -122,13 +122,7 @@ fn module_names(engine: QueryEngine, files: List<SourceFileAddress>) -> List<Dec
 /// of one name stands when another moves.
 @parted_query
 export fn module_declares(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
-    mut names: Map<string, List<DeclaredName>> = {}
-    for n in module_names(engine, module_files(engine, package, local, as_root)) {
-        names.set(n.name, (names.get(n.name) ?? []).concat([n]))
-    }
-    answer_parts(
-        [NamedValue { name: name, value: Declarations { names: ds }.saved_bytes() } for name, ds in names],
-    )
+    parts_by_name(module_names(engine, module_files(engine, package, local, as_root)))
 }
 
 /// Every declaration of `name` a module makes, in listing order.
@@ -139,7 +133,21 @@ export fn declarations_of(
     as_root: bool,
     name: string,
 ) -> List<DeclaredName> {
-    let saved? = module_declares_part(engine, package, local, as_root, name) else { return [] }
+    declarations_in(module_declares_part(engine, package, local, as_root, name))
+}
+
+/// Declarations as an answer of parts, one per name, each holding that name's in the order given.
+fn parts_by_name(ds: List<DeclaredName>) -> AnswerParts {
+    mut names: Map<string, List<DeclaredName>> = {}
+    for d in ds { names.set(d.name, (names.get(d.name) ?? []).concat([d])) }
+    answer_parts(
+        [NamedValue { name: name, value: Declarations { names: held }.saved_bytes() } for name, held in names],
+    )
+}
+
+/// The declarations a part of `parts_by_name` holds; none for no part.
+fn declarations_in(part: Bytes?) -> List<DeclaredName> {
+    let saved? = part else { return [] }
     Declarations.from_saved_bytes(saved).names
 }
 

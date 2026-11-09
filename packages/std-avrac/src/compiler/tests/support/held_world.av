@@ -1,5 +1,5 @@
 //! A package of held files for the program layer's tests: an in-memory source world, its files
-//! addressed in one package, and a store of its own for each case.
+//! addressed in one package, a prelude beside it, and a store of its own for each case.
 use core.{distinct}
 use @std.io.{make_dirs}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
@@ -32,3 +32,20 @@ export fn store_dir(name: string) -> string {
     let _ = make_dirs(dir)
     dir
 }
+
+/// The prelude's one file.
+const PRELUDE_TEXT: string = "export fn shout() -> int { 1 }\n\nexport fn quiet() -> int { 2 }\n"
+
+/// A held file's text, the prelude's one file beside the package's.
+export fn read_with_prelude(file: SourceFileAddress) -> string? {
+    if file.package_name != PRELUDE { return read_held(file) }
+    if file.path_in_package == "src/prelude.av" { PRELUDE_TEXT } else { null }
+}
+
+/// A directory's names, the prelude's beside the package's.
+export fn list_with_prelude(dir: DirectoryAddress) -> List<string>? {
+    if dir.package_name != PRELUDE { return list_held(dir) }
+    match dir.path_in_package { "" -> ["src"], "src" -> ["prelude.av"], _ -> null }
+}
+
+const PRELUDE: string = "@std/prelude"

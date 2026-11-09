@@ -11,19 +11,19 @@ use compiler.{
     file_scope,
     resolved,
 }
-use compiler.tests.support.{file_at, files, list_held, read_held, store_dir}
-use @std.program.address.{DirectoryAddress}
-use @std.program.disk_store.{disk_store_at}
+use compiler.tests.support.{file_at, files, list_with_prelude, read_with_prelude, store_dir}
 use @std.program.address.{SourceFileAddress}
+use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{use_source_world}
 
-/// `path` with `held` the package's files, and an engine over a store of its own.
+/// `path` with `held` the package's files and the prelude beside them, and an engine over a store
+/// of its own.
 type Seen = { engine: QueryEngine, file: SourceFileAddress }
 
 fn scope_in(name: string, held: Map<string, string>, path: string) -> Seen {
     files().set(held)
-    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
     Seen {
         engine: query_engine(disk_store_at(store_dir(name)), avra_fact_definitions()),
         file: file_at(path),
@@ -32,7 +32,7 @@ fn scope_in(name: string, held: Map<string, string>, path: string) -> Seen {
 
 impl Seen {
     /// What the file's top level holds as its own.
-    fn scope() -> FileScope { file_scope(self.engine, self.file) }
+    fn scope() -> FileScope { file_scope(self.engine, self.file)! }
 
     /// What `name` names in `space` here.
     fn kind_of(space: Space, name: string) -> ItemKind? { resolved(self.engine, self.file, space, name)?.kind }
@@ -106,33 +106,9 @@ spec "what a file's top level sees" {
     }
 }
 
-/// The prelude's one file.
-const PRELUDE_TEXT: string = "export fn shout() -> int { 1 }\n\nexport fn quiet() -> int { 2 }\n"
-
-/// The held package's files, and the prelude's beside them.
-fn read_with_prelude(file: SourceFileAddress) -> string? {
-    if file.package_name != "@std/prelude" { return read_held(file) }
-    if file.path_in_package == "src/prelude.av" { PRELUDE_TEXT } else { null }
-}
-
-fn list_with_prelude(dir: DirectoryAddress) -> List<string>? {
-    if dir.package_name != "@std/prelude" { return list_held(dir) }
-    match dir.path_in_package { "" -> ["src"], "src" -> ["prelude.av"], _ -> null }
-}
-
-/// `path` with `held` the package's files and the prelude beside them.
-fn with_prelude(name: string, held: Map<string, string>, path: string) -> Seen {
-    files().set(held)
-    use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
-    Seen {
-        engine: query_engine(disk_store_at(store_dir(name)), avra_fact_definitions()),
-        file: file_at(path),
-    }
-}
-
 /// One process asking what `path`'s top level holds, over the store at `dir`: the queries it ran.
 fn scope_asked(dir: string, path: string) -> List<string> {
-    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
     let store = disk_store_at(dir)
     let engine = query_engine(store, avra_fact_definitions())
     let _ = file_scope(engine, file_at(path))
@@ -143,11 +119,7 @@ fn scope_asked(dir: string, path: string) -> List<string> {
 spec "what a file's scope holds" {
     given "the prelude exporting a name nothing else took, and one the file declares" {
         then "the prelude's resolves, the file's own wins, and neither stands in the file's scope" {
-            let s = with_prelude(
-                "prelude",
-                {"src/main.av": "fn quiet() -> int { 3 }\n"},
-                "src/main.av",
-            )
+            let s = scope_in("prelude", {"src/main.av": "fn quiet() -> int { 3 }\n"}, "src/main.av")
             resolved(s.engine, s.file, Space.Value, "shout")?.file?.package_name == "@std/prelude" &&
                 resolved(s.engine, s.file, Space.Value, "quiet")?.file?.package_name == "@test/p" &&
                 s.scope().own.values.keys().is_empty()

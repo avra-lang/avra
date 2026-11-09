@@ -11,6 +11,7 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
+use @std.program.source_facts.{source_text}
 use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, query_definition}
 
 /// Where a name binds.
@@ -114,19 +115,17 @@ fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
 @parted_query
 export fn module_winners(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
     let shared = module_bindings(engine, package, local, as_root).shared
-    mut by_name: Map<string, List<DeclaredName>> = {}
-    for d in shared.values.values().concat(shared.types.values()).concat(shared.syntaxes.values()) {
-        by_name.set(d.name, (by_name.get(d.name) ?? []).concat([d]))
-    }
-    answer_parts(
-        [NamedValue { name: name, value: Declarations { names: ds }.saved_bytes() } for name, ds in by_name],
+    parts_by_name(
+        shared.values.values().concat(shared.types.values()).concat(shared.syntaxes.values()),
     )
 }
 
 /// The winner `file`'s module shares for `name` in `space`, absent for none.
 fn winner(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
-    let saved? = module_winners_part(engine, file.package_name, module_segments(file), true, name) else { return null }
-    Declarations.from_saved_bytes(saved).names.find(space_of(it.kind) == space)
+    declarations_in(
+        module_winners_part(engine, file.package_name, module_segments(file), true, name),
+    )
+        .find(space_of(it.kind) == space)
 }
 
 /// What a module keeps apart of its shared winners: the private names its files keep apart, and
@@ -147,8 +146,10 @@ fn module_kept(engine: QueryEngine, package: string, local: List<string>, as_roo
 @derive(Saved)
 export type FileScope = { own: Bound, siblings: List<DeclaredName>, clashes: List<NameClash> }
 
+/// What is `file`'s own at its top level; absent for a file that isn't there.
 @query
-export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope {
+export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
+    if source_text(engine, file) == null { return null }
     let module = module_kept(engine, file.package_name, module_segments(file), true)
     mut own = nothing_bound()
     for d in module.apart { if same_file(d.file, file) { own.bind(space_of(d.kind), d.name, d) } }
@@ -191,9 +192,11 @@ fn claimed(engine: QueryEngine, file: SourceFileAddress, space: Space, name: str
 /// the prelude sees none.
 fn lent(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
     if file.package_name == PRELUDE { return null }
-    declarations_of(engine, PRELUDE, [], false, name)
-        .find(it.exported && space_of(it.kind) == space)
+    declarations_of(engine, PRELUDE, [], false, name).find(lends(it, space))
 }
+
+/// Whether the prelude lends `d` in `space`: it's exported there.
+fn lends(d: DeclaredName, space: Space) -> bool { d.exported && space_of(d.kind) == space }
 
 /// Whether `file` stands directly in the `tests/` of the module `at` names, so its imports read that
 /// module's private names too.
@@ -215,7 +218,8 @@ const PRELUDE: string = "@std/prelude"
 /// depends on that name alone.
 @query
 export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
-    resolved_in(engine, file_scope(engine, file), file, space, name)
+    let scope? = file_scope(engine, file) else { return null }
+    resolved_in(engine, scope, file, space, name)
 }
 
 /// What `name` names in `space` from the top level of `file`, whose scope is `scope`.
@@ -246,7 +250,7 @@ export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddr
             .own
             .names_in(space)
             .concat(shared.names_in(space))
-            .concat([d.name for d in prelude if d.exported && space_of(d.kind) == space]),
+            .concat([d.name for d in prelude if lends(d, space)]),
     )
 }
 

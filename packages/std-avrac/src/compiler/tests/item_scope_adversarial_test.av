@@ -1,0 +1,323 @@
+// Attacks on what a file's top level sees: a name in two spaces, the prelude shadowed, an import
+// whose name moves or clashes, a module's tests, a part moving beside one that stands, early
+// cutoff across edits, and the empty cases. Each process reads a store another left behind.
+use compiler.{Space, avra_fact_definitions, avra_source_world, file_scope, package_read, resolved}
+use compiler.tests.support.{file_at, files, list_with_prelude, read_with_prelude, store_dir}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.source_facts.{use_source_world}
+
+/// What one process answered for `name` in `space` from `path`'s top level: the package and file
+/// it names, "" for nothing, how many names `path` lost, and the queries the process ran.
+type Answered = { home: string, clashes: int, ran: List<string> }
+
+fn answered(dir: string, path: string, space: Space, name: string) -> Answered {
+    use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
+    let store = disk_store_at(dir)
+    let engine = query_engine(store, avra_fact_definitions())
+    let d = resolved(engine, file_at(path), space, name)
+    let clashes = file_scope(engine, file_at(path))?.clashes?.length ?? 0
+    let _ = store.saved()
+    Answered {
+        home: if d == null { "" } else { "${d!.file.package_name}/${d!.file.path_in_package}" },
+        clashes: clashes,
+        ran: engine.computed_queries(),
+    }
+}
+
+/// A fresh store's answer with `held` the package's files.
+fn first(name: string, held: Map<string, string>, path: string, space: Space, asked: string) -> Answered {
+    files().set(held)
+    answered(store_dir(name), path, space, asked)
+}
+
+/// `lib`'s one file, exporting `twice` and `thrice`.
+fn lib(thrice_answers: string) -> string {
+    "export fn twice(n: int) -> int { n * 2 }\n\nexport fn thrice(n: int) -> ${thrice_answers} { n * 3 }\n"
+}
+
+const MAIN: string = "use lib.{twice}\n\ntwice(2)\n"
+
+spec "a name in two spaces" {
+    given "a type in one file of a module and a fn of its name in another" {
+        then "a third file sees the type as a type and the fn as a value, and nothing clashes" {
+            let held = {
+                "src/m/a.av": "type Size = { n: int }\n",
+                "src/m/b.av": "fn Size() -> int { 1 }\n",
+                "src/m/c.av": "fn other() -> int { 2 }\n",
+            }
+            let ty = first("two_spaces_type", held, "src/m/c.av", Space.Type, "Size")
+            let value = first("two_spaces_value", held, "src/m/c.av", Space.Value, "Size")
+            ty.home == "@test/p/src/m/a.av" && value.home == "@test/p/src/m/b.av" && ty.clashes == 0
+        }
+    }
+    given "an import of a name its module binds in two spaces" {
+        then "both bind under the one import" {
+            let held = {
+                "src/lib/x.av": "export type Size = { n: int }\n\nexport fn Size() -> int { 1 }\n",
+                "src/main.av": "use lib.{Size}\n",
+            }
+            let ty = first("import_two_type", held, "src/main.av", Space.Type, "Size")
+            let value = first("import_two_value", held, "src/main.av", Space.Value, "Size")
+            ty.home == "@test/p/src/lib/x.av" &&
+                value.home == "@test/p/src/lib/x.av" &&
+                ty.clashes == 0
+        }
+    }
+    given "an import of such a name into a file declaring a fn of it" {
+        then "the type binds, and the fn's import is the one clash" {
+            let held = {
+                "src/lib/x.av": "export type Size = { n: int }\n\nexport fn Size() -> int { 1 }\n",
+                "src/main.av": "use lib.{Size}\n\nfn Size() -> int { 2 }\n",
+            }
+            let ty = first("import_clash_type", held, "src/main.av", Space.Type, "Size")
+            let value = first("import_clash_value", held, "src/main.av", Space.Value, "Size")
+            ty.home == "@test/p/src/lib/x.av" &&
+                value.home == "@test/p/src/main.av" &&
+                value.clashes == 1
+        }
+    }
+}
+
+spec "the prelude shadowed" {
+    given "a sibling declaring a prelude name privately" {
+        then "the module's winner wins" {
+            let held = {
+                "src/m/a.av": "fn shout() -> int { 9 }\n",
+                "src/m/b.av": "fn other() -> int { 2 }\n",
+            }
+            first("shadow_winner", held, "src/m/b.av", Space.Value, "shout").home == "@test/p/src/m/a.av"
+        }
+    }
+    given "an import of a prelude name" {
+        then "the import wins" {
+            let held = {
+                "src/lib/x.av": "export fn shout() -> int { 9 }\n",
+                "src/main.av": "use lib.{shout}\n",
+            }
+            first("shadow_import", held, "src/main.av", Space.Value, "shout").home == "@test/p/src/lib/x.av"
+        }
+    }
+    given "two siblings each keeping a prelude name apart" {
+        then "each sees its own" {
+            let held = {
+                "src/m/a.av": "fn shout() -> int { 8 }\n",
+                "src/m/b.av": "fn shout() -> int { 9 }\n",
+                "src/m/c.av": "fn other() -> int { 2 }\n",
+            }
+            first("apart_own", held, "src/m/a.av", Space.Value, "shout").home == "@test/p/src/m/a.av" &&
+                first("apart_own_b", held, "src/m/b.av", Space.Value, "shout").home == "@test/p/src/m/b.av"
+        }
+        then "a third file sees the prelude's, since no winner took the name" {
+            let held = {
+                "src/m/a.av": "fn shout() -> int { 8 }\n",
+                "src/m/b.av": "fn shout() -> int { 9 }\n",
+                "src/m/c.av": "fn other() -> int { 2 }\n",
+            }
+            first("apart_third", held, "src/m/c.av", Space.Value, "shout").home == "@std/prelude/src/prelude.av"
+        }
+    }
+    given "a prelude name in the other space" {
+        then "a type of the name leaves the prelude's fn standing as the value" {
+            let held = {"src/main.av": "type shout = { n: int }\n"}
+            first("prelude_space", held, "src/main.av", Space.Value, "shout").home == "@std/prelude/src/prelude.av" &&
+                first("prelude_space_type", held, "src/main.av", Space.Type, "shout").home == "@test/p/src/main.av"
+        }
+    }
+}
+
+spec "an import across edits" {
+    given "an imported name moved to another file of its module" {
+        then "the import follows it" {
+            let dir = store_dir("moved")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files()
+                .set(
+                    {
+                        "src/lib/x.av": "export fn thrice(n: int) -> int { n * 3 }\n",
+                        "src/lib/y.av": "export fn twice(n: int) -> int { n * 2 }\n",
+                        "src/main.av": MAIN,
+                    },
+                )
+            answered(dir, "src/main.av", Space.Value, "twice").home == "@test/p/src/lib/y.av"
+        }
+    }
+    given "an import that clashes with the file's own, then the file's own removed" {
+        then "the clash goes and the import binds" {
+            let dir = store_dir("clash_removed")
+            files()
+                .set(
+                    {
+                        "src/lib/x.av": lib("int"),
+                        "src/main.av": "use lib.{twice}\n\nfn twice() -> int { 1 }\n",
+                    },
+                )
+            let before = answered(dir, "src/main.av", Space.Value, "twice")
+            files().put("src/main.av", MAIN)
+            let after = answered(dir, "src/main.av", Space.Value, "twice")
+            before.clashes == 1 &&
+                before.home == "@test/p/src/main.av" &&
+                after.clashes == 0 &&
+                after.home == "@test/p/src/lib/x.av"
+        }
+    }
+    given "the imported name removed from its module" {
+        then "it resolves to nothing" {
+            let dir = store_dir("import_removed")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files().put("src/lib/x.av", "export fn thrice(n: int) -> int { n * 3 }\n")
+            answered(dir, "src/main.av", Space.Value, "twice").home == ""
+        }
+    }
+    given "the imported name's export dropped" {
+        then "it resolves to nothing" {
+            let dir = store_dir("import_unexported")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files().put("src/lib/x.av", "fn twice(n: int) -> int { n * 2 }\n")
+            answered(dir, "src/main.av", Space.Value, "twice").home == ""
+        }
+    }
+}
+
+spec "a module's tests" {
+    given "a file one directory below the module's tests" {
+        then "it reads none of the module's private names" {
+            let held = {
+                "src/m/inner.av": "fn hidden() -> int { 1 }\n",
+                "src/m/tests/deep/x_test.av": "use m.{hidden}\n",
+            }
+            first("deep_tests", held, "src/m/tests/deep/x_test.av", Space.Value, "hidden").home == ""
+        }
+    }
+    given "a module's test importing another module's private name" {
+        then "it reads nothing" {
+            let held = {
+                "src/m/inner.av": "fn mine() -> int { 1 }\n",
+                "src/n/other.av": "fn hidden() -> int { 1 }\n",
+                "src/m/tests/inner_test.av": "use n.{hidden}\n",
+            }
+            first("other_tests", held, "src/m/tests/inner_test.av", Space.Value, "hidden").home == ""
+        }
+    }
+}
+
+spec "early cutoff over a module's parts" {
+    given "a body edited in the imported module" {
+        then "neither its names nor the importer's scope are made again" {
+            let dir = store_dir("cut_body")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files().put("src/lib/x.av", lib("int").replace("n * 3", "n * 4"))
+            let after = answered(dir, "src/main.av", Space.Value, "twice")
+            !after.ran.contains("module_declares") &&
+                !after.ran.contains("file_scope") &&
+                !after.ran.contains("resolved")
+        }
+    }
+    given "the imported name's own signature edited" {
+        then "the importer's scope and the name's answer are made again, and it still resolves" {
+            let dir = store_dir("cut_own_signature")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files()
+                .put(
+                    "src/lib/x.av",
+                    lib("int").replace("twice(n: int) -> int", "twice(n: int) -> string"),
+                )
+            let after = answered(dir, "src/main.av", Space.Value, "twice")
+            after.ran.contains("file_scope") &&
+                after.ran.contains("resolved") &&
+                after.home == "@test/p/src/lib/x.av"
+        }
+    }
+    given "a declaration added to the imported module" {
+        then "its names are made again, and the importer's scope stands" {
+            let dir = store_dir("cut_added")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files().put("src/lib/x.av", "${lib("int")}\nexport fn four() -> int { 4 }\n")
+            let after = answered(dir, "src/main.av", Space.Value, "twice")
+            after.ran.contains("module_declares") && !after.ran.contains("file_scope")
+        }
+    }
+    given "a sibling's winner read, and another sibling name added" {
+        then "the read stands" {
+            let dir = store_dir("cut_winner")
+            files()
+                .set(
+                    {
+                        "src/m/a.av": "fn helper() -> int { 1 }\n",
+                        "src/m/b.av": "fn other() -> int { 2 }\n",
+                    },
+                )
+            let _ = answered(dir, "src/m/b.av", Space.Value, "helper")
+            files().put("src/m/a.av", "fn helper() -> int { 1 }\n\nfn more() -> int { 3 }\n")
+            let after = answered(dir, "src/m/b.av", Space.Value, "helper")
+            after.ran.contains("module_winners") &&
+                !after.ran.contains("resolved") &&
+                after.home == "@test/p/src/m/a.av"
+        }
+    }
+    given "a second export of the imported name added to another file of its module" {
+        then "the first stays the winner and the import still names it" {
+            let dir = store_dir("cut_second")
+            files().set({"src/lib/x.av": lib("int"), "src/main.av": MAIN})
+            let _ = answered(dir, "src/main.av", Space.Value, "twice")
+            files().put("src/lib/y.av", "export fn twice(n: int) -> int { n + n }\n")
+            answered(dir, "src/main.av", Space.Value, "twice").home == "@test/p/src/lib/x.av"
+        }
+    }
+}
+
+spec "the empty cases" {
+    given "an empty file" {
+        then "it sees nothing of its own and loses nothing" {
+            let a = first("empty_file", {"src/main.av": ""}, "src/main.av", Space.Value, "anything")
+            a.home == "" && a.clashes == 0
+        }
+    }
+    given "an import from a module with no names" {
+        then "it binds nothing" {
+            let held = {"src/lib/x.av": "", "src/main.av": "use lib.{twice}\n"}
+            first("empty_module", held, "src/main.av", Space.Value, "twice").home == ""
+        }
+    }
+    given "an import from a module that isn't there" {
+        then "it binds nothing" {
+            first(
+                "no_module",
+                {"src/main.av": "use nowhere.{twice}\n"},
+                "src/main.av",
+                Space.Value,
+                "twice",
+            )
+                .home == ""
+        }
+    }
+    given "a file that isn't there" {
+        then "it sees nothing" {
+            first(
+                "no_file",
+                {"src/main.av": "fn f() -> int { 1 }\n"},
+                "src/gone.av",
+                Space.Value,
+                "f",
+            )
+                .home == ""
+        }
+    }
+    given "a package with no sources" {
+        then "it reads as no files and no items" {
+            files().set({})
+            use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
+            let read = package_read(
+                query_engine(disk_store_at(store_dir("no_sources")), avra_fact_definitions()),
+                "@test/p",
+            )
+            read.files.is_empty() && read.items == 0
+        }
+    }
+}
