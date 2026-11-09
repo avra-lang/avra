@@ -175,11 +175,15 @@ fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> Read
     let parsed = ws.parsed(ws.file_id("/w/${path}"))
     respelled_origins(parsed.store, (p) -> "@test/p/${p.substring(3, p.length)}")
     if back.stmts.length != parsed.stmts.length ||
-        refusal_difference(back.store, parsed.store) != null { return null }
+        refusal_difference(back.store, parsed.store) != null {
+        return null
+    }
     if (0..back.stmts.length)
         .any(
             (at) -> statement_difference(back.store, back.stmts[at], parsed.store, parsed.stmts[at]) != null,
-        ) { return null }
+        ) {
+        return null
+    }
     back
 }
 
@@ -266,3 +270,56 @@ fn meant_queries(dir: string, path: string) -> List<string> {
     let _ = store.saved()
     engine.computed_queries()
 }
+
+spec "an item read for what it means, attacked" {
+    given "two items whose instances write the same format head" {
+        then "they read back with one declaration of it, as the compiler's own parse does" {
+            let back = meant_as_parsed(
+                store_dir("twin_heads"),
+                {"src/lib/lim.av": LIM_FORMAT, "src/main.av": TWIN_HEADS},
+                "src/main.av",
+            )
+            back != null && hoisted_named_once(back!)
+        }
+    }
+    given "a sublanguage whose notation doesn't read" {
+        then "its word opens no block, as in the compiler's own parse" {
+            meant_as_parsed(
+                store_dir("unread"),
+                {
+                    "src/lib/sql.av": SQL.replace("-> query(c, t)", "-> query(c, t"),
+                    "src/main.av": SQL_USER,
+                },
+                "src/main.av",
+            ) != null
+        }
+    }
+    given "a component's declaration edited" {
+        then "only the item of its instance means anew" {
+            let dir = store_dir("component_edit")
+            files()
+                .set(
+                    {
+                        "src/lib/lim.av": LIM,
+                        "src/main.av": "use lib.{lim, span}\n\nfn a() -> int { lim span(1) { 2 } }\n\nfn b() -> int { 3 }\n",
+                    },
+                )
+            let _ = meant_queries(dir, "src/main.av")
+            files().put("src/lib/lim.av", LIM.replace("+ limit.n", "+ limit.n + 0"))
+            meant_queries(dir, "src/main.av").filter(it == "item_expanded").length == 1
+        }
+    }
+}
+
+/// A template whose head is a format, minted as a declaration and hoisted.
+const LIM_FORMAT: string = "export component route(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.path}.pattern() }\n    }\n}\n"
+
+/// Two items, each an instance with the same format head.
+const TWIN_HEADS: string = "use lib.{route}\n\nfn a() -> string { route \"/x\" { 1 } }\n\nfn b() -> string { route \"/x\" { 2 } }\n"
+
+/// Whether each declaration the file's instances minted stands once.
+fn hoisted_named_once(back: ReadBack) -> bool {
+    let names = [back.store.declared_name(s) ?? "" for s in back.store.hoisted_decls()]
+    !names.is_empty() && distinct(names).length == names.length
+}
+

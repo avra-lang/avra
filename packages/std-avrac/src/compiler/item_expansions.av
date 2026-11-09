@@ -43,10 +43,7 @@ type ItemNeeds = { components: List<WordShape>, blocks: List<string> }
 @query
 fn item_needs(engine: QueryEngine, item_text: string, context: Bytes) -> ItemNeeds {
     let store = new_node_store()
-    let _ = item_read_back(
-        store,
-        PlacedTape { start: 0, tape: item_tape(engine, item_text, context) },
-    )
+    let _ = written_back(engine, store, item_text, context)
     let shapes = WordShapes.from_saved_bytes(context).components
     let nodes = [ExprId { index: at } for at in 0..store.exprs.count()]
     let words = distinct([w! for e in nodes for w in [store.instance_word(e)] if w != null])
@@ -63,6 +60,18 @@ fn grammars_named(engine: QueryEngine, file: SourceFileAddress, words: List<stri
     GrammarWord,
 > {
     [g for g in file_grammars(engine, file) if words.contains(g.word)]
+}
+
+/// An item's statements as written, read back into `store`.
+fn written_back(engine: QueryEngine, store: SyntaxArena, item_text: string, context: Bytes) -> List<
+    StmtId,
+> {
+    item_read_back(store, PlacedTape { start: 0, tape: item_tape(engine, item_text, context) })
+}
+
+impl NamedInstance {
+    /// The instance as a parse lists it.
+    fn instanced() -> Instanced { Instanced { name: self.name, declared: self.declared } }
 }
 
 /// What a component means by of its own: its declaration's text, the context its file reads under,
@@ -87,13 +96,15 @@ type ComponentClosure = { contents: List<ComponentContent> }
 
 @query
 fn component_content(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ComponentContent {
-    let held? = declaration(engine, home, declared) else { return ComponentContent {
+    let held? = declaration(engine, home, declared) else {
+        return ComponentContent {
             item_text: "",
             context: no_context(),
             declares: [],
             grammars: [],
             uses: [],
-        } }
+        }
+    }
     let needs = item_needs(engine, held.item_text, held.context)
     ComponentContent {
         item_text: held.item_text,
@@ -163,7 +174,7 @@ fn component_at(engine: QueryEngine, shape: WordShape, entered: List<string>) ->
         readied_all(file_grammars(engine, shape.home)),
         declaring_item.since.exprs,
     )
-    let instances = [Instanced { name: i.name, declared: i.declared } for i in file_instances(engine, shape.home)]
+    let instances = [i.instanced() for i in file_instances(engine, shape.home)]
     for at in declaring_item.since.exprs..declaring_item.until.exprs {
         let e = ExprId { index: at }
         let word? = store.instance_word(e) else { continue }
@@ -200,15 +211,12 @@ type ExpansionInputs = { components: List<ContentHash>, grammars: List<GrammarWo
 @query
 fn item_expanded(engine: QueryEngine, item_text: string, context: Bytes, inputs: Bytes) -> SyntaxTape {
     let store = new_node_store()
-    let stmts = item_read_back(
-        store,
-        PlacedTape { start: 0, tape: item_tape(engine, item_text, context) },
-    )
+    let stmts = written_back(engine, store, item_text, context)
     let handed = ExpansionInputs.from_saved_bytes(inputs)
     blocks_expanded(store, readied_all(handed.grammars), 0)
     let words = BlockWords {
         components: [c! for s in item_needs(engine, item_text, context).components for c in [component_at(engine, s, [])] if c != null],
-        instances: [Instanced { name: i.name, declared: i.declared } for i in handed.instances],
+        instances: [i.instanced() for i in handed.instances],
         door: sugar_door(avra()),
     }
     instances_expanded(
