@@ -1,0 +1,197 @@
+//! WHAT A FILE'S TOP LEVEL SEES, under one law: a name binds once. A module's declarations bind in
+//! file then declaration order; the first binder of a name in a space wins and every later one
+//! clashes — except a private name two files each declare, which each keeps apart: each file sees
+//! its own and no sibling sees either. A file sees its module's winners, then its own kept-apart
+//! names and its imports, and the prelude's exports where nothing else took the name. Values, types
+//! and sublanguages are spaces apart.
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// Where a name binds.
+@derive(Saved)
+export enum Space {
+    Value
+    Type
+    Syntax
+}
+
+/// The space a kind of declaration binds its name in.
+export fn space_of(kind: ItemKind) -> Space {
+    match kind {
+        .Fn or .Const or .Collect or .State -> Space.Value,
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .CollectEnum -> Space.Type,
+        .Syntax -> Space.Syntax,
+    }
+}
+
+/// Names bound in each space.
+@derive(Saved)
+export type Bound = { values: Map<string, DeclaredName>, types: Map<string, DeclaredName>, syntaxes: Map<string, DeclaredName> }
+
+fn nothing_bound() -> Bound { Bound { values: {}, types: {}, syntaxes: {} } }
+
+impl Bound {
+    /// The declaration `name` is bound to in `space`.
+    fn held(space: Space, name: string) -> DeclaredName? {
+        match space {
+            .Value -> self.values.get(name),
+            .Type -> self.types.get(name),
+            .Syntax -> self.syntaxes.get(name),
+        }
+    }
+
+    /// `name` bound to `d` in `space`.
+    mut fn bind(space: Space, name: string, d: DeclaredName) {
+        match space {
+            .Value -> self.values.set(name, d),
+            .Type -> self.types.set(name, d),
+            .Syntax -> self.syntaxes.set(name, d),
+        }
+    }
+}
+
+/// A declaration that lost its name to another, the module's or an import's.
+@derive(Saved)
+export type NameClash = { lost: DeclaredName, holder: DeclaredName, imported: bool }
+
+/// A module's names bound: the winners its files share, the private names its files keep apart, and
+/// every declaration that lost.
+@derive(Saved)
+export type ModuleBindings = { shared: Bound, apart: List<DeclaredName>, clashes: List<NameClash> }
+
+@query
+export fn module_bindings(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleBindings {
+    mut held = nothing_bound()
+    mut apart: List<DeclaredName> = []
+    mut clashes: List<NameClash> = []
+    for _name, ds in module_declares(engine, package, local, as_root).names {
+        for d in ds {
+            let space = space_of(d.kind)
+            let prior? = held.held(space, d.name) else {
+                held.bind(space, d.name, d)
+                continue
+            }
+            let own = apart
+                .find(
+                    (a) -> same_file(a.file, d.file) &&
+                        a.name == d.name &&
+                        space_of(a.kind) == space,
+                ) ?? prior
+            if kept_apart(own, d) {
+                if !apart.any(it.is(prior)) { apart.push(prior) }
+                apart.push(d)
+            } else {
+                clashes.push(NameClash { lost: d, holder: own, imported: false })
+            }
+        }
+    }
+    ModuleBindings { shared: without(held, apart), apart: apart, clashes: clashes }
+}
+
+/// Whether two declarations of one name are each their own file's: both private, in different files.
+fn kept_apart(a: DeclaredName, b: DeclaredName) -> bool { !a.exported && !b.exported && !same_file(a.file, b.file) }
+
+/// `held` with every kept-apart declaration taken out.
+fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
+    mut shared = nothing_bound()
+    for name, d in held.values { if !apart.any(it.is(d)) { shared.values.set(name, d) } }
+    for name, d in held.types { if !apart.any(it.is(d)) { shared.types.set(name, d) } }
+    for name, d in held.syntaxes { if !apart.any(it.is(d)) { shared.syntaxes.set(name, d) } }
+    shared
+}
+
+/// What a file's top level sees: its own kept-apart names, its imports and the prelude's
+/// (`own`), over its module's shared winners; its siblings' kept-apart names, which a read of here
+/// is refused with; and each import that lost its name.
+@derive(Saved)
+export type FileScope = { own: Bound, module: Bound, siblings: List<DeclaredName>, clashes: List<NameClash> }
+
+impl FileScope {
+    /// The declaration `name` names in `space` here.
+    fn named(space: Space, name: string) -> DeclaredName? { self.own.held(space, name) ?? self.module.held(space, name) }
+}
+
+@query
+export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope {
+    let module = module_bindings(engine, file.package_name, module_segments(file), true)
+    mut own = nothing_bound()
+    for d in module.apart { if same_file(d.file, file) { own.bind(space_of(d.kind), d.name, d) } }
+    mut clashes: List<NameClash> = []
+    for u in file_words(engine, file).uses {
+        let at? = imported_module(engine, file, u) else { continue }
+        let exports = module_declares(engine, at.package, at.local, at.as_root)
+        let privately = tests_of(file, at)
+        for j, item in u.items {
+            for d in exports.names.get(item) ?? [] {
+                if !d.exported && !privately { continue }
+                let clash = imported(own, module.shared, file, u.bound_as(j), d)
+                if clash != null { clashes.push(clash!) } else { own.bind(space_of(d.kind), u.bound_as(j), d) }
+            }
+        }
+    }
+    if file.package_name != PRELUDE {
+        for _name, ds in module_declares(engine, PRELUDE, [], false).names {
+            for d in ds {
+                let space = space_of(d.kind)
+                if d.exported &&
+                    own.held(space, d.name) == null &&
+                    module.shared.held(space, d.name) == null { own.bind(space, d.name, d) }
+            }
+        }
+    }
+    FileScope {
+        own: own,
+        module: module.shared,
+        siblings: [d for d in module.apart if !same_file(d.file, file)],
+        clashes: [c for c in module.clashes if same_file(c.lost.file, file)].concat(clashes),
+    }
+}
+
+/// The clash an import of `d` as `name` makes, absent when it binds: a name already this file's, or
+/// its module's export or its own, clashes unless it's that very declaration; a sibling's private
+/// one it shadows.
+fn imported(own: Bound, module: Bound, file: SourceFileAddress, name: string, d: DeclaredName) -> NameClash? {
+    let space = space_of(d.kind)
+    let prior? = own.held(space, name) ?? claimed(module, space, name, file) else { return null }
+    if prior.is(d) { return null }
+    NameClash { lost: d, holder: prior, imported: true }
+}
+
+/// The module's holder of a name as `file` sees it claimed: an export, or this file's own.
+fn claimed(module: Bound, space: Space, name: string, file: SourceFileAddress) -> DeclaredName? {
+    let d? = module.held(space, name) else { return null }
+    if d.exported || same_file(d.file, file) { d } else { null }
+}
+
+/// Whether `file` stands directly in the `tests/` of the module `at` names, so its imports read that
+/// module's private names too.
+fn tests_of(file: SourceFileAddress, at: ModuleAt) -> bool {
+    let module = module_segments(file)
+    at.package == file.package_name &&
+        module.last() == TESTS &&
+        module.take(module.length - 1).join(".") == at.local.join(".")
+}
+
+/// The directory a module's own tests stand in.
+const TESTS: string = "tests"
+
+/// The package every file sees without a `use`.
+const PRELUDE: string = "@std/prelude"
+
+/// What `name` names in `space` from `file`'s top level, absent for nothing: one question per name,
+/// so what reads a name depends on that name alone.
+@query
+export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
+    file_scope(engine, file).named(space, name)
+}
+
+collect listed_scope_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a file's scope reads through, for a process to hand its engine.
+export fn scope_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_scope_facts) }
+
+/// Whether two addresses name one file.
+fn same_file(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.package_name == b.package_name && a.path_in_package == b.path_in_package }

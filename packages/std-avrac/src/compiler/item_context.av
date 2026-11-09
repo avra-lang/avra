@@ -180,14 +180,24 @@ export fn spelled_file(file: SourceFileAddress) -> string { "${file.package_name
 /// What one `use` line imports of block words.
 type LineShapes = { components: List<WordShape>, grammars: List<GrammarWord>, instances: List<NamedInstance> }
 
+/// The module a `use` line names, as a file reads it: its package, its path there, and whether it's
+/// read as its package's own. Absent for a malformed path, the file's own module, or a package the
+/// file's doesn't reach.
+type ModuleAt = { package: string, local: List<string>, as_root: bool }
+
+fn imported_module(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> ModuleAt? {
+    let m = module_path(u.path)
+    if m.malformed() { return null }
+    let provider = m.package() ?? file.package_name
+    if provider == file.package_name && m.local().join(".") == module_segments(file).join(".") { return null }
+    if !reaches(engine, file.package_name, provider) { return null }
+    ModuleAt { package: provider, local: m.local(), as_root: provider == file.package_name }
+}
+
 fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> LineShapes {
     let none = LineShapes { components: [], grammars: [], instances: [] }
-    let m = module_path(u.path)
-    if m.malformed() { return none }
-    let provider = m.package() ?? file.package_name
-    if provider == file.package_name && m.local().join(".") == module_segments(file).join(".") { return none }
-    if !reaches(engine, file.package_name, provider) { return none }
-    let exports = module_exports(engine, provider, m.local(), provider == file.package_name)
+    let at? = imported_module(engine, file, u) else { return none }
+    let exports = module_exports(engine, at.package, at.local, at.as_root)
     LineShapes {
         components: [c with { word: u.bound_as(j) } for j, item in u.items for c in exports.components.get(item) ?? []],
         grammars: [g with { word: u.bound_as(j) } for j, item in u.items for g in exports.grammars.get(item) ?? []],

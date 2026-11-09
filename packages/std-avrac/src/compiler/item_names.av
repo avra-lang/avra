@@ -80,6 +80,16 @@ export fn declare_on(store: SyntaxArena, mut tape: TapeWriter, s: StmtId) {
 @derive(Saved)
 export type DeclaredName = { name: string, kind: ItemKind, file: SourceFileAddress, item: int, exported: bool, face: ContentHash }
 
+impl DeclaredName {
+    /// Whether two are one declaration: one name, of one kind, in one item of one file.
+    fn is(other: DeclaredName) -> bool {
+        self.name == other.name &&
+            self.kind == other.kind &&
+            self.item == other.item &&
+            same_file(self.file, other.file)
+    }
+}
+
 /// What a file declares, in the order it's written; what its instances minted stands with the item
 /// that minted it.
 @derive(Saved)
@@ -104,9 +114,9 @@ export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> FileDec
 export type ModuleDeclares = { names: Map<string, List<DeclaredName>> }
 
 @query
-export fn module_declares(engine: QueryEngine, package: string, local: List<string>) -> ModuleDeclares {
+export fn module_declares(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleDeclares {
     mut names: Map<string, List<DeclaredName>> = {}
-    for f in module_files(engine, package, local, true) {
+    for f in module_files(engine, package, local, as_root) {
         for n in file_declares(engine, f).names { names.set(n.name, (names.get(n.name) ?? []).concat([n])) }
     }
     ModuleDeclares { names: names }

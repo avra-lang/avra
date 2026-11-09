@@ -1,0 +1,83 @@
+// What a file's top level sees, by the program's reads: a module's winners, names its files keep
+// apart, a clash, an import under an alias, the prelude where nothing else took a name, and a
+// module's tests reading its private names.
+use compiler.{FileScope, Space, avra_fact_definitions, avra_source_world, file_scope}
+use compiler.tests.support.{file_at, files, list_held, read_held, store_dir}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.source_facts.{use_source_world}
+
+/// What `path` sees with `held` the package's files.
+fn scope_in(name: string, held: Map<string, string>, path: string) -> FileScope {
+    files().set(held)
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    file_scope(query_engine(disk_store_at(store_dir(name)), avra_fact_definitions()), file_at(path))
+}
+
+/// The file `name` names a declaration in, as a value, from `scope`; "" for none.
+fn value_home(scope: FileScope, name: string) -> string { scope.named(Space.Value, name)?.file?.path_in_package ?? "" }
+
+spec "what a file's top level sees" {
+    given "a private name two files of one module each declare" {
+        then "each file sees its own, and a third sees neither" {
+            let held = {
+                "src/m/a.av": "fn helper() -> int { 1 }\n",
+                "src/m/b.av": "fn helper() -> int { 2 }\n",
+                "src/m/c.av": "fn other() -> int { 3 }\n",
+            }
+            value_home(scope_in("apart_a", held, "src/m/a.av"), "helper") == "src/m/a.av" &&
+                value_home(scope_in("apart_b", held, "src/m/b.av"), "helper") == "src/m/b.av" &&
+                value_home(scope_in("apart_c", held, "src/m/c.av"), "helper") == "" &&
+                scope_in("apart_c2", held, "src/m/c.av").siblings.length == 2
+        }
+    }
+    given "an exported name two files of one module declare" {
+        then "the first file's wins, and the second's is a clash filed under it" {
+            let held = {
+                "src/m/a.av": "export fn shared() -> int { 1 }\n",
+                "src/m/b.av": "export fn shared() -> int { 2 }\n",
+            }
+            let b = scope_in("clash", held, "src/m/b.av")
+            value_home(b, "shared") == "src/m/a.av" &&
+                b.clashes.length == 1 &&
+                b.clashes[0].lost.file.path_in_package == "src/m/b.av"
+        }
+    }
+    given "an import under an alias" {
+        then "the name binds as the alias, and the imported name doesn't" {
+            let held = {
+                "src/lib/x.av": "export fn twice(n: int) -> int { n * 2 }\n",
+                "src/main.av": "use lib.{twice as doubled}\n\ndoubled(2)\n",
+            }
+            let s = scope_in("alias", held, "src/main.av")
+            value_home(s, "doubled") == "src/lib/x.av" && value_home(s, "twice") == ""
+        }
+    }
+    given "a type and a fn of one name" {
+        then "they bind in spaces apart" {
+            let s = scope_in(
+                "spaces",
+                {"src/m/a.av": "type Size = { n: int }\n\nfn Size() -> int { 1 }\n"},
+                "src/m/a.av",
+            )
+            s.named(Space.Type, "Size")?.kind != s.named(Space.Value, "Size")?.kind &&
+                s.clashes.is_empty()
+        }
+    }
+    given "a module's own tests" {
+        then "an explicit `use` reads a name the module keeps private" {
+            let held = {
+                "src/m/inner.av": "fn hidden() -> int { 1 }\n",
+                "src/m/tests/inner_test.av": "use m.{hidden}\n",
+            }
+            value_home(scope_in("tests_private", held, "src/m/tests/inner_test.av"), "hidden") == "src/m/inner.av"
+        }
+        then "another module's `use` of that name sees nothing" {
+            let held = {
+                "src/m/inner.av": "fn hidden() -> int { 1 }\n",
+                "src/other.av": "use m.{hidden}\n",
+            }
+            value_home(scope_in("other_private", held, "src/other.av"), "hidden") == ""
+        }
+    }
+}

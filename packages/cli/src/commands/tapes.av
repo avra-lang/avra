@@ -1,13 +1,21 @@
 //! `avra tapes <package>` — every file of a package read off its items' tapes for what it means,
 //! held to the tree the compiler's own parse makes of it: statement for statement, the same tape,
-//! every node where it was. Says each file that differs and how many it read.
+//! every node where it was; and what its top level sees held to what the workspace's namespace
+//! binds, name for name, wherever the workspace's declaration was written. Says each file that
+//! differs and how many it read.
 use @std.cli.{CliResult, Runnable, command}
 use @std.avrac.compiler.{Workspace}
-use @std.avrac.core.{flatten}
+use @std.avrac.compiler.host.{read_manifest}
+use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.core.{DeclId, flatten}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
+    FileScope,
+    Space,
     file_meant,
+    file_scope,
+    spelled_file,
     read_back,
     respelled_origins,
     refusal_difference,
@@ -25,7 +33,11 @@ type TapesCmd = {}
 impl Runnable for TapesCmd {
     fn run(args: CliResult) -> int {
         let root? = argued_path(args) else { return 1 }
-        let disk = Disk { root: root, std: rooted(std_root() ?? "") }
+        let named = read_manifest(
+            new_source_file("avra.toml", text_at(joined_path(root, "avra.toml")) ?? ""),
+        )
+            .name
+        let disk = Disk { root: root, name: named, std: rooted(std_root() ?? "") }
         use_source_world(
             avra_source_world(
                 (f) -> text_at(disk.on_disk(f.package_name, f.path_in_package)),
@@ -38,7 +50,7 @@ impl Runnable for TapesCmd {
             avra_fact_definitions(),
         )
         let ws = root_workspace(root)
-        let files = sources(engine, "src")
+        let files = sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f)] if d != null]
         for d in differing { println("differs: ${d}") }
         println("tapes: ${files.length} read, ${differing.length} differing")
@@ -46,13 +58,14 @@ impl Runnable for TapesCmd {
     }
 }
 
-/// The packages being read on disk: the one named, and the toolchain's under its std root.
-type Disk = { root: string, std: string }
+/// The packages being read on disk: the one named (`root`, addressed by its manifest's `name`), and
+/// the toolchain's under its std root.
+type Disk = { root: string, name: string, std: string }
 
 impl Disk {
     /// Where a package's file stands.
     fn on_disk(package: string, path: string) -> string {
-        if package.starts_with(STD) {
+        if package != self.name && package.starts_with(STD) {
             joined_path(
                 joined_path(self.std, "std-${package.substring(STD.length, package.length)}"),
                 path,
@@ -64,14 +77,12 @@ impl Disk {
 
     /// A file on disk as the program spells it: its package, then its path.
     fn spelled(path: string) -> string {
+        if path.starts_with("${self.root}/") { return "${self.name}/${path.substring(self.root.length + 1, path.length)}" }
         let std_dir = "${self.std}/std-"
-        if path.starts_with(std_dir) {
-            let rest = path.substring(std_dir.length, path.length)
-            let cut = rest.index_of("/") ?? rest.length
-            return "${STD}${rest.substring(0, cut)}${rest.substring(cut, rest.length)}"
-        }
-        if path.starts_with("${self.root}/") { return "${ROOT}/${path.substring(self.root.length + 1, path.length)}" }
-        path
+        if !path.starts_with(std_dir) { return path }
+        let rest = path.substring(std_dir.length, path.length)
+        let cut = rest.index_of("/") ?? rest.length
+        "${STD}${rest.substring(0, cut)}${rest.substring(cut, rest.length)}"
     }
 }
 
@@ -83,23 +94,20 @@ fn text_at(path: string) -> string? { match read_text(path) { .Ok(text) -> text,
 fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -> names, .Err(_) -> null } }
 
 /// Every source under `dir` of the package being read, never through a package nested inside.
-fn sources(engine: QueryEngine, dir: string) -> List<string> {
-    let names = listed(engine, DirectoryAddress { package_name: ROOT, path_in_package: dir }) ?? []
+fn sources(engine: QueryEngine, package: string, dir: string) -> List<string> {
+    let names = listed(engine, DirectoryAddress { package_name: package, path_in_package: dir }) ?? []
     if dir != "src" && names.contains("avra.toml") { return [] }
     flatten(
-        [if name.ends_with(".av") { ["${dir}/${name}"] } else { sources(engine, "${dir}/${name}") } for name in names],
+        [if name.ends_with(".av") { ["${dir}/${name}"] } else { sources(engine, package, "${dir}/${name}") } for name in names],
     )
 }
-
-/// The package being read, by the name its files are addressed under.
-const ROOT: string = "root"
 
 /// How `path` read for what it means differs from the tree the workspace's parse makes of it,
 /// absent when it doesn't.
 fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
     let back = read_back(
         path,
-        file_meant(engine, SourceFileAddress { package_name: ROOT, path_in_package: path }),
+        file_meant(engine, SourceFileAddress { package_name: disk.name, path_in_package: path }),
     )
     let parsed = ws.parsed(ws.file_id(joined_path(disk.root, path)))
     respelled_origins(parsed.store, (path) -> disk.spelled(path))
@@ -111,8 +119,55 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> s
         let lo = parsed.store.stmt_span(parsed.stmts[at])?.lo ?? 0
         return "${path}: statement ${at} at ${lo}, ${how}"
     }
+    scope_difference(
+        file_scope(engine, SourceFileAddress { package_name: disk.name, path_in_package: path }),
+        ws,
+        disk,
+        path,
+    )
+}
+
+/// How what `path`'s top level sees differs from the workspace's namespace for it, in each space,
+/// absent when it doesn't. A name the workspace bound to a declaration nobody wrote — a builtin,
+/// or one an annotation made — is the workspace's alone.
+fn scope_difference(scope: FileScope, ws: Workspace, disk: Disk, path: string) -> string? {
+    let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
+    let spaces = [
+        Spaced {
+            space: Space.Value,
+            words: names.fn_suggestions(),
+            bound: (n: string) -> names.fn_decl(n),
+            own: scope.own.values.keys().concat(scope.module.values.keys()),
+        },
+        Spaced {
+            space: Space.Type,
+            words: names.type_suggestions(),
+            bound: (n: string) -> names.type_decl(n),
+            own: scope.own.types.keys().concat(scope.module.types.keys()),
+        },
+        Spaced {
+            space: Space.Syntax,
+            words: names.syntax_names.concat(names.base?.syntax_names ?? []),
+            bound: (n: string) -> names.syntax_decl(n),
+            own: scope.own.syntaxes.keys().concat(scope.module.syntaxes.keys()),
+        },
+    ]
+    for s in spaces {
+        for word in s.words {
+            let d? = (s.bound)(word) else { continue }
+            let x = ws.decls.decl(d)
+            if !x.maker.is_empty() || x.home == null { continue }
+            let mine? = scope.named(s.space, word) else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
+            if disk.spelled(ws.decls.file(x.file).path) != spelled_file(mine.file) ||
+                x.name != mine.name { return "${path}: `${word}` names `${spelled_file(mine.file)}`'s `${mine.name}`, the workspace's `${x.name}`" }
+        }
+        for word in s.own { if (s.bound)(word) == null { return "${path}: `${word}` is seen and the workspace binds nothing" } }
+    }
     null
 }
+
+/// One space's names: the workspace's and how it binds them, and the scope's own.
+type Spaced = { space: Space, words: List<string>, bound: fn(string) -> DeclId?, own: List<string> }
 
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
