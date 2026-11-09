@@ -420,13 +420,19 @@ export fn language_features() -> List<LanguageFeature> {
 /// whole run shares.
 export once fn avra() -> Language {
     let lang = assemble(language_features())
-    let rd? = lang.syntax else { return lang }
-    if engine_parse() || grammar_print(rd) != avra_print { return lang }
-    lang with { untold: UntoldParse {
+    lang with { untold: generated_parse(lang) }
+}
+
+/// The generated parser's tables for `lang`, absent where its grammar is not the one the parser
+/// was made from, or the engine is asked to run every parse.
+fn generated_parse(lang: Language) -> UntoldParse? {
+    let rd? = lang.syntax else { return null }
+    if engine_parse() || grammar_print(rd) != avra_print { return null }
+    UntoldParse {
         rows: [lang.builders.get(name) for name in avra_builders],
         kinds: [avra_lexeme().kind_of(term) for term in avra_terms],
         worn: token_classes_worn(),
-    } }
+    }
 }
 
 /// The canonical language over one nameless source — a lone source
