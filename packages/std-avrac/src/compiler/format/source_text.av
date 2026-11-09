@@ -312,6 +312,38 @@ impl SourceText {
 
     /// Whether a statement's own span is one line.
     fn stmt_flat(s: StmtId) -> bool { self.span_flat(self.store.stmt_span(s)) }
+
+    /// Whether the author wrote a braced body on ONE line, judged from the brace that opens it,
+    /// found at or before `lo`, up to `end`. The head before it wraps on its own width, so judging
+    /// the whole construct would read the printer's own wrapped head as a body written over lines,
+    /// and a second print would differ from the first.
+    fn opened_flat(lo: int, end: int) -> bool {
+        let t? = self.text else { return false }
+        if lo < 0 || lo > t.length { return false }
+        let open = brace_at_or_before(t, lo)
+        open >= 0 && self.flat(open, end)
+    }
+
+    /// An expression body's written form: from its own brace to `end`.
+    fn body_flat(body: ExprId, end: int) -> bool { self.opened_flat(start_of(self.store.expr_span(body)), end) }
+
+    /// A statement list's written form: from the brace before its first statement, or the
+    /// statement's closing brace for an empty one, to `s`'s end.
+    fn stmts_flat(stmts: List<StmtId>, s: StmtId) -> bool {
+        let end = self.stmt_end(s)
+        let first? = stmts.first() else { return self.opened_flat(code_end(self.text ?? "", end) - 2, end) }
+        self.opened_flat(start_of(self.store.stmt_span(first)), end)
+    }
+}
+
+/// Where the `{` opening a body lies: at `at`, or before it past spaces and tabs alone; -1 when a
+/// line break or anything else comes first.
+fn brace_at_or_before(t: string, at: int) -> int {
+    if at < t.length && t.char_code(at) == 123 { return at }
+    // LICENSED loops.index_walk: a REVERSE walk to the brace
+    mut i = at
+    while i > 0 && (t.char_code(i - 1) == 32 || t.char_code(i - 1) == 9) { i = i - 1 }
+    if i > 0 && t.char_code(i - 1) == 123 { i - 1 } else { -1 }
 }
 
 /// Where the code of a span ending at `end` really ends — a span may
@@ -414,7 +446,7 @@ impl SourceText {
                 [
                     source_line(
                         depth,
-                        "${sig}${self.ret_arrow(ret, depth, col_after(sig, depth * 4))} ${self.block(body, self.stmt_flat(s), depth)}",
+                        "${sig}${self.ret_arrow(ret, depth, col_after(sig, depth * 4))} ${self.block(body, self.body_flat(body, self.stmt_end(s)), depth)}",
                     ),
                 ]
             },
@@ -436,7 +468,7 @@ impl SourceText {
                             "${prefix}${self.expression(cond, loosest_tier, depth, col_after(prefix, depth * 4))}",
                             stmts,
                             self.stmt_end(s),
-                            self.stmt_flat(s),
+                            self.stmts_flat(stmts, s),
                             depth,
                         ),
                 ]
@@ -494,7 +526,7 @@ impl SourceText {
                             "${prefix}${self.let_else_subject(subject, depth, col_after(prefix, depth * 4))} else",
                             stmts,
                             self.stmt_end(s),
-                            self.stmt_flat(s),
+                            self.stmts_flat(stmts, s),
                             depth,
                         ),
                 ]
@@ -516,7 +548,7 @@ impl SourceText {
                             "${prefix}${self.loop_subject(subject, prefix, depth)}",
                             stmts,
                             self.stmt_end(s),
-                            self.stmt_flat(s),
+                            self.stmts_flat(stmts, s),
                             depth,
                         ),
                 ]
@@ -940,7 +972,7 @@ impl SourceText {
                             rest -> [
                                 source_line(
                                     depth,
-                                    "${head} ${self.block(body, self.stmt_flat(s), depth)}",
+                                    "${head} ${self.block(body, self.body_flat(body, self.stmt_end(s)), depth)}",
                                 ),
                             ],
                         },
@@ -1735,10 +1767,10 @@ impl SourceText {
         }
     }
 
-    /// An `if`'s branches, one-line when the whole form was; an else-less
-    /// guard ends at its first block.
+    /// An `if`'s branches, one-line when the author wrote them so from the first branch's brace on;
+    /// an else-less guard ends at its first block.
     mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId?, id: ExprId, depth: int, col: int = -1) -> string {
-        let one = self.span_flat(self.store.expr_span(id))
+        let one = self.body_flat(yes, end_of(self.store.expr_span(id)))
         let head = "if ${self.expression(cond, loosest_tier, depth, resolved_col(col, depth) + 3)} ${self.block(yes, one, depth)}"
         let other? = no else { return head }
         "${head} else ${self.if_group_else(other, one, depth)}"
@@ -1765,17 +1797,16 @@ impl SourceText {
     /// spelled back as the span the writer wrote rather than the `ms`
     /// field the builder read off it.
     mut fn produce_group(elem: TypeRef, cap: ExprId?, body: ExprId, id: ExprId, depth: int) -> string {
-        let one = self.span_flat(self.store.expr_span(id))
         let pinned = "produce${self.pins([elem])}"
         let head: string = if cap == null { pinned } else { "${pinned}(${self.expression(cap!, loosest_tier, depth)})" }
         // the block is the LIFTED producer's body, wrapped as a
         // zero-seat lambda by the builder — spelled back as written
         let block = match self.store.expr(body) { .Lambda(_, inner) -> inner, rest -> body }
-        "${head} ${self.block(block, one, depth)}"
+        "${head} ${self.block(block, self.body_flat(block, end_of(self.store.expr_span(id))), depth)}"
     }
 
     mut fn within_group(limit: ExprId, body: ExprId, id: ExprId, depth: int, col: int) -> string {
-        let one = self.span_flat(self.store.expr_span(id))
+        let one = self.body_flat(body, end_of(self.store.expr_span(id)))
         "within ${self.expression(limit, loosest_tier, depth, resolved_col(col, depth) + 7)} ${self.block(body, one, depth)}"
     }
 
