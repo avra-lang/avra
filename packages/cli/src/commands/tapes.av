@@ -3,7 +3,7 @@
 //! every node where it was; and what its top level sees held to what the workspace's namespace
 //! binds, name for name, wherever the workspace's declaration was written. Says each file that
 //! differs and how many it read.
-use @std.cli.{CliResult, Runnable, command}
+use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
@@ -23,8 +23,9 @@ use @std.avrac.compiler.{
 }
 use @std.io.{list_dir, read_text}
 use @std.path.{joined_path}
+use @std.time.{now_ns}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
-use @std.program.disk_store.{disk_store_at}
+use @std.program.disk_store.{DiskStore, disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{listed, use_source_world}
 
@@ -45,10 +46,9 @@ impl Runnable for TapesCmd {
                 "avra-tapes",
             ),
         )
-        let engine = query_engine(
-            disk_store_at(joined_path(root, ".avra-cache/tapes")),
-            avra_fact_definitions(),
-        )
+        let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
+        let engine = query_engine(store, avra_fact_definitions())
+        if args.has_flag("program_only") { return program_timed(engine, store, disk) }
         let ws = root_workspace(root)
         let files = sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f)] if d != null]
@@ -56,6 +56,24 @@ impl Runnable for TapesCmd {
         println("tapes: ${files.length} read, ${differing.length} differing")
         if differing.is_empty() { 0 } else { 1 }
     }
+}
+
+/// The program layer alone over every file: what each means and what its top level sees, then what
+/// it learned kept. Says how long it took and how many questions it answered by running them.
+fn program_timed(engine: QueryEngine, store: DiskStore, disk: Disk) -> int {
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let t0 = now_ns()
+    let files = sources(engine, disk.name, "src")
+    for f in files {
+        let address = SourceFileAddress { package_name: disk.name, path_in_package: f }
+        let _ = file_meant(engine, address)
+        let _ = file_scope(engine, address)
+    }
+    let _ = store.saved()
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let ms = (now_ns() - t0) / 1000000
+    println("program: ${files.length} files in ${ms} ms, ${engine.computed_count()} answers made")
+    0
 }
 
 /// The packages being read on disk: the one named (`root`, addressed by its manifest's `name`), and
@@ -159,7 +177,9 @@ fn scope_difference(scope: FileScope, ws: Workspace, disk: Disk, path: string) -
             if !x.maker.is_empty() || x.home == null { continue }
             let mine? = scope.named(s.space, word) else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
             if disk.spelled(ws.decls.file(x.file).path) != spelled_file(mine.file) ||
-                x.name != mine.name { return "${path}: `${word}` names `${spelled_file(mine.file)}`'s `${mine.name}`, the workspace's `${x.name}`" }
+                x.name != mine.name {
+                return "${path}: `${word}` names `${spelled_file(mine.file)}`'s `${mine.name}`, the workspace's `${x.name}`"
+            }
         }
         for word in s.own { if (s.bound)(word) == null { return "${path}: `${word}` is seen and the workspace binds nothing" } }
     }
@@ -169,8 +189,14 @@ fn scope_difference(scope: FileScope, ws: Workspace, disk: Disk, path: string) -
 /// One space's names: the workspace's and how it binds them, and the scope's own.
 type Spaced = { space: Space, words: List<string>, bound: fn(string) -> DeclId?, own: List<string> }
 
+export flag program_only {
+    description: "run the program layer alone over every file and say how long it took"
+    aliases: ["--program-only"]
+}
+
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
+    flags: [program_only]
     args: [file]
     run: TapesCmd {}
 }
