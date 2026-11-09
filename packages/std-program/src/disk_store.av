@@ -151,8 +151,9 @@ fn draft_table() -> DraftTable {
 /// What this process is writing: the draft each answer and each question's records it keeps are
 /// appended to, where each lies in it, what's appended but not yet written, and what's written past
 /// the draft's last mapping, held until it's mapped again. A question kept again is appended again,
-/// and its newest octets are the ones it has. A draft a write failed on is spoiled: its index would
-/// point at octets that never reached it, so it's never published.
+/// and its newest octets are the ones it has; the older stay as dead octets until a compaction drops
+/// them. A draft a write failed on is spoiled: its index would point at octets that never reached it,
+/// so it's never published, and what it couldn't write stays held, so every read still answers.
 type Segment = {
     draft: Draft,
     appended_octets: Cell<int>,
@@ -196,6 +197,7 @@ impl Segment {
     fn appended(octets: Bytes) -> int {
         let at = self.appended_octets.get()
         self.appended_octets.set(at + octets.length)
+        if self.is_spoiled() { return at }
         self.unwritten.push(octets)
         self.unwritten_octets.set(self.unwritten_octets.get() + octets.length)
         if self.unwritten_octets.get() >= UNWRITTEN_OCTETS { self.written() }
@@ -208,7 +210,7 @@ impl Segment {
         if self.is_spoiled() { return }
         match self.draft.write(self.unwritten.get().bytes()) {
             .Ok(_) -> {},
-            .Err(e) -> { return self.spoiled_by.push(e) },
+            .Err(e) -> { return self.spoiled(e) },
         }
         self.unwritten.set([])
         self.unwritten_octets.set(0)
@@ -235,6 +237,15 @@ impl Segment {
         self.answers.unviewed.clear()
         self.questions.unviewed.clear()
         self.unviewed_octets.set(0)
+    }
+
+    /// The draft spoiled by `e`: dropped, so its octets free the disk they hold; what it mapped is
+    /// still read where it lay, and what's kept from here on, like what it couldn't write, is held.
+    fn spoiled(e: IoError) {
+        self.spoiled_by.push(e)
+        self.draft.dropped()
+        self.unwritten.set([])
+        self.unwritten_octets.set(0)
     }
 
     fn is_spoiled() -> bool { !self.spoiled_by.get().is_empty() }
@@ -453,6 +464,16 @@ impl DiskStore {
     /// recent root reaches. Answers how many octets it wrote.
     fn published(absorbed: List<MappedPack>, collecting: bool) -> Result<int, IoError> {
         let segment? = self.writing() else { return 0 }
+        let spoiled_before? = segment.spoiled_by.get().first() else { return self.sealed_if_whole(segment, absorbed, collecting) }
+        fail spoiled_before
+    }
+
+    /// What this process learned and what `absorbed` holds, written after the draft and sealed. A
+    /// write that fails spoils the draft, and nothing is published.
+    fn sealed_if_whole(segment: Segment, absorbed: List<MappedPack>, collecting: bool) -> Result<
+        int,
+        IoError,
+    > {
         let packs = sorted_by(absorbed, (a, b) -> a.generation < b.generation)
         let live: Live? = if collecting { live_over(packs, segment) } else { null }
         let questions = questions_merged(segment, packs, live)
@@ -471,8 +492,6 @@ impl DiskStore {
         let _ = segment.appended(PACK_SEAL.bytes())
         segment.written()
         let spoiled? = segment.spoiled_by.get().first() else { return self.sealed(segment, absorbed, named) }
-        segment.draft.dropped()
-        self.segment.set([])
         fail spoiled
     }
 

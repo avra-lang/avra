@@ -1,9 +1,9 @@
 // Attacks on a store that streams every question's records to its draft and compacts in place: a
 // question kept twice in one process, its records spread over packs and the draft, two processes
 // keeping the same records, a question answered many ways, a draft read before and after it's
-// mapped, a store that can't write, a pack of the format before, and a compaction of a store that
-// has only a draft.
-use @std.io.{exists, list_dir, write_bytes}
+// mapped, a store that can't write, a draft whose write fails mid-run, a pack of the format before,
+// and a compaction of a store that has only a draft.
+use @std.io.{IoError, exists, list_dir, write_bytes}
 use @std.time.{stamp}
 use answer_record.{ContentHash}
 use disk_store.{DiskStore, disk_store_at}
@@ -143,6 +143,28 @@ spec "a store's records, streamed and compacted" {
                 engine.computed_count() == 2 &&
                 store.records_of(length_question("e.av")).length == 2 &&
                 (store.saved() catch -1) == 0
+        }
+    }
+    given "a draft whose write fails mid-run" {
+        then "the draft is dropped, what it kept before and after still answers, nothing runs again, and only publishing is refused" {
+            let directory = directory_named("spoiled")
+            kept_world().put("s.av", "alpha")
+            let store = disk_store_at(directory)
+            let mapped = octets(3145728, "m")
+            let first = kept_length(engine_on(store), "s.av")
+            let _ = kept_echo(engine_on(store), mapped)
+            store.writing()!.spoiled(IoError.Failed("${directory}/learned", 28))
+            let after = kept_echo(engine_on(store), "kept after")
+            let refused = (store.saved() catch -1) == -1
+            let later = engine_on(store)
+            first == 5 &&
+                after == "kept after" &&
+                refused &&
+                kept_length(later, "s.av") == 5 &&
+                kept_echo(later, "kept after") == "kept after" &&
+                kept_echo(later, mapped).length == 3145728 &&
+                later.computed_count() == 1 &&
+                (list_dir(directory) catch []).is_empty()
         }
     }
     given "a pack of the format before beside one of today's" {
