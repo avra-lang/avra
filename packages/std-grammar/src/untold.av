@@ -1,0 +1,283 @@
+//! What a GENERATED parser runs on: the state of one untold run and the verbs its rules
+//! share. A generated rule is a fn over `mut u: Untold<T, N>` answering the cursor it ends
+//! at, or `no_end`/`broke_end`, its value in `u.out`.
+//!
+//! It runs the engine's UNTOLD run exactly (executor.av), a diagnostic carried as a COUNT:
+//! `said` is how many the result in hand carries, rolled back wherever the engine drops one.
+//! A run that says anything is not clean, and its caller asks the engine again for the words.
+use executor.{Captured, RunOutcome}
+use diagnostics.{Cause, Diagnostic}
+use lexeme.{Lexeme}
+use util.{filled}
+use @std.errors.{Loc}
+
+/// A rule's answer when it missed.
+export const no_end: int = 0 - 1
+
+/// A rule's answer when it broke inside a committed branch.
+export const broke_end: int = 0 - 2
+
+/// What a memo holds for a rule not yet asked at a cursor.
+export const unasked: int = 0 - 3
+
+/// One untold run. `lit` is each token's literal slot or -1, `mask` its class bits (bit 62:
+/// it closes a body); `kinds` the lexer's kind for each class slot. The memo is an
+/// open-addressed table from a rule at a cursor, capped or open, to one past its answer's
+/// index in `ends`/`vals`/`saids`. `t_*` are what the last operator a climb took left.
+export type Untold<T, N> = {
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    lit: List<int>,
+    mask: List<int>,
+    kinds: List<int>,
+    open_lit: int,
+    close_lit: int,
+    eof_at: int,
+    build: fn(int, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+    absent: Captured<T, N>,
+    out: Captured<T, N>,
+    said: int,
+    fatal: bool,
+    slots: List<int>,
+    slot_mask: int,
+    used: int,
+    ends: List<int>,
+    vals: List<Captured<T, N>>,
+    saids: List<int>,
+    t_tier: int,
+    t_suffix: int,
+    t_suffixed: bool,
+    t_op_at: int,
+    t_words: int,
+}
+
+/// A run over `tokens`, its literals numbered by `lits` and its classes by `terms`.
+export fn untold<T, N>(
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    lits: Map<string, int>,
+    terms: List<string>,
+    build: fn(int, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+) -> Untold<T, N> {
+    let kinds = [lex.kind_of(term) for term in terms]
+    let close_lit = lits.get("}") ?? no_end
+    mut count = 64
+    while count < tokens.length * 2 { count = count * 2 }
+    Untold {
+        tokens: tokens,
+        lex: lex,
+        lit: [lit_of(lex, lits, t) for t in tokens],
+        mask: [mask_of(lex, kinds, close_lit, lits, t) for t in tokens],
+        kinds: kinds,
+        open_lit: lits.get("{") ?? no_end,
+        close_lit: close_lit,
+        eof_at: lone_eof(lex, tokens),
+        build: build,
+        absent: Captured.Absent,
+        out: Captured.Absent,
+        said: 0,
+        fatal: false,
+        slots: filled(count * 2, 0),
+        slot_mask: count - 1,
+        used: 0,
+        ends: [],
+        vals: [],
+        saids: [],
+        t_tier: 0,
+        t_suffix: no_end,
+        t_suffixed: false,
+        t_op_at: 0,
+        t_words: 0,
+    }
+}
+
+/// The slot of the literal a token spells, or -1 — a literal matches by text alone.
+fn lit_of<T>(lex: Lexeme<T>, lits: Map<string, int>, t: T) -> int {
+    let at? = lits.get(lex.text(t)) else { return no_end }
+    if lex.lit_matches(t, lex.text(t)) { at } else { no_end }
+}
+
+/// A token's class bits: bit `s` when it wears the class of slot `s` below 62, bit 62 when
+/// it closes a body.
+fn mask_of<T>(lex: Lexeme<T>, kinds: List<int>, close_lit: int, lits: Map<string, int>, t: T) -> int {
+    mut bits = if close_lit >= 0 && lit_of(lex, lits, t) == close_lit { 1 << 62 } else { 0 }
+    for s, kind in kinds {
+        if s < 62 && lex.wears_kind(t, kind) { bits = bits | (1 << s) }
+    }
+    bits
+}
+
+/// Where the one end-of-input token stands: last, and alone — or -1, a stream no generated
+/// rule reads.
+fn lone_eof<T>(lex: Lexeme<T>, tokens: List<T>) -> int {
+    let ends = [i for i, t in tokens if lex.is_eof(t)]
+    if ends.length == 1 && ends[0] == tokens.length - 1 { ends[0] } else { no_end }
+}
+
+/// What a run answers, as the engine's untold run would — a run that said anything, or ran
+/// over a stream it cannot read, answers a diagnostic in place of its words.
+export fn untold_outcome<T, N>(u: Untold<T, N>, start: string, end: int) -> RunOutcome<T, N> {
+    if u.eof_at >= 0 && end >= 0 && u.said == 0 && !u.fatal && end == u.eof_at {
+        return RunOutcome { result: u.out, diagnostics: [] }
+    }
+    RunOutcome { result: null, diagnostics: [unworded(start)] }
+}
+
+fn unworded(start: string) -> Diagnostic {
+    Diagnostic {
+        cause: Cause.Expected,
+        message: "the untold run of `${start}` spoke",
+        loc: null,
+        expected: [],
+        in_rule: start,
+    }
+}
+
+impl Untold<T, N> {
+    /// The memo key of rule `rule` at `at`, capped or open.
+    fn key(rule: int, at: int, capped: bool) -> int {
+        (rule * (self.tokens.length + 1) + at) * 2 + if capped { 2 } else { 1 }
+    }
+
+    fn slot_of(key: int) -> int {
+        let mixed = key * 40503
+        mut slot = (mixed ^ (mixed >> 15)) & self.slot_mask
+        while self.slots[slot * 2] != 0 && self.slots[slot * 2] != key { slot = slot + 1 & self.slot_mask }
+        slot * 2
+    }
+
+    /// What the rule under `key` answered, its value in `out` and its words added to `said`;
+    /// `unasked` when it has not been asked.
+    mut fn recall(key: int) -> int {
+        let known = self.slots[self.slot_of(key) + 1]
+        if known == 0 { return unasked }
+        self.out = self.vals[known - 1]
+        self.said = self.said + self.saids[known - 1]
+        self.ends[known - 1]
+    }
+
+    /// `end` remembered under `key`, with the value in `out` and the words said since `said0`.
+    mut fn remember(key: int, end: int, said0: int) -> int {
+        if (self.used + 1) * 2 > self.slot_mask + 1 { self.grow() }
+        self.ends.push(end)
+        self.vals.push(if end >= 0 { self.out } else { self.absent })
+        self.saids.push(self.said - said0)
+        let slot = self.slot_of(key)
+        self.slots.set(slot, key)
+        self.slots.set(slot + 1, self.ends.length)
+        self.used = self.used + 1
+        end
+    }
+
+    /// Twice the slots, every key moved across.
+    mut fn grow() {
+        let old = self.slots
+        self.slots = filled((self.slot_mask + 1) * 4, 0)
+        self.slot_mask = (self.slot_mask + 1) * 2 - 1
+        for at in 0..old.length / 2 {
+            if old[at * 2] != 0 {
+                let slot = self.slot_of(old[at * 2])
+                self.slots.set(slot, old[at * 2])
+                self.slots.set(slot + 1, old[at * 2 + 1])
+            }
+        }
+    }
+
+    /// Whether the token at `at` wears the class of slot `slot`, asked the long way.
+    fn wears(at: int, slot: int) -> bool {
+        slot >= 0 &&
+            slot < self.kinds.length &&
+            self.lex.wears_kind(self.tokens[at], self.kinds[slot])
+    }
+
+    /// Whether the token at `at` is literal `text`, asked the long way.
+    fn spells(at: int, text: string) -> bool { self.lex.lit_matches(self.tokens[at], text) }
+
+    /// How far a class terminal matched at `at` moves: end-of-input is a position, not a token.
+    fn step(at: int) -> int { if at == self.eof_at { 0 } else { 1 } }
+
+    /// The token at `at`, captured.
+    fn term(at: int) -> Captured<T, N> { Captured.Terminal(self.tokens[at]) }
+
+    /// A payload the rule states, worn as a terminal.
+    fn stated(text: string, loc: Loc?) -> Captured<T, N> { Captured.Terminal(self.lex.stated(text, loc)) }
+
+    /// The words of an operator spelled across `n` tokens from `at`, as one.
+    fn joined(at: int, n: int) -> string { [self.lex.text(self.tokens[at + k]) for k in 0..n].join("") }
+
+    /// The source range tokens `[from, until)` cover; null when empty.
+    fn span(from: int, until: int) -> Loc? {
+        if until <= from { return null }
+        let a = self.lex.loc(self.tokens[from])
+        let b = self.lex.loc(self.tokens[until - 1])
+        Loc {
+            file: a.file,
+            lo: if a.lo < b.lo { a.lo } else { b.lo },
+            hi: if a.hi > b.hi { a.hi } else { b.hi },
+        }
+    }
+
+    /// Builder `ix` over `args`: true with its value in `out`, false when it refused.
+    mut fn make(ix: int, args: List<Captured<T, N>>, loc: Loc?) -> bool {
+        match (self.build)(ix, args, loc) {
+            .Ok(v) -> {
+                self.out = v
+                true
+            },
+            .Err(_) -> false,
+        }
+    }
+
+    /// A build that refused: a branch that already spoke since `said0` answers absent, else
+    /// the refusal is said and the run is wrecked. True when the branch still stands.
+    mut fn refused(said0: int) -> bool {
+        if self.said > said0 {
+            self.out = self.absent
+            return true
+        }
+        self.said = self.said + 1
+        self.fatal = true
+        false
+    }
+
+    /// Just past the next token wearing kind `kind` from `from`, or the end.
+    fn sync_kind(kind: int, from: int) -> int {
+        mut i = from
+        while !self.lex.is_eof(self.tokens[i]) {
+            if self.lex.wears_kind(self.tokens[i], kind) { return i + 1 }
+            i = i + 1
+        }
+        i
+    }
+
+    /// Just past the next token spelling `text` from `from`, or the end.
+    fn sync_text(text: string, from: int) -> int {
+        mut i = from
+        while !self.lex.is_eof(self.tokens[i]) {
+            if self.spells(i, text) { return i + 1 }
+            i = i + 1
+        }
+        i
+    }
+
+    /// The statement's end from `from`: past the next break outside every brace it opened
+    /// since `entry`, or before a `}` it did not open.
+    fn sync_to_end(entry: int, from: int) -> int {
+        mut depth = 0
+        for j in entry..from {
+            if self.lit[j] == self.open_lit { depth = depth + 1 }
+            if self.lit[j] == self.close_lit && depth > 0 { depth = depth - 1 }
+        }
+        mut i = from
+        while !self.lex.is_eof(self.tokens[i]) {
+            if depth == 0 && self.lex.ends_statement(self.tokens[i]) { return i + 1 }
+            if self.lit[i] == self.open_lit { depth = depth + 1 }
+            if self.lit[i] == self.close_lit {
+                if depth == 0 { return i }
+                depth = depth - 1
+            }
+            i = i + 1
+        }
+        i
+    }
+}
