@@ -15,11 +15,28 @@ impl SyntaxArena {
         span_of(written.offset, written.offset + written.width)
     }
 
+    /// Where a span was written, in the item's file or another.
+    fn place_in(span: Span?, elsewhere: bool) -> TapePlace? {
+        let written? = self.span_place(span) else { return null }
+        written with { in_item: !elsewhere }
+    }
+
+    /// Where a node was written: a template's nodes copied home are in their provider's file.
+    fn expr_place(id: ExprId) -> TapePlace? { self.place_in(self.expr_span(id), self.spanned_elsewhere(id)) }
+
+    fn stmt_place(id: StmtId) -> TapePlace? { self.place_in(self.stmt_span(id), self.stmt_origins.get()[id.index]?.spanned_home ?? false) }
+
+    fn pat_place(id: PatId) -> TapePlace? { self.place_in(self.pat_span(id), self.pat_origins.get()[id.index]?.spanned_home ?? false) }
+
     /// Where a seat was written.
-    fn param_place(id: ParamId) -> TapePlace? { self.span_place(self.param_id_span(id)) }
+    fn param_place(id: ParamId) -> TapePlace? { self.place_in(self.param_id_span(id), self.param_elsewhere.get()[id.index]) }
 
     /// A seat's identity, minted where it was written.
-    fn param_at(place: TapePlace?) -> ParamId { self.alloc_param_id(self.placed_span(place)) }
+    fn param_at(place: TapePlace?) -> ParamId {
+        let id = self.alloc_param_id(self.placed_span(place))
+        if !(place?.in_item ?? true) { self.param_elsewhere.set_at(id.index, true) }
+        id
+    }
 }
 
 /// Each table read back off a tape, through the verb its route names: what the tree keeps beside

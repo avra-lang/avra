@@ -128,6 +128,9 @@ export type SyntaxArena = {
     // a seat's span, by ParamId — the store's only fact about a
     // Param, which otherwise never touches an arena
     @copied_by_hand("the param walk: alloc_param_id") @taped_with_nodes("`ParamId` is `@placed`: a seat is minted where it was written") param_spans: Cell<List<Span?>>,
+    // whether a seat's span is another file's, by the seat — a template's
+    // seats copied home keep their provider's
+    @not_copied("a copy files where its seats came from as it makes them") @taped_with_nodes("a seat's place says whether it's in the item's file") param_elsewhere: Cell<List<bool>>,
     // the forms an expression was written in, by id — one record, so a
     // template copy carries them all through `wear_expr`
     @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
@@ -223,6 +226,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_reads: list_cell(),
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
+        param_elsewhere: list_cell(),
         expr_marks: list_cell(),
         collect_dense: list_cell(),
         sugar_matches: list_cell(),
@@ -819,7 +823,14 @@ impl SyntaxArena {
     fn refusals() -> List<ParseRefusal> { self.refusals.get() }
 
     /// The arenas' counts now.
-    fn marks() -> ArenaMarks { ArenaMarks { exprs: self.exprs.count(), stmts: self.stmts.count(), pats: self.pat_count() } }
+    fn marks() -> ArenaMarks {
+        ArenaMarks {
+            exprs: self.exprs.count(),
+            stmts: self.stmts.count(),
+            pats: self.pat_count(),
+            params: self.param_spans.get().length,
+        }
+    }
 
     /// Where an expression minted from another file's text was written; null for one written here.
     fn foreign_of(e: ExprId) -> ForeignOrigin? { self.expr_origins.get()[e.index] }
@@ -861,6 +872,8 @@ impl SyntaxArena {
         for at in since.pats..now.pats {
             if self.pat_origins.get()[at] == null { self.pat_origins.set_at(at, origin) }
         }
+        if !origin.spanned_home { return }
+        for at in since.params..now.params { self.param_elsewhere.set_at(at, true) }
     }
 
     /// The nodes minted from each other file's text, grouped by where, in the order each was met.
@@ -1118,6 +1131,7 @@ impl SyntaxArena {
     /// alone — a `Param` never lives in an arena, so this is the
     /// STORE's only fact about it.
     fn alloc_param_id(span: Span?) -> ParamId {
+        self.param_elsewhere.push(false)
         self.param_spans.push(span)
         ParamId { index: self.param_spans.get().length - 1 }
     }

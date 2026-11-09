@@ -181,10 +181,7 @@ fn id_methods(id: RootId, root: MetaType, layouts: List<Layout>, language: TapeL
     let lone_variant: List<Stmts> = if says_its_variant(layouts) { [] } else { [quote { ${tape()}.choice(0) }] }
     quote {
         static fn taped_id(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter, ${ID_NAME}: ${id.type_name}) {
-            let earlier = ${tape()}.number_of(${kind}, ${index})
-            if earlier != null {
-                ${tape()}.count(${variants} + ${tape()}.back_to(earlier!) - 1)
-            } else {
+            if !${tape()}.referred_to(${variants}, ${kind}, ${index}) {
                 let number = ${tape()}.placed(${(verbs.place)(tree(), id_name, node)})
                 ${tape()}.wrote(${kind}, ${index}, number)
                 ${lone_variant}
@@ -199,13 +196,12 @@ fn id_methods(id: RootId, root: MetaType, layouts: List<Layout>, language: TapeL
 
         static fn untaped_id(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${id.type_name} {
             let ${LEAD_NAME} = ${tape()}.count()
-            if ${name(LEAD_NAME)} >= ${variants} {
-                return ${id.type_name} { ${id.index}: ${tape()}.referred(${name(LEAD_NAME)} - ${variants} + 1) }
-            }
+            let earlier = ${tape()}.reference(${name(LEAD_NAME)}, ${variants})
+            if earlier != null { return ${id.type_name} { ${id.index}: earlier! } }
             let ${PLACE_NAME} = ${tape()}.place()
             let number = ${tape()}.numbered()
             let ${ID_NAME} = ${added}
-            ${tape()}.made_at(number, ${index})
+            ${tape()}.made_at(number, ${kind}, ${index})
             ${facts_read}
             ${id_name}
         }
