@@ -285,6 +285,52 @@ spec "an item read for what it means, attacked" {
     }
 }
 
+spec "an item reads under the words it could name" {
+    given "a component added to the module an item's file imports from, which the item never names" {
+        then "only the edited line, read for its words and for its meaning, and the new file's item are read" {
+            let dir = store_dir("word_added")
+            files().set({"src/lib/lim.av": LIM, "src/main.av": WORDLESS_USER})
+            let _ = meant_queries(dir, "src/main.av")
+            files().put("src/lib/more.av", "export component other {\n    n: int = 0\n}\n")
+            files()
+                .put(
+                    "src/main.av",
+                    WORDLESS_USER.replace("use lib.{lim, span}", "use lib.{lim, span, other}"),
+                )
+            meant_queries(dir, "src/main.av").filter(it == "item_tape").length == 3
+        }
+    }
+    given "an item naming a word only inside another name, a comment and a string" {
+        then "it reads as the compiler's own parse reads it" {
+            meant_as_parsed(
+                store_dir("word_inside"),
+                {
+                    "src/lib/lim.av": LIM,
+                    "src/main.av": "use lib.{lim, span}\n\n// lim here\nfn limit_of() -> string { \"lim\" }\n\nfn b() -> int { lim span(1) { 2 } }\n",
+                },
+                "src/main.av",
+            ) != null
+        }
+    }
+    given "a word imported under an alias, and an item spelling only the alias" {
+        then "it reads as the compiler's own parse reads it, meaning its instance" {
+            last_means(
+                meant_as_parsed(
+                    store_dir("word_alias"),
+                    {
+                        "src/lib/lim.av": LIM,
+                        "src/main.av": "use lib.{lim as bound, span}\n\nbound span(1) { 2 }\n",
+                    },
+                    "src/main.av",
+                ),
+            )
+        }
+    }
+}
+
+/// A file importing a component, with items that never name it.
+const WORDLESS_USER: string = "use lib.{lim, span}\n\nfn a() -> int { 1 }\n\nfn b() -> int { 2 }\n"
+
 /// A template whose head is a format, minted as a declaration and hoisted.
 const LIM_FORMAT: string = "export component route(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.path}.pattern() }\n    }\n}\n"
 
