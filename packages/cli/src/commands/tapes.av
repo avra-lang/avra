@@ -11,16 +11,17 @@ use @std.avrac.core.{DeclId}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
-    FileScope,
     Space,
     file_meant,
-    file_scope,
     package_read,
     package_sources,
     spelled_file,
     read_back,
+    file_scope,
+    resolved_in,
     respelled_origins,
     refusal_difference,
+    seen_names,
     statement_difference,
 }
 use @std.io.{list_dir, read_text}
@@ -127,37 +128,34 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> s
         let lo = parsed.store.stmt_span(parsed.stmts[at])?.lo ?? 0
         return "${path}: statement ${at} at ${lo}, ${how}"
     }
-    scope_difference(
-        file_scope(engine, SourceFileAddress { package_name: disk.name, path_in_package: path }),
-        ws,
-        disk,
-        path,
-    )
+    scope_difference(engine, ws, disk, path)
 }
 
 /// How what `path`'s top level sees differs from the workspace's namespace for it, in each space,
 /// absent when it doesn't. A name the workspace bound to a declaration nobody wrote — a builtin,
 /// or one an annotation made — is the workspace's alone.
-fn scope_difference(scope: FileScope, ws: Workspace, disk: Disk, path: string) -> string? {
+fn scope_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    let file = SourceFileAddress { package_name: disk.name, path_in_package: path }
+    let scope = file_scope(engine, file)
     let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
     let spaces = [
         Spaced {
             space: Space.Value,
             words: names.fn_suggestions(),
             bound: (n: string) -> names.fn_decl(n),
-            own: scope.own.values.keys().concat(scope.module.values.keys()),
+            seen: seen_names(engine, scope, file, Space.Value),
         },
         Spaced {
             space: Space.Type,
             words: names.type_suggestions(),
             bound: (n: string) -> names.type_decl(n),
-            own: scope.own.types.keys().concat(scope.module.types.keys()),
+            seen: seen_names(engine, scope, file, Space.Type),
         },
         Spaced {
             space: Space.Syntax,
             words: names.syntax_names.concat(names.base?.syntax_names ?? []),
             bound: (n: string) -> names.syntax_decl(n),
-            own: scope.own.syntaxes.keys().concat(scope.module.syntaxes.keys()),
+            seen: seen_names(engine, scope, file, Space.Syntax),
         },
     ]
     for s in spaces {
@@ -165,19 +163,19 @@ fn scope_difference(scope: FileScope, ws: Workspace, disk: Disk, path: string) -
             let d? = (s.bound)(word) else { continue }
             let x = ws.decls.decl(d)
             if !x.maker.is_empty() || x.home == null { continue }
-            let mine? = scope.named(s.space, word) else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
+            let mine? = resolved_in(engine, scope, file, s.space, word) else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
             if disk.spelled(ws.decls.file(x.file).path) != spelled_file(mine.file) ||
                 x.name != mine.name {
                 return "${path}: `${word}` names `${spelled_file(mine.file)}`'s `${mine.name}`, the workspace's `${x.name}`"
             }
         }
-        for word in s.own { if (s.bound)(word) == null { return "${path}: `${word}` is seen and the workspace binds nothing" } }
+        for word in s.seen { if (s.bound)(word) == null { return "${path}: `${word}` is seen and the workspace binds nothing" } }
     }
     null
 }
 
-/// One space's names: the workspace's and how it binds them, and the scope's own.
-type Spaced = { space: Space, words: List<string>, bound: fn(string) -> DeclId?, own: List<string> }
+/// One space's names: the workspace's and how it binds them, and every one the file sees.
+type Spaced = { space: Space, words: List<string>, bound: fn(string) -> DeclId?, seen: List<string> }
 
 export flag program_only {
     description: "run the program layer alone over every file and say how long it took"

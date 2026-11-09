@@ -13,7 +13,6 @@ use core.{
     Provided,
     Stmt,
     SyntaxArena,
-    distinct,
     new_node_store,
 }
 use features.{BlockGrammar, BlockWords, instances_expanded}
@@ -25,33 +24,20 @@ use @std.program.answer_record.{ContentHash, content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use @std.program.source_facts.{
-    PlacedTape,
-    file_context,
-    file_tapes,
-    item_spans,
-    item_tape,
-    source_text,
-}
+use @std.program.source_facts.{PlacedTape, file_context, item_tape}
 use @std.program.syntax_tape.{SyntaxTape, tape_writer}
 
 /// What an item means by besides its text: the components its instances name, as its file's
 /// words give them, and the words its blocks wait to be read by, each once in the order met.
-@derive(Saved)
 type ItemNeeds = { components: List<WordShape>, blocks: List<string> }
 
-@query
+/// An item's needs, as its tape keeps them.
 fn item_needs(engine: QueryEngine, item_text: string, context: Bytes) -> ItemNeeds {
-    let store = new_node_store()
-    let _ = written_back(engine, store, item_text, context)
+    let about = about_of(item_tape(engine, item_text, context).about)
     let shapes = WordShapes.from_saved_bytes(context).components
-    let nodes = [ExprId { index: at } for at in 0..store.exprs.count()]
-    let words = distinct([w! for e in nodes for w in [store.instance_word(e)] if w != null])
     ItemNeeds {
-        components: [s! for w in words for s in [shapes.find(it.word == w)] if s != null],
-        blocks: distinct(
-            [w! for e in nodes if store.deferred_block(e) != null for w in [store.expr(e).body_of()?.word] if w != null],
-        ),
+        components: [s! for w in about.instance_words for s in [shapes.find(it.word == w)] if s != null],
+        blocks: about.block_words,
     }
 }
 
@@ -143,19 +129,14 @@ fn readied_all(grammars: List<GrammarWord>) -> List<BlockGrammar> { [g! for g in
 
 fn component_name(c: ComponentAt) -> string { "${spelled_file(c.home)}#${c.declared}" }
 
-/// A component's declaring item: its text, which of its file's items it is, and the context its
-/// file reads under.
-type Declaration = { item_text: string, item: int, context: Bytes }
+/// A component's declaring item: its text, where it starts in its file, and the context its file
+/// reads under.
+type Declaration = { item_text: string, start: int, context: Bytes }
 
 fn declaration(engine: QueryEngine, home: SourceFileAddress, declared: string) -> Declaration? {
     let word? = file_words(engine, home).components.find(it.shape.declared == declared) else { return null }
-    let text? = source_text(engine, home) else { return null }
-    let span = item_spans(avra_columns(text), text.length)[word.item]
-    Declaration {
-        item_text: text.substring(span.start, span.end),
-        item: word.item,
-        context: file_context(engine, home),
-    }
+    let item = file_items(engine, home)[word.item]
+    Declaration { item_text: item.text, start: item.start, context: file_context(engine, home) }
 }
 
 /// A component handed whole: its declaring item read back as its file reads it, each instance it
@@ -167,7 +148,10 @@ fn component_at(engine: QueryEngine, shape: WordShape, entered: List<string>) ->
     if entered.contains(named) { return null }
     let held? = declaration(engine, shape.home, shape.declared) else { return null }
     let store = new_node_store(shape.home.path_in_package)
-    let declaring_item = item_read_back_marked(store, file_tapes(engine, shape.home)[held.item])
+    let declaring_item = item_read_back_marked(
+        store,
+        PlacedTape { start: held.start, tape: item_tape(engine, held.item_text, held.context) },
+    )
     let words = WordShapes.from_saved_bytes(held.context).components
     blocks_expanded(
         store,
@@ -233,14 +217,12 @@ fn item_expanded(engine: QueryEngine, item_text: string, context: Bytes, inputs:
 /// written tape elsewhere.
 @query
 export fn file_meant(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
-    let text? = source_text(engine, file) else { return [] }
     let context = file_context(engine, file)
-    [PlacedTape {
-        start: span.start,
-        tape: meant_tape(engine, file, text.substring(span.start, span.end), context),
-    } for span in item_spans(avra_columns(text), text.length)]
+    [PlacedTape { start: item.start, tape: meant_tape(engine, file, item.text, context) } for item in file_items(engine, file)]
 }
 
+/// An item's tape for what it means: expanded where it names a component or a block word, written
+/// elsewhere.
 fn meant_tape(engine: QueryEngine, file: SourceFileAddress, item_text: string, context: Bytes) -> SyntaxTape {
     let needs = item_needs(engine, item_text, context)
     if needs.components.is_empty() && needs.blocks.is_empty() { return item_tape(engine, item_text, context) }

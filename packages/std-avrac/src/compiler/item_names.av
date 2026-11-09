@@ -9,7 +9,9 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{file_context}
+use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
+use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, query_definition}
 use @std.program.syntax_tape.{TapeWriter, face_writer}
 
 /// What a top-level item declares.
@@ -90,14 +92,16 @@ impl DeclaredName {
     }
 }
 
-/// What a file declares, in the order it's written; what its instances minted stands with the item
-/// that minted it.
+/// Declarations, in the order they're written; what an instance minted stands with the item that
+/// minted it.
 @derive(Saved)
-export type FileDeclares = { names: List<DeclaredName> }
+export type Declarations = { names: List<DeclaredName> }
 
+/// What a file declares.
 @query
-export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> FileDeclares {
-    FileDeclares {
+export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
+    let context = file_context(engine, file)
+    Declarations {
         names: [DeclaredName {
             name: n.name,
             kind: ITEM_KINDS[n.kind],
@@ -105,21 +109,38 @@ export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> FileDec
             item: at,
             exported: n.exported,
             face: n.face,
-        } for at, p in file_meant(engine, file) for n in p.tape.declares],
+        } for at, item in file_items(engine, file) for n in meant_tape(engine, file, item.text, context).declares],
     }
 }
 
-/// What a module names: every declaration its files make, by name, in listing order.
-@derive(Saved)
-export type ModuleDeclares = { names: Map<string, List<DeclaredName>> }
+/// Every declaration a module's files make, in listing order.
+fn module_names(engine: QueryEngine, files: List<SourceFileAddress>) -> List<DeclaredName> {
+    [n for f in files for n in file_declares(engine, f).names]
+}
 
-@query
-export fn module_declares(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleDeclares {
+/// What a module names: one part per name, every declaration of it in listing order, so a reader
+/// of one name stands when another moves.
+@parted_query
+export fn module_declares(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
     mut names: Map<string, List<DeclaredName>> = {}
-    for f in module_files(engine, package, local, as_root) {
-        for n in file_declares(engine, f).names { names.set(n.name, (names.get(n.name) ?? []).concat([n])) }
+    for n in module_names(engine, module_files(engine, package, local, as_root)) {
+        names.set(n.name, (names.get(n.name) ?? []).concat([n]))
     }
-    ModuleDeclares { names: names }
+    answer_parts(
+        [NamedValue { name: name, value: Declarations { names: ds }.saved_bytes() } for name, ds in names],
+    )
+}
+
+/// Every declaration of `name` a module makes, in listing order.
+export fn declarations_of(
+    engine: QueryEngine,
+    package: string,
+    local: List<string>,
+    as_root: bool,
+    name: string,
+) -> List<DeclaredName> {
+    let saved? = module_declares_part(engine, package, local, as_root, name) else { return [] }
+    Declarations.from_saved_bytes(saved).names
 }
 
 collect listed_name_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

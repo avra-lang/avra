@@ -1,6 +1,13 @@
-// A module's names off its items' tapes: what each file declares, what a body edit leaves standing,
-// and what a signature edit moves.
-use compiler.{ItemKind, ModuleDeclares, avra_fact_definitions, avra_source_world, module_declares}
+// A module's names off its items' tapes: what each file declares, read with no file's tapes put
+// together whole, what a body edit leaves standing, and what a signature edit moves.
+use compiler.{
+    Declarations,
+    DeclaredName,
+    ItemKind,
+    avra_fact_definitions,
+    avra_source_world,
+    module_declares,
+}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{use_source_world}
@@ -10,26 +17,30 @@ const LIB: string = "/// Adds.\nexport fn add(a: int, b: int) -> int { a + b }\n
 
 const SIBLING: string = "export enum Mood {\n    Calm\n    Loud\n}\n\nfn twice(x: int) -> int { add(x, x) }\n"
 
-/// One process naming the module `lib`: its names, and the queries it ran.
-type Named = { names: ModuleDeclares, asked: List<string> }
+/// One process naming the module `lib`: its names, each one part, and the queries it ran.
+type Named = { names: Map<string, List<DeclaredName>>, asked: List<string> }
 
 fn named(dir: string) -> Named {
     use_source_world(avra_source_world(read_held, list_held, "avra-test"))
     let store = disk_store_at(dir)
     let engine = query_engine(store, avra_fact_definitions())
-    let names = module_declares(engine, "@test/p", ["lib"], true)
+    mut names: Map<string, List<DeclaredName>> = {}
+    for part in module_declares(engine, "@test/p", ["lib"], true).parts {
+        let ds = Declarations.from_saved_bytes(part.value).names
+        names.set(ds[0].name, ds)
+    }
     let _ = store.saved()
     Named { names: names, asked: engine.computed_queries() }
 }
 
 /// The face the module gives `name`'s one declaration.
-fn face_of(n: Named, name: string) -> string { "${n.names.names.get(name)?.first()?.face?.high_word ?? 0}" }
+fn face_of(n: Named, name: string) -> string { "${n.names.get(name)?.first()?.face?.high_word ?? 0}" }
 
 spec "a module's names, off its items' tapes" {
     given "a module of two files" {
         then "each declaration stands under its name, with what it declares and whether it's exported" {
             files().set({"src/lib/a.av": LIB, "src/lib/b.av": SIBLING})
-            let names = named(store_dir("names")).names.names
+            let names = named(store_dir("names")).names
             names.keys().length == 5 &&
                 names.get("add")!.first()!.kind == ItemKind.Fn &&
                 names.get("add")!.first()!.exported &&
@@ -38,6 +49,15 @@ spec "a module's names, off its items' tapes" {
                 names.get("LIMIT")!.first()!.kind == ItemKind.Const &&
                 names.get("Mood")!.first()!.kind == ItemKind.Enum &&
                 names.get("twice")!.first()!.file.path_in_package == "src/lib/b.av"
+        }
+    }
+    given "a module's names asked alone" {
+        then "no file's tapes are put together whole for what it means" {
+            files().set({"src/lib/a.av": LIB, "src/lib/b.av": SIBLING})
+            let asked = named(store_dir("headers")).asked
+            asked.contains("file_declares") &&
+                !asked.contains("file_meant") &&
+                !asked.contains("file_tapes")
         }
     }
     given "a fn's body edited" {

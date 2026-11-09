@@ -1,21 +1,45 @@
 // What a file's top level sees, by the program's reads: a module's winners, names its files keep
-// apart, a clash, an import under an alias, the prelude where nothing else took a name, and a
-// module's tests reading its private names.
-use compiler.{FileScope, Space, avra_fact_definitions, avra_source_world, file_scope}
+// apart, a clash, an import under an alias, the prelude where nothing else took a name, a module's
+// tests reading its private names, a scope holding only the file's own, and an import standing
+// when another name moves.
+use compiler.{
+    FileScope,
+    ItemKind,
+    Space,
+    avra_fact_definitions,
+    avra_source_world,
+    file_scope,
+    resolved,
+}
 use compiler.tests.support.{file_at, files, list_held, read_held, store_dir}
+use @std.program.address.{DirectoryAddress}
 use @std.program.disk_store.{disk_store_at}
-use @std.program.query_engine.{query_engine}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{use_source_world}
 
-/// What `path` sees with `held` the package's files.
-fn scope_in(name: string, held: Map<string, string>, path: string) -> FileScope {
+/// `path` with `held` the package's files, and an engine over a store of its own.
+type Seen = { engine: QueryEngine, file: SourceFileAddress }
+
+fn scope_in(name: string, held: Map<string, string>, path: string) -> Seen {
     files().set(held)
     use_source_world(avra_source_world(read_held, list_held, "avra-test"))
-    file_scope(query_engine(disk_store_at(store_dir(name)), avra_fact_definitions()), file_at(path))
+    Seen {
+        engine: query_engine(disk_store_at(store_dir(name)), avra_fact_definitions()),
+        file: file_at(path),
+    }
 }
 
-/// The file `name` names a declaration in, as a value, from `scope`; "" for none.
-fn value_home(scope: FileScope, name: string) -> string { scope.named(Space.Value, name)?.file?.path_in_package ?? "" }
+impl Seen {
+    /// What the file's top level holds as its own.
+    fn scope() -> FileScope { file_scope(self.engine, self.file) }
+
+    /// What `name` names in `space` here.
+    fn kind_of(space: Space, name: string) -> ItemKind? { resolved(self.engine, self.file, space, name)?.kind }
+}
+
+/// The file `name` names a declaration in, as a value, from `seen`; "" for none.
+fn value_home(seen: Seen, name: string) -> string { resolved(seen.engine, seen.file, Space.Value, name)?.file?.path_in_package ?? "" }
 
 spec "what a file's top level sees" {
     given "a private name two files of one module each declare" {
@@ -28,7 +52,7 @@ spec "what a file's top level sees" {
             value_home(scope_in("apart_a", held, "src/m/a.av"), "helper") == "src/m/a.av" &&
                 value_home(scope_in("apart_b", held, "src/m/b.av"), "helper") == "src/m/b.av" &&
                 value_home(scope_in("apart_c", held, "src/m/c.av"), "helper") == "" &&
-                scope_in("apart_c2", held, "src/m/c.av").siblings.length == 2
+                scope_in("apart_c2", held, "src/m/c.av").scope().siblings.length == 2
         }
     }
     given "an exported name two files of one module declare" {
@@ -39,8 +63,8 @@ spec "what a file's top level sees" {
             }
             let b = scope_in("clash", held, "src/m/b.av")
             value_home(b, "shared") == "src/m/a.av" &&
-                b.clashes.length == 1 &&
-                b.clashes[0].lost.file.path_in_package == "src/m/b.av"
+                b.scope().clashes.length == 1 &&
+                b.scope().clashes[0].lost.file.path_in_package == "src/m/b.av"
         }
     }
     given "an import under an alias" {
@@ -60,8 +84,8 @@ spec "what a file's top level sees" {
                 {"src/m/a.av": "type Size = { n: int }\n\nfn Size() -> int { 1 }\n"},
                 "src/m/a.av",
             )
-            s.named(Space.Type, "Size")?.kind != s.named(Space.Value, "Size")?.kind &&
-                s.clashes.is_empty()
+            s.kind_of(Space.Type, "Size") != s.kind_of(Space.Value, "Size") &&
+                s.scope().clashes.is_empty()
         }
     }
     given "a module's own tests" {
@@ -78,6 +102,88 @@ spec "what a file's top level sees" {
                 "src/other.av": "use m.{hidden}\n",
             }
             value_home(scope_in("other_private", held, "src/other.av"), "hidden") == ""
+        }
+    }
+}
+
+/// The prelude's one file.
+const PRELUDE_TEXT: string = "export fn shout() -> int { 1 }\n\nexport fn quiet() -> int { 2 }\n"
+
+/// The held package's files, and the prelude's beside them.
+fn read_with_prelude(file: SourceFileAddress) -> string? {
+    if file.package_name != "@std/prelude" { return read_held(file) }
+    if file.path_in_package == "src/prelude.av" { PRELUDE_TEXT } else { null }
+}
+
+fn list_with_prelude(dir: DirectoryAddress) -> List<string>? {
+    if dir.package_name != "@std/prelude" { return list_held(dir) }
+    match dir.path_in_package { "" -> ["src"], "src" -> ["prelude.av"], _ -> null }
+}
+
+/// `path` with `held` the package's files and the prelude beside them.
+fn with_prelude(name: string, held: Map<string, string>, path: string) -> Seen {
+    files().set(held)
+    use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
+    Seen {
+        engine: query_engine(disk_store_at(store_dir(name)), avra_fact_definitions()),
+        file: file_at(path),
+    }
+}
+
+/// One process asking what `path`'s top level holds, over the store at `dir`: the queries it ran.
+fn scope_asked(dir: string, path: string) -> List<string> {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let store = disk_store_at(dir)
+    let engine = query_engine(store, avra_fact_definitions())
+    let _ = file_scope(engine, file_at(path))
+    let _ = store.saved()
+    engine.computed_queries()
+}
+
+spec "what a file's scope holds" {
+    given "the prelude exporting a name nothing else took, and one the file declares" {
+        then "the prelude's resolves, the file's own wins, and neither stands in the file's scope" {
+            let s = with_prelude(
+                "prelude",
+                {"src/main.av": "fn quiet() -> int { 3 }\n"},
+                "src/main.av",
+            )
+            resolved(s.engine, s.file, Space.Value, "shout")?.file?.package_name == "@std/prelude" &&
+                resolved(s.engine, s.file, Space.Value, "quiet")?.file?.package_name == "@test/p" &&
+                s.scope().own.values.keys().is_empty()
+        }
+    }
+    given "a module's winner declared by a sibling" {
+        then "it resolves, and the file's scope holds none of it" {
+            let s = scope_in(
+                "winner",
+                {
+                    "src/m/a.av": "fn helper() -> int { 1 }\n",
+                    "src/m/b.av": "fn other() -> int { 2 }\n",
+                },
+                "src/m/b.av",
+            )
+            value_home(s, "helper") == "src/m/a.av" && s.scope().own.values.keys().is_empty()
+        }
+    }
+    given "an import of one name, and another name of its module given a new signature" {
+        then "the importer's scope is not made again" {
+            let dir = store_dir("import_stands")
+            files()
+                .set(
+                    {
+                        "src/lib/x.av": "export fn twice(n: int) -> int { n * 2 }\n\nexport fn thrice(n: int) -> int { n * 3 }\n",
+                        "src/main.av": "use lib.{twice}\n\ntwice(2)\n",
+                    },
+                )
+            let _ = scope_asked(dir, "src/main.av")
+            files()
+                .put(
+                    "src/lib/x.av",
+                    "export fn twice(n: int) -> int { n * 2 }\n\nexport fn thrice(n: int) -> string { \"3\" }\n",
+                )
+            let asked = scope_asked(dir, "src/main.av")
+            asked.contains("module_declares") && !asked.contains("file_scope")
         }
     }
 }

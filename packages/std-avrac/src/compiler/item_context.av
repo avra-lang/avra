@@ -4,7 +4,7 @@
 //! and whether a named instance of it binds its name; a sublanguage's word, with its grammar's
 //! notation. Every declaration this reads is read with no words of its own, so working out one
 //! file's words never needs another file's words.
-use core.{ComponentWord, Instancing, StmtId, SyntaxArena, flatten, module_path}
+use core.{ComponentWord, ExprId, Instancing, StmtId, SyntaxArena, distinct, flatten, module_path}
 use compiler.host.{read_manifest}
 use diagnostics.{new_source_file}
 use features.{BlockGrammar, BlockWords}
@@ -15,7 +15,7 @@ use @std.meta.{derive}
 use @std.path.{dir_of, under_dir}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.saved_derive.{Saved}
-use @std.program.source_facts.{file_tapes, item_spans, item_tape, listed, source_text}
+use @std.program.source_facts.{file_context, item_spans, item_tape, listed, source_text}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 
@@ -91,10 +91,19 @@ export fn file_grammars(engine: QueryEngine, file: SourceFileAddress) -> List<Gr
     flatten([line_shapes(engine, file, u).grammars for u in file_words(engine, file).uses])
 }
 
-/// What a parse keeps of an item for its file's words, read without its nodes: the components it
-/// declares, the sublanguages it exports, its top-level named instances and its `use` lines.
+/// What a parse keeps of an item for its file's words and its meaning, read without its nodes: the
+/// components it declares, the sublanguages it exports, its top-level named instances, its `use`
+/// lines, and what it means by besides its text — the word of each instance it holds and each word
+/// its blocks wait to be read by, each once in the order met.
 @derive(Saved)
-type ItemAbout = { components: List<ItemComponent>, grammars: List<ItemGrammar>, instances: List<ItemInstance>, uses: List<UseLine> }
+type ItemAbout = {
+    components: List<ItemComponent>,
+    grammars: List<ItemGrammar>,
+    instances: List<ItemInstance>,
+    uses: List<UseLine>,
+    instance_words: List<string>,
+    block_words: List<string>,
+}
 
 /// A component an item declares: its name, whether its instance binds a name, whether it's exported.
 @derive(Saved)
@@ -119,18 +128,44 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
         grammars: [ItemGrammar { word: g!.name, notation: g!.text } for s in stmts if store.is_exported(s) for g in [store.syntax_parts(s)] if g != null],
         instances: [ItemInstance { name: i!.name, declared: i!.declared, exported: store.is_exported(s) } for s in stmts for i in [instanced(store, s)] if i != null],
         uses: [UseLine { path: u!.path, items: u!.items, aliases: u!.aliases } for s in stmts for u in [store.use_parts(s)] if u != null],
+        instance_words: distinct([w! for e in every_expr(store) for w in [store.instance_word(e)] if w != null]),
+        block_words: distinct(
+            [w! for e in every_expr(store) if store.deferred_block(e) != null for w in [store.expr(e).body_of()?.word] if w != null],
+        ),
     }
         .saved_bytes()
 }
 
+fn every_expr(store: SyntaxArena) -> List<ExprId> { [ExprId { index: at } for at in 0..store.exprs.count()] }
+
+/// One item of a file: where its text starts, and the text.
+@derive(Saved)
+export type ItemText = { start: int, text: string }
+
+/// A file's items (`item_spans`), each as its text; a file with no text has none. Its text is
+/// lexed here alone.
+@query
+export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemText> {
+    let text? = source_text(engine, file) else { return [] }
+    [ItemText { start: span.start, text: text.substring(span.start, span.end) } for span in item_spans(avra_columns(text), text.length)]
+}
+
 /// What each item of a file keeps for its words, read with no words of its own.
 fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
-    let text? = source_text(engine, file) else { return [] }
-    [about_of(item_tape(engine, text.substring(span.start, span.end), no_context()).about) for span in item_spans(avra_columns(text), text.length)]
+    [about_of(item_tape(engine, item.text, no_context()).about) for item in file_items(engine, file)]
 }
 
 fn about_of(octets: Bytes?) -> ItemAbout {
-    let held? = octets else { return ItemAbout { components: [], grammars: [], instances: [], uses: [] } }
+    let held? = octets else {
+        return ItemAbout {
+            components: [],
+            grammars: [],
+            instances: [],
+            uses: [],
+            instance_words: [],
+            block_words: [],
+        }
+    }
     ItemAbout.from_saved_bytes(held)
 }
 
@@ -209,7 +244,8 @@ fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> Line
 /// tokens against its words, then those each `use` line imports.
 @query
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
-    let own = [NamedInstance { name: i.name, declared: i.declared } for p in file_tapes(engine, file) for i in about_of(p.tape.about).instances]
+    let context = file_context(engine, file)
+    let own = [NamedInstance { name: i.name, declared: i.declared } for item in file_items(engine, file) for i in about_of(item_tape(engine, item.text, context).about).instances]
     own
         .concat([i for u in file_words(engine, file).uses for i in line_shapes(engine, file, u).instances])
 }
