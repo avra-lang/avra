@@ -70,24 +70,142 @@ export type PartSeen = { part_name: ContentHash, part_hash: ContentHash }
 export type RecordedRead = { question: ContentHash, whole_answer: ContentHash, part: PartSeen? }
 
 /// One way a question was answered: the hash that finds the answer's bytes, and everything read to
-/// get there. A DEEP record reads only inputs, however many queries stood between them and the
-/// answer. It's the same claim made shorter: checking one touches no other question, so an unchanged
-/// program costs its inputs and nothing more.
+/// get there, as words, so a record is checked where it lies. A whole read is four words, its
+/// question then the whole answer it saw; a part read is eight, those then the part's name and the
+/// part's hash. A DEEP record reads only inputs, however many queries stood between them and the
+/// answer. It's the same claim made shorter: checking one touches no other question, so an
+/// unchanged program costs its inputs and nothing more.
 @derive(Saved)
-export type AnswerRecord = { answer: ContentHash, reads: List<RecordedRead>, deep: bool = false }
+export type AnswerRecord = { answer: ContentHash, whole_reads: List<int>, part_reads: List<int>, deep: bool = false }
+
+/// The words of a whole read.
+const WHOLE_READ_WORDS: int = 4
+
+/// The words of a part read.
+const PART_READ_WORDS: int = 8
+
+/// The record of an answer and what was read to get there.
+export fn answer_record(answer: ContentHash, reads: List<RecordedRead>, deep: bool) -> AnswerRecord {
+    AnswerRecord {
+        answer: answer,
+        whole_reads: [word for read in reads.filter(it.part == null) for word in read.words()],
+        part_reads: [word for read in reads.filter(it.part != null) for word in read.words()],
+        deep: deep,
+    }
+}
 
 impl AnswerRecord {
+    fn kept() -> KeptRecord {
+        KeptRecord {
+            answer: self.answer,
+            deep: self.deep,
+            whole_reads: RecordWords.Held(self.whole_reads),
+            part_reads: RecordWords.Held(self.part_reads),
+        }
+    }
+
     /// Whether two records say the same thing, so keeping both would add nothing.
+    fn same_as(other: AnswerRecord) -> bool { self.kept().same_as(other) }
+}
+
+/// A record's words, held in memory or read where they lie.
+export enum RecordWords {
+    Held(List<int>)
+    Laid(SavedList)
+}
+
+impl RecordWords {
+    fn length() -> int {
+        match self { .Held(words) -> words.length, .Laid(words) -> words.length }
+    }
+
+    fn at(position: int) -> int {
+        match self { .Held(words) -> words[position], .Laid(words) -> words.number_at(position) }
+    }
+
+    /// The hash whose words start at `position`.
+    fn hash_at(position: int) -> ContentHash { ContentHash { high_word: self.at(position), low_word: self.at(position + 1) } }
+
+    fn same_as(other: List<int>) -> bool { self.length() == other.length && (0..other.length).all((i) -> self.at(i) == other[i]) }
+}
+
+/// A record as the engine checks it, its reads never decoded.
+export type KeptRecord = { answer: ContentHash, deep: bool, whole_reads: RecordWords, part_reads: RecordWords }
+
+/// The record saved at `record`, read where it lies.
+export fn kept_in_place(record: SavedRecord) -> KeptRecord {
+    KeptRecord {
+        answer: ContentHash.read_from(AnswerRecord.answer_in_place(record)),
+        deep: AnswerRecord.deep_in(record),
+        whole_reads: RecordWords.Laid(AnswerRecord.whole_reads_in_place(record)),
+        part_reads: RecordWords.Laid(AnswerRecord.part_reads_in_place(record)),
+    }
+}
+
+impl KeptRecord {
     fn same_as(other: AnswerRecord) -> bool {
         self.answer.same_as(other.answer) &&
             self.deep == other.deep &&
-            self.reads.length == other.reads.length &&
-            (self.reads.is_empty() ||
-                content_hash(self.saved_bytes()).same_as(content_hash(other.saved_bytes())))
+            self.whole_reads.same_as(other.whole_reads) &&
+            self.part_reads.same_as(other.part_reads)
+    }
+
+    /// Whether every read holds, in the order kept: each whole read asked of its question and the
+    /// answer it saw, then each part read of those, the part's name and the part's hash.
+    fn every_read(
+        whole: fn(ContentHash, ContentHash) -> bool,
+        part: fn(ContentHash, ContentHash, ContentHash, ContentHash) -> bool,
+    ) -> bool {
+        let wholes = self.whole_reads
+        let parts = self.part_reads
+        (0..wholes.length() / WHOLE_READ_WORDS)
+                .all(
+                    (i) -> whole(
+                        wholes.hash_at(i * WHOLE_READ_WORDS),
+                        wholes.hash_at(i * WHOLE_READ_WORDS + 2),
+                    ),
+                ) &&
+            (0..parts.length() / PART_READ_WORDS)
+                .all(
+                    (i) -> part(
+                        parts.hash_at(i * PART_READ_WORDS),
+                        parts.hash_at(i * PART_READ_WORDS + 2),
+                        parts.hash_at(i * PART_READ_WORDS + 4),
+                        parts.hash_at(i * PART_READ_WORDS + 6),
+                    ),
+                )
+    }
+
+    /// The question of every read, whole reads first.
+    fn read_questions() -> List<ContentHash> {
+        [self.whole_reads.hash_at(i * WHOLE_READ_WORDS) for i in 0..self.whole_reads.length() / WHOLE_READ_WORDS]
+            .concat(
+                [self.part_reads.hash_at(i * PART_READ_WORDS) for i in 0..self.part_reads.length() / PART_READ_WORDS],
+            )
     }
 }
 
 impl RecordedRead {
+    /// The words this read is kept as.
+    fn words() -> List<int> {
+        let seen = [
+            self.question.high_word,
+            self.question.low_word,
+            self.whole_answer.high_word,
+            self.whole_answer.low_word,
+        ]
+        let part? = self.part else { return seen }
+        seen
+            .concat(
+                [
+                    part.part_name.high_word,
+                    part.part_name.low_word,
+                    part.part_hash.high_word,
+                    part.part_hash.low_word,
+                ],
+            )
+    }
+
     /// What makes this read one read: its question, and its part if it looked at one. A reader
     /// that reads the same thing twice has one read.
     fn read_key() -> ContentHash {

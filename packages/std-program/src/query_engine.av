@@ -10,9 +10,11 @@ use saved_layout.{SavedBytes}
 use answer_record.{
     AnswerRecord,
     ContentHash,
+    KeptRecord,
     PartSeen,
     Question,
     RecordedRead,
+    answer_record,
     content_hash,
     question,
 }
@@ -37,7 +39,7 @@ impl QueryDefinition {
 /// Where answers outlive a process. A question may hold several records, one per set of reads
 /// that answered it, so going back to an earlier state finds its earlier answer.
 export trait AnswerStore {
-    fn records_of(question: ContentHash) -> List<AnswerRecord>
+    fn records_of(question: ContentHash) -> List<KeptRecord>
 
     fn keep_record(asked: Question, record: AnswerRecord)
 
@@ -56,8 +58,9 @@ export trait AnswerStore {
 /// A question being answered, and the reads it has made so far.
 type OpenQuestion = { question: ContentHash, reads: HashKeyedTable<RecordedRead> }
 
-/// A question this process knows the answer to, and what it read to get there.
-type SettledAnswer = { asked: Question, answer: ContentHash, reads: List<RecordedRead> }
+/// A question this process knows the answer to, the record of what it read to get there, and
+/// whether a deep record of that answer is kept.
+type SettledAnswer = { asked: Question, answer: ContentHash, record: KeptRecord, deep_kept: bool }
 
 /// What this process has learned so far. An identity: every holder asks through the one engine.
 export type QueryEngine = {
@@ -128,19 +131,30 @@ impl QueryEngine {
             .find((record) -> self.stands_now(record)) else {
             return null
         }
-        self.settled(asked, standing.answer, standing.reads)
+        self.settled(asked, standing.answer, standing, standing.deep)
     }
 
     /// Whether every read of a record still sees what it saw.
-    fn stands_now(record: AnswerRecord) -> bool { record.reads.all((read) -> self.read_holds(read)) }
+    fn stands_now(record: KeptRecord) -> bool {
+        record
+            .every_read(
+                (question, seen) -> self.answer_holds(question, seen),
+                (question, seen, part_name, part_hash) -> self.answer_holds(question, seen) ||
+                    self.part_holds(question, part_name, part_hash),
+            )
+    }
 
-    /// Whether a read still sees what it saw. A question nobody can ask now never holds.
-    fn read_holds(read: RecordedRead) -> bool {
-        let settled? = self.settled_now(read.question) else { return false }
-        if settled.answer.same_as(read.whole_answer) { return true }
-        let part? = read.part else { return false }
-        part_hash_seen(self.part_in(settled.asked, settled.answer, part.part_name))
-            .same_as(part.part_hash)
+    /// Whether a question's whole answer is still the one seen. A question nobody can ask now never
+    /// holds.
+    fn answer_holds(question: ContentHash, seen: ContentHash) -> bool {
+        let settled? = self.settled_now(question) else { return false }
+        settled.answer.same_as(seen)
+    }
+
+    /// Whether one part of a question's answer is still the one seen.
+    fn part_holds(question: ContentHash, part_name: ContentHash, part_hash: ContentHash) -> bool {
+        let settled? = self.settled_now(question) else { return false }
+        part_hash_seen(self.part_in(settled.asked, settled.answer, part_name)).same_as(part_hash)
     }
 
     /// What this process says a question's answer is, settling it if it must, absent for a
@@ -174,9 +188,9 @@ impl QueryEngine {
         let bytes = self.run_recording(asked, reads)
         let answer = content_hash(bytes)
         if self.store.answer_bytes(answer) == null { self.keep_or_hold(asked, answer, bytes) }
-        let record = AnswerRecord { answer: answer, reads: reads.values() }
+        let record = answer_record(answer, reads.values(), false)
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.store.keep_record(asked, record) }
-        self.settled(asked, answer, record.reads)
+        self.settled(asked, answer, record.kept(), false)
     }
 
     /// An input's bytes are read afresh in every process, so only this process holds them.
@@ -223,11 +237,13 @@ impl QueryEngine {
     /// no code hash can't vouch for its old answers, so nothing reaching one gets a deep record.
     fn deep_record_kept(question: ContentHash) {
         let root? = self.settled_answers.get(question) else { return }
+        if root.deep_kept { return }
         let reached: HashKeyedTable<RecordedRead> = hash_keyed_table()
         let seen: HashKeyedTable<bool> = hash_keyed_table()
         if !self.inputs_gathered(root, reached, seen) { return }
-        let record = AnswerRecord { answer: root.answer, reads: reached.values(), deep: true }
+        let record = answer_record(root.answer, reached.values(), true)
         if !self.store.records_of(question).any(it.same_as(record)) { self.store.keep_record(root.asked, record) }
+        let _ = self.settled(root.asked, root.answer, root.record, true)
     }
 
     /// Gathers every input a settled answer reached, each once, and says whether all of it could.
@@ -236,21 +252,17 @@ impl QueryEngine {
         reached: HashKeyedTable<RecordedRead>,
         seen: HashKeyedTable<bool>,
     ) -> bool {
-        for read in settled.reads {
-            if seen.get(read.question) != null { continue }
-            seen.put(read.question, true)
-            let below? = self.settled_answers.get(read.question) else { return false }
+        for question in settled.record.read_questions() {
+            if seen.get(question) != null { continue }
+            seen.put(question, true)
+            let below? = self.settled_answers.get(question) else { return false }
             let definition = self.definition_of(below.asked)
             if definition.code_hash.is_empty() { return false }
             if definition.is_input {
                 reached
                     .put(
-                        read.question,
-                        RecordedRead {
-                            question: read.question,
-                            whole_answer: below.answer,
-                            part: null,
-                        },
+                        question,
+                        RecordedRead { question: question, whole_answer: below.answer, part: null },
                     )
             } else if !self.inputs_gathered(below, reached, seen) {
                 return false
@@ -260,10 +272,13 @@ impl QueryEngine {
     }
 
     /// Remembers the answer for the rest of this process, and answers it.
-    fn settled(asked: Question, answer: ContentHash, reads: List<RecordedRead>) -> ContentHash {
+    fn settled(asked: Question, answer: ContentHash, record: KeptRecord, deep_kept: bool) -> ContentHash {
         self
             .settled_answers
-            .put(asked.known_as, SettledAnswer { asked: asked, answer: answer, reads: reads })
+            .put(
+                asked.known_as,
+                SettledAnswer { asked: asked, answer: answer, record: record, deep_kept: deep_kept },
+            )
         answer
     }
 

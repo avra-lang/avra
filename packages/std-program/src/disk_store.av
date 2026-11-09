@@ -7,7 +7,15 @@
 //! The worst a race can do is repeat work: a pack gone from under a reader is a miss.
 use @std.io.{IoError, list_dir, make_dirs, remove, write_bytes}
 use @std.meta.{derive}
-use answer_record.{AnswerRecord, ContentHash, Question, content_hash, entry_keyed}
+use answer_record.{
+    AnswerRecord,
+    ContentHash,
+    KeptRecord,
+    Question,
+    content_hash,
+    entry_keyed,
+    kept_in_place,
+}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use query_engine.{AnswerStore}
 use saved_derive.{Saved}
@@ -27,7 +35,7 @@ extern fn avra_mmap_len(mapping: ptr) -> int
 extern fn avra_mmap_close(mapping: ptr)
 
 /// A pack's last octets. It names the format, and a pack that lost its tail doesn't have it.
-const PACK_SEAL: string = "avrapak1"
+export const PACK_SEAL: string = "avrapak2"
 
 const PACK_SUFFIX: string = ".pack"
 
@@ -86,9 +94,10 @@ fn mapped_pack(path: string) -> MappedPack? {
 impl MappedPack {
     fn question_entry(question: ContentHash) -> SavedRecord? { entry_keyed(self.question_high_words, self.questions, question) }
 
-    fn records_of(question: ContentHash) -> List<AnswerRecord> {
+    fn records_of(question: ContentHash) -> List<KeptRecord> {
         let entry? = self.question_entry(question) else { return [] }
-        QuestionRecords.records_in(entry)
+        let records = QuestionRecords.records_in_place(entry)
+        [kept_in_place(records.record_at(i)!) for i in 0..records.length]
     }
 
     fn question_known_as(question: ContentHash) -> Question? {
@@ -135,9 +144,10 @@ export fn disk_store_at(directory: string) -> DiskStore {
 fn pack_names_in(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(PACK_SUFFIX)) }
 
 impl AnswerStore for DiskStore {
-    fn records_of(question: ContentHash) -> List<AnswerRecord> {
+    fn records_of(question: ContentHash) -> List<KeptRecord> {
         let published = [record for pack in self.packs.get() for record in pack.records_of(question)]
-        published.concat(self.new_questions.get(question)?.records ?? [])
+        published
+            .concat([record.kept() for record in self.new_questions.get(question)?.records ?? []])
     }
 
     fn keep_record(asked: Question, record: AnswerRecord) {

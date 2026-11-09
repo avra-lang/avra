@@ -7,7 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{DeclId, flatten}
+use @std.avrac.core.{DeclId}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -15,6 +15,8 @@ use @std.avrac.compiler.{
     Space,
     file_meant,
     file_scope,
+    package_read,
+    package_sources,
     spelled_file,
     read_back,
     respelled_origins,
@@ -24,10 +26,10 @@ use @std.avrac.compiler.{
 use @std.io.{list_dir, read_text}
 use @std.path.{joined_path}
 use @std.time.{now_ns}
-use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{DiskStore, disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
-use @std.program.source_facts.{listed, use_source_world}
+use @std.program.source_facts.{use_source_world}
 
 type TapesCmd = {}
 
@@ -50,7 +52,7 @@ impl Runnable for TapesCmd {
         let engine = query_engine(store, avra_fact_definitions())
         if args.has_flag("program_only") { return program_timed(engine, store, disk) }
         let ws = root_workspace(root)
-        let files = sources(engine, disk.name, "src")
+        let files = package_sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f)] if d != null]
         for d in differing { println("differs: ${d}") }
         println("tapes: ${files.length} read, ${differing.length} differing")
@@ -58,21 +60,18 @@ impl Runnable for TapesCmd {
     }
 }
 
-/// The program layer alone over every file: what each means and what its top level sees, then what
-/// it learned kept. Says how long it took and how many questions it answered by running them.
+/// The program layer alone, the package read whole as one question, then what it learned kept.
+/// Says how long it took and how many questions it answered by running them.
 fn program_timed(engine: QueryEngine, store: DiskStore, disk: Disk) -> int {
     // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
     let t0 = now_ns()
-    let files = sources(engine, disk.name, "src")
-    for f in files {
-        let address = SourceFileAddress { package_name: disk.name, path_in_package: f }
-        let _ = file_meant(engine, address)
-        let _ = file_scope(engine, address)
-    }
+    let read = package_read(engine, disk.name)
     let _ = store.saved()
     // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
     let ms = (now_ns() - t0) / 1000000
-    println("program: ${files.length} files in ${ms} ms, ${engine.computed_count()} answers made")
+    println(
+        "program: ${read.files.length} files, ${read.items} items, ${read.clashes} clashes in ${ms} ms, ${engine.computed_count()} answers made",
+    )
     0
 }
 
@@ -110,15 +109,6 @@ const STD: string = "@std/"
 fn text_at(path: string) -> string? { match read_text(path) { .Ok(text) -> text, .Err(_) -> null } }
 
 fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -> names, .Err(_) -> null } }
-
-/// Every source under `dir` of the package being read, never through a package nested inside.
-fn sources(engine: QueryEngine, package: string, dir: string) -> List<string> {
-    let names = listed(engine, DirectoryAddress { package_name: package, path_in_package: dir }) ?? []
-    if dir != "src" && names.contains("avra.toml") { return [] }
-    flatten(
-        [if name.ends_with(".av") { ["${dir}/${name}"] } else { sources(engine, package, "${dir}/${name}") } for name in names],
-    )
-}
 
 /// How `path` read for what it means differs from the tree the workspace's parse makes of it,
 /// absent when it doesn't.

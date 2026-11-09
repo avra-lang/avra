@@ -5,14 +5,17 @@ use answer_record.{
     PartSeen,
     Question,
     RecordedRead,
+    answer_record,
     content_hash,
+    kept_in_place,
     question,
 }
+use saved_layout.{saved_bytes_in_memory}
 
 fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
 
 fn record_reading(reads: List<RecordedRead>) -> AnswerRecord {
-    AnswerRecord { answer: hash_of("an int"), reads: reads }
+    answer_record(hash_of("an int"), reads, false)
 }
 
 spec "answer_record — what's remembered about an answer" {
@@ -70,6 +73,16 @@ spec "answer_record — what's remembered about an answer" {
             }
             !record_reading([one]).same_as(record_reading([other]))
         }
+        then "two whole reads aren't one part read of the same words" {
+            let a = RecordedRead { question: hash_of("a"), whole_answer: hash_of("b"), part: null }
+            let c = RecordedRead { question: hash_of("c"), whole_answer: hash_of("d"), part: null }
+            let part = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: PartSeen { part_name: hash_of("c"), part_hash: hash_of("d") },
+            }
+            !record_reading([a, c]).same_as(record_reading([part]))
+        }
     }
     given "a read's key" {
         then "a part read is apart from its whole read and from another part" {
@@ -95,7 +108,9 @@ spec "answer_record — what's remembered about an answer" {
     given "a record saved and read back" {
         then "with no reads it is whole" {
             let back = AnswerRecord.from_saved_bytes(record_reading([]).saved_bytes())
-            back.reads.is_empty() && back.answer.same_as(hash_of("an int"))
+            back.whole_reads.is_empty() &&
+                back.part_reads.is_empty() &&
+                back.answer.same_as(hash_of("an int"))
         }
         then "a whole-answer read and a part read both survive" {
             let whole_read = RecordedRead {
@@ -110,7 +125,22 @@ spec "answer_record — what's remembered about an answer" {
             }
             let back = AnswerRecord
                 .from_saved_bytes(record_reading([whole_read, part_read]).saved_bytes())
-            back.reads[0].part == null && back.reads[1].part!.part_name.same_as(hash_of("helper"))
+            back.whole_reads.length == 4 &&
+                back.part_reads.length == 8 &&
+                back.part_reads[4] == hash_of("helper").high_word &&
+                back.kept().read_questions()[1].same_as(hash_of("names m"))
+        }
+        then "read where it lies, it says what it said" {
+            let read = RecordedRead {
+                question: hash_of("names m"),
+                whole_answer: hash_of("table"),
+                part: PartSeen { part_name: hash_of("helper"), part_hash: hash_of("absent") },
+            }
+            let empty = record_reading([])
+            let full = record_reading([read])
+            kept_in_place(saved_bytes_in_memory(empty.saved_bytes()).root()).same_as(empty) &&
+                kept_in_place(saved_bytes_in_memory(full.saved_bytes()).root()).same_as(full) &&
+                !kept_in_place(saved_bytes_in_memory(full.saved_bytes()).root()).same_as(empty)
         }
     }
 }

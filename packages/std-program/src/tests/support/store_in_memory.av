@@ -1,5 +1,5 @@
 //! A store in memory, standing in for the one on disk, shared by the engine's tests.
-use answer_record.{AnswerRecord, ContentHash, Question}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use query_engine.{AnswerStore}
 use saved_layout.{SavedBytes, saved_bytes_in_memory}
@@ -18,11 +18,11 @@ export fn store_in_memory() -> StoreInMemory {
 }
 
 impl AnswerStore for StoreInMemory {
-    fn records_of(question: ContentHash) -> List<AnswerRecord> { self.records.get(question) ?? [] }
+    fn records_of(question: ContentHash) -> List<KeptRecord> { [record.kept() for record in self.records.get(question) ?? []] }
 
     fn keep_record(asked: Question, record: AnswerRecord) {
         self.questions.put(asked.known_as, asked)
-        self.records.put(asked.known_as, self.records_of(asked.known_as).concat([record]))
+        self.records.put(asked.known_as, (self.records.get(asked.known_as) ?? []).concat([record]))
     }
 
     fn question_known_as(question: ContentHash) -> Question? { self.questions.get(question) }

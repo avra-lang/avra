@@ -1,0 +1,51 @@
+//! WHAT A PACKAGE READS AS: every source file's items and what its top level sees, asked as one
+//! question, so a process asking it of a package nobody edited checks one record of inputs.
+use core.{flatten}
+use @std.meta.{derive}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{listed}
+
+/// A package read whole: its source files, how many items they hold, and how many names clashed.
+@derive(Saved)
+export type PackageRead = { files: List<string>, items: int, clashes: int }
+
+@query
+export fn package_read(engine: QueryEngine, package: string) -> PackageRead {
+    let files = package_sources(engine, package, "src")
+    let reads = [file_tally(engine, SourceFileAddress { package_name: package, path_in_package: f }) for f in files]
+    PackageRead {
+        files: files,
+        items: [r.items for r in reads].sum(),
+        clashes: [r.clashes for r in reads].sum(),
+    }
+}
+
+/// One file read: how many items it holds, and how many of its names clashed.
+@derive(Saved)
+export type FileTally = { items: int, clashes: int }
+
+@query
+export fn file_tally(engine: QueryEngine, file: SourceFileAddress) -> FileTally {
+    FileTally {
+        items: file_meant(engine, file).length,
+        clashes: file_scope(engine, file).clashes.length,
+    }
+}
+
+/// The `.av` files under `dir`, in listing order; a directory holding its own manifest is another
+/// package's.
+export fn package_sources(engine: QueryEngine, package: string, dir: string) -> List<string> {
+    let names = listed(engine, DirectoryAddress { package_name: package, path_in_package: dir }) ?? []
+    if dir != "src" && names.contains("avra.toml") { return [] }
+    flatten(
+        [if name.ends_with(".av") { ["${dir}/${name}"] } else { package_sources(engine, package, "${dir}/${name}") } for name in names],
+    )
+}
+
+collect listed_package_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a package read whole reads through, for a process to hand its engine.
+export fn package_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_package_facts) }
