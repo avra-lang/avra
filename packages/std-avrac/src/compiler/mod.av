@@ -31,7 +31,7 @@ use @std.program.token_columns.{TokenRoles, token_roles}
 use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor, engine_parse}
 use @std.meta.{Field}
 use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
-use grammar.{avra_known_terminals}
+use grammar.{avra_known_terminals, avra_lexeme}
 use compiler.format.{rule_scale, worded_nodes}
 use features.{
     Wording,
@@ -118,10 +118,8 @@ export type Language = {
     rows: LanguageRows,
     dispatch: Dispatch,
     diagnostics: List<Diag>,
-    // whether its untold run is the generated parser's: true only where the grammar is the
-    // one that parser was made from; its builders by the parser's index
-    untold: bool = false,
-    untold_rows: List<BuilderRow?> = [],
+    // the generated parser's tables, present only where the grammar is the one it was made from
+    untold: UntoldParse? = null,
 }
 
 export fn assemble(features: List<LanguageFeature>) -> Language {
@@ -424,7 +422,10 @@ export once fn avra() -> Language {
     let lang = assemble(language_features())
     let rd? = lang.syntax else { return lang }
     if engine_parse() || grammar_print(rd) != avra_print { return lang }
-    lang with { untold: true, untold_rows: [lang.builders.get(name) for name in avra_builders] }
+    lang with { untold: UntoldParse {
+        rows: [lang.builders.get(name) for name in avra_builders],
+        kinds: [avra_lexeme().kind_of(term) for term in avra_terms],
+    } }
 }
 
 /// The canonical language over one nameless source — a lone source
