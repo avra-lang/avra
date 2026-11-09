@@ -4,18 +4,18 @@
 //! and whether a named instance of it binds its name; a sublanguage's word, with its grammar's
 //! notation. Every declaration this reads is read with no words of its own, so working out one
 //! file's words never needs another file's words.
-use core.{ComponentWord, Instancing, StmtId, SyntaxArena, flatten, module_path, new_node_store}
+use core.{ComponentWord, Instancing, StmtId, SyntaxArena, flatten, module_path}
 use compiler.host.{read_manifest}
 use diagnostics.{new_source_file}
 use features.{BlockGrammar, BlockWords}
-use features.components.{binds_name, instanced, named_instances, word_of}
+use features.components.{binds_name, instanced, word_of}
 use grammar.{avra_known_terminals, parse_grammar}
 use @std.grammar.{ready}
 use @std.meta.{derive}
 use @std.path.{dir_of, under_dir}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.saved_derive.{Saved}
-use @std.program.source_facts.{PlacedTape, file_context, item_spans, item_tape, listed, source_text}
+use @std.program.source_facts.{file_tapes, item_spans, item_tape, listed, source_text}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 
@@ -91,26 +91,48 @@ export fn file_grammars(engine: QueryEngine, file: SourceFileAddress) -> List<Gr
     flatten([line_shapes(engine, file, u).grammars for u in file_words(engine, file).uses])
 }
 
-/// One file's declarations, each read with no words of its own, each knowing the item it's in.
-fn declared_in(engine: QueryEngine, file: SourceFileAddress) -> Declared? {
-    let text? = source_text(engine, file) else { return null }
-    let store = new_node_store(file.path_in_package)
-    let read = [item_read_back(
-        store,
-        PlacedTape {
-            start: span.start,
-            tape: item_tape(engine, text.substring(span.start, span.end), no_context()),
-        },
-    ) for span in item_spans(avra_columns(text), text.length)]
-    Declared {
-        store: store,
-        stmts: [s for item in read for s in item],
-        items: [at for at, item in read for _s in item],
+/// What a parse keeps of an item for its file's words, read without its nodes: the components it
+/// declares, the sublanguages it exports, its top-level named instances and its `use` lines.
+@derive(Saved)
+type ItemAbout = { components: List<ItemComponent>, grammars: List<ItemGrammar>, instances: List<ItemInstance>, uses: List<UseLine> }
+
+/// A component an item declares: its name, whether its instance binds a name, whether it's exported.
+@derive(Saved)
+type ItemComponent = { declared: string, binds_name: bool, exported: bool }
+
+/// A sublanguage an item exports: its word and its grammar's notation.
+@derive(Saved)
+type ItemGrammar = { word: string, notation: string }
+
+/// A named instance an item makes, and whether it's exported.
+@derive(Saved)
+type ItemInstance = { name: string, declared: string, exported: bool }
+
+/// What an item's statements say of its file's words, as its tape keeps it.
+export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
+    ItemAbout {
+        components: [ItemComponent {
+            declared: w!.declared,
+            binds_name: binds_name(w!),
+            exported: store.is_exported(s),
+        } for s in stmts for w in [word_of(store, s, "")] if w != null],
+        grammars: [ItemGrammar { word: g!.name, notation: g!.text } for s in stmts if store.is_exported(s) for g in [store.syntax_parts(s)] if g != null],
+        instances: [ItemInstance { name: i!.name, declared: i!.declared, exported: store.is_exported(s) } for s in stmts for i in [instanced(store, s)] if i != null],
+        uses: [UseLine { path: u!.path, items: u!.items, aliases: u!.aliases } for s in stmts for u in [store.use_parts(s)] if u != null],
     }
+        .saved_bytes()
 }
 
-/// A file's statements read back, the store they stand in, and the item each is in.
-type Declared = { store: SyntaxArena, stmts: List<StmtId>, items: List<int> }
+/// What each item of a file keeps for its words, read with no words of its own.
+fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
+    let text? = source_text(engine, file) else { return [] }
+    [about_of(item_tape(engine, text.substring(span.start, span.end), no_context()).about) for span in item_spans(avra_columns(text), text.length)]
+}
+
+fn about_of(octets: Bytes?) -> ItemAbout {
+    let held? = octets else { return ItemAbout { components: [], grammars: [], instances: [], uses: [] } }
+    ItemAbout.from_saved_bytes(held)
+}
 
 /// What a file declares of block words and imports: every component it declares, each saying
 /// whether it's exported, the sublanguages and named instances it exports, and its `use` lines.
@@ -130,26 +152,25 @@ impl UseLine {
     fn bound_as(j: int) -> string { if self.aliases[j].is_empty() { self.items[j] } else { self.aliases[j] } }
 }
 
-/// What a file declares of block words and imports, read once.
+/// What a file declares of block words and imports, read once, off its items' tapes.
 @query
 fn file_words(engine: QueryEngine, file: SourceFileAddress) -> FileWords {
-    let read? = declared_in(engine, file) else { return FileWords { components: [], grammars: [], instances: [], uses: [] } }
-    let origin = spelled_file(file)
+    let abouts = file_abouts(engine, file)
     FileWords {
         components: [DeclaredWord {
             shape: WordShape {
-                word: w!.word,
-                declared: w!.declared,
+                word: c.declared,
+                declared: c.declared,
                 home: file,
                 own: false,
-                binds_name: binds_name(w!),
+                binds_name: c.binds_name,
             },
-            exported: read.store.is_exported(s),
-            item: read.items[at],
-        } for at, s in read.stmts for w in [word_of(read.store, s, origin)] if w != null],
-        instances: [NamedInstance { name: i!.name, declared: i!.declared } for s in read.stmts if read.store.is_exported(s) for i in [instanced(read.store, s)] if i != null],
-        grammars: [GrammarWord { word: parts!.name, origin: origin, notation: parts!.text } for s in read.stmts if read.store.is_exported(s) for parts in [read.store.syntax_parts(s)] if parts != null],
-        uses: [UseLine { path: u!.path, items: u!.items, aliases: u!.aliases } for s in read.stmts for u in [read.store.use_parts(s)] if u != null],
+            exported: c.exported,
+            item: at,
+        } for at, a in abouts for c in a.components],
+        grammars: [GrammarWord { word: g.word, origin: spelled_file(file), notation: g.notation } for a in abouts for g in a.grammars],
+        instances: [NamedInstance { name: i.name, declared: i.declared } for a in abouts for i in a.instances if i.exported],
+        uses: [u for a in abouts for u in a.uses],
     }
 }
 
@@ -178,9 +199,7 @@ fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> Line
 /// tokens against its words, then those each `use` line imports.
 @query
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
-    let text = source_text(engine, file) ?? ""
-    let words = context_words(file_context(engine, file)).components
-    let own = if words.is_empty() { [] } else { [NamedInstance { name: i.name, declared: i.declared } for i in named_instances(text, words)] }
+    let own = [NamedInstance { name: i.name, declared: i.declared } for p in file_tapes(engine, file) for i in about_of(p.tape.about).instances]
     own
         .concat([i for u in file_words(engine, file).uses for i in line_shapes(engine, file, u).instances])
 }

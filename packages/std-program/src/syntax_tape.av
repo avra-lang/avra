@@ -50,7 +50,8 @@ type TapePlaces = { places: Bytes, facts: TapeSection }
 export type TapeName = { name: string, kind: int, exported: bool, face: ContentHash }
 
 /// An item's tape. `meaning_hash` and `above_hash` stand for their sections, computed once;
-/// `declares` says what the item names, read without its nodes.
+/// `declares` says what the item names and `about` what its language keeps of it besides, both
+/// read without its nodes.
 @derive(Saved)
 export type SyntaxTape = {
     meaning_hash: ContentHash,
@@ -59,6 +60,7 @@ export type SyntaxTape = {
     above: TapeSection,
     places: TapePlaces,
     declares: List<TapeName>,
+    about: Bytes?,
 }
 
 /// One fact, waiting to be put in order.
@@ -145,6 +147,7 @@ export type TapeWriter = {
     /// Whether this tape is a face, which leaves out every body.
     facing: bool = false,
     declares: List<TapeName> = [],
+    about: Bytes? = null,
 }
 
 /// The nodes of one kind on a tape: by each one's index in its tree, the number it was written as.
@@ -299,6 +302,9 @@ impl TapeWriter {
         self.declares.push(TapeName { name: name, kind: kind, exported: exported, face: face })
     }
 
+    /// What the item's language keeps of it, read without its nodes: its own saved bytes.
+    fn said_about(octets: Bytes) { self.about = octets }
+
     /// What a face written here says: its structure, its texts and its facts, as one hash.
     fn face() -> ContentHash {
         content_hash(
@@ -326,6 +332,7 @@ impl TapeWriter {
             above: above,
             places: TapePlaces { places: self.places.bytes()!, facts: self.place_facts.finished() },
             declares: self.declares,
+            about: self.about,
         }
     }
 }
