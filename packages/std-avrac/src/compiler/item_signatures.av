@@ -3,7 +3,20 @@
 //! declaring item's tape and the names layer alone, and a declared type is known by its file and
 //! name, never by where it stands, so a signature moves only when what it writes or what its names
 //! name does.
-use core.{Param, StmtId, SyntaxArena, TypeRef, new_node_store, width_named, widthless}
+use core.{
+    INFERRED,
+    Param,
+    SignedSeat,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    TypeHead,
+    TypeRef,
+    new_node_store,
+    seat_spelled,
+    width_named,
+    widthless,
+}
 use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
@@ -14,40 +27,6 @@ use @std.program.sorted.{sorted_by}
 use @std.text.{text_before}
 use @std.program.source_facts.{PlacedTape}
 use @std.program.syntax_tape.{SyntaxTape}
-
-/// What a written type's name names.
-@derive(Saved)
-export enum TypeHead {
-    /// A type the language owns: a scalar or a constructor (`int`, `List`, `Map`).
-    Owned(name: string)
-    /// One of the fn's own type parameters, by its place among them.
-    Parameter(index: int, name: string)
-    /// A type a file declares, known by its file and its name.
-    Declared(file: SourceFileAddress, name: string)
-    /// A name that names no type here.
-    Unnamed(name: string)
-    /// A type the fn's body decides (`_`), which only typing it answers.
-    Inferred
-    /// A fn type: its seats and its answer.
-    Function
-}
-
-/// A written type, resolved: what it names, its type arguments, whether it's optional or dynamic, a fn
-/// type's seats and answer, and the members of a union.
-@derive(Saved)
-export type SignedType = {
-    head: TypeHead,
-    args: List<SignedType>,
-    optional: bool,
-    dynamic: bool,
-    seats: List<SignedSeat>,
-    answer: SignedType?,
-    alternatives: List<SignedType>,
-}
-
-/// A fn type's seat: its type and the promises it makes.
-@derive(Saved)
-export type SignedSeat = { ty: SignedType, mutable: bool, settled: bool }
 
 /// A fn's parameter: its name, its type when written, the promises its seat makes, and the width it
 /// crosses to C at, if it names one. A width is the seat's, never the value's: the type is the
@@ -182,64 +161,8 @@ impl Signing {
     }
 }
 
-impl SignedType {
-    /// This type with each of its declaration's type parameters bound to `args`, in order.
-    fn bound(args: List<SignedType>) -> SignedType {
-        let inner = self with { args: [a.bound(args) for a in self.args], seats: [s with { ty: s.ty.bound(args) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.bound(args) }, alternatives: [a.bound(args) for a in self.alternatives] }
-        let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
-        if at >= args.length { return inner }
-        args[at] with { optional: args[at].optional || self.optional, dynamic: args[at].dynamic || self.dynamic }
-    }
-
-    /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`.
-    fn spelled() -> string {
-        if !self.alternatives.is_empty() { return [a.spelled() for a in self.alternatives].join(" or ") }
-        let named = match self.head {
-            .Owned(name) or .Unnamed(name) -> name,
-            .Parameter(_, name) -> name,
-            .Declared(_, name) -> name,
-            .Inferred -> INFERRED,
-            .Function -> "fn(${[s.spelled() for s in self.seats].join(", ")})${answered(self.answer)}",
-        }
-        let applied = if self.args.is_empty() { named } else { "${named}<${[a.spelled() for a in self.args].join(", ")}>" }
-        let dyn_named = if self.dynamic { "dyn ${applied}" } else { applied }
-        if self.optional { "${dyn_named}?" } else { dyn_named }
-    }
-}
-
-impl SignedSeat {
-    fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty.spelled()) }
-}
-
 impl SignedParam {
     fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty?.spelled() ?? "_") }
-}
-
-/// A fn type's answer as it follows its seats: nothing for `void`.
-fn answered(answer: SignedType?) -> string {
-    let a? = answer else { return "" }
-    let word = a.spelled()
-    if word == "void" { "" } else { " -> ${word}" }
-}
-
-/// A seat's type behind the promises it makes.
-fn seat_spelled(mutable: bool, settled: bool, word: string) -> string {
-    if settled { return if mutable { "const mut ${word}" } else { "const ${word}" } }
-    if mutable { "mut ${word}" } else { word }
-}
-
-/// How a type the body decides is written.
-const INFERRED: string = "_"
-
-impl SignedType {
-    /// Whether any part of this type is one the body decides.
-    fn inferred() -> bool {
-        self.head is .Inferred ||
-            self.args.any(it.inferred()) ||
-            self.seats.any(it.ty.inferred()) ||
-            self.answer?.inferred() ?? false ||
-            self.alternatives.any(it.inferred())
-    }
 }
 
 collect listed_signature_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
