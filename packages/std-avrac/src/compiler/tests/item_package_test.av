@@ -1,0 +1,56 @@
+// A package read whole: its store worked out ahead across cores when it's big enough, the same
+// answer either way.
+use compiler.{PackageRead, avra_fact_definitions, avra_source_world, package_read, package_store}
+use @std.program.query_engine.{query_engine}
+use @std.program.source_facts.{use_source_world}
+use compiler.tests.support.{files, list_held, read_held, store_dir}
+
+/// A package of `count` files, one fn each.
+fn package_of(count: int) -> Map<string, string> {
+    mut held: Map<string, string> = {}
+    for n in 0..count { held.set("src/m/f${n}.av", "fn f${n}() -> int { ${n} }\n") }
+    held
+}
+
+/// One process reading the package at `dir` whole: what it read, and the queries it ran itself.
+type Read = { read: PackageRead, asked: List<string> }
+
+fn read_whole(dir: string) -> Read {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let store = package_store(dir, "@test/p")
+    let engine = query_engine(store, avra_fact_definitions())
+    let read = package_read(engine, "@test/p")
+    let _ = store.saved()
+    Read { read: read, asked: engine.computed_queries() }
+}
+
+spec "a package read whole" {
+    given "a package too small to be worth forking" {
+        then "it reads every file here" {
+            files().set(package_of(3))
+            let whole = read_whole(store_dir("small"))
+            whole.read.files.length == 3 &&
+                whole.read.items == 3 &&
+                whole.asked.contains("item_tape")
+        }
+    }
+    given "a package worth forking" {
+        then "every file's words were read across cores, so this process parses no item and reads the same" {
+            files().set(package_of(20))
+            let whole = read_whole(store_dir("forked"))
+            whole.read.files.length == 20 &&
+                whole.read.items == 20 &&
+                !whole.asked.contains("file_words") &&
+                !whole.asked.contains("item_tape")
+        }
+        then "a second process asks only its inputs" {
+            files().set(package_of(20))
+            let dir = store_dir("forked_again")
+            let _ = read_whole(dir)
+            let again = read_whole(dir)
+            again.read.items == 20 &&
+                !again.asked.contains("item_tape") &&
+                !again.asked.contains("file_tally")
+        }
+    }
+}

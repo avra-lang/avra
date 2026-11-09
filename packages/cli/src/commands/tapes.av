@@ -14,6 +14,7 @@ use @std.avrac.compiler.{
     Space,
     file_meant,
     package_read,
+    package_store,
     package_sources,
     spelled_file,
     read_back,
@@ -28,7 +29,7 @@ use @std.io.{list_dir, read_text}
 use @std.path.{joined_path}
 use @std.time.{now_ns}
 use @std.program.address.{SourceFileAddress}
-use @std.program.disk_store.{DiskStore, disk_store_at}
+use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{use_source_world}
 
@@ -49,9 +50,9 @@ impl Runnable for TapesCmd {
                 "avra-tapes",
             ),
         )
+        if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
-        if args.has_flag("program_only") { return program_timed(engine, store, disk) }
         let ws = root_workspace(root)
         let files = package_sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f)] if d != null]
@@ -61,17 +62,20 @@ impl Runnable for TapesCmd {
     }
 }
 
-/// The program layer alone, the package read whole as one question, then what it learned kept.
-/// Says how long it took and how many questions it answered by running them.
-fn program_timed(engine: QueryEngine, store: DiskStore, disk: Disk) -> int {
+/// The program layer alone: the package's store, its unknown files worked out across cores, then
+/// the package read whole as one question and what it learned kept. Says how long it took and how
+/// many questions this process answered by running them.
+fn program_timed(directory: string, disk: Disk) -> int {
     // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
     let t0 = now_ns()
+    let store = package_store(directory, disk.name)
+    let engine = query_engine(store, avra_fact_definitions())
     let read = package_read(engine, disk.name)
     let _ = store.saved()
     // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
     let ms = (now_ns() - t0) / 1000000
     println(
-        "program: ${read.files.length} files, ${read.items} items, ${read.clashes} clashes in ${ms} ms, ${engine.computed_count()} answers made",
+        "program: ${read.files.length} files, ${read.items} items, ${read.clashes} clashes in ${ms} ms, ${engine.computed_count()} answers made here",
     )
     0
 }
