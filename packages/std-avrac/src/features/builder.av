@@ -41,7 +41,20 @@ use grammar.{Token}
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: SyntaxArena, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: List<Field> = [], anchor: string? = null }
+export type Builder = { store: SyntaxArena, args: List<Captured<Token, LangNode>>, span: Span?, text: string = "", words: BlockWords = BlockWords {}, payloads: Payloads = Payloads {}, anchor: string? = null }
+
+/// What a build reads its arguments by, prepared once per builder: the payloads the model
+/// declares in argument order, their names, and the ones a facet marks.
+export type Payloads = { fields: List<Field> = [], names: List<string> = [], facets: List<Field> = [] }
+
+/// `fields` prepared for builds to read.
+export fn payloads_of(fields: List<Field>) -> Payloads {
+    Payloads {
+        fields: fields,
+        names: [f.name for f in fields],
+        facets: [f for f in fields if facet_table(f) != null],
+    }
+}
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
@@ -134,7 +147,7 @@ impl Slots for Builder {
     /// table no row names is a defect at the mark, never a silent drop.
     fn made_stmt(s: Stmt) -> Result<StmtId, string> {
         let id = self.store.alloc_stmt(s, self.node_span())
-        for f in self.payloads {
+        for f in self.payloads.facets {
             let side? = facet_table(f) else { continue }
             if !self.present_of(f.name)? { continue }
             let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
@@ -148,7 +161,7 @@ impl Slots for Builder {
     /// a sugar.
     fn made_expr(e: Expr) -> Result<ExprId, string> {
         let id = self.store.alloc_expr(e, self.node_span())
-        for f in self.payloads {
+        for f in self.payloads.facets {
             let side? = facet_table(f) else { continue }
             if !self.present_of(f.name)? { continue }
             let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
@@ -267,7 +280,7 @@ impl Builder {
     /// the order arguments arrive in. Asking by NAME is what keeps two
     /// same-typed payloads from being swapped silently.
     fn slot_of(n: string) -> Result<int, string> {
-        let at? = found_at([p.name for p in self.payloads], n) else { return .Err(unknown_payload(self.payloads, n)) }
+        let at? = found_at(self.payloads.names, n) else { return .Err(unknown_payload(self.payloads.fields, n)) }
         .Ok(at)
     }
 
@@ -349,7 +362,7 @@ impl Builder {
     /// branch's. A `@facet` field has no pattern side table, so it is
     /// refused here rather than silently dropped.
     fn make_pat(p: Pat) -> Result<LangNode, string> {
-        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(LangNode.NPat(self.store.alloc_pat(p, self.node_span()))) }
+        let f? = self.payloads.facets.first() else { return .Ok(LangNode.NPat(self.store.alloc_pat(p, self.node_span()))) }
         .Err(facet_not_a_pattern(f.name))
     }
 
