@@ -83,6 +83,8 @@ export type Rebuilder = {
     // a seat or lambda param whose NAME came through a hole: a binder
     // with no node of its own, keyed by its ParamId
     holed_params: List<ParamId>,
+    // every seat the copy made, each keeping the template's span
+    made_params: List<ParamId>,
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
@@ -103,6 +105,21 @@ export type Rebuilder = {
 /// A classifying walk over a store's quote body, `runs` the run mark
 /// of each hole by index (`store.is_run_hole` over its fill
 /// expression).
+/// The nodes a copy made from its template, each keeping the template's span: those whose names
+/// read there and those whose names came through a hole, never what a fill built at its own.
+export type CopiedNodes = { exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, params: List<ParamId> }
+
+impl Rebuilder {
+    fn made_nodes() -> CopiedNodes {
+        CopiedNodes {
+            exprs: self.made_exprs.concat(self.holed_exprs),
+            stmts: self.made_stmts.concat(self.holed_stmts),
+            pats: self.made_pats.concat(self.holed_pats),
+            params: self.made_params,
+        }
+    }
+}
+
 export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
     Rebuilder {
         src: store,
@@ -120,6 +137,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         holed_stmts: [],
         holed_pats: [],
         holed_params: [],
+        made_params: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -154,6 +172,7 @@ export fn copier(
         holed_stmts: [],
         holed_pats: [],
         holed_params: [],
+        made_params: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -482,6 +501,7 @@ impl Rebuilder {
         let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), marks: self.marks(p.marks), says: self.said(p.says) }
         if !self.copying { return rebuilt }
         let id = self.dst.alloc_param_id(self.src.param_id_span(p.id))
+        self.made_params.push(id)
         if !self.verbatim && hole_name(p.name.of) != null { self.holed_params.push(id) }
         rebuilt with { id: id }
     }
@@ -561,6 +581,7 @@ impl Rebuilder {
                 self.holed_stmts = self.holed_stmts.concat(sub.holed_stmts)
                 self.holed_pats = self.holed_pats.concat(sub.holed_pats)
                 self.holed_params = self.holed_params.concat(sub.holed_params)
+                self.made_params = self.made_params.concat(sub.made_params)
                 copied
             },
             .Expanded(expansion) -> BodyView.Expanded(self.expr(expansion)),

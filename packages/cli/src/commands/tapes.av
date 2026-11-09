@@ -1,0 +1,114 @@
+//! `avra tapes <package>` — every file of a package read off its items' tapes for what it means,
+//! held to the tree the compiler's own parse makes of it: statement for statement, the same tape,
+//! every node where it was. Says each file that differs and how many it read.
+use @std.cli.{CliResult, Runnable, command}
+use @std.avrac.compiler.{Workspace}
+use @std.avrac.core.{flatten}
+use @std.avrac.compiler.{
+    avra_fact_definitions,
+    avra_source_world,
+    file_meant,
+    read_back,
+    respelled_origins,
+    statement_difference,
+}
+use @std.io.{list_dir, read_text}
+use @std.path.{joined_path}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.source_facts.{listed, use_source_world}
+
+type TapesCmd = {}
+
+impl Runnable for TapesCmd {
+    fn run(args: CliResult) -> int {
+        let root? = argued_path(args) else { return 1 }
+        let disk = Disk { root: root, std: rooted(std_root() ?? "") }
+        use_source_world(
+            avra_source_world(
+                (f) -> text_at(disk.on_disk(f.package_name, f.path_in_package)),
+                (d) -> names_at(disk.on_disk(d.package_name, d.path_in_package)),
+                "avra-tapes",
+            ),
+        )
+        let engine = query_engine(
+            disk_store_at(joined_path(root, ".avra-cache/tapes")),
+            avra_fact_definitions(),
+        )
+        let ws = root_workspace(root)
+        let files = sources(engine, "src")
+        let differing = [d! for f in files for d in [difference(engine, ws, disk, f)] if d != null]
+        for d in differing { println("differs: ${d}") }
+        println("tapes: ${files.length} read, ${differing.length} differing")
+        if differing.is_empty() { 0 } else { 1 }
+    }
+}
+
+/// The packages being read on disk: the one named, and the toolchain's under its std root.
+type Disk = { root: string, std: string }
+
+impl Disk {
+    /// Where a package's file stands.
+    fn on_disk(package: string, path: string) -> string {
+        if package.starts_with(STD) { joined_path(
+                joined_path(self.std, "std-${package.substring(STD.length, package.length)}"),
+                path,
+            ) } else { joined_path(self.root, path) }
+    }
+
+    /// A file on disk as the program spells it: its package, then its path.
+    fn spelled(path: string) -> string {
+        let std_dir = "${self.std}/std-"
+        if path.starts_with(std_dir) {
+            let rest = path.substring(std_dir.length, path.length)
+            let cut = rest.index_of("/") ?? rest.length
+            return "${STD}${rest.substring(0, cut)}${rest.substring(cut, rest.length)}"
+        }
+        if path.starts_with("${self.root}/") { return "${ROOT}/${path.substring(self.root.length + 1, path.length)}" }
+        path
+    }
+}
+
+/// The toolchain's packages, by the prefix their names wear.
+const STD: string = "@std/"
+
+fn text_at(path: string) -> string? { match read_text(path) { .Ok(text) -> text, .Err(_) -> null } }
+
+fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -> names, .Err(_) -> null } }
+
+/// Every source under `dir` of the package being read, never through a package nested inside.
+fn sources(engine: QueryEngine, dir: string) -> List<string> {
+    let names = listed(engine, DirectoryAddress { package_name: ROOT, path_in_package: dir }) ?? []
+    if dir != "src" && names.contains("avra.toml") { return [] }
+    flatten(
+        [if name.ends_with(".av") { ["${dir}/${name}"] } else { sources(engine, "${dir}/${name}") } for name in names],
+    )
+}
+
+/// The package being read, by the name its files are addressed under.
+const ROOT: string = "root"
+
+/// How `path` read for what it means differs from the tree the workspace's parse makes of it,
+/// absent when it doesn't.
+fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    let back = read_back(
+        path,
+        file_meant(engine, SourceFileAddress { package_name: ROOT, path_in_package: path }),
+    )
+    let parsed = ws.parsed(ws.file_id(joined_path(disk.root, path)))
+    respelled_origins(parsed.store, (path) -> disk.spelled(path))
+    if back.stmts.length != parsed.stmts.length { return "${path}: ${back.stmts.length} statements, the parse ${parsed.stmts.length}" }
+    for at, s in back.stmts {
+        let how? = statement_difference(back.store, s, parsed.store, parsed.stmts[at]) else { continue }
+        let lo = parsed.store.stmt_span(parsed.stmts[at])?.lo ?? 0
+        return "${path}: statement ${at} at ${lo}, ${how}"
+    }
+    null
+}
+
+export command tapes {
+    description: "Read every file of a package off its item tapes and hold each to the parse"
+    args: [file]
+    run: TapesCmd {}
+}

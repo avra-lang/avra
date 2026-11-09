@@ -2,25 +2,13 @@
 //! value, … }` is `Name inst { it -> match it { … } }` — the pronoun's one
 //! seat, its body the match, exactly as a trailing block's arms read. The
 //! node keeps the arms as written and MEANS that closure.
-use core.{
-    expr_node,
-    Expr,
-    ExprId,
-    TypeId,
-    Reg,
-    Arm,
-    Scoped,
-    Minting,
-    minting,
-    pronoun_param,
-    NodeFacts,
-}
+use core.{expr_node, Expr, ExprId, TypeId, Reg, Arm, Scoped, Minting, minting, NodeFacts}
 use core.marks.{apart}
 use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
 
 @expr_node
 @apart
-export type ArmsBody = { arms: List<Arm> }
+export type ArmsBody = { arms: List<Arm>, @facet(trailing) trailing: bool = false }
 
 impl NodeFacts for ArmsBody {
     fn says(written: string) -> string? { "" }
@@ -36,7 +24,7 @@ impl Meaning for ArmsBody {
         let subject = cx.store.alloc_expr(Expr.Ident(Scoped("it")), cx.span)
         let matched = cx.store.alloc_expr(Expr.Match(subject, self.arms), cx.span)
         cx.store.mark_sugar_match(matched)
-        let closure = cx.store.alloc_expr(Expr.Lambda([pronoun_param], matched), cx.span)
+        let closure = cx.store.alloc_expr(Expr.Lambda([cx.store.pronoun_seat()], matched), cx.span)
         .Ok(minting([subject, matched, closure]))
     }
 }

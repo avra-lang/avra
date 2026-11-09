@@ -36,10 +36,10 @@ use core.{
     copier,
     flatten,
     some_list,
+    digest_of,
 }
 use features.{MeanCx}
 use core.expr.{Component}
-use @std.path.{stem_of}
 
 /// The closure an instance is extended by, and every node its copy made.
 type Again = { root: ExprId, minted: List<ExprId> }
@@ -309,17 +309,18 @@ impl Mint {
 
     /// A pattern head's record: its string literal's format minted as a
     /// `grammar` declaration and hoisted to the file's top level, under a
-    /// name no writer can spell and no other file of the module mints.
-    /// Absent for a head that is code.
+    /// name no writer can spell, made of the format itself, so one format
+    /// is one declaration however many heads write it. Absent for a head
+    /// that is code.
     fn minted_format(word: ComponentWord, t: Template, field: string, head: ExprId) -> Result<
         Minted?,
         string,
     > {
         if !t.formats.contains(field) { return .Ok(null) }
         let text? = self.store.expr(head).text_of() else { return .Err(pattern_literal(word.word, field)) }
-        let name = "${word.word}\$${field}\$${stem_of(self.store.file)}\$${head.index}"
+        let name = "${word.word}\$${field}\$${digest_of(text).substring(0, 16)}"
         let at = self.store.expr_span(head)
-        self.store.hoist(self.store.declared_format(name, text, at, false)?)
+        if !self.store.hoists(name) { self.store.hoist(self.store.declared_format(name, text, at, false)?) }
         // minted before the copy, so it resolves in the user's file
         .Ok(Minted { name: name, named: self.store.alloc_expr(Expr.Ident(Scoped(name)), at) })
     }
@@ -426,7 +427,6 @@ impl SyntaxArena {
         minted: List<Minted?>,
         door: Means,
     ) -> ExprId {
-        let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
         // a component's own hole grammar has no `..` spelling, so no
         // fill here is ever a run
@@ -438,7 +438,7 @@ impl SyntaxArena {
             door,
         )
         let root = self.template_value(rb.stmts(template.stmts))
-        self.note_copied(since, word.origin)
+        self.note_copied(rb.made_nodes(), word.origin)
         root
     }
 

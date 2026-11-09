@@ -1,10 +1,11 @@
 //! Avra's items on tapes, for the program layer: Avra's source world, an item's tape read from its
 //! own text, its refusals among what it keeps, and a file's tree put back together from its items'
 //! tapes.
-use core.{SyntaxArena, Stmt, StmtId, new_node_store}
+use core.{ForeignOrigin, SyntaxArena, Stmt, StmtId, new_node_store}
 use diagnostics.{new_source_file}
 use grammar.{avra_lexeme, lex_source}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.answer_record.{content_hash}
 use @std.program.query_engine.{QueryDefinition}
 use @std.program.source_facts.{PlacedTape, SourceWorld, source_fact_definitions}
 use @std.program.syntax_tape.{SyntaxTape, tape_reader, tape_writer}
@@ -53,7 +54,38 @@ export type ReadBack = { store: SyntaxArena, stmts: List<StmtId> }
 
 export fn read_back(file: string, placed: List<PlacedTape>) -> ReadBack {
     let store = new_node_store(file)
-    ReadBack { store: store, stmts: [s for p in placed for s in item_read_back(store, p)] }
+    let stmts = [s for p in placed for s in item_read_back(store, p)]
+    ReadBack { store: store, stmts: stmts.concat(store.hoisted_decls()) }
+}
+
+/// How statement `a` of `left` differs from `b` of `right`, absent when they're one statement: the
+/// same tape, every node where it was, meaning the same, and the same to the compiler.
+export fn statement_difference(left: SyntaxArena, a: StmtId, right: SyntaxArena, b: StmtId) -> string? {
+    let one = statement_tape(left, a)
+    let other = statement_tape(right, b)
+    if !one.meaning_hash.same_as(other.meaning_hash) { return "its meaning" }
+    if !content_hash(one.places.places).same_as(content_hash(other.places.places)) { return "where its nodes stand" }
+    if left.stmt_fingerprint(a) != right.stmt_fingerprint(b) { return "its fingerprint" }
+    null
+}
+
+/// A store with each foreign node's file named by `spelled`, as a workspace naming files by where
+/// they stand on disk is held to a program naming them by address.
+export fn respelled_origins(store: SyntaxArena, spelled: fn(string) -> string) {
+    store.expr_origins.set([respelled_origin(o, spelled) for o in store.expr_origins.get()])
+    store.stmt_origins.set([respelled_origin(o, spelled) for o in store.stmt_origins.get()])
+    store.pat_origins.set([respelled_origin(o, spelled) for o in store.pat_origins.get()])
+}
+
+fn respelled_origin(o: ForeignOrigin?, spelled: fn(string) -> string) -> ForeignOrigin? {
+    let held? = o else { return null }
+    if held.path.is_empty() { held } else { held with { path: spelled(held.path) } }
+}
+
+fn statement_tape(store: SyntaxArena, s: StmtId) -> SyntaxTape {
+    mut tape = tape_writer()
+    Stmt.taped_id(store, tape, s)
+    tape.finished()
 }
 
 /// One item's statements read back into `store`, settled as a parse leaves them.

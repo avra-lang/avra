@@ -6,6 +6,7 @@
 //! instances and reads no file again.
 use core.{
     ArenaMarks,
+    StmtId,
     ComponentWord,
     ExprId,
     Instanced,
@@ -23,7 +24,14 @@ use @std.program.answer_record.{ContentHash, content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use @std.program.source_facts.{PlacedTape, file_context, item_spans, item_tape, source_text}
+use @std.program.source_facts.{
+    PlacedTape,
+    file_context,
+    file_tapes,
+    item_spans,
+    item_tape,
+    source_text,
+}
 use @std.program.syntax_tape.{SyntaxTape, tape_writer}
 
 /// The components an item's instances name, as its file's words give them, each once, in the
@@ -42,28 +50,59 @@ fn item_uses(engine: QueryEngine, item_text: string, context: Bytes) -> List<Wor
     [s! for w in words for s in [shapes.find(it.word == w)] if s != null]
 }
 
-/// What a component means by, as content: its declaration's text, the context its file reads
-/// under, and the same of every component its template's instances name.
+/// What a component means by of its own: its declaration's text, the context its file reads under,
+/// the components its file declares, which its lists take alone, and the components its
+/// template's instances name.
 @derive(Saved)
-type ComponentContent = { item_text: string, context: Bytes, uses: List<ContentHash> }
+type ComponentContent = { item_text: string, context: Bytes, declares: List<string>, uses: List<ComponentAt> }
 
-/// A component's content, as one hash.
+/// A component, by its file and the name it's declared under.
+@derive(Saved)
+type ComponentAt = { home: SourceFileAddress, declared: string }
+
+/// Every component a component means by, each once in the order met, itself first.
+@derive(Saved)
+type ComponentClosure = { contents: List<ComponentContent> }
+
 @query
-fn component_key(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ContentHash {
-    let held? = declaration(engine, home, declared) else {
-        return content_hash(
-            ComponentContent { item_text: "", context: no_context(), uses: [] }.saved_bytes(),
-        )
+fn component_content(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ComponentContent {
+    let held? = declaration(engine, home, declared) else { return ComponentContent { item_text: "", context: no_context(), declares: [], uses: [] } }
+    ComponentContent {
+        item_text: held.item_text,
+        context: held.context,
+        declares: [w.shape.declared for w in file_words(engine, home).components],
+        uses: [ComponentAt { home: s.home, declared: s.declared } for s in item_uses(engine, held.item_text, held.context)],
     }
-    let uses = [component_key(engine, s.home, s.declared) for s in item_uses(engine, held.item_text, held.context)]
-    content_hash(
-        ComponentContent { item_text: held.item_text, context: held.context, uses: uses }
-            .saved_bytes(),
-    )
 }
 
-/// A component's declaring item: its text, where it starts, and the context its file reads under.
-type Declaration = { item_text: string, start: int, context: Bytes }
+/// A component's content and every one it means by, as one hash: components that name each other
+/// are one closure, walked once.
+@query
+fn component_key(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ContentHash {
+    mut met: Map<string, bool> = {}
+    mut order: List<ComponentAt> = [ComponentAt { home: home, declared: declared }]
+    met.set(component_name(order[0]), true)
+    mut contents: List<ComponentContent> = []
+    mut at = 0
+    while at < order.length {
+        let content = component_content(engine, order[at].home, order[at].declared)
+        contents.push(content)
+        for u in content.uses {
+            if !met.has(component_name(u)) {
+                met.set(component_name(u), true)
+                order.push(u)
+            }
+        }
+        at = at + 1
+    }
+    content_hash(ComponentClosure { contents: contents }.saved_bytes())
+}
+
+fn component_name(c: ComponentAt) -> string { "${spelled_file(c.home)}#${c.declared}" }
+
+/// A component's declaring item: its text, which of its file's items it is, and the context its
+/// file reads under.
+type Declaration = { item_text: string, item: int, context: Bytes }
 
 fn declaration(engine: QueryEngine, home: SourceFileAddress, declared: string) -> Declaration? {
     let word? = file_words(engine, home).components.find(it.shape.declared == declared) else { return null }
@@ -71,35 +110,44 @@ fn declaration(engine: QueryEngine, home: SourceFileAddress, declared: string) -
     let span = item_spans(avra_columns(text), text.length)[word.item]
     Declaration {
         item_text: text.substring(span.start, span.end),
-        start: span.start,
+        item: word.item,
         context: file_context(engine, home),
     }
 }
 
-/// A component handed whole: its declaration read back where its file reads it, each instance its
-/// template holds handed its own component, so a copy of the template means what it would there.
+/// A component handed whole: its file read back as a parse reads it, each instance its declaring
+/// item holds handed its own component, so a copy of the template means what it would there.
 /// Absent for a word that names no declaration, or one whose template names itself.
 fn component_at(engine: QueryEngine, shape: WordShape, entered: List<string>) -> ComponentWord? {
-    let named = "${spelled_file(shape.home)}#${shape.declared}"
+    let named = component_name(ComponentAt { home: shape.home, declared: shape.declared })
     if entered.contains(named) { return null }
     let held? = declaration(engine, shape.home, shape.declared) else { return null }
     let store = new_node_store(shape.home.path_in_package)
-    let stmts = item_read_back(
-        store,
-        PlacedTape { start: held.start, tape: item_tape(engine, held.item_text, held.context) },
-    )
+    let items = [item_read_back_marked(store, p) for p in file_tapes(engine, shape.home)]
+    let declaring_item = items[held.item]
     let words = WordShapes.from_saved_bytes(held.context).components
     let instances = [Instanced { name: i.name, declared: i.declared } for i in file_instances(engine, shape.home)]
-    for at in 0..store.exprs.count() {
+    for at in declaring_item.since.exprs..declaring_item.until.exprs {
         let e = ExprId { index: at }
         let word? = store.instance_word(e) else { continue }
         let nested? = words.find(it.word == word) else { continue }
         let handed? = component_at(engine, nested, entered.concat([named])) else { continue }
         store.provide(e, Provided { word: handed, instances: instances })
     }
-    let declaring? = stmts.find((s) -> store.component_parts(s)?.name == shape.declared) else { return null }
+    let declaring? = declaring_item
+        .stmts
+        .find((s) -> store.component_parts(s)?.name == shape.declared) else { return null }
     let whole? = word_of(store, declaring, spelled_file(shape.home)) else { return null }
     whole with { word: shape.word, own: shape.own }
+}
+
+/// One item read back, and the run of nodes it made.
+type MarkedItem = { stmts: List<StmtId>, since: ArenaMarks, until: ArenaMarks }
+
+fn item_read_back_marked(store: SyntaxArena, p: PlacedTape) -> MarkedItem {
+    let since = store.marks()
+    let stmts = item_read_back(store, p)
+    MarkedItem { stmts: stmts, since: since, until: store.marks() }
 }
 
 /// What an item's instances mean by: the content of each component they name, and the named
@@ -117,7 +165,6 @@ fn item_expanded(engine: QueryEngine, item_text: string, context: Bytes, inputs:
         store,
         PlacedTape { start: 0, tape: item_tape(engine, item_text, context) },
     )
-    let hoisted = store.hoisted_decls().length
     let listed = ExpansionInputs.from_saved_bytes(inputs).instances
     let words = BlockWords {
         components: [c! for s in item_uses(engine, item_text, context) for c in [component_at(engine, s, [])] if c != null],
@@ -130,10 +177,9 @@ fn item_expanded(engine: QueryEngine, item_text: string, context: Bytes, inputs:
         words,
         ArenaMarks { exprs: 0, stmts: 0, pats: 0, params: 0 },
     )
-    let all = stmts.concat(store.hoisted_decls().drop(hoisted))
     mut tape = tape_writer()
-    tape.count(all.length)
-    for s in all { Stmt.taped_id(store, tape, s) }
+    tape.count(stmts.length)
+    for s in stmts { Stmt.taped_id(store, tape, s) }
     SyntaxArena.tape_item_tables(store, tape)
     tape.finished()
 }

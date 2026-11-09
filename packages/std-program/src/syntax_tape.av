@@ -132,6 +132,8 @@ export type TapeWriter = {
     place_facts: SectionWriter = SectionWriter {},
     /// Each kind of node met, and the number each of its nodes was written as.
     written: List<WrittenNodes> = [],
+    /// For each node being written, innermost last, whether it stands in another file.
+    standing: List<bool> = [],
 }
 
 /// The nodes of one kind on a tape: by each one's index in its tree, the number it was written as.
@@ -203,6 +205,25 @@ impl TapeWriter {
         let written? = place else { return self.unplaced() }
         if written.in_item { self.place(written.offset, written.width) } else { self.place_elsewhere(written.offset, written.width) }
     }
+
+    /// Says where the next node stands, answering its number: what it holds stands where it does
+    /// until `left`. A node with no place stands where the one holding it does.
+    fn entered(place: TapePlace?) -> int {
+        self.standing.push(if place == null { self.stands_elsewhere() } else { !place!.in_item })
+        self.placed(place)
+    }
+
+    /// The node `entered` last is written.
+    fn left() { self.standing = self.standing.take(self.standing.length - 1) }
+
+    /// Says where a value the node being written holds stands, answering its number: in another
+    /// file wherever the node is.
+    fn placed_within(place: TapePlace?) -> int {
+        let held? = place else { return self.unplaced() }
+        if self.stands_elsewhere() { self.place_elsewhere(held.offset, held.width) } else { self.placed(held) }
+    }
+
+    fn stands_elsewhere() -> bool { self.standing.last() ?? false }
 
     /// Says the next node standing for an id has no place, answering its number.
     fn unplaced() -> int {

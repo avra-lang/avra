@@ -182,12 +182,13 @@ fn module_segments(file: SourceFileAddress) -> List<string> {
 /// Where a package's modules stand.
 const SOURCE_ROOT: string = "src"
 
-/// Every component a file's own module declares, its own among them: a program is a module of
-/// its own.
+/// Every component a file's own module declares: its own, then each other file's in its
+/// directory, a program's among them.
 fn own_module_words(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredWord> {
-    if is_program(engine, file) { return file_words(engine, file).components }
     let module = module_declared(engine, file.package_name, module_segments(file))
-    if module.files.contains(file.path_in_package) { module.components } else { module.components.concat(file_words(engine, file).components) }
+    file_words(engine, file)
+        .components
+        .concat([w for w in module.components if w.shape.home.path_in_package != file.path_in_package])
 }
 
 /// What a module's files declare of block words, read once, in listing order: every component,
@@ -231,22 +232,6 @@ fn module_exports(engine: QueryEngine, package: string, local: List<string>, as_
     }
     ModuleExports { components: components, grammars: grammars, instances: instances }
 }
-
-/// Whether a file is a program: its directory holds the marker that says what it answers.
-fn is_program(engine: QueryEngine, file: SourceFileAddress) -> bool {
-    let dir = dir_of(file.path_in_package)
-    let names = listed(
-        engine,
-        DirectoryAddress { package_name: file.package_name, path_in_package: dir },
-    ) ?? []
-    let stem = file
-        .path_in_package
-        .substring(dir.length + 1, file.path_in_package.length - ".av".length)
-    PROGRAM_MARKERS.any((marker) -> names.contains("${stem}${marker}"))
-}
-
-/// What a program says it answers, beside it.
-const PROGRAM_MARKERS: List<string> = [".expected", ".refuses", ".verdict"]
 
 /// A module's files: its directory's sources, or the one file named for it, never through a
 /// package nested inside, never a file its manifest excludes, and a dependency's own program

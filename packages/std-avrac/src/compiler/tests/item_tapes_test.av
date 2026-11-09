@@ -9,6 +9,8 @@ use compiler.{
     file_meant,
     parse_source,
     read_back,
+    respelled_origins,
+    statement_difference,
 }
 use @std.io.{make_dirs}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
@@ -69,7 +71,7 @@ fn reads_back_as_parsed(dir: string, path: string) -> bool {
     let back = read_back(path, tapes_of(dir, path))
     let parsed = parse_source(files().get().get(path)!)
     back.stmts.length == parsed.stmts.length &&
-        [at for at, s in back.stmts if back.store.stmt_fingerprint(s) != parsed.store.stmt_fingerprint(parsed.stmts[at])]
+        [at for at, s in back.stmts if statement_difference(back.store, s, parsed.store, parsed.stmts[at]) != null]
             .is_empty()
 }
 
@@ -77,13 +79,13 @@ spec "a file's items on tapes" {
     given "a file read once" {
         then "the first process reads its text, its words' shapes and each of its three items" {
             files().set({"src/a.av": THREE})
-            process(store_dir("first"), "src/a.av") == "file_tapes source_text file_context language_print listed module_declared package_facts source_text source_text file_words item_tape item_tape item_tape"
+            process(store_dir("first"), "src/a.av") == "file_tapes source_text file_context language_print module_declared package_facts source_text listed source_text file_words item_tape item_tape item_tape"
         }
         then "a later process asks only its inputs: the file, its directory, its manifest and the module file it isn't" {
             let dir = store_dir("unchanged")
             files().set({"src/a.av": THREE})
             let _ = process(dir, "src/a.av")
-            process(dir, "src/a.av") == "source_text language_print listed source_text source_text"
+            process(dir, "src/a.av") == "source_text language_print source_text listed source_text"
         }
     }
     given "one item's body edited" {
@@ -92,7 +94,7 @@ spec "a file's items on tapes" {
             files().set({"src/b.av": THREE})
             let _ = process(dir, "src/b.av")
             files().put("src/b.av", ONE_BODY_EDITED)
-            process(dir, "src/b.av") == "source_text file_tapes language_print listed source_text source_text file_words item_tape"
+            process(dir, "src/b.av") == "source_text file_tapes language_print source_text listed source_text file_words item_tape"
         }
     }
     given "the tapes of a file" {
@@ -170,12 +172,13 @@ fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> bool
     for e in rooted { in_w.set(e.key, e.value) }
     let ws = a_process_over(in_w, [e.key for e in rooted])
     let parsed = ws.parsed(ws.file_id("/w/${path}"))
+    respelled_origins(parsed.store, (p) -> "@test/p/${p.substring(3, p.length)}")
     let last = back.stmts[back.stmts.length - 1]
     let value = back.store.stmt_value(last) ?? back.store.answer_of(last)
     back.stmts.length == parsed.stmts.length &&
         value != null &&
         back.store.meant(value!) != null &&
-        [at for at, s in back.stmts if back.store.stmt_fingerprint(s) != parsed.store.stmt_fingerprint(parsed.stmts[at])]
+        [at for at, s in back.stmts if statement_difference(back.store, s, parsed.store, parsed.stmts[at]) != null]
             .is_empty()
 }
 

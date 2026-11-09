@@ -2,7 +2,7 @@
 //! call so far taking the blocks as its last arguments, and `{ x -> … }` is a
 //! lambda — over the pronoun's one seat when it writes none and reads `it`.
 //! Each node keeps what was written and MEANS the call or the lambda.
-use core.{expr_node, Expr, ExprId, TypeId, Reg, Param, Minting, minting, pronoun_param, NodeFacts}
+use core.{expr_node, Expr, ExprId, TypeId, Reg, Param, Minting, minting, NodeFacts}
 use core.marks.{apart}
 use features.{Meaning, MeanCx, ResolveCx, TypeCx, LowerCx, nothing}
 
@@ -36,7 +36,7 @@ impl Meaning for Trailed {
 /// body reads `it`.
 @expr_node
 @apart
-export type BlockLambda = { seats: List<Param>, body: ExprId }
+export type BlockLambda = { seats: List<Param>, body: ExprId, @facet(trailing) trailing: bool = false }
 
 impl NodeFacts for BlockLambda {
     fn says(written: string) -> string? { "" }
@@ -49,7 +49,7 @@ impl Meaning for BlockLambda {
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.meant_type(e) }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg { cx.meant_reg(e) }
     fn minted(cx: MeanCx) -> Result<Minting, string> {
-        let seats = if self.seats.is_empty() && cx.store.pronoun_rides(self.body) { [pronoun_param] } else { self.seats }
+        let seats = if self.seats.is_empty() && cx.store.pronoun_rides(self.body) { [cx.store.pronoun_seat()] } else { self.seats }
         let closure = cx.store.alloc_expr(Expr.Lambda(seats, self.body), cx.span)
         .Ok(minting([closure]))
     }

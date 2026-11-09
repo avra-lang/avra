@@ -50,7 +50,91 @@ export type DocGroup = { lines: List<string>, @offset at: int }
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
 @derive(Taped)
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool, is_asset: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_module_state: bool, is_host: bool, is_asset: bool, is_heard: bool }
+
+/// A MARK IS PART OF ITS NODE AS A SET. A node's print folds what it is with every mark it wears,
+/// each a stamp that replaces the one its code made before, in their codes' order, so the order
+/// marks are made in is no part of it.
+/// A print is a function of the finished tree: once a tree stands, a settle derives every print
+/// again, children first, so the order marks were made in is no part of any.
+@identity
+export type Stamped = {
+    identities: Cell<List<int>>,
+    /// By node, the marks it wears, absent for none.
+    stamps: Cell<List<List<Stamp>?>>,
+    prints: Cell<List<int>>,
+    /// By node, the settle that last derived its print.
+    settled_in: Cell<List<int>>,
+    /// The settle under way, 0 for none, and the last one begun.
+    pass: Cell<int>,
+    passes: Cell<int>,
+}
+
+/// A mark folded into a node's print: its code, and what it carries as one value.
+export type Stamp = { code: int, value: int }
+
+fn no_prints() -> Stamped {
+    Stamped {
+        identities: list_cell(),
+        stamps: list_cell(),
+        prints: list_cell(),
+        settled_in: list_cell(),
+        pass: Cell.new(0),
+        passes: Cell.new(0),
+    }
+}
+
+fn no_stamps() -> List<Stamp>? { null }
+
+impl Stamped {
+    /// A node added, printed as what it is.
+    fn added(identity: int) {
+        self.identities.push(identity)
+        self.stamps.push(no_stamps())
+        self.prints.push(identity)
+        self.settled_in.push(0)
+    }
+
+    /// Node `at` wears the mark `code`, carrying `value`.
+    fn stamp(at: int, code: int, value: int) {
+        let kept = [s for s in self.stamps.get()[at] ?? [] if s.code != code]
+        let stamps = [s for s in kept if s.code < code]
+            .concat([Stamp { code: code, value: value }])
+            .concat([s for s in kept if s.code > code])
+        self.stamps.set_at(at, stamps)
+        self.refold(at)
+    }
+
+    fn refold(at: int) {
+        let identity = self.identities.get()[at]
+        let stamps? = self.stamps.get()[at] else {
+            self.prints.set_at(at, identity)
+            return
+        }
+        self.prints.set_at(at, stamps.fold(identity, (acc, s) -> fp(s.code, [acc, s.value])))
+    }
+
+    fn print(at: int) -> int { self.prints.get()[at] }
+
+    fn begun() {
+        self.passes.set(self.passes.get() + 1)
+        self.pass.set(self.passes.get())
+    }
+
+    fn ended() { self.pass.set(0) }
+
+    /// Whether a settle is under way and hasn't derived node `at`'s print yet.
+    fn unsettled(at: int) -> bool { self.pass.get() > 0 && self.settled_in.get()[at] != self.pass.get() }
+
+    /// Node `at` is being derived in this settle; asked again inside it, it answers what it held.
+    fn settling(at: int) { self.settled_in.set_at(at, self.pass.get()) }
+
+    /// Node `at` is what `identity` says, wearing the stamps it wore.
+    fn reidentified(at: int, identity: int) {
+        self.identities.set_at(at, identity)
+        self.refold(at)
+    }
+}
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -59,10 +143,10 @@ fn no_stmt_marks() -> StmtMarks {
         is_once: false,
         is_static: false,
         is_state: false,
-        is_provide: false,
         is_module_state: false,
         is_host: false,
         is_asset: false,
+        is_heard: false,
     }
 }
 
@@ -90,9 +174,9 @@ export type SeatFill = { arg: int, field: int }
 @derive(Copied)
 export type SyntaxArena = {
     exprs: Arena<Expr>,
-    @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") expr_fingerprints: Cell<List<int>>,
+    @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") expr_prints: Stamped,
     stmts: Arena<Stmt>,
-    @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") stmt_fingerprints: Cell<List<int>>,
+    @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") stmt_prints: Stamped,
     @copied(stmt, wear) marks: Cell<List<StmtMarks>>,
     // the format a `grammar` declaration read, by its statement
     @copied(stmt, wear_grammar) grammars: Cell<List<GrammarSpec?>>,
@@ -124,7 +208,7 @@ export type SyntaxArena = {
     @copied_by_hand("the pattern walk: alloc_pat") @taped_with_nodes("the `Pat` root: its nodes") pats: Cell<List<Pat>>,
     @copied_by_hand("the pattern walk: alloc_pat") @taped_with_nodes("the `Pat` root: its nodes' places") pat_spans: Cell<List<Span?>>,
     @copied_by_hand("the pattern walk: name_read") @remade("alloc_pat mints a name's read") pat_reads: Cell<List<ExprId?>>,
-    @copied_by_hand("the pattern walk: alloc_pat") @remade("folded at allocation") pat_fingerprints: Cell<List<int>>,
+    @copied_by_hand("the pattern walk: alloc_pat") @remade("folded at allocation") pat_prints: Stamped,
     // a seat's span, by ParamId — the store's only fact about a
     // Param, which otherwise never touches an arena
     @copied_by_hand("the param walk: alloc_param_id") @taped_with_nodes("`ParamId` is `@placed`: a seat is minted where it was written") param_spans: Cell<List<Span?>>,
@@ -210,9 +294,9 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
     SyntaxArena {
         file: file,
         exprs: new_arena(),
-        expr_fingerprints: list_cell(),
+        expr_prints: no_prints(),
         stmts: new_arena(),
-        stmt_fingerprints: list_cell(),
+        stmt_prints: no_prints(),
         marks: list_cell(),
         grammars: list_cell(),
         component_insts: list_cell(),
@@ -224,7 +308,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pats: list_cell(),
         pat_spans: list_cell(),
         pat_reads: list_cell(),
-        pat_fingerprints: list_cell(),
+        pat_prints: no_prints(),
         param_spans: list_cell(),
         param_elsewhere: list_cell(),
         expr_marks: list_cell(),
@@ -321,7 +405,7 @@ fn distinct_origins(all: List<ForeignOrigin>) -> List<ForeignOrigin> {
 impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
-        self.expr_fingerprints.push(e.identity(self))
+        self.expr_prints.added(e.identity(self))
         self.expr_marks.push(no_expr_marks())
         self.sugar_matches.push(false)
         self.minted_by.push(null)
@@ -343,7 +427,7 @@ impl SyntaxArena {
     /// node: the block's refusals speak in the block's words.
     fn mark_trailing(e: ExprId) {
         self.update_expr_marks(e, (m) -> m with { is_trailing: true })
-        self.expr_fingerprints.set_at(e.index, fp(111, [self.expr_fingerprints.get()[e.index]]))
+        self.expr_prints.stamp(e.index, 111, 0)
     }
 
     fn is_trailing(e: ExprId) -> bool {
@@ -445,7 +529,7 @@ impl SyntaxArena {
     /// form its twin reads identically.
     fn mark_raw_string(e: ExprId) {
         self.update_expr_marks(e, (m) -> m with { is_raw: true })
-        self.expr_fingerprints.set_at(e.index, fp(144, [self.expr_fingerprints.get()[e.index]]))
+        self.expr_prints.stamp(e.index, 144, 0)
     }
 
     fn is_raw_string(e: ExprId) -> bool {
@@ -456,7 +540,7 @@ impl SyntaxArena {
     /// names: a binding of the wrong type refuses as a hole.
     fn mark_hole(e: ExprId) {
         self.update_expr_marks(e, (m) -> m with { is_hole: true })
-        self.expr_fingerprints.set_at(e.index, fp(113, [self.expr_fingerprints.get()[e.index]]))
+        self.expr_prints.stamp(e.index, 113, 0)
     }
 
     fn is_hole(e: ExprId) -> bool {
@@ -467,7 +551,7 @@ impl SyntaxArena {
     /// sibling nodes rather than one.
     fn mark_run_hole(e: ExprId) {
         self.update_expr_marks(e, (m) -> m with { is_run_hole: true })
-        self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
+        self.expr_prints.stamp(e.index, 149, 0)
     }
 
     /// A collect's `dense` mark — part of the statement's identity, so
@@ -475,7 +559,7 @@ impl SyntaxArena {
     fn mark_collect_dense(s: StmtId, on: bool) {
         self.collect_dense.set_at(s.index, on)
         if on {
-            self.stmt_fingerprints.set_at(s.index, fp(187, [self.stmt_fingerprints.get()[s.index]]))
+            self.stamp(s, 187, 0)
         }
     }
 
@@ -491,7 +575,7 @@ impl SyntaxArena {
     /// variant unhandled.
     fn mark_sugar_match(e: ExprId) {
         self.sugar_matches.set_at(e.index, true)
-        self.expr_fingerprints.set_at(e.index, fp(150, [self.expr_fingerprints.get()[e.index]]))
+        self.expr_prints.stamp(e.index, 150, 0)
     }
 
     /// `nodes` are what `sugar`'s meaning minted: each answers for it —
@@ -563,10 +647,7 @@ impl SyntaxArena {
     /// `sugar` extended by `roots`, which its fingerprint folds in.
     fn extended_with(sugar: ExprId, roots: List<ExprId>) {
         self.extensions.set_at(sugar.index, roots)
-        let prints = self.expr_fingerprints.get()
-        self
-            .expr_fingerprints
-            .set_at(sugar.index, fp(198, [prints[sugar.index], fp_list([prints[r.index] for r in roots])]))
+        self.expr_prints.stamp(sugar.index, 198, fp_list([self.expr_fingerprint(r) for r in roots]))
     }
 
     /// The nodes `e` is extended by; none for a node that is not.
@@ -689,15 +770,7 @@ impl SyntaxArena {
     fn mark_struct_targs(e: ExprId, args: List<TypeRef>) {
         self.struct_targs.set_at(e.index, args)
         if !args.is_empty() {
-            self
-                .expr_fingerprints
-                .set_at(
-                    e.index,
-                    fp(
-                        188,
-                        [self.expr_fingerprints.get()[e.index], fp_list([type_fp(a) for a in args])],
-                    ),
-                )
+            self.expr_prints.stamp(e.index, 188, fp_list([type_fp(a) for a in args]))
         }
     }
 
@@ -728,14 +801,13 @@ impl SyntaxArena {
     /// a field.
     fn mark_on_handler(e: ExprId, event: string) {
         self.on_handlers.set_at(e.index, OnHandler { event: event })
-        self
-            .expr_fingerprints
-            .set_at(e.index, fp(189, [self.expr_fingerprints.get()[e.index], fp_str(event)]))
+        self.expr_prints.stamp(e.index, 189, fp_str(event))
     }
 
     /// A setting's value marked as the handler its name's event hears.
     fn mark_setting_handler(s: StmtId) {
         let parts? = self.setting_parts(s) else { return }
+        self.update_marks(s, (m) -> m with { is_heard: true })
         self.mark_on_handler(parts.value, parts.name)
         self.restamp(s, 199)
     }
@@ -758,9 +830,7 @@ impl SyntaxArena {
     fn mark_unheard(e: ExprId, why: Unheard) {
         let held? = self.on_handlers.get()[e.index] else { return }
         self.on_handlers.set_at(e.index, held with { unheard: why })
-        self
-            .expr_fingerprints
-            .set_at(e.index, fp(190, [self.expr_fingerprints.get()[e.index], unheard_fp(why)]))
+        self.expr_prints.stamp(e.index, 190, unheard_fp(why))
     }
 
     /// Whether the value at `e` fills a field another law already refused
@@ -849,9 +919,14 @@ impl SyntaxArena {
     /// `path`, and spanned in this file's offsets.
     fn note_foreign(since: ArenaMarks, path: string) { self.originated(since, ForeignOrigin { path: path, spanned_home: false }) }
 
-    /// Every node minted since `since` was copied from the file at
-    /// `path`, and keeps that file's spans.
-    fn note_copied(since: ArenaMarks, path: string) { self.originated(since, ForeignOrigin { path: path, spanned_home: true }) }
+    /// The nodes a copy made were copied from the file at `path`, and keep that file's spans.
+    fn note_copied(copied: CopiedNodes, path: string) {
+        let origin = ForeignOrigin { path: path, spanned_home: true }
+        for e in copied.exprs { if self.expr_origins.get()[e.index] == null { self.expr_origins.set_at(e.index, origin) } }
+        for s in copied.stmts { if self.stmt_origins.get()[s.index] == null { self.stmt_origins.set_at(s.index, origin) } }
+        for p in copied.pats { if self.pat_origins.get()[p.index] == null { self.pat_origins.set_at(p.index, origin) } }
+        for p in copied.params { self.param_elsewhere.set_at(p.index, true) }
+    }
 
     /// Every node minted since `since` was written in the module `module`
     /// (`@std.meta`): its bare names resolve there, whatever file they land in.
@@ -872,8 +947,6 @@ impl SyntaxArena {
         for at in since.pats..now.pats {
             if self.pat_origins.get()[at] == null { self.pat_origins.set_at(at, origin) }
         }
-        if !origin.spanned_home { return }
-        for at in since.params..now.params { self.param_elsewhere.set_at(at, true) }
     }
 
     /// The nodes minted from each other file's text, grouped by where, in the order each was met.
@@ -974,12 +1047,10 @@ impl SyntaxArena {
     /// Null for every shape that is not a call.
     fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? { self.expr(e).called_with(blocks) }
 
-    /// A head WIDENED by its trailing blocks — each marked as one, the
-    /// call given them as its last arguments through the call protocol,
-    /// at `span`. A head that is no call refuses in the block's words.
+    /// A head WIDENED by its trailing blocks — the call given them as
+    /// its last arguments through the call protocol, at `span`. A head that is no call refuses in the block's words.
     fn trailed(h: ExprId, blocks: List<ExprId>, span: Span?) -> Result<ExprId, string> {
         if blocks.is_empty() { return .Ok(h) }
-        for k in blocks { self.mark_trailing(k) }
         let widened? = self.called_with(h, blocks) else { return .Err(not_a_call_trailed()) }
         .Ok(self.alloc_expr(widened, span))
     }
@@ -1046,7 +1117,7 @@ impl SyntaxArena {
     /// pronoun's WHOLE mechanism: nothing downstream knows it exists.
     fn pronouned(a: ExprId) -> ExprId {
         if !self.pronoun_rides(a) { return a }
-        let label? = self.arg_label(a) else { return self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a)) }
+        let label? = self.arg_label(a) else { return self.alloc_expr(Expr.Lambda([self.pronoun_seat()], a), self.expr_span(a)) }
         // a named argument keeps its name: the wrap goes inside it
         self
             .alloc_expr(Expr.Named(Plain(label), self.pronouned(self.unnamed(a))), self.expr_span(a))
@@ -1100,7 +1171,7 @@ impl SyntaxArena {
 
     /// The one pattern-allocation seam.
     fn alloc_pat(p: Pat, span: Span? = null) -> PatId {
-        self.pat_fingerprints.push(self.fingerprint_pat(p))
+        self.pat_prints.added(self.fingerprint_pat(p))
         self.pat_spans.push(span)
         self.pat_reads.push(self.read_of(p, span))
         self.pat_origins.push(null)
@@ -1125,11 +1196,29 @@ impl SyntaxArena {
     fn pat_count() -> int { self.pats.get().length }
     fn pat(id: PatId) -> Pat { self.pats.get()[id.index] }
     fn pat_span(id: PatId) -> Span? { self.pat_spans.get()[id.index] }
-    fn pat_fingerprint(id: PatId) -> int { self.pat_fingerprints.get()[id.index] }
+    fn pat_fingerprint(id: PatId) -> int {
+        if self.pat_prints.unsettled(id.index) {
+            self.pat_prints.settling(id.index)
+            self.pat_prints.reidentified(id.index, self.fingerprint_pat(self.pat(id)))
+        }
+        self.pat_prints.print(id.index)
+    }
 
     /// The one seat-allocation seam: a fresh `ParamId` for its span
     /// alone — a `Param` never lives in an arena, so this is the
     /// STORE's only fact about it.
+    /// The pronoun's own seat, minted for one implicit `it` lambda: a seat the source never wrote.
+    fn pronoun_seat() -> Param {
+        Param {
+            name: Scoped("it"),
+            ty: null,
+            default: null,
+            promises: plain_mark,
+            id: self.alloc_param_id(null),
+            implicit: true,
+        }
+    }
+
     fn alloc_param_id(span: Span?) -> ParamId {
         self.param_elsewhere.push(false)
         self.param_spans.push(span)
@@ -1229,7 +1318,7 @@ impl SyntaxArena {
 
     /// The one statement-allocation seam.
     fn alloc_stmt(s: Stmt, span: Span? = null) -> StmtId {
-        self.stmt_fingerprints.push(s.identity(self))
+        self.stmt_prints.added(s.identity(self))
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
         self.component_insts.push(null)
@@ -1266,9 +1355,7 @@ impl SyntaxArena {
     /// without them.
     fn stamp_doc(s: StmtId) {
         let lines? = self.doc_comment(s) else { return }
-        self
-            .stmt_fingerprints
-            .set_at(s.index, fp(115, [self.stmt_fingerprints.get()[s.index], fp_str(lines.join("\n"))]))
+        self.stamp(s, 115, fp_str(lines.join("\n")))
     }
 
     fn doc_comment(s: StmtId) -> List<string>? { self.docs.get()[s.index]?.lines }
@@ -1316,7 +1403,7 @@ impl SyntaxArena {
     /// `annotations_of` reads in the order `annotate` was called.
     fn annotate(s: StmtId, a: Annotation) {
         self.annotations.set_at(s.index, self.annotations_of(s).concat([a]))
-        self.restamp_annotation(s, a)
+        self.restamp_annotations(s)
     }
 
     /// `@name(args)` crossed this declaration OUTSIDE one already
@@ -1332,21 +1419,17 @@ impl SyntaxArena {
     /// still reads in the author's order.
     fn annotate_before(s: StmtId, a: Annotation) {
         self.annotations.set_at(s.index, [a].concat(self.annotations_of(s)))
-        self.restamp_annotation(s, a)
+        self.restamp_annotations(s)
     }
 
-    fn restamp_annotation(s: StmtId, a: Annotation) {
+    /// Every annotation a statement wears, in the order they're written, as one stamp.
+    fn restamp_annotations(s: StmtId) {
         self
-            .stmt_fingerprints
-            .set_at(
-                s.index,
-                fp(
-                    114,
-                    [
-                        self.stmt_fingerprints.get()[s.index],
-                        self.expr_fingerprint(a.callee),
-                        fp_list(self.expr_fps(a.args)),
-                    ],
+            .stamp(
+                s,
+                114,
+                fp_list(
+                    [fp_list([self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]) for a in self.annotations_of(s)],
                 ),
             )
     }
@@ -1383,12 +1466,9 @@ impl SyntaxArena {
     /// The marks a statement wears.
     fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
 
-    /// Gives `s` every keyword `worn` records, each through its own verb
-    /// so the fingerprint follows — the one door a copy uses, so a new
-    /// bit is added here and a template copy never forgets it. A
-    /// fingerprint is a chain of stamps, so they land in the order a
-    /// parse stamps them: the declaration's own words, then `export`,
-    /// which wraps it.
+    /// Gives `s` every mark `worn` records, each through its own verb so
+    /// the fingerprint follows — the one door a copy and a tape use, so a
+    /// new bit is added here and neither ever forgets it.
     fn wear(s: StmtId, worn: StmtMarks) {
         if worn.is_mutating { self.mark_mutating(s) }
         if worn.is_once { self.mark_once(s) }
@@ -1397,6 +1477,8 @@ impl SyntaxArena {
         if worn.is_module_state { self.mark_module_state(s) }
         if worn.is_host { self.mark_host(s) }
         if worn.is_exported { self.mark_exported(s) }
+        if worn.is_asset { self.mark_asset(s) }
+        if worn.is_heard { self.mark_setting_handler(s) }
     }
 
     /// `mut fn` crossed this declaration — it says its receiver is
@@ -1511,9 +1593,15 @@ impl SyntaxArena {
     }
 
     /// A declaration an instance minted, joining its file's top level.
+    /// A declaration an instance minted, kept once by its name.
     fn hoist(s: StmtId) {
+        let name = self.declared_name(s)
+        if name != null && self.hoists(name!) { return }
         self.hoisted.push(s)
     }
+
+    /// Whether a declaration of `name` is hoisted already.
+    fn hoists(name: string) -> bool { self.hoisted.get().any((s) -> self.declared_name(s) == name) }
 
     /// The declarations instances minted, in the order they were.
     fn hoisted_decls() -> List<StmtId> {
@@ -1559,10 +1647,10 @@ impl SyntaxArena {
     /// that CARRIES something folds what it carries to ONE value, so
     /// the codes stay a registry and no run's boundary can move.
     fn restamp_carrying(s: StmtId, tag: int, carried: List<int>) {
-        self
-            .stmt_fingerprints
-            .set_at(s.index, fp(tag, [self.stmt_fingerprints.get()[s.index], fp_list(carried)]))
+        self.stamp(s, tag, fp_list(carried))
     }
+
+    fn stamp(s: StmtId, code: int, value: int) { self.stmt_prints.stamp(s.index, code, value) }
 
     /// `export` crossed this declaration — the module's surface
     /// carries it, so it is part of the statement like every other
@@ -1615,8 +1703,43 @@ impl SyntaxArena {
     fn stmt_span(id: StmtId) -> Span? { self.stmts.span_at(id.index) }
     /// Whether `id` is the `null` literal.
     fn null_literal(id: ExprId) -> bool { self.expr(id) is .NullLit }
-    fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints.get()[id.index] }
-    fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints.get()[id.index] }
+    fn expr_fingerprint(id: ExprId) -> int {
+        if self.expr_prints.unsettled(id.index) { self.resettled_expr(id) }
+        self.expr_prints.print(id.index)
+    }
+
+    fn stmt_fingerprint(id: StmtId) -> int {
+        if self.stmt_prints.unsettled(id.index) { self.resettled_stmt(id) }
+        self.stmt_prints.print(id.index)
+    }
+
+    /// An expression's print derived again from what it is now, and its extensions'.
+    fn resettled_expr(e: ExprId) {
+        self.expr_prints.settling(e.index)
+        self.expr_prints.reidentified(e.index, self.expr(e).identity(self))
+        let roots = self.extended_by(e)
+        if !roots.is_empty() { self.expr_prints.stamp(e.index, 198, fp_list([self.expr_fingerprint(r) for r in roots])) }
+    }
+
+    /// A statement's print derived again from what it is now, and its annotations'.
+    fn resettled_stmt(s: StmtId) {
+        self.stmt_prints.settling(s.index)
+        self.stmt_prints.reidentified(s.index, self.stmt(s).identity(self))
+        if !self.annotations_of(s).is_empty() { self.restamp_annotations(s) }
+    }
+
+    /// Every print derived again from the finished tree, each child's before what holds it.
+    fn settle_prints() {
+        self.expr_prints.begun()
+        self.stmt_prints.begun()
+        self.pat_prints.begun()
+        for at in 0..self.exprs.count() { let _ = self.expr_fingerprint(ExprId { index: at }) }
+        for at in 0..self.stmts.count() { let _ = self.stmt_fingerprint(StmtId { index: at }) }
+        for at in 0..self.pats.get().length { let _ = self.pat_fingerprint(PatId { index: at }) }
+        self.expr_prints.ended()
+        self.stmt_prints.ended()
+        self.pat_prints.ended()
+    }
 
     /// Every expression tagged `k` (`tag_expr`, `@derive(Matchable)`'s
     /// variant order) inside `[lo, hi)`: the `Expr` arena relation's
