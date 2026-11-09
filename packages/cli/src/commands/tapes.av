@@ -7,7 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{DeclId, TypeId}
+use @std.avrac.core.{DeclId, ExprId, TypeId}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -20,6 +20,8 @@ use @std.avrac.compiler.{
     read_back,
     file_scope,
     fn_signature,
+    fn_body_spans,
+    typed_fn,
     file_declares,
     ItemKind,
     resolved_in,
@@ -139,7 +141,46 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, sign
     }
     let scoped = scope_difference(engine, ws, disk, path)
     if scoped != null || !signed { return scoped }
-    signature_difference(engine, ws, disk, path)
+    signature_difference(engine, ws, disk, path) ?? type_difference(engine, ws, disk, path)
+}
+
+/// How a fn `path` declares is typed differently from the workspace's typing of its body, absent
+/// when every node both type reads alike: nodes paired by where they stand, and a node the
+/// workspace left untyped (a literal it folded into another) read as nothing to hold.
+fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    let file = disk.file_at(path)
+    let id = ws.file_id(joined_path(disk.root, path))
+    let names = ws.visible(id)
+    let parsed = ws.parsed(id)
+    mut old_at: Map<string, List<ExprId>> = {}
+    for at in 0..parsed.store.exprs.count() {
+        let e = ExprId { index: at }
+        let span? = parsed.store.expr_span(e) else { continue }
+        let key = "${span.lo}:${span.hi}"
+        old_at.set(key, (old_at.get(key) ?? []).concat([e]))
+    }
+    for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+        let d? = names.fn_decl(own.name) else { continue }
+        let x = ws.decls.decl(d)
+        if !x.maker.is_empty() ||
+            x.home == null ||
+            disk.spelled(ws.decls.file(x.file).path) != spelled_file(file) { continue }
+        let mine? = typed_fn(engine, file, own.name) else { continue }
+        let facts = ws.typed(d)
+        let spans = fn_body_spans(engine, file, own.name)
+        for at, ty in mine.types {
+            let new? = ty else { continue }
+            let span? = spans[at] else { continue }
+            let olds = old_at.get("${span.lo}:${span.hi}") ?? []
+            if olds.length != 1 || !facts.of_expr.holds(olds[0].index) { continue }
+            let old_type = facts.type_at(olds[0])
+            // a node the workspace's typing never reached holds the error it was born with
+            if ws.decls.types.shape_of(old_type) is .Error { continue }
+            let old = workspace_spelled(ws, old_type)
+            if old != new.spelled() { return "${path}: `${own.name}` types the node at ${span.lo} ${new.spelled()}, the workspace ${old}" }
+        }
+    }
+    null
 }
 
 /// A type as the workspace writes it, each union's members in the order the program layer writes

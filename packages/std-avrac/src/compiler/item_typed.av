@@ -1,0 +1,71 @@
+//! WHAT A FN'S BODY IS TYPED AS: every node checked by its feature's rule, under the fn's signature,
+//! each name it reads asked of the names layer and that declaration's signature alone. The answer is
+//! a column of types beside the item's tape, by each node's place in the item read back.
+use core.{
+    CheckedProgram,
+    ExprId,
+    SignedSeat,
+    SignedType,
+    Span,
+    TypeHead,
+    Expected,
+    checking,
+    headed_type,
+}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A body's types: each node's, by its index in the item read back, where its feature has a rule.
+@derive(Saved)
+export type TypedBody = { types: List<SignedType?> }
+
+/// The body of the fn `file` declares as `name`, typed; absent when it declares none with a body.
+@query
+export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> TypedBody? {
+    let signature? = fn_signature(engine, file, name) else { return null }
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
+        .first() else { return null }
+    mut cx = checking(
+        item.store,
+        CheckedProgram { value_named: (n: string) -> value_type(engine, file, n) },
+    )
+    for p in signature.params { if p.ty != null { cx.bind(p.name, p.ty!) } }
+    let _ = cx.check(body, Expected.Exactly(signature.answer))
+    TypedBody { types: cx.types.get() }
+}
+
+/// The type a top-level value's name has from `file`: a fn's, as a fn type. Absent for a name that
+/// names no fn.
+fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    let s? = fn_signature(engine, d.file, d.name) else { return null }
+    SignedType {
+        head: TypeHead.Function,
+        args: [],
+        optional: false,
+        dynamic: false,
+        seats: [SignedSeat {
+            ty: p.ty ?? headed_type(TypeHead.Inferred),
+            mutable: p.mutable,
+            settled: p.settled,
+        } for p in s.params],
+        answer: s.answer,
+        alternatives: [],
+    }
+}
+
+/// Where each node of the fn `file` declares as `name` stands, by its index in the item read back,
+/// for holding its types to another reading of the same text.
+export fn fn_body_spans(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<Span?> {
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return [] }
+    [item.store.expr_span(ExprId { index: at }) for at in 0..item.store.exprs.count()]
+}
+
+collect listed_typed_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a fn's body is typed through, for a process to hand its engine.
+export fn typed_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_typed_facts) }

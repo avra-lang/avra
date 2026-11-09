@@ -1,0 +1,84 @@
+//! WHAT A BODY IS TYPED WITH: the arena its nodes stand in, each node's type as it's checked, the
+//! bindings in scope, and what the program answers about the names a body reads. The program's
+//! answers come in as fns, so typing stands below the queries that answer them.
+
+/// What a seat wants of the node checked into it.
+export enum Expected {
+    /// Anything: the node says what it is.
+    Free
+    /// This type.
+    Exactly(ty: SignedType)
+}
+
+/// What a body's checking reads of the program: the type a top-level value's name has from the
+/// body's file, absent when it names none.
+export type CheckedProgram = { value_named: fn(string) -> SignedType? }
+
+/// One body being checked. An identity: every rule writes the one table.
+export type Checking = {
+    store: SyntaxArena,
+    program: CheckedProgram,
+    /// Each node's type, by its index, once checked.
+    types: Cell<List<SignedType?>>,
+    /// The bindings in scope, innermost last.
+    scopes: Cell<List<Map<string, SignedType>>>,
+}
+
+/// A body of `store` to check against `program`.
+export fn checking(store: SyntaxArena, program: CheckedProgram) -> Checking {
+    let unchecked: SignedType? = null
+    let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
+    let outermost: Map<string, SignedType> = {}
+    let scopes: Cell<List<Map<string, SignedType>>> = Cell.new([outermost])
+    Checking { store: store, program: program, types: types, scopes: scopes }
+}
+
+impl Checking {
+    /// `e` checked against `expected`, its type kept.
+    mut fn check(e: ExprId, expected: Expected) -> SignedType? {
+        let ty = self.store.expr(e).checked(self, e, expected)
+        if ty != null { self.types.set_at(e.index, ty) }
+        ty
+    }
+
+    /// Every node `e` holds checked against nothing, and `e` itself left unchecked.
+    mut fn held_checked(e: ExprId) -> SignedType? {
+        for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Free) }
+        null
+    }
+
+    /// What `e` was checked as, absent when it wasn't.
+    fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
+
+    /// The type a name has here: the innermost binding of it, else what the program names by it.
+    fn bound(name: string) -> SignedType? {
+        let scopes = self.scopes.get()
+        let held = reversed(scopes).find(it.has(name))
+        if held != null { return held!.get(name) }
+        (self.program.value_named)(name)
+    }
+
+    /// `name` bound to `ty` in the innermost scope.
+    mut fn bind(name: string, ty: SignedType) {
+        let scopes = self.scopes.get()
+        mut innermost = scopes.last()!
+        innermost.set(name, ty)
+        self.scopes.set_at(scopes.length - 1, innermost)
+    }
+}
+
+/// A type the language owns, with nothing applied.
+export fn owned_type(name: string) -> SignedType { headed_type(TypeHead.Owned(name)) }
+
+/// A type that is its head alone: nothing applied, nothing optional.
+export fn headed_type(head: TypeHead) -> SignedType {
+    SignedType {
+        head: head,
+        args: [],
+        optional: false,
+        dynamic: false,
+        seats: [],
+        answer: null,
+        alternatives: [],
+    }
+}
