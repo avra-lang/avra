@@ -52,6 +52,7 @@ use features.{
     computes,
     computed_extras,
     BlockWords,
+    payloads_of,
 }
 use diagnostics.{Diag, DiagCode, new_source_file}
 use features.type_expr.{type_expr}
@@ -118,8 +119,9 @@ export type Language = {
     dispatch: Dispatch,
     diagnostics: List<Diag>,
     // whether its untold run is the generated parser's: true only where the grammar is the
-    // one that parser was made from
+    // one that parser was made from; its builders by the parser's index
     untold: bool = false,
+    untold_rows: List<BuilderRow?> = [],
 }
 
 export fn assemble(features: List<LanguageFeature>) -> Language {
@@ -179,7 +181,11 @@ fn with_nodes(
     for row in rows {
         let name = node_builder_name(row.owner, row.variant)
         let held? = out.get(name) else { continue }
-        out.set(name, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
+        out
+            .set(
+                name,
+                held with { payloads: payloads_of(row.payloads), anchor: anchorage(row.payloads) },
+            )
     }
     // a computed node's fn reads its node's labels, then the branch's own
     for c in computed_builds(g, rows) {
@@ -189,7 +195,7 @@ fn with_nodes(
         out
             .set(
                 c.by,
-                held with { payloads: row.payloads.concat(extras), anchor: anchorage(row.payloads) },
+                held with { payloads: payloads_of(row.payloads.concat(extras)), anchor: anchorage(row.payloads) },
             )
     }
     out
@@ -417,7 +423,8 @@ export fn language_features() -> List<LanguageFeature> {
 export once fn avra() -> Language {
     let lang = assemble(language_features())
     let rd? = lang.syntax else { return lang }
-    lang with { untold: !engine_parse() && grammar_print(rd) == avra_print }
+    if engine_parse() || grammar_print(rd) != avra_print { return lang }
+    lang with { untold: true, untold_rows: [lang.builders.get(name) for name in avra_builders] }
 }
 
 /// The canonical language over one nameless source — a lone source
