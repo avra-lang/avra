@@ -7,7 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{DeclId, TypeId, TypeRegistry}
+use @std.avrac.core.{DeclId, TypeId}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -143,15 +143,18 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, sign
 }
 
 /// A type as the workspace writes it, each union's members in the order the program layer writes
-/// them: a union is a set, and the workspace orders it by when its members were first made.
-fn workspace_spelled(types: TypeRegistry, id: TypeId) -> string {
+/// them and a generic type applied by its declaration's name: a union is a set, the workspace orders
+/// it by when its members were first made, and an applied type keeps the name its use spelled.
+fn workspace_spelled(ws: Workspace, id: TypeId) -> string {
+    let types = ws.decls.types
     match types.shape_of(id) {
-        .Union(members) -> sorted_by([workspace_spelled(types, m) for m in members], (a, b) -> text_before(a, b))
+        .Union(members) -> sorted_by([workspace_spelled(ws, m) for m in members], (a, b) -> text_before(a, b))
             .join(" or "),
-        .Res(ok, err) -> "Result<${workspace_spelled(types, ok)}, ${workspace_spelled(types, err)}>",
-        .Opt(inner) -> "${workspace_spelled(types, inner)}?",
-        .List(elem) -> "List<${workspace_spelled(types, elem)}>",
-        .Map(k, v) -> "Map<${workspace_spelled(types, k)}, ${workspace_spelled(types, v)}>",
+        .Res(ok, err) -> "Result<${workspace_spelled(ws, ok)}, ${workspace_spelled(ws, err)}>",
+        .Opt(inner) -> "${workspace_spelled(ws, inner)}?",
+        .List(elem) -> "List<${workspace_spelled(ws, elem)}>",
+        .App(decl, _, args) -> "${ws.decls.decl(decl).name}<${[workspace_spelled(ws, a) for a in args].join(", ")}>",
+        .Map(k, v) -> "Map<${workspace_spelled(ws, k)}, ${workspace_spelled(ws, v)}>",
         // every other shape holds no union to order: the workspace's own spelling is the answer
         rest -> types.name_of(id),
     }
@@ -172,7 +175,7 @@ fn signature_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: st
         let theirs? = match signed { .Fn(sig) -> sig, rest -> null } else { continue }
         let mine? = fn_signature(engine, file, own.name) else { return "${path}: `${own.name}` is signed by the workspace and by nothing here" }
         if mine.answer.inferred() || mine.params.any(it.ty?.inferred() ?? false) { continue }
-        let old = "(${[workspace_spelled(ws.decls.types, p) for p in theirs.params].join(", ")}) -> ${workspace_spelled(ws.decls.types, theirs.ret)}"
+        let old = "(${[workspace_spelled(ws, p) for p in theirs.params].join(", ")}) -> ${workspace_spelled(ws, theirs.ret)}"
         let new = "(${[p.ty?.spelled() ?? "_" for p in mine.params].join(", ")}) -> ${mine.answer.spelled()}"
         if old != new { return "${path}: `${own.name}` is signed ${new}, the workspace's ${old}" }
     }
