@@ -3,11 +3,13 @@
 //! kept is followed through its reads to the questions it read and the answers it found. A question
 //! keeps its newest few records, so going back an edit or two still finds its answer, and a root
 //! keeps its newest few code versions, so binaries sharing a store each keep theirs. What's dropped
-//! is only ever work: a record whose read can't be asked doesn't stand, and runs again.
+//! is only ever work: a record whose read can't be asked doesn't stand, and runs again. Records are
+//! read where they lie, so the walk holds only which questions and answers live.
 use @std.meta.{derive}
-use answer_record.{AnswerRecord, ContentHash, Question, content_hash}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, content_hash, kept_in_place}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{Saved}
+use saved_layout.{SavedRecord, SavedSlots}
 use sorted.{sorted_by}
 
 /// The most records a question keeps, newest first.
@@ -21,47 +23,58 @@ const KEPT_VERSIONS: int = 2
 @derive(Saved)
 export type QuestionRecords = { question: ContentHash, asked: Question, records: List<AnswerRecord>, written_in: int = 0 }
 
-/// What a compaction keeps: each live question with its kept records, and every answer they found.
-export type Live = { questions: List<QuestionRecords>, answers: HashKeyedTable<bool> }
+/// The records of the question saved at `entry`, oldest first, read where they lie.
+export fn records_in(entry: SavedRecord) -> List<KeptRecord> {
+    let records = QuestionRecords.records_in_place(entry)
+    [kept_in_place(records.record_at(i)!) for i in 0..records.length]
+}
 
-/// What `questions` keeps alive: a walk from the kept roots, each question queued once.
-export fn live_in(questions: List<QuestionRecords>) -> Live {
-    let by_question: HashKeyedTable<QuestionRecords> = hash_keyed_table()
-    for entry in questions { by_question.put(entry.question, entry) }
-    let queued: HashKeyedTable<bool> = hash_keyed_table()
+/// A question that may be a root: what it asks whatever its code, and the generation its newest
+/// record was written in.
+export type RootCandidate = { question: ContentHash, slot: ContentHash, written_in: int }
+
+/// The question saved at `entry` as a root, absent when none of its records is deep. Only a root's
+/// question is decoded.
+export fn root_candidate(entry: SavedRecord) -> RootCandidate? {
+    if !records_in(entry).any(it.deep) { return null }
+    RootCandidate {
+        question: ContentHash.read_from(QuestionRecords.question_in_place(entry)),
+        slot: slot_of(QuestionRecords.asked_in(entry)),
+        written_in: QuestionRecords.written_in_in(entry),
+    }
+}
+
+/// What a compaction keeps: each live question, and every answer its kept records found.
+export type Live = { questions: HashKeyedTable<bool>, answers: HashKeyedTable<bool> }
+
+/// What the kept roots among `candidates` keep alive, each question's records asked of
+/// `records_of`: a walk from the roots, each question queued once.
+export fn live_in(candidates: List<RootCandidate>, records_of: fn(ContentHash) -> List<KeptRecord>) -> Live {
+    let questions: HashKeyedTable<bool> = hash_keyed_table()
     let answers: HashKeyedTable<bool> = hash_keyed_table()
-    mut kept: List<QuestionRecords> = []
-    mut pending: List<ContentHash> = []
-    for root in kept_roots(questions) { queue(queued, pending, root) }
+    mut pending = kept_roots(candidates)
+    for root in pending { questions.put(root, true) }
     // LICENSED loops.index_walk: a queue read by position while it grows
     mut next = 0
     while next < pending.length {
-        let entry? = by_question.get(pending[next]) else {
-            next = next + 1
-            continue
-        }
+        let records = newest_records(records_of(pending[next]))
         next = next + 1
-        let records = newest_records(entry.records)
-        kept.push(entry with { records: records })
         for record in records {
             answers.put(record.answer, true)
-            for read in record.kept().read_questions() { queue(queued, pending, read) }
+            for read in record.read_questions() {
+                if questions.get(read) != null { continue }
+                questions.put(read, true)
+                pending.push(read)
+            }
         }
     }
-    Live { questions: kept, answers: answers }
-}
-
-/// `question` onto the end of `pending`, unless it was ever queued.
-fn queue(queued: HashKeyedTable<bool>, mut pending: List<ContentHash>, question: ContentHash) {
-    if queued.get(question) != null { return }
-    queued.put(question, true)
-    pending.push(question)
+    Live { questions: questions, answers: answers }
 }
 
 /// A question's newest records, oldest first, and always its newest shallow one: a root reused
 /// through a shallow record writes only deep ones after it, and a deep record reads inputs alone,
 /// so without it nothing below the root would be reached.
-fn newest_records(records: List<AnswerRecord>) -> List<AnswerRecord> {
+export fn newest_records(records: List<KeptRecord>) -> List<KeptRecord> {
     if records.length <= KEPT_RECORDS { return records }
     let newest = records.drop(records.length - KEPT_RECORDS)
     if newest.any(!it.deep) { return newest }
@@ -69,18 +82,21 @@ fn newest_records(records: List<AnswerRecord>) -> List<AnswerRecord> {
     [shallow].concat(newest)
 }
 
-/// The roots kept: each query asked of the same arguments keeps its newest code versions.
-fn kept_roots(questions: List<QuestionRecords>) -> List<ContentHash> {
-    let by_slot: HashKeyedTable<List<QuestionRecords>> = hash_keyed_table()
-    for entry in questions.filter((entry) -> entry.records.any(it.deep)) {
-        let slot = slot_of(entry.asked)
-        by_slot.put(slot, (by_slot.get(slot) ?? []).concat([entry]))
+/// The roots kept: each query asked of the same arguments keeps its newest code versions, a
+/// question met more than once counted at its newest.
+fn kept_roots(candidates: List<RootCandidate>) -> List<ContentHash> {
+    let newest_of: HashKeyedTable<RootCandidate> = hash_keyed_table()
+    for c in candidates {
+        let met = newest_of.get(c.question)
+        if met == null || met!.written_in < c.written_in { newest_of.put(c.question, c) }
     }
-    [entry.question for versions in by_slot.values() for entry in newest(versions)]
+    let by_slot: HashKeyedTable<List<RootCandidate>> = hash_keyed_table()
+    for c in newest_of.values() { by_slot.put(c.slot, (by_slot.get(c.slot) ?? []).concat([c])) }
+    [c.question for versions in by_slot.values() for c in newest(versions)]
 }
 
 /// The newest versions of one root, by the generation they were last written in.
-fn newest(versions: List<QuestionRecords>) -> List<QuestionRecords> {
+fn newest(versions: List<RootCandidate>) -> List<RootCandidate> {
     sorted_by(versions, (a, b) -> a.written_in > b.written_in).take(KEPT_VERSIONS)
 }
 

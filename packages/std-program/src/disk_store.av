@@ -1,6 +1,8 @@
-//! ANSWERS ON DISK: a directory of packs, each immutable. A process streams every answer it keeps
-//! into a draft as it's made and holds only where each lies, so what it holds follows what it's
-//! working on, never the size of the program. Publishing appends the draft's index and its seal,
+//! ANSWERS ON DISK: a directory of packs, each immutable. A process streams every answer and every
+//! question's records it keeps into a draft as they're made and holds only where each lies, so what
+//! it holds follows what it's working on, never the size of the program. A pack absorbed or
+//! compacted is carried over as its octets lie, and only a question whose records merge or shrink
+//! is saved again. Publishing appends the draft's index and its seal,
 //! and one atomic rename makes it a pack: there is no log to tear and no lock to hold, any number
 //! of processes write at once, and one that dies leaves everything it published. A pack is read
 //! where it lies, so opening a store costs a map per pack and checking a record pages in no answer.
@@ -10,9 +12,9 @@
 use @std.hash.{Hasher, hasher}
 use @std.io.{Draft, IoError, abandoned_drafts, drafted, list_dir, make_dirs, remove}
 use @std.meta.{derive}
-use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, entry_keyed, kept_in_place}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, entry_keyed}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
-use pack_collection.{Live, QuestionRecords, live_in}
+use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in, root_candidate}
 use query_engine.{AnswerStore}
 use saved_derive.{Saved}
 use saved_layout.{
@@ -33,7 +35,7 @@ extern fn avra_mmap_len(mapping: ptr) -> int
 extern fn avra_mmap_close(mapping: ptr)
 
 /// A pack's last octets. It names the format, and a pack that lost its tail doesn't have it.
-export const PACK_SEAL: string = "avrapak4"
+export const PACK_SEAL: string = "avrapak5"
 
 const PACK_SUFFIX: string = ".pack"
 
@@ -41,22 +43,24 @@ const PACK_SUFFIX: string = ".pack"
 const COMPACTION_SLACK: int = 67108864
 
 /// The most octets of answers a draft holds in memory past its mapping before it maps itself again.
-const UNMAPPED_OCTETS: int = 16777216
+const UNMAPPED_OCTETS: int = 2097152
 
-/// Where an answer's bytes lie in a pack, by their hash.
+/// Where a kept thing's octets lie in a pack: the hash it's kept under, where they start, and how
+/// many there are. An answer is kept under the hash of its octets, a question's records under the
+/// question's hash; each is a saved answer of its own, read where it lies.
 @derive(Saved)
-type AnswerSpan = { answer: ContentHash, at: int, length: int }
+type KeptSpan = { key: ContentHash, at: int, length: int }
 
-/// A pack's index, written after its answers' octets: each table sorted by hash, beside a list of
-/// its keys' high words, so a search touches numbers and opens only the entries it might have found.
-/// Its generation is one past the newest pack it saw; its kept octets are what the store's last
-/// compaction kept, the measure the next compaction waits on.
+/// A pack's index, written after what it keeps: a table of answers and one of questions, each
+/// sorted by hash beside a list of its keys' high words, so a search touches numbers and opens only
+/// the entries it might have found. Its generation is one past the newest pack it saw; its kept
+/// octets are what the store's last compaction kept, the measure the next compaction waits on.
 @derive(Saved)
 type PackIndex = {
     answer_high_words: List<int>,
-    answers: List<AnswerSpan>,
+    answers: List<KeptSpan>,
     question_high_words: List<int>,
-    questions: List<QuestionRecords>,
+    questions: List<KeptSpan>,
     generation: int,
     kept_octets: int,
 }
@@ -67,7 +71,6 @@ type MappedPack = {
     path: string,
     length: int,
     source: SavedSource,
-    index: SavedRecord,
     answer_high_words: SavedList,
     answers: SavedList,
     question_high_words: SavedList,
@@ -92,7 +95,6 @@ fn mapped_pack(path: string) -> MappedPack? {
         path: path,
         length: length,
         source: source,
-        index: index,
         answer_high_words: PackIndex.answer_high_words_in_place(index),
         answers: PackIndex.answers_in_place(index),
         question_high_words: PackIndex.question_high_words_in_place(index),
@@ -103,12 +105,15 @@ fn mapped_pack(path: string) -> MappedPack? {
 }
 
 impl MappedPack {
-    fn question_entry(question: ContentHash) -> SavedRecord? { entry_keyed(self.question_high_words, self.questions, question) }
+    /// The records `question` has here, where they lie.
+    fn question_entry(question: ContentHash) -> SavedRecord? {
+        let span? = entry_keyed(self.question_high_words, self.questions, question) else { return null }
+        self.saved_at(KeptSpan.read_from(span)).root()
+    }
 
     fn records_of(question: ContentHash) -> List<KeptRecord> {
         let entry? = self.question_entry(question) else { return [] }
-        let records = QuestionRecords.records_in_place(entry)
-        [kept_in_place(records.record_at(i)!) for i in 0..records.length]
+        records_in(entry)
     }
 
     fn question_known_as(question: ContentHash) -> Question? {
@@ -117,56 +122,70 @@ impl MappedPack {
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
-        let entry? = entry_keyed(self.answer_high_words, self.answers, answer) else { return null }
-        let at = AnswerSpan.at_in(entry)
-        SavedBytes { source: self.source, from: at, to: at + AnswerSpan.length_in(entry) }
+        let span? = entry_keyed(self.answer_high_words, self.answers, answer) else { return null }
+        self.saved_at(KeptSpan.read_from(span))
     }
+
+    /// The octets a span names, where they lie.
+    fn saved_at(span: KeptSpan) -> SavedBytes { SavedBytes { source: self.source, from: span.at, to: span.at + span.length } }
 
     /// How many answers and questions the pack holds.
     fn entries() -> int { self.answers.length + self.questions.length }
 
-    /// Every answer the pack holds: its hash, and its bytes where they lie.
-    fn kept_answers() -> List<AnswerSpan> { PackIndex.answers_in(self.index) }
+    /// Every answer the pack keeps, in its order.
+    fn answer_spans() -> List<KeptSpan> { [KeptSpan.read_from(self.answers.record_at(i)!) for i in 0..self.answers.length] }
 
-    /// Every question the pack holds, with its records.
-    fn kept_questions() -> List<QuestionRecords> { PackIndex.questions_in(self.index) }
+    /// Every question the pack keeps, in its order.
+    fn question_spans() -> List<KeptSpan> { [KeptSpan.read_from(self.questions.record_at(i)!) for i in 0..self.questions.length] }
 }
 
-/// What this process is writing: the draft each answer it keeps is appended to, where each lies in
-/// it, what's appended but not yet written, and what's written past the draft's last mapping, held
-/// until it's mapped again. A draft a write failed on is spoiled: its index would point at octets
-/// that never reached it, so it's never published.
+/// What a draft keeps of one kind: where each lies in it, and the octets not yet mapped, held.
+type DraftTable = { spans: HashKeyedTable<KeptSpan>, unviewed: HashKeyedTable<Bytes> }
+
+fn draft_table() -> DraftTable {
+    let spans: HashKeyedTable<KeptSpan> = hash_keyed_table()
+    let unviewed: HashKeyedTable<Bytes> = hash_keyed_table()
+    DraftTable { spans: spans, unviewed: unviewed }
+}
+
+/// What this process is writing: the draft each answer and each question's records it keeps are
+/// appended to, where each lies in it, what's appended but not yet written, and what's written past
+/// the draft's last mapping, held until it's mapped again. A question kept again is appended again,
+/// and its newest octets are the ones it has. A draft a write failed on is spoiled: its index would
+/// point at octets that never reached it, so it's never published.
 type Segment = {
     draft: Draft,
     appended_octets: Cell<int>,
-    spans: HashKeyedTable<AnswerSpan>,
+    answers: DraftTable,
+    questions: DraftTable,
     unwritten: Cell<List<Bytes>>,
     unwritten_octets: Cell<int>,
-    view: Cell<SavedSource>,
-    viewed: Cell<int>,
-    unviewed: HashKeyedTable<Bytes>,
+    /// Each mapping of the draft, oldest first: a span is read through the oldest that reaches it,
+    /// so a page is resident in one mapping, never in each.
+    views: Cell<List<DraftView>>,
     unviewed_octets: Cell<int>,
     /// The write that spoiled the draft, if one did.
     spoiled_by: Cell<List<IoError>>,
 }
 
+/// A mapping of the draft, as far as it reached when it was made.
+type DraftView = { source: SavedSource, length: int }
+
 /// The most octets a draft gathers before writing them, so a write is never one small answer.
 const UNWRITTEN_OCTETS: int = 1048576
 
 fn segment_of(draft: Draft) -> Segment {
-    let spans: HashKeyedTable<AnswerSpan> = hash_keyed_table()
     let unwritten: Cell<List<Bytes>> = Cell.new([])
-    let unviewed: HashKeyedTable<Bytes> = hash_keyed_table()
     let spoiled_by: Cell<List<IoError>> = Cell.new([])
+    let views: Cell<List<DraftView>> = Cell.new([])
     Segment {
         draft: draft,
         appended_octets: Cell.new(0),
-        spans: spans,
+        answers: draft_table(),
+        questions: draft_table(),
         unwritten: unwritten,
         unwritten_octets: Cell.new(0),
-        view: Cell.new(SavedSource.InMemory("".bytes())),
-        viewed: Cell.new(0),
-        unviewed: unviewed,
+        views: views,
         unviewed_octets: Cell.new(0),
         spoiled_by: spoiled_by,
     }
@@ -195,35 +214,37 @@ impl Segment {
         self.unwritten_octets.set(0)
     }
 
-    /// An answer's bytes kept: appended, and held until the draft is mapped past them.
-    fn keep(answer: ContentHash, bytes: Bytes) {
-        let at = self.appended(bytes)
-        self.spans.put(answer, AnswerSpan { answer: answer, at: at, length: bytes.length })
-        self.unviewed.put(answer, bytes)
+    /// `bytes` kept in `kind` under `key`: appended, and held until the draft is mapped past them.
+    fn keep(kind: DraftTable, key: ContentHash, bytes: Bytes) {
+        kind.spans.put(key, KeptSpan { key: key, at: self.appended(bytes), length: bytes.length })
+        kind.unviewed.put(key, bytes)
         self.unviewed_octets.set(self.unviewed_octets.get() + bytes.length)
         if self.unviewed_octets.get() >= UNMAPPED_OCTETS { self.mapped_again() }
     }
 
     /// The draft written and mapped as far as it goes, so nothing in it need be held. A draft that
-    /// can't be written or mapped keeps its answers held.
+    /// can't be written or mapped keeps what it holds.
     fn mapped_again() {
         self.written()
         if self.is_spoiled() { return }
         let mapping? = avra_mmap_open(self.draft.path) else { return }
         if avra_mmap_len(mapping) != self.appended_octets.get() { return avra_mmap_close(mapping) }
-        self.view.set(SavedSource.Mapped(mapping))
-        self.viewed.set(avra_mmap_len(mapping))
-        self.unviewed.clear()
+        self
+            .views
+            .push(DraftView { source: SavedSource.Mapped(mapping), length: avra_mmap_len(mapping) })
+        self.answers.unviewed.clear()
+        self.questions.unviewed.clear()
         self.unviewed_octets.set(0)
     }
 
     fn is_spoiled() -> bool { !self.spoiled_by.get().is_empty() }
 
-    fn answer_bytes(answer: ContentHash) -> SavedBytes? {
-        let span? = self.spans.get(answer) else { return null }
+    /// What `kind` keeps under `key`, where it lies, absent when it keeps nothing there.
+    fn saved_in(kind: DraftTable, key: ContentHash) -> SavedBytes? {
+        let span? = kind.spans.get(key) else { return null }
         let end = span.at + span.length
-        if end <= self.viewed.get() { return SavedBytes { source: self.view.get(), from: span.at, to: end } }
-        saved_bytes_in_memory(self.unviewed.get(answer)!)
+        let view? = self.views.get().find(it.length >= end) else { return saved_bytes_in_memory(kind.unviewed.get(key)!) }
+        SavedBytes { source: view.source, from: span.at, to: end }
     }
 }
 
@@ -232,11 +253,12 @@ impl Segment {
 export type DiskStore = {
     directory: string,
     packs: Cell<List<MappedPack>>,
-    new_questions: HashKeyedTable<QuestionRecords>,
-    /// The draft this process is writing, once it keeps an answer.
+    /// The draft this process is writing, once it keeps anything.
     segment: Cell<List<Segment>>,
-    /// Bytes for this process alone, never published.
+    /// Answers' bytes for this process alone, never published.
     held_answers: HashKeyedTable<Bytes>,
+    /// Questions' records this process keeps without a draft, never published.
+    held_questions: HashKeyedTable<Bytes>,
     /// One past the newest pack's generation: what this process writes as.
     generation: int,
     /// Packs this store can't read: torn, or in another format.
@@ -262,15 +284,15 @@ export fn disk_store_at(directory: string) -> DiskStore {
     let paths = ["${directory}/${name}" for name in pack_names_in(directory)]
     let packs = [pack! for path in paths for pack in [mapped_pack(path)] if pack != null]
     let foreign = [ForeignPack { path: path, length: octets_in(path) } for path in paths if !packs.any(it.path == path)]
-    let new_questions: HashKeyedTable<QuestionRecords> = hash_keyed_table()
     let held_answers: HashKeyedTable<Bytes> = hash_keyed_table()
+    let held_questions: HashKeyedTable<Bytes> = hash_keyed_table()
     let segment: Cell<List<Segment>> = Cell.new([])
     DiskStore {
         directory: directory,
         packs: Cell.new(packs),
-        new_questions: new_questions,
         segment: segment,
         held_answers: held_answers,
+        held_questions: held_questions,
         foreign: foreign,
         generation: 1 +
             packs
@@ -286,20 +308,31 @@ fn pack_names_in(directory: string) -> List<string> { (list_dir(directory) catch
 impl AnswerStore for DiskStore {
     fn records_of(question: ContentHash) -> List<KeptRecord> {
         let published = [record for pack in self.packs.get() for record in pack.records_of(question)]
-        published
-            .concat([record.kept() for record in self.new_questions.get(question)?.records ?? []])
+        let learned? = self.learned_entry(question) else { return published }
+        published.concat(records_in(learned))
     }
 
+    /// The record kept beside what this process learned of the question before: its records saved
+    /// again, whole, in the draft. A store that can't write keeps them for this process alone.
     fn keep_record(asked: Question, record: AnswerRecord) {
-        let earlier = self.new_questions.get(asked.known_as)?.records ?? []
-        self.take_records(asked, earlier.concat([record]), self.generation)
+        let earlier = [r.held() for r in self.learned_records(asked.known_as)]
+        let bytes = QuestionRecords {
+            question: asked.known_as,
+            asked: asked,
+            records: earlier.concat([record]),
+            written_in: self.generation,
+        }
+            .saved_bytes()
+        if self.held_questions.get(asked.known_as) != null { return self.held_questions.put(asked.known_as, bytes) }
+        let segment? = self.writing() else { return self.held_questions.put(asked.known_as, bytes) }
+        segment.keep(segment.questions, asked.known_as, bytes)
     }
 
     fn question_known_as(question: ContentHash) -> Question? {
-        self.new_questions.get(question)?.asked ?? first_answering(
-            self.packs.get(),
-            (pack) -> pack.question_known_as(question),
-        )
+        let learned? = self.learned_entry(question) else {
+            return first_answering(self.packs.get(), (pack) -> pack.question_known_as(question))
+        }
+        QuestionRecords.asked_in(learned)
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
@@ -314,7 +347,7 @@ impl AnswerStore for DiskStore {
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) {
         if self.unpublished_answer(answer) != null { return }
         let segment? = self.writing() else { return self.held_answers.put(answer, bytes) }
-        segment.keep(answer, bytes)
+        segment.keep(segment.answers, answer, bytes)
     }
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.held_answers.put(answer, bytes) }
@@ -322,8 +355,25 @@ impl AnswerStore for DiskStore {
 
 impl DiskStore {
     fn unpublished_answer(answer: ContentHash) -> SavedBytes? {
-        let held? = self.held_answers.get(answer) else { return self.segment.get().first()?.answer_bytes(answer) }
+        let held? = self.held_answers.get(answer) else {
+            let segment? = self.segment.get().first() else { return null }
+            return segment.saved_in(segment.answers, answer)
+        }
         saved_bytes_in_memory(held)
+    }
+
+    /// The records this process learned of `question`, where they lie, absent when it learned none.
+    fn learned_entry(question: ContentHash) -> SavedRecord? {
+        let held? = self.held_questions.get(question) else {
+            let segment? = self.segment.get().first() else { return null }
+            return segment.saved_in(segment.questions, question)?.root()
+        }
+        saved_bytes_in_memory(held).root()
+    }
+
+    fn learned_records(question: ContentHash) -> List<KeptRecord> {
+        let entry? = self.learned_entry(question) else { return [] }
+        records_in(entry)
     }
 
     /// The draft this process writes, opened on first use; absent when none can be. A draft a
@@ -337,27 +387,13 @@ impl DiskStore {
         segment
     }
 
-    fn take_records(asked: Question, records: List<AnswerRecord>, written_in: int) {
-        self
-            .new_questions
-            .put(
-                asked.known_as,
-                QuestionRecords {
-                    question: asked.known_as,
-                    asked: asked,
-                    records: records,
-                    written_in: written_in,
-                },
-            )
-    }
-
     /// Whether this process has learned anything it hasn't published.
-    fn has_news() -> bool { !self.new_questions.is_empty() || self.learned() > 0 }
+    fn has_news() -> bool { self.learned() > 0 }
 
     /// How many answers and questions this process learned, to weigh against a pack's.
     fn entries_learned() -> int {
-        let segment? = self.segment.get().first() else { return self.new_questions.values().length }
-        self.new_questions.values().length + segment.spans.values().length
+        let segment? = self.segment.get().first() else { return 0 }
+        segment.answers.spans.values().length + segment.questions.spans.values().length
     }
 
     /// How many octets this process has written to its draft.
@@ -413,23 +449,17 @@ impl DiskStore {
     }
 
     /// What this process learned and what `absorbed` holds, sealed as one pack, which the store
-    /// then reads in place of `absorbed`, and has nothing new. Answers how many octets it wrote.
+    /// then reads in place of `absorbed`, and has nothing new. Collecting, it keeps only what a
+    /// recent root reaches. Answers how many octets it wrote.
     fn published(absorbed: List<MappedPack>, collecting: bool) -> Result<int, IoError> {
         let segment? = self.writing() else { return 0 }
-        for pack in sorted_by(absorbed, (a, b) -> a.generation > b.generation) { self.take_in_questions(pack) }
-        let live: Live? = if collecting { live_in(self.new_questions.values()) } else { null }
-        if live != null {
-            self.new_questions.clear()
-            for entry in live!.questions { self.new_questions.put(entry.question, entry) }
-        }
-        for pack in absorbed { take_in_answers(segment, pack, live) }
-        let spans = segment
-            .spans
-            .values()
-            .filter((span) -> live == null || live!.answers.get(span.answer) != null)
+        let packs = sorted_by(absorbed, (a, b) -> a.generation < b.generation)
+        let live: Live? = if collecting { live_over(packs, segment) } else { null }
+        let questions = questions_merged(segment, packs, live)
+        let answers = answers_merged(segment, packs, live)
         let runs = index_runs(
-            self.new_questions.values(),
-            spans,
+            questions,
+            answers,
             self.generation,
             if collecting { segment.appended_octets.get() } else { absorbed.fold(0, (most, pack) -> max_of(most, pack.kept_octets)) },
         )
@@ -458,35 +488,109 @@ impl DiskStore {
         let kept = self.packs.get().filter((pack) -> !absorbed.any(it.path == pack.path))
         let opened = mapped_pack(path)
         self.packs.set(if opened == null { kept } else { kept.concat([opened!]) })
-        self.new_questions.clear()
         self.segment.set([])
         segment.appended_octets.get()
     }
-
-    /// The questions `pack` holds, taken in as if learned here. Packs are taken newest first, so its
-    /// records go before those already gathered, and every question's records stay oldest first.
-    fn take_in_questions(pack: MappedPack) {
-        for entry in pack.kept_questions() {
-            let earlier = self.new_questions.get(entry.question)
-            self
-                .take_records(
-                    entry.asked,
-                    merged_records(entry.records, earlier?.records ?? []),
-                    max_of(earlier?.written_in ?? 0, entry.written_in),
-                )
-        }
-    }
 }
 
-/// The answers `pack` holds that `live` keeps, or all of them with no `live`, their octets copied
-/// into the draft one at a time.
-fn take_in_answers(segment: Segment, pack: MappedPack, live: Live?) {
-    for span in pack.kept_answers() {
-        if segment.spans.get(span.answer) != null { continue }
-        if live != null && live!.answers.get(span.answer) == null { continue }
-        let at = segment.appended(pack.source.octets_at(span.at, span.at + span.length))
-        segment.spans.put(span.answer, span with { at: at })
+/// A span among those a pack is written from, and where it lies: in the absorbed pack at `rank`,
+/// oldest first, or in the draft, ranked after every pack.
+type Placed = { span: KeptSpan, rank: int }
+
+/// Every span of `packs`, oldest first, then the draft's, ordered by key and, within a key, by
+/// rank: what a new pack is written from, one run of spans per key.
+fn placed_runs(
+    packs: List<MappedPack>,
+    draft: List<KeptSpan>,
+    of_pack: fn(MappedPack) -> List<KeptSpan>,
+) -> List<List<Placed>> {
+    let all = [Placed { span: span, rank: rank } for rank, pack in packs for span in of_pack(pack)]
+        .concat([Placed { span: span, rank: packs.length } for span in draft])
+    let sorted = sorted_by(all, (a, b) -> a.span.key.comes_before(b.span.key))
+    mut runs: List<List<Placed>> = []
+    mut run: List<Placed> = []
+    for placed in sorted {
+        if !run.is_empty() && !run[0].span.key.same_as(placed.span.key) {
+            runs.push(run)
+            run = []
+        }
+        run.push(placed)
     }
+    if !run.is_empty() { runs.push(run) }
+    runs
+}
+
+/// What `live` keeps of every pack's questions and the draft's, each question once: one source's
+/// records are carried as they lie, and several sources' merged, oldest first, each record once.
+fn questions_merged(segment: Segment, packs: List<MappedPack>, live: Live?) -> List<KeptSpan> {
+    let runs = placed_runs(packs, segment.questions.spans.values(), (pack) -> pack.question_spans())
+    [span! for run in runs if live == null || live!.questions.get(run[0].span.key) != null for span in [question_written(segment, packs, run, live != null)] if span != null]
+}
+
+/// One question's run written into the draft: carried as it lies when one source holds it and
+/// nothing is dropped from it, saved again otherwise. Absent when it keeps no record.
+fn question_written(segment: Segment, packs: List<MappedPack>, run: List<Placed>, collecting: bool) -> KeptSpan? {
+    let entries = [entry_placed(segment, packs, p) for p in run]
+    let records = merged_records(entries)
+    let kept = if collecting { newest_records(records) } else { records }
+    if kept.is_empty() { return null }
+    if run.length == 1 && kept.length == records.length { return carried(segment, packs, run[0]) }
+    let newest = entries.last()!
+    let bytes = QuestionRecords {
+        question: run[0].span.key,
+        asked: QuestionRecords.asked_in(newest),
+        records: [r.held() for r in kept],
+        written_in: entries.fold(0, (most, entry) -> max_of(most, QuestionRecords.written_in_in(entry))),
+    }
+        .saved_bytes()
+    KeptSpan { key: run[0].span.key, at: segment.appended(bytes), length: bytes.length }
+}
+
+/// A question's records as one placed span holds them, where they lie.
+fn entry_placed(segment: Segment, packs: List<MappedPack>, p: Placed) -> SavedRecord {
+    if p.rank < packs.length { return packs[p.rank].saved_at(p.span).root() }
+    segment.saved_in(segment.questions, p.span.key)!.root()
+}
+
+/// Several sources' records of one question, oldest first, each record once.
+fn merged_records(entries: List<SavedRecord>) -> List<KeptRecord> {
+    mut merged: List<KeptRecord> = []
+    for entry in entries {
+        let earlier = merged
+        merged = earlier
+            .concat(records_in(entry).filter((record) -> !earlier.any(it.same_as(record.held()))))
+    }
+    merged
+}
+
+/// What `live` keeps of every pack's answers and the draft's, each answer once, from its newest
+/// source: the draft's stand where they are, a pack's are copied in.
+fn answers_merged(segment: Segment, packs: List<MappedPack>, live: Live?) -> List<KeptSpan> {
+    let runs = placed_runs(packs, segment.answers.spans.values(), (pack) -> pack.answer_spans())
+    [carried(segment, packs, run.last()!) for run in runs if live == null || live!.answers.get(run[0].span.key) != null]
+}
+
+/// A placed span as the new pack holds it: the draft's where it stands, a pack's octets copied in.
+fn carried(segment: Segment, packs: List<MappedPack>, p: Placed) -> KeptSpan {
+    if p.rank == packs.length { return p.span }
+    let pack = packs[p.rank]
+    p.span with { at: segment.appended(pack.source.octets_at(p.span.at, p.span.at + p.span.length)) }
+}
+
+/// What a recent root among `packs` and the draft reaches, every record read where it lies.
+fn live_over(packs: List<MappedPack>, segment: Segment) -> Live {
+    let draft_entries = [segment.saved_in(segment.questions, span.key)!.root() for span in segment.questions.spans.values()]
+    let candidates = [c! for pack in packs for span in pack.question_spans() for c in [root_candidate(pack.saved_at(span).root())] if c != null]
+        .concat([c! for entry in draft_entries for c in [root_candidate(entry)] if c != null])
+    live_in(
+        candidates,
+        (question) -> merged_records(
+            [entry! for pack in packs for entry in [pack.question_entry(question)] if entry != null]
+                .concat(
+                    [entry! for entry in [segment.saved_in(segment.questions, question)?.root()] if entry != null],
+                ),
+        ),
+    )
 }
 
 fn max_of(a: int, b: int) -> int { if a > b { a } else { b } }
@@ -510,25 +614,16 @@ fn absorbed_by(entries: int, packs: List<MappedPack>) -> List<MappedPack> {
     absorbed
 }
 
-/// One question's records from two packs, each set of reads once.
-fn merged_records(earlier: List<AnswerRecord>, later: List<AnswerRecord>) -> List<AnswerRecord> {
-    earlier.concat(later.filter((record) -> !earlier.any(it.same_as(record))))
-}
-
 /// A pack's index, as the runs of octets it's written in.
-fn index_runs(
-    questions: List<QuestionRecords>,
-    answers: List<AnswerSpan>,
-    generation: int,
-    kept_octets: int,
-) -> List<Bytes> {
-    let sorted_answers = sorted_by(answers, (a, b) -> a.answer.comes_before(b.answer))
-    let sorted_questions = sorted_by(questions, (a, b) -> a.question.comes_before(b.question))
+/// Both tables come sorted by hash.
+fn index_runs(questions: List<KeptSpan>, answers: List<KeptSpan>, generation: int, kept_octets: int) -> List<
+    Bytes,
+> {
     let index = PackIndex {
-        answer_high_words: [span.answer.high_word for span in sorted_answers],
-        answers: sorted_answers,
-        question_high_words: [entry.question.high_word for entry in sorted_questions],
-        questions: sorted_questions,
+        answer_high_words: [span.key.high_word for span in answers],
+        answers: answers,
+        question_high_words: [span.key.high_word for span in questions],
+        questions: questions,
         generation: generation,
         kept_octets: kept_octets,
     }

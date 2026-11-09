@@ -1,0 +1,172 @@
+// Attacks on a store that streams every question's records to its draft and compacts in place: a
+// question kept twice in one process, its records spread over packs and the draft, two processes
+// keeping the same records, a question answered many ways, a draft read before and after it's
+// mapped, a store that can't write, a pack of the format before, and a compaction of a store that
+// has only a draft.
+use @std.io.{exists, list_dir, write_bytes}
+use @std.time.{stamp}
+use answer_record.{ContentHash}
+use disk_store.{DiskStore, disk_store_at}
+use query_engine.{QueryEngine, query_engine}
+use saved_query.{ListedQuery, definitions_of, input, query, query_definition}
+
+once fn kept_world() -> Cell<Map<string, string>> {
+    let world: Map<string, string> = {}
+    Cell.new(world)
+}
+
+@input
+fn kept_text(_engine: QueryEngine, path: string) -> string { kept_world().get().get(path) ?? "" }
+
+@query
+fn kept_length(engine: QueryEngine, path: string) -> int { kept_text(engine, path).length }
+
+@query
+fn kept_echo(_engine: QueryEngine, text: string) -> string { text }
+
+collect kept_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn engine_on(store: DiskStore) -> QueryEngine { query_engine(store, definitions_of(kept_queries)) }
+
+fn directory_named(label: string) -> string { "/tmp/avra-disk-store-attack/${stamp()}-${label}" }
+
+/// What `kept_length` of `path` is known by.
+fn length_question(path: string) -> ContentHash {
+    kept_length_definition()
+        .question_about(kept_length_arguments(engine_on(disk_store_at("/dev/null/none")), path))
+        .known_as
+}
+
+/// A whole process asking the length of `path` with nobody asking: its query, and a deep record.
+/// Answers how many queries ran.
+fn length_asked(directory: string, path: string) -> int {
+    let store = disk_store_at(directory)
+    let engine = engine_on(store)
+    let _ = kept_length(engine, path)
+    let _ = store.saved()
+    engine.computed_count()
+}
+
+fn packs_in(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
+
+/// Each record a later process finds for `path`'s length: how many, and how many are deep.
+type Found = { records: int, deep: int }
+
+fn found(directory: string, path: string) -> Found {
+    let records = disk_store_at(directory).records_of(length_question(path))
+    Found { records: records.length, deep: records.filter(it.deep).length }
+}
+
+/// A text of `n` octets.
+fn octets(n: int, mark: string) -> string { [mark for _i in 0..n].join("") }
+
+spec "a store's records, streamed and compacted" {
+    given "a question kept twice in one process" {
+        then "the pack holds its shallow record and its deep one, each once" {
+            let directory = directory_named("twice")
+            kept_world().put("a.av", "alpha")
+            let _ = length_asked(directory, "a.av")
+            let f = found(directory, "a.av")
+            f.records == 2 && f.deep == 1
+        }
+    }
+    given "a question's records in a pack and in the draft that absorbs it" {
+        then "the new pack holds every record once, oldest first" {
+            let directory = directory_named("spread")
+            kept_world().put("b.av", "alpha")
+            let _ = length_asked(directory, "b.av")
+            kept_world().put("b.av", "alpha beta")
+            let _ = length_asked(directory, "b.av")
+            let f = found(directory, "b.av")
+            packs_in(directory).length == 1 && f.records == 4 && f.deep == 2
+        }
+    }
+    given "two processes keeping the same records beside each other, one with more, then merged" {
+        then "each record stands once" {
+            let directory = directory_named("same")
+            kept_world().put("c.av", "alpha")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let _ = kept_length(engine_on(one), "c.av")
+            let other_engine = engine_on(other)
+            let _ = kept_length(other_engine, "c.av")
+            let _ = kept_echo(other_engine, "and something of its own")
+            let _ = one.saved_alone()
+            let _ = other.saved_alone()
+            let two = packs_in(directory).length
+            let _ = disk_store_at(directory).merged()
+            let f = found(directory, "c.av")
+            two == 2 && packs_in(directory).length == 1 && f.records == 2 && f.deep == 1
+        }
+    }
+    given "a root answered more ways than a question keeps, then compacted" {
+        then "its newest records stay, and the one it reruns from runs only its input" {
+            let directory = directory_named("many_ways")
+            for text in ["a", "bb", "ccc", "dddd", "eeeee"] {
+                kept_world().put("d.av", text)
+                let _ = length_asked(directory, "d.av")
+            }
+            let before = found(directory, "d.av")
+            let _ = disk_store_at(directory).compacted()
+            let after = found(directory, "d.av")
+            before.records == 10 && after.records == 3 && length_asked(directory, "d.av") == 1
+        }
+    }
+    given "answers enough to map the draft again while a process runs" {
+        then "everything it kept reads the same before and after, and a later process runs nothing" {
+            let directory = directory_named("mapped")
+            let texts = [octets(1048576, "${i}") for i in 0..5]
+            let store = disk_store_at(directory)
+            let engine = engine_on(store)
+            let first = [kept_echo(engine, text).length for text in texts]
+            let again = [kept_echo(engine, text).length for text in texts]
+            let ran = engine.computed_count()
+            let _ = store.saved()
+            let later = engine_on(disk_store_at(directory))
+            let read_later = [kept_echo(later, text).length for text in texts]
+            first.all(it == 1048576) &&
+                again.all(it == 1048576) &&
+                ran == 5 &&
+                read_later.all(it == 1048576) &&
+                later.computed_count() == 0
+        }
+    }
+    given "a store that can't write" {
+        then "its process reuses what it learned, and publishing writes nothing" {
+            let store = disk_store_at("/dev/null/store")
+            let engine = engine_on(store)
+            kept_world().put("e.av", "alpha")
+            let first = kept_length(engine, "e.av")
+            let again = kept_length(engine, "e.av")
+            first == 5 &&
+                again == 5 &&
+                engine.computed_count() == 2 &&
+                store.records_of(length_question("e.av")).length == 2 &&
+                (store.saved() catch -1) == 0
+        }
+    }
+    given "a pack of the format before beside one of today's" {
+        then "it's read as nothing, and a compaction removes it" {
+            let directory = directory_named("before")
+            kept_world().put("f.av", "alpha")
+            let _ = length_asked(directory, "f.av")
+            let _ = write_bytes(
+                "${directory}/old.pack",
+                "an old pack's octets, then its seal: avrapak4".bytes(),
+            )
+            let reused = length_asked(directory, "f.av")
+            let _ = disk_store_at(directory).compacted()
+            reused == 1 && !exists("${directory}/old.pack") && length_asked(directory, "f.av") == 1
+        }
+    }
+    given "a compaction by a process that has only a draft" {
+        then "what it learned is published, and a later process runs only its input" {
+            let directory = directory_named("draft_only")
+            kept_world().put("g.av", "alpha")
+            let store = disk_store_at(directory)
+            let _ = kept_length(engine_on(store), "g.av")
+            let _ = store.compacted()
+            packs_in(directory).length == 1 && length_asked(directory, "g.av") == 1
+        }
+    }
+}

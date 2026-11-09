@@ -9,7 +9,8 @@ use answer_record.{
     content_hash,
     question,
 }
-use pack_collection.{QuestionRecords, live_in}
+use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in, root_candidate}
+use saved_layout.{SavedRecord, saved_bytes_in_memory}
 
 fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
 
@@ -28,11 +29,26 @@ fn entry(q: Question, records: List<AnswerRecord>, written_in: int) -> QuestionR
     QuestionRecords { question: q.known_as, asked: q, records: records, written_in: written_in }
 }
 
-fn kept(questions: List<QuestionRecords>, q: Question) -> bool { live_in(questions).questions.any(it.question.same_as(q.known_as)) }
+/// Each entry saved and read where it lies, as a store reads it.
+fn laid(questions: List<QuestionRecords>) -> List<SavedRecord> { [saved_bytes_in_memory(q.saved_bytes()).root() for q in questions] }
+
+/// What a compaction of `questions` keeps alive.
+fn live_of(questions: List<QuestionRecords>) -> Live {
+    let entries = laid(questions)
+    live_in(
+        [c! for e in entries for c in [root_candidate(e)] if c != null],
+        (question) -> [r for at, e in entries if questions[at].question.same_as(question) for r in records_in(e)],
+    )
+}
+
+fn kept(questions: List<QuestionRecords>, q: Question) -> bool { live_of(questions).questions.get(q.known_as) != null }
+
+/// How many of the records of `q`, the entry at `at`, a compaction keeps.
+fn records_kept(questions: List<QuestionRecords>, at: int) -> int { newest_records(records_in(laid(questions)[at])).length }
 
 spec "pack_collection — what a compaction keeps" {
     given "nothing" {
-        then "nothing is kept" { live_in([]).questions.is_empty() }
+        then "nothing is kept" { live_of([]).questions.is_empty() }
     }
     given "a root and what it read" {
         then "both stay, with the answers they found, and a question nobody reads goes" {
@@ -44,7 +60,7 @@ spec "pack_collection — what a compaction keeps" {
                 entry(root, [record("root answer", [leaf], true)], 1),
                 entry(stray, [record("stray answer", [], false)], 1),
             ]
-            let live = live_in(questions)
+            let live = live_of(questions)
             kept(questions, root) &&
                 kept(questions, leaf) &&
                 !kept(questions, stray) &&
@@ -69,8 +85,8 @@ spec "pack_collection — what a compaction keeps" {
                     4,
                 ),
             ]
-            let live = live_in(questions)
-            live.questions.find(it.question.same_as(root.known_as))!.records.length == 3 &&
+            let live = live_of(questions)
+            records_kept(questions, 1) == 3 &&
                 !kept(questions, old_read) &&
                 live.answers.get(hash_of("r1")) == null &&
                 live.answers.get(hash_of("r4")) != null
@@ -93,10 +109,7 @@ spec "pack_collection — what a compaction keeps" {
                     4,
                 ),
             ]
-            live_in(questions).questions.find(it.question.same_as(root.known_as))!
-                    .records
-                    .length == 4 &&
-                kept(questions, leaf)
+            records_kept(questions, 1) == 4 && kept(questions, leaf)
         }
     }
     given "one root under three versions of its code" {
