@@ -35,6 +35,8 @@ type CheckScope = { names: Map<string, Local>, opaque: bool }
 export type Checking = {
     store: SyntaxArena,
     program: CheckedProgram,
+    /// What the body's fn answers, which a `return` checks against; absent when it isn't known.
+    answer: SignedType?,
     /// Each node's type, by its index, once checked.
     types: Cell<List<SignedType?>>,
     /// The bindings in scope, innermost last.
@@ -46,8 +48,8 @@ export type Checking = {
     asks: Cell<Map<string, Ask>>,
 }
 
-/// A body of `store` to check against `program`.
-export fn checking(store: SyntaxArena, program: CheckedProgram) -> Checking {
+/// A body of `store` to check against `program`, its fn answering `answer`.
+export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedType?) -> Checking {
     let unchecked: SignedType? = null
     let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
     let scopes: Cell<List<CheckScope>> = Cell.new([open_scope()])
@@ -55,6 +57,7 @@ export fn checking(store: SyntaxArena, program: CheckedProgram) -> Checking {
     Checking {
         store: store,
         program: program,
+        answer: answer,
         types: types,
         scopes: scopes,
         unruled: Cell.new(0),
@@ -170,6 +173,9 @@ fn open_scope() -> CheckScope {
 
 /// A type the language owns, with nothing applied.
 export fn owned_type(name: string) -> SignedType { headed_type(TypeHead.Owned(name)) }
+
+/// The type of code that doesn't finish.
+export fn never_type() -> SignedType { headed_type(TypeHead.Never) }
 
 /// A type that is its head alone: nothing applied, nothing optional.
 export fn headed_type(head: TypeHead) -> SignedType {

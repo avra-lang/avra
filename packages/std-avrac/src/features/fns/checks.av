@@ -1,7 +1,8 @@
-//! The typing rule of a call: each argument checks against its seat, and the call is what the fn
+//! The typing rules of a call and `return`. A call: each argument checks against its seat, and the call is what the fn
 //! answers. A generic fn's call waits for inference, so it checks its arguments against nothing.
-use core.{Checking, Checks, ExprId, Expected, SignedType, TypeHead}
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeHead}
 use core.expr.{Call}
+use core.stmt.{Return}
 
 impl Checks for Call {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
@@ -17,4 +18,13 @@ impl Checks for Call {
 fn free_args(mut cx: Checking, args: List<ExprId>) -> SignedType? {
     for a in args { let _ = cx.check(a, Expected.Free) }
     null
+}
+
+impl StmtChecks for Return {
+    /// `return` checks its value against what the fn answers.
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        let value? = self.value else { return }
+        let _ = cx
+            .check(value, if cx.answer != null { Expected.Exactly(cx.answer!) } else { Expected.Free })
+    }
 }

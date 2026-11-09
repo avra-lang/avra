@@ -1,6 +1,6 @@
 //! The typing rule of `if`: the condition is a `bool`, both branches check against what the seat
 //! wants, a presence test narrowing its name in the branch its truth proves, and the value is their type when they agree; an `if` whose value is dropped is `void` once
-//! its branches are known.
+//! its branches are known. A branch that never finishes joins with the other.
 use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
 use core.expr.{If}
 
@@ -13,6 +13,9 @@ impl Checks for If {
         let other? = self.on_false else { return if expected is .Dropped && yes != null { owned_type("void") } else { null } }
         let no = if asked != null && !asked!.on_present { cx.check_narrowed(other, expected, asked!.name) } else { cx.check(other, expected) }
         if expected is .Dropped { return if yes != null && no != null { owned_type("void") } else { null } }
-        if yes != null && no != null && yes!.spelled() == no!.spelled() { yes } else { null }
+        if yes == null || no == null { return null }
+        if yes!.head is .Never { return no }
+        if no!.head is .Never { return yes }
+        if yes!.spelled() == no!.spelled() { yes } else { null }
     }
 }

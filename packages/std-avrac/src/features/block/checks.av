@@ -1,27 +1,34 @@
-//! The typing rule of a block: its statements checked in a scope of their own, and its value the
-//! last one's when that's an expression; a block whose value is dropped and that ends in an
-//! expression is `void`. One that ends in anything else waits for that statement's rule.
-use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
+//! The typing rule of a block: its statements checked in a scope of their own, and its value its
+//! tail's, the last statement when that's a value; a block with no tail, or whose value is dropped,
+//! is `void`, and one that leaves (its last statement a `return`, `fail` or jump) is `never`.
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtId, never_type, owned_type}
 use core.expr.{Block}
 
 impl Checks for Block {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         if expected is .Unknown { return cx.held_checked(e) }
+        if cx.store.leaves(e) { return left(cx, self.stmts) }
         cx.opened()
         let ending = self.stmts.last()
-        for s in self.stmts.take(if self.stmts.is_empty() { 0 } else { self.stmts.length - 1 }) { cx.check_stmt(s) }
-        let answered: SignedType? = if ending == null {
+        let tail = if ending == null { null } else { cx.store.answer_of(ending!) }
+        for s in if tail == null { self.stmts } else { self.stmts.take(self.stmts.length - 1) } { cx.check_stmt(s) }
+        let answered: SignedType? = if tail == null {
             owned_type("void")
-        } else if expected is .Dropped && cx.store.answer_of(ending!) != null {
-            let _ = cx.check(cx.store.answer_of(ending!)!, Expected.Dropped)
+        } else if expected is .Dropped {
+            let _ = cx.check(tail!, Expected.Dropped)
             owned_type("void")
-        } else if cx.store.answer_of(ending!) != null && !(expected is .Dropped) {
-            cx.check(cx.store.answer_of(ending!)!, expected)
         } else {
-            cx.check_stmt(ending!)
-            null
+            cx.check(tail!, expected)
         }
         cx.closed()
         answered
     }
+}
+
+/// A block that leaves: its statements checked in a scope of their own, and no value.
+fn left(mut cx: Checking, stmts: List<StmtId>) -> SignedType? {
+    cx.opened()
+    for s in stmts { cx.check_stmt(s) }
+    cx.closed()
+    never_type()
 }
