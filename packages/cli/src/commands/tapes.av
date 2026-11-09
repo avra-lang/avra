@@ -7,7 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{DeclId}
+use @std.avrac.core.{DeclId, TypeId, TypeRegistry}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -19,6 +19,9 @@ use @std.avrac.compiler.{
     spelled_file,
     read_back,
     file_scope,
+    fn_signature,
+    file_declares,
+    ItemKind,
     resolved_in,
     respelled_origins,
     refusal_difference,
@@ -31,7 +34,9 @@ use @std.time.{now_ns}
 use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.sorted.{sorted_by}
 use @std.program.source_facts.{use_source_world}
+use @std.text.{text_before}
 
 type TapesCmd = {}
 
@@ -55,7 +60,7 @@ impl Runnable for TapesCmd {
         let engine = query_engine(store, avra_fact_definitions())
         let ws = root_workspace(root)
         let files = package_sources(engine, disk.name, "src")
-        let differing = [d! for f in files for d in [difference(engine, ws, disk, f)] if d != null]
+        let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
         for d in differing { println("differs: ${d}") }
         println("tapes: ${files.length} read, ${differing.length} differing")
         if differing.is_empty() { 0 } else { 1 }
@@ -120,7 +125,7 @@ fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -
 
 /// How `path` read for what it means differs from the tree the workspace's parse makes of it,
 /// absent when it doesn't.
-fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, signed: bool) -> string? {
     let back = read_back(path, file_meant(engine, disk.file_at(path)))
     let parsed = ws.parsed(ws.file_id(joined_path(disk.root, path)))
     respelled_origins(parsed.store, (path) -> disk.spelled(path))
@@ -132,7 +137,46 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> s
         let lo = parsed.store.stmt_span(parsed.stmts[at])?.lo ?? 0
         return "${path}: statement ${at} at ${lo}, ${how}"
     }
-    scope_difference(engine, ws, disk, path)
+    let scoped = scope_difference(engine, ws, disk, path)
+    if scoped != null || !signed { return scoped }
+    signature_difference(engine, ws, disk, path)
+}
+
+/// A type as the workspace writes it, each union's members in the order the program layer writes
+/// them: a union is a set, and the workspace orders it by when its members were first made.
+fn workspace_spelled(types: TypeRegistry, id: TypeId) -> string {
+    match types.shape_of(id) {
+        .Union(members) -> sorted_by([workspace_spelled(types, m) for m in members], (a, b) -> text_before(a, b))
+            .join(" or "),
+        .Res(ok, err) -> "Result<${workspace_spelled(types, ok)}, ${workspace_spelled(types, err)}>",
+        .Opt(inner) -> "${workspace_spelled(types, inner)}?",
+        .List(elem) -> "List<${workspace_spelled(types, elem)}>",
+        .Map(k, v) -> "Map<${workspace_spelled(types, k)}, ${workspace_spelled(types, v)}>",
+        // every other shape holds no union to order: the workspace's own spelling is the answer
+        rest -> types.name_of(id),
+    }
+}
+
+/// How a fn `path` declares is signed differently from the workspace's signature of it, absent when
+/// every one is signed alike: each parameter's type and the answer, as the compiler writes them.
+fn signature_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    let file = disk.file_at(path)
+    let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
+    for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+        let d? = names.fn_decl(own.name) else { continue }
+        let x = ws.decls.decl(d)
+        if !x.maker.is_empty() ||
+            x.home == null ||
+            disk.spelled(ws.decls.file(x.file).path) != spelled_file(file) { continue }
+        let signed? = ws.decls.sig(d) else { continue }
+        let theirs? = match signed { .Fn(sig) -> sig, rest -> null } else { continue }
+        let mine? = fn_signature(engine, file, own.name) else { return "${path}: `${own.name}` is signed by the workspace and by nothing here" }
+        if mine.answer.inferred() || mine.params.any(it.ty?.inferred() ?? false) { continue }
+        let old = "(${[workspace_spelled(ws.decls.types, p) for p in theirs.params].join(", ")}) -> ${workspace_spelled(ws.decls.types, theirs.ret)}"
+        let new = "(${[p.ty?.spelled() ?? "_" for p in mine.params].join(", ")}) -> ${mine.answer.spelled()}"
+        if old != new { return "${path}: `${own.name}` is signed ${new}, the workspace's ${old}" }
+    }
+    null
 }
 
 /// How what `path`'s top level sees differs from the workspace's namespace for it, in each space,
@@ -186,9 +230,14 @@ export flag program_only {
     aliases: ["--program-only"]
 }
 
+export flag signatures {
+    description: "hold every fn's signature to the workspace's too"
+    aliases: ["--signatures"]
+}
+
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only]
+    flags: [program_only, signatures]
     args: [file]
     run: TapesCmd {}
 }

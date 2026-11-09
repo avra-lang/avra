@@ -1,0 +1,248 @@
+//! WHAT A FN'S SIGNATURE SAYS, every type it writes resolved: to one of the fn's own type parameters,
+//! to a type the language owns, or to the declaration its file's top level names. It's read off the
+//! declaring item's tape and the names layer alone, and a declared type is known by its file and
+//! name, never by where it stands, so a signature moves only when what it writes or what its names
+//! name does.
+use core.{Param, StmtId, SyntaxArena, TypeRef, new_node_store, width_named, widthless}
+use compiler.typing.{builtin_type_name}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+use @std.program.source_facts.{PlacedTape}
+use @std.program.syntax_tape.{SyntaxTape}
+
+/// What a written type's name names.
+@derive(Saved)
+export enum TypeHead {
+    /// A type the language owns: a scalar or a constructor (`int`, `List`, `Map`).
+    Owned(name: string)
+    /// One of the fn's own type parameters, by its place among them.
+    Parameter(index: int, name: string)
+    /// A type a file declares, known by its file and its name.
+    Declared(file: SourceFileAddress, name: string)
+    /// A name that names no type here.
+    Unnamed(name: string)
+    /// A type the fn's body decides (`_`), which only typing it answers.
+    Inferred
+    /// A fn type: its seats and its answer.
+    Function
+}
+
+/// A written type, resolved: what it names, its type arguments, whether it's optional or dynamic, a fn
+/// type's seats and answer, and the members of a union.
+@derive(Saved)
+export type SignedType = {
+    head: TypeHead,
+    args: List<SignedType>,
+    optional: bool,
+    dynamic: bool,
+    seats: List<SignedSeat>,
+    answer: SignedType?,
+    alternatives: List<SignedType>,
+}
+
+/// A fn type's seat: its type and the promises it makes.
+@derive(Saved)
+export type SignedSeat = { ty: SignedType, mutable: bool, settled: bool }
+
+/// A fn's parameter: its name, its type when written, the promises its seat makes, and the width it
+/// crosses to C at, if it names one. A width is the seat's, never the value's: the type is the
+/// language's one integer.
+@derive(Saved)
+export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settled: bool, width: string? }
+
+/// A fn's signature: its type parameters, its parameters, its answer and the width its answer
+/// crosses from C at, if it names one.
+@derive(Saved)
+export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string? }
+
+/// What an alias stands for: its type parameters and the type it names, resolved where it's declared.
+@derive(Saved)
+export type AliasTarget = { type_params: List<string>, of: SignedType }
+
+/// The signature of the fn `file` declares as `name`, absent when it declares none.
+@query
+export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let written? = written_fn(item.store, item.stmts, name) else { return null }
+    let signing = Signing { engine: engine, file: file, type_params: written.type_params }
+    FnSignature {
+        type_params: written.type_params,
+        params: [signing.param(p) for p in written.params],
+        answer: signing.signed(widthless(written.ret)!),
+        answer_width: width_of(written.ret),
+    }
+}
+
+/// What the alias `file` declares as `name` stands for, absent when it declares none.
+@query
+export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: string) -> AliasTarget? {
+    let item? = declaring_item(engine, file, name, ItemKind.Alias) else { return null }
+    let parts? = [a! for s in item.stmts for a in [item.store.alias_parts(s)] if a != null]
+        .find(it.name == name) else { return null }
+    AliasTarget {
+        type_params: parts.tparams,
+        of: Signing { engine: engine, file: file, type_params: parts.tparams }.signed(parts.of),
+    }
+}
+
+/// The item that declares `name` as `kind` in `file`, read back, absent when none does.
+type ReadItem = { store: SyntaxArena, stmts: List<StmtId> }
+
+fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ReadItem? {
+    let declared? = file_declares(engine, file).names.find(it.name == name && it.kind == kind) else { return null }
+    let item = items_under(engine, file)[declared.item]
+    let store = new_node_store()
+    let stmts = item_read_back(
+        store,
+        PlacedTape { start: item.start, tape: SyntaxTape.read_from(meant_tape(engine, file, item)) },
+    )
+    ReadItem { store: store, stmts: stmts }
+}
+
+/// The width a written type names, if it names one.
+fn width_of(written: TypeRef?) -> string? {
+    let w? = written else { return null }
+    if width_named(w.name) != null { w.name } else { null }
+}
+
+/// What a fn writes of its signature: its type parameters, its parameters and its answer.
+type WrittenFn = { type_params: List<string>, params: List<Param>, ret: TypeRef }
+
+/// What the fn `name` among `stmts` writes, a declared fn's or an extern's.
+fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenFn? {
+    for s in stmts {
+        let declared = store.fn_parts(s)
+        if declared != null && declared!.name == name {
+            return WrittenFn {
+                type_params: [t.name.of for t in declared!.tparams],
+                params: declared!.params,
+                ret: declared!.ret,
+            }
+        }
+        let external = store.extern_parts(s)
+        if external != null && external!.name == name { return WrittenFn { type_params: [], params: external!.params, ret: external!.ret } }
+    }
+    null
+}
+
+/// Where a signature's types are resolved: its file's top level, under the fn's own type parameters.
+type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string> }
+
+impl Signing {
+    fn param(p: Param) -> SignedParam {
+        SignedParam {
+            name: p.name.of,
+            ty: if p.ty == null { null } else { self.signed(widthless(p.ty)!) },
+            mutable: p.promises.mutable,
+            settled: p.promises.settled,
+            width: width_of(p.ty),
+        }
+    }
+
+    /// A written type with every name in it resolved, an alias standing for what it names, and a
+    /// union's members in one order whatever order they were written in.
+    fn signed(written: TypeRef) -> SignedType {
+        let made = SignedType {
+            head: if written.arrow { TypeHead.Function } else { self.head_of(written.name) },
+            args: [self.signed(a) for a in written.applied],
+            optional: written.optional,
+            dynamic: written.dynamic,
+            seats: [SignedSeat { ty: self.signed(s.ty), mutable: s.mutable, settled: s.settled } for s in written.seats],
+            answer: if written.answer == null { null } else { self.signed(written.answer!) },
+            alternatives: sorted_by(
+                [self.signed(a) for a in written.alternatives],
+                (a, b) -> text_before(a.spelled(), b.spelled()),
+            ),
+        }
+        let target? = self.aliased(made.head) else { return made }
+        target.of.bound(made.args) with { optional: target.of.optional || made.optional, dynamic: target.of.dynamic || made.dynamic }
+    }
+
+    /// What a head names when it names an alias.
+    fn aliased(head: TypeHead) -> AliasTarget? {
+        match head {
+            .Declared(file, name) -> alias_target(self.engine, file, name),
+            .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function -> null,
+        }
+    }
+
+    /// What a type name names: a type parameter, a type the language owns, or a declaration.
+    fn head_of(name: string) -> TypeHead {
+        if name == INFERRED { return TypeHead.Inferred }
+        let at = self.type_params.index_of(name)
+        if at >= 0 { return TypeHead.Parameter(at, name) }
+        if builtin_type_name(avra().rows.types, name) { return TypeHead.Owned(name) }
+        let d? = resolved(self.engine, self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
+        TypeHead.Declared(d.file, d.name)
+    }
+}
+
+impl SignedType {
+    /// This type with each of its declaration's type parameters bound to `args`, in order.
+    fn bound(args: List<SignedType>) -> SignedType {
+        let inner = self with { args: [a.bound(args) for a in self.args], seats: [s with { ty: s.ty.bound(args) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.bound(args) }, alternatives: [a.bound(args) for a in self.alternatives] }
+        let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
+        if at >= args.length { return inner }
+        args[at] with { optional: args[at].optional || self.optional, dynamic: args[at].dynamic || self.dynamic }
+    }
+
+    /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`.
+    fn spelled() -> string {
+        if !self.alternatives.is_empty() { return [a.spelled() for a in self.alternatives].join(" or ") }
+        let named = match self.head {
+            .Owned(name) or .Unnamed(name) -> name,
+            .Parameter(_, name) -> name,
+            .Declared(_, name) -> name,
+            .Inferred -> INFERRED,
+            .Function -> "fn(${[s.spelled() for s in self.seats].join(", ")})${answered(self.answer)}",
+        }
+        let applied = if self.args.is_empty() { named } else { "${named}<${[a.spelled() for a in self.args].join(", ")}>" }
+        let dyn_named = if self.dynamic { "dyn ${applied}" } else { applied }
+        if self.optional { "${dyn_named}?" } else { dyn_named }
+    }
+}
+
+impl SignedSeat {
+    fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty.spelled()) }
+}
+
+impl SignedParam {
+    fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty?.spelled() ?? "_") }
+}
+
+/// A fn type's answer as it follows its seats: nothing for `void`.
+fn answered(answer: SignedType?) -> string {
+    let a? = answer else { return "" }
+    let word = a.spelled()
+    if word == "void" { "" } else { " -> ${word}" }
+}
+
+/// A seat's type behind the promises it makes.
+fn seat_spelled(mutable: bool, settled: bool, word: string) -> string {
+    if settled { return if mutable { "const mut ${word}" } else { "const ${word}" } }
+    if mutable { "mut ${word}" } else { word }
+}
+
+/// How a type the body decides is written.
+const INFERRED: string = "_"
+
+impl SignedType {
+    /// Whether any part of this type is one the body decides.
+    fn inferred() -> bool {
+        self.head is .Inferred ||
+            self.args.any(it.inferred()) ||
+            self.seats.any(it.ty.inferred()) ||
+            self.answer?.inferred() ?? false ||
+            self.alternatives.any(it.inferred())
+    }
+}
+
+collect listed_signature_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a fn's signature reads through, for a process to hand its engine.
+export fn signature_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_signature_facts) }
