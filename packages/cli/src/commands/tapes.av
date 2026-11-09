@@ -22,6 +22,7 @@ use @std.avrac.compiler.{
     fn_signature,
     fn_body_spans,
     typed_fn,
+    untyped_kinds,
     file_declares,
     ItemKind,
     resolved_in,
@@ -65,6 +66,7 @@ impl Runnable for TapesCmd {
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
         for d in differing { println("differs: ${d}") }
         println("tapes: ${files.length} read, ${differing.length} differing")
+        if args.has_flag("signatures") { println("typed: ${typed_share(engine, disk, files)}") }
         if differing.is_empty() { 0 } else { 1 }
     }
 }
@@ -142,6 +144,22 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, sign
     let scoped = scope_difference(engine, ws, disk, path)
     if scoped != null || !signed { return scoped }
     signature_difference(engine, ws, disk, path) ?? type_difference(engine, ws, disk, path)
+}
+
+/// How much of the fns `files` declare the program layer types: its typed nodes of all their nodes.
+fn typed_share(engine: QueryEngine, disk: Disk, files: List<string>) -> string {
+    let bodies = [b! for f in files for own in file_declares(engine, disk.file_at(f)).names.filter(it.kind == ItemKind.Fn) for b in [typed_fn(engine, disk.file_at(f), own.name)] if b != null]
+    let held = [b.types.length for b in bodies].sum()
+    let typed = [b.types.filter(it != null).length for b in bodies].sum()
+    mut untyped: Map<string, int> = {}
+    for f in files {
+        for own in file_declares(engine, disk.file_at(f)).names.filter(it.kind == ItemKind.Fn) {
+            for kind in untyped_kinds(engine, disk.file_at(f), own.name) { untyped.set(kind, (untyped.get(kind) ?? 0) + 1) }
+        }
+    }
+    let most = sorted_by([k for k, _n in untyped], (a, b) -> untyped.get(a)! > untyped.get(b)!)
+        .take(12)
+    "${typed} of ${held} nodes, ${if held == 0 { 0 } else { typed * 100 / held }}%; untyped most: ${[k + " " + "${untyped.get(k)!}" for k in most].join(", ")}"
 }
 
 /// How a fn `path` declares is typed differently from the workspace's typing of its body, absent
