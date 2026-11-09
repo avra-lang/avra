@@ -7,6 +7,7 @@ use @std.grammar.{
     RunOutcome,
     Lexeme,
     Untold,
+    TokenTables,
     untold,
     untold_outcome,
     no_end,
@@ -284,21 +285,23 @@ export const avra_terms: List<string> = [
     "ON",
 ]
 
-once fn avra_lits() -> Map<string, int> {
+/// Every literal's slot, by its text.
+export once fn avra_lits() -> Map<string, int> {
     mut m: Map<string, int> = {}
     for at, text in avra_lit_texts { m.set(text, at) }
     m
 }
 
-/// The untold run of `program` over `tokens`, `kinds` the lexer's kind of each of
-/// `avra_terms`.
+/// The untold run of `program` over `tokens`, read off `tables` (`avra_lits`' slots),
+/// `kinds` the lexer's kind of each of `avra_terms`.
 export fn avra_untold(
     tokens: List<Token>,
     lex: Lexeme<Token>,
+    tables: TokenTables,
     kinds: List<int>,
     build: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>,
 ) -> RunOutcome<Token, LangNode> {
-    mut u = untold<Token, LangNode>(tokens, lex, avra_lits(), kinds, build)
+    mut u = untold<Token, LangNode>(tokens, lex, tables, kinds, 0, 1, build)
     if u.eof_at < 0 { return untold_outcome(u, "program", no_end) }
     let end = avra_r0(u, 0, false)
     untold_outcome(u, "program", end)
