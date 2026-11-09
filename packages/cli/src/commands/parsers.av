@@ -1,0 +1,148 @@
+//! `avra parsers <package>` — the generated parser held to the grammar engine on every file of
+//! a package: each file's untold run on both, every builder call they make compared in order,
+//! and how long each took. Says each file they differ on and exits 1 if any.
+use @std.cli.{CliResult, Runnable, command}
+use @std.avrac.compiler.{avra, avra_untold, avra_builders, Language}
+use @std.avrac.grammar.{Token, avra_lexeme, lex_source}
+use @std.avrac.features.{LangNode, build_named, BlockWords}
+use @std.avrac.core.{new_node_store, loc_span}
+use @std.grammar.{Captured, RunOutcome, run_untold}
+use @std.relation.engine.{list_cell}
+use @std.errors.{Loc}
+use @std.io.{list_dir, read_text}
+use @std.path.{joined_path}
+use @std.time.{now_ns}
+
+type ParsersCmd = {}
+
+impl Runnable for ParsersCmd {
+    fn run(args: CliResult) -> int {
+        let lang = avra()
+        if !lang.untold {
+            eprintln(
+                "parsers: the generated parser is not this grammar's — `./avra grammar --untold` makes it",
+            )
+            return 1
+        }
+        let held = [held_file(lang, f) for f in av_files(joined_path(args.arg("file"), "src"))]
+        let wrong = [h for h in held if h.wrong != null]
+        for h in wrong { println("differs: ${h.wrong!}") }
+        let clean = [h for h in held if h.clean].length
+        let engine_ms = held.fold(0, (acc, h) -> acc + h.engine_ns) / 1000000
+        let generated_ms = held.fold(0, (acc, h) -> acc + h.generated_ns) / 1000000
+        println(
+            "parsers: ${held.length} files, ${clean} clean on both, ${wrong.length} differing; engine ${engine_ms} ms, generated ${generated_ms} ms",
+        )
+        if wrong.is_empty() { 0 } else { 1 }
+    }
+}
+
+/// One file on both parsers: whether both ran clean, how they differ when they do, and how long
+/// each took.
+type Held = { clean: bool, wrong: string?, engine_ns: int, generated_ns: int }
+
+alias Builds = fn(string, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>
+
+alias Indexed = fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>
+
+fn held_file(lang: Language, path: string) -> Held {
+    let text = match read_text(path) { .Ok(t) -> t, .Err(_) -> "" }
+    let tokens = lex_source(text).tokens
+    let engine_log = list_cell<string>()
+    let engine_store = new_node_store(path)
+    let by_name: Builds = (name, a, loc) -> logged(
+        engine_log,
+        name,
+        a,
+        loc,
+        build_named(lang.builders, engine_store, name, a, loc_span(loc), text, BlockWords {}),
+    )
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let t0 = now_ns()
+    let engine = run_untold<Token, LangNode>(lang.syntax!, tokens, avra_lexeme(), by_name)
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let t1 = now_ns()
+    let generated_log = list_cell<string>()
+    let generated_store = new_node_store(path)
+    let by_index: Indexed = (ix, a, loc) -> logged(
+        generated_log,
+        avra_builders[ix],
+        a,
+        loc,
+        build_named(
+            lang.builders,
+            generated_store,
+            avra_builders[ix],
+            a,
+            loc_span(loc),
+            text,
+            BlockWords {},
+        ),
+    )
+    let generated = avra_untold(tokens, avra_lexeme(), by_index)
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let t2 = now_ns()
+    Held {
+        clean: ran_clean(engine) && ran_clean(generated),
+        wrong: difference(path, engine, generated, engine_log.get(), generated_log.get()),
+        engine_ns: t1 - t0,
+        generated_ns: t2 - t1,
+    }
+}
+
+/// How the two runs of `path` differ: a clean run on one alone, or the builder calls of two clean
+/// runs. Two runs that both spoke are worded by the engine either way.
+fn difference(
+    path: string,
+    engine: RunOutcome<Token, LangNode>,
+    generated: RunOutcome<Token, LangNode>,
+    by_engine: List<string>,
+    by_generated: List<string>,
+) -> string? {
+    if ran_clean(engine) != ran_clean(generated) { return "${path}: clean on the ${if ran_clean(engine) { "engine" } else { "generated parser" }} alone" }
+    if !ran_clean(engine) { return null }
+    let at? = [i for i, call in by_engine if i >= by_generated.length || by_generated[i] != call]
+        .first() else {
+        if by_generated.length > by_engine.length { return "${path}: the generated parser builds ${by_generated[by_engine.length]} past the engine's end" }
+        return null
+    }
+    "${path}: builder call ${at}: the engine's ${by_engine[at]}, the generated parser's ${if at < by_generated.length { by_generated[at] } else { "none" }}"
+}
+
+fn ran_clean(o: RunOutcome<Token, LangNode>) -> bool { o.result != null && o.diagnostics.is_empty() }
+
+/// `built`, its call written to `log` first: the builder, each argument's shape, the range.
+fn logged(
+    log: Cell<List<string>>,
+    name: string,
+    a: List<Captured<Token, LangNode>>,
+    loc: Loc?,
+    built: Result<Captured<Token, LangNode>, string>,
+) -> Result<Captured<Token, LangNode>, string> {
+    log
+        .push(
+            "${name}(${[capture_shape(x) for x in a].join(", ")}) at ${loc?.lo ?? -1}..${loc?.hi ?? -1}",
+        )
+    built
+}
+
+fn capture_shape(c: Captured<Token, LangNode>) -> string {
+    match c {
+        .Terminal(t) -> "`${t.text}`",
+        .Node(_) -> "node",
+        .Many(items) -> "[${[capture_shape(x) for x in items].join(", ")}]",
+        .Absent -> "_",
+    }
+}
+
+/// Every `.av` file under `dir`.
+fn av_files(dir: string) -> List<string> {
+    let names = match list_dir(dir) { .Ok(n) -> n, .Err(_) -> [] }
+    [p for n in names for p in if n.ends_with(".av") { [joined_path(dir, n)] } else { av_files(joined_path(dir, n)) }]
+}
+
+export command parsers {
+    description: "Hold the generated parser to the grammar engine on every file of a package"
+    args: [file]
+    run: ParsersCmd {}
+}

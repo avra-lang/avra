@@ -164,7 +164,16 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         src.text,
         door,
     )
-    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
+    let by_index: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string> = (
+        ix,
+        args,
+        loc,
+    ) -> build(avra_builders[ix], args, loc)
+    let o = when {
+        telling -> run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build)
+        lang.untold -> avra_untold(lexed.tokens, avra_lexeme(), by_index)
+        _ -> run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build)
+    }
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
     // attach_docs: an orphaned doc group extends this list, and
