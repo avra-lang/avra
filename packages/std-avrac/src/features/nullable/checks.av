@@ -1,0 +1,21 @@
+//! The typing rule of `let x? = v else { … }`: the else block checks in a scope of its own, its
+//! value dropped, and then `x` is bound to what `v` holds when it's present.
+use core.{Checking, Expected, SignedType, StmtChecks, StmtId}
+use core.stmt.{LetElse}
+
+impl StmtChecks for LetElse {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        let held = cx.check(self.subject, Expected.Free)
+        cx.opened()
+        for st in self.stmts { cx.check_stmt(st) }
+        cx.closed()
+        cx.bind(self.name.of, present(held))
+    }
+}
+
+/// What an optional type holds when present; absent for any other, whose presence is another
+/// feature's to say.
+fn present(ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    if t.optional { t with { optional: false } } else { null }
+}
