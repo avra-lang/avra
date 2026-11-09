@@ -35,11 +35,11 @@ impl Seen {
     fn scope() -> FileScope { file_scope(self.engine, self.file)! }
 
     /// What `name` names in `space` here.
-    fn kind_of(space: Space, name: string) -> ItemKind? { resolved(self.engine, self.file, space, name)?.kind }
+    fn kind_of(space: Space, name: string) -> ItemKind? { resolved(self.engine, self.file, space, name).named()?.kind }
 }
 
 /// The file `name` names a declaration in, as a value, from `seen`; "" for none.
-fn value_home(seen: Seen, name: string) -> string { resolved(seen.engine, seen.file, Space.Value, name)?.file?.path_in_package ?? "" }
+fn value_home(seen: Seen, name: string) -> string { resolved(seen.engine, seen.file, Space.Value, name).named()?.file?.path_in_package ?? "" }
 
 spec "what a file's top level sees" {
     given "a private name two files of one module each declare" {
@@ -120,8 +120,8 @@ spec "what a file's scope holds" {
     given "the prelude exporting a name nothing else took, and one the file declares" {
         then "the prelude's resolves, the file's own wins, and neither stands in the file's scope" {
             let s = scope_in("prelude", {"src/main.av": "fn quiet() -> int { 3 }\n"}, "src/main.av")
-            resolved(s.engine, s.file, Space.Value, "shout")?.file?.package_name == "@std/prelude" &&
-                resolved(s.engine, s.file, Space.Value, "quiet")?.file?.package_name == "@test/p" &&
+            resolved(s.engine, s.file, Space.Value, "shout").named()?.file?.package_name == "@std/prelude" &&
+                resolved(s.engine, s.file, Space.Value, "quiet").named()?.file?.package_name == "@test/p" &&
                 s.scope().own.values.keys().is_empty()
         }
     }

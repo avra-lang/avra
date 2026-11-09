@@ -213,12 +213,29 @@ const TESTS: string = "tests"
 /// The package every file sees without a `use`.
 const PRELUDE: string = "@std/prelude"
 
-/// What `name` names in `space` from `file`'s top level, absent for nothing: the file's own, else
-/// its module's shared winner, else the prelude's. One question per name, so what reads a name
-/// depends on that name alone.
+/// What a name names from a file's top level.
+@derive(Saved)
+export enum Resolution {
+    /// One declaration.
+    Named(declaration: DeclaredName)
+    /// Private declarations the file's siblings each keep apart, none of them its own: a read of the
+    /// name here is refused, naming them.
+    KeptApart(declarations: List<DeclaredName>)
+    /// Nothing.
+    Unbound
+}
+
+impl Resolution {
+    /// The one declaration named, absent when there's none to read.
+    fn named() -> DeclaredName? { match self { .Named(d) -> d, _ -> null } }
+}
+
+/// What `name` names in `space` from `file`'s top level: the file's own, else its module's shared
+/// winner, else its siblings' kept-apart declarations, else the prelude's. A file that isn't there
+/// names nothing. One question per name, so what reads a name depends on that name alone.
 @query
-export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
-    let scope? = file_scope(engine, file) else { return null }
+export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
+    let scope? = file_scope(engine, file) else { return Resolution.Unbound }
     resolved_in(engine, scope, file, space, name)
 }
 
@@ -229,17 +246,38 @@ export fn resolved_in(
     file: SourceFileAddress,
     space: Space,
     name: string,
-) -> DeclaredName? {
-    scope.own.held(space, name) ?? winner(engine, file, space, name) ?? lent(
-        engine,
-        file,
-        space,
-        name,
-    )
+) -> Resolution {
+    let mine? = scope.own.held(space, name) ?? winner(engine, file, space, name) else {
+        return unclaimed(engine, scope, file, space, name)
+    }
+    Resolution.Named(mine)
 }
 
-/// Every name the top level of `file`, whose scope is `scope`, sees in `space`, each once: its own,
-/// its module's shared winners, then the prelude's exports.
+/// What a name neither the file nor its module's winners claim names: its siblings' kept-apart
+/// declarations, else the prelude's export.
+fn unclaimed(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> Resolution {
+    let apart = scope.kept_apart(space, name)
+    if !apart.is_empty() { return Resolution.KeptApart(apart) }
+    let prelude? = lent(engine, file, space, name) else { return Resolution.Unbound }
+    Resolution.Named(prelude)
+}
+
+impl FileScope {
+    /// The declarations of `name` in `space` the file's siblings keep apart.
+    fn kept_apart(space: Space, name: string) -> List<DeclaredName> {
+        [d for d in self.siblings if d.name == name && space_of(d.kind) == space]
+    }
+}
+
+/// Every name the top level of `file`, whose scope is `scope`, names a declaration by in `space`,
+/// each once: its own, its module's shared winners, then the prelude's exports no sibling keeps
+/// apart.
 export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, space: Space) -> List<
     string,
 > {
@@ -250,7 +288,9 @@ export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddr
             .own
             .names_in(space)
             .concat(shared.names_in(space))
-            .concat([d.name for d in prelude if lends(d, space)]),
+            .concat(
+                [d.name for d in prelude if lends(d, space) && scope.kept_apart(space, d.name).is_empty()],
+            ),
     )
 }
 

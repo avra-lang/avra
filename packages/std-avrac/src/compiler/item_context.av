@@ -117,6 +117,11 @@ type ItemGrammar = { word: string, notation: string }
 @derive(Saved)
 type ItemInstance = { name: string, declared: string, exported: bool }
 
+impl ItemInstance {
+    /// The instance as a body lists it by name.
+    fn listed() -> NamedInstance { NamedInstance { name: self.name, declared: self.declared } }
+}
+
 /// What an item's statements say of its file's words, as its tape keeps it.
 export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
     ItemAbout {
@@ -204,7 +209,7 @@ fn file_words(engine: QueryEngine, file: SourceFileAddress) -> FileWords {
             item: at,
         } for at, a in abouts for c in a.components],
         grammars: [GrammarWord { word: g.word, origin: spelled_file(file), notation: g.notation } for a in abouts for g in a.grammars],
-        instances: [NamedInstance { name: i.name, declared: i.declared } for a in abouts for i in a.instances if i.exported],
+        instances: [i.listed() for a in abouts for i in a.instances if i.exported],
         uses: [u for a in abouts for u in a.uses],
     }
 }
@@ -245,7 +250,7 @@ fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> Line
 @query
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
     let context = file_context(engine, file)
-    let own = [NamedInstance { name: i.name, declared: i.declared } for item in file_items(engine, file) for i in about_of(item_tape(engine, item.text, context).about).instances]
+    let own = [i.listed() for item in file_items(engine, file) for i in about_of(item_tape(engine, item.text, context).about).instances]
     own
         .concat([i for u in file_words(engine, file).uses for i in line_shapes(engine, file, u).instances])
 }

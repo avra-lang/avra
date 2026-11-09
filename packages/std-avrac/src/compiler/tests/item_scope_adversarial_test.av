@@ -1,29 +1,49 @@
 // Attacks on what a file's top level sees: a name in two spaces, the prelude shadowed, an import
 // whose name moves or clashes, a module's tests, a part moving beside one that stands, early
 // cutoff across edits, and the empty cases. Each process reads a store another left behind.
-use compiler.{Space, avra_fact_definitions, avra_source_world, file_scope, package_read, resolved}
+use compiler.{
+    DeclaredName,
+    Resolution,
+    Space,
+    avra_fact_definitions,
+    avra_source_world,
+    file_scope,
+    package_read,
+    resolved,
+}
 use compiler.tests.support.{file_at, files, list_with_prelude, read_with_prelude, store_dir}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{query_engine}
 use @std.program.source_facts.{use_source_world}
 
 /// What one process answered for `name` in `space` from `path`'s top level: the package and file
-/// it names, "" for nothing, how many names `path` lost, and the queries the process ran.
-type Answered = { home: string, clashes: int, ran: List<string> }
+/// it names, "" for nothing; each kept-apart declaration a read there is refused with; how many
+/// names `path` lost; and the queries the process ran.
+type Answered = { home: string, apart: List<string>, clashes: int, ran: List<string> }
 
 fn answered(dir: string, path: string, space: Space, name: string) -> Answered {
     use_source_world(avra_source_world(read_with_prelude, list_with_prelude, "avra-test"))
     let store = disk_store_at(dir)
     let engine = query_engine(store, avra_fact_definitions())
-    let d = resolved(engine, file_at(path), space, name)
+    let r = resolved(engine, file_at(path), space, name)
     let clashes = file_scope(engine, file_at(path))?.clashes?.length ?? 0
     let _ = store.saved()
     Answered {
-        home: if d == null { "" } else { "${d!.file.package_name}/${d!.file.path_in_package}" },
+        home: home_of(r.named()),
+        apart: [home_of(d) for d in kept_apart_in(r)],
         clashes: clashes,
         ran: engine.computed_queries(),
     }
 }
+
+/// A declaration's package and file, "" for none.
+fn home_of(d: DeclaredName?) -> string {
+    let held? = d else { return "" }
+    "${held.file.package_name}/${held.file.path_in_package}"
+}
+
+/// The kept-apart declarations a resolution names, none for any other.
+fn kept_apart_in(r: Resolution) -> List<DeclaredName> { match r { .KeptApart(ds) -> ds, _ -> [] } }
 
 /// A fresh store's answer with `held` the package's files.
 fn first(name: string, held: Map<string, string>, path: string, space: Space, asked: string) -> Answered {
@@ -108,13 +128,24 @@ spec "the prelude shadowed" {
             first("apart_own", held, "src/m/a.av", Space.Value, "shout").home == "@test/p/src/m/a.av" &&
                 first("apart_own_b", held, "src/m/b.av", Space.Value, "shout").home == "@test/p/src/m/b.av"
         }
-        then "a third file sees the prelude's, since no winner took the name" {
+        then "a third file's read is kept apart, naming both, and the prelude fills nothing" {
             let held = {
                 "src/m/a.av": "fn shout() -> int { 8 }\n",
                 "src/m/b.av": "fn shout() -> int { 9 }\n",
                 "src/m/c.av": "fn other() -> int { 2 }\n",
             }
-            first("apart_third", held, "src/m/c.av", Space.Value, "shout").home == "@std/prelude/src/prelude.av"
+            let a = first("apart_third", held, "src/m/c.av", Space.Value, "shout")
+            a.home == "" && a.apart.join(" ") == "@test/p/src/m/a.av @test/p/src/m/b.av"
+        }
+        then "a third file importing the name reads its import" {
+            let held = {
+                "src/m/a.av": "fn shout() -> int { 8 }\n",
+                "src/m/b.av": "fn shout() -> int { 9 }\n",
+                "src/m/c.av": "use lib.{shout}\n",
+                "src/lib/x.av": "export fn shout() -> int { 7 }\n",
+            }
+            let a = first("apart_imported", held, "src/m/c.av", Space.Value, "shout")
+            a.home == "@test/p/src/lib/x.av" && a.apart.is_empty() && a.clashes == 0
         }
     }
     given "a prelude name in the other space" {

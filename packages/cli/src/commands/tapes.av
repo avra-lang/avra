@@ -93,6 +93,9 @@ impl Disk {
         }
     }
 
+    /// The named package's file at `path`, as the program addresses it.
+    fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: self.name, path_in_package: path } }
+
     /// A file on disk as the program spells it: its package, then its path.
     fn spelled(path: string) -> string {
         if path.starts_with("${self.root}/") { return "${self.name}/${path.substring(self.root.length + 1, path.length)}" }
@@ -114,10 +117,7 @@ fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -
 /// How `path` read for what it means differs from the tree the workspace's parse makes of it,
 /// absent when it doesn't.
 fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
-    let back = read_back(
-        path,
-        file_meant(engine, SourceFileAddress { package_name: disk.name, path_in_package: path }),
-    )
+    let back = read_back(path, file_meant(engine, disk.file_at(path)))
     let parsed = ws.parsed(ws.file_id(joined_path(disk.root, path)))
     respelled_origins(parsed.store, (path) -> disk.spelled(path))
     let refused = refusal_difference(back.store, parsed.store)
@@ -135,7 +135,7 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> s
 /// absent when it doesn't. A name the workspace bound to a declaration nobody wrote — a builtin,
 /// or one an annotation made — is the workspace's alone.
 fn scope_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
-    let file = SourceFileAddress { package_name: disk.name, path_in_package: path }
+    let file = disk.file_at(path)
     let scope? = file_scope(engine, file) else { return "${path}: has no scope" }
     let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
     let spaces = [
@@ -163,7 +163,7 @@ fn scope_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string
             let d? = (s.bound)(word) else { continue }
             let x = ws.decls.decl(d)
             if !x.maker.is_empty() || x.home == null { continue }
-            let mine? = resolved_in(engine, scope, file, s.space, word) else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
+            let mine? = resolved_in(engine, scope, file, s.space, word).named() else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
             if disk.spelled(ws.decls.file(x.file).path) != spelled_file(mine.file) ||
                 x.name != mine.name {
                 return "${path}: `${word}` names `${spelled_file(mine.file)}`'s `${mine.name}`, the workspace's `${x.name}`"
