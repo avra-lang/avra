@@ -1,0 +1,70 @@
+// What the untold run is written as: a fn per rule and per branch, a memo only where a rule can
+// be asked twice at one cursor, and the same source for the same grammar.
+use @std.grammar.{
+    Grammar,
+    Rule,
+    UntoldTarget,
+    untold_source,
+    ready,
+    rule_def,
+    seq,
+    item,
+    lit,
+    rule_ref,
+}
+
+fn generate_g(rules: List<Rule>) -> Grammar {
+    Grammar { name: "t", start: rules[0].name, rules: rules }
+}
+
+fn source_of(rules: List<Rule>) -> string {
+    match untold_source(
+        ready(generate_g(rules), []),
+        UntoldTarget { prefix: "t", token: "Tok", node: "Node", uses: [], print: 7 },
+    ) { .Ok(text) -> text, .Err(why) -> "refused: ${why}" }
+}
+
+/// `a = b "x"`, `b = "z"`: `b` named once, at `a`'s head.
+fn headed() -> List<Rule> {
+    [
+        rule_def("a", [seq([item(rule_ref("b")), item(lit("x"))])]),
+        rule_def("b", [seq([item(lit("z"))])]),
+    ]
+}
+
+/// `a = b "x" | "q" b`, `b = "z"`: `b` named twice.
+fn twice() -> List<Rule> {
+    [
+        rule_def(
+            "a",
+            [seq([item(rule_ref("b")), item(lit("x"))]), seq([item(lit("q")), item(rule_ref("b"))])],
+        ),
+        rule_def("b", [seq([item(lit("z"))])]),
+    ]
+}
+
+spec "grammar/generate" {
+    given "a rule of two branches" {
+        then "the rule is a fn, and each branch one more" {
+            let text = source_of(twice())
+            text.contains("fn t_r0(") && text.contains("fn t_r0_0(") && text.contains("fn t_r0_1(")
+        }
+        then "the same grammar is written to the same text twice" {
+            source_of(twice()) == source_of(twice())
+        }
+        then "the print it was made from is in the source" {
+            source_of(twice()).contains("export const t_print: int = 7")
+        }
+    }
+    given "a rule named once, at the head of a branch" {
+        then "the rule named keeps no memo and its namer keeps its own" {
+            let text = source_of(headed())
+            !text.contains("u.key(1, at, capped)") && text.contains("u.key(0, at, capped)")
+        }
+    }
+    given "a rule named twice" {
+        then "the rule named keeps its memo" {
+            source_of(twice()).contains("u.key(1, at, capped)")
+        }
+    }
+}
