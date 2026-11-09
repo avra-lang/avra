@@ -1,0 +1,92 @@
+// A draft: grown by appends, read by its path while open, published whole under a name chosen at
+// the end or removed unpublished, and named as abandoned only once its process is gone.
+use @std.io.{
+    Draft,
+    abandoned_drafts,
+    drafted,
+    exists,
+    list_dir,
+    make_dirs,
+    read_bytes,
+    remove,
+    write_bytes,
+    env_or,
+}
+
+/// A scratch directory with nothing in it.
+fn fresh_dir(name: string) -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-io-draft-spec/${name}"
+    let _ = make_dirs(dir)
+    for file in list_dir(dir) catch [] { let _ = remove("${dir}/${file}") }
+    dir
+}
+
+fn opened(near: string) -> Draft {
+    match drafted(near) {
+        .Ok(d) -> d,
+        .Err(_) -> Draft { handle: -1, fd: -1, path: "", process: 0 },
+    }
+}
+
+fn read_text_at(path: string) -> string { (read_bytes(path) catch "".bytes()).text_lossy() }
+
+spec "std/io draft" {
+    given "a draft with nothing written" {
+        then "published, it is an empty file" {
+            let dir = fresh_dir("empty")
+            let d = opened("${dir}/out")
+            let _ = d.published("${dir}/out.done") catch ""
+            exists("${dir}/out.done") && read_text_at("${dir}/out.done") == ""
+        }
+    }
+    given "a draft written in pieces" {
+        then "it reads back by its path while open, and publishes whole" {
+            let dir = fresh_dir("pieces")
+            let d = opened("${dir}/out")
+            let _ = d.write("one ".bytes()) catch 0
+            let _ = d.write("two".bytes()) catch 0
+            let open_read = read_text_at(d.path)
+            let _ = d.published("${dir}/final") catch ""
+            open_read == "one two" && read_text_at("${dir}/final") == "one two" && !exists(d.path)
+        }
+        then "dropped, nothing of it is left" {
+            let dir = fresh_dir("dropped")
+            let d = opened("${dir}/out")
+            let _ = d.write("gone".bytes()) catch 0
+            d.dropped()
+            (list_dir(dir) catch ["?"]).is_empty()
+        }
+        then "two drafts beside one name are apart" {
+            let dir = fresh_dir("apart")
+            let a = opened("${dir}/out")
+            let b = opened("${dir}/out")
+            let _ = a.write("a".bytes()) catch 0
+            let _ = b.write("b".bytes()) catch 0
+            let paths = a.path != b.path
+            let _ = a.published("${dir}/a") catch ""
+            let _ = b.published("${dir}/b") catch ""
+            paths && read_text_at("${dir}/a") == "a" && read_text_at("${dir}/b") == "b"
+        }
+    }
+    given "drafts left in a directory" {
+        then "one of a process that's gone is abandoned, this process's own is not" {
+            let dir = fresh_dir("abandoned")
+            let mine = opened("${dir}/out")
+            let _ = write_bytes("${dir}/out.2147483646-0.draft", "dead".bytes())
+            let _ = write_bytes("${dir}/out.draft", "no process".bytes())
+            let _ = write_bytes("${dir}/out.1-0.draft", "another's, alive".bytes())
+            let _ = write_bytes("${dir}/out.-1-0.draft", "a negative".bytes())
+            let found = abandoned_drafts(dir)
+            mine.dropped()
+            found.contains("out.2147483646-0.draft") &&
+                found.contains("out.-1-0.draft") &&
+                !found.contains("out.1-0.draft") &&
+                !found.any((name) -> mine.path.ends_with(name))
+        }
+        then "a name that isn't a draft is never one" {
+            let dir = fresh_dir("not-drafts")
+            let _ = write_bytes("${dir}/a.pack", "x".bytes())
+            abandoned_drafts(dir).is_empty()
+        }
+    }
+}
