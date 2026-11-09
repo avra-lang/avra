@@ -31,9 +31,14 @@ export type NamedInstance = { name: string, declared: string }
 @derive(Saved)
 export type GrammarWord = { word: string, origin: string, notation: string }
 
+/// A sublanguage's word as a parse needs it: where it's declared, and whether its notation reads —
+/// a word whose grammar doesn't is no block word.
+@derive(Saved)
+export type GrammarShape = { word: string, origin: string, reads: bool }
+
 /// The words a file's items read under.
 @derive(Saved)
-export type WordShapes = { components: List<WordShape>, grammars: List<GrammarWord> }
+export type WordShapes = { components: List<WordShape>, grammars: List<GrammarShape> }
 
 /// What reading a file's items depends on besides their text: its words' shapes.
 export fn avra_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes { word_shapes(engine, file).saved_bytes() }
@@ -41,13 +46,12 @@ export fn avra_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes { 
 /// What reading an item depends on when it depends on nothing but its text.
 export fn no_context() -> Bytes { WordShapes { components: [], grammars: [] }.saved_bytes() }
 
-/// The words a parse under `context` reads by: each component known by its shape, each grammar
-/// readied.
+/// The words a parse under `context` reads by, each known by its shape alone.
 export fn context_words(context: Bytes) -> BlockWords {
     let shapes = WordShapes.from_saved_bytes(context)
     BlockWords {
         components: [shaped_word(w) for w in shapes.components],
-        grammars: [g! for g in [readied(w) for w in shapes.grammars] if g != null],
+        grammars: [BlockGrammar { word: g.word, ready: null, origin: g.origin } for g in shapes.grammars if g.reads],
     }
 }
 
@@ -62,7 +66,7 @@ fn shaped_word(w: WordShape) -> ComponentWord {
 }
 
 /// A grammar readied from its notation; absent for one that doesn't parse, whose library speaks.
-fn readied(w: GrammarWord) -> BlockGrammar? {
+export fn readied(w: GrammarWord) -> BlockGrammar? {
     let built? = parse_grammar(w.notation).built else { return null }
     BlockGrammar { word: w.word, ready: ready(built, avra_known_terminals()), origin: w.origin }
 }
@@ -73,8 +77,18 @@ fn word_shapes(engine: QueryEngine, file: SourceFileAddress) -> WordShapes {
     let lines = [line_shapes(engine, file, u) for u in file_words(engine, file).uses]
     WordShapes {
         components: own.concat(flatten([l.components for l in lines])),
-        grammars: flatten([l.grammars for l in lines]),
+        grammars: [GrammarShape {
+            word: g.word,
+            origin: g.origin,
+            reads: parse_grammar(g.notation).built != null,
+        } for g in file_grammars(engine, file)],
     }
+}
+
+/// The sublanguages a file's `use` lines import, each by the word it's imported as.
+@query
+export fn file_grammars(engine: QueryEngine, file: SourceFileAddress) -> List<GrammarWord> {
+    flatten([line_shapes(engine, file, u).grammars for u in file_words(engine, file).uses])
 }
 
 /// One file's declarations, each read with no words of its own, each knowing the item it's in.

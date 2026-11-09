@@ -1,7 +1,7 @@
 //! Avra's items on tapes, for the program layer: Avra's source world, an item's tape read from its
 //! own text, its refusals among what it keeps, and a file's tree put back together from its items'
 //! tapes.
-use core.{ForeignOrigin, SyntaxArena, Stmt, StmtId, new_node_store}
+use core.{ForeignOrigin, ParseRefusal, SyntaxArena, Stmt, StmtId, new_node_store}
 use diagnostics.{new_source_file}
 use grammar.{avra_lexeme, lex_source}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
@@ -80,6 +80,23 @@ export fn respelled_origins(store: SyntaxArena, spelled: fn(string) -> string) {
 fn respelled_origin(o: ForeignOrigin?, spelled: fn(string) -> string) -> ForeignOrigin? {
     let held? = o else { return null }
     if held.path.is_empty() { held } else { held with { path: spelled(held.path) } }
+}
+
+/// What `left` refuses that `right` doesn't, or the reverse, by words and place; absent when they
+/// refuse alike.
+export fn refusal_difference(left: SyntaxArena, right: SyntaxArena) -> string? {
+    let one = [refusal_key(r) for r in left.refusals()]
+    let other = [refusal_key(r) for r in right.refusals()]
+    let missing = [k for k in one if !other.contains(k)]
+        .concat([k for k in other if !one.contains(k)])
+    if missing.is_empty() && one.length == other.length { null } else { "its refusals: ${missing.first() ?? "a count"}" }
+}
+
+fn refusal_key(r: ParseRefusal) -> string {
+    match r {
+        .Grammar(_, message, span, _, _) -> "${message} at ${span?.lo ?? -1}",
+        .Builder(_, message, _, span) -> "${message} at ${span?.lo ?? -1}",
+    }
 }
 
 fn statement_tape(store: SyntaxArena, s: StmtId) -> SyntaxTape {

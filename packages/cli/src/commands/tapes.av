@@ -10,6 +10,7 @@ use @std.avrac.compiler.{
     file_meant,
     read_back,
     respelled_origins,
+    refusal_difference,
     statement_difference,
 }
 use @std.io.{list_dir, read_text}
@@ -51,10 +52,14 @@ type Disk = { root: string, std: string }
 impl Disk {
     /// Where a package's file stands.
     fn on_disk(package: string, path: string) -> string {
-        if package.starts_with(STD) { joined_path(
+        if package.starts_with(STD) {
+            joined_path(
                 joined_path(self.std, "std-${package.substring(STD.length, package.length)}"),
                 path,
-            ) } else { joined_path(self.root, path) }
+            )
+        } else {
+            joined_path(self.root, path)
+        }
     }
 
     /// A file on disk as the program spells it: its package, then its path.
@@ -98,6 +103,8 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> s
     )
     let parsed = ws.parsed(ws.file_id(joined_path(disk.root, path)))
     respelled_origins(parsed.store, (path) -> disk.spelled(path))
+    let refused = refusal_difference(back.store, parsed.store)
+    if refused != null { return "${path}: ${refused!}" }
     if back.stmts.length != parsed.stmts.length { return "${path}: ${back.stmts.length} statements, the parse ${parsed.stmts.length}" }
     for at, s in back.stmts {
         let how? = statement_difference(back.store, s, parsed.store, parsed.stmts[at]) else { continue }

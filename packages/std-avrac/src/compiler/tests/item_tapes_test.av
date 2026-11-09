@@ -1,7 +1,7 @@
 // A file's items on tapes, through the program layer's engine and a store on disk: a later process
 // reads an unchanged file with no item read at all, an edited one reads only the items that moved,
 // and the tree put back together is the one a parse makes.
-use core.{distinct}
+use core.{ExprId, distinct}
 use compiler.{
     ReadBack,
     avra_fact_definitions,
@@ -9,6 +9,7 @@ use compiler.{
     file_meant,
     parse_source,
     read_back,
+    refusal_difference,
     respelled_origins,
     statement_difference,
 }
@@ -79,7 +80,7 @@ spec "a file's items on tapes" {
     given "a file read once" {
         then "the first process reads its text, its words' shapes and each of its three items" {
             files().set({"src/a.av": THREE})
-            process(store_dir("first"), "src/a.av") == "file_tapes source_text file_context language_print module_declared package_facts source_text listed source_text file_words item_tape item_tape item_tape"
+            process(store_dir("first"), "src/a.av") == "file_tapes source_text file_context language_print module_declared package_facts source_text listed source_text file_words item_tape item_tape item_tape file_grammars"
         }
         then "a later process asks only its inputs: the file, its directory, its manifest and the module file it isn't" {
             let dir = store_dir("unchanged")
@@ -158,9 +159,9 @@ spec "an item read under its file's words" {
     }
 }
 
-/// Whether `path`, read back for what it means, is the tree the compiler's own parse makes of it
-/// in a workspace over the same files: statement for statement, and its last one meaning something.
-fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> bool {
+/// `path` read back for what it means, when it's the tree the compiler's own parse makes of it in a
+/// workspace over the same files, statement for statement; absent when it isn't.
+fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> ReadBack? {
     files().set(held)
     use_source_world(avra_source_world(read_held, list_held, "avra-test"))
     let back = read_back(
@@ -173,13 +174,28 @@ fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> bool
     let ws = a_process_over(in_w, [e.key for e in rooted])
     let parsed = ws.parsed(ws.file_id("/w/${path}"))
     respelled_origins(parsed.store, (p) -> "@test/p/${p.substring(3, p.length)}")
-    let last = back.stmts[back.stmts.length - 1]
-    let value = back.store.stmt_value(last) ?? back.store.answer_of(last)
-    back.stmts.length == parsed.stmts.length &&
-        value != null &&
-        back.store.meant(value!) != null &&
-        [at for at, s in back.stmts if statement_difference(back.store, s, parsed.store, parsed.stmts[at]) != null]
-            .is_empty()
+    if back.stmts.length != parsed.stmts.length ||
+        refusal_difference(back.store, parsed.store) != null { return null }
+    if (0..back.stmts.length)
+        .any(
+            (at) -> statement_difference(back.store, back.stmts[at], parsed.store, parsed.stmts[at]) != null,
+        ) { return null }
+    back
+}
+
+/// Whether the last statement read back means something.
+fn last_means(back: ReadBack?) -> bool {
+    let read? = back else { return false }
+    let last? = read.stmts.last() else { return false }
+    let value? = read.store.stmt_value(last) ?? read.store.answer_of(last) else { return false }
+    read.store.meant(value) != null
+}
+
+/// Whether some block read back was read by its grammar.
+fn block_read(back: ReadBack?) -> bool {
+    let read? = back else { return false }
+    (0..read.store.exprs.count())
+        .any((at) -> read.store.expr(ExprId { index: at }).body_of()?.view?.expansion() != null)
 }
 
 /// A template component over `quote { … }`, with a record its head names.
@@ -188,20 +204,65 @@ const LIM: string = "export type Span = { n: int }\nexport fn span(n: int) -> Sp
 spec "an item read for what it means" {
     given "a named instance of a record, imported from another module" {
         then "it reads back meaning what the compiler's own parse makes it mean, statement for statement" {
-            meant_as_parsed(
-                store_dir("record"),
-                {"src/lib/tally.av": tally("", "self.extra"), "src/main.av": CONSUMER},
-                "src/main.av",
+            last_means(
+                meant_as_parsed(
+                    store_dir("record"),
+                    {"src/lib/tally.av": tally("", "self.extra"), "src/main.av": CONSUMER},
+                    "src/main.av",
+                ),
             )
         }
     }
     given "an instance of a template, imported from another module" {
         then "it reads back meaning the copy the compiler's own parse makes, statement for statement" {
-            meant_as_parsed(
-                store_dir("template"),
-                {"src/lib/lim.av": LIM, "src/main.av": "use lib.{lim, span}\n\nlim span(1) { 2 }\n"},
-                "src/main.av",
+            last_means(
+                meant_as_parsed(
+                    store_dir("template"),
+                    {
+                        "src/lib/lim.av": LIM,
+                        "src/main.av": "use lib.{lim, span}\n\nlim span(1) { 2 }\n",
+                    },
+                    "src/main.av",
+                ),
             )
         }
     }
+    given "a block of a sublanguage imported from another module" {
+        then "it reads back read by its grammar as the compiler's own parse reads it, statement for statement" {
+            block_read(
+                meant_as_parsed(
+                    store_dir("block"),
+                    {"src/lib/sql.av": SQL, "src/main.av": SQL_USER},
+                    "src/main.av",
+                ),
+            )
+        }
+    }
+    given "the grammar's notation edited" {
+        then "only the edited item is read again, and only the block's item means anew" {
+            let dir = store_dir("notation")
+            files().set({"src/lib/sql.av": SQL, "src/main.av": SQL_USER})
+            let _ = meant_queries(dir, "src/main.av")
+            files().put("src/lib/sql.av", SQL.replace("-> query(c, t)", "->  query(c, t)"))
+            let asked = meant_queries(dir, "src/main.av")
+            asked.filter(it == "item_tape").length == 1 &&
+                asked.filter(it == "item_expanded").length == 1
+        }
+    }
+}
+
+/// A sublanguage, its actions' fns beside it.
+const SQL: string = "export type Select = { cols: List<string>, relation: string }\nexport fn query(cols: List<string>, relation: string) -> Select { Select { cols: cols, relation: relation } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME -> query(c, t)\n}\n"
+
+/// A file with a block of it, and an item that has none.
+const SQL_USER: string = "use lib.{sql, Select}\n\nfn q() -> Select { sql { SELECT a, b FROM t } }\n\nfn other() -> int { 1 }\n"
+
+/// One process reading `path` for what it means: the queries it ran, in order.
+fn meant_queries(dir: string, path: string) -> List<string> {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let store = disk_store_at(dir)
+    let engine = query_engine(store, avra_fact_definitions())
+    let _ = file_meant(engine, file_at(path))
+    let _ = store.saved()
+    engine.computed_queries()
 }

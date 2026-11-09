@@ -20,8 +20,8 @@ use core.{
     BodyView,
 }
 use @std.errors.{Loc}
-use features.{LangNode, Builder, zip_defect_of}
-use @std.grammar.{run_from, Captured, Cause, Grammar, Seq, Item, Build}
+use features.{BlockGrammar, LangNode, Builder, zip_defect_of}
+use @std.grammar.{run_from, Captured, Cause, Grammar, Ready, Seq, Item, Build}
 use grammar.{lex_body, runs, TokenKind, Token, avra_lexeme}
 
 fn build_sublang(b: Builder) -> Result<LangNode, string> {
@@ -44,45 +44,68 @@ fn build_sublang(b: Builder) -> Result<LangNode, string> {
     // `quote_written` carries the identical law).
     let e = b.store.alloc_expr(Expr.Body(w.text, parts, holes, view), w.span.cover(body.span))
     b.store.mark_sublang(e, body.span.lo)
+    if deferred(b, w.text) { b.store.defer_block(e, body.text) }
     .Ok(LangNode.NExpr(e))
+}
+
+/// Whether the block's word is one a parse knows by its shape alone, whose grammar runs later.
+fn deferred(b: Builder, word: string) -> bool { b.words.grammars.any(it.word == word && it.ready == null) }
+
+/// Each block a parse left for later, from `since` on, read by its word's grammar among
+/// `grammars`: what a parse that knew the grammar would have made of it.
+export fn blocks_expanded(store: SyntaxArena, grammars: List<BlockGrammar>, since: int) {
+    for at in since..store.exprs.count() {
+        let e = ExprId { index: at }
+        let text? = store.deferred_block(e) else { continue }
+        let word? = store.expr(e).body_of()?.word else { continue }
+        let block? = grammars.find(it.word == word) else { continue }
+        let ready? = block.ready else { continue }
+        let holes = store.expr(e).body_of()?.holes ?? []
+        let expansion? = store.block_read(ready, block.origin, text, store.body_start(e), holes) else { continue }
+        store.expand_block(e, expansion)
+    }
 }
 
 /// The block's body run through its word's grammar: the root the
 /// actions minted, or null with the refusal spoken at the block.
 fn expanded(b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprId? {
     let block? = b.words.grammars.find(it.word == word) else { return null }
-    let at = body.span.lo
-    let lexed = lex_body(body.text)
-    for x in lexed.errors {
-        b
-            .store
-            .refuse(ParseRefusal.Grammar(Cause.Block, x.message, x.span.shifted(at), [], "(lexing)"))
+    let ready? = block.ready else { return null }
+    b.store.block_read(ready, block.origin, body.text, body.span.lo, holes)
+}
+
+impl SyntaxArena {
+    /// A block's body, standing at `at`, read by a grammar declared at `origin`: the root its
+    /// actions minted, or null with the refusal spoken at the block.
+    fn block_read(block: Ready, origin: string, text: string, at: int, holes: List<ExprId>) -> ExprId? {
+        let lexed = lex_body(text)
+        for x in lexed.errors { self
+                .refuse(ParseRefusal.Grammar(Cause.Block, x.message, x.span.shifted(at), [], "(lexing)")) }
+        if !lexed.errors.is_empty() { return null }
+        let since = self.marks()
+        let store = self
+        let g = block.g
+        let build = (name: string, args: List<Captured<Token, ExprId>>, loc: Loc?) -> store
+            .minted_action(name, listed_seats(g, name, args.length), args, loc_span(loc), holes)
+        let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
+        let o = run_from<Token, ExprId>(block, block.g.start, tokens, avra_lexeme(), build)
+        self.note_foreign(since, origin)
+        for d in o.diagnostics {
+            self
+                .refuse(
+                    ParseRefusal
+                        .Grammar(
+                            Cause.Block,
+                            d.message,
+                            span_of(d.loc?.lo ?? at, d.loc?.hi ?? at),
+                            d.expected,
+                            d.in_rule,
+                        ),
+                )
+        }
+        if !o.diagnostics.is_empty() || o.result == null { return null }
+        self.captured_expr(o.result!, holes)
     }
-    if !lexed.errors.is_empty() { return null }
-    let since = b.store.marks()
-    let store = b.store
-    let g = block.ready.g
-    let build = (name: string, args: List<Captured<Token, ExprId>>, loc: Loc?) -> store
-        .minted_action(name, listed_seats(g, name, args.length), args, loc_span(loc), holes)
-    let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
-    let o = run_from<Token, ExprId>(block.ready, block.ready.g.start, tokens, avra_lexeme(), build)
-    b.store.note_foreign(since, block.origin)
-    for d in o.diagnostics {
-        b
-            .store
-            .refuse(
-                ParseRefusal
-                    .Grammar(
-                        Cause.Block,
-                        d.message,
-                        span_of(d.loc?.lo ?? at, d.loc?.hi ?? at),
-                        d.expected,
-                        d.in_rule,
-                    ),
-            )
-    }
-    if !o.diagnostics.is_empty() || o.result == null { return null }
-    b.store.captured_expr(o.result!, holes)
 }
 
 /// Which of an action's seats take a LIST — the labels captured under
