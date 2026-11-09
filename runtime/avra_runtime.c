@@ -572,6 +572,8 @@ static void acc_report(void) {
 #if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling;
 static int64_t g_mem_next;
+int64_t avra_pool_allowed(int64_t in_use);
+int64_t avra_pool_free_bytes(void);
 #endif
 
 // Settled at load, for the reason `rc_guard_init` gives: a lazy
@@ -588,7 +590,9 @@ static void acc_settled(void) {
     if (wide && *wide) g_wide_cells = (int64_t)avra_number(wide, 10);
 #if AVRA_MEASURES_MEMORY
     const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
-    if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = (int64_t)avra_number(ceiling, 10) << 20;
+    if (ceiling && *ceiling) g_mem_ceiling = (int64_t)avra_number(ceiling, 10) << 20;
+    int64_t first_look = avra_pool_free_bytes();
+    g_mem_next = first_look < g_mem_ceiling ? first_look : g_mem_ceiling;
 #endif
     CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
 }
@@ -625,6 +629,10 @@ int64_t avra_mem_live(void) { return g_live_bytes; }
 // `g_mem_next` measures the allocator's own bytes in use: past the
 // ceiling it traps, and under it the next look waits for the ledger to
 // grow by the headroom that measurement left.
+// AND THE MACHINE'S POOL IS ASKED AT THE SAME LOOK (runtime/avra_pool.c): past
+// a small allowance a process reserves the memory it uses from what every
+// process on the machine shares, and waits for it when others hold it all, so
+// the first look comes at that allowance rather than at the ceiling.
 #if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling = (int64_t)6000 << 20;
 static int64_t g_mem_next = (int64_t)6000 << 20;
@@ -649,7 +657,20 @@ static void mem_ceiling_measure(void) {
                (long long)(g_mem_ceiling >> 20));
         avra_trap(msg); // LICENSED traps.process_limit: the memory ceiling is a limit of the process
     }
-    g_mem_next = g_live_bytes + (g_mem_ceiling - used);
+    int64_t allowed = avra_pool_allowed(used);
+    if (allowed < 0) {
+        char msg[160];
+        if (allowed == -1) {
+            avra_fmt(msg, sizeof msg, "this run needs more than the machine's whole memory pool: %lld MB in use (AVRA_MEM_POOL_MB)",
+                   (long long)(used >> 20));
+        } else {
+            avra_fmt(msg, sizeof msg, "other runs held the machine's memory pool past this run's wait: %lld MB in use (AVRA_MEM_POOL_WAIT_MS)",
+                   (long long)(used >> 20));
+        }
+        avra_trap(msg); // LICENSED traps.process_limit: the pool is a limit of the machine
+    }
+    int64_t limit = allowed < g_mem_ceiling ? allowed : g_mem_ceiling;
+    g_mem_next = g_live_bytes + (limit - used);
 }
 #endif
 
