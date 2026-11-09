@@ -61,6 +61,25 @@ fn lit_table(slots: Map<string, int>) -> List<string> {
     texts
 }
 
+/// One branch being written: where it starts, what caps its items, and what its items written
+/// so far are known to have done — `surely` one consumed, `spoke` one may have said something;
+/// `an` and `ss` whether its code reads the anchored flag and the words at its entry.
+type Branch = {
+    s: Seq,
+    n: int,
+    entry: string,
+    cap: string,
+    capx: string,
+    acc: bool,
+    br: string,
+    scope: List<string>,
+    keep_v0: bool,
+    surely: bool,
+    spoke: bool,
+    an: bool,
+    ss: bool,
+}
+
 /// One arm of a climb's operator match: the first words it answers and what it runs.
 type Arm = { slots: List<int>, body: string }
 
@@ -220,6 +239,10 @@ impl Gen {
     ) {
         let n = self.fresh()
         let kept = if branch_fns == null { written(a) } else { [] }
+        if branch_fns == null && a.branches.length == 1 {
+            self.lone_alt(a.branches[0], n, kept, entry, origin, cap, acc, res, scope)
+            return
+        }
         self.line("let as${n} = u.said")
         for x in kept { self.line("let sv${n}_${x} = l_${x}") }
         self.line("mut bs${n} = no_end")
@@ -254,6 +277,32 @@ impl Gen {
         self.line("} else {")
         self.line("u.said = as${n}")
         self.line("${res} = no_end")
+        self.line("}")
+        self.line("}")
+    }
+
+    /// A choice of one branch: what it answers, and on a miss nothing it bound or said.
+    mut fn lone_alt(
+        s: Seq,
+        n: int,
+        kept: List<string>,
+        entry: string,
+        origin: string,
+        cap: string,
+        acc: bool,
+        res: string,
+        scope: List<string>,
+    ) {
+        self.line("let as${n} = u.said")
+        for x in kept { self.line("let sv${n}_${x} = l_${x}") }
+        let guard = self.guard(s.start, entry)
+        if guard != null { self.line("if ${guard!} {") }
+        self.seq(s, entry, origin, cap, acc, res, scope)
+        if guard != null { self.line("}") }
+        self.line("if ${res} < 0 {")
+        for x in kept { self.line("l_${x} = sv${n}_${x}") }
+        self.line("if ${res} == no_end {")
+        self.line("u.said = as${n}")
         self.line("}")
         self.line("}")
     }
@@ -313,135 +362,175 @@ impl Gen {
         scope: List<string>,
     ) {
         let n = self.fresh()
-        let v0 = s.build == null || s.operators != null
-        self.line("for b${n} in 0..1 {")
-        self.line("let ss${n} = u.said")
-        self.line("let e${n} = ${entry}")
-        self.line("let o${n} = ${origin}")
-        self.line("mut c${n} = e${n}")
-        if [m for i, m in s.items if i < s.items.length - 1 && opens(m.prim)].length > 0 { self.line("mut open${n} = !(${cap})") } else { self.line("let open${n} = !(${cap})") }
-        if s.items.length > 1 { self.line("mut an${n} = false") }
-        if v0 { self.line("mut v0${n} = u.absent") }
-        for i, m in s.items { self.member(s, n, i, m, acc, v0, br, scope) }
+        let pass = s.build == null || s.operators != null
+        let lone = pass && s.operators == null && s.items.length == 1
+        let opening = [m for i, m in s.items if i < s.items.length - 1 && opens(m.prim)].length > 0
+        mut b = Branch {
+            s: s,
+            n: n,
+            entry: entry,
+            cap: cap,
+            capx: if opening { "!open${n}" } else { cap },
+            acc: acc,
+            br: br,
+            scope: scope,
+            keep_v0: pass && !lone,
+            surely: false,
+            spoke: false,
+            an: false,
+            ss: false,
+        }
+        let outer = self.lines
+        self.lines = []
+        self.depth = self.depth + 1
+        for i, m in s.items { b = self.member(b, i, m) }
+        let v0 = if lone { "u.out" } else { "v0${n}" }
         if s.operators != null {
             let id = self.fresh()
             self.climbs.push(ClimbJob { id: id, s: s })
+            b = b with { ss: true }
             self
-                .line("${br} = ${self.name("climb${id}")}(u, v0${n}, e${n}, c${n}, 0, ${cap}, ss${n})")
-            self.line("break b${n}")
+                .line("${br} = ${self.name("climb${id}")}(u, ${v0}, ${entry}, c${n}, 0, ${cap}, ss${n})")
         } else {
             let loc = "lc${n}"
-            if needs_loc(s.build) { self.line("let ${loc} = u.span(o${n}, c${n})") }
+            if needs_loc(s.build) || s.items.is_empty() { b = b with { ss: true } }
+            if needs_loc(s.build) {
+                self.line("let ${loc} = u.span(${origin}, c${n})")
+            }
             self
                 .built(
                     s.build,
                     scope,
                     [],
-                    if s.items.is_empty() { null } else { "v0${n}" },
+                    if s.items.is_empty() { null } else { v0 },
                     loc,
                     ["if u.refused(ss${n}) { ${br} = c${n} }", "break b${n}"],
                 )
             self.line("${br} = c${n}")
         }
         self.line("}")
+        let body = self.lines
+        self.lines = outer
+        self.line("for b${n} in 0..1 {")
+        if b.ss { self.line("let ss${n} = u.said") }
+        self.line("mut c${n} = ${entry}")
+        if opening { self.line("mut open${n} = !(${cap})") }
+        if b.an { self.line("mut an${n} = false") }
+        if b.keep_v0 { self.line("mut v0${n} = u.absent") }
+        self.lines.push(body.join("\n"))
+        self.depth = self.depth - 1
     }
 
-    /// Item `i` of branch `n`: matched, then judged as `match_seq` judges it.
-    mut fn member(
-        s: Seq,
-        n: int,
-        i: int,
-        m: Item,
-        acc: bool,
-        v0: bool,
-        br: string,
-        scope: List<string>,
-    ) {
+    /// Item `i` of branch `b`: matched, then judged as `match_seq` judges it. Answers the branch
+    /// with what its items are now known to have done.
+    mut fn member(b0: Branch, i: int, m: Item) -> Branch {
+        mut b = b0
+        let n = b.n
+        let s = b.s
         let r = "r${n}_${i}"
         let last = i == s.items.length - 1
-        let want = m.label != null || i == 0 && v0
-        let capx = "!open${n}"
+        let want = m.label != null ||
+            i == 0 && (b.keep_v0 || s.items.length == 1 && s.build == null)
+        let fold = s.fold != null && (m.rep == Rep.Star || m.rep == Rep.Opt)
+        let misses = m.trailer || !fold && (m.rep == Rep.One || m.rep == Rep.Plus)
+        let breaks = !fold && m.rep == Rep.One && can_break(m.prim)
         self.line("mut ${r} = no_end")
-        if m.trailer { self.line("if open${n} {") }
-        if s.fold != null && (m.rep == Rep.Star || m.rep == Rep.Opt) {
-            self.fold(s, n, m, r, capx, scope)
+        if m.trailer { self.line("if ${if b.capx == b.cap { "!(${b.cap})" } else { "open${n}" }} {") }
+        if fold {
+            self.fold(b, m, r)
         } else {
             match m.rep {
                 .One -> {
-                    self.prim(m, "c${n}", capx, acc, want, r, scope)
+                    self.prim(m, "c${n}", b.capx, b.acc, want, r, b.scope)
                     if m.label != null {
                         self.line("if ${r} >= 0 {")
-                        self.line(self.bound(m.label!, "u.out", acc || m.listed))
+                        self.line(self.bound(m.label!, "u.out", b.acc || m.listed))
                         self.line("}")
                     }
                 },
                 .Opt -> {
-                    self.line("let os${n}_${i} = u.said")
-                    self.prim(m, "c${n}", capx, acc, want, r, scope)
-                    self.line("if ${r} >= 0 {")
-                    if m.label != null { self.line(self.bound(m.label!, "u.out", acc || m.listed)) }
-                    self.line("} else {")
-                    self.line("u.said = os${n}_${i}")
+                    let quiet = can_speak(m.prim)
+                    if quiet { self.line("let os${n}_${i} = u.said") }
+                    self.prim(m, "c${n}", b.capx, b.acc, want, r, b.scope)
+                    self.line("if ${r} < 0 {")
+                    if quiet { self.line("u.said = os${n}_${i}") }
                     self.line("${r} = c${n}")
                     if want { self.line("u.out = u.absent") }
+                    if m.label != null {
+                        self.line("} else {")
+                        self.line(self.bound(m.label!, "u.out", b.acc || m.listed))
+                    }
                     self.line("}")
                 },
-                .Star -> self.repetition(m, n, r, 0, capx, want, scope),
-                .Plus -> self.repetition(m, n, r, 1, capx, want, scope),
+                .Star -> self.repetition(b, m, r, 0, want),
+                .Plus -> self.repetition(b, m, r, 1, want),
             }
         }
         if m.trailer { self.line("}") }
-        self.line("if ${r} >= 0 {")
-        if !last {
+        let tracks = !last && !b.surely
+        if misses { self.line("if ${r} >= 0 {") }
+        if tracks {
+            b = b with { an: true }
             self.line("if ${r} > c${n} {")
             self.line("an${n} = true")
             self.line("}")
-            if opens(m.prim) { self.line("open${n} = true") }
         }
+        if !last && opens(m.prim) { self.line("open${n} = true") }
         self.line("c${n} = ${r}")
-        if i == 0 && v0 { self.line("v0${n} = u.out") }
-        self.line("} else if ${r} == broke_end {")
-        self.line("${br} = broke_end")
-        self.line("break b${n}")
-        if i == 0 {
+        if i == 0 && b.keep_v0 { self.line("v0${n} = u.out") }
+        let spoke = b.spoke || can_speak(m.prim) || fold
+        let after = b with { surely: b.surely || consumes(m), spoke: spoke || m.expect != null }
+        if !misses { return after with { spoke: spoke } }
+        if breaks {
+            self.line("} else if ${r} == broke_end {")
+            self.line("${b.br} = broke_end")
+            self.line("break b${n}")
+        }
+        if i == 0 || !b.surely && !b.an {
             self.line("} else {")
-            self.line("${br} = no_end")
+            self.line("${b.br} = no_end")
             self.line("break b${n}")
             self.line("}")
-            return
+            return after
         }
-        self.line("} else if !an${n} {")
-        self.line("${br} = no_end")
-        self.line("break b${n}")
-        self.line("} else if u.said > ss${n} {")
-        if m.expect == null && s.recover == null {
-            self.line("${br} = broke_end")
-        } else {
-            self.line("${br} = ${self.synced(s.recover?.sync_to ?? "END", n)}")
-            self.line("u.out = u.absent")
+        if !b.surely {
+            self.line("} else if !an${n} {")
+            self.line("${b.br} = no_end")
+            self.line("break b${n}")
         }
-        self.line("break b${n}")
+        if b.spoke {
+            b = b with { ss: true }
+            self.line("} else if u.said > ss${n} {")
+            if m.expect == null && s.recover == null {
+                self.line("${b.br} = broke_end")
+            } else {
+                self.line("${b.br} = ${self.synced(s.recover?.sync_to ?? "END", b)}")
+                self.line("u.out = u.absent")
+            }
+            self.line("break b${n}")
+        }
         self.line("} else {")
         self.line("u.said = u.said + 1")
         if m.expect != null {
-            if m.label != null { self.line(self.bound(m.label!, "u.absent", acc)) }
-            if m.prim.answers_to("END") { self.line("c${n} = u.sync_to_end(e${n}, c${n})") }
+            if m.label != null { self.line(self.bound(m.label!, "u.absent", b.acc)) }
+            if m.prim.answers_to("END") { self.line("c${n} = u.sync_to_end(${b.entry}, c${n})") }
         } else if s.recover == null {
-            self.line("${br} = broke_end")
+            self.line("${b.br} = broke_end")
             self.line("break b${n}")
         } else {
-            self.line("${br} = ${self.synced(s.recover!.sync_to, n)}")
+            self.line("${b.br} = ${self.synced(s.recover!.sync_to, b)}")
             self.line("u.out = u.absent")
             self.line("break b${n}")
         }
         self.line("}")
+        after with { an: b.an, ss: b.ss }
     }
 
-    /// Where recovery to `target` lands from branch `n`'s cursor.
-    fn synced(target: string, n: int) -> string {
-        if is_end(target) { return "u.sync_to_end(e${n}, c${n})" }
-        if self.rd.known_terminals.contains(target) { return "u.sync_kind(u.lex.kind_of(${quoted(target)}), c${n})" }
-        "u.sync_text(${quoted(target)}, c${n})"
+    /// Where recovery to `target` lands from branch `b`'s cursor.
+    fn synced(target: string, b: Branch) -> string {
+        if is_end(target) { return "u.sync_to_end(${b.entry}, c${b.n})" }
+        if self.rd.known_terminals.contains(target) { return "u.sync_kind(u.lex.kind_of(${quoted(target)}), c${b.n})" }
+        "u.sync_text(${quoted(target)}, c${b.n})"
     }
 
     /// The capture written to `label`: collected or replaced.
@@ -505,44 +594,38 @@ impl Gen {
         }
     }
 
-    /// A greedy repetition of `m` from branch `n`'s cursor into `r`: a failed turn ends it, and a
+    /// A greedy repetition of `m` from branch `b`'s cursor into `r`: a failed turn ends it, and a
     /// turn that consumes nothing wrecks the run.
-    mut fn repetition(
-        m: Item,
-        n: int,
-        r: string,
-        min: int,
-        cap: string,
-        want: bool,
-        scope: List<string>,
-    ) {
+    mut fn repetition(b: Branch, m: Item, r: string, min: int, want: bool) {
         let k = self.fresh()
-        let counted = min > 0 && !want
-        self.line("let re${k} = u.said")
-        self.line("mut rc${k} = c${n}")
+        let collects = want || m.label != null
+        let counted = min > 0 && !collects
+        let quiet = can_speak(m.prim)
+        if min > 0 && quiet { self.line("let re${k} = u.said") }
+        self.line("mut rc${k} = c${b.n}")
         if counted { self.line("mut nn${k} = 0") }
-        if want { self.line("mut col${k}: List<${self.cap_type()}> = []") }
+        if collects { self.line("mut col${k}: List<${self.cap_type()}> = []") }
         self.line("while true {")
-        self.line("let rs${k} = u.said")
+        if quiet { self.line("let rs${k} = u.said") }
         self.line("mut ir${k} = no_end")
-        self.prim(m, "rc${k}", cap, true, want, "ir${k}", scope)
+        self.prim(m, "rc${k}", b.capx, true, collects, "ir${k}", b.scope)
         self.line("if ir${k} < 0 {")
-        self.line("u.said = rs${k}")
+        if quiet { self.line("u.said = rs${k}") }
         self.line("break")
         self.line("}")
         self.line("if ir${k} == rc${k} {")
-        self.line("u.said = rs${k} + 1")
+        self.line("u.said = u.said + 1")
         self.line("u.fatal = true")
         self.line("break")
         self.line("}")
-        if want { self.line("col${k}.push(u.out)") }
+        if collects { self.line("col${k}.push(u.out)") }
         self.line("rc${k} = ir${k}")
         if counted { self.line("nn${k} = nn${k} + 1") }
         self.line("}")
-        let count = if want { "col${k}.length" } else { "nn${k}" }
+        let count = if collects { "col${k}.length" } else { "nn${k}" }
         if min > 0 {
             self.line("if ${count} < ${min} {")
-            self.line("u.said = re${k}")
+            if quiet { self.line("u.said = re${k}") }
             self.line("} else {")
         }
         self.line("${r} = rc${k}")
@@ -558,10 +641,10 @@ impl Gen {
         if min > 0 { self.line("}") }
     }
 
-    /// A fold's turns from branch `n`'s cursor into `r`: each turn reads the value so far under
+    /// A fold's turns from branch `b`'s cursor into `r`: each turn reads the value so far under
     /// the seed's label, and what else it bound dies with it.
-    mut fn fold(s: Seq, n: int, m: Item, r: string, cap: string, scope: List<string>) {
-        let field = s.fold!
+    mut fn fold(b: Branch, m: Item, r: string) {
+        let field = b.s.fold!
         let turns? = m.prim.group_alt() else {
             self.refuse("a fold's turns are a group")
             return
@@ -569,13 +652,13 @@ impl Gen {
         let k = self.fresh()
         let dying = [x for x in written(turns) if x != field]
         self.line("mut fa${k} = l_${field}")
-        self.line("mut fc${k} = c${n}")
+        self.line("mut fc${k} = c${b.n}")
         for x in dying { self.line("let fs${k}_${x} = l_${x}") }
         self.line("while true {")
         self.line("l_${field} = fa${k}")
         self.line("let fb${k} = u.said")
         self.line("mut tr${k} = no_end")
-        self.alt(turns, "fc${k}", "e${n}", cap, false, "tr${k}", scope, null)
+        self.alt(turns, "fc${k}", b.entry, b.capx, false, "tr${k}", b.scope, null)
         for x in dying { self.line("l_${x} = fs${k}_${x}") }
         self.line("if tr${k} < 0 {")
         self.line("u.said = fb${k}")
@@ -920,6 +1003,20 @@ fn needs_loc(b: Build?) -> bool {
     let d? = b else { return false }
     match d { .Var(_) -> false, .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> true }
 }
+
+/// Whether an item surely consumes a token when it matches: a literal, matched once.
+fn consumes(m: Item) -> bool {
+    if m.rep != Rep.One || m.trailer { return false }
+    match m.prim { .Lit(_) -> true, .Named(_) or .Ref(_) or .Group(_) or .NotChar(_) -> false }
+}
+
+/// Whether matching an atom can answer that it broke.
+fn can_break(p: Prim) -> bool {
+    match p { .Ref(_) or .Group(_) or .NotChar(_) -> true, .Lit(_) or .Named(_) -> false }
+}
+
+/// Whether matching an atom can say anything.
+fn can_speak(p: Prim) -> bool { can_break(p) }
 
 /// A delimiter that opens what follows it in its sequence.
 fn opens(p: Prim) -> bool {
