@@ -1,21 +1,16 @@
-//! ANSWERS ON DISK: a directory of packs, each immutable and named by the hash of its bytes. A
-//! process publishes what it learned as one new pack, with a single atomic rename. So there is no
-//! log to tear and no lock to hold: any number of processes write at once, and one that dies
-//! leaves everything it published. A pack is read where it lies, so opening a store costs a map
-//! per pack and answers are never paged in to check a record. A new pack absorbs every pack no
-//! bigger than itself, which keeps the count of packs logarithmic and each answer's rewrites few.
-//! The worst a race can do is repeat work: a pack gone from under a reader is a miss.
-use @std.io.{IoError, list_dir, make_dirs, remove, write_bytes}
+//! ANSWERS ON DISK: a directory of packs, each immutable. A process streams every answer it keeps
+//! into a draft as it's made and holds only where each lies, so what it holds follows what it's
+//! working on, never the size of the program. Publishing appends the draft's index and its seal,
+//! and one atomic rename makes it a pack: there is no log to tear and no lock to hold, any number
+//! of processes write at once, and one that dies leaves everything it published. A pack is read
+//! where it lies, so opening a store costs a map per pack and checking a record pages in no answer.
+//! A new pack absorbs every pack no bigger than itself, which keeps the count of packs logarithmic
+//! and each answer's copies few. The worst a race can do is repeat work: a pack gone from under a
+//! reader is a miss.
+use @std.hash.{Hasher, hasher}
+use @std.io.{Draft, IoError, abandoned_drafts, drafted, list_dir, make_dirs, remove}
 use @std.meta.{derive}
-use answer_record.{
-    AnswerRecord,
-    ContentHash,
-    KeptRecord,
-    Question,
-    content_hash,
-    entry_keyed,
-    kept_in_place,
-}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, entry_keyed, kept_in_place}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use query_engine.{AnswerStore}
 use saved_derive.{Saved}
@@ -26,7 +21,9 @@ use saved_layout.{
     SavedSlots,
     SavedSource,
     saved_bytes_in_memory,
+    saved_layout_writer,
     saved_root_record,
+    word_in,
 }
 use sorted.{sorted_by}
 
@@ -35,34 +32,38 @@ extern fn avra_mmap_len(mapping: ptr) -> int
 extern fn avra_mmap_close(mapping: ptr)
 
 /// A pack's last octets. It names the format, and a pack that lost its tail doesn't have it.
-export const PACK_SEAL: string = "avrapak2"
+export const PACK_SEAL: string = "avrapak3"
 
 const PACK_SUFFIX: string = ".pack"
 
-/// An answer's bytes, under their hash.
+/// The most octets of answers a draft holds in memory past its mapping before it maps itself again.
+const UNMAPPED_OCTETS: int = 16777216
+
+/// Where an answer's bytes lie in a pack, by their hash.
 @derive(Saved)
-type KeptAnswer = { answer: ContentHash, bytes: Bytes }
+type AnswerSpan = { answer: ContentHash, at: int, length: int }
 
 /// One question, once, and every way it was answered.
 @derive(Saved)
 type QuestionRecords = { question: ContentHash, asked: Question, records: List<AnswerRecord> }
 
-/// A pack's contents, each table sorted by hash. Answers are written first, so the records sit
-/// together and checking them pages in none of the answers.
+/// A pack's index, written after its answers' octets: each table sorted by hash, beside a list of
+/// its keys' high words, so a search touches numbers and opens only the entries it might have found.
 @derive(Saved)
-type AnswerPack = {
+type PackIndex = {
     answer_high_words: List<int>,
-    answers: List<KeptAnswer>,
+    answers: List<AnswerSpan>,
     question_high_words: List<int>,
     questions: List<QuestionRecords>,
 }
 
-/// A pack in a mapped file. Its tables' labels are read once, here. A mapping stays for the life of
-/// the process, so bytes read from one never dangle, even after its file is gone.
+/// A pack in a mapped file. Its index's tables are found once, here. A mapping stays for the life
+/// of the process, so bytes read from one never dangle, even after its file is gone.
 type MappedPack = {
     path: string,
     length: int,
-    root: SavedRecord,
+    source: SavedSource,
+    index: SavedRecord,
     answer_high_words: SavedList,
     answers: SavedList,
     question_high_words: SavedList,
@@ -74,20 +75,22 @@ fn mapped_pack(path: string) -> MappedPack? {
     let mapping? = avra_mmap_open(path) else { return null }
     let source = SavedSource.Mapped(mapping)
     let length = avra_mmap_len(mapping)
-    let root_ends_at = length - PACK_SEAL.length
-    if root_ends_at < PACK_SEAL.length || source.octets_at(root_ends_at, length).text() != PACK_SEAL {
+    let index_ends_at = length - PACK_SEAL.length
+    if index_ends_at < PACK_SEAL.length ||
+        source.octets_at(index_ends_at, length).text() != PACK_SEAL {
         avra_mmap_close(mapping)
         return null
     }
-    let root = saved_root_record(source, root_ends_at)
+    let index = saved_root_record(source, index_ends_at)
     MappedPack {
         path: path,
         length: length,
-        root: root,
-        answer_high_words: AnswerPack.answer_high_words_in_place(root),
-        answers: AnswerPack.answers_in_place(root),
-        question_high_words: AnswerPack.question_high_words_in_place(root),
-        questions: AnswerPack.questions_in_place(root),
+        source: source,
+        index: index,
+        answer_high_words: PackIndex.answer_high_words_in_place(index),
+        answers: PackIndex.answers_in_place(index),
+        question_high_words: PackIndex.question_high_words_in_place(index),
+        questions: PackIndex.questions_in_place(index),
     }
 }
 
@@ -107,7 +110,112 @@ impl MappedPack {
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
         let entry? = entry_keyed(self.answer_high_words, self.answers, answer) else { return null }
-        KeptAnswer.bytes_in_place(entry)
+        let at = AnswerSpan.at_in(entry)
+        SavedBytes { source: self.source, from: at, to: at + AnswerSpan.length_in(entry) }
+    }
+
+    /// How many answers and questions the pack holds.
+    fn entries() -> int { self.answers.length + self.questions.length }
+
+    /// Every answer the pack holds: its hash, and its bytes where they lie.
+    fn kept_answers() -> List<AnswerSpan> { PackIndex.answers_in(self.index) }
+
+    /// Every question the pack holds, with its records.
+    fn kept_questions() -> List<QuestionRecords> { PackIndex.questions_in(self.index) }
+}
+
+/// What this process is writing: the draft each answer it keeps is appended to, where each lies in
+/// it, what's appended but not yet written, and what's written past the draft's last mapping, held
+/// until it's mapped again. A draft a write failed on is spoiled: its index would point at octets
+/// that never reached it, so it's never published.
+type Segment = {
+    draft: Draft,
+    appended_octets: Cell<int>,
+    spans: HashKeyedTable<AnswerSpan>,
+    unwritten: Cell<List<Bytes>>,
+    unwritten_octets: Cell<int>,
+    view: Cell<SavedSource>,
+    viewed: Cell<int>,
+    unviewed: HashKeyedTable<Bytes>,
+    unviewed_octets: Cell<int>,
+    /// The write that spoiled the draft, if one did.
+    spoiled_by: Cell<List<IoError>>,
+}
+
+/// The most octets a draft gathers before writing them, so a write is never one small answer.
+const UNWRITTEN_OCTETS: int = 1048576
+
+fn segment_of(draft: Draft) -> Segment {
+    let spans: HashKeyedTable<AnswerSpan> = hash_keyed_table()
+    let unwritten: Cell<List<Bytes>> = Cell.new([])
+    let unviewed: HashKeyedTable<Bytes> = hash_keyed_table()
+    let spoiled_by: Cell<List<IoError>> = Cell.new([])
+    Segment {
+        draft: draft,
+        appended_octets: Cell.new(0),
+        spans: spans,
+        unwritten: unwritten,
+        unwritten_octets: Cell.new(0),
+        view: Cell.new(SavedSource.InMemory("".bytes())),
+        viewed: Cell.new(0),
+        unviewed: unviewed,
+        unviewed_octets: Cell.new(0),
+        spoiled_by: spoiled_by,
+    }
+}
+
+impl Segment {
+    /// `octets` appended, answering where they start. They reach the draft with the next write.
+    fn appended(octets: Bytes) -> int {
+        let at = self.appended_octets.get()
+        self.appended_octets.set(at + octets.length)
+        self.unwritten.push(octets)
+        self.unwritten_octets.set(self.unwritten_octets.get() + octets.length)
+        if self.unwritten_octets.get() >= UNWRITTEN_OCTETS { self.written() }
+        at
+    }
+
+    /// Everything appended written to the draft, in one write. A write that fails spoils it.
+    fn written() {
+        if self.unwritten_octets.get() == 0 { return }
+        if self.is_spoiled() { return }
+        match self.draft.write(self.unwritten.get().bytes()) {
+            .Ok(_) -> {},
+            .Err(e) -> { return self.spoiled_by.push(e) },
+        }
+        self.unwritten.set([])
+        self.unwritten_octets.set(0)
+    }
+
+    /// An answer's bytes kept: appended, and held until the draft is mapped past them.
+    fn keep(answer: ContentHash, bytes: Bytes) {
+        let at = self.appended(bytes)
+        self.spans.put(answer, AnswerSpan { answer: answer, at: at, length: bytes.length })
+        self.unviewed.put(answer, bytes)
+        self.unviewed_octets.set(self.unviewed_octets.get() + bytes.length)
+        if self.unviewed_octets.get() >= UNMAPPED_OCTETS { self.mapped_again() }
+    }
+
+    /// The draft written and mapped as far as it goes, so nothing in it need be held. A draft that
+    /// can't be written or mapped keeps its answers held.
+    fn mapped_again() {
+        self.written()
+        if self.is_spoiled() { return }
+        let mapping? = avra_mmap_open(self.draft.path) else { return }
+        if avra_mmap_len(mapping) != self.appended_octets.get() { return avra_mmap_close(mapping) }
+        self.view.set(SavedSource.Mapped(mapping))
+        self.viewed.set(avra_mmap_len(mapping))
+        self.unviewed.clear()
+        self.unviewed_octets.set(0)
+    }
+
+    fn is_spoiled() -> bool { !self.spoiled_by.get().is_empty() }
+
+    fn answer_bytes(answer: ContentHash) -> SavedBytes? {
+        let span? = self.spans.get(answer) else { return null }
+        let end = span.at + span.length
+        if end <= self.viewed.get() { return SavedBytes { source: self.view.get(), from: span.at, to: end } }
+        saved_bytes_in_memory(self.unviewed.get(answer)!)
     }
 }
 
@@ -117,26 +225,25 @@ export type DiskStore = {
     directory: string,
     packs: Cell<List<MappedPack>>,
     new_questions: HashKeyedTable<QuestionRecords>,
-    new_answers: HashKeyedTable<KeptAnswer>,
+    /// The draft this process is writing, once it keeps an answer.
+    segment: Cell<List<Segment>>,
     /// Bytes for this process alone, never published.
     held_answers: HashKeyedTable<Bytes>,
 }
 
-/// The store at `directory`. A directory that isn't there yet is an empty store.
+/// The store at `directory`. A directory that isn't there yet is an empty store. A draft whose
+/// process died is removed.
 export fn disk_store_at(directory: string) -> DiskStore {
-    mut packs: List<MappedPack> = []
-    for file_name in pack_names_in(directory) {
-        let pack? = mapped_pack("${directory}/${file_name}") else { continue }
-        packs.push(pack)
-    }
+    for name in abandoned_drafts(directory) { let _ = remove("${directory}/${name}") }
+    let packs = [pack! for name in pack_names_in(directory) for pack in [mapped_pack("${directory}/${name}")] if pack != null]
     let new_questions: HashKeyedTable<QuestionRecords> = hash_keyed_table()
-    let new_answers: HashKeyedTable<KeptAnswer> = hash_keyed_table()
     let held_answers: HashKeyedTable<Bytes> = hash_keyed_table()
+    let segment: Cell<List<Segment>> = Cell.new([])
     DiskStore {
         directory: directory,
         packs: Cell.new(packs),
         new_questions: new_questions,
-        new_answers: new_answers,
+        segment: segment,
         held_answers: held_answers,
     }
 }
@@ -169,8 +276,12 @@ impl AnswerStore for DiskStore {
         )
     }
 
+    /// An answer kept in the draft. A store that can't write keeps it for this process alone, so a
+    /// full disk costs the next process work and never this one an answer.
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) {
-        self.new_answers.put(answer, KeptAnswer { answer: answer, bytes: bytes })
+        if self.unpublished_answer(answer) != null { return }
+        let segment? = self.writing() else { return self.held_answers.put(answer, bytes) }
+        segment.keep(answer, bytes)
     }
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.held_answers.put(answer, bytes) }
@@ -178,8 +289,19 @@ impl AnswerStore for DiskStore {
 
 impl DiskStore {
     fn unpublished_answer(answer: ContentHash) -> SavedBytes? {
-        let bytes? = self.held_answers.get(answer) ?? self.new_answers.get(answer)?.bytes else { return null }
-        saved_bytes_in_memory(bytes)
+        let held? = self.held_answers.get(answer) else { return self.segment.get().first()?.answer_bytes(answer) }
+        saved_bytes_in_memory(held)
+    }
+
+    /// The draft this process writes, opened on first use; absent when none can be. A draft a
+    /// forked parent opened is left to it.
+    fn writing() -> Segment? {
+        let open = self.segment.get().first()
+        if open != null && open!.draft.is_mine() { return open }
+        let draft? = opened_draft(self.directory) else { return null }
+        let segment = segment_of(draft)
+        self.segment.set([segment])
+        segment
     }
 
     fn take_records(asked: Question, records: List<AnswerRecord>) {
@@ -192,40 +314,66 @@ impl DiskStore {
     }
 
     /// Whether this process has learned anything it hasn't published.
-    fn has_news() -> bool { !self.new_questions.is_empty() || !self.new_answers.is_empty() }
+    fn has_news() -> bool { !self.new_questions.is_empty() || self.learned() > 0 }
+
+    /// How many answers and questions this process learned, to weigh against a pack's.
+    fn entries_learned() -> int {
+        let segment? = self.segment.get().first() else { return self.new_questions.values().length }
+        self.new_questions.values().length + segment.spans.values().length
+    }
+
+    /// How many octets this process has written to its draft.
+    fn learned() -> int {
+        let segment? = self.segment.get().first() else { return 0 }
+        segment.appended_octets.get()
+    }
 
     /// Publishes what this process learned as one pack, absorbing packs no bigger than it, and
     /// answers how many octets it wrote. A process that learned nothing writes nothing.
     fn saved() -> Result<int, IoError> {
         if !self.has_news() { return 0 }
-        let fresh = self.octets_of_new()
-        let absorbed = absorbed_by(fresh.length, self.packs.get())
-        self.take_in(absorbed)
-        self.published(if absorbed.is_empty() { fresh } else { self.octets_of_new() }, absorbed)
+        self.published(absorbed_by(self.entries_learned(), self.packs.get()))
     }
 
     /// Publishes what this process learned as a pack of its own, for when others are publishing
     /// beside it and merging would only repeat their work.
     fn saved_alone() -> Result<int, IoError> {
         if !self.has_news() { return 0 }
-        self.published(self.octets_of_new(), [])
+        self.published([])
     }
 
     /// Every pack as one, for when several are published at once. Answers how many octets it wrote.
     fn merged() -> Result<int, IoError> {
         let packs = self.packs.get()
         if packs.length < 2 { return 0 }
-        self.take_in(packs)
-        self.published(self.octets_of_new(), packs)
+        self.published(packs)
     }
 
-    /// `octets` as a pack on disk, which the store then reads in place of `absorbed`, and has
-    /// nothing new. Answers how many octets it wrote.
-    fn published(octets: Bytes, absorbed: List<MappedPack>) -> Result<int, IoError> {
-        make_dirs(self.directory)?
-        let hash = content_hash(octets)
-        let path = "${self.directory}/${hash.high_word}_${hash.low_word}${PACK_SUFFIX}"
-        write_bytes(path, octets)?
+    /// What this process learned and what `absorbed` holds, sealed as one pack, which the store
+    /// then reads in place of `absorbed`, and has nothing new. Answers how many octets it wrote.
+    fn published(absorbed: List<MappedPack>) -> Result<int, IoError> {
+        let segment? = self.writing() else { return 0 }
+        for pack in absorbed { self.take_in(segment, pack) }
+        let runs = index_runs(self.new_questions.values(), segment.spans.values())
+        mut named = hasher()
+        for run in runs {
+            let _ = segment.appended(run)
+            named = named.update(run)
+        }
+        let _ = segment.appended(PACK_SEAL.bytes())
+        segment.written()
+        let spoiled? = segment.spoiled_by.get().first() else { return self.sealed(segment, absorbed, named) }
+        segment.draft.dropped()
+        self.segment.set([])
+        fail spoiled
+    }
+
+    /// The draft, written whole, published as the pack its index names; the store then reads it in
+    /// place of `absorbed`, and has nothing new. Answers how many octets it wrote.
+    fn sealed(segment: Segment, absorbed: List<MappedPack>, named: Hasher) -> Result<int, IoError> {
+        let digest = named.digest()
+        let path = "${self.directory}/${word_in(digest, 0)}_${word_in(digest, 8)}${PACK_SUFFIX}"
+        segment.draft.published(path)?
         for pack in absorbed {
             if pack.path != path { let _ = remove(pack.path) }
         }
@@ -233,33 +381,41 @@ impl DiskStore {
         let opened = mapped_pack(path)
         self.packs.set(if opened == null { kept } else { kept.concat([opened!]) })
         self.new_questions.clear()
-        self.new_answers.clear()
-        octets.length
+        self.segment.set([])
+        segment.appended_octets.get()
     }
 
-    /// What `absorbed` holds, taken in as if it had been learned here.
-    fn take_in(absorbed: List<MappedPack>) {
-        for pack in absorbed {
-            let contents = AnswerPack.read_from(pack.root)
-            for entry in contents.questions {
-                let earlier = self.new_questions.get(entry.question)?.records ?? []
-                self.take_records(entry.asked, merged_records(earlier, entry.records))
-            }
-            for kept in contents.answers { self.new_answers.put(kept.answer, kept) }
+    /// What `pack` holds, taken in as if it had been learned here: its answers' octets copied into
+    /// the draft, one at a time, and its records merged with this process's.
+    fn take_in(segment: Segment, pack: MappedPack) {
+        for span in pack.kept_answers() {
+            if segment.spans.get(span.answer) != null { continue }
+            let at = segment.appended(pack.source.octets_at(span.at, span.at + span.length))
+            segment
+                .spans
+                .put(span.answer, AnswerSpan { answer: span.answer, at: at, length: span.length })
+        }
+        for entry in pack.kept_questions() {
+            let earlier = self.new_questions.get(entry.question)?.records ?? []
+            self.take_records(entry.asked, merged_records(earlier, entry.records))
         }
     }
-
-    /// Everything learned and taken in, as one pack's octets.
-    fn octets_of_new() -> Bytes { pack_octets(self.new_questions.values(), self.new_answers.values()) }
 }
 
-/// The packs a new pack of `length` absorbs: smallest first, each no bigger than all before it.
-fn absorbed_by(length: int, packs: List<MappedPack>) -> List<MappedPack> {
-    mut gathered = length
+/// A draft beside the store's packs, absent when none can be opened.
+fn opened_draft(directory: string) -> Draft? {
+    let _ = make_dirs(directory) catch ""
+    match drafted("${directory}/learned") { .Ok(draft) -> draft, .Err(_) -> null }
+}
+
+/// The packs a new pack of `entries` absorbs: smallest first, each holding no more than all before
+/// it.
+fn absorbed_by(entries: int, packs: List<MappedPack>) -> List<MappedPack> {
+    mut gathered = entries
     mut absorbed: List<MappedPack> = []
-    for pack in sorted_by(packs, (a, b) -> a.length < b.length) {
-        if pack.length > gathered { return absorbed }
-        gathered = gathered + pack.length
+    for pack in sorted_by(packs, (a, b) -> a.entries() < b.entries()) {
+        if pack.entries() > gathered { return absorbed }
+        gathered = gathered + pack.entries()
         absorbed.push(pack)
     }
     absorbed
@@ -270,16 +426,18 @@ fn merged_records(earlier: List<AnswerRecord>, later: List<AnswerRecord>) -> Lis
     earlier.concat(later.filter((record) -> !earlier.any(it.same_as(record))))
 }
 
-fn pack_octets(questions: List<QuestionRecords>, answers: List<KeptAnswer>) -> Bytes {
+/// A pack's index, as the runs of octets it's written in.
+fn index_runs(questions: List<QuestionRecords>, answers: List<AnswerSpan>) -> List<Bytes> {
     let sorted_answers = sorted_by(answers, (a, b) -> a.answer.comes_before(b.answer))
     let sorted_questions = sorted_by(questions, (a, b) -> a.question.comes_before(b.question))
-    let pack = AnswerPack {
-        answer_high_words: [kept.answer.high_word for kept in sorted_answers],
+    let index = PackIndex {
+        answer_high_words: [span.answer.high_word for span in sorted_answers],
         answers: sorted_answers,
         question_high_words: [entry.question.high_word for entry in sorted_questions],
         questions: sorted_questions,
     }
-    pack.saved_bytes().concat(PACK_SEAL.bytes())
+    let writer = saved_layout_writer()
+    writer.finished_runs_of(index.written_into(writer))
 }
 
 /// What the first pack that can answer says.

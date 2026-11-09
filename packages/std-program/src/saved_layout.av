@@ -25,6 +25,10 @@ const CODES_PER_WORD: int = 32
 /// The length from which a run of octets is kept whole rather than an octet at a time.
 const WHOLE_RUN_LENGTH: int = 32
 
+/// The most single octets a writer holds before closing them into a run, so what it holds stays
+/// within a few kilobytes of what it wrote.
+const PENDING_RUN_LENGTH: int = 4096
+
 extern fn avra_float_to_bits(value: float) -> int
 extern fn avra_float_of_bits(bits: int) -> float
 extern fn avra_mmap_word_at(mapping: ptr, position: int) -> int
@@ -64,6 +68,7 @@ impl SavedLayoutWriter {
             let value = slot_value(start, slot)
             self.write_big_endian(value, width_holding(value))
         }
+        self.pending_bounded()
         start
     }
 
@@ -74,6 +79,7 @@ impl SavedLayoutWriter {
             .fold(1, (widest, slot) -> max_of(widest, width_holding(slot_value(start, slot))))
         self.write_label(width, 0, slots.length)
         for slot in slots { self.write_big_endian(slot_value(start, slot), width) }
+        self.pending_bounded()
         start
     }
 
@@ -83,6 +89,7 @@ impl SavedLayoutWriter {
         self.write_label(1, 0, octets.length)
         if octets.length < WHOLE_RUN_LENGTH {
             for i in 0..octets.length { self.write_octet(octets.at(i)) }
+            self.pending_bounded()
             return start
         }
         self.finish_pending_run()
@@ -95,11 +102,15 @@ impl SavedLayoutWriter {
     fn write_text(text: string) -> int { self.write_octets(text.bytes()) }
 
     /// The whole answer, with `root` as its root.
-    fn finished(root: int) -> Bytes {
+    fn finished(root: int) -> Bytes { self.finished_runs_of(root).bytes() }
+
+    /// The whole answer as its runs in order, with `root` as its root, for a caller that writes
+    /// them out one by one and never needs them joined.
+    fn finished_runs_of(root: int) -> List<Bytes> {
         self
             .write_big_endian(self.written_length() + ROOT_DISTANCE_LENGTH - root, ROOT_DISTANCE_LENGTH)
         self.finish_pending_run()
-        self.finished_runs.get().bytes()
+        self.finished_runs.get()
     }
 
     /// A node's label: one octet for a small node, up to seven for a large one.
@@ -122,6 +133,9 @@ impl SavedLayoutWriter {
 
     /// One octet onto the end of the answer.
     fn write_octet(octet: int) { self.pending_octets.push(octet & 255) }
+
+    /// The single octets closed into a run once there are enough of them.
+    fn pending_bounded() { if self.pending_octets.get().length >= PENDING_RUN_LENGTH { self.finish_pending_run() } }
 
     /// The single octets written so far, closed into one run.
     fn finish_pending_run() {

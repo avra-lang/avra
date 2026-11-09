@@ -186,20 +186,19 @@ static IoTemp* temp_at(int64_t h) {
     return h >= 0 && h < IO_TEMPS && g_io_temps[h].fd >= 0 ? &g_io_temps[h] : NULL;
 }
 
-/* A temp open beside the target, or -errno. The name carries the
-   PROCESS's id, so two processes writing the same path do not share a
-   temp and clobber each other's half-written bytes. O_EXCL then means
-   a leftover from a crashed run of THIS pid is refused rather than
-   silently reused. */
-int64_t avra_io_temp(const char* path) {
+/* A free slot claimed for a temp at `temp`, to be published as
+   `target`, or -errno. O_EXCL means a leftover from a crashed run of
+   THIS pid is refused rather than silently reused, so it is removed and
+   the open tried once more. */
+static int64_t temp_claimed(const char* temp, const char* target) {
     temps_armed();
     int64_t h = -1;
     for (int i = 0; i < IO_TEMPS && h < 0; i++) if (g_io_temps[i].fd < 0) h = i;
     if (h < 0) return -EMFILE;
     IoTemp* t = &g_io_temps[h];
-    if (strlen(path) + 32 >= IO_PATH) return -ENAMETOOLONG;
-    snprintf(t->temp, IO_PATH, "%s.avra-%ld.tmp", path, (long)getpid());
-    snprintf(t->target, IO_PATH, "%s", path);
+    if (strlen(temp) >= IO_PATH || strlen(target) >= IO_PATH) return -ENAMETOOLONG;
+    snprintf(t->temp, IO_PATH, "%s", temp);
+    snprintf(t->target, IO_PATH, "%s", target);
     int fd;
     while ((fd = open(t->temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)) < 0 && errno == EINTR) {}
     if (fd < 0 && errno == EEXIST) {
@@ -212,11 +211,37 @@ int64_t avra_io_temp(const char* path) {
     return h;
 }
 
+/* A temp open beside the target, or -errno. The name carries the
+   PROCESS's id, so two processes writing the same path do not share a
+   temp and clobber each other's half-written bytes. */
+int64_t avra_io_temp(const char* path) {
+    if (strlen(path) + 32 >= IO_PATH) return -ENAMETOOLONG;
+    char temp[IO_PATH];
+    snprintf(temp, IO_PATH, "%s.avra-%ld.tmp", path, (long)getpid());
+    return temp_claimed(temp, path);
+}
+
+/* A DRAFT: a temp at the caller's own name, its target named only when
+   it is published (`avra_io_commit_to`). The caller makes the name
+   this process's alone from `avra_io_pid` and `avra_io_serial`. */
+int64_t avra_io_draft(const char* temp) { return temp_claimed(temp, temp); }
+
+/* This process's id. */
+int64_t avra_io_pid(void) { return (int64_t)getpid(); }
+
+/* A number no earlier call in this process answered. */
+int64_t avra_io_serial(void) {
+    static int64_t next = 0;
+    return next++;
+}
+
 /* The temp's descriptor, for the runtime's write row. */
 int64_t avra_io_temp_fd(int64_t h) {
     IoTemp* t = temp_at(h);
     return t ? t->fd : -EBADF;
 }
+
+int64_t avra_io_commit_to(int64_t h, const char* target);
 
 /* THE CLOSE'S ERROR REACHES THE STATUS, and it must: a write can be
    held in the kernel until close, so a full disk or a failing device
@@ -225,6 +250,16 @@ int64_t avra_io_temp_fd(int64_t h) {
 int64_t avra_io_commit(int64_t h) {
     IoTemp* t = temp_at(h);
     if (!t) return -EBADF;
+    return avra_io_commit_to(h, t->target);
+}
+
+/* The temp published under `target`, chosen now, by the same close
+   then rename as `avra_io_commit`. */
+int64_t avra_io_commit_to(int64_t h, const char* target) {
+    IoTemp* t = temp_at(h);
+    if (!t) return -EBADF;
+    if (strlen(target) >= IO_PATH) return -ENAMETOOLONG;
+    if (target != t->target) snprintf(t->target, IO_PATH, "%s", target);
     int64_t shut = close(t->fd) == 0 || errno == EINTR ? 0 : -errno;
     t->fd = -1;
     if (shut < 0) { unlink(t->temp); return shut; }

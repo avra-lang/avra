@@ -12,7 +12,7 @@
 //! `remove(write_text(p, t)?)`. That answer is a `Result`, so reading
 //! it parenthesises the propagation: `(write_text(p, t)?).length`.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.text.{nul_at}
+use @std.text.{nul_at, parse_int}
 
 // THIS PACKAGE'S OWN C (src/c/std_io.c) — every one answers an int: a
 // status, a descriptor, a handle, a kind, or a negative errno. No text
@@ -28,6 +28,11 @@ extern fn avra_io_temp(path: string) -> int
 extern fn avra_io_temp_fd(h: int) -> int
 extern fn avra_io_commit(h: int) -> int
 extern fn avra_io_drop(h: int) -> int
+extern fn avra_io_draft(path: string) -> int
+extern fn avra_io_commit_to(h: int, path: string) -> int
+extern fn avra_io_pid() -> int
+extern fn avra_io_serial() -> int
+extern fn avra_pid_alive(pid: int) -> int
 extern fn avra_io_env_set(name: string) -> int
 extern fn avra_io_open_append(path: string) -> int
 extern fn avra_fd_sync(fd: int) -> int
@@ -424,6 +429,53 @@ impl AppendFile {
 
     fn closed() -> Result<int, IoError> { done(self.path, avra_io_close(self.fd)) }
 }
+
+/// A file being written beside `near`, under a name no other draft shares: grown by appends,
+/// readable by its `path` while it's open, and published whole under a name chosen at the end, by
+/// one rename. Dropped unpublished, it's removed. A draft is its process's: a forked child holds
+/// its parent's and must never write into it.
+export type Draft = { handle: int, fd: int, path: string, process: int }
+
+export fn drafted(near: string) -> Result<Draft, IoError> {
+    let process = avra_io_pid()
+    let path = "${one_path(near)?}.${process}-${avra_io_serial()}${DRAFT_SUFFIX}"
+    let handle = done(path, avra_io_draft(path))?
+    Draft { handle: handle, fd: done(path, avra_io_temp_fd(handle))?, path: path, process: process }
+}
+
+impl Draft {
+    /// Whether this process opened the draft.
+    fn is_mine() -> bool { self.process == avra_io_pid() }
+
+    /// OCTETS appended after what's written so far.
+    fn write(bytes: Bytes) -> Result<int, IoError> { poured(self.path, self.fd, bytes) }
+
+    /// The draft published as `target`: whatever stood there is replaced, and a reader sees the
+    /// old file or the whole new one. Answers the target.
+    fn published(target: string) -> Result<string, IoError> {
+        done(target, avra_io_commit_to(self.handle, one_path(target)?))?
+        target
+    }
+
+    /// The draft removed, unpublished.
+    fn dropped() { let _ = avra_io_drop(self.handle) }
+}
+
+/// The drafts in `directory` whose process is gone, so nothing will publish them.
+export fn abandoned_drafts(directory: string) -> List<string> {
+    [name for name in list_dir(directory) catch [] if name.ends_with(DRAFT_SUFFIX) && !drafting(name)]
+}
+
+/// Whether the process a draft's name carries still runs. A name that carries none is nobody's.
+fn drafting(name: string) -> bool {
+    let parts = name.split(".")
+    if parts.length < 3 { return false }
+    let process? = parse_int(parts[parts.length - 2].split("-").first() ?? "") else { return false }
+    process > 0 && avra_pid_alive(process) == 1
+}
+
+/// What a draft's name ends in.
+const DRAFT_SUFFIX: string = ".draft"
 
 /// The file cut back to exactly `len` bytes — what a caller trims a
 /// TORN TAIL to (bytes an earlier crash left past the last frame it
