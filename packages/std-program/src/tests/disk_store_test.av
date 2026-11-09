@@ -162,6 +162,21 @@ spec "disk_store — answers outlive the process" {
         }
     }
     given "a compaction" {
+        then "a pack published beside it after it opened is left standing" {
+            let directory = fresh_directory("compact-beside")
+            disk_world().put("n.av", "alpha")
+            disk_world().put("o.av", "beta")
+            let _ = process_asking(directory, "n.av", "alpha")
+            let compacting = disk_store_at(directory)
+            let _ = process_asking(directory, "o.av", "beta")
+            let _ = compacting.compacted()
+            process_asking(directory, "o.av", "beta") == 1 &&
+                process_asking(directory, "n.av", "alpha") == 1
+        }
+        then "of an empty store, it writes nothing" {
+            let directory = fresh_directory("compact-empty")
+            (disk_store_at(directory).compacted() catch -1) == 0 && !exists(directory)
+        }
         then "what the newest root reaches stays in one pack, and a later process runs only its input" {
             let directory = fresh_directory("compact")
             disk_world().put("k.av", "alpha")
