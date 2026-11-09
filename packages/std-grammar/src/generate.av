@@ -40,6 +40,7 @@ export fn untold_source(rd: Ready, target: UntoldTarget) -> Result<string, strin
         guard_fns: [],
         climbs: [],
         refusal: null,
+        unremembered: unremembered(rd),
     }
     gen.literal("{")
     gen.literal("}")
@@ -102,6 +103,8 @@ type Gen = {
     guard_fns: List<string>,
     climbs: List<ClimbJob>,
     refusal: string?,
+    // by ordinal, the rules asked at most once at any cursor: they keep no memo
+    unremembered: List<bool>,
 }
 
 impl Gen {
@@ -200,6 +203,14 @@ impl Gen {
         let base = self.name("r${o}")
         self.line("")
         self.line("fn ${base}(mut u: ${self.run_type()}, at: int, capped: bool) -> int {")
+        if self.unremembered[o] {
+            self.line("mut res = no_end")
+            self.alt(body, "at", "at", "capped", false, "res", [], base)
+            self.line("res")
+            self.line("}")
+            for k, br in body.branches { self.branch("${base}_${k}", br) }
+            return
+        }
         self.line("let key = u.key(${o}, at, capped)")
         self.line("let seen = u.recall(key)")
         self.line("if seen != unasked {")
@@ -1037,6 +1048,55 @@ fn lit_slot_of(t: StartTerm) -> List<int> {
         .Lit(_) if t.slot >= 0 -> [t.slot],
         .Lit(_) or .Named(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [],
     }
+}
+
+/// By ordinal, the rules that are asked at most once at any cursor and so keep no memo: each is
+/// named in one place only, at the head of a branch of a rule, which is itself asked at most once
+/// at a cursor — memoized or by this same law. A rule an operator's climb names is asked again
+/// for each operator tried at one cursor, and the start rule by the run.
+fn unremembered(rd: Ready) -> List<bool> {
+    let sites = flatten([rule_sites(r.body) for r in rd.g.rules])
+        .concat([Site { rule: rd.g.start, head: false }])
+    [sites.filter(it.rule == r.name).length == 1 && sites.any(it.rule == r.name && it.head) for r in rd.g.rules]
+}
+
+/// One place a rule is named: whether it is a branch's head, matched at the branch's own entry.
+type Site = { rule: string, head: bool }
+
+/// Every place a rule's body names a rule.
+fn rule_sites(body: Alt) -> List<Site> {
+    flatten([branch_sites(s) for s in body.branches])
+}
+
+fn branch_sites(s: Seq) -> List<Site> {
+    // a head capped by its own mark is asked alike by a capped and an open ask of its rule
+    let items = flatten(
+        [item_sites(m, i == 0 && !m.head && (m.rep == Rep.One || m.rep == Rep.Opt)) for i, m in s.items],
+    )
+    let climbs = if s.operators == null { [] } else { climb_sites(s) }
+    items.concat(climbs)
+}
+
+fn item_sites(m: Item, head: bool) -> List<Site> {
+    match m.prim {
+        .Ref(target) -> [Site { rule: target, head: head }],
+        .Group(inner) -> flatten([nested_sites(x) for x in inner.branches]),
+        .Lit(_) or .Named(_) or .NotChar(_) -> [],
+    }
+}
+
+/// A group's branch: no place in it is a rule's own head.
+fn nested_sites(s: Seq) -> List<Site> {
+    flatten([item_sites(m, false) for m in s.items])
+        .concat(if s.operators == null { [] } else { climb_sites(s) })
+}
+
+/// What a climb names besides its branch's items: its operand again for every operator, and each
+/// suffix's rule.
+fn climb_sites(s: Seq) -> List<Site> {
+    let operand = [Site { rule: s.items[0].prim.rule()!, head: false } for _x in [0] if s.items[0].prim.rule() != null]
+    operand
+        .concat([Site { rule: e.rule!, head: false } for e in s.operators!.entries if e.rule != null])
 }
 
 /// Every label an alternation's items write, nested groups opened.
