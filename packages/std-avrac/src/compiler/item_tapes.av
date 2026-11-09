@@ -33,6 +33,7 @@ export fn avra_fact_definitions() -> List<QueryDefinition> {
     source_fact_definitions()
         .concat(context_fact_definitions())
         .concat(expansion_fact_definitions())
+        .concat(name_fact_definitions())
 }
 
 /// A text's tokens, as Avra's grammar says they work.
@@ -42,10 +43,17 @@ export fn avra_columns(text: string) -> TokenColumns { token_columns(text, lex_s
 /// what its file keeps of it, its refusals among them.
 export fn avra_item_tape(item_text: string, context: Bytes) -> SyntaxTape {
     let parsed = parse_program(avra(), new_source_file("<item>", item_text), context_words(context))
+    tape_of_item(parsed.store, [s for s in parsed.stmts if !parsed.store.is_hoisted(s)])
+}
+
+/// An item's tape: its statements, what its file keeps of it, and every name it declares, what it
+/// hoisted among them, each with its face.
+export fn tape_of_item(store: SyntaxArena, stmts: List<StmtId>) -> SyntaxTape {
     mut tape = tape_writer()
-    tape.count(parsed.stmts.length)
-    for s in parsed.stmts { Stmt.taped_id(parsed.store, tape, s) }
-    SyntaxArena.tape_item_tables(parsed.store, tape)
+    tape.count(stmts.length)
+    for s in stmts { Stmt.taped_id(store, tape, s) }
+    SyntaxArena.tape_item_tables(store, tape)
+    for s in stmts.concat(store.hoisted_decls()) { declare_on(store, tape, s) }
     tape.finished()
 }
 

@@ -57,6 +57,9 @@ export const OFFSET_MARK: string = "offset"
 /// or keeps it apart from the value, as a side table does.
 export enum FieldRole {
     Written
+    /// Written, and left out of the face: a part no reader of the declaration's name depends on, as
+    /// a fn's body is.
+    Body
     Carried
     Apart
 }
@@ -125,7 +128,7 @@ impl Reading {
     fn declaration_of(type_name: string) -> MetaType? { (self.declared)(type_name) }
 
     fn is_written(f: Field) -> bool {
-        match self.role_of(f) { .Written -> true, .Carried or .Apart -> false }
+        match self.role_of(f) { .Written or .Body -> true, .Carried or .Apart -> false }
     }
 
     /// Whether a field is written down: one the language writes, or a place it carries, which
@@ -143,9 +146,14 @@ impl Reading {
         match inner { .Placed(_, _) -> inner, rest -> .Optional(inner) }
     }
 
+    /// Whether a field is a body, left out of a face.
+    fn is_body(f: Field) -> bool {
+        match self.role_of(f) { .Body -> true, .Written or .Carried or .Apart -> false }
+    }
+
     /// Whether a value of the type holds the field, as a variant's payload does.
     fn is_carried(f: Field) -> bool {
-        match self.role_of(f) { .Written or .Carried -> true, .Apart -> false }
+        match self.role_of(f) { .Written or .Body or .Carried -> true, .Apart -> false }
     }
 
     /// The fields a variant's value holds, in order: what's written down and what's carried.

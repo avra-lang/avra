@@ -1,0 +1,120 @@
+//! WHAT A MODULE NAMES, read off its items' tapes alone: each tape says what its item declares, so
+//! naming a module hydrates no node. A name carries its face — the hash of its declaration written
+//! with every body left out — so a body edit leaves every module's names as they were, and nothing
+//! that reads a name runs again.
+use core.{Stmt, StmtId, SyntaxArena}
+use @std.program.defect.{defect}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{ContentHash}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.syntax_tape.{TapeWriter, face_writer}
+
+/// What a top-level item declares.
+@derive(Saved)
+export enum ItemKind {
+    Fn
+    Record
+    Enum
+    Named
+    Alias
+    Trait
+    Component
+    Syntax
+    Collect
+    CollectEnum
+    Const
+    State
+}
+
+/// Every kind, by the number a tape writes it as.
+const ITEM_KINDS: List<ItemKind> = [
+    ItemKind.Fn,
+    ItemKind.Record,
+    ItemKind.Enum,
+    ItemKind.Named,
+    ItemKind.Alias,
+    ItemKind.Trait,
+    ItemKind.Component,
+    ItemKind.Syntax,
+    ItemKind.Collect,
+    ItemKind.CollectEnum,
+    ItemKind.Const,
+    ItemKind.State,
+]
+
+/// What a statement declares, absent for one that declares nothing a module names.
+fn item_kind(store: SyntaxArena, s: StmtId) -> ItemKind? {
+    match store.stmt(s) {
+        .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) -> ItemKind.Fn,
+        .StructDecl(_, _, _, _) -> ItemKind.Record,
+        .EnumDecl(_, _, _) -> ItemKind.Enum,
+        .NamedType(_, _, _) -> ItemKind.Named,
+        .Alias(_, _, _) -> ItemKind.Alias,
+        .TraitDecl(_, _, _) -> ItemKind.Trait,
+        .ComponentDecl(_, _, _, _, _, _) -> ItemKind.Component,
+        .SyntaxDecl(_, _) -> ItemKind.Syntax,
+        .Collect(_, _, _, _, _, _) -> ItemKind.Collect,
+        .CollectEnum(_, _, _, _, _) -> ItemKind.CollectEnum,
+        .ConstDecl(_, _, _) -> ItemKind.Const,
+        .MutLet(_, _, _) -> if store.is_module_state(s) { ItemKind.State } else { null },
+        .Let(_, _, _) or .LetElse(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .ForEach(_, _, _, _) or .While(_, _) or .Return(_) or .Fail(_) or .ImplDecl(_, _, _, _, _) or .Setting(_, _) or .Spec(_, _) or .Defer(_, _) or .Jump(_, _) or .Error -> null,
+    }
+}
+
+/// Writes what `s` declares on `tape`, if anything: its name, kind and face.
+export fn declare_on(store: SyntaxArena, mut tape: TapeWriter, s: StmtId) {
+    let kind? = item_kind(store, s) else { return }
+    let name? = store.declared_name(s) ?? store.let_name(s) else { return }
+    mut face = face_writer()
+    Stmt.taped_id(store, face, s)
+    let number = ITEM_KINDS.index_of(kind)
+    if number < 0 { defect(kind_unnumbered()) }
+    tape.declared(name, number, store.is_exported(s), face.face())
+}
+
+/// One declaration: its name, what it declares, the file and item it stands in, whether its module
+/// exports it, and its face.
+@derive(Saved)
+export type DeclaredName = { name: string, kind: ItemKind, file: SourceFileAddress, item: int, exported: bool, face: ContentHash }
+
+/// What a file declares, in the order it's written; what its instances minted stands with the item
+/// that minted it.
+@derive(Saved)
+export type FileDeclares = { names: List<DeclaredName> }
+
+@query
+export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> FileDeclares {
+    FileDeclares {
+        names: [DeclaredName {
+            name: n.name,
+            kind: ITEM_KINDS[n.kind],
+            file: file,
+            item: at,
+            exported: n.exported,
+            face: n.face,
+        } for at, p in file_meant(engine, file) for n in p.tape.declares],
+    }
+}
+
+/// What a module names: every declaration its files make, by name, in listing order.
+@derive(Saved)
+export type ModuleDeclares = { names: Map<string, List<DeclaredName>> }
+
+@query
+export fn module_declares(engine: QueryEngine, package: string, local: List<string>) -> ModuleDeclares {
+    mut names: Map<string, List<DeclaredName>> = {}
+    for f in module_files(engine, package, local, true) {
+        for n in file_declares(engine, f).names { names.set(n.name, (names.get(n.name) ?? []).concat([n])) }
+    }
+    ModuleDeclares { names: names }
+}
+
+collect listed_name_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a module's names read through, for a process to hand its engine.
+export fn name_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_name_facts) }
+
+fn kind_unnumbered() -> string { "an item kind is missing from the numbering a tape writes" }

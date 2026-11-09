@@ -1,0 +1,34 @@
+//! A package of held files for the program layer's tests: an in-memory source world, its files
+//! addressed in one package, and a store of its own for each case.
+use core.{distinct}
+use @std.io.{make_dirs}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.time.{stamp}
+
+/// The files the world holds, by their path in the package.
+export once fn files() -> Cell<Map<string, string>> {
+    let held: Map<string, string> = {}
+    Cell.new(held)
+}
+
+/// A held file's text, absent for one not held.
+export fn read_held(file: SourceFileAddress) -> string? { files().get().get(file.path_in_package) }
+
+/// A directory's names: the held files directly in it, and the directories holding the rest.
+export fn list_held(dir: DirectoryAddress) -> List<string>? {
+    let prefix = if dir.path_in_package.is_empty() { "" } else { "${dir.path_in_package}/" }
+    let under = [path.substring(prefix.length, path.length) for path in files().get().keys() if path.starts_with(prefix)]
+    if under.is_empty() { return null }
+    distinct(
+        [if rest.contains("/") { rest.substring(0, rest.index_of("/")) } else { rest } for rest in under],
+    )
+}
+
+export fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: "@test/p", path_in_package: path } }
+
+/// A store of its own for each case.
+export fn store_dir(name: string) -> string {
+    let dir = "/tmp/avra-program-test/${stamp()}/${name}"
+    let _ = make_dirs(dir)
+    dir
+}

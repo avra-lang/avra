@@ -277,7 +277,8 @@ type Layout = { declared: MetaVariant, held: List<Held>, fields: List<LaidField>
 type Held = { field: Field, read: Code? }
 
 /// A field written, how it lies, and the flag it leads with, if it does.
-type LaidField = { field: Field, shape: ValueShape, led: Led? }
+/// A body field is left out of a face.
+type LaidField = { field: Field, shape: ValueShape, led: Led?, body: bool }
 
 /// A field leading with a flag: how, and which of the variant's flags is its.
 type Led = { form: FlagLed, number: int }
@@ -285,14 +286,24 @@ type Led = { form: FlagLed, number: int }
 /// Each variant of `t` laid out: a record is one, named as the type is.
 fn laid_out(t: MetaType, reading: Reading) -> List<Layout> {
     let shaped = reading.variants_of(t)
-    [laid(v, if t.variants.is_empty() { t.fields } else { reading.carried_fields(v) }, shaped[at]) for at, v in declared_variants(t)]
+    [laid(
+        reading,
+        v,
+        if t.variants.is_empty() { t.fields } else { reading.carried_fields(v) },
+        shaped[at],
+    ) for at, v in declared_variants(t)]
 }
 
-fn laid(declared: MetaVariant, held: List<Field>, v: ShapedVariant) -> Layout {
+fn laid(reading: Reading, declared: MetaVariant, held: List<Field>, v: ShapedVariant) -> Layout {
     let shaped = [ShapedValue { field: f.field, shape: f.shape! } for f in v.fields if f.shape != null]
     let forms = [flag_led(f.shape) for f in shaped]
     let numbers = [[form for form in forms.take(at) if form != null].length for at, _form in forms]
-    let fields = [LaidField { field: f.field, shape: f.shape, led: led_numbered(forms[at], numbers[at]) } for at, f in shaped]
+    let fields = [LaidField {
+        field: f.field,
+        shape: f.shape,
+        led: led_numbered(forms[at], numbers[at]),
+        body: reading.is_body(f.field),
+    } for at, f in shaped]
     let flag_count = [form for form in forms if form != null].length
     Layout {
         declared: declared,
@@ -344,6 +355,12 @@ fn something_written(statements: List<Stmts>) -> List<Stmts> {
 
 /// A field after the flags: what's left of a flagged one, and the rest whole.
 fn field_written(f: LaidField, value: Code) -> List<Stmts> {
+    let whole = field_written_whole(f, value)
+    if !f.body { return whole }
+    [quote { if !${tape()}.facing { ${whole} } }]
+}
+
+fn field_written_whole(f: LaidField, value: Code) -> List<Stmts> {
     let led? = f.led else { return [written(f.shape, value, 0)] }
     (led.form.rest_written)(value)
 }

@@ -43,7 +43,14 @@ type TapeMeaning = { structure: Bytes, texts: Bytes, facts: TapeSection }
 @derive(Saved)
 type TapePlaces = { places: Bytes, facts: TapeSection }
 
-/// An item's tape. `meaning_hash` and `above_hash` stand for their sections, computed once.
+/// A name an item declares: the name, the language's number for what it declares, whether its
+/// module exports it, and its face — what a reader of the name depends on, so a change that leaves
+/// it standing leaves every reader standing.
+@derive(Saved)
+export type TapeName = { name: string, kind: int, exported: bool, face: ContentHash }
+
+/// An item's tape. `meaning_hash` and `above_hash` stand for their sections, computed once;
+/// `declares` says what the item names, read without its nodes.
 @derive(Saved)
 export type SyntaxTape = {
     meaning_hash: ContentHash,
@@ -51,6 +58,7 @@ export type SyntaxTape = {
     above_hash: ContentHash,
     above: TapeSection,
     places: TapePlaces,
+    declares: List<TapeName>,
 }
 
 /// One fact, waiting to be put in order.
@@ -134,12 +142,18 @@ export type TapeWriter = {
     written: List<WrittenNodes> = [],
     /// For each node being written, innermost last, whether it stands in another file.
     standing: List<bool> = [],
+    /// Whether this tape is a face, which leaves out every body.
+    facing: bool = false,
+    declares: List<TapeName> = [],
 }
 
 /// The nodes of one kind on a tape: by each one's index in its tree, the number it was written as.
 type WrittenNodes = { kind: string, numbers: DenseWindow }
 
 export fn tape_writer(item_start: int = 0) -> TapeWriter { TapeWriter { item_start: item_start } }
+
+/// A writer of a face: a declaration as its readers depend on it, every body left out.
+export fn face_writer() -> TapeWriter { TapeWriter { item_start: 0, facing: true } }
 
 impl TapeWriter {
     /// A number that's never negative: a length, a variant, a count.
@@ -280,6 +294,23 @@ impl TapeWriter {
     /// The number `text` goes by among what's said above the item.
     fn above_text(text: string) -> int { self.above.texts.number(text) }
 
+    /// The item declares `name`, as `kind` in its language's numbering.
+    fn declared(name: string, kind: int, exported: bool, face: ContentHash) {
+        self.declares.push(TapeName { name: name, kind: kind, exported: exported, face: face })
+    }
+
+    /// What a face written here says: its structure, its texts and its facts, as one hash.
+    fn face() -> ContentHash {
+        content_hash(
+            TapeMeaning {
+                structure: self.structure.bytes()!,
+                texts: octets_of_texts(self.texts.texts),
+                facts: self.facts.finished(),
+            }
+                .saved_bytes(),
+        )
+    }
+
     /// The tape of everything written.
     fn finished() -> SyntaxTape {
         let meaning = TapeMeaning {
@@ -294,6 +325,7 @@ impl TapeWriter {
             above_hash: content_hash(above.saved_bytes()),
             above: above,
             places: TapePlaces { places: self.places.bytes()!, facts: self.place_facts.finished() },
+            declares: self.declares,
         }
     }
 }
