@@ -2,15 +2,7 @@
 // says: the variant, the flags, then each field, a node's children parents first. Then whole trees
 // read back through the generated reader, which writes the same tape again.
 use answer_record.{content_hash}
-use syntax_tape.{
-    TapePlace,
-    TapeReader,
-    TapeWriter,
-    tape_reader,
-    tape_reader_extending,
-    tape_writer,
-    tape_writer_extending,
-}
+use syntax_tape.{TapePlace, TapeReader, TapeWriter, tape_reader, tape_writer}
 use tape_schema.{TypeSchema}
 use tests.support.tiny_tree.{TinyId, TinyNode, TinyTree, tiny_tree}
 use tests.support.tiny_taped.{Taped}
@@ -224,29 +216,6 @@ spec "a generated node" {
             TinyNode.taped_id(tree, tape, id(0))
             let place = tape_reader(tape.finished(), 500).place()!
             place.offset == 900 && place.width == 4 && !place.in_item
-        }
-    }
-    given "a tape extending another" {
-        then "it names a node the other made by its number there, and reads back sharing it" {
-            let base_tree = tiny_tree([leaf(1)])
-            let base = tape_reader(written_from(base_tree).finished())
-            let back = tiny_tree([])
-            let read_leaf = TinyNode.untaped_id(back, base)
-            let fresh = back.added(leaf(2), TapePlace { offset: 5, width: 1 })
-            let pair = back.added(.Pair(read_leaf, fresh), TapePlace { offset: 6, width: 1 })
-            mut extension = tape_writer_extending(base)
-            TinyNode.taped_id(back, extension, pair)
-            let again = tiny_tree([])
-            let base_again = tape_reader(written_from(base_tree).finished())
-            let leaf_again = TinyNode.untaped_id(again, base_again)
-            let read_pair = TinyNode
-                .untaped_id(again, tape_reader_extending(extension.finished(), base_again))
-            match again.node(read_pair.index) {
-                .Pair(left, right) -> again.all().length == 3 &&
-                    left.index == leaf_again.index &&
-                    right.index != leaf_again.index,
-                _ -> false,
-            }
         }
     }
     given "a node saying where in its file something stands" {

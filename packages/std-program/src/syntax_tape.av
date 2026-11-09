@@ -132,39 +132,12 @@ export type TapeWriter = {
     place_facts: SectionWriter = SectionWriter {},
     /// Each kind of node met, and the number each of its nodes was written as.
     written: List<WrittenNodes> = [],
-    /// The same of the tape this one extends, whose nodes this one mentions by their numbers there.
-    base: List<WrittenNodes> = [],
 }
 
 /// The nodes of one kind on a tape: by each one's index in its tree, the number it was written as.
 type WrittenNodes = { kind: string, numbers: DenseWindow }
 
 export fn tape_writer(item_start: int = 0) -> TapeWriter { TapeWriter { item_start: item_start } }
-
-/// A tape extending the one `base` read, as an item's expansion extends the item: it mentions a
-/// node `base` made by the number it had there.
-export fn tape_writer_extending(base: TapeReader) -> TapeWriter {
-    mut numbered: List<WrittenNodes> = []
-    let kinds = base.made_kinds.get()
-    for number, index in base.made.get() {
-        if index >= 0 { numbered = with_numbered(numbered, kinds[number], index, number) }
-    }
-    TapeWriter { item_start: base.item_start, base: numbered }
-}
-
-/// `nodes` with the node at `index` of `kind` numbered `number`.
-fn with_numbered(nodes: List<WrittenNodes>, kind: string, index: int, number: int) -> List<
-    WrittenNodes,
-> {
-    let found = nodes.find(it.kind == kind)
-    if found != null {
-        found!.numbers.put(index, number)
-        return nodes
-    }
-    let added = WrittenNodes { kind: kind, numbers: dense_window() }
-    added.numbers.put(index, number)
-    nodes.concat([added])
-}
 
 impl TapeWriter {
     /// A number that's never negative: a length, a variant, a count.
@@ -266,17 +239,11 @@ impl TapeWriter {
     /// How far back the node numbered `number` stands from the next: one for the node just numbered.
     fn back_to(number: int) -> int { self.nodes_numbered - number }
 
-    /// Writes a mention of the node at `index` of `kind`, answering whether it's one this tape or
-    /// the one it extends already holds. A mention leads past a root's `variants`: twice how far
-    /// back it stands here, less two, or twice its number in the tape extended, plus one.
+    /// Writes a mention of the node at `index` of `kind`, answering whether the tape already holds
+    /// it: past a root's `variants`, how far back it stands, less one.
     fn referred_to(variants: int, kind: string, index: int) -> bool {
-        let own = self.number_of(kind, index)
-        if own != null {
-            self.count(variants + 2 * (self.back_to(own!) - 1))
-            return true
-        }
-        let based? = self.base.find(it.kind == kind)?.numbers?.get(index) else { return false }
-        self.count(variants + 2 * based + 1)
+        let earlier? = self.number_of(kind, index) else { return false }
+        self.count(variants + self.back_to(earlier) - 1)
         true
     }
 
@@ -363,15 +330,9 @@ export type TapeReader = {
     last_offset: Cell<int> = Cell.new(0),
     /// By number, the index each node was made at, -1 while it's still being read.
     made: Cell<List<int>> = Cell.new(no_nodes_made()),
-    /// By number, the kind of node made, "" for a place that's no node.
-    made_kinds: Cell<List<string>> = Cell.new(no_kinds_made()),
-    /// What read the tape this one extends, absent for a tape that extends none.
-    base: TapeReader? = null,
 }
 
 fn no_nodes_made() -> List<int> { [] }
-
-fn no_kinds_made() -> List<string> { [] }
 
 /// A reader of `tape`, from its first node, for an item starting `item_start` bytes into its file.
 export fn tape_reader(tape: SyntaxTape, item_start: int = 0) -> TapeReader {
@@ -382,9 +343,6 @@ export fn tape_reader(tape: SyntaxTape, item_start: int = 0) -> TapeReader {
         places: tape.places.places,
     }
 }
-
-/// A reader of `tape`, which extends the tape `base` read: its places count from where `base`'s do.
-export fn tape_reader_extending(tape: SyntaxTape, base: TapeReader) -> TapeReader { tape_reader(tape, base.item_start) with { base: base } }
 
 impl TapeReader {
     fn count() -> int { number_from(self.structure, self.at) }
@@ -426,14 +384,15 @@ impl TapeReader {
     /// Where the next node standing for an id was written, absent when it has no place. Numbers it.
     fn place() -> TapePlace? {
         self.made.push(0 - 1)
-        self.made_kinds.push("")
         let stored = number_from(self.places, self.place_at)
         if stored == 0 { return null }
-        if stored % 2 == 0 { return TapePlace {
+        if stored % 2 == 0 {
+            return TapePlace {
                 offset: unzigzag(number_from(self.places, self.place_at)),
                 width: stored / 2 - 1,
                 in_item: false,
-            } }
+            }
+        }
         let offset = self.last_offset.get() + unzigzag(number_from(self.places, self.place_at))
         self.last_offset.set(offset)
         TapePlace { offset: self.item_start + offset, width: (stored - 1) / 2 }
@@ -442,32 +401,14 @@ impl TapeReader {
     /// The number of the node whose place was read last.
     fn numbered() -> int { self.made.get().length - 1 }
 
-    /// The node numbered `number` is the one of `kind` made at `index`.
-    fn made_at(number: int, kind: string, index: int) {
-        self.made.set_at(number, index)
-        self.made_kinds.set_at(number, kind)
-    }
+    /// The node numbered `number` was made at `index`.
+    fn made_at(number: int, index: int) { self.made.set_at(number, index) }
 
-    /// The index a lead names when it mentions a node already made, here or in the tape this one
-    /// extends; absent when it leads a node of the root's `variants`.
+    /// The index a lead names when it mentions a node already made; absent when it leads a node
+    /// of the root's `variants`.
     fn reference(lead: int, variants: int) -> int? {
         if lead < variants { return null }
-        let past = lead - variants
-        if past % 2 == 0 { return self.referred(past / 2 + 1) }
-        let base? = self.base else {
-            defect(no_base_extended(past / 2))
-            return null
-        }
-        base.made_index((past - 1) / 2)
-    }
-
-    /// The index of the node made as `number`.
-    fn made_index(number: int) -> int {
-        let made = self.made.get()
-        if number < 0 || number >= made.length { defect(no_node_numbered(number, made.length)) }
-        let index = made[number]
-        if index < 0 { defect(node_still_read(number)) }
-        index
+        self.referred(lead - variants + 1)
     }
 
     /// The index of the node `back` numbers before the next, which a tape refers to again.
@@ -492,10 +433,6 @@ fn unknown_choice(at: int, choices: int) -> string { "a tape holds variant ${at}
 fn no_node_back(back: int, numbered: int) -> string { "a tape refers to the node ${back} back, with ${numbered} numbered" }
 
 fn node_still_read(number: int) -> string { "a tape refers to node ${number} while it's still being read" }
-
-fn no_node_numbered(number: int, numbered: int) -> string { "a tape refers to node ${number} of a tape with ${numbered} numbered" }
-
-fn no_base_extended(number: int) -> string { "a tape refers to node ${number} of the tape it extends, and it extends none" }
 
 /// The number at `at` in `octets`, moving `at` past it.
 fn number_from(octets: Bytes, at: Cell<int>) -> int {

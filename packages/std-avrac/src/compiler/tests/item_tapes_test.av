@@ -2,13 +2,21 @@
 // reads an unchanged file with no item read at all, an edited one reads only the items that moved,
 // and the tree put back together is the one a parse makes.
 use core.{distinct}
-use compiler.{ReadBack, avra_fact_definitions, avra_source_world, parse_source, read_back}
+use compiler.{
+    ReadBack,
+    avra_fact_definitions,
+    avra_source_world,
+    file_meant,
+    parse_source,
+    read_back,
+}
 use @std.io.{make_dirs}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.source_facts.{PlacedTape, file_tapes, use_source_world}
 use @std.time.{stamp}
+use compiler.{Parsed}
 
 once fn files() -> Cell<Map<string, string>> {
     let held: Map<string, string> = {}
@@ -144,6 +152,53 @@ spec "an item read under its file's words" {
             let back = consumer_back(dir)
             ran.contains("item_tape") &&
                 back.store.let_name(back.stmts[back.stmts.length - 1]) == null
+        }
+    }
+}
+
+/// Whether `path`, read back for what it means, is the tree the compiler's own parse makes of it
+/// in a workspace over the same files: statement for statement, and its last one meaning something.
+fn meant_as_parsed(dir: string, held: Map<string, string>, path: string) -> bool {
+    files().set(held)
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let back = read_back(
+        path,
+        file_meant(query_engine(disk_store_at(dir), avra_fact_definitions()), file_at(path)),
+    )
+    let rooted = [Entry { key: "/w/${e.key}", value: e.value } for e in held.entries()]
+    mut in_w: Map<string, string> = {}
+    for e in rooted { in_w.set(e.key, e.value) }
+    let ws = a_process_over(in_w, [e.key for e in rooted])
+    let parsed = ws.parsed(ws.file_id("/w/${path}"))
+    let last = back.stmts[back.stmts.length - 1]
+    let value = back.store.stmt_value(last) ?? back.store.answer_of(last)
+    back.stmts.length == parsed.stmts.length &&
+        value != null &&
+        back.store.meant(value!) != null &&
+        [at for at, s in back.stmts if back.store.stmt_fingerprint(s) != parsed.store.stmt_fingerprint(parsed.stmts[at])]
+            .is_empty()
+}
+
+/// A template component over `quote { … }`, with a record its head names.
+const LIM: string = "export type Span = { n: int }\nexport fn span(n: int) -> Span {\n    Span { n: n }\n}\nexport component lim(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            {\n                let limit: Span = \${self.limit}\n                \${self.body} + limit.n\n            }\n        }\n    }\n}\n"
+
+spec "an item read for what it means" {
+    given "a named instance of a record, imported from another module" {
+        then "it reads back meaning what the compiler's own parse makes it mean, statement for statement" {
+            meant_as_parsed(
+                store_dir("record"),
+                {"src/lib/tally.av": tally("", "self.extra"), "src/main.av": CONSUMER},
+                "src/main.av",
+            )
+        }
+    }
+    given "an instance of a template, imported from another module" {
+        then "it reads back meaning the copy the compiler's own parse makes, statement for statement" {
+            meant_as_parsed(
+                store_dir("template"),
+                {"src/lib/lim.av": LIM, "src/main.av": "use lib.{lim, span}\n\nlim span(1) { 2 }\n"},
+                "src/main.av",
+            )
         }
     }
 }
