@@ -1,5 +1,6 @@
 // The trait a language writes around the generated code: its own tree in its own signature, and how
 // an id reaches it.
+use tape_schema.{TapeSchema}
 use @std.meta.{Code, Declared, Field, Type as MetaType, type_named}
 use tape_derive.{TapeLanguage, TreeVerbs, root_declared, tape_marks, taped_declared}
 use value_shapes.{FieldRole, Reading}
@@ -17,10 +18,16 @@ export trait TinyRoot {
     static fn derive(t: MetaType) -> Declared { root_declared(t, tiny_language()) }
 }
 
+/// The tiny tree's schema, read off its declarations where they're named.
+export const TINY_SCHEMA: TapeSchema = tiny_reading().tapes_schema("TinyNode")
+
+/// The tiny tree as its tapes read it.
+export fn tiny_reading() -> Reading { Reading { declared: type_named, role: role_of, places: true } }
+
 fn tiny_language() -> TapeLanguage {
     TapeLanguage {
         tree: "TinyTree",
-        reading: Reading { declared: type_named, role: role_of, places: true },
+        reading: tiny_reading(),
         verbs: TreeVerbs {
             node: (tree: Code, id: Code, _node: string) -> quote { ${tree}.node(${id}.index) },
             place: (tree: Code, id: Code, _node: string) -> quote { ${tree}.place(${id}.index) },

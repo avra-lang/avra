@@ -164,6 +164,25 @@ type NodeType = { schema: TypeSchema, holding: List<ValueShape> }
 export type RootSchema = { schema: TapeSchema, roots_reached: List<string> }
 
 impl Reading {
+    /// Every type a tape whose items start at the root named `root` holds: each root it reaches and
+    /// every type their fields reach, each once by path. It asks declarations alone, so a `const`
+    /// settles it as data while the program builds; names resolve where that const stands.
+    fn tapes_schema(root: string) -> TapeSchema {
+        mut found: Map<string, TypeSchema> = {}
+        mut met: Map<string, bool> = {}
+        mut roots = [root]
+        while !roots.is_empty() {
+            let named = roots.pop()
+            if met.has(named) { continue }
+            met.set(named, true)
+            let declared? = (self.declared)(named) else { continue }
+            let reached = self.root_schema(declared)
+            for t in reached.schema.types { found.set(t.type_path, t) }
+            roots = roots.concat(reached.roots_reached)
+        }
+        tape_schema(found.values())
+    }
+
     /// The schema of `root` and of every type its fields reach, stopping at the other roots.
     fn root_schema(root: MetaType) -> RootSchema {
         let own = self.declared_type(root, path_of(root, []))

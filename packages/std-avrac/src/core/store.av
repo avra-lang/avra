@@ -1,7 +1,8 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
 use @std.meta.{derive, identity, plain_field}
-use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.engine.{list_cell}
+use @std.program.dense_window.{DenseWindow, dense_window}
 
 /// How a sugar's meaning is minted beside it: the language's own door,
 /// since only the language reads a template. It answers the nodes it
@@ -270,7 +271,7 @@ export type SyntaxArena = {
     @copied_by_hand("minted_expr: its TypeRefs are rebuilt through tref") @taped(expr, struct_targs_read) struct_targs: Cell<List<List<TypeRef>>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
-    @copied_by_hand("minted_expr: a quote is named by its new offset") @remade("remade_expr: a quote is named where it stands") quotes_at: Cell<Map<string, int>>,
+    @copied_by_hand("minted_expr: a quote is named by its new offset") @remade("remade_expr: a quote is named where it stands") quotes_at: DenseWindow,
     // the file's sublanguage blocks, in order, and each one's body
     // offset in the source; what their grammars refused; the node
     // runs their actions minted, with the library each names
@@ -326,7 +327,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         provided: list_cell(),
         expansions: list_cell(),
         struct_targs: list_cell(),
-        quotes_at: map_cell(),
+        quotes_at: dense_window(),
         sublangs: list_cell(),
         body_starts: list_cell(),
         block_texts: list_cell(),
@@ -874,12 +875,12 @@ impl SyntaxArena {
     /// Where a quote's runs of text start in the source, one per part.
     fn mark_quote_at(e: ExprId) {
         let sp: Span? = self.expr_span(e)
-        if sp != null { self.quotes_at.put("${sp!.lo}", e.index) }
+        if sp != null { self.quotes_at.put(sp!.lo, e.index) }
     }
 
     /// The quote starting at a source offset, when one does.
     fn quote_at(offset: int) -> ExprId? {
-        let i? = self.quotes_at.get().get("${offset}") else { return null }
+        let i? = self.quotes_at.get(offset) else { return null }
         ExprId { index: i }
     }
 

@@ -21,7 +21,6 @@ use @std.meta.{
     refuse,
 }
 use syntax_tape.{FLAGS_PER_NUMBER, flag_mask}
-use tape_schema.{Holds, Lying, FieldSchema, TypeSchema, VariantSchema, Wrapping}
 use value_shapes.{
     OFFSET_MARK,
     Reading,
@@ -97,10 +96,7 @@ export fn root_declared(t: MetaType, language: TapeLanguage) -> Declared {
         t,
         language,
         layouts,
-        [
-            id_methods(RootId { type_name: id, index: index }, t, layouts, language),
-            root_schema_declarations(t, language.reading),
-        ],
+        [id_methods(RootId { type_name: id, index: index }, t, layouts, language)],
     )
 }
 
@@ -542,60 +538,6 @@ fn led_through(w: Wrapper) -> FlagLed? {
 }
 
 fn nothing_after(_value: Code) -> List<Stmts> { [] }
-
-/// Generated: a root's `tape_types_into`, putting the schema of the root and the types only it
-/// reaches into `found`, then asking each other root it reaches to do the same. A root already there
-/// is left, so roots reaching each other stop. The schema is worked out while the program builds and
-/// written as the code that makes it, so nothing is decoded when it runs.
-export fn root_schema_declarations(root: MetaType, reading: Reading) -> Decls {
-    let reached = reading.root_schema(root)
-    let schemas = [type_schema_code(s) for s in reached.schema.types]
-    let others = [quote { ${name(other)}.tape_types_into(found) } for other in reached.roots_reached]
-    quote {
-        static fn tape_types_into(mut found: Map<string, TypeSchema>) {
-            if found.has(${literal(path_of(root, []))}) { return }
-            for each in [..${schemas}] { found.set(each.type_path, each) }
-            ${others}
-        }
-    }
-}
-
-fn type_schema_code(s: TypeSchema) -> Code {
-    let variants = [variant_schema_code(v) for v in s.variants]
-    quote { TypeSchema { type_path: ${literal(s.type_path)}, variants: [..${variants}] } }
-}
-
-fn variant_schema_code(v: VariantSchema) -> Code {
-    let fields = [field_schema_code(f) for f in v.fields]
-    quote { VariantSchema { name: ${literal(v.name)}, fields: [..${fields}] } }
-}
-
-fn field_schema_code(f: FieldSchema) -> Code {
-    quote { FieldSchema { name: ${literal(f.name)}, lies: ${lying_code(f.lies)} } }
-}
-
-fn lying_code(l: Lying) -> Code {
-    let wrapped = [wrapping_code(w) for w in l.wrapped]
-    quote { Lying { wrapped: [..${wrapped}], holds: ${holds_code(l.holds)} } }
-}
-
-fn wrapping_code(w: Wrapping) -> Code {
-    match w { .Optional -> quote { Wrapping.Optional }, .List -> quote { Wrapping.List } }
-}
-
-fn holds_code(h: Holds) -> Code {
-    match h {
-        .Node(type_path) -> quote { Holds.Node(${literal(type_path)}) },
-        .Reached(type_path) -> quote { Holds.Reached(${literal(type_path)}) },
-        .Offset -> quote { Holds.Offset },
-        .Int -> quote { Holds.Int },
-        .Float -> quote { Holds.Float },
-        .Bool -> quote { Holds.Bool },
-        .Text -> quote { Holds.Text },
-        .Bytes -> quote { Holds.Bytes },
-        .Place -> quote { Holds.Place },
-    }
-}
 
 fn unmade(t: MetaType, f: Field) -> Diagnostic {
     refuse("`${t.name}.${f.name}` isn't on its tape, so reading it back needs a default")
