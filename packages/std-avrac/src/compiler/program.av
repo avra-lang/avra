@@ -165,24 +165,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         src.text,
         door,
     )
-    let by_index: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string> = (
-        ix,
-        args,
-        loc,
-    ) -> build_row(
-        lang.untold_rows[ix],
-        avra_builders[ix],
-        store,
-        args,
-        loc_span(loc),
-        src.text,
-        door,
-    )
-    let o = when {
-        telling -> run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build)
-        lang.untold -> avra_untold(lexed.tokens, avra_lexeme(), by_index)
-        _ -> run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build)
-    }
+    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { quietly(lang, lexed.tokens, store, src.text, door, build) }
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
     // attach_docs: an orphaned doc group extends this list, and
@@ -204,6 +187,25 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         source: src,
         voices: Voices { list: refusals_spoken(store.refusals(), src.file, lang.rows.codes) },
     }
+}
+
+/// The untold run of `tokens`: the generated parser's where the language has it, the engine's
+/// otherwise.
+fn quietly(
+    lang: Language,
+    tokens: List<Token>,
+    store: SyntaxArena,
+    text: string,
+    door: BlockWords,
+    build: fn(string, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>,
+) -> RunOutcome<Token, LangNode> {
+    let generated? = lang.untold else { return run_untold<Token, LangNode>(lang.syntax!, tokens, avra_lexeme(), build) }
+    let by_index: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string> = (
+        ix,
+        args,
+        loc,
+    ) -> build_row(generated.rows[ix], avra_builders[ix], store, args, loc_span(loc), text, door)
+    avra_untold(tokens, avra_lexeme(), generated.kinds, by_index)
 }
 
 /// A type SPELLING (`List<ExprId>?`) as the written type it spells —
