@@ -1,0 +1,17 @@
+//! The typing rule of `if`: the condition is a `bool`, both branches check against what the seat
+//! wants, and the value is their type when they agree; an `if` whose value is dropped is `void` once
+//! its branches are known.
+use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
+use core.expr.{If}
+
+impl Checks for If {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        if expected is .Unknown { return cx.held_checked(e) }
+        let _ = cx.check(self.cond, Expected.Exactly(owned_type("bool")))
+        let yes = cx.check(self.on_true, expected)
+        let other? = self.on_false else { return if expected is .Dropped && yes != null { owned_type("void") } else { null } }
+        let no = cx.check(other, expected)
+        if expected is .Dropped { return if yes != null && no != null { owned_type("void") } else { null } }
+        if yes != null && no != null && yes!.spelled() == no!.spelled() { yes } else { null }
+    }
+}

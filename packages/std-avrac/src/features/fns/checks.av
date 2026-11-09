@@ -1,0 +1,20 @@
+//! The typing rule of a call: each argument checks against its seat, and the call is what the fn
+//! answers. A generic fn's call waits for inference, so it checks its arguments against nothing.
+use core.{Checking, Checks, ExprId, Expected, SignedType, TypeHead}
+use core.expr.{Call}
+
+impl Checks for Call {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let callee = cx.read(self.callee.of)
+        let f? = callee else { return free_args(cx, self.args) }
+        if !(f.head is .Function) || f.generic() || f.seats.length != self.args.length { return free_args(cx, self.args) }
+        for at, a in self.args { let _ = cx.check(a, Expected.Exactly(f.seats[at].ty)) }
+        f.answer
+    }
+}
+
+/// Every argument checked against nothing, and the call unchecked.
+fn free_args(mut cx: Checking, args: List<ExprId>) -> SignedType? {
+    for a in args { let _ = cx.check(a, Expected.Free) }
+    null
+}

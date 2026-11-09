@@ -1,0 +1,27 @@
+//! The typing rule of a block: its statements checked in a scope of their own, and its value the
+//! last one's when that's an expression; a block whose value is dropped and that ends in an
+//! expression is `void`. One that ends in anything else waits for that statement's rule.
+use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
+use core.expr.{Block}
+
+impl Checks for Block {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        if expected is .Unknown { return cx.held_checked(e) }
+        cx.opened()
+        let ending = self.stmts.last()
+        for s in self.stmts.take(if self.stmts.is_empty() { 0 } else { self.stmts.length - 1 }) { cx.check_stmt(s) }
+        let answered: SignedType? = if ending == null {
+            owned_type("void")
+        } else if expected is .Dropped && cx.store.answer_of(ending!) != null {
+            let _ = cx.check(cx.store.answer_of(ending!)!, Expected.Dropped)
+            owned_type("void")
+        } else if cx.store.answer_of(ending!) != null && !(expected is .Dropped) {
+            cx.check(cx.store.answer_of(ending!)!, expected)
+        } else {
+            cx.check_stmt(ending!)
+            null
+        }
+        cx.closed()
+        answered
+    }
+}

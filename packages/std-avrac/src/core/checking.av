@@ -8,11 +8,23 @@ export enum Expected {
     Free
     /// This type.
     Exactly(ty: SignedType)
+    /// Nothing: the value is dropped where it stands.
+    Dropped
+    /// Unknown: the node stands under one with no rule, which may use its value or drop it.
+    Unknown
 }
 
 /// What a body's checking reads of the program: the type a top-level value's name has from the
-/// body's file, absent when it names none.
-export type CheckedProgram = { value_named: fn(string) -> SignedType? }
+/// body's file, absent when it names none; and a type written in the body, resolved where it stands.
+export type CheckedProgram = { value_named: fn(string) -> SignedType?, written: fn(TypeRef) -> SignedType }
+
+/// A name bound in a body, and its type when it's known: a binding whose type isn't known still
+/// stands in front of every name further out.
+export type Local = { ty: SignedType? }
+
+/// One scope of a body: the names bound in it, and whether a statement in it with no rule of its
+/// own may have bound names it doesn't hold, so a name further out can't be read through it.
+type CheckScope = { names: Map<string, Local>, opaque: bool }
 
 /// One body being checked. An identity: every rule writes the one table.
 export type Checking = {
@@ -21,16 +33,18 @@ export type Checking = {
     /// Each node's type, by its index, once checked.
     types: Cell<List<SignedType?>>,
     /// The bindings in scope, innermost last.
-    scopes: Cell<List<Map<string, SignedType>>>,
+    scopes: Cell<List<CheckScope>>,
+    /// How many nodes with no rule of their own the check stands under: any of them may bind a name
+    /// no scope here holds.
+    unruled: Cell<int>,
 }
 
 /// A body of `store` to check against `program`.
 export fn checking(store: SyntaxArena, program: CheckedProgram) -> Checking {
     let unchecked: SignedType? = null
     let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
-    let outermost: Map<string, SignedType> = {}
-    let scopes: Cell<List<Map<string, SignedType>>> = Cell.new([outermost])
-    Checking { store: store, program: program, types: types, scopes: scopes }
+    let scopes: Cell<List<CheckScope>> = Cell.new([open_scope()])
+    Checking { store: store, program: program, types: types, scopes: scopes, unruled: Cell.new(0) }
 }
 
 impl Checking {
@@ -41,30 +55,74 @@ impl Checking {
         ty
     }
 
-    /// Every node `e` holds checked against nothing, and `e` itself left unchecked.
+    /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked.
     mut fn held_checked(e: ExprId) -> SignedType? {
-        for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Free) }
+        self.unruled.set(self.unruled.get() + 1)
+        for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Unknown) }
+        self.unruled.set(self.unruled.get() - 1)
         null
     }
 
     /// What `e` was checked as, absent when it wasn't.
     fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
 
-    /// The type a name has here: the innermost binding of it, else what the program names by it.
+    /// The type a name read here has, absent when it can't be known yet: under a node with no rule,
+    /// which may bind the name itself, or bound to an optional type, which a condition around the
+    /// read may have narrowed.
+    fn read(name: string) -> SignedType? {
+        if self.unruled.get() > 0 { return null }
+        let ty? = self.bound(name) else { return null }
+        if ty.optional { null } else { ty }
+    }
+
+    /// The type a name has here: the innermost binding of it, else what the program names by it;
+    /// absent past a scope that may have bound it unseen.
     fn bound(name: string) -> SignedType? {
-        let scopes = self.scopes.get()
-        let held = reversed(scopes).find(it.has(name))
-        if held != null { return held!.get(name) }
+        for scope in reversed(self.scopes.get()) {
+            let local = scope.names.get(name)
+            if local != null { return local!.ty }
+            if scope.opaque { return null }
+        }
         (self.program.value_named)(name)
     }
 
-    /// `name` bound to `ty` in the innermost scope.
-    mut fn bind(name: string, ty: SignedType) {
+    /// `name` bound in the innermost scope, to `ty` when it's known.
+    mut fn bind(name: string, ty: SignedType?) {
         let scopes = self.scopes.get()
         mut innermost = scopes.last()!
-        innermost.set(name, ty)
+        innermost.names.set(name, Local { ty: ty })
         self.scopes.set_at(scopes.length - 1, innermost)
     }
+
+    /// A scope opened inside the current one.
+    mut fn opened() { self.scopes.push(open_scope()) }
+
+    /// The innermost scope closed.
+    mut fn closed() {
+        let scopes = self.scopes.get()
+        self.scopes.set(scopes.take(scopes.length - 1))
+    }
+
+    /// `s` checked, binding what it declares where it stands.
+    mut fn check_stmt(s: StmtId) { self.store.stmt(s).stmt_checked(self, s) }
+
+    /// Every expression `s` holds checked against what isn't known.
+    mut fn stmt_held_checked(s: StmtId) {
+        self.unruled.set(self.unruled.get() + 1)
+        for e in self.store.stmt_children(s) { let _ = self.check(e, Expected.Unknown) }
+        self.unruled.set(self.unruled.get() - 1)
+        let scopes = self.scopes.get()
+        self.scopes.set_at(scopes.length - 1, scopes.last()! with { opaque: true })
+    }
+
+    /// A type written in the body, resolved.
+    fn written(ty: TypeRef) -> SignedType { (self.program.written)(ty) }
+}
+
+/// A scope with nothing bound in it yet.
+fn open_scope() -> CheckScope {
+    let names: Map<string, Local> = {}
+    CheckScope { names: names, opaque: false }
 }
 
 /// A type the language owns, with nothing applied.

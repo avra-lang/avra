@@ -1,0 +1,21 @@
+//! The typing rules of `let` and `mut`: a value checked against its annotation, or read as it is,
+//! and its name bound to the type.
+use core.{Checking, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeRef}
+use core.stmt.{Let, MutLet}
+
+impl StmtChecks for Let {
+    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value) }
+}
+
+impl StmtChecks for MutLet {
+    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value) }
+}
+
+/// `value` checked against `annotation` when one is written, and `name` bound to the annotation's
+/// type, else to the value's.
+fn bound_to(mut cx: Checking, name: string, annotation: TypeRef?, value: ExprId) {
+    let declared: SignedType? = if annotation == null { null } else { cx.written(annotation!) }
+    let read = cx
+        .check(value, if declared == null { Expected.Free } else { Expected.Exactly(declared!) })
+    cx.bind(name, declared ?? read)
+}

@@ -3,6 +3,7 @@
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
     CheckedProgram,
+    TypeRef,
     ExprId,
     SignedSeat,
     SignedType,
@@ -29,11 +30,15 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
     let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
     let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
         .first() else { return null }
+    let signing = Signing { engine: engine, file: file, type_params: signature.type_params }
     mut cx = checking(
         item.store,
-        CheckedProgram { value_named: (n: string) -> value_type(engine, file, n) },
+        CheckedProgram {
+            value_named: (n: string) -> value_type(engine, file, n),
+            written: (written: TypeRef) -> signing.signed(written),
+        },
     )
-    for p in signature.params { if p.ty != null { cx.bind(p.name, p.ty!) } }
+    for p in signature.params { cx.bind(p.name, p.ty) }
     let _ = cx.check(body, Expected.Exactly(signature.answer))
     TypedBody { types: cx.types.get() }
 }
