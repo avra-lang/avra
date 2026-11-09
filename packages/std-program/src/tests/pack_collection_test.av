@@ -1,0 +1,128 @@
+// A compaction keeps what a recent root reaches: each root's newest code versions, each question's
+// newest records, and the answers and questions those records read.
+use answer_record.{
+    AnswerRecord,
+    ContentHash,
+    Question,
+    RecordedRead,
+    answer_record,
+    content_hash,
+    question,
+}
+use pack_collection.{QuestionRecords, live_in}
+
+fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
+
+fn asked(name: string, code: string, arguments: string) -> Question { question(name, code, arguments.bytes()) }
+
+/// A record answering `answer` that read `reads`, each a whole read of what it saw then.
+fn record(answer: string, reads: List<Question>, deep: bool) -> AnswerRecord {
+    answer_record(
+        hash_of(answer),
+        [RecordedRead { question: r.known_as, whole_answer: hash_of("seen"), part: null } for r in reads],
+        deep,
+    )
+}
+
+fn entry(q: Question, records: List<AnswerRecord>, written_in: int) -> QuestionRecords {
+    QuestionRecords { question: q.known_as, asked: q, records: records, written_in: written_in }
+}
+
+fn kept(questions: List<QuestionRecords>, q: Question) -> bool { live_in(questions).questions.any(it.question.same_as(q.known_as)) }
+
+spec "pack_collection — what a compaction keeps" {
+    given "nothing" {
+        then "nothing is kept" { live_in([]).questions.is_empty() }
+    }
+    given "a root and what it read" {
+        then "both stay, with the answers they found, and a question nobody reads goes" {
+            let leaf = asked("leaf", "c", "x")
+            let root = asked("root", "c", "x")
+            let stray = asked("stray", "c", "x")
+            let questions = [
+                entry(leaf, [record("leaf answer", [], false)], 1),
+                entry(root, [record("root answer", [leaf], true)], 1),
+                entry(stray, [record("stray answer", [], false)], 1),
+            ]
+            let live = live_in(questions)
+            kept(questions, root) &&
+                kept(questions, leaf) &&
+                !kept(questions, stray) &&
+                live.answers.get(hash_of("leaf answer")) != null &&
+                live.answers.get(hash_of("stray answer")) == null
+        }
+    }
+    given "a question answered many ways" {
+        then "only its newest three records stay, and what only an older one read goes" {
+            let old_read = asked("old", "c", "x")
+            let root = asked("root", "c", "x")
+            let questions = [
+                entry(old_read, [record("old answer", [], false)], 1),
+                entry(
+                    root,
+                    [
+                        record("r1", [old_read], true),
+                        record("r2", [], true),
+                        record("r3", [], true),
+                        record("r4", [], true),
+                    ],
+                    4,
+                ),
+            ]
+            let live = live_in(questions)
+            live.questions.find(it.question.same_as(root.known_as))!.records.length == 3 &&
+                !kept(questions, old_read) &&
+                live.answers.get(hash_of("r1")) == null &&
+                live.answers.get(hash_of("r4")) != null
+        }
+    }
+    given "a root reused through an old shallow record, with deep records after it" {
+        then "the shallow one stays, and what it read" {
+            let leaf = asked("leaf", "c", "x")
+            let root = asked("root", "c", "x")
+            let questions = [
+                entry(leaf, [record("leaf answer", [], false)], 1),
+                entry(
+                    root,
+                    [
+                        record("r0", [leaf], false),
+                        record("r1", [], true),
+                        record("r2", [], true),
+                        record("r3", [], true),
+                    ],
+                    4,
+                ),
+            ]
+            live_in(questions).questions.find(it.question.same_as(root.known_as))!
+                    .records
+                    .length == 4 &&
+                kept(questions, leaf)
+        }
+    }
+    given "one root under three versions of its code" {
+        then "the two written most recently stay" {
+            let v1 = asked("root", "v1", "x")
+            let v2 = asked("root", "v2", "x")
+            let v3 = asked("root", "v3", "x")
+            let questions = [
+                entry(v1, [record("a1", [], true)], 1),
+                entry(v3, [record("a3", [], true)], 3),
+                entry(v2, [record("a2", [], true)], 2),
+            ]
+            !kept(questions, v1) && kept(questions, v2) && kept(questions, v3)
+        }
+        then "a root asked of other arguments is its own" {
+            let one = asked("root", "v1", "x")
+            let newer = asked("root", "v2", "x")
+            let newest = asked("root", "v3", "x")
+            let other = asked("root", "v1", "y")
+            let questions = [
+                entry(one, [record("a1", [], true)], 1),
+                entry(newer, [record("a2", [], true)], 2),
+                entry(newest, [record("a3", [], true)], 3),
+                entry(other, [record("b1", [], true)], 1),
+            ]
+            kept(questions, other) && !kept(questions, one)
+        }
+    }
+}

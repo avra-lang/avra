@@ -161,6 +161,39 @@ spec "disk_store — answers outlive the process" {
                 process_asking(directory, "f.av", "beta") == 1
         }
     }
+    given "a compaction" {
+        then "what the newest root reaches stays in one pack, and a later process runs only its input" {
+            let directory = fresh_directory("compact")
+            disk_world().put("k.av", "alpha")
+            let _ = process_asking(directory, "k.av", "alpha")
+            disk_world().put("k.av", "alpha beta")
+            let _ = process_asking(directory, "k.av", "alpha")
+            let _ = disk_store_at(directory).compacted()
+            pack_files(directory).length == 1 && process_asking(directory, "k.av", "alpha") == 1
+        }
+        then "a pack it can't read goes, and what it can read stays" {
+            let directory = fresh_directory("foreign")
+            disk_world().put("m.av", "alpha")
+            let _ = process_asking(directory, "m.av", "alpha")
+            let _ = write_bytes("${directory}/older.pack", "another format's pack".bytes())
+            let _ = disk_store_at(directory).compacted()
+            !exists("${directory}/older.pack") &&
+                pack_files(directory).length == 1 &&
+                process_asking(directory, "m.av", "alpha") == 1
+        }
+        then "an edit one back still stands whole, and one three back reruns only below its root" {
+            let directory = fresh_directory("history")
+            for text in ["w1", "w2", "w3", "w4", "w5"] {
+                disk_world().put("l.av", "alpha ${text}")
+                let _ = process_asking(directory, "l.av", "alpha")
+            }
+            let _ = disk_store_at(directory).compacted()
+            disk_world().put("l.av", "alpha w4")
+            let one_back = process_asking(directory, "l.av", "alpha")
+            disk_world().put("l.av", "alpha w1")
+            one_back == 1 && process_asking(directory, "l.av", "alpha") == 2
+        }
+    }
     given "damage to the directory" {
         then "a file that isn't a pack is ignored, whatever its size" {
             let directory = fresh_directory("junk")
