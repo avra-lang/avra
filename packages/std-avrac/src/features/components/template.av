@@ -31,9 +31,17 @@ use core.{
 use grammar.{Token, TokenKind, lex_source, after_type_args}
 
 /// An exported component as an importing file's block word.
-export fn word_of(store: SyntaxArena, s: StmtId, origin: string) -> ComponentWord? {
+export fn word_of(store: SyntaxArena, s: StmtId, origin: string) -> ComponentWord? { word_among(store, s, origin, store.component_names()) }
+
+/// The same, its file declaring components by `components`.
+export fn word_among(store: SyntaxArena, s: StmtId, origin: string, components: List<string>) -> ComponentWord? {
     let c? = store.component_parts(s) else { return null }
-    ComponentWord { word: c.name, declared: c.name, form: instancing(store, c), origin: origin }
+    ComponentWord {
+        word: c.name,
+        declared: c.name,
+        form: instancing(store, c, components),
+        origin: origin,
+    }
 }
 
 /// A named instance's statement as a name a body may list.
@@ -87,8 +95,8 @@ export fn binds_name(c: ComponentWord) -> bool {
 
 /// How an instance of the component stands in place: its template,
 /// or the library's reason it cannot.
-fn instancing(store: SyntaxArena, c: ComponentParts) -> Instancing {
-    let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c)) }
+fn instancing(store: SyntaxArena, c: ComponentParts, components: List<string>) -> Instancing {
+    let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c, components)) }
     let fields = c.fields()
     if copies_events(store, c) { return Instancing.Spoken }
     if fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }

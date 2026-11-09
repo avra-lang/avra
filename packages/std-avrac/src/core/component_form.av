@@ -19,15 +19,16 @@ export const default_mark: string = "default"
 
 /// The record an instance of the component is a literal of — absent for one
 /// that expands, whose instance is its template copied in place.
-export fn record_form(store: SyntaxArena, c: ComponentParts) -> Record? {
+export fn record_form(store: SyntaxArena, c: ComponentParts, components: List<string>) -> Record? {
     if expand_of(store, c) != null { return null }
-    record_of(store, c)
+    record_of(store, c, components)
 }
 
 /// A component read as a record: its head in order, the `List` fields
 /// its instance's statements may fill, its one fn field — an event's
-/// handler is heard, never a body — and its events.
-export fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
+/// handler is heard, never a body — and its events. `components` are the names its file declares
+/// components by: a list of one takes that component's instances alone.
+export fn record_of(store: SyntaxArena, c: ComponentParts, components: List<string>) -> Record {
     let fields = c.fields()
     let arrow_fields = [p for p in fields if p.ty?.arrow ?? false]
     Record {
@@ -35,7 +36,7 @@ export fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
         slots: [ChildSlot {
             name: p.name.of,
             of: element_name(p),
-            gathers: !declares_component(store, element_name(p)),
+            gathers: !components.contains(element_name(p)),
         } for p in fields if lists(p)],
         named: fields.any(it.name.of == "name"),
         checks: member(store, c, "check") != null,
@@ -62,10 +63,9 @@ fn answers_nullable(ty: TypeRef?) -> bool {
     ty?.answer?.optional ?? false
 }
 
-/// Whether the file declares a component by this name — a list of its
-/// records takes that component's instances alone.
-fn declares_component(store: SyntaxArena, name: string) -> bool {
-    store.stmt_ids().any((s) -> store.component_parts(s)?.name == name)
+impl SyntaxArena {
+    /// The names this store's statements declare components by.
+    fn component_names() -> List<string> { [c!.name for s in self.stmt_ids() for c in [self.component_parts(s)] if c != null] }
 }
 
 /// The name a `List` field's elements are written with.

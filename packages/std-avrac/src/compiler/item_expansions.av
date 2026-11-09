@@ -18,7 +18,7 @@ use core.{
 }
 use features.{BlockGrammar, BlockWords, instances_expanded}
 use features.sublang.{blocks_expanded}
-use features.components.{word_of}
+use features.components.{word_among}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash, content_hash}
@@ -158,16 +158,16 @@ fn declaration(engine: QueryEngine, home: SourceFileAddress, declared: string) -
     }
 }
 
-/// A component handed whole: its file read back as a parse reads it, each instance its declaring
-/// item holds handed its own component, so a copy of the template means what it would there.
+/// A component handed whole: its declaring item read back as its file reads it, each instance it
+/// holds handed its own component, so a copy of the template means what it would there; its lists
+/// take what its file's headers say the file declares.
 /// Absent for a word that names no declaration, or one whose template names itself.
 fn component_at(engine: QueryEngine, shape: WordShape, entered: List<string>) -> ComponentWord? {
     let named = component_name(ComponentAt { home: shape.home, declared: shape.declared })
     if entered.contains(named) { return null }
     let held? = declaration(engine, shape.home, shape.declared) else { return null }
     let store = new_node_store(shape.home.path_in_package)
-    let items = [item_read_back_marked(store, p) for p in file_tapes(engine, shape.home)]
-    let declaring_item = items[held.item]
+    let declaring_item = item_read_back_marked(store, file_tapes(engine, shape.home)[held.item])
     let words = WordShapes.from_saved_bytes(held.context).components
     blocks_expanded(
         store,
@@ -187,7 +187,8 @@ fn component_at(engine: QueryEngine, shape: WordShape, entered: List<string>) ->
         .find((s) -> store.component_parts(s)?.name == shape.declared) else {
         return null
     }
-    let whole? = word_of(store, declaring, spelled_file(shape.home)) else { return null }
+    let declares = [w.shape.declared for w in file_words(engine, shape.home).components]
+    let whole? = word_among(store, declaring, spelled_file(shape.home), declares) else { return null }
     whole with { word: shape.word, own: shape.own }
 }
 
