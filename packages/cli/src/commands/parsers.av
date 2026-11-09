@@ -1,7 +1,7 @@
 //! `avra parsers <package>` — the generated parser held to the grammar engine on every file of
 //! a package: each file's untold run on both, every builder call they make compared in order,
 //! and how long each took. Says each file they differ on and exits 1 if any.
-use @std.cli.{CliResult, Runnable, command}
+use @std.cli.{CliResult, Runnable, command, option}
 use @std.avrac.compiler.{avra, avra_untold, avra_builders, avra_lits, Language}
 use @std.avrac.grammar.{Token, avra_lexeme, lex_source, avra_token_tables}
 use @std.avrac.features.{LangNode, build_named, BlockWords}
@@ -12,6 +12,8 @@ use @std.errors.{Loc}
 use @std.io.{list_dir, read_text}
 use @std.path.{joined_path}
 use @std.time.{now_ns}
+use @std.text.{parse_int}
+use @std.avrac.core.{flatten}
 
 type ParsersCmd = {}
 
@@ -24,7 +26,10 @@ impl Runnable for ParsersCmd {
             )
             return 1
         }
-        let held = [held_file(lang, f) for f in av_files(joined_path(args.arg("file"), "src"))]
+        let mutants = parse_int(args.option("mutants")) ?? 0
+        let held = flatten(
+            [held_file(lang, f, mutants) for f in av_files(joined_path(args.arg("file"), "src"))],
+        )
         let wrong = [h for h in held if h.wrong != null]
         for h in wrong { println("differs: ${h.wrong!}") }
         let clean = [h for h in held if h.clean].length
@@ -45,9 +50,30 @@ alias Builds = fn(string, List<Captured<Token, LangNode>>, Loc?) -> Result<Captu
 
 alias Indexed = fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>
 
-fn held_file(lang: Language, path: string) -> Held {
+/// `path` on both parsers, then `mutants` of its token stream: one token dropped, doubled or swapped
+/// with the next, each at its own place — inputs that fail, recover and speak.
+fn held_file(lang: Language, path: string, mutants: int) -> List<Held> {
     let text = match read_text(path) { .Ok(t) -> t, .Err(_) -> "" }
     let tokens = lex_source(text).tokens
+    [held_tokens(lang, path, text, tokens)]
+        .concat([held_tokens(lang, "${path} mutant ${k}", text, mutated(tokens, k)) for k in 0..mutants])
+}
+
+/// Mutant `k` of `tokens`: at a place `k` picks, one token dropped, doubled or swapped with the
+/// next — never the last, the end of input.
+fn mutated(tokens: List<Token>, k: int) -> List<Token> {
+    if tokens.length < 3 { return tokens }
+    let at = (k * 7919 + 13) % (tokens.length - 1)
+    let before = tokens.slice(0, at)
+    let after = tokens.slice(at + 1, tokens.length)
+    match k % 3 {
+        0 -> before.concat(after),
+        1 -> before.concat([tokens[at], tokens[at]]).concat(after),
+        _ -> if at + 1 < tokens.length - 1 { before.concat([tokens[at + 1], tokens[at]]).concat(tokens.slice(at + 2, tokens.length)) } else { tokens },
+    }
+}
+
+fn held_tokens(lang: Language, path: string, text: string, tokens: List<Token>) -> Held {
     let engine_log = list_cell<string>()
     let engine_store = new_node_store(path)
     let by_name: Builds = (name, a, loc) -> logged(
@@ -147,8 +173,13 @@ fn av_files(dir: string) -> List<string> {
     [p for n in names for p in if n.ends_with(".av") { [joined_path(dir, n)] } else { av_files(joined_path(dir, n)) }]
 }
 
+export option mutants {
+    description: "how many mutants of each file's tokens to hold the parsers to as well"
+}
+
 export command parsers {
     description: "Hold the generated parser to the grammar engine on every file of a package"
+    options: [mutants]
     args: [file]
     run: ParsersCmd {}
 }
