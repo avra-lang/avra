@@ -7,12 +7,16 @@
 use @std.errors.{Loc}
 use @std.grammar.{
     Lexeme,
+    TokenTables,
+    class_bits,
+    closing_bit,
     Grammar,
     parse_grammar as grammar_parse_tokens,
     Diagnostic,
     lex_diagnostic,
 }
 use core.{Span, span_of}
+use @std.relation.engine.{list_cell}
 
 /// One row of the terminal-name vocabulary: the string a grammar rule
 /// writes (`NUMBER`) and the token kind it denotes. One table; the
@@ -90,11 +94,77 @@ fn kind_is(self_kind: TokenKind, k: TokenKind) -> bool {
         k == TokenKind.Name && (self_kind == TokenKind.Hole || self_kind == TokenKind.Component)
 }
 
-fn token_lit_matches(t: Token, text: string) -> bool {
-    match t.kind {
-        .Name or .Num or .Op or .Break or .Pkg -> t.text == text,
+fn token_lit_matches(t: Token, text: string) -> bool { spells_literals(t.kind) && t.text == text }
+
+/// Whether a token of kind `k` can spell a grammar literal: by its text, when it does.
+fn spells_literals(k: TokenKind) -> bool {
+    match k {
+        .Name or .Num or .Op or .Break or .Pkg -> true,
         .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Env or .Provide or .On or .Octets -> false,
     }
+}
+
+/// A number for everything a terminal class reads of a token but its text: its kind and its
+/// spelling — two tokens of one class wear the same classes.
+fn token_class(t: Token) -> int {
+    let kind = match t.kind {
+        .Name -> 0,
+        .Num -> 1,
+        .Str -> 2,
+        .IStrBegin -> 3,
+        .IStrMid -> 4,
+        .IStrEnd -> 5,
+        .Op -> 6,
+        .Break -> 7,
+        .Eof -> 8,
+        .Pkg -> 9,
+        .Hole -> 10,
+        .HoleBegin -> 11,
+        .HoleEnd -> 12,
+        .Block -> 13,
+        .Body -> 14,
+        .Component -> 15,
+        .State -> 16,
+        .Octets -> 17,
+        .Env -> 18,
+        .Provide -> 19,
+        .On -> 20,
+    }
+    kind * 4 +
+        if t.raw { 2 } else { 0 } +
+        if t.kind == TokenKind.Num && t.is_fraction() { 1 } else { 0 }
+}
+
+/// What each token class wears, by `token_class`: -1 until a token of it is asked.
+export fn token_classes_worn() -> Cell<List<int>> {
+    let worn = list_cell<int>()
+    for _k in 0..84 { worn.push(0 - 1) }
+    worn
+}
+
+/// Each token's literal slot by `lits` and its classes by `kinds`, as `token_tables` answers
+/// them — a class asked of the lexeme once in `worn`, for every token of it.
+export fn avra_token_tables(
+    tokens: List<Token>,
+    lits: Map<string, int>,
+    kinds: List<int>,
+    worn: Cell<List<int>>,
+) -> TokenTables {
+    let lit = [if spells_literals(t.kind) { lits.get(t.text) ?? 0 - 1 } else { 0 - 1 } for t in tokens]
+    let close = lits.get("}") ?? 0 - 1
+    TokenTables {
+        lit: lit,
+        mask: [class_worn(worn, kinds, t) | closing_bit(lit[i], close) for i, t in tokens],
+    }
+}
+
+fn class_worn(worn: Cell<List<int>>, kinds: List<int>, t: Token) -> int {
+    let key = token_class(t)
+    let known = worn.get()[key]
+    if known >= 0 { return known }
+    let bits = class_bits(avra_lexeme(), kinds, t)
+    worn.set_at(key, bits)
+    bits
 }
 
 fn token_is_eof(t: Token) -> bool { t.kind == TokenKind.Eof }

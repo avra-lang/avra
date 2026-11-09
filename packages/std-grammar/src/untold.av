@@ -51,25 +51,26 @@ export type Untold<T, N> = {
     t_words: int,
 }
 
-/// A run over `tokens`, its literals numbered by `lits` and its classes by `kinds`, the lexer's
-/// kind for each class slot.
+/// A run over `tokens`, read off `tables`; `kinds` is the lexer's kind for each class slot, and
+/// `open_lit`/`close_lit` the slots of `{` and `}`.
 export fn untold<T, N>(
     tokens: List<T>,
     lex: Lexeme<T>,
-    lits: Map<string, int>,
+    tables: TokenTables,
     kinds: List<int>,
+    open_lit: int,
+    close_lit: int,
     build: fn(int, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
 ) -> Untold<T, N> {
-    let close_lit = lits.get("}") ?? no_end
     mut count = 64
     while count < tokens.length * 2 { count = count * 2 }
     Untold {
         tokens: tokens,
         lex: lex,
-        lit: [lit_of(lex, lits, t) for t in tokens],
-        mask: [mask_of(lex, kinds, close_lit, lits, t) for t in tokens],
+        lit: tables.lit,
+        mask: tables.mask,
         kinds: kinds,
-        open_lit: lits.get("{") ?? no_end,
+        open_lit: open_lit,
         close_lit: close_lit,
         eof_at: lone_eof(lex, tokens),
         build: build,
@@ -91,21 +92,39 @@ export fn untold<T, N>(
     }
 }
 
+/// What a generated rule reads of each token: the slot of the literal it spells, or -1, and the
+/// classes it wears as bits — bit `s` for the class of slot `s` below 62, bit 62 when it closes
+/// a body.
+export type TokenTables = { lit: List<int>, mask: List<int> }
+
+/// `tokens`' tables, asked of the lexeme token by token and class by class — for a lexeme with
+/// no quicker way to answer them.
+export fn token_tables<T>(lex: Lexeme<T>, lits: Map<string, int>, kinds: List<int>, tokens: List<T>) -> TokenTables {
+    let lit = [lit_of(lex, lits, t) for t in tokens]
+    let close = lits.get("}") ?? no_end
+    TokenTables {
+        lit: lit,
+        mask: [class_bits(lex, kinds, t) | closing_bit(lit[i], close) for i, t in tokens],
+    }
+}
+
 /// The slot of the literal a token spells, or -1 — a literal matches by text alone.
 fn lit_of<T>(lex: Lexeme<T>, lits: Map<string, int>, t: T) -> int {
     let at? = lits.get(lex.text(t)) else { return no_end }
     if lex.lit_matches(t, lex.text(t)) { at } else { no_end }
 }
 
-/// A token's class bits: bit `s` when it wears the class of slot `s` below 62, bit 62 when
-/// it closes a body.
-fn mask_of<T>(lex: Lexeme<T>, kinds: List<int>, close_lit: int, lits: Map<string, int>, t: T) -> int {
-    mut bits = if close_lit >= 0 && lit_of(lex, lits, t) == close_lit { 1 << 62 } else { 0 }
+/// The classes a token wears, as bits: bit `s` when it wears the class of slot `s`, below 62.
+export fn class_bits<T>(lex: Lexeme<T>, kinds: List<int>, t: T) -> int {
+    mut bits = 0
     for s, kind in kinds {
         if s < 62 && lex.wears_kind(t, kind) { bits = bits | (1 << s) }
     }
     bits
 }
+
+/// Bit 62 for a token spelling literal slot `lit` when that is the slot of `}`.
+export fn closing_bit(lit: int, close_lit: int) -> int { if lit >= 0 && lit == close_lit { 1 << 62 } else { 0 } }
 
 /// Where the one end-of-input token stands: last, and alone — or -1, a stream no generated
 /// rule reads.
