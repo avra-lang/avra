@@ -25,6 +25,18 @@ impl ContentHash {
 /// The hash of `octets`.
 export fn content_hash(octets: Bytes) -> ContentHash { hash_of_digest(blake3(octets)) }
 
+/// The words of one hash.
+export const HASH_WORDS: int = 2
+
+/// The hash whose words start at `position` of `words`.
+export fn hash_in(words: List<int>, position: int) -> ContentHash { ContentHash { high_word: words[position], low_word: words[position + 1] } }
+
+/// `hashes` as words: each one's high word, then its low.
+export fn words_of(hashes: List<ContentHash>) -> List<int> { [word for h in hashes for word in [h.high_word, h.low_word]] }
+
+/// The hashes `words` holds, each as its two words.
+export fn hashes_in(words: List<int>) -> List<ContentHash> { [hash_in(words, at * HASH_WORDS) for at in 0..words.length / HASH_WORDS] }
+
 /// The hash of runs of octets written one after another: the same as the hash of them joined.
 export fn runs_hash(runs: List<Bytes>) -> ContentHash { hash_of_digest(runs.fold(hasher(), (h, run) -> h.update(run)).digest()) }
 
@@ -207,10 +219,13 @@ impl KeptRecord {
     }
 
     /// The question of every read, whole reads first.
-    fn read_questions() -> List<ContentHash> {
-        [self.whole_reads.hash_at(i * WHOLE_READ_WORDS) for i in 0..self.whole_reads.length() / WHOLE_READ_WORDS]
+    fn read_questions() -> List<ContentHash> { hashes_in(self.read_question_words()) }
+
+    /// The words of every read's question, whole reads first.
+    fn read_question_words() -> List<int> {
+        [self.whole_reads.at(i * WHOLE_READ_WORDS + k) for i in 0..self.whole_reads.length() / WHOLE_READ_WORDS for k in 0..HASH_WORDS]
             .concat(
-                [self.part_reads.hash_at(i * PART_READ_WORDS) for i in 0..self.part_reads.length() / PART_READ_WORDS],
+                [self.part_reads.at(i * PART_READ_WORDS + k) for i in 0..self.part_reads.length() / PART_READ_WORDS for k in 0..HASH_WORDS],
             )
     }
 }

@@ -73,6 +73,18 @@ fn one_list(slots: List<SavedSlot>) -> Bytes {
     w.finished(w.write_record(0, [SavedSlot.Child(list)]))
 }
 
+/// `numbers` written as one list of numbers, as the root's one field.
+fn numbers_list(numbers: List<int>) -> Bytes {
+    let w = saved_layout_writer()
+    let list = w.write_numbers(numbers)
+    w.finished(w.write_record(0, [SavedSlot.Child(list)]))
+}
+
+/// Whether `numbers` written as numbers are the octets of a list of their number slots.
+fn numbers_as_slots(numbers: List<int>) -> bool {
+    blake3_hex(numbers_list(numbers)) == blake3_hex(one_list([SavedSlot.Number(n) for n in numbers]))
+}
+
 /// Whether searching for every number, and each number's neighbours, agrees with walking the list.
 fn search_agrees_with_a_walk(numbers: List<int>) -> bool {
     let answer = one_list([SavedSlot.Number(n) for n in numbers])
@@ -162,6 +174,22 @@ spec "program/saved_layout — an answer read where it lies" {
             let answer = one_list([SavedSlot.Number(v) for v in values])
             let read = saved_root_record(SavedSource.InMemory(answer), answer.length).list_at(0)!
             (0..values.length).all((i) -> read.number_at(i) == values[i])
+        }
+    }
+    given "a list of numbers written as numbers" {
+        then "it is the octets a list of their number slots is: empty, signed, at every width, long" {
+            numbers_as_slots([]) &&
+                numbers_as_slots([0, -1, 1, -128, 255, 256, -65536, 65536]) &&
+                numbers_as_slots(
+                    [4294967296, -4294967297, 9223372036854775807, -9223372036854775807],
+                ) &&
+                numbers_as_slots([i * 37 - 50000 for i in 0..5000])
+        }
+        then "no run its writer holds passes a few kilobytes past the bound" {
+            let w = saved_layout_writer()
+            let list = w.write_numbers([i * 70000 for i in 0..5000])
+            let runs = w.finished_runs_of(w.write_record(0, [SavedSlot.Child(list)]))
+            runs.length > 1 && runs.all(it.length <= 4096 + 8)
         }
     }
     given "a sorted list of numbers searched" {

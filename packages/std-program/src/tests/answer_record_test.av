@@ -7,8 +7,10 @@ use answer_record.{
     RecordedRead,
     answer_record,
     content_hash,
+    hashes_in,
     kept_in_place,
     question,
+    words_of,
 }
 use saved_layout.{saved_bytes_in_memory}
 
@@ -28,6 +30,17 @@ spec "answer_record — what's remembered about an answer" {
             let first = ContentHash { high_word: 1, low_word: 9 }
             let second = ContentHash { high_word: 2, low_word: 0 }
             first.comes_before(second) && !second.comes_before(first)
+        }
+    }
+    given "hashes as words" {
+        then "none are no words" { words_of([]).is_empty() && hashes_in([]).is_empty() }
+        then "each is its high word then its low, and reads back in order" {
+            let hashes = [hash_of("a"), hash_of("b")]
+            let words = words_of(hashes)
+            words.length == 4 &&
+                words[0] == hashes[0].high_word &&
+                words[3] == hashes[1].low_word &&
+                hashes_in(words)[1].same_as(hashes[1])
         }
     }
     given "a question" {
@@ -128,7 +141,8 @@ spec "answer_record — what's remembered about an answer" {
             back.whole_reads.length == 4 &&
                 back.part_reads.length == 8 &&
                 back.part_reads[4] == hash_of("helper").high_word &&
-                back.kept().read_questions()[1].same_as(hash_of("names m"))
+                back.kept().read_questions()[1].same_as(hash_of("names m")) &&
+                hashes_in(back.kept().read_question_words())[1].same_as(hash_of("names m"))
         }
         then "read where it lies, it says what it said" {
             let read = RecordedRead {

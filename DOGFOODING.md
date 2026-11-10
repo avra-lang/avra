@@ -2086,3 +2086,10 @@ sugar's index, so none meets a name of the code it lands in. Meanings and rules
 are filed by root kind through one index, `RootIndex<T>`
 (`packages/std-avrac/src/compiler/rules_table.av`), so an entry no pattern can
 narrow is tried at every node for both.
+
+## A run of hashes is held as its words
+
+A `ContentHash` in a record's field is two words in place, but a `List<ContentHash>` holds a box for
+each — about sixty octets a hash: one cold run's reads were 84,434 of them, 5 MB. A list of hashes
+that lives long or runs long is held as its words, through `words_of`, `hashes_in` and `hash_in`
+(`packages/std-program/src/answer_record.av`), as `HeldEntry.reads` is (`frontier.av`).

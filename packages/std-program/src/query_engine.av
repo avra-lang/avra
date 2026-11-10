@@ -18,6 +18,7 @@ use answer_record.{
     answer_record,
     content_hash,
     question,
+    words_of,
 }
 
 /// How a query runs.
@@ -66,17 +67,19 @@ export trait AnswerStore {
 /// A question being answered, and the reads it has made so far.
 type OpenQuestion = { question: ContentHash, reads: HashKeyedTable<RecordedRead> }
 
-/// A question this process knows the answer to: the answer, and how it came to be known.
-type SettledAnswer = { question: ContentHash, answer: ContentHash, known: Known }
-
-/// How a settled answer came to be known.
-enum Known {
-    /// Reused by its query through a kept record that stands, read where it lies.
-    Reused(query_name: string, record: KeptRecord)
-    /// Worked out by its query in this process, from what it read.
-    Worked(query_name: string, reads: List<ContentHash>)
+/// A question this process knows the answer to, by how it came to be known.
+enum SettledAnswer {
+    /// Learned by its query in this process, reused through a kept record that stands or worked out
+    /// from what it read: the answer as the frontier keeps it.
+    Learned(entry: HeldEntry)
     /// Standing untouched at its place in this binary's frontier.
-    Standing(frontier: Frontier, place: int)
+    Standing(question: ContentHash, answer: ContentHash, frontier: Frontier, place: int)
+}
+
+impl SettledAnswer {
+    fn answer() -> ContentHash {
+        match self { .Learned(entry) -> entry.answer, .Standing(_, answer, _, _) -> answer }
+    }
 }
 
 /// What this process knows of its binary's frontier.
@@ -160,8 +163,8 @@ impl QueryEngine {
     /// The frontier is read before anything is looked up, so an input it holds is asked once.
     fn settled_answer(asked: Question) -> ContentHash {
         self.frontier_read_once()
-        self.settled_answers.get(asked.known_as)?.answer ?? self
-            .settled_from_frontier(asked.known_as)?.answer ?? self.reused_answer(asked) ?? self
+        self.settled_answers.get(asked.known_as)?.answer() ?? self
+            .settled_from_frontier(asked.known_as)?.answer() ?? self.reused_answer(asked) ?? self
             .computed_answer(asked)
     }
 
@@ -174,7 +177,7 @@ impl QueryEngine {
             .store
             .records_of(asked.known_as)
             .find((record) -> self.stands_now(record)) else { return null }
-        self.settled(asked, standing.answer, Known.Reused(asked.query_name, standing))
+        self.learned(asked, standing.answer, standing.read_question_words())
     }
 
     /// Whether every read of a record still sees what it saw.
@@ -192,13 +195,13 @@ impl QueryEngine {
     /// holds.
     fn answer_holds(question: ContentHash, seen: ContentHash) -> bool {
         let settled? = self.settled_now(question) else { return false }
-        settled.answer.same_as(seen)
+        settled.answer().same_as(seen)
     }
 
     /// Whether one part of a question's answer is still the one seen.
     fn part_holds(question: ContentHash, part_name: ContentHash, part_hash: ContentHash) -> bool {
         let settled? = self.settled_now(question) else { return false }
-        part_hash_seen(self.part_in(question, settled.answer, part_name, null)).same_as(part_hash)
+        part_hash_seen(self.part_in(question, settled.answer(), part_name, null)).same_as(part_hash)
     }
 
     /// What this process says a question's answer is, settling it if it must, absent for a
@@ -220,12 +223,9 @@ impl QueryEngine {
 
     /// The answer at `at` in `f`, settled as it stands there.
     fn stood(f: Frontier, at: int) -> SettledAnswer {
-        let settled = SettledAnswer {
-            question: f.question_at(at),
-            answer: f.answer_at(at),
-            known: Known.Standing(f, at),
-        }
-        self.settled_answers.put(settled.question, settled)
+        let question = f.question_at(at)
+        let settled = SettledAnswer.Standing(question, f.answer_at(at), f, at)
+        self.settled_answers.put(question, settled)
         settled
     }
 
@@ -322,26 +322,12 @@ impl QueryEngine {
     }
 
     /// A settled answer as the frontier may keep it: whatever this process worked out or reused,
-    /// and a root it asked that stood in the frontier without being one there. Absent for any
-    /// other answer that stood.
+    /// a root when it was asked alone, and a root it asked that stood in the frontier without being
+    /// one there. Absent for any other answer that stood.
     fn learned_entry(s: SettledAnswer) -> HeldEntry? {
-        let root = self.asked_alone.get(s.question) != null
-        match s.known {
-            .Standing(f, place) -> if root && !f.root_at(place) { f.held_at(place)?.rooted() } else { null },
-            .Reused(name, record) -> self.held(s, name, record.read_questions(), root),
-            .Worked(name, reads) -> self.held(s, name, reads, root),
-        }
-    }
-
-    /// An answer this process learned, as the frontier keeps it: an input when its query is read
-    /// afresh.
-    fn held(s: SettledAnswer, query_name: string, reads: List<ContentHash>, root: bool) -> HeldEntry {
-        HeldEntry {
-            question: s.question,
-            answer: s.answer,
-            reads: reads,
-            input: self.read_afresh(query_name),
-            root: root,
+        match s {
+            .Learned(entry) -> if self.asked_alone.get(entry.question) == null { entry } else { entry.rooted() },
+            .Standing(question, _, f, place) -> if self.asked_alone.get(question) != null && !f.root_at(place) { f.held_at(place)?.rooted() } else { null },
         }
     }
 
@@ -386,10 +372,10 @@ impl QueryEngine {
         let bytes = self.run_recording(asked, reads)
         let answer = content_hash(bytes)
         if self.store.answer_bytes(answer) == null { self.keep_or_hold(asked, answer, bytes) }
-        let record = answer_record(answer, reads.values())
+        let recorded = reads.values()
+        let record = answer_record(answer, recorded)
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.store.keep_record(asked, record) }
-        self
-            .settled(asked, answer, Known.Worked(asked.query_name, [r.question for r in reads.values()]))
+        self.learned(asked, answer, words_of([r.question for r in recorded]))
     }
 
     /// An input's bytes are read afresh in every process, so only this process holds them.
@@ -432,14 +418,17 @@ impl QueryEngine {
         asker.reads.put(read.read_key(), read)
     }
 
-    /// Remembers the answer for the rest of this process, and answers it.
-    fn settled(asked: Question, answer: ContentHash, known: Known) -> ContentHash {
-        self
-            .settled_answers
-            .put(
-                asked.known_as,
-                SettledAnswer { question: asked.known_as, answer: answer, known: known },
-            )
+    /// Remembers the answer for the rest of this process as the frontier keeps it, the questions
+    /// it read as `reads`' words, and answers it: an input when its query is read afresh.
+    fn learned(asked: Question, answer: ContentHash, reads: List<int>) -> ContentHash {
+        let entry = HeldEntry {
+            question: asked.known_as,
+            answer: answer,
+            reads: reads,
+            input: self.read_afresh(asked.query_name),
+            root: false,
+        }
+        self.settled_answers.put(asked.known_as, SettledAnswer.Learned(entry))
         answer
     }
 

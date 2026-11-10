@@ -4,6 +4,7 @@
 use @std.hash.{blake3_hex}
 use @std.meta.{derive}
 use saved_derive.{Saved}
+use saved_layout.{SavedSlot, float_bits, saved_layout_writer}
 use address.{
     DeclarationAddress,
     DeclarationOrigin,
@@ -43,6 +44,32 @@ fn every_kind(ratio: float, counts: Map<string, int>, outcome: Result<int, strin
         held: Cell.new(7),
         maybe_counts: null,
     }
+}
+
+/// Lists of each shape a slot holds as a number.
+@derive(Saved)
+type Numbered = { ints: List<int>, flags: List<bool>, ratios: List<float>, shades: List<Shade> }
+
+/// `n` written by hand as a record of lists of number slots, its fields in order.
+fn slotted(n: Numbered) -> Bytes {
+    let w = saved_layout_writer()
+    let ints = w.write_list([SavedSlot.Number(i) for i in n.ints])
+    let flags = w.write_list([SavedSlot.Number(if f { 1 } else { 0 }) for f in n.flags])
+    let ratios = w.write_list([SavedSlot.Number(float_bits(r)) for r in n.ratios])
+    let shades = w.write_list([SavedSlot.Number(if s == .Dark { 1 } else { 0 }) for s in n.shades])
+    w
+        .finished(
+            w
+                .write_record(
+                    0,
+                    [
+                        SavedSlot.Child(ints),
+                        SavedSlot.Child(flags),
+                        SavedSlot.Child(ratios),
+                        SavedSlot.Child(shades),
+                    ],
+                ),
+        )
 }
 
 type Label = string
@@ -142,6 +169,29 @@ spec "saved_derive — an enum whose variants hold nothing" {
                 back.maybe == null &&
                 back.all.length == 2 &&
                 back.all[0] == .Light
+        }
+    }
+}
+
+spec "saved_derive — a list of numbers" {
+    given "a list of each shape that is a number in its slot" {
+        then "it is saved as a list of the slots, and reads back" {
+            let n = Numbered {
+                ints: [0, -1, 4294967296, -9223372036854775807],
+                flags: [true, false, true],
+                ratios: [1.5, -0.0, 2.25],
+                shades: [.Dark, .Light],
+            }
+            let back = Numbered.from_saved_bytes(n.saved_bytes())
+            blake3_hex(n.saved_bytes()) == blake3_hex(slotted(n)) &&
+                back.ints[3] == -9223372036854775807 &&
+                !back.flags[1] &&
+                back.ratios[0] == 1.5 &&
+                back.shades[0] == .Dark
+        }
+        then "empty, each is a list of no slots" {
+            let n = Numbered { ints: [], flags: [], ratios: [], shades: [] }
+            blake3_hex(n.saved_bytes()) == blake3_hex(slotted(n))
         }
     }
 }

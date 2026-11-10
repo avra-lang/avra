@@ -81,8 +81,23 @@ impl SavedLayoutWriter {
         let width = slots
             .fold(1, (widest, slot) -> max_of(widest, width_holding(slot_value(start, slot))))
         self.write_label(width, 0, slots.length)
-        for slot in slots { self.write_big_endian(slot_value(start, slot), width) }
-        self.pending_bounded()
+        for slot in slots {
+            self.write_big_endian(slot_value(start, slot), width)
+            self.pending_bounded()
+        }
+        start
+    }
+
+    /// A list of `numbers`, the octets a list of their number slots takes, answering where it starts.
+    fn write_numbers(numbers: List<int>) -> int {
+        let start = self.written_length()
+        let width = numbers
+            .fold(1, (widest, number) -> max_of(widest, width_holding(zigzagged(number))))
+        self.write_label(width, 0, numbers.length)
+        for number in numbers {
+            self.write_big_endian(zigzagged(number), width)
+            self.pending_bounded()
+        }
         start
     }
 
@@ -154,11 +169,14 @@ impl SavedLayoutWriter {
 /// back it starts from `start`, and no child as zero, since a real child is never zero back.
 fn slot_value(start: int, slot: SavedSlot) -> int {
     match slot {
-        .Number(value) -> value.wrapping_shl(1) ^ (value >> 63),
+        .Number(value) -> zigzagged(value),
         .Child(position) -> start - position,
         .NoChild -> 0,
     }
 }
+
+/// A number as its slot stores it.
+fn zigzagged(value: int) -> int { value.wrapping_shl(1) ^ (value >> 63) }
 
 /// The fewest octets, of 1, 2, 4 or 8, that hold `value`. A negative slot value is one whose
 /// top bit is set, so it takes all eight.

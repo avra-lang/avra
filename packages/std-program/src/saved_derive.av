@@ -170,15 +170,15 @@ type SavedForm = { written: fn(Code) -> Code, read: fn(Code, Code) -> Code }
 fn saved_form(shape: ValueShape) -> SavedForm {
     match shape {
         .Int or .Offset -> SavedForm {
-            written: (value: Code) -> quote { SavedSlot.Number(${value}) },
+            written: (value: Code) -> number_slot(shape, value),
             read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) },
         },
         .Float -> SavedForm {
-            written: (value: Code) -> quote { SavedSlot.Number(float_bits(${value})) },
+            written: (value: Code) -> number_slot(shape, value),
             read: (node: Code, slot: Code) -> quote { ${node}.float_at(${slot}) },
         },
         .Tags(type_name, _, variants) -> SavedForm {
-            written: (value: Code) -> quote { SavedSlot.Number(${tag_number(value, variants)}) },
+            written: (value: Code) -> number_slot(shape, value),
             read: (node: Code, slot: Code) -> tag_made(
                 type_name,
                 variants,
@@ -186,7 +186,7 @@ fn saved_form(shape: ValueShape) -> SavedForm {
             ),
         },
         .Bool -> SavedForm {
-            written: (value: Code) -> quote { SavedSlot.Number(if ${value} { 1 } else { 0 }) },
+            written: (value: Code) -> number_slot(shape, value),
             read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) == 1 },
         },
         .Text -> SavedForm {
@@ -198,10 +198,7 @@ fn saved_form(shape: ValueShape) -> SavedForm {
             read: (node: Code, slot: Code) -> quote { ${node}.octets_at(${slot})! },
         },
         .Listed(element) -> SavedForm {
-            written: (value: Code) -> {
-                let item_written = slot_written(element, quote { item })
-                quote { SavedSlot.Child(${writer_code()}.write_list([${item_written} for item in ${value}])) }
-            },
+            written: (value: Code) -> listed_written(element, value),
             read: (node: Code, slot: Code) -> {
                 let item_read = slot_read(element, quote { items }, quote { position })
                 quote { read_saved_list(${node}.list_at(${slot})!, (items, position) -> ${item_read}) }
@@ -216,6 +213,44 @@ fn saved_form(shape: ValueShape) -> SavedForm {
             read: (node: Code, slot: Code) -> quote { ${name(type_name)}.read_from(${node}.record_at(${slot})!) },
         },
         .Id(_, _, _) or .Placed(_, _) -> no_form_for_an_id(),
+    }
+}
+
+/// The number a value of `shape` sits in its slot as, in generated code, absent for a shape saved
+/// as a child.
+fn number_written(shape: ValueShape, value: Code) -> Code? {
+    match shape {
+        .Int or .Offset -> value,
+        .Float -> quote { float_bits(${value}) },
+        .Tags(_, _, variants) -> tag_number(value, variants),
+        .Bool -> quote { if ${value} { 1 } else { 0 } },
+        .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> null,
+    }
+}
+
+/// The slot of a value of `shape`, a shape whose slot holds a number.
+fn number_slot(shape: ValueShape, value: Code) -> Code { quote { SavedSlot.Number(${number_written(shape, value)!}) } }
+
+/// A list's node, in generated code: a list of numbers written as they are, any other item as the
+/// slot it takes.
+fn listed_written(element: ValueShape, value: Code) -> Code {
+    let numbers? = numbers_written(element, value) else {
+        let item_written = slot_written(element, quote { item })
+        return quote { SavedSlot.Child(${writer_code()}.write_list([${item_written} for item in ${value}])) }
+    }
+    quote { SavedSlot.Child(${writer_code()}.write_numbers(${numbers})) }
+}
+
+/// A list of values of `element` as the numbers their slots hold, in generated code: the list itself
+/// when each value is its number, absent for a shape saved as a child.
+fn numbers_written(element: ValueShape, list: Code) -> Code? {
+    match element {
+        .Int or .Offset -> list,
+        .Float or .Bool or .Tags(_, _, _) -> {
+            let number = number_written(element, quote { item })!
+            quote { [${number} for item in ${list}] }
+        },
+        .Text or .Octets or .Optional(_) or .Listed(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) -> null,
     }
 }
 
