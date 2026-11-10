@@ -348,6 +348,7 @@ export command tapes {
 fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     mut sugars = 0
     mut alike = 0
+    mut seated = 0
     mut untyped = 0
     mut differing: List<string> = []
     for path in package_sources(engine, disk.name, "src") {
@@ -360,24 +361,38 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                 let core = body.core[e.index]
                 if surface == null || core == null {
                     untyped = untyped + 1
+                    if shown { println(
+                            "untyped: ${path} ${own.name}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
+                        ) }
                     continue
                 }
                 if surface!.spelled() == core!.spelled() {
                     alike = alike + 1
                     continue
                 }
+                if meets_its_seat(surface!, core!, body.seats.get("${e.index}")) {
+                    seated = seated + 1
+                    continue
+                }
+                let seat = body.seats.get("${e.index}")?.spelled() ?? "no seat"
                 differing
                     .push(
-                        "${path} ${own.name}: ${surface!.spelled()} on the surface, ${core!.spelled()} in the core",
+                        "${path} ${own.name}: ${surface!.spelled()} on the surface, ${core!.spelled()} in the core, ${seat} wanted",
                     )
             }
         }
     }
     if shown { for d in differing { println("differs: ${d}") } }
     println(
-        "core: ${sugars} sugars meant, ${alike} typed alike, ${differing.length} differing, ${untyped} untyped on a side",
+        "core: ${sugars} sugars meant, ${alike} typed alike, ${seated} answering their seat, ${differing.length} differing, ${untyped} untyped on a side",
     )
     if differing.is_empty() { 0 } else { 1 }
+}
+
+/// Whether a core answering its seat's want stands for a surface type that fits that seat.
+fn meets_its_seat(surface: SignedType, core: SignedType, seat: SignedType?) -> bool {
+    let wanted? = seat else { return false }
+    core.spelled() == wanted.spelled() && surface.reaches(wanted)
 }
 
 /// The source at `lo` in the package's file `path`, one line of it at most.

@@ -143,6 +143,22 @@ impl SignedType {
 
     /// The type with its outermost null taken off: what a present value of it holds.
     fn unwrapped() -> SignedType { self with { nulls: if self.nulls > 0 { self.nulls - 1 } else { 0 } } }
+
+    /// Whether a value of this type stands in a seat of `seat`'s: as it is, as nothing (`never`),
+    /// widened into a nullable, or as the `Ok` of a `Result`.
+    fn reaches(seat: SignedType) -> bool {
+        if self.spelled() == seat.spelled() || self.bottom() { return true }
+        if seat.nullable() && (self.head is .Never || self.reaches(seat.unwrapped())) { return true }
+        seat.resulted() && self.reaches(seat.args[0])
+    }
+
+    /// Whether this is a `Result`, present: an ok type and an error type.
+    fn resulted() -> bool {
+        match self.head {
+            .Owned(name) -> name == "Result" && self.args.length == 2 && self.nulls == 0,
+            rest -> false,
+        }
+    }
 }
 
 impl SignedSeat {
