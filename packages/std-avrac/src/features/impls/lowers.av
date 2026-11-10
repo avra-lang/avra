@@ -108,10 +108,12 @@ fn folded_code(cx: Lowering, m: MethodCall) -> int? {
 }
 
 /// A method a type the program declares has: a call of its symbol, the receiver its first seat.
+/// Whether a method writes its receiver is the whole program's to say, its `mut` mark only one
+/// witness, so a receiver in a `mut` binding's cell counts as written.
 fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
     if !subject.args.is_empty() { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
     let callee? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    if callee.writes && !cell_rooted(cx, m.subject) { return cx.missed_as("a method that writes its receiver") }
+    if (callee.writes || in_cell(cx, m.subject)) && !cell_rooted(cx, m.subject) { return cx.missed_as("a method that may write its receiver") }
     if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let seats? = seated(cx, m) else { return cx.missed_as("a receiver on a path through a cell") }
     cx.call_fn(cx.layout_at(e), callee, seats)
