@@ -105,6 +105,10 @@ export fn walk_binds(subject: SignedType?) -> WalkBinds {
     WalkBinds { index: null, element: null }
 }
 
+/// A seat's part, when it names no type parameter still open: a part that does is the call's to fill
+/// from what the lambda turns out to be.
+fn known(part: SignedType?) -> SignedType? { if part == null || part!.generic() { null } else { part } }
+
 /// The fn type a lambda's seat wants, when it wants one of `arity` seats.
 fn seat_fn(expected: Expected, arity: int) -> SignedType? {
     let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
@@ -190,10 +194,10 @@ impl Checking {
     /// where it stands under a seat it can't see, which may widen it.
     mut fn lambda_checked(params: List<Param>, body: ExprId, expected: Expected) -> SignedType? {
         let seat = seat_fn(expected, params.length)
-        let types = [if p.ty != null { self.written(p.ty!) } else { seat?.seats?.get(at)?.ty } for at, p in params]
+        let types = [if p.ty != null { self.written(p.ty!) } else { known(seat?.seats?.get(at)?.ty) } for at, p in params]
         self.fenced()
         for at, p in params { self.bind(p.name.of, types[at]) }
-        let wanted = seat?.answer
+        let wanted = known(seat?.answer)
         let read = self
             .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
         let answer = wanted ?? read
@@ -362,8 +366,12 @@ impl Checking {
             let seat = seats[at]
             if !(seat.head is .Function) { continue }
             let wanted = seat.filled(found)
+            let lambda = self.store.lambda_parts(v) != null
             let read = self
-                .check(v, if wanted.generic() { Expected.Unknown } else { Expected.Exactly(wanted) })
+                .check(
+                    v,
+                    if wanted.generic() && !lambda { Expected.Unknown } else { Expected.Exactly(wanted) },
+                )
             if wanted.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
         }
         if agreed { found } else { null }
