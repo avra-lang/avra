@@ -138,6 +138,9 @@ export enum FillClass {
     /// A meaning's subject handle (`features.TypedCode`), spliced as the node
     /// it holds: where an expression stands.
     Node
+    /// A run of a meaning's handles, spliced as the nodes they hold: where
+    /// statements, a run, or a block's tail stand.
+    Nodes
 }
 
 /// THE SEAT LAW, one registry read by typing and by the splice: what
@@ -148,43 +151,45 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
         .Expression -> match class {
             .Template(k) -> k is .Code,
             .Int or .Bool or .Id or .Held or .Pattern or .Node -> true,
-            .Templates(_) or .Text or .Texts or .Named or .PatId -> false,
+            .Templates(_) or .Text or .Texts or .Named or .PatId or .Nodes -> false,
         },
         .Name -> match class {
             .Text or .Int or .Named -> true,
-            .Template(_) or .Templates(_) or .Bool or .Texts or .Id or .PatId or .Held or .Pattern or .Node -> false,
+            .Template(_) or .Templates(_) or .Bool or .Texts or .Id or .PatId or .Held or .Pattern or .Node or .Nodes -> false,
         },
         .Binder -> match class {
             .Text or .Int or .Bool or .Named or .Texts or .PatId -> true,
-            .Template(_) or .Templates(_) or .Id or .Held or .Pattern or .Node -> false,
+            .Template(_) or .Templates(_) or .Id or .Held or .Pattern or .Node or .Nodes -> false,
         },
         .Type -> match class {
             .Text or .Named or .Pattern -> true,
-            .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Id or .PatId or .Held or .Node -> false,
+            .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Id or .PatId or .Held or .Node or .Nodes -> false,
         },
         .Statement -> match class {
             .Template(k) or .Templates(k) -> !(k is .Arms),
+            .Nodes -> true,
             .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node -> false,
         },
         .Arm -> match class {
             .Template(k) or .Templates(k) -> k is .Arms,
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node or .Nodes -> false,
         },
         .Run -> match class {
             .Templates(k) -> k is .Code,
+            .Nodes -> true,
             .Template(_) or .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node -> false,
         },
         .Fields -> match class {
             .Template(k) or .Templates(k) -> declares(k),
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node or .Nodes -> false,
         },
         .Inits -> match class {
             .Template(k) or .Templates(k) -> expresses(k),
-            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern or .Node or .Nodes -> false,
         },
         .Tail -> match class {
             .Template(k) or .Templates(k) -> !(k is .Arms),
-            .Int or .Bool or .Id or .Held or .Pattern or .Node -> true,
+            .Int or .Bool or .Id or .Held or .Pattern or .Node or .Nodes -> true,
             .Text or .Texts or .Named or .PatId -> false,
         },
     }
@@ -216,7 +221,7 @@ export fn class_kind(c: FillClass) -> MetaKind? {
         .Template(k) -> k,
         .Templates(k) -> many_of(k),
         .Int or .Bool or .Held or .Pattern -> MetaKind.Code,
-        .Id or .PatId or .Node -> MetaKind.Rewrite,
+        .Id or .PatId or .Node or .Nodes -> MetaKind.Rewrite,
         .Text or .Texts or .Named -> null,
     }
 }

@@ -5,7 +5,7 @@
 //! pattern's holes bind nodes of that item, and a template splices each back as the node it is,
 //! never as its text, so its span, its type and its own meaning come with it.
 use core.{At, SignedType, SyntaxArena}
-use @std.meta.{Rewrite}
+use @std.meta.{Node, Rewrite}
 
 /// An item's syntax, where a quote pattern reads it.
 export type TypedView = { store: SyntaxArena }
@@ -31,7 +31,18 @@ impl TypedCode {
 /// A handle on each of `ats`, in `of`: what a run hole binds.
 export fn typed_coded(of: TypedItem, ats: List<At>) -> List<TypedCode> { [TypedCode { of: of, at: a } for a in ats] }
 
-/// The arena index of the node a handle holds: what a template splices where the hole stands.
+/// The node a handle holds, as a template's fill: its arena and its index, so the splice puts it
+/// only where a node of its arena stands.
+export fn typed_code_node(m: TypedCode) -> Node {
+    match m.at {
+        .Expr(id) -> held_node("expr", id.index),
+        .Pat(id) -> held_node("pat", id.index),
+        .Stmt(id) -> held_node("stmt", id.index),
+        .Field(_, _) or .Param(_, _) -> held_node("none", 0),
+    }
+}
+
+/// The arena index of the node a handle holds.
 export fn typed_code_index(m: TypedCode) -> int {
     match m.at {
         .Expr(id) -> id.index,
@@ -40,6 +51,12 @@ export fn typed_code_index(m: TypedCode) -> int {
         .Field(_, _) or .Param(_, _) -> 0 - 1,
     }
 }
+
+/// The nodes a run of handles holds, as one fill.
+export fn typed_codes_node(ms: List<TypedCode>) -> Node { Node.Many([typed_code_node(m) for m in ms]) }
+
+/// A node of the arena as a fill: its arena's word and its index.
+fn held_node(arena: string, index: int) -> Node { Node.Many([Node.Name(arena), Node.Int(index)]) }
 
 export component meaning {
     run: fn(TypedCode) -> Rewrite?

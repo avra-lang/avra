@@ -49,7 +49,7 @@ fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Min
     }
     let said? = node.means(cx) else { return node.minted(cx) }
     match (said?).node {
-        .Template(_, _, parts, fills) -> .Ok(minting(spliced(lang, store, sugar, parts, [hole_id(f) for f in fills]))),
+        .Template(_, _, parts, fills) -> .Ok(minting(spliced(lang, store, sugar, parts, fills))),
         rest -> .Ok(minting([])),
     }
 }
@@ -58,14 +58,9 @@ fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Min
 /// none when the template can't be read here.
 export fn rewritten_beside(store: SyntaxArena, sugar: ExprId, said: Rewrite) -> List<ExprId> {
     match said.node {
-        .Template(_, _, parts, fills) -> spliced(avra(), store, sugar, parts, [hole_id(f) for f in fills]),
+        .Template(_, _, parts, fills) -> spliced(avra(), store, sugar, parts, fills),
         rest -> [],
     }
-}
-
-/// The arena index a hole's fill names — an id fills as its index.
-fn hole_id(fill: Node) -> int {
-    match fill { .Int(index) -> index, rest -> 0 - 1 }
 }
 
 /// The template's runs with a hole between each, as the quote it was
@@ -75,15 +70,19 @@ fn woven_quote(parts: List<string>) -> string {
     "quote { ${holed}${parts.last()!} }"
 }
 
-fn spliced(lang: Language, store: SyntaxArena, sugar: ExprId, parts: List<string>, ids: List<int>) -> List<
-    ExprId,
-> {
+fn spliced(
+    lang: Language,
+    store: SyntaxArena,
+    sugar: ExprId,
+    parts: List<string>,
+    fills: List<Node>,
+) -> List<ExprId> {
     let source = woven_quote(parts)
     let s? = scratch(lang, source) else { return [] }
     let body? = s.store.expr(s.body).body_of() else { return [] }
     let stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, rest -> [] }
     let last? = stmts.last() else { return [] }
-    let thunks = [(kind: HoleKind) -> filled(kind, index) for index in ids]
+    let thunks = [(kind: HoleKind) -> filled(kind, fill) for fill in fills]
     mut rb = copier(s.store, store, thunks, hole_runs(s.store, s.body), sugar_door(lang))
     let copied = rb.stmts(stmts)
     let root? = store.answer_of(copied.last()!) else { return [] }
@@ -93,14 +92,70 @@ fn spliced(lang: Language, store: SyntaxArena, sugar: ExprId, parts: List<string
     made.filter(!same_expr(it, root)).concat([root])
 }
 
-/// A hole's id in the seat it stands in: an expression, a pattern, or a
-/// refusal the splice speaks.
-fn filled(kind: HoleKind, index: int) -> Filled {
+/// A hole's fill in the seat it stands in: an id, as the seat reads it; a held node, where a node
+/// of its arena stands; a run of held nodes, where statements or a run stand; any other a refusal
+/// the splice speaks.
+fn filled(kind: HoleKind, fill: Node) -> Filled {
+    let index = match fill { .Int(i) -> i, rest -> null }
+    if index != null { return id_filled(kind, index!) }
+    let one = held_at(fill)
+    if one != null { return held_filled(kind, one!) }
+    let run? = held_run(fill) else { return Filled.Unplaceable("a rewrite's hole holds no node") }
+    run_filled(kind, run)
+}
+
+/// An id in the seat it stands in: an expression or a pattern.
+fn id_filled(kind: HoleKind, index: int) -> Filled {
     match kind {
         .Expression or .Tail -> Filled.Expr(ExprId { index: index }),
         .Binder -> Filled.Pat(PatId { index: index }),
         rest -> Filled.Unplaceable("a rewrite's hole stands where an expression or a pattern does"),
     }
+}
+
+/// A node of the arena a fill holds: its arena's word and its index.
+type Held = { arena: string, index: int }
+
+/// The node a fill holds, absent for a fill that holds one node of no arena.
+fn held_at(fill: Node) -> Held? {
+    let items? = match fill { .Many(items) -> items, rest -> null } else { return null }
+    if items.length != 2 { return null }
+    let arena? = match items[0] { .Name(word) -> word, rest -> null } else { return null }
+    let index? = match items[1] { .Int(i) -> i, rest -> null } else { return null }
+    Held { arena: arena, index: index }
+}
+
+/// The nodes a run fill holds, absent when any item holds none.
+fn held_run(fill: Node) -> List<Held>? {
+    let items? = match fill { .Many(items) -> items, rest -> null } else { return null }
+    let held = [held_at(i) for i in items]
+    if held.any(it == null) { null } else { [h! for h in held] }
+}
+
+/// A held node in the seat it stands in, which must take a node of its arena.
+fn held_filled(kind: HoleKind, held: Held) -> Filled {
+    match kind {
+        .Expression or .Tail -> if held.arena == "expr" { Filled.Expr(ExprId { index: held.index }) } else { misplaced(held.arena, "an expression") },
+        .Binder -> if held.arena == "pat" { Filled.Pat(PatId { index: held.index }) } else { misplaced(held.arena, "a pattern") },
+        rest -> Filled.Unplaceable("a held node stands where an expression or a pattern does"),
+    }
+}
+
+/// A run of held nodes in the seat it stands in: statements, or a run of expressions.
+fn run_filled(kind: HoleKind, run: List<Held>) -> Filled {
+    match kind {
+        .Statement or .Tail -> if run.all(it.arena == "stmt") { Filled.Stmts([StmtId { index: h.index } for h in run]) } else { misplaced_run("statements") },
+        .Run -> if run.all(it.arena == "expr") { Filled.Exprs([ExprId { index: h.index } for h in run]) } else { misplaced_run("expressions") },
+        rest -> Filled.Unplaceable("a run of held nodes stands where statements or a run do"),
+    }
+}
+
+fn misplaced(arena: string, seat: string) -> Filled {
+    Filled.Unplaceable("a held `${arena}` node stands where ${seat} does")
+}
+
+fn misplaced_run(seat: string) -> Filled {
+    Filled.Unplaceable("a run holding another arena's nodes stands where ${seat} do")
 }
 
 /// The template's scratch parse, made once.
