@@ -1,0 +1,1 @@
+Receipt fixtures: small packages the program layer's receipts are held to, kept outside `src/` so no suite compiles them as std-avrac's own code. Each directory's README.md states the receipt it must give (`avra tapes <dir> --core` or `--signatures`); some refuse on purpose.
