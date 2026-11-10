@@ -508,8 +508,18 @@ impl Workspace {
     /// A unit lowered for the durable answer: one that spoke is never kept, so it speaks again.
     fn lowered_saved(w: Wanted) -> Unit {
         let out = self.lowering(w)
-        if !out.voices.list.is_empty() { self.query_db().unkept() }
+        if !out.voices.list.is_empty() || self.gathers_closure(w) { self.query_db().unkept() }
         out
+    }
+
+    /// Whether a unit is a closure-scoped collect's own. Its members are the closure of the program
+    /// being built, which its want doesn't name, so its answer is this program's alone and is never
+    /// kept for another that shares the store.
+    fn gathers_closure(w: Wanted) -> bool {
+        let d? = w.decl else { return false }
+        let x = self.decls.decl(d)
+        let parts? = self.decls.store_of(x.file).collect_parts(x.stmt) else { return false }
+        match parts.scope { .Closure -> true, .Self or .Package or .UnknownScope(_) -> false }
     }
 
     /// Every body a unit lowered belongs to the unit's declaration: a specialization
