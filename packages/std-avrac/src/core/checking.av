@@ -54,9 +54,14 @@ export type EnumShape = { params: int, variants: List<VariantSeat> }
 /// An enum's variant: its name and its payloads.
 export type VariantSeat = { name: string, payloads: List<FieldSeat> }
 
+impl VariantSeat {
+    /// Its payloads' types, when it carries `arity` payloads and each one's type is known.
+    fn seats(arity: int) -> List<SignedType>? { all_known([p.ty for p in self.payloads], arity) }
+}
+
 /// What walking a value binds at each turn: its index (a list's position, a map's key) and its
-/// element.
-export type WalkBinds = { index: SignedType?, element: SignedType? }
+/// element, each absent when it isn't known.
+export type WalkBinds = { index: SignedType? = null, element: SignedType? = null }
 
 /// One scope of a body: the names bound in it, and whether it's a lambda's, which reads a name further
 /// out as it may be when the lambda runs, never as a test around the lambda narrowed it.
@@ -101,13 +106,19 @@ fn result_shape() -> EnumShape {
 /// What walking a value of `subject`'s type binds: a list's position and element, a map's key and
 /// value, a range's integers; nothing known for any other type.
 export fn walk_binds(subject: SignedType?) -> WalkBinds {
-    let s? = subject else { return WalkBinds { index: null, element: null } }
+    let s? = subject else { return WalkBinds {} }
     let element = s.listed()
     if element != null { return WalkBinds { index: owned_type("int"), element: element } }
     let value = s.mapped()
     if value != null { return WalkBinds { index: s.args[0], element: value } }
-    if s.word() == "Range" && !s.nullable() { return WalkBinds { index: null, element: owned_type("int") } }
-    WalkBinds { index: null, element: null }
+    if s.word() == "Range" && !s.nullable() { return WalkBinds { element: owned_type("int") } }
+    WalkBinds {}
+}
+
+/// `types`, when there are `arity` of them and each is known.
+export fn all_known(types: List<SignedType?>?, arity: int) -> List<SignedType>? {
+    let all? = types else { return null }
+    if all.length == arity && all.all(it != null) { [t! for t in all] } else { null }
 }
 
 /// A seat's part, when it names no type parameter still open: a part that does is the call's to fill
@@ -247,9 +258,11 @@ impl Checking {
     fn bound(name: string) -> SignedType? {
         mut fenced = false
         for scope in reversed(self.scopes.get()) {
-            let local = scope.names.get(name)
-            if local != null { return if fenced && local!.wide != null { local!.wide } else { local!.ty } }
-            if scope.fenced { fenced = true }
+            let local? = scope.names.get(name) else {
+                if scope.fenced { fenced = true }
+                continue
+            }
+            return if fenced && local.wide != null { local.wide } else { local.ty }
         }
         (self.program.value_named)(name)
     }
@@ -307,9 +320,10 @@ impl Checking {
 
     /// `s` checked, binding what it declares where it stands.
     mut fn check_stmt(s: StmtId) {
-        let meant = if self.meanings { self.store.stmt_meant(s) } else { null }
-        if meant == null { return self.store.stmt(s).stmt_checked(self, s) }
-        for m in meant! { self.check_stmt(m) }
+        let meant? = (if self.meanings { self.store.stmt_meant(s) } else { null }) else {
+            return self.store.stmt(s).stmt_checked(self, s)
+        }
+        for m in meant { self.check_stmt(m) }
     }
 
     /// Every expression `s` holds checked against what isn't known.
@@ -463,21 +477,18 @@ impl Checking {
         expected: Expected,
     ) -> SignedType? {
         let shape = self.enum_of(enum_type)
-        let variant = shape?.variants?.find(it.name == name)
-        if variant == null ||
-            variant!.payloads.length != args.length ||
-            variant!.payloads.any(it.ty == null) {
+        let seats? = shape?.variants?.find(it.name == name)?.seats(args.length) else {
             self.checked_free(args)
             return null
         }
         let params = shape!.params
-        let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
-        mut pinned: Map<string, SignedType> = {}
-        if wanted != null && wanted!.names_as(enum_type) && wanted!.args.length == params {
-            for at, a in wanted!.args { pinned.set("${at}", a) }
+        let wanted_args = match expected {
+            .Exactly(ty) -> if ty.names_as(enum_type) && ty.args.length == params { ty.args } else { [] },
+            rest -> [],
         }
-        let found? = self
-            .fills([p.ty! for p in variant!.payloads], args, pinned, null, Expected.Free) else { return null }
+        mut pinned: Map<string, SignedType> = {}
+        for at, a in wanted_args { pinned.set("${at}", a) }
+        let found? = self.fills(seats, args, pinned, null, Expected.Free) else { return null }
         let filled = [found.get("${at}") for at in 0..params]
         if filled.any(it == null) { null } else { enum_type with { args: [a! for a in filled] } }
     }

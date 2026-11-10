@@ -120,12 +120,7 @@ export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
     if decls.avrac_type(ty, "ExprId") { return FillClass.Id }
     if decls.avrac_type(ty, "PatId") { return FillClass.PatId }
     let elem: TypeId? = decls.elem_of(ty)
-    if elem != null && decls.avrac_type(elem!, "TypedCode") { return FillClass.Nodes }
-    if elem != null {
-        let inner: MetaKind? = template_kind(decls, elem!)
-        if inner != null { return FillClass.Templates(inner!) }
-        return if decls.types.shape_of(elem!) is .Str { FillClass.Texts } else { null }
-    }
+    if elem != null { return listed_class(decls, elem!) }
     if decls.meta_names_one(ty) { return FillClass.Named }
     match shape {
         .Str -> FillClass.Text,
@@ -133,6 +128,15 @@ export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
         .Bool -> FillClass.Bool,
         .Ptr or .Bytes or .Float or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> null,
     }
+}
+
+/// What a list hole's value is, by its element's type: nodes, templates or texts — null for any
+/// other element.
+fn listed_class(decls: Decls, elem: TypeId) -> FillClass? {
+    if decls.avrac_type(elem, "TypedCode") { return FillClass.Nodes }
+    let inner: MetaKind? = template_kind(decls, elem)
+    if inner != null { return FillClass.Templates(inner!) }
+    if decls.types.shape_of(elem) is .Str { FillClass.Texts } else { null }
 }
 
 // ── voices ──

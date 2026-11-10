@@ -13,6 +13,7 @@ use core.{
     Proof,
     SignedType,
     SyntaxArena,
+    all_known,
     owned_type,
 }
 use core.expr.{Is, Match, VariantLit}
@@ -75,7 +76,11 @@ impl Checks for Match {
 /// the other; none for any other arm.
 fn arm_truths(store: SyntaxArena, arms: List<Arm>) -> List<bool?> {
     let said = [said_truth(store, a) for a in arms]
-    [if said[at] != null { said[at] } else if catches_all(store, a) { the_other(said.take(at)) } else { null } for at, a in arms]
+    [when {
+        said[at] != null -> said[at]
+        catches_all(store, a) -> the_other(said.take(at))
+        _ -> null
+    } for at, a in arms]
 }
 
 /// The literal truth an arm's one pattern names, absent for any other arm.
@@ -107,12 +112,11 @@ impl Checks for Is {
 impl Checks for VariantLit {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
-        let payloads = cx.payloads_of(wanted, self.name.of)
-        if payloads == null || payloads!.length != self.args.length || payloads!.any(it == null) {
+        let payloads? = all_known(cx.payloads_of(wanted, self.name.of), self.args.length) else {
             cx.checked_free(self.args)
             return null
         }
-        for at, a in self.args { let _ = cx.check(a, Expected.Exactly(payloads![at]!)) }
+        for at, a in self.args { let _ = cx.check(a, Expected.Exactly(payloads[at])) }
         wanted
     }
 }

@@ -361,14 +361,15 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
             statements = statements + body.statements.length
             let roots = [e.index for e in body.sugars]
             for at, surface in body.surface {
-                let core = body.core[at]
-                if surface == null || core == null || roots.contains(at) { continue }
+                let surface? = surface else { continue }
+                let core? = body.core[at] else { continue }
+                if roots.contains(at) { continue }
                 nodes = nodes + 1
-                if surface!.spelled() != core!.spelled() &&
-                    !meets_its_seat(surface!, core!, body.seats.get("${at}")) {
+                if surface.spelled() != core.spelled() &&
+                    !meets_its_seat(surface, core, body.seats.get("${at}")) {
                     differing
                         .push(
-                            "${path} ${own.name}: a node ${surface!.spelled()} on the surface, ${core!.spelled()} in the core, ${body.seats.get("${at}")?.spelled() ?? "no seat"} wanted",
+                            "${path} ${own.name}: a node ${surface.spelled()} on the surface, ${core.spelled()} in the core, ${body.seats.get("${at}")?.spelled() ?? "no seat"} wanted",
                         )
                 }
             }
@@ -383,20 +384,21 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                             "untyped: ${path} ${own.name}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
                         )
                     }
-                    continue
                 }
-                if surface!.spelled() == core!.spelled() {
+                let surface? = surface else { continue }
+                let core? = core else { continue }
+                if surface.spelled() == core.spelled() {
                     alike = alike + 1
                     continue
                 }
-                if meets_its_seat(surface!, core!, body.seats.get("${e.index}")) {
+                if meets_its_seat(surface, core, body.seats.get("${e.index}")) {
                     seated = seated + 1
                     continue
                 }
                 let seat = body.seats.get("${e.index}")?.spelled() ?? "no seat"
                 differing
                     .push(
-                        "${path} ${own.name}: ${surface!.spelled()} on the surface, ${core!.spelled()} in the core, ${seat} wanted",
+                        "${path} ${own.name}: ${surface.spelled()} on the surface, ${core.spelled()} in the core, ${seat} wanted",
                     )
             }
         }
