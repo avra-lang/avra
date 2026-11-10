@@ -143,9 +143,11 @@ impl SignedType {
     fn unwrapped() -> SignedType { self with { nulls: if self.nulls > 0 { self.nulls - 1 } else { 0 } } }
 
     /// Whether a value of this type stands in a seat of `seat`'s: as it is, as nothing (`never`),
-    /// widened into a nullable, or as the `Ok` of a `Result`.
+    /// boxed into a `dyn` (whether it holds the trait is the seat law's), widened into a nullable, or
+    /// as the `Ok` of a `Result`.
     fn reaches(seat: SignedType) -> bool {
         if self.spelled() == seat.spelled() || self.bottom() { return true }
+        if seat.dynamic && seat.nulls == 0 && !self.dynamic && !self.nullable() { return true }
         if seat.nullable() && (self.head is .Never || self.reaches(seat.unwrapped())) { return true }
         seat.resulted() && self.reaches(seat.args[0])
     }
