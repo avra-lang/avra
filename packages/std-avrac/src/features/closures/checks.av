@@ -1,5 +1,5 @@
 //! The typing rule of a lambda: each parameter is its written type, or else its seat's when the
-//! lambda checks into a fn type; its body checks in a scope of its own against the seat's answer,
+//! lambda checks into a fn type, and makes the promises either makes; its body checks in a scope of its own against the seat's answer,
 //! which is the lambda's answer, the body's widening into it; and the lambda is the fn type it makes
 //! once all of that is known, and where it stands is: a seat it can't see may widen it. A name from
 //! further out reads in the body as it may be when the lambda runs, never narrowed by a test around
@@ -11,7 +11,7 @@ impl Checks for Lambda {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let seat = seat_fn(expected, self.params.length)
         let seated = !(expected is .Unknown)
-        let params = [if p.ty != null { cx.written(p.ty!) } else { seat_at(seat, at) } for at, p in self.params]
+        let params = [if p.ty != null { cx.written(p.ty!) } else { seat?.seats?.get(at)?.ty } for at, p in self.params]
         cx.fenced()
         for at, p in self.params { cx.bind(p.name.of, params[at]) }
         let wanted = seat?.answer
@@ -20,14 +20,12 @@ impl Checks for Lambda {
         let answer = wanted ?? read
         cx.closed()
         if !seated || answer == null || params.any(it == null) { return null }
-        headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: t!, mutable: false, settled: false } for t in params], answer: answer }
+        headed_type(TypeHead.Function) with { seats: [SignedSeat {
+            ty: params[at]!,
+            mutable: p.promises.mutable || seat?.seats?.get(at)?.mutable ?? false,
+            settled: p.promises.settled || seat?.seats?.get(at)?.settled ?? false,
+        } for at, p in self.params], answer: answer }
     }
-}
-
-/// The type a fn type's seat `at` takes, absent with no fn type.
-fn seat_at(fn_type: SignedType?, at: int) -> SignedType? {
-    let f? = fn_type else { return null }
-    if at < f.seats.length { f.seats[at].ty } else { null }
 }
 
 /// The fn type a lambda's seat wants, when it wants one of `arity` seats.

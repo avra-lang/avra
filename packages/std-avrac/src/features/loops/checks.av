@@ -1,7 +1,7 @@
 //! The typing rules of loops: `while`'s condition is a `bool`; `for` binds its element, and its
 //! index when it names one, from what its subject is walked as; each body checks in a scope of its
 //! own, its values dropped.
-use core.{Checking, Expected, SignedType, StmtChecks, StmtId, TypeHead, owned_type}
+use core.{Checking, Expected, SignedType, StmtChecks, StmtId, owned_type}
 use core.stmt.{ForEach, While}
 
 impl StmtChecks for While {
@@ -27,19 +27,12 @@ impl StmtChecks for ForEach {
 /// What a walk binds at each turn: its index (a list's position, a map's key) and its element.
 type Walk = { index: SignedType?, element: SignedType? }
 
-/// What walking a value of `subject`'s type binds; nothing known for a type this rule doesn't walk.
+/// What walking a value of `subject`'s type binds: a list's position and element, a map's key and
+/// value; nothing known for any other type.
 fn walked(subject: SignedType?) -> Walk {
     let s? = subject else { return Walk { index: null, element: null } }
-    if s.nullable() || s.dynamic { return Walk { index: null, element: null } }
-    match s.head {
-        .Owned(name) -> walk_of(name, s.args),
-        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> Walk { index: null, element: null },
-    }
-}
-
-/// What walking one of the language's own collections binds.
-fn walk_of(name: string, args: List<SignedType>) -> Walk {
-    if name == "List" && args.length == 1 { return Walk { index: owned_type("int"), element: args[0] } }
-    if name == "Map" && args.length == 2 { return Walk { index: args[0], element: args[1] } }
-    Walk { index: null, element: null }
+    let element = s.listed()
+    if element != null { return Walk { index: owned_type("int"), element: element } }
+    if s.nullable() || s.dynamic || s.args.length != 2 || !s.names_as(owned_type("Map")) { return Walk { index: null, element: null } }
+    Walk { index: s.args[0], element: s.args[1] }
 }

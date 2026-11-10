@@ -3,6 +3,8 @@
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
     CheckedProgram,
+    FieldSeat,
+    RecordShape,
     TypeRef,
     ExprId,
     SignedSeat,
@@ -36,7 +38,8 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
         CheckedProgram {
             value_named: (n: string) -> value_type(engine, file, n),
             written: (written: TypeRef) -> signing.signed(written),
-            field_of: (subject: SignedType, field: string) -> field_type(engine, subject, field),
+            type_named: (n: string) -> signing.named(n),
+            record_of: (ty: SignedType) -> record_shape(engine, ty),
             method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
         },
         signature.answer,
@@ -46,17 +49,18 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
     TypedBody { types: cx.types.get() }
 }
 
-/// The type of `field` on a value of `subject`'s type: a record's field, bound to the arguments the
-/// record is applied to. Absent for an optional or dynamic subject, and for any type that isn't a
-/// record the program declares.
-fn field_type(engine: QueryEngine, subject: SignedType, field: string) -> SignedType? {
-    if subject.nullable() || subject.dynamic { return null }
-    let at? = match subject.head {
+/// The record `ty` is: its type parameters and its fields, typed where it's declared. Absent for a
+/// type that isn't a record the program declares.
+fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
+    let at? = match ty.head {
         .Declared(file, name) -> RecordAt { file: file, name: name },
         rest -> null,
     } else { return null }
     let record? = record_signature(engine, at.file, at.name) else { return null }
-    record.fields.find(it.name == field)?.ty?.bound(subject.args)
+    RecordShape {
+        params: record.type_params.length,
+        fields: [FieldSeat { name: f.name, ty: f.ty } for f in record.fields],
+    }
 }
 
 /// The type a top-level value's name has from `file`: a fn's, as a fn type. Absent for a name that

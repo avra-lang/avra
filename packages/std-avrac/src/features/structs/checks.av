@@ -1,0 +1,33 @@
+//! The typing rule of a record literal: each value checks against its field's type, and the literal
+//! is the record. A generic record's arguments come from the seat it fills when that names the
+//! record, else from what its values fill.
+use core.{Checking, Checks, ExprId, Expected, SignedType}
+use core.expr.{StructLit}
+
+impl Checks for StructLit {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let named = cx.type_named(self.name.of)
+        let record = cx.record_of(named)
+        let seats = [record?.fields?.find(it.name == f.of)?.ty for f in self.fields]
+        if record == null || seats.any(it == null) {
+            cx.checked_free(self.values)
+            return null
+        }
+        let applied = applied_by(expected, named, record!.params)
+        if applied != null {
+            for at, v in self.values { let _ = cx.check(v, Expected.Exactly(seats[at]!.bound(applied!.args))) }
+            return applied
+        }
+        let found? = cx.fills([s! for s in seats], self.values, {}) else { return null }
+        let args = [found.get("${at}") for at in 0..record!.params]
+        if args.any(it == null) { null } else { named with { args: [a! for a in args] } }
+    }
+}
+
+/// The record a seat names, applied to every argument it takes, absent for a seat that names another
+/// or none.
+fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType? {
+    let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
+    if !wanted.names_as(named) || wanted.dynamic || wanted.args.length != params { return null }
+    wanted with { nulls: 0 }
+}

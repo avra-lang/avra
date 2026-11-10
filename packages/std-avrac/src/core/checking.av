@@ -15,14 +15,23 @@ export enum Expected {
 }
 
 /// What a body's checking reads of the program: the type a top-level value's name has from the
-/// body's file, absent when it names none; a type written in the body, resolved where it stands; and
-/// the type of a value's field, and of a method on it, absent when the program names none.
+/// body's file, absent when it names none; a type written in the body, and one named, resolved where
+/// it stands; the record a type is, and the method a value of it has, absent when the program names
+/// none.
 export type CheckedProgram = {
     value_named: fn(string) -> SignedType?,
     written: fn(TypeRef) -> SignedType,
-    field_of: fn(SignedType, string) -> SignedType?,
+    type_named: fn(string) -> SignedType,
+    record_of: fn(SignedType) -> RecordShape?,
     method_of: fn(SignedType, string) -> SignedType?,
 }
+
+/// A record as typing reads it: how many type parameters it has, and its fields, each typed under
+/// them.
+export type RecordShape = { params: int, fields: List<FieldSeat> }
+
+/// A record's field: its name, and its type when it's written.
+export type FieldSeat = { name: string, ty: SignedType? }
 
 /// A name bound in a body, its type when it's known, and whether it may narrow: a binding whose type
 /// isn't known still stands in front of every name further out, and only one that can't be written
@@ -187,8 +196,53 @@ impl Checking {
         self.scopes.set_at(scopes.length - 1, scopes.last()! with { opaque: true })
     }
 
-    /// The type of `name` read off a value of `subject`'s type, absent when the program names none.
-    fn field_of(subject: SignedType, name: string) -> SignedType? { (self.program.field_of)(subject, name) }
+    /// The type of the field `name` on a value of `subject`'s type, bound to the arguments the record
+    /// is applied to: absent for an optional or dynamic subject, a type that's no record, a field it
+    /// doesn't have, and a subject that doesn't give the record every argument.
+    fn field_of(subject: SignedType, name: string) -> SignedType? {
+        if subject.nullable() || subject.dynamic { return null }
+        let record? = self.record_of(subject) else { return null }
+        if subject.args.length != record.params { return null }
+        record.fields.find(it.name == name)?.ty?.bound(subject.args)
+    }
+
+    /// The record `ty` is, absent when it's none.
+    fn record_of(ty: SignedType) -> RecordShape? { (self.program.record_of)(ty) }
+
+    /// A type named in the body, resolved.
+    fn type_named(name: string) -> SignedType { (self.program.type_named)(name) }
+
+    /// What the values checked into `seats` fill of the type parameters the seats name, beyond those
+    /// `pinned` already fills: each value
+    /// whose seat isn't a fn first, then each fn value against its seat with what's filled so far, a
+    /// seat still naming an unfilled parameter unseen. Absent when a value can't fill its seat or two
+    /// fill one parameter differently.
+    mut fn fills(seats: List<SignedType>, values: List<ExprId>, pinned: Map<string, SignedType>) -> Map<
+        string,
+        SignedType,
+    >? {
+        mut found = pinned
+        mut agreed = true
+        for at, v in values {
+            let seat = seats[at]
+            if seat.head is .Function { continue }
+            let read = self
+                .check(v, if seat.generic() { Expected.Free } else { Expected.Exactly(seat) })
+            if seat.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+        }
+        for at, v in values {
+            let seat = seats[at]
+            if !(seat.head is .Function) { continue }
+            let wanted = seat.filled(found)
+            let read = self
+                .check(v, if wanted.generic() { Expected.Unknown } else { Expected.Exactly(wanted) })
+            if wanted.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+        }
+        if agreed { found } else { null }
+    }
+
+    /// Each value checked against nothing.
+    mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
 
     /// The fn type of the method `name` on a value of `subject`'s type, absent when the program names
     /// none.
@@ -206,6 +260,9 @@ fn open_scope() -> CheckScope {
 
 /// A type the language owns, with nothing applied.
 export fn owned_type(name: string) -> SignedType { headed_type(TypeHead.Owned(name)) }
+
+/// The absent value's own type: `never?`, a value that is only ever null.
+export fn null_type() -> SignedType { never_type() with { nulls: 1 } }
 
 /// The type of code that doesn't finish.
 export fn never_type() -> SignedType { headed_type(TypeHead.Never) }

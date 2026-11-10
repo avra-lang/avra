@@ -1,6 +1,6 @@
 //! The typing rules of the literals, names and operators this feature reads.
 use core.{BinOp, Checking, Checks, ExprId, SignedType, Expected, TypeHead, owned_type}
-use core.expr.{Binary, FloatLit, Ident, IntLit, Not, Prop}
+use core.expr.{Binary, FloatLit, Ident, Index, IntLit, Not, Prop}
 
 impl Checks for IntLit {
     /// An integer literal is an `int`.
@@ -94,5 +94,14 @@ impl Checks for Prop {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject? = cx.check(self.subject, Expected.Free) else { return null }
         cx.field_of(subject, self.name.of)
+    }
+}
+
+impl Checks for Index {
+    /// `xs[i]` is the list's element, `i` an `int`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        let _ = cx.check(self.index, Expected.Exactly(owned_type("int")))
+        subject?.listed()
     }
 }

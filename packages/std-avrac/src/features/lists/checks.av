@@ -1,0 +1,20 @@
+//! The typing rule of a list literal: each element checks against the element type its seat wants,
+//! and the literal is the list that seat names; with none, the list of its elements' join. `[]`
+//! is its own type wherever it stands.
+use core.{Checking, Checks, ExprId, Expected, SignedType, never_type, owned_type, types_joined}
+use core.expr.{ListLit}
+
+impl Checks for ListLit {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
+        let element = wanted?.listed()
+        if element != null {
+            for v in self.elems { let _ = cx.check(v, Expected.Exactly(element!)) }
+            return if self.elems.is_empty() { owned_type("List") with { args: [never_type()] } } else { wanted }
+        }
+        let held = types_joined(
+            [cx.check(v, if expected is .Unknown { Expected.Unknown } else { Expected.Free }) for v in self.elems],
+        )
+        if held == null { null } else { owned_type("List") with { args: [held!] } }
+    }
+}

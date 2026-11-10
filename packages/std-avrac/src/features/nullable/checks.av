@@ -1,6 +1,8 @@
-//! The typing rule of `let x? = v else { … }`: the else block checks in a scope of its own, its
-//! value dropped, and then `x` is bound to what `v` holds when it's present.
-use core.{Checking, Expected, SignedType, StmtChecks, StmtId}
+//! The typing rules of absence: `null`, `??`, `!`, and `let x? = v else { … }`, whose else block
+//! checks in a scope of its own, its value dropped, before `x` is bound to what `v` holds when it's
+//! present.
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, null_type}
+use core.expr.{Coalesce, Force, NullLit}
 use core.stmt.{LetElse}
 
 impl StmtChecks for LetElse {
@@ -18,4 +20,25 @@ impl StmtChecks for LetElse {
 fn present(ty: SignedType?) -> SignedType? {
     let t? = ty else { return null }
     if t.nullable() { t.unwrapped() } else { null }
+}
+
+impl Checks for NullLit {
+    /// `null` is the absent value's own type, whatever seat it fills.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { null_type() }
+}
+
+impl Checks for Coalesce {
+    /// `a ?? b` is what `a` holds when present, joined with `b`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let left = cx.check(self.left, Expected.Free)
+        let right = cx.check(self.right, Expected.Free)
+        if left == null || right == null || !left!.nullable() { null } else { left!.unwrapped().joined_with(right!) }
+    }
+}
+
+impl Checks for Force {
+    /// `v!` is what `v` holds when present.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        present(cx.check(self.subject, Expected.Free))
+    }
 }

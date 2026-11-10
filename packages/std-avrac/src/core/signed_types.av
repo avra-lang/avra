@@ -52,9 +52,18 @@ impl SignedType {
         args[at] with { nulls: args[at].nulls + self.nulls, dynamic: args[at].dynamic || self.dynamic }
     }
 
-    /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`.
+    /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`;
+    /// the absent value's own type `null`, and the empty literals' `[]` and `{}`.
     fn spelled() -> string {
         if !self.alternatives.is_empty() { return [a.spelled() for a in self.alternatives].join(" or ") }
+        if self.head is .Never && self.nulls > 0 { return "null${["?" for _i in 1..self.nulls].join("")}" }
+        "${self.word()}${["?" for _i in 0..self.nulls].join("")}"
+    }
+
+    /// The type as it's written when present.
+    fn word() -> string {
+        if self.listed()?.bottom() ?? false { return "[]" }
+        if self.mapped()?.bottom() ?? false { return "{}" }
         let named = match self.head {
             .Owned(name) or .Unnamed(name) -> name,
             .Parameter(_, name) -> name,
@@ -64,9 +73,53 @@ impl SignedType {
             .Never -> "never",
         }
         let applied = if self.args.is_empty() { named } else { "${named}<${[a.spelled() for a in self.args].join(", ")}>" }
-        let dyn_named = if self.dynamic { "dyn ${applied}" } else { applied }
-        "${dyn_named}${["?" for _i in 0..self.nulls].join("")}"
+        if self.dynamic { "dyn ${applied}" } else { applied }
     }
+
+    /// Whether `other` names the same type as this, whatever either is applied to.
+    fn names_as(other: SignedType) -> bool { head_word(self.head) == head_word(other.head) }
+
+    /// The element of a list type, held directly: absent for any other type, and for a list that may
+    /// be null or is dynamic.
+    fn listed() -> SignedType? {
+        if self.nullable() || self.dynamic || self.args.length != 1 { return null }
+        match self.head {
+            .Owned(name) -> if name == "List" { self.args[0] } else { null },
+            rest -> null,
+        }
+    }
+
+    /// The value type of a map type, held directly: absent for any other type, and for a map that may
+    /// be null or is dynamic.
+    fn mapped() -> SignedType? {
+        if self.nullable() || self.dynamic || self.args.length != 2 { return null }
+        match self.head {
+            .Owned(name) -> if name == "Map" { self.args[1] } else { null },
+            rest -> null,
+        }
+    }
+
+    /// The one type this and `other` both are, absent when they're different types: `never` gives
+    /// way to the other, either one's nulls are kept, and their arguments join alike.
+    fn joined_with(other: SignedType) -> SignedType? {
+        let nulls = if self.nulls > other.nulls { self.nulls } else { other.nulls }
+        if self.head is .Never { return other with { nulls: nulls } }
+        if other.head is .Never { return self with { nulls: nulls } }
+        if !self.names_as(other) ||
+            self.dynamic != other.dynamic ||
+            self.args.length != other.args.length { return null }
+        if !self.seats.is_empty() ||
+            !other.seats.is_empty() ||
+            !self.alternatives.is_empty() ||
+            !other.alternatives.is_empty() {
+            return if self.word() == other.word() { self with { nulls: nulls } } else { null }
+        }
+        let args = [x.joined_with(other.args[i]) for i, x in self.args]
+        if args.any(it == null) { null } else { self with { nulls: nulls, args: [x! for x in args] } }
+    }
+
+    /// Whether this is `never`, the type no value has.
+    fn bottom() -> bool { self.head is .Never && self.nulls == 0 }
 
     /// Whether the value may be null.
     fn nullable() -> bool { self.nulls > 0 }
@@ -105,24 +158,24 @@ impl SignedType {
     }
 
     /// Whether `actual` is this type with its type parameters filled, each fill recorded in `found`
-    /// and every fill agreeing with what's already there. A parameter seat under nulls takes as many
-    /// off what fills it, and no more than it has.
+    /// and fills of one parameter joining. A parameter seat under nulls takes as many
+    /// off what fills it, and no more than it has; `never` fits every parameter and fills none.
     fn unifies(actual: SignedType, mut found: Map<string, SignedType>) -> bool {
         let at = match self.head { .Parameter(index, _) -> index, rest -> -1 }
         if at >= 0 {
             let fill = actual with { nulls: if actual.nulls > self.nulls { actual.nulls - self.nulls } else { 0 } }
+            if fill.head is .Never { return true }
             let known = found.get("${at}")
-            if known == null {
-                found.set("${at}", fill)
-                return true
-            }
-            return known!.spelled() == fill.spelled()
+            let joined = if known == null { fill } else { known!.joined_with(fill) }
+            if joined == null { return false }
+            found.set("${at}", joined!)
+            return true
         }
         if actual.nulls > self.nulls { return false }
         if self.dynamic != actual.dynamic ||
             self.args.length != actual.args.length ||
             self.seats.length != actual.seats.length { return false }
-        if !same_head(self.head, actual.head) { return false }
+        if !self.names_as(actual) { return false }
         for i, a in self.args { if !a.unifies(actual.args[i], found) { return false } }
         for i, s in self.seats { if !s.ty.unifies(actual.seats[i].ty, found) { return false } }
         if self.answer != null &&
@@ -164,9 +217,6 @@ impl SignedType {
     }
 }
 
-/// Whether two heads name one type.
-fn same_head(a: TypeHead, b: TypeHead) -> bool { head_word(a) == head_word(b) }
-
 /// A head as one word: what it names, with its kind.
 fn head_word(h: TypeHead) -> string {
     match h {
@@ -178,4 +228,10 @@ fn head_word(h: TypeHead) -> string {
         .Function -> "function",
         .Never -> "never",
     }
+}
+
+/// The join of every type, `never` for none, absent when one isn't known or two don't join.
+export fn types_joined(types: List<SignedType?>) -> SignedType? {
+    let none: SignedType? = headed_type(TypeHead.Never)
+    types.fold(none, (all, t) -> if all == null || t == null { null } else { all!.joined_with(t!) })
 }
