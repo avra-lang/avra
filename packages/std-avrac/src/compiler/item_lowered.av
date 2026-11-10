@@ -62,7 +62,8 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
                 Signing { engine: engine, file: file, type_params: signature.type_params },
             ),
             named: (n: string) -> named_value(engine, file, n),
-            method: (ty: SignedType, m: string) -> method_callee(engine, ty, m),
+            method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
+            statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
             lifts: lifts,
             lift_symbol: (lo: int) -> declared_symbol(file, "${name}.lambda${lo}"),
         },
@@ -141,18 +142,19 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
     }
 }
 
-/// The method `name` a value of `subject`'s type has, as a call reaches it: the method the one impl
-/// that gives it writes, on a type the program declares applied to nothing, by the symbol its body is
-/// known by. Absent for any other.
-fn method_callee(engine: QueryEngine, subject: SignedType, name: string) -> CalledFn? {
+/// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
+/// as a call reaches it: the one the one impl that gives it writes, on a type the program declares
+/// applied to nothing, by the symbol its body is known by. Absent for any other.
+fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics: bool) -> CalledFn? {
     if subject.nullable() || subject.dynamic || !subject.args.is_empty() { return null }
     let declared? = declared_at(subject) else { return null }
-    let impls = impls_with(engine, declared.file, declared.name, name, false)
+    let impls = impls_with(engine, declared.file, declared.name, name, statics)
     if impls.length != 1 { return null }
     let at = impls[0]
     let item = read_item(engine, at.file, at.item)
     let fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() ?? []
-    let m? = fns.find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
+    let m? = fns
+        .find((s) -> item.store.fn_parts(s)?.name == name && item.store.is_static(s) == statics) else { return null }
     let parts = item.store.fn_parts(m)!
     CalledFn {
         file: at.file,

@@ -6,7 +6,8 @@
 use @std.program.address.{SourceFileAddress}
 
 /// What a lowering reads of the program: what the checked program answers, what a top-level name
-/// the body reads or calls is, and the declared method a value of a type has by a name.
+/// the body reads or calls is, the declared method a value of a type has by a name, and the static
+/// fn a type has by a name.
 export type LoweredProgram = {
     checked: CheckedProgram,
     named: fn(string) -> NamedValue?,
@@ -15,6 +16,7 @@ export type LoweredProgram = {
     lifts: Cell<List<LiftedBody>>,
     /// The symbol a lambda written at an offset lifts under.
     lift_symbol: fn(int) -> string,
+    statics: fn(SignedType, string) -> CalledFn?,
 }
 
 /// What a top-level name a body reads or calls is, as its code reads it.
@@ -266,6 +268,15 @@ impl Lowering {
     /// The declared method `name` a value of `ty` has, absent where the program declares none.
     fn method(ty: SignedType, name: string) -> CalledFn? { (self.program.method)(ty, name) }
 
+    /// The static fn `name` the type `ty` has, absent where the program declares none.
+    fn static_fn(ty: SignedType, name: string) -> CalledFn? { (self.program.statics)(ty, name) }
+
+    /// Whether the type `ty` names is declared with type parameters.
+    fn generic_declared(ty: SignedType) -> bool {
+        (self.program.checked.record_of)(ty)?.params ?? 0 > 0 ||
+            self.program.checked.enum_shape(ty)?.params ?? 0 > 0
+    }
+
     // ── Names ───────────────────────────────────────────────────────
 
     /// A scope opened inside the current one.
@@ -287,6 +298,13 @@ impl Lowering {
 
     /// What `name` is bound to here, absent when the body binds it nowhere in view.
     fn bound(name: string) -> Bound? { reversed(self.scopes.get()).find(it.has(name))?.get(name) }
+
+    /// Whether `name` here is one of the fn's seats: bound in the outermost scope, where the seats
+    /// are, and nowhere further in.
+    fn seat_named(name: string) -> bool {
+        let scopes = self.scopes.get()
+        reversed(scopes).find_index(it.has(name)) == scopes.length - 1
+    }
 
     /// The fn's seat `name` of type `ty`: the next register, as the seats mint in order.
     mut fn seated(name: string, ty: SignedType) { self.bind(name, Bound.Value(self.mint(self.laid_out(ty)), ty)) }

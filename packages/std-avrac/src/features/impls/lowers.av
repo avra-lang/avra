@@ -1,27 +1,82 @@
 //! The lowering rule of a method call: a verb the language owns that is one runtime row is that row,
-//! handed the receiver then each argument; a method a type the program declares has in one impl is a
-//! call of the method's own symbol, the receiver its first seat. Any other method call isn't lowered
-//! yet, and says what it is.
-use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, RtSig, SignedType, own_row, rt_sig_of}
+//! handed the receiver then each argument, and one that is a shape of rows is that shape; a method a
+//! type the program declares has in one impl is a call of the method's own symbol, the receiver its
+//! first seat. A call through a type builds the variant it names, or calls the type's static fn. Any
+//! other method call isn't lowered yet, and says what it is.
+use core.{
+    BinOp,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    RtSig,
+    SignedType,
+    OwnRow,
+    own_row_of,
+    own_shape,
+    rt_sig_of,
+}
 use core.expr.{MethodCall}
 
 impl Lowers for MethodCall {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let subject? = cx.type_at(self.subject) else { return cx.unlowered(e) }
-        if subject.described() != null { return cx.missed_as("a call through a type") }
+        let described = subject.described()
+        if described != null { return through_type(cx, self, e, described!) }
         if subject.dynamic { return cx.missed_as("a `dyn` dispatch") }
         if subject.nullable() { return cx.unlowered(e) }
         match subject.head {
-            .Owned(word) -> owned_verb(cx, self, e, word),
+            .Owned(word) -> owned_verb(cx, self, e, subject, word),
             .Declared(_, _) -> declared_method(cx, self, e, subject),
             .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.unlowered(e),
         }
     }
 }
 
-/// A verb on a type the language owns: its row, handed the receiver then each argument.
-fn owned_verb(mut cx: Lowering, m: MethodCall, e: ExprId, word: string) -> Reg {
-    let own? = own_row(word, m.name.of) else { return cx.list_walked(m, e, word) ?? cx.missed_as(verb_unlowered(word, m.name.of)) }
+/// A call through a type: the variant of that name the type has, built of the arguments; a verb the
+/// language owns on its own type (`Cell.new`); or a static fn of a type the program declares.
+fn through_type(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> Reg {
+    if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as("a call through a type naming an argument") }
+    let made? = cx.type_at(e) else { return cx.missed_as("an untyped call through a type") }
+    let tag = if made.names_as(ty) { cx.variants_of(made)?.find_index(it.name == m.name.of) } else { null }
+    if tag != null { return cx.tagged_value(cx.laid_out(made), tag!, [cx.lower(a) for a in m.args]) }
+    match ty.head {
+        .Owned(word) -> {
+            let shape? = own_shape(word, m.name.of) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+            if !shape.on_the_type() { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+            cx.own_verb_lowered(shape, e, m.subject, m.args)
+        },
+        .Declared(_, _) -> static_called(cx, m, e, ty),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.missed_as("a call through a type"),
+    }
+}
+
+/// A static fn of a type the program declares applied to nothing: a call of its symbol, handed each
+/// argument.
+fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> Reg {
+    if cx.generic_declared(ty) { return cx.missed_as("a static fn of the generic `${ty.spelled()}`") }
+    let callee? = cx.static_fn(ty, m.name.of) else { return cx.missed_as(static_unlowered(ty, m.name.of)) }
+    if !callee.plain { return cx.missed_as(static_unlowered(ty, m.name.of)) }
+    cx.call_fn(cx.layout_at(e), callee, [cx.lower(a) for a in m.args])
+}
+
+/// A verb on a type the language owns: its row, handed the receiver then each argument, or the shape
+/// of rows it is.
+fn owned_verb(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, word: string) -> Reg {
+    let own? = own_row_of(subject, m.name.of) else { return shaped_verb(cx, m, e, word) }
+    owned_row(cx, m, e, word, own)
+}
+
+/// A verb on a type the language owns that is a shape of rows.
+fn shaped_verb(mut cx: Lowering, m: MethodCall, e: ExprId, word: string) -> Reg {
+    let shape? = own_shape(word, m.name.of) else { return cx.list_walked(m, e, word) ?? cx.missed_as(verb_unlowered(word, m.name.of)) }
+    if shape.on_the_type() || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+    cx.own_verb_lowered(shape, e, m.subject, m.args)
+}
+
+/// A verb on a type the language owns that is one row.
+fn owned_row(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, own: OwnRow) -> Reg {
     let row? = rt_sig_of(own.row) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
     match own.answer {
         .Answer -> row_called(cx, m, e, row),
@@ -56,7 +111,7 @@ fn folded_code(cx: Lowering, m: MethodCall) -> int? {
 fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
     if !subject.args.is_empty() { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
     let callee? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    if callee.writes { return cx.missed_as("a method that writes its receiver") }
+    if callee.writes && !cell_rooted(cx, m.subject) { return cx.missed_as("a method that writes its receiver") }
     if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let seats? = seated(cx, m) else { return cx.missed_as("a receiver on a path through a cell") }
     cx.call_fn(cx.layout_at(e), callee, seats)
@@ -70,6 +125,15 @@ fn seated(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
     if cx.store.place_root(m.subject)?.index != m.subject.index { return null }
     let args = [cx.lower(a) for a in m.args]
     [cx.lower(m.subject)].concat(args)
+}
+
+/// Whether a receiver a method writes is read out of its cell as it is: a `mut` binding's own name,
+/// its cell holding a value that rides no pointer. One that rides a pointer is opened or thawed by
+/// where its seed came from, which isn't lowered yet.
+fn cell_rooted(cx: Lowering, subject: ExprId) -> bool {
+    let ty? = cx.type_at(subject) else { return false }
+    let l? = cx.program.checked.layout(ty) else { return false }
+    !l.pointer() && cx.store.place_root(subject)?.index == subject.index && in_cell(cx, subject)
 }
 
 /// Whether a receiver is a place whose root a `mut` binding's cell holds.
@@ -86,3 +150,5 @@ fn in_cell(cx: Lowering, subject: ExprId) -> bool {
 fn verb_unlowered(word: string, name: string) -> string { "`${word}.${name}`" }
 
 fn method_unlowered(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`" }
+
+fn static_unlowered(ty: SignedType, name: string) -> string { "the static fn `${name}` of `${ty.spelled()}`" }
