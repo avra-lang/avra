@@ -4,8 +4,7 @@
 //! without running anything, and a recomputed answer that comes out the same leaves its readers
 //! standing. Nothing here knows what the queries are about.
 use answer_parts.{AnswerPart, part_hash_seen, part_in_saved_parts}
-use frontier.{Frontier, FrontierEntry}
-use sorted.{sorted_by}
+use frontier.{Frontier, FrontierLearned, HeldEntry}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_layout.{SavedBytes}
@@ -56,11 +55,12 @@ export trait AnswerStore {
     /// An answer's bytes for this process alone, for what the next process reads afresh anyway.
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes)
 
-    /// The frontier the binary printed `print` last wrote here, absent when there's none.
+    /// The frontier the binary printed `print` leaves here as it stands, absent when there's none.
     fn frontier_of(print: string) -> Frontier?
 
-    /// Keeps `entries` as the frontier of the binary printed `print`, whole or not at all.
-    fn keep_frontier(print: string, entries: List<FrontierEntry>)
+    /// Keeps what a process of the binary printed `print` learned beside the frontier it read, for
+    /// that binary's frontier, each file of it whole or not at all.
+    fn keep_frontier(print: string, learned: FrontierLearned)
 }
 
 /// A question being answered, and the reads it has made so far.
@@ -79,6 +79,22 @@ enum Known {
     Standing(frontier: Frontier, place: int)
 }
 
+/// What this process knows of its binary's frontier.
+enum FrontierState {
+    /// Not read yet: nothing has been asked.
+    Unread
+    /// Read, and there's none.
+    Missing
+    /// Its inputs are being asked, so none of its answers stands yet.
+    Opening
+    /// Open, its suspects known.
+    Open(open: OpenFrontier)
+}
+
+/// A frontier answers are taken from, and whether a changed input reaches each of its answers, by
+/// place: what must be checked.
+type OpenFrontier = { frontier: Frontier, suspects: List<bool> }
+
 /// What this process has learned so far. An identity: every holder asks through the one engine.
 export type QueryEngine = {
     store: dyn AnswerStore,
@@ -92,12 +108,10 @@ export type QueryEngine = {
     computed: Cell<List<string>>,
     /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
     records_checked: Cell<int>,
-    /// This binary's frontier, once read; empty when it has none.
-    frontier: Cell<List<Frontier>>,
-    /// Whether the frontier has been read and its inputs asked.
-    frontier_read: Cell<bool>,
-    /// Whether a changed input reaches each answer of the frontier, by its place: what must be checked.
-    suspects: Cell<List<bool>>,
+    /// What this process knows of its binary's frontier.
+    frontier: Cell<FrontierState>,
+    /// The questions asked with nobody asking: the roots, which keep what they read in the frontier.
+    asked_alone: HashKeyedTable<bool>,
 }
 
 export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition>) -> QueryEngine {
@@ -105,8 +119,7 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
     let settled_answers: HashKeyedTable<SettledAnswer> = hash_keyed_table()
     let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
     let computed: Cell<List<string>> = Cell.new([])
-    let frontier: Cell<List<Frontier>> = Cell.new([])
-    let suspects: Cell<List<bool>> = Cell.new([])
+    let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
@@ -114,9 +127,8 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         open_questions: open_questions,
         computed: computed,
         records_checked: Cell.new(0),
-        frontier: frontier,
-        frontier_read: Cell.new(false),
-        suspects: suspects,
+        frontier: Cell.new(FrontierState.Unread),
+        asked_alone: asked_alone,
     }
     for definition in definitions {
         if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
@@ -196,44 +208,59 @@ impl QueryEngine {
             .settled_by_asking(question)
     }
 
-    /// An answer this binary's frontier holds and no changed input reaches, settled as it stands.
+    /// An answer this binary's frontier holds standing and no changed input reaches, settled as it
+    /// stands.
     fn settled_from_frontier(question: ContentHash) -> SettledAnswer? {
-        let f? = self.frontier_ready() else { return null }
+        let open? = self.frontier_open() else { return null }
+        let f = open.frontier
         let at? = f.place_of(question) else { return null }
-        if self.suspects.get()[at] || f.input_at(at) { return null }
+        if open.suspects[at] || !f.stands(at) || f.input_at(at) { return null }
+        self.stood(f, at)
+    }
+
+    /// The answer at `at` in `f`, settled as it stands there.
+    fn stood(f: Frontier, at: int) -> SettledAnswer {
         let settled = SettledAnswer {
-            question: question,
+            question: f.question_at(at),
             answer: f.answer_at(at),
             known: Known.Standing(f, at),
         }
-        self.settled_answers.put(question, settled)
+        self.settled_answers.put(settled.question, settled)
         settled
     }
 
     /// This binary's frontier with its suspects known; absent while there's none, or while its
     /// inputs are being asked.
-    fn frontier_ready() -> Frontier? {
+    fn frontier_open() -> OpenFrontier? {
         self.frontier_read_once()
-        let f? = self.frontier.get().first() else { return null }
-        if self.suspects.get().length != f.length() { return null }
-        f
+        match self.frontier.get() { .Open(open) -> open, .Unread or .Missing or .Opening -> null }
     }
 
     /// Reads this binary's frontier the first time anything is asked.
-    fn frontier_read_once() { if !self.frontier_read.get() { self.frontier_opened() } }
+    fn frontier_read_once() {
+        match self.frontier.get() {
+            .Unread -> self.frontier_opened(),
+            .Missing or .Opening or .Open(_) -> { return },
+        }
+    }
 
-    /// Reads this binary's frontier and asks its inputs first, so every answer a changed input
-    /// reaches is a suspect.
+    /// Reads this binary's frontier and asks its standing inputs first, so every answer a changed
+    /// input reaches is a suspect and each input that held stands. A frontier whose reads don't lie
+    /// within it is none.
     fn frontier_opened() {
-        self.frontier_read.set(true)
-        let f? = self.store.frontier_of(self.print()) else { return }
-        self.frontier.set([f])
-        let changed = [at for at in 0..f.length() if f.input_at(at) && !self.input_holds(f, at)]
-        self
-            .suspects
-            .set(
-                if changed.is_empty() { [false for _i in 0..f.length()] } else { f.readers_of(changed) },
-            )
+        self.frontier.set(FrontierState.Opening)
+        let f? = self.store.frontier_of(self.print()) else { return self.frontier.set(FrontierState.Missing) }
+        let inputs = [at for at in 0..f.length() if f.stands(at) && f.input_at(at)]
+        let changed = inputs.filter((at) -> !self.input_holds(f, at))
+        let suspects? = self.suspects_of(f, changed) else { return self.frontier.set(FrontierState.Missing) }
+        for at in inputs { if !suspects[at] { let _ = self.stood(f, at) } }
+        self.frontier.set(FrontierState.Open(OpenFrontier { frontier: f, suspects: suspects }))
+    }
+
+    /// Whether a change in `changed` reaches each answer of `f`; absent when its reads don't lie
+    /// within it.
+    fn suspects_of(f: Frontier, changed: List<int>) -> List<bool>? {
+        if changed.is_empty() { [false for _i in 0..f.length()] } else { f.readers_of(changed) }
     }
 
     /// Whether the input at `at` answers now what it answered when the frontier was written.
@@ -253,35 +280,34 @@ impl QueryEngine {
         "${h.high_word}_${h.low_word}"
     }
 
-    /// Writes what this process knows as this binary's frontier: every answer it settled, with what
-    /// it read, and every answer of the frontier it read that no changed input reached. Writes
-    /// nothing when it asked nothing, or learned nothing the frontier doesn't hold.
+    /// Leaves what this process learned beside the frontier it read, for its store to write as this
+    /// binary's frontier. Leaves nothing when it asked nothing.
     fn frontier_kept() {
-        if !self.frontier_read.get() { return }
-        let f = self.frontier.get().first()
-        if f != null && !self.suspects.get().any(it) && !self.learned_beyond_frontier() { return }
-        let settled = [self.entry_of(s) for s in self.settled_answers.values()]
-        self.store.keep_frontier(self.print(), closed_entries(settled.concat(self.carried_from(f))))
-    }
-
-    /// Whether this process settled anything its frontier doesn't hold, besides what is read afresh
-    /// anyway.
-    fn learned_beyond_frontier() -> bool { self.settled_answers.values().any((s) -> self.learned_here(s.known)) }
-
-    /// Whether an answer came to be known in this process by a query the next one won't work out
-    /// afresh anyway.
-    fn learned_here(known: Known) -> bool {
-        match known {
-            .Reused(name, _) or .Worked(name, _) -> !self.read_afresh(name),
-            .Standing(_, _) -> false,
+        match self.frontier.get() {
+            .Unread or .Opening -> { return },
+            .Missing -> self.learned_kept(null),
+            .Open(open) -> self.learned_kept(open),
         }
     }
 
-    /// The answers of `f` this process didn't settle and no changed input reached, carried as they
-    /// stand; none without a frontier.
-    fn carried_from(f: Frontier?) -> List<HeldEntry> {
-        let held? = f else { return [] }
-        [carried_entry(held, at) for at in 0..held.length() if !self.suspects.get()[at] && self.settled_answers.get(held.question_at(at)) == null]
+    /// Hands the store every answer this process settled that may say what `open` doesn't, and the
+    /// places of the suspects it never settled; nothing when there's neither.
+    fn learned_kept(open: OpenFrontier?) {
+        let entries = [h! for s in self.settled_answers.values() for h in [self.learned_entry(s)] if h != null]
+        let stale = self.unsettled_suspects(open)
+        if entries.is_empty() && stale.is_empty() { return }
+        self
+            .store
+            .keep_frontier(self.print(), FrontierLearned { on: open?.frontier, entries: entries, stale: stale })
+    }
+
+    /// The places of `open`'s suspects that stand and this process never settled: no longer known to
+    /// hold.
+    fn unsettled_suspects(open: OpenFrontier?) -> List<int> {
+        let o? = open else { return [] }
+        [at for at, suspect in o.suspects if suspect &&
+            o.frontier.stands(at) &&
+            self.settled_answers.get(o.frontier.question_at(at)) == null]
     }
 
     /// Whether a query reads the outside world afresh in every process.
@@ -295,23 +321,27 @@ impl QueryEngine {
         d == null || d!.is_input || d!.code_hash.is_empty()
     }
 
-    /// A settled answer as the frontier keeps it, before its reads are places.
-    fn entry_of(s: SettledAnswer) -> HeldEntry {
+    /// A settled answer as the frontier may keep it: whatever this process worked out or reused,
+    /// and a root it asked that stood in the frontier without being one there. Absent for any
+    /// other answer that stood.
+    fn learned_entry(s: SettledAnswer) -> HeldEntry? {
+        let root = self.asked_alone.get(s.question) != null
         match s.known {
-            .Standing(f, place) -> carried_entry(f, place),
-            .Reused(name, record) -> self.learned_entry(s, name, record.read_questions()),
-            .Worked(name, reads) -> self.learned_entry(s, name, reads),
+            .Standing(f, place) -> if root && !f.root_at(place) { f.held_at(place)?.rooted() } else { null },
+            .Reused(name, record) -> self.held(s, name, record.read_questions(), root),
+            .Worked(name, reads) -> self.held(s, name, reads, root),
         }
     }
 
     /// An answer this process learned, as the frontier keeps it: an input when its query is read
     /// afresh.
-    fn learned_entry(s: SettledAnswer, query_name: string, reads: List<ContentHash>) -> HeldEntry {
+    fn held(s: SettledAnswer, query_name: string, reads: List<ContentHash>, root: bool) -> HeldEntry {
         HeldEntry {
             question: s.question,
             answer: s.answer,
             reads: reads,
             input: self.read_afresh(query_name),
+            root: root,
         }
     }
 
@@ -356,7 +386,7 @@ impl QueryEngine {
         let bytes = self.run_recording(asked, reads)
         let answer = content_hash(bytes)
         if self.store.answer_bytes(answer) == null { self.keep_or_hold(asked, answer, bytes) }
-        let record = answer_record(answer, reads.values(), false)
+        let record = answer_record(answer, reads.values())
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.store.keep_record(asked, record) }
         self
             .settled(asked, answer, Known.Worked(asked.query_name, [r.question for r in reads.values()]))
@@ -396,9 +426,9 @@ impl QueryEngine {
     }
 
     /// Whoever is asking now has made this read; with nobody asking, the question is a root, which
-    /// the frontier keeps.
+    /// the frontier keeps with what it reads.
     fn record_read(read: RecordedRead) {
-        let asker? = self.open_questions.get().last() else { return }
+        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
         asker.reads.put(read.read_key(), read)
     }
 
@@ -425,36 +455,3 @@ fn two_queries_named(definition: QueryDefinition) -> string {
     "two queries are named `${definition.query_name}`, so their saved answers would collide"
 }
 
-/// An answer the frontier will keep, its reads still questions.
-type HeldEntry = { question: ContentHash, answer: ContentHash, reads: List<ContentHash>, input: bool }
-
-/// The frontier's answer at `at`, carried as it stands.
-fn carried_entry(f: Frontier, at: int) -> HeldEntry {
-    HeldEntry {
-        question: f.question_at(at),
-        answer: f.answer_at(at),
-        reads: [f.question_at(r) for r in f.reads_at(at)],
-        input: f.input_at(at),
-    }
-}
-
-/// The entries as a frontier holds them: sorted by question, each read a place, and none whose
-/// reads aren't all held, so the frontier stays closed.
-fn closed_entries(held: List<HeldEntry>) -> List<FrontierEntry> {
-    mut kept = sorted_by(held, (a, b) -> a.question.comes_before(b.question))
-    while true {
-        let places: HashKeyedTable<int> = hash_keyed_table()
-        for at, e in kept { places.put(e.question, at) }
-        let whole = kept.filter(it.reads.all((r) -> places.get(r) != null))
-        if whole.length == kept.length {
-            return [FrontierEntry {
-                question: e.question,
-                answer: e.answer,
-                reads: [places.get(r)! for r in e.reads],
-                input: e.input,
-            } for e in kept]
-        }
-        kept = whole
-    }
-    []
-}

@@ -10,6 +10,9 @@
 //! label, so one large field widens nothing else. All of it is big-endian. An answer ends in how
 //! far back its root starts, in eight octets, so a load of eight octets anywhere in an answer stays
 //! inside it. Every position is relative, so an answer reads the same wherever it's embedded.
+//!
+//! Octets another process wrote may lie, so they're read through doors that check a node lies
+//! within them before reading it: a lie reads as absent, never as a trap.
 
 use defect.{defect}
 
@@ -271,6 +274,9 @@ export trait SavedSlots {
     /// What slot `slot` stores.
     fn stored_at(slot: int) -> int
 
+    /// How many slots it holds.
+    fn slot_count() -> int
+
     /// Slot `slot` as a number.
     fn number_at(slot: int) -> int {
         let stored = self.stored_at(slot)
@@ -316,6 +322,21 @@ export trait SavedSlots {
     fn child_start_at(slot: int) -> int? {
         let stored = self.stored_at(slot)
         if stored == 0 { null } else { self.start() - stored }
+    }
+
+    /// Slot `slot` as a record lying wholly before `end`, absent when it holds none or the record
+    /// doesn't.
+    fn record_within_at(slot: int, end: int) -> SavedRecord? {
+        if slot >= self.slot_count() { return null }
+        let child? = self.child_start_at(slot) else { return null }
+        record_within(self.source(), child, end)
+    }
+
+    /// Slot `slot` as a list lying wholly before `end`, absent when it holds none or the list doesn't.
+    fn list_within_at(slot: int, end: int) -> SavedList? {
+        if slot >= self.slot_count() { return null }
+        let child? = self.child_start_at(slot) else { return null }
+        list_within(self.source(), child, end)
     }
 }
 
@@ -363,8 +384,20 @@ export type SavedRecord = {
     first_size_codes: int,
 }
 
-fn record_starting_at(source: SavedSource, start: int) -> SavedRecord {
+fn record_starting_at(source: SavedSource, start: int) -> SavedRecord { record_labelled(source, start, label_at(source, start)) }
+
+/// The record starting at `start`, absent unless all of it lies before `end`: its label, its size
+/// codes and its slots. The eight octets past `end` are read too, as a root's distance keeps them.
+export fn record_within(source: SavedSource, start: int, end: int) -> SavedRecord? {
+    if start < 0 || start >= end { return null }
     let label = label_at(source, start)
+    if label.contents_at + size_code_octets(label.length) > end { return null }
+    let record = record_labelled(source, start, label)
+    if record.slots_end() > end { null } else { record }
+}
+
+/// The record a label read at `start` begins.
+fn record_labelled(source: SavedSource, start: int, label: NodeLabel) -> SavedRecord {
     let codes_arrived = label.contents_octets >= size_code_octets(label.length)
     SavedRecord {
         source: source,
@@ -381,6 +414,8 @@ impl SavedSlots for SavedRecord {
 
     fn start() -> int { self.start }
 
+    fn slot_count() -> int { self.field_count }
+
     /// Finds the slot past the widths before it, then loads it.
     fn stored_at(slot: int) -> int {
         let slots_at = self.size_codes_at + size_code_octets(self.field_count)
@@ -392,6 +427,13 @@ impl SavedSlots for SavedRecord {
 }
 
 impl SavedRecord {
+    /// Where the record's last slot ends.
+    fn slots_end() -> int {
+        self.size_codes_at +
+            size_code_octets(self.field_count) +
+            self.octets_before(self.field_count)
+    }
+
     /// The width of one slot, from the size codes in hand when it's among the first thirty-two.
     fn width_of_slot(slot: int) -> int {
         let codes = if slot < CODES_PER_WORD { self.first_size_codes } else { self.source.word_at(self.size_codes_at + slot / 4) }
@@ -435,6 +477,13 @@ fn list_starting_at(source: SavedSource, start: int) -> SavedList {
     }
 }
 
+/// The list starting at `start`, absent unless its label and every item lie before `end`.
+export fn list_within(source: SavedSource, start: int, end: int) -> SavedList? {
+    if start < 0 || start >= end { return null }
+    let list = list_starting_at(source, start)
+    if list.items_at + list.length * list.width > end { null } else { list }
+}
+
 impl SavedList {
     /// Where the first number at or after `wanted` sits, in a list of numbers sorted ascending.
     fn first_at_or_after(wanted: int) -> int {
@@ -453,6 +502,8 @@ impl SavedSlots for SavedList {
 
     fn start() -> int { self.start }
 
+    fn slot_count() -> int { self.length }
+
     /// Every item has one width, so an item is one multiplication away.
     fn stored_at(slot: int) -> int {
         high_octets(self.source.word_at(self.items_at + slot * self.width), self.width)
@@ -465,13 +516,19 @@ export fn saved_root_record(source: SavedSource, end: int) -> SavedRecord {
     record_starting_at(source, end - source.word_at(end - ROOT_DISTANCE_LENGTH))
 }
 
-/// The root record of octets `length` long that end in `seal`, absent when they don't: what lost its
-/// tail never reads as whole.
+/// The root record of octets `length` long that end in `seal`, absent when they don't, or when the
+/// root doesn't lie within them: what lost its tail, or says its root stands elsewhere, never reads
+/// as whole.
 export fn sealed_root_record(source: SavedSource, length: int, seal: string) -> SavedRecord? {
     let end = length - seal.length
     if end < ROOT_DISTANCE_LENGTH || source.octets_at(end, length).text() != seal { return null }
-    saved_root_record(source, end)
+    let distance = source.word_at(end - ROOT_DISTANCE_LENGTH)
+    if distance <= ROOT_DISTANCE_LENGTH || distance > end { return null }
+    record_within(source, end - distance, sealed_end(length, seal))
 }
+
+/// Where the nodes of octets `length` long that end in `seal` end: before the root's distance.
+export fn sealed_end(length: int, seal: string) -> int { length - seal.length - ROOT_DISTANCE_LENGTH }
 
 /// A two-bit code as its width of 1, 2, 4 or 8 octets.
 fn width_of_code(code: int) -> int { 1 << code }

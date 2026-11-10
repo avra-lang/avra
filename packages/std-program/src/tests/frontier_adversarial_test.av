@@ -6,8 +6,9 @@ use @std.process.{cmd, tool_at}
 use @std.text.{parse_int}
 use @std.time.{stamp}
 use answer_record.{ContentHash, content_hash, question}
-use disk_store.{disk_store_at, frontier_path}
-use frontier.{FrontierEntry, frontier_runs}
+use disk_store.{PACK_SEAL, disk_store_at, frontier_file_path}
+use frontier.{FRONTIER_SEAL, Frontier, FrontierEntry, FrontierKind, base_file, delta_file}
+use saved_layout.{entries_map}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use sorted.{sorted_by}
 
@@ -97,9 +98,15 @@ fn idle(directory: string, binary: List<QueryDefinition>) {
 
 fn fresh(label: string) -> string { "/tmp/avra-frontier-attack/${stamp()}-${label}" }
 
-/// Where `binary` keeps its frontier in `directory`.
+/// Where `binary` keeps its frontier's base in `directory`: the one written last, as a process that
+/// wrote a base leaves only it.
 fn frontier_file(directory: string, binary: List<QueryDefinition>) -> string {
-    frontier_path(directory, printed(binary))
+    frontier_files(directory, binary).filter(it.ends_with(".front")).last() ?? "${directory}/no-base.front"
+}
+
+/// Every file of `binary`'s frontier in `directory`.
+fn frontier_files(directory: string, binary: List<QueryDefinition>) -> List<string> {
+    ["${directory}/${name}" for name in list_dir(directory) catch [] if name.starts_with("frontier-${printed(binary)}.")]
 }
 
 /// What tells `binary` apart from another binary.
@@ -131,8 +138,9 @@ fn plant(name: string, argument: string, answer: string, reads: List<ContentHash
     }
 }
 
-/// `plants` written as the frontier of `binary` in `directory`, sorted as a frontier is, each read
-/// the place of what it names; a read naming nothing planted lands five past the end.
+/// `plants` written as the frontier of `binary` in `directory`, a base sorted as a frontier is, each
+/// read the place of what it names, each answer that isn't an input a root; a read naming nothing
+/// planted lands five past the end.
 fn planted(directory: string, binary: List<QueryDefinition>, plants: List<Plant>) {
     let _ = make_dirs(directory) catch ""
     let sorted = sorted_by(plants, (x, y) -> x.question.comes_before(y.question))
@@ -141,8 +149,11 @@ fn planted(directory: string, binary: List<QueryDefinition>, plants: List<Plant>
         answer: p.answer,
         reads: [place_in(sorted, r) for r in p.reads],
         input: p.input,
+        root: !p.input,
     } for p in sorted]
-    let _ = write_bytes(frontier_file(directory, binary), frontier_runs(entries, 1).bytes())
+    let base = base_file(entries, [], 1)
+    let path = frontier_file_path(directory, printed(binary), FrontierKind.Base, base.id)
+    let _ = write_bytes(path, base.runs.bytes())
 }
 
 fn place_in(sorted: List<Plant>, read: ContentHash) -> int {
@@ -205,6 +216,111 @@ fn versioned(world: Map<string, string>, version: string) -> List<QueryDefinitio
         computing("parity", "c1", parity_of),
         computing("report", "c1", report_of),
     ]
+}
+
+/// `text` reads the world; `length` counts a path's text; `total` sums the lengths of the paths its
+/// argument names; `chosen` measures the path `which` names.
+fn wide_binary(world: Map<string, string>) -> List<QueryDefinition> {
+    [
+        read_from("text", "c1", Cell.new(world), true),
+        computing("length", "c1", length_of),
+        computing("total", "c1", total_of),
+        computing("chosen", "c1", (e, _a) -> asked(e, "length", asked(e, "text", "which")).bytes()),
+    ]
+}
+
+fn total_of(e: QueryEngine, a: Bytes) -> Bytes { "${[parse_int(asked(e, "length", p)) ?? 0 for p in (a.text() ?? "").split(",")].sum()}".bytes() }
+
+/// The paths `total` sums.
+const WIDE_PATHS: string = "p0,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11"
+
+/// A world of twelve paths, each one longer than its number, but `p3` and `p5` as given, and three
+/// more `which` may name; the lengths of `wide("xxxx", "xxxxxx")` total 78.
+fn wide(p3: string, p5: string) -> Map<string, string> {
+    mut w: Map<string, string> = {"q1": "a", "q2": "bb", "q3": "ccc", "which": "q1"}
+    for i in 0..12 { w.set("p${i}", ["x" for _j in 0..i + 1].join("")) }
+    w.set("p3", p3)
+    w.set("p5", p5)
+    w
+}
+
+/// The unedited world, `which` naming `path`.
+fn choosing(path: string) -> Map<string, string> {
+    mut w = unedited()
+    w.set("which", path)
+    w
+}
+
+/// A process asking `total` of every path and `chosen` in `world`.
+fn both_asked(directory: string, world: Map<string, string>) -> QueryEngine {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, wide_binary(world))
+    let _ = asked(engine, "total", WIDE_PATHS)
+    let _ = asked(engine, "chosen", "")
+    engine.frontier_kept()
+    let _ = store.saved()
+    engine
+}
+
+/// The world before any edit.
+fn unedited() -> Map<string, string> { wide("xxxx", "xxxxxx") }
+
+/// A world whose every path is one longer: its lengths total 90.
+fn every_path_edited() -> Map<string, string> { entries_map([Entry { key: "p${i}", value: ["y" for _j in 0..i + 2].join("") } for i in 0..12]) }
+
+/// A process asking `total` of every path in `world`.
+fn totaled(directory: string, world: Map<string, string>) -> Ran { ran(directory, wide_binary(world), "total", WIDE_PATHS) }
+
+/// How many files of the wide binary's frontier in `directory` end in `suffix`.
+fn wide_files(directory: string, suffix: string) -> int { frontier_files(directory, wide_binary(unedited())).filter(it.ends_with(suffix)).length }
+
+/// The wide binary's frontier in `directory` as a process would read it.
+fn wide_frontier(directory: string) -> Frontier? { disk_store_at(directory).frontier_of(printed(wide_binary(unedited()))) }
+
+/// How many deltas the wide binary's frontier in `directory` holds after a process in a world whose
+/// `p3` is `p3`.
+fn deltas_after(directory: string, p3: string) -> int {
+    let _ = totaled(directory, wide(p3, "xxxxxx"))
+    wide_files(directory, ".delta")
+}
+
+/// Two processes of the wide binary that read one frontier, then publish in turn: one in `first`'s
+/// world, then one in `second`'s.
+fn beside(directory: string, first: Map<string, string>, second: Map<string, string>) {
+    let one = disk_store_at(directory)
+    let other = disk_store_at(directory)
+    let one_engine = query_engine(one, wide_binary(first))
+    let other_engine = query_engine(other, wide_binary(second))
+    let _ = asked(one_engine, "total", WIDE_PATHS)
+    let _ = asked(other_engine, "total", WIDE_PATHS)
+    one_engine.frontier_kept()
+    let _ = one.saved()
+    other_engine.frontier_kept()
+    let _ = other.saved()
+}
+
+/// The delta file of the wide binary's frontier in `directory`, when it holds one.
+fn the_delta(directory: string) -> string { frontier_files(directory, wide_binary(unedited())).filter(it.ends_with(".delta")).first() ?? "" }
+
+/// A delta over the wide binary's frontier in `directory`, writing `total`'s answer as 999 at
+/// `place` and saying the state holds `extent` places after it.
+fn planted_delta(directory: string, place: int, extent: int) {
+    let f = wide_frontier(directory)!
+    let total = FrontierEntry {
+        question: known_as("total", WIDE_PATHS),
+        answer: content_hash("999".bytes()),
+        reads: [],
+        input: false,
+        root: true,
+    }
+    let write = delta_file(f.id(), [total], [place], [], extent, f.generation())
+    let path = frontier_file_path(
+        directory,
+        printed(wide_binary(unedited())),
+        FrontierKind.Delta,
+        write.id,
+    )
+    let _ = write_bytes(path, write.runs.bytes())
 }
 
 spec "frontier — attacked" {
@@ -339,6 +455,34 @@ spec "frontier — attacked" {
             ran(directory, probing(two("z", ""), true), "probe", "a").answer == "z"
         }
     }
+    given "planted damage" {
+        then "garbage ending in a pack's seal is no pack" {
+            let directory = fresh("garbage_pack")
+            let _ = reported(directory, two("abc", "xy"))
+            let garbage = ["garbage " for _i in 0..8].join("") + PACK_SEAL
+            let _ = write_bytes("${directory}/planted.pack", garbage.bytes())
+            reported(directory, two("abcd", "xy")).answer == "even/2"
+        }
+        then "garbage ending in a frontier's seal is no frontier" {
+            let directory = fresh("garbage_seal")
+            let _ = reported(directory, two("abc", "xy"))
+            let garbage = ["garbage " for _i in 0..8].join("") + FRONTIER_SEAL
+            let _ = write_bytes(frontier_file(directory, binary(two("abc", "xy"))), garbage.bytes())
+            reported(directory, two("abcd", "xy")).answer == "even/2"
+        }
+        then "a frontier read whose place is past its end answers the changed world" {
+            let directory = fresh("read_past_end")
+            planted(
+                directory,
+                binary(two("abc", "xy")),
+                [
+                    plant("text", "a", "abc", [], true),
+                    plant("length", "a", "3", [known_as("nothing", "x")], false),
+                ],
+            )
+            ran(directory, binary(two("abcd", "xy")), "length", "a").answer == "4"
+        }
+    }
     given "change shapes" {
         then "one input changed: its readers run, with the world's answer" {
             let directory = fresh("one_changed")
@@ -407,6 +551,176 @@ spec "frontier — attacked" {
             back.answer == "3" &&
                 back.engine.worked_count() == 0 &&
                 ran(directory, binary(w), "pick", "").answer == "3"
+        }
+    }
+    given "a frontier written as deltas" {
+        then "an edit writes a delta beside the base, and the next process answers from both, checking no record" {
+            let directory = fresh("delta_edit")
+            let _ = totaled(directory, unedited())
+            let edited = totaled(directory, wide("ab", "xxxxxx"))
+            let warm = totaled(directory, wide("ab", "xxxxxx"))
+            edited.answer == "76" &&
+                wide_files(directory, ".front") == 1 &&
+                wide_files(directory, ".delta") == 1 &&
+                warm.answer == "76" &&
+                warm.engine.records_checked_count() == 0 &&
+                warm.engine.worked_count() == 0
+        }
+        then "an edit and its revert, each a delta, answer their worlds, and going back works nothing out" {
+            let directory = fresh("delta_revert")
+            let _ = totaled(directory, unedited())
+            let edited = totaled(directory, wide("ab", "xxxxxx"))
+            let back = totaled(directory, unedited())
+            let again = totaled(directory, wide("ab", "xxxxxx"))
+            edited.answer == "76" &&
+                back.answer == "78" &&
+                again.answer == "76" &&
+                back.engine.worked_count() == 0 &&
+                again.engine.worked_count() == 0 &&
+                wide_frontier(directory)!.chain.length == 3
+        }
+        then "past four deltas, the next write folds the chain into a base" {
+            let directory = fresh("delta_fold")
+            let counts = [deltas_after(directory, p3) for p3 in ["xxxx", "a", "bb", "ccc", "dddd", "eeeee", "ffffff"]]
+            ["${n}" for n in counts].join(",") == "0,1,2,3,4,0,1" &&
+                wide_files(directory, ".front") == 1
+        }
+        then "a folded chain answers its world, and the process after checks no record" {
+            let directory = fresh("delta_folded_warm")
+            let _ = [deltas_after(directory, p3) for p3 in ["xxxx", "a", "bb", "ccc", "dddd", "eeeee"]]
+            let warm = totaled(directory, wide("eeeee", "xxxxxx"))
+            warm.answer == "79" && warm.engine.records_checked_count() == 0
+        }
+        then "a delta forgets the inputs nothing reads any more" {
+            let directory = fresh("delta_forgets")
+            let _ = [both_asked(directory, choosing(path)) for path in ["q1", "q2", "q3", "q1"]]
+            let deltas = wide_files(directory, ".delta")
+            let later = both_asked(directory, choosing("q1"))
+            deltas == 3 && later.computed_count() == 14 && later.worked_count() == 0
+        }
+        then "a change near the base's size folds into a base, and leaves no delta" {
+            let directory = fresh("delta_wide_change")
+            let _ = totaled(directory, unedited())
+            let edited = totaled(directory, every_path_edited())
+            edited.answer == "90" &&
+                wide_files(directory, ".delta") == 0 &&
+                wide_files(directory, ".front") == 1
+        }
+        then "a delta that writes a place past its own end is no part of the chain" {
+            let directory = fresh("delta_place_past")
+            let _ = totaled(directory, unedited())
+            let extent = wide_frontier(directory)!.length()
+            planted_delta(directory, extent + 7, extent + 1)
+            wide_frontier(directory)!.chain.is_empty() &&
+                totaled(directory, unedited()).answer == "78"
+        }
+        then "a delta that leaves a place past its state's end unwritten is no part of the chain" {
+            let directory = fresh("delta_place_unwritten")
+            let _ = totaled(directory, unedited())
+            let extent = wide_frontier(directory)!.length()
+            planted_delta(directory, extent, extent + 2)
+            wide_frontier(directory)!.chain.is_empty() &&
+                totaled(directory, unedited()).answer == "78"
+        }
+        then "a torn delta is no part of the frontier, nor is any delta after it" {
+            let directory = fresh("delta_torn")
+            let _ = totaled(directory, unedited())
+            let _ = totaled(directory, wide("ab", "xxxxxx"))
+            let torn = the_delta(directory)
+            let _ = totaled(directory, wide("ab", "cd"))
+            let _ = truncate_to(torn, octets_of(torn) / 2) catch ""
+            let chain = wide_frontier(directory)!.chain.length
+            chain == 0 && totaled(directory, wide("ab", "cd")).answer == "72"
+        }
+        then "garbage ending in a frontier's seal, as a delta, is no part of the frontier" {
+            let directory = fresh("delta_garbage")
+            let _ = totaled(directory, unedited())
+            let _ = totaled(directory, wide("ab", "xxxxxx"))
+            let garbage = ["garbage " for _i in 0..8].join("") + FRONTIER_SEAL
+            let _ = write_bytes(the_delta(directory), garbage.bytes())
+            wide_frontier(directory)!.chain.is_empty() &&
+                totaled(directory, wide("ab", "xxxxxx")).answer == "76"
+        }
+    }
+    given "deltas beside each other" {
+        then "two processes whose worlds disagree fork the chain, and a reader stops before the fork with its world's answer" {
+            let directory = fresh("fork")
+            let _ = totaled(directory, unedited())
+            beside(directory, wide("ab", "xxxxxx"), wide("xxxx", "cd"))
+            let f = wide_frontier(directory)!
+            let forks = wide_files(directory, ".delta")
+            f.forked &&
+                f.chain.is_empty() &&
+                forks == 2 &&
+                totaled(directory, wide("ab", "cd")).answer == "72"
+        }
+        then "after a fork the next process folds it, and the one after checks no record" {
+            let directory = fresh("fork_folded")
+            let _ = totaled(directory, unedited())
+            beside(directory, wide("ab", "xxxxxx"), wide("xxxx", "cd"))
+            let _ = totaled(directory, wide("ab", "cd"))
+            let warm = totaled(directory, wide("ab", "cd"))
+            wide_files(directory, ".delta") == 0 &&
+                wide_files(directory, ".front") == 1 &&
+                warm.answer == "72" &&
+                warm.engine.records_checked_count() == 0
+        }
+        then "two processes doing the same work in one world, beside each other, write one delta" {
+            let directory = fresh("beside_same")
+            let _ = totaled(directory, unedited())
+            beside(directory, wide("ab", "xxxxxx"), wide("ab", "xxxxxx"))
+            let f = wide_frontier(directory)!
+            let warm = totaled(directory, wide("ab", "xxxxxx"))
+            !f.forked &&
+                f.chain.length == 1 &&
+                wide_files(directory, ".delta") == 1 &&
+                warm.answer == "76" &&
+                warm.engine.records_checked_count() == 0
+        }
+        then "two processes in one world asking different questions, beside each other, leave one chain holding both" {
+            let directory = fresh("beside_agreeing")
+            let _ = totaled(directory, unedited())
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let one_engine = query_engine(one, wide_binary(wide("ab", "xxxxxx")))
+            let other_engine = query_engine(other, wide_binary(wide("ab", "xxxxxx")))
+            let _ = asked(one_engine, "total", WIDE_PATHS)
+            let _ = asked(other_engine, "length", "p5")
+            one_engine.frontier_kept()
+            let _ = one.saved()
+            other_engine.frontier_kept()
+            let _ = other.saved()
+            let f = wide_frontier(directory)!
+            let total = totaled(directory, wide("ab", "xxxxxx"))
+            let length = ran(directory, wide_binary(wide("ab", "xxxxxx")), "length", "p5")
+            !f.forked &&
+                f.chain.length == 2 &&
+                total.answer == "76" &&
+                total.engine.records_checked_count() == 0 &&
+                length.answer == "6" &&
+                length.engine.records_checked_count() == 0
+        }
+        then "a delta whose parent was compacted away is no part of the frontier, and a compaction removes it" {
+            let directory = fresh("orphan")
+            let _ = totaled(directory, unedited())
+            let late = disk_store_at(directory)
+            let late_engine = query_engine(late, wide_binary(wide("ab", "xxxxxx")))
+            let _ = asked(late_engine, "total", WIDE_PATHS)
+            let folding = disk_store_at(directory)
+            let folding_engine = query_engine(folding, wide_binary(wide("xxxx", "cd")))
+            let _ = asked(folding_engine, "total", WIDE_PATHS)
+            folding_engine.frontier_kept()
+            let _ = folding.compacted()
+            late_engine.frontier_kept()
+            let _ = late.saved()
+            let orphan = the_delta(directory)
+            let unread = wide_frontier(directory)!.chain.is_empty()
+            let read = totaled(directory, wide("ab", "cd"))
+            let _ = disk_store_at(directory).compacted()
+            orphan != "" &&
+                unread &&
+                read.answer == "72" &&
+                !(list_dir(directory) catch []).any("${directory}/${it}" == orphan)
         }
     }
     given "processes beside each other" {
@@ -550,6 +864,25 @@ spec "frontier — attacked" {
             let _ = disk_store_at(directory).compacted()
             let warm = reported(directory, two("abc", "xy"))
             warm.engine.records_checked_count() == 0 && warm.engine.worked_count() == 0
+        }
+        then "an unchanged world after two processes beside each other checks no record" {
+            let directory = fresh("warm_beside")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let one_engine = query_engine(one, binary(two("abc", "xy")))
+            let other_engine = query_engine(other, binary(two("abc", "xy")))
+            let _ = asked(one_engine, "report", "a,b")
+            let _ = asked(other_engine, "parity", "b")
+            one_engine.frontier_kept()
+            let _ = one.saved()
+            other_engine.frontier_kept()
+            let _ = other.saved()
+            reported(directory, two("abc", "xy")).engine.records_checked_count() == 0
+        }
+        then "a frontier forgets the inputs nothing reads any more" {
+            let directory = fresh("forgets")
+            for which in ["a", "b", "c", "a"] { let _ = ran(directory, binary(picking(which)), "pick", "") }
+            ran(directory, binary(picking("a")), "pick", "").engine.computed_count() == 2
         }
         then "an unchanged world with a query of no code hash works out only that query" {
             let directory = fresh("warm_unhashed")

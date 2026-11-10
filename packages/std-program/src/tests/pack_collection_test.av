@@ -17,11 +17,10 @@ fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
 fn asked(name: string, code: string, arguments: string) -> Question { question(name, code, arguments.bytes()) }
 
 /// A record answering `answer` that read `reads`, each a whole read of what it saw then.
-fn record(answer: string, reads: List<Question>, deep: bool) -> AnswerRecord {
+fn record(answer: string, reads: List<Question>) -> AnswerRecord {
     answer_record(
         hash_of(answer),
         [RecordedRead { question: r.known_as, whole_answer: hash_of("seen"), part: null } for r in reads],
-        deep,
     )
 }
 
@@ -56,9 +55,9 @@ spec "pack_collection — what a compaction keeps" {
             let root = asked("root", "c", "x")
             let stray = asked("stray", "c", "x")
             let questions = [
-                entry(leaf, [record("leaf answer", [], false)], 1),
-                entry(root, [record("root answer", [leaf], true)], 1),
-                entry(stray, [record("stray answer", [], false)], 1),
+                entry(leaf, [record("leaf answer", [])], 1),
+                entry(root, [record("root answer", [leaf])], 1),
+                entry(stray, [record("stray answer", [])], 1),
             ]
             let live = live_of([root], questions)
             kept(live, root) &&
@@ -73,15 +72,10 @@ spec "pack_collection — what a compaction keeps" {
             let old_read = asked("old", "c", "x")
             let root = asked("root", "c", "x")
             let questions = [
-                entry(old_read, [record("old answer", [], false)], 1),
+                entry(old_read, [record("old answer", [])], 1),
                 entry(
                     root,
-                    [
-                        record("r1", [old_read], true),
-                        record("r2", [], true),
-                        record("r3", [], true),
-                        record("r4", [], true),
-                    ],
+                    [record("r1", [old_read]), record("r2", []), record("r3", []), record("r4", [])],
                     4,
                 ),
             ]
@@ -90,26 +84,6 @@ spec "pack_collection — what a compaction keeps" {
                 !kept(live, old_read) &&
                 live.answers.get(hash_of("r1")) == null &&
                 live.answers.get(hash_of("r4")) != null
-        }
-    }
-    given "a root reused through an old shallow record, with deep records after it" {
-        then "the shallow one stays, and what it read" {
-            let leaf = asked("leaf", "c", "x")
-            let root = asked("root", "c", "x")
-            let questions = [
-                entry(leaf, [record("leaf answer", [], false)], 1),
-                entry(
-                    root,
-                    [
-                        record("r0", [leaf], false),
-                        record("r1", [], true),
-                        record("r2", [], true),
-                        record("r3", [], true),
-                    ],
-                    4,
-                ),
-            ]
-            records_kept(questions, 1) == 4 && kept(live_of([root], questions), leaf)
         }
     }
 }

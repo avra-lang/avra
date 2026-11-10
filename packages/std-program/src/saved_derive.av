@@ -111,7 +111,9 @@ fn saved_methods(t: MetaType) -> Decls {
 }
 
 /// `<field>_in(record)` reads one field of a saved record without the others, and a field holding a
-/// list, a record or octets also has `<field>_in_place(record)`, which copies nothing.
+/// list, a record or octets also has `<field>_in_place(record)`, which copies nothing. A list's or a
+/// record's has `<field>_within(record, end)` too, absent unless it lies wholly before `end`: the
+/// door for octets another process wrote.
 fn field_door(f: Field, slot: int) -> Decls {
     let number = slot_number(slot)
     let shape = shape_of_field(f)
@@ -122,10 +124,12 @@ fn field_door(f: Field, slot: int) -> Decls {
         .Listed(_) -> quote {
             ${read}
             static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedList { record.list_at(${number})! }
+            static fn ${"${f.name}_within"}(record: SavedRecord, end: int) -> SavedList? { record.list_within_at(${number}, end) }
         },
         .Declared(_, _) -> quote {
             ${read}
             static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedRecord { record.record_at(${number})! }
+            static fn ${"${f.name}_within"}(record: SavedRecord, end: int) -> SavedRecord? { record.record_within_at(${number}, end) }
         },
         .Octets -> quote {
             ${read}

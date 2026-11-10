@@ -6,7 +6,7 @@
 use @std.io.{IoError, exists, list_dir, write_bytes}
 use @std.time.{stamp}
 use answer_record.{ContentHash}
-use disk_store.{DiskStore, disk_store_at}
+use disk_store.{DiskStore, KeptSpan, PACK_SEAL, disk_store_at, index_runs}
 use query_engine.{QueryEngine, query_engine}
 use saved_query.{ListedQuery, definitions_of, input, query, query_definition}
 
@@ -180,11 +180,58 @@ spec "a store's records, streamed and compacted" {
             let _ = length_asked(directory, "f.av")
             let _ = write_bytes(
                 "${directory}/old.pack",
-                "an old pack's octets, then its seal: avrapak4".bytes(),
+                "an old pack's octets, then its seal: avrapak5".bytes(),
             )
             let reused = length_asked(directory, "f.av")
             let _ = disk_store_at(directory).compacted()
             reused == 1 && !exists("${directory}/old.pack") && length_asked(directory, "f.av") == 1
+        }
+    }
+    given "garbage ending in a pack's seal" {
+        then "it's read as nothing, the answer stands, and a compaction removes it" {
+            let directory = directory_named("garbage_sealed")
+            kept_world().put("h.av", "alpha")
+            let _ = length_asked(directory, "h.av")
+            let planted = "${directory}/planted.pack"
+            let _ = write_bytes(planted, (["garbage " for _i in 0..8].join("") + PACK_SEAL).bytes())
+            let reused = length_asked(directory, "h.av")
+            let _ = disk_store_at(directory).compacted()
+            reused == 1 && !exists(planted) && length_asked(directory, "h.av") == 1
+        }
+    }
+    given "a pack whose index names octets past its end" {
+        then "what it names is found elsewhere or worked out again, and a compaction drops the pack" {
+            let directory = directory_named("span_past")
+            kept_world().put("i.av", "alpha")
+            let _ = length_asked(directory, "i.av")
+            let answer = disk_store_at(directory).records_of(length_question("i.av"))[0].answer
+            let spans = [KeptSpan { key: answer, at: 0, length: 1048576 }]
+            let questions = [KeptSpan { key: length_question("i.av"), at: 8, length: 1073741824 }]
+            let planted = "${directory}/planted.pack"
+            let runs = ["sixteen octets..".bytes()]
+                .concat(index_runs(questions, spans, 1, 0))
+                .concat([PACK_SEAL.bytes()])
+            let _ = write_bytes(planted, runs.bytes())
+            let reused = length_asked(directory, "i.av")
+            let _ = disk_store_at(directory).compacted()
+            reused == 1 && !exists(planted) && length_asked(directory, "i.av") == 1
+        }
+        then "a later process over only that pack works the answer out" {
+            let directory = directory_named("span_past_alone")
+            kept_world().put("j.av", "alpha")
+            let _ = length_asked(directory, "j.av")
+            let answer = disk_store_at(directory).records_of(length_question("j.av"))[0].answer
+            for name in packs_in(directory) { let _ = write_bytes("${directory}/${name}", "".bytes()) }
+            let spans = [KeptSpan { key: answer, at: 0, length: 1048576 }]
+            let questions = [KeptSpan { key: length_question("j.av"), at: 8, length: 1073741824 }]
+            let runs = ["sixteen octets..".bytes()]
+                .concat(index_runs(questions, spans, 1, 0))
+                .concat([PACK_SEAL.bytes()])
+            let _ = write_bytes("${directory}/planted.pack", runs.bytes())
+            let store = disk_store_at(directory)
+            store.records_of(length_question("j.av")).is_empty() &&
+                store.answer_bytes(answer) == null &&
+                length_asked(directory, "j.av") == 2
         }
     }
     given "a compaction by a process that has only a draft and the frontier it left" {

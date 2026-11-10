@@ -2,7 +2,7 @@
 //! and every answer it read to get there. The answer's own bytes live apart, under their hash, so
 //! a record can be checked without touching them. A record stands only while every read still
 //! holds; a question with no record has no answer, and is computed.
-use @std.hash.{blake3}
+use @std.hash.{blake3, hasher}
 use @std.meta.{derive}
 use saved_derive.{Saved}
 use saved_layout.{SavedList, SavedRecord, SavedSlots, word_in}
@@ -23,21 +23,35 @@ impl ContentHash {
 }
 
 /// The hash of `octets`.
-export fn content_hash(octets: Bytes) -> ContentHash {
-    let hash = blake3(octets)
-    ContentHash { high_word: word_in(hash, 0), low_word: word_in(hash, 8) }
-}
+export fn content_hash(octets: Bytes) -> ContentHash { hash_of_digest(blake3(octets)) }
 
-/// Where the entry keyed by `wanted` stands in a table sorted by hash and held in place: a list of
-/// the keys' high words beside a list of entries, each entry's first field its key. A search
-/// touches the list of numbers, and opens only the entries it might have found.
-export fn place_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> int? {
+/// The hash of runs of octets written one after another: the same as the hash of them joined.
+export fn runs_hash(runs: List<Bytes>) -> ContentHash { hash_of_digest(runs.fold(hasher(), (h, run) -> h.update(run)).digest()) }
+
+/// A BLAKE3 digest's first sixteen octets.
+fn hash_of_digest(digest: Bytes) -> ContentHash { ContentHash { high_word: word_in(digest, 0), low_word: word_in(digest, 8) } }
+
+/// Where the key `wanted` stands in a table sorted by hash, its keys' high words held in
+/// `high_words`: `low_word_at` reads the low word of the key at a place, absent when it can't be
+/// read. A search touches the list of numbers, and reads a key only where it might have found it.
+export fn place_keyed_by(high_words: SavedList, wanted: ContentHash, low_word_at: fn(int) -> int?) -> int? {
     mut position = high_words.first_at_or_after(wanted.high_word)
     while position < high_words.length && high_words.number_at(position) == wanted.high_word {
-        if ContentHash.read_from(entries.record_at(position)!.record_at(0)!).same_as(wanted) { return position }
+        let low? = low_word_at(position) else { return null }
+        if low == wanted.low_word { return position }
         position = position + 1
     }
     null
+}
+
+/// Where the entry keyed by `wanted` stands in a table held in place: a list of the keys' high words
+/// beside a list of entries, each entry's first field its key.
+export fn place_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> int? {
+    place_keyed_by(
+        high_words,
+        wanted,
+        (at) -> ContentHash.low_word_in(entries.record_at(at)!.record_at(0)!),
+    )
 }
 
 /// The entry keyed by `wanted` in such a table.
@@ -77,11 +91,9 @@ export type RecordedRead = { question: ContentHash, whole_answer: ContentHash, p
 /// One way a question was answered: the hash that finds the answer's bytes, and everything read to
 /// get there, as words, so a record is checked where it lies. A whole read is four words, its
 /// question then the whole answer it saw; a part read is eight, those then the part's name and the
-/// part's hash. A DEEP record reads only inputs, however many queries stood between them and the
-/// answer. It's the same claim made shorter: checking one touches no other question, so an
-/// unchanged program costs its inputs and nothing more.
+/// part's hash.
 @derive(Saved)
-export type AnswerRecord = { answer: ContentHash, whole_reads: List<int>, part_reads: List<int>, deep: bool = false }
+export type AnswerRecord = { answer: ContentHash, whole_reads: List<int>, part_reads: List<int> }
 
 /// The words of a whole read.
 const WHOLE_READ_WORDS: int = 4
@@ -90,12 +102,11 @@ const WHOLE_READ_WORDS: int = 4
 const PART_READ_WORDS: int = 8
 
 /// The record of an answer and what was read to get there.
-export fn answer_record(answer: ContentHash, reads: List<RecordedRead>, deep: bool) -> AnswerRecord {
+export fn answer_record(answer: ContentHash, reads: List<RecordedRead>) -> AnswerRecord {
     AnswerRecord {
         answer: answer,
         whole_reads: [word for read in reads.filter(it.part == null) for word in read.words()],
         part_reads: [word for read in reads.filter(it.part != null) for word in read.words()],
-        deep: deep,
     }
 }
 
@@ -103,7 +114,6 @@ impl AnswerRecord {
     fn kept() -> KeptRecord {
         KeptRecord {
             answer: self.answer,
-            deep: self.deep,
             whole_reads: RecordWords.Held(self.whole_reads),
             part_reads: RecordWords.Held(self.part_reads),
         }
@@ -143,13 +153,12 @@ impl RecordWords {
 }
 
 /// A record as the engine checks it, its reads never decoded.
-export type KeptRecord = { answer: ContentHash, deep: bool, whole_reads: RecordWords, part_reads: RecordWords }
+export type KeptRecord = { answer: ContentHash, whole_reads: RecordWords, part_reads: RecordWords }
 
 /// The record saved at `record`, read where it lies.
 export fn kept_in_place(record: SavedRecord) -> KeptRecord {
     KeptRecord {
         answer: ContentHash.read_from(AnswerRecord.answer_in_place(record)),
-        deep: AnswerRecord.deep_in(record),
         whole_reads: RecordWords.Laid(AnswerRecord.whole_reads_in_place(record)),
         part_reads: RecordWords.Laid(AnswerRecord.part_reads_in_place(record)),
     }
@@ -158,7 +167,6 @@ export fn kept_in_place(record: SavedRecord) -> KeptRecord {
 impl KeptRecord {
     fn same_as(other: AnswerRecord) -> bool {
         self.answer.same_as(other.answer) &&
-            self.deep == other.deep &&
             self.whole_reads.same_as(other.whole_reads) &&
             self.part_reads.same_as(other.part_reads)
     }
@@ -169,7 +177,6 @@ impl KeptRecord {
             answer: self.answer,
             whole_reads: self.whole_reads.words(),
             part_reads: self.part_reads.words(),
-            deep: self.deep,
         }
     }
 

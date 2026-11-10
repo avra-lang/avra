@@ -8,12 +8,24 @@
 //! where it lies, so opening a store costs a map per pack and checking a record pages in no answer.
 //! A new pack absorbs every pack no bigger than itself, which keeps the count of packs logarithmic
 //! and each answer's copies few. The worst a race can do is repeat work: a pack gone from under a
-//! reader is a miss.
-use @std.hash.{Hasher, hasher}
+//! reader is a miss. A pack another process wrote may lie, so its index's tables are checked to lie
+//! within it when it opens, and each span where it's read: a pack that lies is foreign, a span that
+//! lies is a miss, and a compaction drops both. Beside the packs lies each binary's frontier, a base
+//! and the deltas over it, every file named by the hash of its octets.
 use @std.io.{Draft, IoError, abandoned_drafts, drafted, list_dir, make_dirs, remove}
 use @std.meta.{derive}
-use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, entry_keyed}
-use frontier.{Frontier, FrontierEntry, frontier_in, frontier_runs}
+use @std.text.{parse_int}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, place_keyed_by, runs_hash}
+use frontier.{
+    Frontier,
+    FrontierFile,
+    FrontierKind,
+    FrontierLearned,
+    FrontierWrite,
+    files_kept,
+    frontier_over,
+    frontier_written,
+}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in}
 use query_engine.{AnswerStore}
@@ -26,8 +38,8 @@ use saved_layout.{
     SavedSource,
     saved_bytes_in_memory,
     saved_layout_writer,
+    sealed_end,
     sealed_root_record,
-    word_in,
 }
 use sorted.{sorted_by}
 
@@ -36,7 +48,7 @@ extern fn avra_mmap_len(mapping: ptr) -> int
 extern fn avra_mmap_close(mapping: ptr)
 
 /// A pack's last octets. It names the format, and a pack that lost its tail doesn't have it.
-export const PACK_SEAL: string = "avrapak5"
+export const PACK_SEAL: string = "avrapak6"
 
 const PACK_SUFFIX: string = ".pack"
 
@@ -50,7 +62,7 @@ const UNMAPPED_OCTETS: int = 2097152
 /// many there are. An answer is kept under the hash of its octets, a question's records under the
 /// question's hash; each is a saved answer of its own, read where it lies.
 @derive(Saved)
-type KeptSpan = { key: ContentHash, at: int, length: int }
+export type KeptSpan = { key: ContentHash, at: int, length: int }
 
 /// A pack's index, written after what it keeps: a table of answers and one of questions, each
 /// sorted by hash beside a list of its keys' high words, so a search touches numbers and opens only
@@ -66,11 +78,13 @@ type PackIndex = {
     kept_octets: int,
 }
 
-/// A pack in a mapped file. Its index's tables are found once, here. A mapping stays for the life
-/// of the process, so bytes read from one never dangle, even after its file is gone.
+/// A pack in a mapped file. Its index's tables are found once, here, and every node of it lies
+/// before `end`. A mapping stays for the life of the process, so bytes read from one never dangle,
+/// even after its file is gone.
 type MappedPack = {
     path: string,
     length: int,
+    end: int,
     source: SavedSource,
     answer_high_words: SavedList,
     answers: SavedList,
@@ -80,33 +94,65 @@ type MappedPack = {
     kept_octets: int,
 }
 
-/// The pack at `path`, absent when it can't be read or doesn't end in the seal.
+/// The pack at `path`, absent when it can't be read or isn't a whole pack.
 fn mapped_pack(path: string) -> MappedPack? {
     let mapping? = avra_mmap_open(path) else { return null }
-    let source = SavedSource.Mapped(mapping)
-    let length = avra_mmap_len(mapping)
-    let index? = sealed_root_record(source, length, PACK_SEAL) else {
+    let pack? = pack_in(path, SavedSource.Mapped(mapping), avra_mmap_len(mapping)) else {
         avra_mmap_close(mapping)
         return null
     }
+    pack
+}
+
+/// The pack `source` holds, `length` octets long, absent unless it ends in the seal and its index's
+/// tables lie within it, each beside its keys' high words one for one.
+fn pack_in(path: string, source: SavedSource, length: int) -> MappedPack? {
+    let index? = sealed_root_record(source, length, PACK_SEAL) else { return null }
+    let end = sealed_end(length, PACK_SEAL)
+    let answer_high_words? = PackIndex.answer_high_words_within(index, end) else { return null }
+    let answers? = PackIndex.answers_within(index, end) else { return null }
+    let question_high_words? = PackIndex.question_high_words_within(index, end) else { return null }
+    let questions? = PackIndex.questions_within(index, end) else { return null }
+    if answer_high_words.length != answers.length || question_high_words.length != questions.length { return null }
     MappedPack {
         path: path,
         length: length,
+        end: end,
         source: source,
-        answer_high_words: PackIndex.answer_high_words_in_place(index),
-        answers: PackIndex.answers_in_place(index),
-        question_high_words: PackIndex.question_high_words_in_place(index),
-        questions: PackIndex.questions_in_place(index),
+        answer_high_words: answer_high_words,
+        answers: answers,
+        question_high_words: question_high_words,
+        questions: questions,
         generation: PackIndex.generation_in(index),
         kept_octets: PackIndex.kept_octets_in(index),
     }
 }
 
 impl MappedPack {
+    /// The span at `at` of `spans`, absent unless it lies within the pack: its record, its key, and
+    /// the octets it names.
+    fn span_at(spans: SavedList, at: int) -> KeptSpan? {
+        let record? = spans.record_within_at(at, self.end) else { return null }
+        let key? = KeptSpan.key_within(record, self.end) else { return null }
+        let span = KeptSpan {
+            key: ContentHash.read_from(key),
+            at: KeptSpan.at_in(record),
+            length: KeptSpan.length_in(record),
+        }
+        if span.at >= 0 && span.length >= 0 && span.at + span.length <= self.end { span } else { null }
+    }
+
+    /// The span keyed by `key` among `spans`, beside their keys' high words, absent when there's none
+    /// that lies within the pack.
+    fn span_keyed(high_words: SavedList, spans: SavedList, key: ContentHash) -> KeptSpan? {
+        let at? = place_keyed_by(high_words, key, (p) -> self.span_at(spans, p)?.key?.low_word) else { return null }
+        self.span_at(spans, at)
+    }
+
     /// The records `question` has here, where they lie.
     fn question_entry(question: ContentHash) -> SavedRecord? {
-        let span? = entry_keyed(self.question_high_words, self.questions, question) else { return null }
-        self.saved_at(KeptSpan.read_from(span)).root()
+        let span? = self.span_keyed(self.question_high_words, self.questions, question) else { return null }
+        self.saved_at(span).root()
     }
 
     fn records_of(question: ContentHash) -> List<KeptRecord> {
@@ -120,8 +166,8 @@ impl MappedPack {
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
-        let span? = entry_keyed(self.answer_high_words, self.answers, answer) else { return null }
-        self.saved_at(KeptSpan.read_from(span))
+        let span? = self.span_keyed(self.answer_high_words, self.answers, answer) else { return null }
+        self.saved_at(span)
     }
 
     /// The octets a span names, where they lie.
@@ -130,11 +176,11 @@ impl MappedPack {
     /// How many answers and questions the pack holds.
     fn entries() -> int { self.answers.length + self.questions.length }
 
-    /// Every answer the pack keeps, in its order.
-    fn answer_spans() -> List<KeptSpan> { [KeptSpan.read_from(self.answers.record_at(i)!) for i in 0..self.answers.length] }
+    /// Every answer the pack keeps that lies within it, in its order.
+    fn answer_spans() -> List<KeptSpan> { [span! for i in 0..self.answers.length for span in [self.span_at(self.answers, i)] if span != null] }
 
-    /// Every question the pack keeps, in its order.
-    fn question_spans() -> List<KeptSpan> { [KeptSpan.read_from(self.questions.record_at(i)!) for i in 0..self.questions.length] }
+    /// Every question the pack keeps that lies within it, in its order.
+    fn question_spans() -> List<KeptSpan> { [span! for i in 0..self.questions.length for span in [self.span_at(self.questions, i)] if span != null] }
 }
 
 /// What a draft keeps of one kind: where each lies in it, and the octets not yet mapped, held.
@@ -272,12 +318,14 @@ export type DiskStore = {
     generation: int,
     /// Packs this store can't read: torn, or in another format.
     foreign: List<ForeignPack>,
-    /// The frontier this process will leave, written once the pack holding its answers is.
-    pending_frontier: Cell<List<PendingFrontier>>,
+    /// What this process learned for its binary's frontier, written once the pack holding its
+    /// answers is.
+    pending_frontier: Cell<PendingFrontier?>,
 }
 
-/// A frontier waiting for its answers to be published: whose it is, and what it holds.
-type PendingFrontier = { print: string, entries: List<FrontierEntry> }
+/// What a process learned for its binary's frontier, waiting for its answers to be published:
+/// whose it is, and what it learned.
+type PendingFrontier = { print: string, learned: FrontierLearned }
 
 /// A pack this store can't read, and its size: it counts against the store's room, and goes when
 /// the store compacts. A binary that wrote it only ever loses work.
@@ -301,7 +349,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
     let held_answers: HashKeyedTable<Bytes> = hash_keyed_table()
     let held_questions: HashKeyedTable<Bytes> = hash_keyed_table()
     let segment: Cell<List<Segment>> = Cell.new([])
-    let pending: Cell<List<PendingFrontier>> = Cell.new([])
+    let pending: Cell<PendingFrontier?> = Cell.new(null)
     DiskStore {
         directory: directory,
         packs: Cell.new(packs),
@@ -319,29 +367,72 @@ export fn disk_store_at(directory: string) -> DiskStore {
     }
 }
 
-/// A frontier file and what it holds, read where it lies.
-type Held = { path: string, frontier: Frontier }
-
 /// How many binaries' frontiers a store keeps.
 const KEPT_FRONTIERS: int = 2
 
-/// The frontier the file at `path` holds; its mapping stays for the process, as a pack's does.
-fn frontier_at(path: string) -> Frontier? {
+/// What every frontier file's name begins with.
+const FRONTIER_PREFIX: string = "frontier-"
+
+/// A frontier file in the store's directory: where it is, which binary's it is, and what it holds.
+/// Its mapping stays for the process, as a pack's does.
+type FoundFrontier = { path: string, print: string, file: FrontierFile }
+
+/// What a file holding `kind` ends in.
+fn suffix_of(kind: FrontierKind) -> string {
+    match kind { .Base -> ".front", .Delta -> ".delta" }
+}
+
+/// Where the binary printed `print` keeps the frontier file of `kind` named by `id`.
+export fn frontier_file_path(directory: string, print: string, kind: FrontierKind, id: ContentHash) -> string {
+    "${directory}/${FRONTIER_PREFIX}${print}.${id.high_word}_${id.low_word}${suffix_of(kind)}"
+}
+
+/// Every frontier file in `directory` that can be mapped, of any binary.
+fn frontiers_in(directory: string) -> List<FoundFrontier> {
+    [found! for name in list_dir(directory) catch [] for found in [found_frontier(directory, name)] if found != null]
+}
+
+/// Every frontier file of the binary printed `print` in `directory` that can be mapped.
+fn frontiers_of(directory: string, print: string) -> List<FoundFrontier> {
+    [found! for name in list_dir(directory) catch [] if name.starts_with("${FRONTIER_PREFIX}${print}.") for found in [found_frontier(directory, name)] if found != null]
+}
+
+/// The frontier file `name` in `directory`, absent when the name isn't a frontier file's or it
+/// can't be mapped.
+fn found_frontier(directory: string, name: string) -> FoundFrontier? {
+    if !name.starts_with(FRONTIER_PREFIX) { return null }
+    let kind? = [k for k in [FrontierKind.Base, FrontierKind.Delta] if name.ends_with(suffix_of(k))]
+        .first() else { return null }
+    let parts = name
+        .substring(FRONTIER_PREFIX.length, name.length - suffix_of(kind).length)
+        .split(".")
+    if parts.length != 2 { return null }
+    let id? = hash_named(parts[1]) else { return null }
+    let path = "${directory}/${name}"
     let mapping? = avra_mmap_open(path) else { return null }
-    let held? = frontier_in(SavedSource.Mapped(mapping), avra_mmap_len(mapping)) else {
-        avra_mmap_close(mapping)
-        return null
+    FoundFrontier {
+        path: path,
+        print: parts[0],
+        file: FrontierFile {
+            kind: kind,
+            id: id,
+            source: SavedSource.Mapped(mapping),
+            length: avra_mmap_len(mapping),
+        },
     }
-    held
 }
 
-/// The frontier files in `directory`, by name.
-fn frontier_names_in(directory: string) -> List<string> {
-    (list_dir(directory) catch []).filter(it.starts_with("frontier-") && it.ends_with(".front"))
+/// The hash a file name spells as its two words, absent when it spells none.
+fn hash_named(spelled: string) -> ContentHash? {
+    let words = spelled.split("_")
+    if words.length != 2 { return null }
+    let high? = parse_int(words[0]) else { return null }
+    let low? = parse_int(words[1]) else { return null }
+    ContentHash { high_word: high, low_word: low }
 }
 
-/// Where the binary printed `print` keeps its frontier.
-export fn frontier_path(directory: string, print: string) -> string { "${directory}/frontier-${print}.front" }
+/// A binary's frontier as it stands, and whose it is.
+type PrintedFrontier = { print: string, frontier: Frontier }
 
 fn pack_names_in(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(PACK_SUFFIX)) }
 
@@ -392,41 +483,87 @@ impl AnswerStore for DiskStore {
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.held_answers.put(answer, bytes) }
 
-    /// The frontier file the binary printed `print` wrote, read where it lies.
-    fn frontier_of(print: string) -> Frontier? { frontier_at(frontier_path(self.directory, print)) }
+    /// The frontier the files of the binary printed `print` hold, read where they lie.
+    fn frontier_of(print: string) -> Frontier? { frontier_over([f.file for f in frontiers_of(self.directory, print)]) }
 
-    /// Holds `entries` as the frontier this process leaves, written once the pack holding their
+    /// Holds what this process learned for its binary's frontier, written once the pack holding its
     /// answers is.
-    fn keep_frontier(print: string, entries: List<FrontierEntry>) { self.pending_frontier.set([PendingFrontier { print: print, entries: entries }]) }
+    fn keep_frontier(print: string, learned: FrontierLearned) { self.pending_frontier.set(PendingFrontier { print: print, learned: learned }) }
 }
 
 impl DiskStore {
-    /// What a compaction keeps alive: every question the newest frontiers hold, one per binary that
-    /// last wrote here, so two binaries sharing a store each keep theirs and a third repeats work.
-    /// Every older frontier goes, as the answers only it named do.
+    /// What a compaction keeps alive: every question the frontiers it keeps hold, and what this
+    /// process learned for its own.
     fn frontier_seeds() -> List<ContentHash> {
-        let pending = self.pending_frontier.get()
-        let own = [frontier_path(self.directory, p.print) for p in pending]
-        let read = [Held { path: path, frontier: f! } for name in frontier_names_in(self.directory) for path in ["${self.directory}/${name}"] if !own.contains(path) for f in [frontier_at(path)] if f != null]
-        let newest = sorted_by(read, (a, b) -> a.frontier.generation > b.frontier.generation)
-            .take(KEPT_FRONTIERS - pending.length)
-        for h in read { if !newest.any(it.path == h.path) { let _ = remove(h.path) } }
-        [e.question for p in pending for e in p.entries]
-            .concat([q for h in newest for q in h.frontier.questions()])
+        let own = self.pending_frontier.get()?.print
+        let held = [q for f in self.frontiers_kept(own) for q in f.frontier.questions()]
+        let pending? = self.pending_frontier.get() else { return held }
+        let read = pending.learned.on?.questions() ?? []
+        held.concat(read).concat([h.question for h in pending.learned.entries])
     }
 
-    /// The pending frontier written, once what it names is published. One rename makes it, so a
-    /// reader finds the old one or the new one whole; a frontier that can't be written costs the
-    /// next process a walk, never a wrong answer.
-    fn frontier_published() {
-        let pending? = self.pending_frontier.get().first() else { return }
-        self.pending_frontier.set([])
-        let draft? = match drafted("${self.directory}/frontier") { .Ok(d) -> d, .Err(_) -> null } else { return }
-        for run in frontier_runs(pending.entries, self.generation) {
-            let wrote = draft.write(run) catch -1
-            if wrote < 0 { return }
+    /// The frontiers a compaction keeps, one per binary: `own`'s first, then the newest others',
+    /// so two binaries sharing a store each keep theirs and a third repeats work.
+    fn frontiers_kept(own: string?) -> List<PrintedFrontier> {
+        mut by_print: Map<string, List<FrontierFile>> = {}
+        for f in frontiers_in(self.directory) { by_print.set(f.print, (by_print.get(f.print) ?? []).concat([f.file])) }
+        let standing = [PrintedFrontier { print: print, frontier: f! } for print, files in by_print for f in [frontier_over(files)] if f != null]
+        let newest = sorted_by(
+            standing,
+            (a, b) -> a.frontier.generation() > b.frontier.generation(),
+        )
+        newest.filter(it.print == own).concat(newest.filter(it.print != own)).take(KEPT_FRONTIERS)
+    }
+
+    /// Every frontier file the kept frontiers no longer read, removed: each file of a binary past the
+    /// ones a store keeps, `own`'s first, and each file a kept frontier doesn't read.
+    fn frontiers_tidied(own: string?) {
+        let kept = self.frontiers_kept(own)
+        for f in frontiers_in(self.directory) {
+            if !kept.any(it.print == f.print) { let _ = remove(f.path) }
         }
-        let _ = draft.published(frontier_path(self.directory, pending.print)) catch ""
+        for k in kept { self.frontier_tidied(k.print) }
+    }
+
+    /// The files of the binary printed `print` its frontier no longer reads, removed: an older or
+    /// unreadable base, and a delta that doesn't descend from the newest.
+    fn frontier_tidied(print: string) {
+        let found = frontiers_of(self.directory, print)
+        let kept = files_kept([f.file for f in found])
+        for f in found {
+            if !kept.any(it.same_as(f.file.id)) { let _ = remove(f.path) }
+        }
+    }
+
+    /// What this process learned for its frontier written, once what it names is published, beside
+    /// the frontier as it stands now: a delta, or folded into a base, `whole` always. One rename
+    /// makes each file, so a reader finds it whole or not at all, and a base's older files go. A
+    /// frontier that can't be written costs the next process work, never a wrong answer.
+    fn frontier_published(whole: bool) {
+        let pending? = self.pending_frontier.get() else { return }
+        self.pending_frontier.set(null)
+        let write? = frontier_written(
+            self.frontier_of(pending.print),
+            pending.learned,
+            self.generation,
+            whole,
+        ) else { return }
+        if !self.file_published(pending.print, write) { return }
+        match write.kind { .Base -> self.frontier_tidied(pending.print), .Delta -> { return } }
+    }
+
+    /// `write` published as the binary printed `print`'s file, by a draft and one rename; whether
+    /// it was.
+    fn file_published(print: string, write: FrontierWrite) -> bool {
+        let draft? = match drafted("${self.directory}/frontier") { .Ok(d) -> d, .Err(_) -> null } else { return false }
+        for run in write.runs {
+            let wrote = draft.write(run) catch -1
+            if wrote < 0 {
+                draft.dropped()
+                return false
+            }
+        }
+        (draft.published(frontier_file_path(self.directory, print, write.kind, write.id)) catch "") != ""
     }
 
     fn unpublished_answer(answer: ContentHash) -> SavedBytes? {
@@ -482,15 +619,19 @@ impl DiskStore {
     fn saved() -> Result<int, IoError> {
         if self.has_news() && self.outgrown() { return self.compacted() }
         let written = if self.has_news() { self.published(absorbed_by(self.entries_learned(), self.packs.get()), false)? } else { 0 }
-        self.frontier_published()
+        self.frontier_published(false)
         written
     }
 
-    /// Every pack as one, keeping only what the newest frontiers reach; packs it can't read go.
+    /// Every pack as one, keeping only what the kept frontiers reach; packs it can't read go, and
+    /// so does every frontier file the kept frontiers don't read. What this process learned for its
+    /// own is folded into a base.
     fn compacted() -> Result<int, IoError> {
+        let own = self.pending_frontier.get()?.print
         let written = if self.packs.get().is_empty() && !self.has_news() { 0 } else { self.published(self.packs.get(), true)? }
         for pack in self.foreign { let _ = remove(pack.path) }
-        self.frontier_published()
+        self.frontier_published(true)
+        self.frontiers_tidied(own)
         written
     }
 
@@ -550,22 +691,20 @@ impl DiskStore {
             self.generation,
             if collecting { segment.appended_octets.get() } else { absorbed.fold(0, (most, pack) -> max_of(most, pack.kept_octets)) },
         )
-        mut named = hasher()
-        for run in runs {
-            let _ = segment.appended(run)
-            named = named.update(run)
-        }
+        for run in runs { let _ = segment.appended(run) }
         let _ = segment.appended(PACK_SEAL.bytes())
         segment.written()
-        let spoiled? = segment.spoiled_by.get().first() else { return self.sealed(segment, absorbed, named) }
+        let spoiled? = segment.spoiled_by.get().first() else { return self.sealed(segment, absorbed, runs_hash(runs)) }
         fail spoiled
     }
 
     /// The draft, written whole, published as the pack its index names; the store then reads it in
     /// place of `absorbed`, and has nothing new. Answers how many octets it wrote.
-    fn sealed(segment: Segment, absorbed: List<MappedPack>, named: Hasher) -> Result<int, IoError> {
-        let digest = named.digest()
-        let path = "${self.directory}/${word_in(digest, 0)}_${word_in(digest, 8)}${PACK_SUFFIX}"
+    fn sealed(segment: Segment, absorbed: List<MappedPack>, named: ContentHash) -> Result<
+        int,
+        IoError,
+    > {
+        let path = "${self.directory}/${named.high_word}_${named.low_word}${PACK_SUFFIX}"
         segment.draft.published(path)?
         for pack in absorbed {
             if pack.path != path { let _ = remove(pack.path) }
@@ -696,11 +835,14 @@ fn absorbed_by(entries: int, packs: List<MappedPack>) -> List<MappedPack> {
     absorbed
 }
 
-/// A pack's index, as the runs of octets it's written in.
+/// A pack's index, as the runs of octets it's written in, after what it keeps and before its seal.
 /// Both tables come sorted by hash.
-fn index_runs(questions: List<KeptSpan>, answers: List<KeptSpan>, generation: int, kept_octets: int) -> List<
-    Bytes,
-> {
+export fn index_runs(
+    questions: List<KeptSpan>,
+    answers: List<KeptSpan>,
+    generation: int,
+    kept_octets: int,
+) -> List<Bytes> {
     let index = PackIndex {
         answer_high_words: [span.key.high_word for span in answers],
         answers: answers,
