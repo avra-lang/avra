@@ -1,0 +1,26 @@
+//! The lowering rules of `mut` and assignment: a `mut` lives in a cell wearing its binding's type,
+//! seeded with its value; a write to its name stores into the cell.
+use core.{Bound, Lowering, StmtId, StmtLowers}
+use core.stmt.{Assign, MutLet}
+
+impl StmtLowers for MutLet {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        if cx.store.is_state_stmt(s) { return cx.stmt_unlowered(s) }
+        let v = cx.lower(self.value)
+        let ty? = cx.binding_type(self.ty, self.value) else { return cx.missed("an untyped `mut`") }
+        cx.bind(self.name.of, Bound.Slot(cx.seeded_cell(cx.laid_out(ty), v), ty))
+    }
+}
+
+impl StmtLowers for Assign {
+    /// The value first, then the store; a write along a path isn't lowered yet.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let v = cx.lower(self.value)
+        let name? = cx.store.ident_name(self.target) else { return cx.missed("a write along a path") }
+        let b? = cx.bound(name) else { return cx.missed("a write to a name the body doesn't bind") }
+        match b {
+            .Slot(cell, _) -> cx.stored(cell, v),
+            .Value(_, _) -> cx.missed("a write to a `let`"),
+        }
+    }
+}

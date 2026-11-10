@@ -1,0 +1,37 @@
+//! The lowering rules of a call and `return`: a call of a declared fn hands it each argument, its
+//! answer minted last; `return` leaves the fn with its value.
+use core.{CalledFn, ExprId, Lowering, Lowers, Reg, StmtId, StmtLowers, SyntaxArena}
+use core.expr.{Call}
+use core.stmt.{Return}
+
+impl Lowers for Call {
+    /// A call of a fn the program declares, by position into seats that promise nothing: its
+    /// arguments in order, then the call. Any other call isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let callee? = called(cx, self) else { return cx.unlowered(e) }
+        let args = [cx.lower(a) for a in self.args]
+        let answer = cx.layout_at(e)
+        if callee.external { cx.call_c(answer, callee.symbol, args) } else { cx.call_fn(answer, callee, args) }
+    }
+}
+
+/// The fn a call names, when the program declares it and the call hands it plain arguments.
+fn called(cx: Lowering, call: Call) -> CalledFn? {
+    if !call.pins.is_empty() || cx.bound(call.callee.of) != null { return null }
+    let named? = cx.named(call.callee.of) else { return null }
+    let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
+    if !callee.plain || call.args.any((a) -> by_name(cx.store, a)) { null } else { callee }
+}
+
+/// Whether an argument names its seat.
+fn by_name(store: SyntaxArena, a: ExprId) -> bool {
+    match store.expr(a) { .Named(_, _) -> true, rest -> false }
+}
+
+impl StmtLowers for Return {
+    /// `return` leaves the fn with its value, or with nothing.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let value? = self.value else { return cx.answer_exit(null) }
+        cx.answer_exit(cx.lower(value))
+    }
+}

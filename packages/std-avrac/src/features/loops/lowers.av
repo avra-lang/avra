@@ -1,0 +1,21 @@
+//! The lowering rules of a loop and of leaving one: `while` tests its condition each turn and runs
+//! its body in a scope of its own; `break` ends the innermost loop, `continue` starts its next turn.
+use core.{Lowering, StmtId, StmtLowers}
+use core.stmt.{Jump, While}
+
+impl StmtLowers for While {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        cx.loop_start()
+        cx.loop_cond(cx.lower(self.cond))
+        for b in self.stmts { cx.lower_stmt(b) }
+        cx.loop_end()
+    }
+}
+
+impl StmtLowers for Jump {
+    /// A jump naming its loop isn't lowered yet.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        if self.label != null { return cx.missed("a jump naming its loop") }
+        cx.jumped(self.again)
+    }
+}

@@ -11,6 +11,7 @@ use core.{
     RecordShape,
     TypeRef,
     ExprId,
+    StmtId,
     SignedSeat,
     SignedType,
     Span,
@@ -36,16 +37,21 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
     TypedBody { types: body_checked(engine, file, signed, false).types.get() }
 }
 
-/// A fn's body beside the signature it is typed under, and the item that holds it.
-type SignedBody = { signature: FnSignature, item: ReadItem, body: ExprId }
+/// A fn's body beside the signature it is typed under, the item that holds it, and the statement
+/// that declares it.
+type SignedBody = { signature: FnSignature, item: ReadItem, body: ExprId, stmt: StmtId }
 
 /// The fn `file` declares as `name`, its body signed; absent when it declares none with a body.
 fn signed_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedBody? {
     let signature? = fn_signature(engine, file, name) else { return null }
     let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
-    let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
-        .first() else { return null }
-    SignedBody { signature: signature, item: item, body: body }
+    let stmt? = item.stmts.find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
+    SignedBody {
+        signature: signature,
+        item: item,
+        body: item.store.fn_parts(stmt)!.body,
+        stmt: stmt,
+    }
 }
 
 /// The body checked under its signature in `file`: each sugar by its own rule, or as the core it

@@ -1,0 +1,503 @@
+//! HOW A BODY BECOMES IR: the core its body means, walked node by node through each feature's rule,
+//! every register typed by its layout. The context holds the instructions and the registers as they
+//! mint, the names in scope, and what the program answers about the names a body reads; it speaks
+//! every control and value shape through its verbs, so a rule never brackets a region by hand. A
+//! node no rule lowers yet is named, never guessed at.
+use @std.program.address.{SourceFileAddress}
+
+/// What a lowering reads of the program: what the checked program answers, and what a top-level
+/// name the body reads or calls is.
+export type LoweredProgram = { checked: CheckedProgram, named: fn(string) -> NamedValue? }
+
+/// What a top-level name a body reads or calls is, as its code reads it.
+export enum NamedValue {
+    Fn(callee: CalledFn)
+    /// A `const` whose value is written as a literal.
+    Literal(value: Literal)
+}
+
+/// A fn a body calls: where it's declared, the symbol its code is known by, whether C defines it,
+/// and whether a call hands it its arguments by position into seats that promise nothing and have no
+/// default.
+export type CalledFn = { file: SourceFileAddress, name: string, symbol: string, external: bool, plain: bool }
+
+/// A value written as a literal.
+export enum Literal {
+    Int(v: int)
+    Float(bits: int)
+    Bool(v: bool)
+    Text(s: string)
+}
+
+impl Literal {
+    /// The type the language gives the literal.
+    fn type() -> SignedType {
+        owned_type(
+            match self {
+                .Int(_) -> "int",
+                .Float(_) -> "float",
+                .Bool(_) -> "bool",
+                .Text(_) -> "string",
+            },
+        )
+    }
+}
+
+/// What a name bound in a body holds: its value in a register, or a cell its value is read from; and
+/// the binding's type.
+export enum Bound {
+    Value(r: Reg, ty: SignedType)
+    Slot(cell: Reg, ty: SignedType)
+}
+
+/// One body being lowered. An identity: every rule writes the one table.
+export type Lowering = {
+    store: SyntaxArena,
+    program: LoweredProgram,
+    /// Each node's type in the core, by its index.
+    types: List<SignedType?>,
+    /// The type each node's seat wants, by its index, where its seat names one.
+    seats: Map<string, SignedType>,
+    /// What the body's fn answers.
+    answer: SignedType,
+    /// The instructions, in order.
+    ins: Cell<List<Ins>>,
+    /// Each register's layout, by its index: a register mints with the instruction that defines it.
+    layouts: Cell<List<Layout>>,
+    /// The names in scope, innermost last.
+    scopes: Cell<List<Map<string, Bound>>>,
+    /// What wasn't lowered, in the order it was met.
+    missing: Cell<List<string>>,
+    /// The fns the body calls, each once.
+    callees: Cell<List<CalledFn>>,
+    /// How many loops stand open around what's being lowered.
+    loops: Cell<int>,
+}
+
+/// A body of `store` to lower, typed in the core as `types` with its seats' wants `seats`, its fn
+/// answering `answer`.
+export fn lowering(
+    store: SyntaxArena,
+    program: LoweredProgram,
+    types: List<SignedType?>,
+    seats: Map<string, SignedType>,
+    answer: SignedType,
+) -> Lowering {
+    let ins: Cell<List<Ins>> = Cell.new([])
+    let layouts: Cell<List<Layout>> = Cell.new([])
+    let scopes: Cell<List<Map<string, Bound>>> = Cell.new([no_names()])
+    let missing: Cell<List<string>> = Cell.new([])
+    let callees: Cell<List<CalledFn>> = Cell.new([])
+    let loops: Cell<int> = Cell.new(0)
+    Lowering {
+        store: store,
+        program: program,
+        types: types,
+        seats: seats,
+        answer: answer,
+        ins: ins,
+        layouts: layouts,
+        scopes: scopes,
+        missing: missing,
+        callees: callees,
+        loops: loops,
+    }
+}
+
+/// A scope with nothing bound in it yet.
+fn no_names() -> Map<string, Bound> {
+    let names: Map<string, Bound> = {}
+    names
+}
+
+impl Lowering {
+    // ── The walk ────────────────────────────────────────────────────
+
+    /// `e`'s value, emitted: what the node means, by its rule.
+    mut fn lower(e: ExprId) -> Reg { self.lowered_as(e, false) }
+
+    /// `e` as a value nothing reads, emitted: what it does.
+    mut fn dropped(e: ExprId) -> Reg { self.lowered_as(e, true) }
+
+    /// `e` emitted by its rule, or by the rule of what it means; a value its seat lifts (into a
+    /// nullable, a `Result`, a `dyn`) isn't lowered yet.
+    mut fn lowered_as(e: ExprId, dropped: bool) -> Reg {
+        let lift = self.lift_at(e)
+        if lift != null { return self.missed_as("a lift into `${lift!.spelled()}`") }
+        let meant = self.store.meant(e)
+        if meant != null { return self.lowered_as(meant!, dropped) }
+        let node = self.store.expr(e)
+        if dropped { node.lowered_dropped(self, e) } else { node.lowered(self, e) }
+    }
+
+    /// The type `e`'s seat lifts its value into, absent where the seat takes it as it is.
+    fn lift_at(e: ExprId) -> SignedType? {
+        let seat? = self.seat_at(e) else { return null }
+        let ty? = self.type_at(e) else { return null }
+        if ty.spelled() == seat.spelled() || ty.bottom() || !ty.reaches(seat) { return null }
+        seat
+    }
+
+    /// `s`, emitted: what it means, by its rule.
+    mut fn lower_stmt(s: StmtId) {
+        let meant? = self.store.stmt_meant(s) else { return self.store.stmt(s).stmt_lowered(self, s) }
+        for m in meant { self.lower_stmt(m) }
+    }
+
+    /// A branch whose value nothing reads: a block's statements in a scope of names of their own, or
+    /// the one expression it is, dropped.
+    mut fn arm_stmts(value: ExprId) {
+        let stmts? = self.store.block_stmts(value) else {
+            let _ = self.dropped(value)
+            return
+        }
+        self.opened()
+        for s in stmts { self.lower_stmt(s) }
+        self.closed()
+    }
+
+    /// `e` isn't lowered yet: its kind noted, and a register nothing reads in its place.
+    mut fn unlowered(e: ExprId) -> Reg { self.missed_as("`${self.store.expr(e).surface().node}`") }
+
+    /// `s` isn't lowered yet: its kind noted.
+    mut fn stmt_unlowered(s: StmtId) { self.missed("`${self.store.stmt(s).surface().node}`") }
+
+    /// What isn't lowered yet, noted.
+    mut fn missed(what: string) { self.missing.push(what) }
+
+    /// What isn't lowered yet, noted, and a register nothing reads in its place.
+    mut fn missed_as(what: string) -> Reg {
+        self.missed(what)
+        self.mint(Layout.Void)
+    }
+
+    // ── Types and layouts ───────────────────────────────────────────
+
+    /// The type `e` has in the core, absent when typing didn't find one.
+    fn type_at(e: ExprId) -> SignedType? { if e.index < self.types.length { self.types[e.index] } else { null } }
+
+    /// The type `e`'s seat wants, absent where its seat names none.
+    fn seat_at(e: ExprId) -> SignedType? { self.seats.get("${e.index}") }
+
+    /// A binding's type: as it's written, else its value's.
+    fn binding_type(written: TypeRef?, value: ExprId) -> SignedType? {
+        if written == null { self.type_at(value) } else { self.written(written!) }
+    }
+
+    /// What a value of `ty` is to the machine; a type whose layout isn't known is noted.
+    mut fn laid_out(ty: SignedType) -> Layout {
+        let laid? = self.program.checked.layout(ty) else {
+            self.missed("the layout of `${ty.spelled()}`")
+            return Layout.Void
+        }
+        laid
+    }
+
+    /// What `e`'s value is to the machine; an untyped node is noted.
+    mut fn layout_at(e: ExprId) -> Layout {
+        let ty? = self.type_at(e) else {
+            self.missed("an untyped `${self.store.expr(e).surface().node}`")
+            return Layout.Void
+        }
+        self.laid_out(ty)
+    }
+
+    /// A type written in the body, resolved.
+    fn written(ty: TypeRef) -> SignedType { (self.program.checked.written)(ty) }
+
+    /// What a top-level name the body reads or calls is.
+    fn named(name: string) -> NamedValue? { (self.program.named)(name) }
+
+    // ── Names ───────────────────────────────────────────────────────
+
+    /// A scope opened inside the current one.
+    mut fn opened() { self.scopes.push(no_names()) }
+
+    /// The innermost scope closed.
+    mut fn closed() {
+        let scopes = self.scopes.get()
+        self.scopes.set(scopes.take(scopes.length - 1))
+    }
+
+    /// `name` bound in the innermost scope.
+    mut fn bind(name: string, b: Bound) {
+        let scopes = self.scopes.get()
+        mut innermost = scopes.last()!
+        innermost.set(name, b)
+        self.scopes.set_at(scopes.length - 1, innermost)
+    }
+
+    /// What `name` is bound to here, absent when the body binds it nowhere in view.
+    fn bound(name: string) -> Bound? { reversed(self.scopes.get()).find(it.has(name))?.get(name) }
+
+    /// The fn's seat `name` of type `ty`: the next register, as the seats mint in order.
+    mut fn seated(name: string, ty: SignedType) { self.bind(name, Bound.Value(self.mint(self.laid_out(ty)), ty)) }
+
+    /// A read of `b` at `e`, wearing the binding's own type: its register, or what its cell holds now.
+    /// A read typed otherwise, a narrowed nullable's, isn't lowered yet.
+    mut fn read(e: ExprId, b: Bound) -> Reg {
+        let ty = match b { .Value(_, t) or .Slot(_, t) -> t }
+        if self.type_at(e)?.spelled() != ty.spelled() { return self.missed_as("a narrowed read") }
+        match b { .Value(r, _) -> r, .Slot(cell, _) -> self.loaded(self.laid_out(ty), cell) }
+    }
+
+    // ── Registers ───────────────────────────────────────────────────
+    // A register is minted with the instruction that defines it, after every register that
+    // instruction reads: operands first, the answer last.
+
+    /// A fresh register of layout `l`.
+    mut fn mint(l: Layout) -> Reg {
+        let r = Reg { index: self.layouts.get().length }
+        self.layouts.push(l)
+        r
+    }
+
+    /// `i`, emitted.
+    mut fn emit(i: Ins) { self.ins.push(i) }
+
+    // ── Constants ───────────────────────────────────────────────────
+
+    mut fn const_int(n: int) -> Reg { self.word_at(Layout.Word, n) }
+
+    mut fn const_bool(b: bool) -> Reg {
+        let r = self.mint(Layout.Truth)
+        self.emit(Ins.ConstBool(r, b))
+        r
+    }
+
+    mut fn const_str(s: string) -> Reg {
+        let r = self.mint(Layout.Boxed(BoxKind.Text))
+        self.emit(Ins.ConstStr(r, s))
+        r
+    }
+
+    /// A float constant, given as its IEEE-754 bits.
+    mut fn const_float(bits: int) -> Reg {
+        let r = self.mint(Layout.Real)
+        self.emit(Ins.ConstFloat(r, bits))
+        r
+    }
+
+    /// The word `n` in a register of layout `l`: a void's nothing, a pointer's null.
+    mut fn word_at(l: Layout, n: int) -> Reg {
+        let r = self.mint(l)
+        self.emit(Ins.ConstInt(r, n))
+        r
+    }
+
+    /// A literal's constant.
+    mut fn constant(v: Literal) -> Reg {
+        match v {
+            .Int(n) -> self.const_int(n),
+            .Float(bits) -> self.const_float(bits),
+            .Bool(b) -> self.const_bool(b),
+            .Text(s) -> self.const_str(s),
+        }
+    }
+
+    // ── Operations ──────────────────────────────────────────────────
+
+    /// An eager binary operation, its operands one layout, answering a value of layout `l`.
+    mut fn bin(l: Layout, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// `!src`.
+    mut fn not(src: Reg) -> Reg {
+        let dst = self.mint(Layout.Truth)
+        self.emit(Ins.Un(dst, UnOp.Not, src))
+        dst
+    }
+
+    /// The registers `elems` as one value of layout `l`.
+    mut fn pack(l: Layout, elems: List<Reg>) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Pack(dst, elems))
+        dst
+    }
+
+    // ── Calls ───────────────────────────────────────────────────────
+
+    /// A call of a declared fn by its symbol, answering a value of layout `l`.
+    mut fn call_fn(l: Layout, callee: CalledFn, args: List<Reg>) -> Reg {
+        if !self.callees.get().any(it.symbol == callee.symbol) { self.callees.push(callee) }
+        let dst = self.mint(l)
+        self.emit(Ins.Call(dst, callee.symbol, args))
+        dst
+    }
+
+    /// A call of a fn C defines, answering a value of layout `l`; one answering nothing answers a
+    /// void's register.
+    mut fn call_c(l: Layout, symbol: string, args: List<Reg>) -> Reg {
+        if rt_waits(symbol) { return self.missed_as("a call of `${symbol}`, which waits") }
+        match l {
+            .Void -> {
+                self.emit(Ins.CallRtVoid(symbol, args))
+                self.word_at(Layout.Void, 0)
+            },
+            .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> {
+                let dst = self.mint(l)
+                self.emit(Ins.CallRt(dst, symbol, args))
+                dst
+            },
+        }
+    }
+
+    /// A call of the runtime's row `row`, answering a value of layout `l`.
+    mut fn call_row(l: Layout, row: RtSig, args: List<Reg>) -> Reg { self.call_c(l, row.name, args) }
+
+    // ── Regions ─────────────────────────────────────────────────────
+    // A region is ONE expression whose arms are blocks handed the context, so no rule opens a bracket
+    // it doesn't close. The answer mints last, after every arm's.
+
+    /// A two-armed region answering a value of layout `l`: `taken` when `cond` holds, else `other`.
+    mut fn region(
+        cond: Reg,
+        l: Layout,
+        taken: fn(mut Lowering) -> Reg,
+        other: fn(mut Lowering) -> Reg,
+    ) -> Reg {
+        // LICENSED compiler.if_start_raw: this IS the verb
+        self.emit(Ins.IfStart(cond))
+        // LICENSED compiler.arm_end_raw: this IS the verb
+        self.emit(Ins.ArmEnd(taken(self)))
+        let last = other(self)
+        let dst = self.mint(l)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+        dst
+    }
+
+    /// A two-armed region whose value nothing reads: each arm closes on a word nobody reads.
+    mut fn void_branches(
+        cond: Reg,
+        taken: fn(mut Lowering) -> void,
+        other: fn(mut Lowering) -> void,
+    ) {
+        // LICENSED compiler.if_start_raw: this IS the verb
+        self.emit(Ins.IfStart(cond))
+        taken(self)
+        // LICENSED compiler.arm_end_raw: this IS the verb
+        self.emit(Ins.ArmEnd(self.const_int(0)))
+        other(self)
+        let last = self.const_int(0)
+        let dst = self.mint(Layout.Word)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+    }
+
+    // ── Scopes ──────────────────────────────────────────────────────
+
+    /// A scope opens: what it makes is released where it ends.
+    mut fn scope_enter() {
+        // LICENSED compiler.scope_enter_raw: this IS the verb
+        self.emit(Ins.ScopeEnter(Level.Application))
+    }
+
+    /// A scope ends, `gives` escaping it.
+    mut fn scope_exit(gives: Reg?) {
+        // LICENSED compiler.scope_exit_raw: this IS the verb
+        self.emit(Ins.ScopeExit(gives))
+    }
+
+    // ── Loops ───────────────────────────────────────────────────────
+    // `loop_start`, the condition's instructions, `loop_cond`, which opens the turn's scope, the body,
+    // then `loop_end`.
+
+    mut fn loop_start() {
+        self.loops.set(self.loops.get() + 1)
+        // LICENSED compiler.loop_start_raw: this IS the verb
+        self.emit(Ins.LoopStart)
+    }
+
+    /// The condition each turn tests, then the turn's scope.
+    mut fn loop_cond(more: Reg) {
+        // LICENSED compiler.loop_cond_raw: this IS the verb
+        self.emit(Ins.LoopCond(more))
+        self.scope_enter()
+        self.opened()
+    }
+
+    mut fn loop_end() {
+        self.closed()
+        self.scope_exit(null)
+        // LICENSED compiler.loop_end_raw: this IS the verb
+        self.emit(Ins.LoopEnd)
+        self.loops.set(self.loops.get() - 1)
+    }
+
+    /// The innermost loop's turn ends here: its next begins when `again`, else the loop ends.
+    mut fn jumped(again: bool) {
+        if self.loops.get() == 0 { return self.missed("a jump outside a loop") }
+        self.emit(Ins.LoopJump(0, again))
+    }
+
+    // ── Cells ───────────────────────────────────────────────────────
+
+    /// A cell of layout `l`, holding `seed`: the seed minted before the cell.
+    mut fn seeded_cell(l: Layout, seed: Reg) -> Reg {
+        let cell = self.mint(l)
+        self.emit(Ins.Alloca(cell))
+        self.emit(Ins.Store(cell, seed))
+        cell
+    }
+
+    /// What `cell` holds now, a value of layout `l`.
+    mut fn loaded(l: Layout, cell: Reg) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Load(dst, cell))
+        dst
+    }
+
+    /// `v` written into `cell`.
+    mut fn stored(cell: Reg, v: Reg) { self.emit(Ins.Store(cell, v)) }
+
+    // ── Exits ───────────────────────────────────────────────────────
+
+    /// The fn leaves here, answering `answer`, or nothing.
+    mut fn answer_exit(answer: Reg?) {
+        let gives = answer ?? self.hollow_of(owned_type("void"))
+        self.emit(Ins.FnExit(gives))
+    }
+
+    // ── Hollows ─────────────────────────────────────────────────────
+    // A value of a type that's never read but must be total: what an arm that left yields, and what
+    // a block ending in a statement answers.
+
+    /// A value of `ty` nobody reads: a nullable's absence, else its type's zero.
+    mut fn hollow_of(ty: SignedType) -> Reg {
+        let l = self.laid_out(ty)
+        if ty.nullable() { self.absent_of(ty, l) } else { self.zero_of(l) }
+    }
+
+    /// The zero of layout `l`: each field's zero, a value enum's spare tag beside a zero word.
+    mut fn zero_of(l: Layout) -> Reg {
+        match l {
+            .Tagged(_) -> self.pack(l, [self.const_int(ABSENT_TAG), self.const_int(0)]),
+            .Fields(fields) -> self.pack(l, [self.zero_of(f) for f in fields]),
+            .Truth -> self.const_bool(false),
+            .Real -> self.const_float(0),
+            .Maybe(value) -> self.pack(l, [self.const_bool(false), self.zero_of(value)]),
+            .Void or .Word or .Boxed(_) or .Bare -> self.word_at(l, 0),
+        }
+    }
+
+    /// The absence of `ty`, a nullable of layout `l`: a null pointer, a spare tag, or a pair whose
+    /// flag is false.
+    mut fn absent_of(ty: SignedType, l: Layout) -> Reg {
+        match l {
+            .Maybe(_) -> {
+                let payload = self.hollow_of(ty.unwrapped())
+                self.pack(l, [self.const_bool(false), payload])
+            },
+            .Tagged(_) -> self.pack(l, [self.const_int(ABSENT_TAG), self.const_int(0)]),
+            .Word -> self.pack(l, [self.const_int(ABSENT_TAG)]),
+            .Void or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) -> self.word_at(l, 0),
+        }
+    }
+}
+
+/// An enum's spare tag: the one no variant has, which its nullable spends on absence.
+const ABSENT_TAG: int = -1

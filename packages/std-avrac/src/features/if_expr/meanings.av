@@ -1,7 +1,8 @@
-//! What a two-branch `if` means, in the core.
-use features.{meaning}
+//! What an `if` means, in the core.
+use core.{At}
+use features.{TypedCode, meaning, typed_coded}
 
-/// `if c { a } else { b }` is a match on the condition.
+/// `if c { a } else { b }` is a match on the condition; without an else, the other arm does nothing.
 export meaning if_else {
     quote { if ${c} { ${..taken} } else { ${..other} } } -> quote {
         match ${c} {
@@ -13,4 +14,25 @@ export meaning if_else {
             }
         }
     },
+    quote { if ${c} { ${..taken} } } if elseless(it) -> quote {
+        match ${c} {
+            true -> {
+                ${taken}
+            }
+            _ -> {
+                ${nothing_in(it)}
+            }
+        }
+    },
 }
+
+/// Whether the `if` has no else.
+fn elseless(subject: TypedCode) -> bool {
+    match subject.at {
+        .Expr(e) -> match subject.of.view.store.expr(e) { .If(_, _, other) -> other == null, rest -> false },
+        .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+    }
+}
+
+/// No statements, in the item `subject` stands in.
+fn nothing_in(subject: TypedCode) -> List<TypedCode> { typed_coded(subject.of, []) }

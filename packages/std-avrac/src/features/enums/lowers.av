@@ -1,0 +1,53 @@
+//! The lowering rule of a `match` on a `bool`, what an `if` means: one region, its first arm taken
+//! where the subject holds. A match on anything else isn't lowered yet.
+use core.{Arm, ExprId, Lowering, Lowers, Reg, SignedType, SyntaxArena, owned_type}
+use core.expr.{Match}
+
+impl Lowers for Match {
+    /// A region answering each arm's value, or where an arm leaves, nothing of the region's type.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let arms? = truth_arms(cx, self) else { return cx.unlowered(e) }
+        let ty = region_type(cx, e)
+        cx
+            .region(cx.lower(self.subject), cx.laid_out(ty)) { cx -> yielded(cx, arms.taken, ty) } else { cx -> yielded(cx, arms.other, ty) }
+    }
+
+    /// A region whose arms are statements and whose value is nothing.
+    fn lowered_dropped(mut cx: Lowering, e: ExprId) -> Reg {
+        let arms? = truth_arms(cx, self) else { return cx.unlowered(e) }
+        cx
+            .void_branches(cx.lower(self.subject)) { cx -> cx.arm_stmts(arms.taken) } else { cx -> cx.arm_stmts(arms.other) }
+        cx.hollow_of(owned_type("void"))
+    }
+}
+
+/// A match on a `bool`'s two arms: the one a true subject takes, and the other.
+type TruthArms = { taken: ExprId, other: ExprId }
+
+/// The arms of a match on a `bool` whose first arm takes `true` and whose second takes the rest
+/// without naming it; absent for any other match.
+fn truth_arms(cx: Lowering, m: Match) -> TruthArms? {
+    if cx.type_at(m.subject)?.spelled() != owned_type("bool").spelled() || m.arms.length != 2 { return null }
+    let truths = arm_truths(cx.store, m.arms)
+    if truths[0] != true || truths[1] != false || binds_subject(cx.store, m.arms[1]) { return null }
+    TruthArms { taken: m.arms[0].value, other: m.arms[1].value }
+}
+
+/// Whether an arm's one pattern names the subject.
+fn binds_subject(store: SyntaxArena, a: Arm) -> bool {
+    match store.pat(a.pats[0]) { .Bind(_) -> true, rest -> false }
+}
+
+/// The type a region answers: the match's own, or where every arm leaves, its seat's, else the fn's.
+fn region_type(cx: Lowering, e: ExprId) -> SignedType {
+    let own = cx.type_at(e)
+    if own != null && !own!.bottom() { return own! }
+    let seat = cx.seat_at(e)
+    if seat != null && !seat!.bottom() { seat! } else { cx.answer }
+}
+
+/// An arm's value: what it makes, or where it leaves, nothing of the region's type.
+fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
+    let made = cx.lower(value)
+    if cx.store.leaves(value) { cx.hollow_of(ty) } else { made }
+}

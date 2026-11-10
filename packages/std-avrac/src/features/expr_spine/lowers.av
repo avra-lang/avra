@@ -1,0 +1,118 @@
+//! The lowering rules of the literals, names and operators this feature reads: a literal is its
+//! constant, a name what it's bound to, and an operator over the language's own numbers, truths and
+//! text one instruction or one runtime row; `&&` and `||` take their right side inside a region.
+use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, SignedType, rt_sig_of}
+use core.expr.{Binary, FloatLit, Ident, IntLit, Not}
+
+impl Lowers for IntLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_int(self.value) }
+}
+
+impl Lowers for FloatLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_float(self.bits) }
+}
+
+impl Lowers for Ident {
+    /// A name is what it's bound to here: a parameter's or a `let`'s register, what a `mut`'s cell
+    /// holds now, or the literal a `const` is written as.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let b = cx.bound(self.name.of)
+        if b != null { return cx.read(e, b!) }
+        let named? = cx.named(self.name.of) else { return cx.unlowered(e) }
+        let value? = match named { .Literal(v) -> v, rest -> null } else { return cx.unlowered(e) }
+        if cx.type_at(e)?.spelled() != value.type().spelled() { return cx.unlowered(e) }
+        cx.constant(value)
+    }
+}
+
+impl Lowers for Not {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.not(cx.lower(self.value)) }
+}
+
+impl Lowers for Binary {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        match self.op {
+            .And -> both(cx, self.left, self.right),
+            .Or -> either(cx, self.left, self.right),
+            .Eq -> compared(cx, e, false, self.left, self.right),
+            .Ne -> compared(cx, e, true, self.left, self.right),
+            .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or .Ge or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> operated(cx, e, self.op, self.left, self.right),
+        }
+    }
+}
+
+/// `l && r`: `r` where `l` holds, else false.
+fn both(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
+    cx.region(cx.lower(l), Layout.Truth) { cx -> cx.lower(r) } else { cx -> cx.const_bool(false) }
+}
+
+/// `l || r`: true where `l` holds, else `r`.
+fn either(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
+    cx.region(cx.lower(l), Layout.Truth) { cx -> cx.const_bool(true) } else { cx -> cx.lower(r) }
+}
+
+/// What an operator's operands are, by their layout.
+enum Operand {
+    Number
+    Truth
+    Text
+    Octets
+}
+
+/// The operands' kind, absent for a layout no operator here reads.
+fn operand_of(l: Layout) -> Operand? {
+    match l {
+        .Word or .Real -> Operand.Number,
+        .Truth -> Operand.Truth,
+        .Boxed(box) -> match box {
+            .Text -> Operand.Text,
+            .Bytes -> Operand.Octets,
+            .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}
+
+/// The kind of the one type both operands are, when it's one the language owns, applied to nothing
+/// and present.
+fn operands(mut cx: Lowering, l: ExprId, r: ExprId) -> Operand? {
+    let left? = cx.type_at(l) else { return null }
+    if cx.type_at(r)?.spelled() != left.spelled() ||
+        left.nullable() ||
+        left.dynamic ||
+        !left.args.is_empty() { return null }
+    let plain? = owned_only(left) else { return null }
+    operand_of(cx.laid_out(plain))
+}
+
+/// `t` when the language owns it.
+fn owned_only(t: SignedType) -> SignedType? { match t.head { .Owned(_) -> t, rest -> null } }
+
+/// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number or a
+/// truth by one instruction.
+fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) -> Reg {
+    let kind? = operands(cx, l, r) else { return cx.unlowered(e) }
+    let a = cx.lower(l)
+    let b = cx.lower(r)
+    let row = match kind {
+        .Text -> "avra_streq",
+        .Octets -> "avra_bytes_eq",
+        .Number or .Truth -> { return cx.bin(Layout.Truth, if negated { BinOp.Ne } else { BinOp.Eq }, a, b) },
+    }
+    let same = cx.call_row(Layout.Truth, rt_sig_of(row)!, [a, b])
+    if negated { cx.not(same) } else { same }
+}
+
+/// An arithmetic, comparison or bitwise operation over numbers, one instruction; `+` over text, the
+/// runtime's join.
+fn operated(mut cx: Lowering, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    let kind? = operands(cx, l, r) else { return cx.unlowered(e) }
+    let a = cx.lower(l)
+    let b = cx.lower(r)
+    let answer = cx.layout_at(e)
+    match kind {
+        .Number -> cx.bin(answer, op, a, b),
+        .Text -> if op == BinOp.Add { cx.call_row(answer, rt_sig_of("avra_str_concat")!, [a, b]) } else { cx.unlowered(e) },
+        .Truth or .Octets -> cx.unlowered(e),
+    }
+}

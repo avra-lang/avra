@@ -7,7 +7,29 @@ use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{DeclId, ExprId, SignedType, TypeId, flatten}
+use @std.avrac.core.{
+    BoxKind,
+    CalledFn,
+    DeclId,
+    ExprId,
+    Ins,
+    Layout,
+    Reg,
+    RtFlag,
+    SignedType,
+    TypeId,
+    alpha_renamed,
+    canon_not_if,
+    dst_of,
+    flatten,
+    region_end,
+    resymbolled,
+    same_ins,
+    same_reg,
+}
+use @std.avrac.compiler.lower.{Body}
+use @std.avrac.features.{Namespace}
+use @std.avrac.compiler.backend.{body_lines}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -26,6 +48,9 @@ use @std.avrac.compiler.{
     file_declares,
     ItemKind,
     elaborated_fn,
+    lowered_fn,
+    lowered_unit_of,
+    LoweredFn,
     resolved_in,
     respelled_origins,
     refusal_difference,
@@ -64,6 +89,7 @@ impl Runnable for TapesCmd {
         let engine = query_engine(store, avra_fact_definitions())
         if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
         let ws = root_workspace(root)
+        if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
         let files = package_sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
         for d in differing { println("differs: ${d}") }
@@ -191,11 +217,7 @@ fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> 
     }
     mut pairs: List<TypedPair> = []
     for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
-        let d? = names.fn_decl(own.name) else { continue }
-        let x = ws.decls.decl(d)
-        if !x.maker.is_empty() ||
-            x.home == null ||
-            disk.spelled(ws.decls.file(x.file).path) != spelled_file(file) { continue }
+        let d? = written_decl(ws, disk, names, file, own.name) else { continue }
         let mine? = typed_fn(engine, file, own.name) else { continue }
         let facts = ws.typed(d)
         let spans = fn_body_spans(engine, file, own.name)
@@ -221,6 +243,17 @@ fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> 
         }
     }
     pairs
+}
+
+/// The workspace's declaration of the fn `name` that `file` writes, absent for one generated, or
+/// written somewhere else.
+fn written_decl(ws: Workspace, disk: Disk, names: Namespace, file: SourceFileAddress, name: string) -> DeclId? {
+    let d? = names.fn_decl(name) else { return null }
+    let x = ws.decls.decl(d)
+    if !x.maker.is_empty() ||
+        x.home == null ||
+        disk.spelled(ws.decls.file(x.file).path) != spelled_file(file) { return null }
+    d
 }
 
 /// The first node `path`'s fns type differently from the workspace, absent when none does.
@@ -255,11 +288,7 @@ fn signature_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: st
     let file = disk.file_at(path)
     let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
     for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
-        let d? = names.fn_decl(own.name) else { continue }
-        let x = ws.decls.decl(d)
-        if !x.maker.is_empty() ||
-            x.home == null ||
-            disk.spelled(ws.decls.file(x.file).path) != spelled_file(file) { continue }
+        let d? = written_decl(ws, disk, names, file, own.name) else { continue }
         let signed? = ws.decls.sig(d) else { continue }
         let theirs? = match signed { .Fn(sig) -> sig, rest -> null } else { continue }
         let mine? = fn_signature(engine, file, own.name) else { return "${path}: `${own.name}` is signed by the workspace and by nothing here" }
@@ -328,7 +357,7 @@ export flag signatures {
 }
 
 export flag left {
-    description: "with --signatures or --core, show where the nodes that don't agree stand"
+    description: "with --signatures, --core or --lowered, show where what doesn't agree stands"
     aliases: ["--left"]
 }
 
@@ -337,9 +366,14 @@ export flag core {
     aliases: ["--core"]
 }
 
+export flag lowered {
+    description: "lower every fn the program layer can lower whole, and hold its IR to the workspace's"
+    aliases: ["--lowered"]
+}
+
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures, left, core]
+    flags: [program_only, signatures, left, core, lowered]
     args: [file]
     run: TapesCmd {}
 }
@@ -422,4 +456,210 @@ fn snippet(disk: Disk, path: string, lo: int) -> string {
     let rest = text.substring(lo, if lo + 60 < text.length { lo + 60 } else { text.length })
     let line_end = rest.index_of("\n")
     if line_end < 0 { rest } else { rest.substring(0, line_end) }
+}
+
+/// Every fn of the package the program layer lowers whole, its IR held to the workspace's lowering
+/// of the same fn: seat for seat, instruction for instruction with registers numbered as they're
+/// defined, and each register's layout to the one the workspace's type for it has. The workspace
+/// tests the unwinding flag after a call that may reach a cancel point, which the program layer
+/// can't tell yet, and the tick at a loop's back edge where the program links a scheduler, which it
+/// can't tell yet either; those tests are cut and counted. Says what isn't lowered yet, by the first thing
+/// each fn met. Answers 1 when any differs.
+fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
+    mut fns = 0
+    mut whole = 0
+    mut alike = 0
+    mut tested = 0
+    mut ticked = 0
+    mut differing: List<string> = []
+    mut missing: Map<string, int> = {}
+    let paths = package_sources(engine, disk.name, "src")
+    let ids = [ws.file_id(joined_path(disk.root, p)) for p in paths]
+    for id in ids { let _ = ws.parsed(id) }
+    let scopes = [ws.visible(id) for id in ids]
+    workspace_settled(ws)
+    for at, path in paths {
+        let file = disk.file_at(path)
+        let names = scopes[at]
+        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+            let d? = written_decl(ws, disk, names, file, own.name) else { continue }
+            let mine? = lowered_fn(engine, file, own.name) else { continue }
+            fns = fns + 1
+            if !mine.whole() {
+                let first = mine.missing[0]
+                missing.set(first, (missing.get(first) ?? 0) + 1)
+                if shown && missing.get(first)! <= 3 { println("left: ${first} in ${path} ${own.name}") }
+                continue
+            }
+            whole = whole + 1
+            let theirs? = lowered_unit_of(ws, ws.decls.plain_want(d)).bodies.first() else {
+                differing.push("${path} ${own.name}: the workspace lowers no body for it")
+                continue
+            }
+            let cut = flag_tests_cut(theirs.ins)
+            let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins })
+            if how != null {
+                differing.push("${path} ${own.name}: ${how!}")
+                continue
+            }
+            alike = alike + 1
+            if cut.calls > 0 { tested = tested + 1 }
+            if cut.edges > 0 { ticked = ticked + 1 }
+        }
+    }
+    if shown { for d in differing { println("differs: ${d}") } }
+    let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
+    println(
+        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge), ${differing.length} differing; not lowered yet: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}",
+    )
+    if differing.is_empty() { 0 } else { 1 }
+}
+
+/// The workspace with every file it reaches named and its references gathered, before any of its
+/// lowering runs: lowering a fn asks the references, whose gathering reads each file's names, and
+/// naming a file the workspace hasn't met yet mints it under the question that reads them.
+fn workspace_settled(ws: Workspace) {
+    mut named = 0
+    while ws.decls.all_files().length > named {
+        let files = ws.decls.all_files()
+        for x in files.drop(named) { if ws.reads_as_source(x.path) { let _ = ws.visible(x.id) } }
+        named = files.length
+    }
+    let _ = ws.references()
+}
+
+/// The workspace's instructions with each test of the running task's flags cut out, and how many
+/// were: the unwinding test after a call that may reach a cancel point, and the tick test at a loop's
+/// back edge.
+type CutTests = { ins: List<Ins>, calls: int, edges: int }
+
+/// `ins` without its flag tests: each a read of a flag and the region it decides.
+fn flag_tests_cut(ins: List<Ins>) -> CutTests {
+    mut kept: List<Ins> = []
+    mut calls = 0
+    mut edges = 0
+    mut at = 0
+    while at < ins.length {
+        let tested? = flag_tested(ins, at) else {
+            kept.push(ins[at])
+            at = at + 1
+            continue
+        }
+        at = region_end(ins, at + 1) + 1
+        match tested {
+            .Unwinding -> {
+                calls = calls + 1
+            },
+            .Tick -> {
+                edges = edges + 1
+            },
+        }
+    }
+    CutTests { ins: kept, calls: calls, edges: edges }
+}
+
+/// The flag the instruction at `at` reads for the region that follows it, absent where it reads none.
+fn flag_tested(ins: List<Ins>, at: int) -> RtFlag? {
+    if at + 1 >= ins.length { return null }
+    match ins[at] {
+        .FlagRead(r, f) -> match ins[at + 1] { .IfStart(c) -> if same_reg(c, r) { f } else { null }, rest -> null },
+        rest -> null,
+    }
+}
+
+/// A body's instructions with registers numbered as they're defined, and each defined register's own
+/// number, in the order defined.
+type Numbered = { ins: List<Ins>, defined: List<Reg> }
+
+fn numbered(raw: List<Ins>, seats: int) -> Numbered {
+    Numbered {
+        ins: alpha_renamed(raw, seats),
+        defined: [d! for i in canon_not_if(raw) for d in [dst_of(i)] if d != null],
+    }
+}
+
+/// How a fn lowered here differs from the workspace's lowering of it, absent when every seat,
+/// instruction and register reads alike.
+fn lowered_difference(ws: Workspace, disk: Disk, mine: LoweredFn, theirs: Body) -> string? {
+    let seats = [old_layout(ws, t) for t in theirs.params]
+    if [l.spelled() for l in mine.params].join(", ") != [l.spelled() for l in seats].join(", ") {
+        return "seats ${[l.spelled() for l in mine.params].join(", ")}, the workspace's ${[l.spelled() for l in seats].join(", ")}"
+    }
+    let answer = old_layout(ws, theirs.ret)
+    if mine.answer.spelled() != answer.spelled() { return "answers ${mine.answer.spelled()}, the workspace's ${answer.spelled()}" }
+    let renames = callee_symbols(ws, disk, mine.callees)
+    let ours = numbered(
+        [resymbolled(i, (s) -> renames.get(s) ?? s) for i in mine.ins],
+        mine.params.length,
+    )
+    let workspace = numbered(theirs.ins, theirs.params.length)
+    for at, i in ours.ins {
+        if at >= workspace.ins.length { return "instruction ${at} is `${ins_text(i)}`, where the workspace's has ended" }
+        if !same_ins(i, workspace.ins[at]) { return "instruction ${at} is `${ins_text(i)}`, the workspace's `${ins_text(workspace.ins[at])}`" }
+    }
+    if workspace.ins.length > ours.ins.length { return "ends at instruction ${ours.ins.length}, where the workspace's has `${ins_text(workspace.ins[ours.ins.length])}`" }
+    for at, r in ours.defined {
+        let old = old_layout(ws, theirs.reg_types[workspace.defined[at].index])
+        let new = mine.layouts[r.index]
+        if new.spelled() != old.spelled() { return "the register instruction ${at} defines is ${new.spelled()}, the workspace's ${old.spelled()}" }
+    }
+    null
+}
+
+/// One instruction as the IR's text writes it.
+fn ins_text(i: Ins) -> string { body_lines([i]).join(" ") }
+
+/// Each callee's symbol, mapped to the one the workspace's lowering calls it by.
+fn callee_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>) -> Map<string, string> {
+    mut renames: Map<string, string> = {}
+    for c in callees {
+        let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
+        let d = ws.visible(id).fn_decl(c.name)
+        if d != null { renames.set(c.symbol, ws.decls.symbol(d!)) }
+    }
+    renames
+}
+
+/// What a register of the workspace's type is to the machine, read off its registry the way the
+/// backend reads it: the receipt's one reading of a type the program layer never sees.
+fn old_layout(ws: Workspace, ty: TypeId) -> Layout {
+    let types = ws.decls.types
+    if types.valued_carrier(ty) { return Layout.Tagged(types.counted_mask(ty)) }
+    if types.travels_wide(ty) { return Layout.Fields([old_layout(ws, f) for f in types.flat_fields(types.machine_type(ty))]) }
+    match types.shape_of(types.machine_type(ty)) {
+        .Int or .Error or .TypeName(_, _) or .Var(_, _, _) -> Layout.Word,
+        .Void -> Layout.Void,
+        .Float -> Layout.Real,
+        .Bool -> Layout.Truth,
+        .Ptr or .Null -> Layout.Bare,
+        .Str -> Layout.Boxed(BoxKind.Text),
+        .Bytes -> Layout.Boxed(BoxKind.Bytes),
+        .List(_) or .EmptyList -> Layout.Boxed(BoxKind.List),
+        .Map(_, _) or .EmptyMap -> Layout.Boxed(BoxKind.Map),
+        .Cell(_) -> Layout.Boxed(BoxKind.Cell),
+        .Task(_) or .Tasks -> Layout.Boxed(BoxKind.Task),
+        .Range -> Layout.Boxed(BoxKind.Range),
+        .Struct(_, _) -> Layout.Boxed(BoxKind.Record),
+        .Enum(_, _) or .Res(_, _) -> Layout.Boxed(BoxKind.Enum),
+        .App(d, _, _) -> match ws.decls.decl(d).kind {
+            .Enum or .CollectEnum -> Layout.Boxed(BoxKind.Enum),
+            .Record or .Builtin or .Named or .Alias or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .State or .Fn or .Method -> Layout.Boxed(BoxKind.Record),
+        },
+        .Dyn(_, _) -> Layout.Boxed(BoxKind.Dyn),
+        .Fn(_, _, _) -> Layout.Boxed(BoxKind.Closure),
+        .Union(_) -> Layout.Boxed(BoxKind.Union),
+        .Opt(inner) -> old_nullable(ws, inner),
+    }
+}
+
+/// What a nullable of the workspace's type `inner` is: the pointer itself, the same registers where
+/// a spare tag stands for absence, a one-slot box over a flat record, else a pair.
+fn old_nullable(ws: Workspace, inner: TypeId) -> Layout {
+    let types = ws.decls.types
+    let carried = old_layout(ws, inner)
+    if types.seen_shape(inner) is .Opt { return Layout.Maybe(carried) }
+    if types.rides_pointer(inner) { return carried }
+    if types.is_word_enum(inner) { return Layout.Word }
+    if types.is_flat(inner) { return Layout.Boxed(BoxKind.Slot) }
+    Layout.Maybe(carried)
 }

@@ -1,0 +1,155 @@
+//! WHAT A FN DOES, AS IR: the core its body means, lowered node by node by each node's feature, every
+//! register typed by its layout. A node no rule lowers yet is named, never guessed at.
+use core.{CalledFn, Expr, Ins, Layout, Literal, LoweredProgram, NamedValue, Param, lowering}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// A fn's body as IR: its seats' layouts and its answer's, its instructions, each register's layout
+/// by its index, the fns it calls, and what wasn't lowered yet, in the order it was met.
+export type LoweredFn = {
+    params: List<Layout>,
+    answer: Layout,
+    ins: List<Ins>,
+    layouts: List<Layout>,
+    callees: List<CalledFn>,
+    missing: List<string>,
+}
+
+impl LoweredFn {
+    /// Whether every node of the body was lowered.
+    fn whole() -> bool { self.missing.is_empty() }
+}
+
+/// The body of the fn `file` declares as `name`, lowered: its seats the first registers, the body
+/// inside their scope, then its answer. Absent when it declares none with a body.
+export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    let refused = lowering_refused(signed)
+    if refused != null {
+        return LoweredFn {
+            params: [],
+            answer: Layout.Void,
+            ins: [],
+            layouts: [],
+            callees: [],
+            missing: [refused!],
+        }
+    }
+    let body = elaborated(engine, file, signed)
+    let signature = signed.signature
+    mut cx = lowering(
+        body.store,
+        LoweredProgram {
+            checked: program_of(
+                engine,
+                file,
+                Signing { engine: engine, file: file, type_params: signature.type_params },
+            ),
+            named: (n: string) -> named_value(engine, file, n),
+        },
+        body.core,
+        body.seats,
+        signature.answer,
+    )
+    for p in signature.params { cx.seated(p.name, p.ty!) }
+    cx.scope_enter()
+    let r = cx.lower(body.body)
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    LoweredFn {
+        params: cx.layouts.get().take(signature.params.length),
+        answer: cx.laid_out(signature.answer),
+        ins: cx.ins.get(),
+        layouts: cx.layouts.get(),
+        callees: cx.callees.get(),
+        missing: cx.missing.get(),
+    }
+}
+
+/// Why a fn's body isn't lowered yet before any of it is read: its signature is one only units by
+/// layout, a slot of its own or a seat's place can carry, or an annotation may make what it does.
+fn lowering_refused(signed: SignedBody) -> string? {
+    if !signed.signature.type_params.is_empty() { return "a generic fn" }
+    if signed.item.store.is_once(signed.stmt) { return "a `once` fn" }
+    if !signed.item.store.annotations_of(signed.stmt).is_empty() { return "an annotated fn, whose body its annotation may make" }
+    let params = signed.item.store.fn_parts(signed.stmt)!.params
+    if params.any(it.ty == null) { return "an untyped seat" }
+    if params.any(it.state || it.promises.settled) { return "a `state` or `const` seat" }
+    null
+}
+
+/// What a top-level value's name is from `file`, as code reads it: a fn the program declares, or a
+/// `const` written as a literal. Absent for any other name.
+fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamedValue? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    match d.kind {
+        .Fn -> {
+            let callee? = callee_of(engine, d) else { return null }
+            NamedValue.Fn(callee)
+        },
+        .Const -> {
+            let value? = const_literal(engine, d) else { return null }
+            NamedValue.Literal(value)
+        },
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State -> null,
+    }
+}
+
+/// The fn `d` names, as a call reaches it: an extern by the symbol C knows it by, a declared fn by
+/// the one its body is known by.
+fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
+    let item = read_item(engine, d.file, d.item)
+    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == d.name]
+        .first()
+    if external != null {
+        return CalledFn {
+            file: d.file,
+            name: d.name,
+            symbol: d.name,
+            external: true,
+            plain: external!.params.all(plain_seat),
+        }
+    }
+    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == d.name]
+        .first() else { return null }
+    CalledFn {
+        file: d.file,
+        name: d.name,
+        symbol: declared_symbol(d.file, d.name),
+        external: false,
+        plain: declared.tparams.is_empty() && declared.params.all(plain_seat),
+    }
+}
+
+/// Whether a seat takes its argument as it is: typed, promising nothing, with no default, one value.
+fn plain_seat(p: Param) -> bool {
+    p.ty != null &&
+        !p.promises.mutable &&
+        !p.promises.settled &&
+        !p.state &&
+        p.default == null &&
+        p.spread == null
+}
+
+/// The symbol a declared fn's body is known by: its file, then its name.
+export fn declared_symbol(file: SourceFileAddress, name: string) -> string { "${spelled_file(file)}.${name}" }
+
+/// The literal the `const` `d` names is written as, absent when its value is computed.
+fn const_literal(engine: QueryEngine, d: DeclaredName) -> Literal? {
+    let item = read_item(engine, d.file, d.item)
+    let value? = [v! for s in item.stmts if item.store.let_name(s) == d.name for v in [item.store.const_value(s)] if v != null]
+        .first() else { return null }
+    literal_of(item.store.valued(value))
+}
+
+/// The literal a node is, absent for a node that isn't one.
+fn literal_of(e: Expr) -> Literal? {
+    let n = e.int_of()
+    if n != null { return Literal.Int(n!) }
+    let bits = e.bits_of()
+    if bits != null { return Literal.Float(bits!) }
+    let b = e.bool_of()
+    if b != null { return Literal.Bool(b!) }
+    let text? = e.text_of() else { return null }
+    Literal.Text(text)
+}

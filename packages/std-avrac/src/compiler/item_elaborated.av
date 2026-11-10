@@ -12,6 +12,8 @@ use @std.program.query_engine.{QueryEngine}
 /// expression's type on the surface, and its type in the core.
 export type ElaboratedBody = {
     store: SyntaxArena,
+    /// The body's root.
+    body: ExprId,
     sugars: List<ExprId>,
     /// The statements a meaning rewrote.
     statements: List<StmtId>,
@@ -30,6 +32,11 @@ impl ElaboratedBody {
 /// body.
 export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> ElaboratedBody? {
     let signed? = signed_body(engine, file, name) else { return null }
+    elaborated(engine, file, signed)
+}
+
+/// A signed body, elaborated.
+fn elaborated(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> ElaboratedBody {
     let store = signed.item.store
     let typed = TypedItem {
         view: TypedView { store: store },
@@ -40,6 +47,7 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
     let core = body_checked(engine, file, signed, true)
     ElaboratedBody {
         store: store,
+        body: signed.body,
         sugars: sugars,
         statements: statements,
         surface: typed.types,

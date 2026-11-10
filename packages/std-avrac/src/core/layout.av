@@ -1,0 +1,301 @@
+//! WHAT A VALUE IS TO THE MACHINE: the register class it rides and, for a pointer, the box behind
+//! it. It is all the backend, the evaluator and the memory pass read of a register, so a register's
+//! type is its layout and never a language type. A type's layout is decided by its shape and, for a
+//! type the program declares, by its declaration.
+
+/// What a box holds, behind a pointer the runtime counts.
+export enum BoxKind {
+    Text
+    Bytes
+    List
+    Map
+    /// A record that isn't flat: one with a field that isn't a scalar, or with type parameters.
+    Record
+    /// An enum a variant of which carries more than one word.
+    Enum
+    /// A fn value: its code and what it captured.
+    Closure
+    Cell
+    Task
+    /// A `dyn` value: the value beside its methods.
+    Dyn
+    /// A union's value.
+    Union
+    Range
+    /// One slot holding a flat record: what a flat record's nullable points at.
+    Slot
+}
+
+/// What a value is to the machine.
+export enum Layout {
+    /// No value: `void`, whose register is a word nobody reads.
+    Void
+    /// An integer word: an `int`, or an enum whose variants carry nothing, as its tag.
+    Word
+    /// A `bool`.
+    Truth
+    /// A `float`: an IEEE-754 double.
+    Real
+    /// A pointer to a box the runtime counts.
+    Boxed(box: BoxKind)
+    /// A pointer the runtime doesn't count: a foreign `ptr`, and `null` alone.
+    Bare
+    /// A flat record of several fields, carried in registers as its fields.
+    Fields(fields: List<Layout>)
+    /// An enum each variant of which carries at most one word: its tag and that word in registers.
+    /// Bit `t` of `counted` is set when variant `t`'s word is a pointer the runtime counts.
+    Tagged(counted: int)
+    /// A nullable that rides no pointer and has no spare tag: whether it's present, then the value.
+    Maybe(value: Layout)
+}
+
+impl Layout {
+    /// The layout as the IR's text writes it.
+    fn spelled() -> string {
+        match self {
+            .Void -> "void",
+            .Word -> "word",
+            .Truth -> "truth",
+            .Real -> "real",
+            .Boxed(box) -> "box ${box_word(box)}",
+            .Bare -> "bare",
+            .Fields(fields) -> "fields(${[f.spelled() for f in fields].join(", ")})",
+            .Tagged(counted) -> "tagged ${counted}",
+            .Maybe(value) -> "maybe ${value.spelled()}",
+        }
+    }
+
+    /// Whether the value is a pointer, so its nullable is the pointer itself, null when absent.
+    fn pointer() -> bool {
+        match self {
+            .Boxed(_) or .Bare -> true,
+            .Void or .Word or .Truth or .Real or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+    }
+
+    /// Whether the value has a tag no variant spends, so its nullable is the same registers.
+    fn spare_tag() -> bool {
+        match self {
+            .Tagged(_) -> true,
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Maybe(_) -> false,
+        }
+    }
+}
+
+/// A box's word.
+fn box_word(b: BoxKind) -> string {
+    match b {
+        .Text -> "text",
+        .Bytes -> "bytes",
+        .List -> "list",
+        .Map -> "map",
+        .Record -> "record",
+        .Enum -> "enum",
+        .Closure -> "closure",
+        .Cell -> "cell",
+        .Task -> "task",
+        .Dyn -> "dyn",
+        .Union -> "union",
+        .Range -> "range",
+        .Slot -> "slot",
+    }
+}
+
+/// A type the program declares, as its layout reads it.
+enum Declared {
+    /// An enum whose variants carry nothing: its tag.
+    WordEnum
+    /// An enum each variant of which carries at most one word.
+    ValueEnum(counted: int)
+    BoxedEnum
+    /// A record of scalar fields and no type parameters: its fields' layouts.
+    FlatRecord(fields: List<Layout>)
+    BoxedRecord
+}
+
+/// What a declared type is as a register.
+fn declared_layout(d: Declared?) -> Layout? {
+    let held? = d else { return null }
+    match held {
+        .WordEnum -> Layout.Word,
+        .ValueEnum(counted) -> Layout.Tagged(counted),
+        .BoxedEnum -> Layout.Boxed(BoxKind.Enum),
+        .FlatRecord(fields) -> if fields.length == 1 { fields[0] } else { Layout.Fields(fields) },
+        .BoxedRecord -> Layout.Boxed(BoxKind.Record),
+    }
+}
+
+/// An enum carrying more variants than this keeps its box.
+const MOST_VALUED_VARIANTS: int = 62
+
+impl CheckedProgram {
+    /// What a value of `ty` is to the machine; absent for a type no value has yet: one the body
+    /// decides, a type parameter, a name that names no type, or a declared type that's neither a
+    /// record nor an enum.
+    fn layout(ty: SignedType) -> Layout? { self.laid(ty, []) }
+
+    /// `ty`'s layout while the enums `laying` are being laid out, each read meanwhile as boxed.
+    fn laid(ty: SignedType, laying: List<SignedType>) -> Layout? {
+        if ty.nullable() { return self.nullable_laid(ty.unwrapped(), laying) }
+        if ty.dynamic { return Layout.Boxed(BoxKind.Dyn) }
+        if !ty.alternatives.is_empty() { return Layout.Boxed(BoxKind.Union) }
+        match ty.head {
+            .Owned(name) -> self.owned_layout(name, ty.args, laying),
+            .Declared(_, _) -> declared_layout(self.declared(ty, laying)),
+            .Function -> Layout.Boxed(BoxKind.Closure),
+            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
+        }
+    }
+
+    /// What a nullable of `inner` is: the pointer itself where `inner` rides one, null when absent; the
+    /// same registers where `inner` has a spare tag; a one-slot box where `inner` is a flat record;
+    /// else a pair.
+    fn nullable_laid(inner: SignedType, laying: List<SignedType>) -> Layout? {
+        if inner.bottom() { return Layout.Bare }
+        let carried? = self.laid(inner, laying) else { return null }
+        if inner.nullable() { return Layout.Maybe(carried) }
+        if carried.pointer() || carried.spare_tag() { return carried }
+        let d? = self.declared(inner, laying) else { return Layout.Maybe(carried) }
+        match d {
+            .WordEnum -> Layout.Word,
+            .FlatRecord(_) -> Layout.Boxed(BoxKind.Slot),
+            .ValueEnum(_) or .BoxedEnum or .BoxedRecord -> Layout.Maybe(carried),
+        }
+    }
+
+    /// What a type the language owns is.
+    fn owned_layout(name: string, args: List<SignedType>, laying: List<SignedType>) -> Layout? {
+        match name {
+            "int" -> Layout.Word,
+            "bool" -> Layout.Truth,
+            "float" -> Layout.Real,
+            "void" -> Layout.Void,
+            "ptr" -> Layout.Bare,
+            "string" -> Layout.Boxed(BoxKind.Text),
+            "Bytes" -> Layout.Boxed(BoxKind.Bytes),
+            "List" -> Layout.Boxed(BoxKind.List),
+            "Map" -> Layout.Boxed(BoxKind.Map),
+            "Cell" -> Layout.Boxed(BoxKind.Cell),
+            "Task" or "Tasks" -> Layout.Boxed(BoxKind.Task),
+            "Range" -> Layout.Boxed(BoxKind.Range),
+            "Result" -> self.result_layout(args, laying),
+            _ -> null,
+        }
+    }
+
+    /// A `Result` is a value enum when each side is one word, `Ok` tag 0 and `Err` tag 1.
+    fn result_layout(args: List<SignedType>, laying: List<SignedType>) -> Layout? {
+        if args.length != 2 { return null }
+        let ok? = self.side_word(args[0], laying) else { return Layout.Boxed(BoxKind.Enum) }
+        let err? = self.side_word(args[1], laying) else { return Layout.Boxed(BoxKind.Enum) }
+        Layout.Tagged(ok + 2 * err)
+    }
+
+    /// A `Result` side's one word: 0 a scalar or an enum's tag, 1 a pointer the runtime counts;
+    /// absent for anything else.
+    fn side_word(t: SignedType, laying: List<SignedType>) -> int? {
+        if t.nullable() { return if self.laid(t, laying)?.pointer() == true { 1 } else { null } }
+        if t.dynamic { return 1 }
+        if !t.alternatives.is_empty() { return null }
+        match t.head {
+            .Owned(name) -> {
+                let side? = self.owned_layout(name, t.args, laying) else { return null }
+                match side {
+                    .Word or .Truth or .Real -> 0,
+                    .Boxed(_) -> 1,
+                    .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+                }
+            },
+            .Declared(_, _) -> {
+                let d? = self.declared(t, laying) else { return null }
+                match d {
+                    .WordEnum -> 0,
+                    .BoxedEnum or .BoxedRecord -> 1,
+                    .ValueEnum(_) or .FlatRecord(_) -> null,
+                }
+            },
+            .Function -> 1,
+            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
+        }
+    }
+
+    /// What the type `ty` names is, read off its declaration; absent for a type the program declares
+    /// as neither a record nor an enum.
+    fn declared(ty: SignedType, laying: List<SignedType>) -> Declared? {
+        let shape = (self.enum_of)(ty)
+        if shape != null {
+            if laying.any(it.names_as(ty)) { return Declared.BoxedEnum }
+            return self.enum_declared(ty, shape!, laying.concat([ty]))
+        }
+        let record? = (self.record_of)(ty) else { return null }
+        if record.params > 0 || record.fields.is_empty() { return Declared.BoxedRecord }
+        let scalars = [f.ty! for f in record.fields if f.ty != null && self.scalar_field(f.ty!)]
+        if scalars.length != record.fields.length { return Declared.BoxedRecord }
+        let fields = [self.laid(f, laying) for f in scalars]
+        if fields.any(it == null) { return null }
+        Declared.FlatRecord([f! for f in fields])
+    }
+
+    /// An enum's layout: its tag alone, its tag and one word, or its box.
+    fn enum_declared(ty: SignedType, shape: EnumShape, laying: List<SignedType>) -> Declared {
+        if shape.params > 0 { return Declared.BoxedEnum }
+        if shape.variants.all(it.payloads.is_empty()) { return Declared.WordEnum }
+        if shape.variants.length > MOST_VALUED_VARIANTS { return Declared.BoxedEnum }
+        let words = [self.variant_word(ty, v, laying) for v in shape.variants]
+        if words.any(it == null) { return Declared.BoxedEnum }
+        Declared.ValueEnum(counted_bits([w! for w in words]))
+    }
+
+    /// What one variant's payloads make of its word: absent when it carries more than one or a payload
+    /// isn't one word, 0 when the word is uncounted, 1 when it's a pointer. An enum carried inside its
+    /// own variant is read as boxed.
+    fn variant_word(owner: SignedType, v: VariantSeat, laying: List<SignedType>) -> int? {
+        if v.payloads.length > 1 { return null }
+        let p? = v.payloads.first() else { return 0 }
+        let t? = p.ty else { return null }
+        if t.nullable() {
+            if t.unwrapped().names_as(owner) { return 1 }
+            return if self.laid(t, laying)?.pointer() == true { 1 } else { null }
+        }
+        if t.dynamic || !t.alternatives.is_empty() { return 1 }
+        match t.head {
+            .Owned(name) -> match name {
+                "int" -> 0,
+                "string" or "Bytes" or "List" or "Map" or "Cell" or "Task" or "Tasks" or "Range" or "Result" -> 1,
+                _ -> null,
+            },
+            .Declared(_, _) -> {
+                let shape = (self.enum_of)(t)
+                if shape != null { return if !t.names_as(owner) && self.word_enum(t) { 0 } else { null } }
+                let record? = self.laid(t, laying) else { return null }
+                match record {
+                    .Word -> 0,
+                    .Boxed(_) -> 1,
+                    .Void or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+                }
+            },
+            .Function -> 1,
+            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
+        }
+    }
+
+    /// A field a flat record may hold: an `int`, a `bool`, an enum whose variants carry nothing, or
+    /// that enum's nullable.
+    fn scalar_field(t: SignedType) -> bool {
+        if t.nulls > 1 || t.dynamic || !t.alternatives.is_empty() { return false }
+        match t.head {
+            .Owned(name) -> t.nulls == 0 && (name == "int" || name == "bool"),
+            .Declared(_, _) -> self.word_enum(t.unwrapped()),
+            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Function or .Never or .Meta -> false,
+        }
+    }
+
+    /// Whether `t` names an enum whose variants carry nothing.
+    fn word_enum(t: SignedType) -> bool {
+        let shape? = (self.enum_of)(t) else { return false }
+        shape.params == 0 && shape.variants.all(it.payloads.is_empty())
+    }
+}
+
+/// The bits of the variants whose word is counted: bit `t` for variant `t`.
+fn counted_bits(words: List<int>) -> int { reversed(words).fold(0, (mask, w) -> mask * 2 + w) }
