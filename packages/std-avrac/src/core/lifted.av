@@ -29,23 +29,8 @@ impl Lowering {
     mut fn okayed(into: SignedType, r: Reg) -> Reg {
         let l = self.laid_out(into)
         match l {
-            .Tagged(_) -> self.pack(l, [self.const_int(0), r]),
-            .Boxed(_) -> self.tagged_box(l, 0, r),
+            .Tagged(_) or .Boxed(_) -> self.tagged_value(l, 0, [r]),
             .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> self.missed_as("a lift into `${into.spelled()}`"),
-        }
-    }
-
-    /// A box of layout `l` holding `tag`, then the one-slot payload `r`; a payload that takes more
-    /// than a slot isn't lowered yet.
-    mut fn tagged_box(l: Layout, tag: int, r: Reg) -> Reg {
-        match self.layouts.get()[r.index] {
-            .Word or .Truth or .Real or .Boxed(_) or .Bare -> {
-                let dst = self.call_row(l, rt_sig_of("avra_array_sized")!, [self.const_int(2)])
-                self.run_row(rt_sig_of("avra_array_push")!, [dst, self.const_int(tag)])
-                self.run_row(rt_sig_of("avra_array_push")!, [dst, r])
-                dst
-            },
-            .Void or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.missed_as("a boxed payload wider than a slot"),
         }
     }
 

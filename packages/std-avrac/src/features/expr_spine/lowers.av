@@ -2,7 +2,7 @@
 //! constant, a name what it's bound to, and an operator over the language's own numbers, truths and
 //! text one instruction or one runtime row; `&&` and `||` take their right side inside a region.
 use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, SignedType, rt_sig_of}
-use core.expr.{Binary, FloatLit, Ident, IntLit, Not}
+use core.expr.{Binary, FloatLit, Ident, IntLit, Not, Prop}
 
 impl Lowers for IntLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_int(self.value) }
@@ -22,6 +22,24 @@ impl Lowers for Ident {
         let value? = match named { .Literal(v) -> v, rest -> null } else { return cx.unlowered(e) }
         if cx.type_at(e)?.spelled() != value.type().spelled() { return cx.unlowered(e) }
         cx.constant(value)
+    }
+}
+
+impl Lowers for Prop {
+    /// A record's field: what a flat record's registers hold at its place, or a boxed one's slots past
+    /// the fields before it. A `state` field, and a property that isn't a field, aren't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
+        let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
+        if fields[n].state { return cx.missed_as("a `state` field's read") }
+        let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        let l = cx.layout_at(e)
+        match cx.laid_out(ty) {
+            .Boxed(_) -> cx.boxed_field(v, laid, n, l),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> cx.extracted(l, v, n),
+        }
     }
 }
 

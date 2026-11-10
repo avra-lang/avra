@@ -1,0 +1,20 @@
+//! The lowering rule of a record literal: each value in the order written, then the record of them in
+//! its fields' order, packed when the record is flat and boxed when it isn't.
+use core.{ExprId, Lowering, Lowers, Reg, spread_entry}
+use core.expr.{StructLit}
+
+impl Lowers for StructLit {
+    /// A literal that writes every field. One the binary holds as data, or that leaves a field to its
+    /// default, spreads, or builds a record with a `state` field, isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
+        if cx.held_as_data(e) { return cx.missed_as("a literal the binary holds as data") }
+        let written = [f.of for f in self.fields]
+        if written.contains(spread_entry) { return cx.missed_as("a record literal that spreads") }
+        if fields.any(it.state) { return cx.missed_as("a record literal with a `state` field") }
+        if !fields.all((f) -> written.contains(f.name)) { return cx.missed_as("a record literal leaving a field to its default") }
+        let values = [cx.lower(v) for v in self.values]
+        cx.record_packed(cx.laid_out(ty), [values[written.index_of(f.name)] for f in fields])
+    }
+}

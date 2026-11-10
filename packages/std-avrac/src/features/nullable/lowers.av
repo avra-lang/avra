@@ -1,11 +1,59 @@
 //! The lowering rules of absence: `null` is a null constant its seat gives a layout, and a match on
 //! presence is one region, its present arm holding what the subject carries.
-use core.{Bound, ExprId, Lowering, Lowers, Reg, StmtId, StmtLowers, owned_type}
-use core.expr.{MatchOpt, NullLit}
+use core.{
+    Bound,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{Force, MatchOpt, NullLit}
 use core.stmt.{LetElse}
 
 impl Lowers for NullLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.word_at(cx.layout_at(e), 0) }
+}
+
+impl Lowers for Force {
+    /// What the subject carries, the runtime insisting it's present; a subject that isn't nullable is
+    /// itself.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        if held.nullable() { insisted(cx, v, held) } else { v }
+    }
+}
+
+/// What `v`, a nullable of `opt`, carries, the runtime refusing its absence: a counted pointer handed
+/// back by the runtime, a flat record's box's one slot, a pair's second, and a foreign pointer or a
+/// spare-tagged value its own registers, once tested.
+fn insisted(mut cx: Lowering, v: Reg, opt: SignedType) -> Reg {
+    let carried = cx.laid_out(opt.unwrapped())
+    let l = cx.laid_out(opt)
+    match l {
+        .Maybe(value) -> cx
+            .call_row(
+                value,
+                rt_sig_of("avra_insist_scalar")!,
+                [cx.extracted(Layout.Truth, v, 0), cx.extracted(value, v, 1)],
+            ),
+        .Boxed(_) -> if l.slot_box() { cx.slot_read(carried, cx.call_row(l, rt_sig_of("avra_insist")!, [v]), 0) } else { cx.call_row(carried, rt_sig_of("avra_insist")!, [v]) },
+        .Bare -> tested(cx, v, cx.present(v, opt), cx.const_int(0)),
+        .Word or .Tagged(_) -> tested(cx, v, cx.present(v, opt), cx.extracted(Layout.Word, v, 0)),
+        .Void or .Truth or .Real or .Fields(_) -> cx.missed_as("an insisted `${opt.spelled()}`"),
+    }
+}
+
+/// `v` once the runtime has refused it where `present` doesn't hold, `word` the word it's tested by.
+fn tested(mut cx: Lowering, v: Reg, present: Reg, word: Reg) -> Reg {
+    let _ = cx.call_row(Layout.Word, rt_sig_of("avra_insist_scalar")!, [present, word])
+    v
 }
 
 impl Lowers for MatchOpt {

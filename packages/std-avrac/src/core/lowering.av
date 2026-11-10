@@ -211,6 +211,29 @@ impl Lowering {
     /// A type written in the body, resolved.
     fn written(ty: TypeRef) -> SignedType { (self.program.checked.written)(ty) }
 
+    /// The fields of the record `ty` is, each typed under its arguments; absent for a type that's no
+    /// record, or that doesn't give the record every argument.
+    fn fields_of(ty: SignedType) -> List<FieldSeat>? {
+        if ty.nullable() || ty.dynamic { return null }
+        let record? = (self.program.checked.record_of)(ty) else { return null }
+        if ty.args.length != record.params { return null }
+        [f with { ty: f.ty?.bound(ty.args) } for f in record.fields]
+    }
+
+    /// The variants of the enum `ty` is, `Result` among them, each payload typed under its arguments;
+    /// absent for a type that's no enum, or that doesn't give the enum every argument.
+    fn variants_of(ty: SignedType) -> List<VariantSeat>? {
+        let shape? = self.program.checked.enum_shape(ty) else { return null }
+        if ty.args.length != shape.params { return null }
+        [v with { payloads: [p with { ty: p.ty?.bound(ty.args) } for p in v.payloads] } for v in shape.variants]
+    }
+
+    /// What each of `seats` is to the machine, absent when one's type isn't known.
+    mut fn seat_layouts(seats: List<FieldSeat>) -> List<Layout>? {
+        if seats.any(it.ty == null) { return null }
+        [self.laid_out(s.ty!) for s in seats]
+    }
+
     /// What a top-level name the body reads or calls is.
     fn named(name: string) -> NamedValue? { (self.program.named)(name) }
 
@@ -378,6 +401,21 @@ impl Lowering {
         // LICENSED compiler.arm_end_raw: this IS the verb
         self.emit(Ins.ArmEnd(taken(self)))
         let last = other(self)
+        let dst = self.mint(l)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+        dst
+    }
+
+    /// A region over `selector` answering a value of layout `l`: arm `j` taken where the selector is
+    /// `cases[j]`, and arm `cases.length` where it's none of them.
+    mut fn switched(selector: Reg, cases: List<int>, l: Layout, arm: fn(mut Lowering, int) -> Reg) -> Reg {
+        self.emit(Ins.SwitchStart(selector, cases))
+        for j in 0..cases.length {
+            // LICENSED compiler.arm_end_raw: this IS the verb
+            self.emit(Ins.ArmEnd(arm(self, j)))
+        }
+        let last = arm(self, cases.length)
         let dst = self.mint(l)
         // LICENSED compiler.region_end_raw: this IS the verb
         self.emit(Ins.RegionEnd(dst, last))

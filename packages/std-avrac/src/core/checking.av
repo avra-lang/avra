@@ -35,8 +35,9 @@ export type CheckedProgram = {
 /// them.
 export type RecordShape = { params: int, fields: List<FieldSeat> }
 
-/// A record's field: its name, and its type when it's written.
-export type FieldSeat = { name: string, ty: SignedType? }
+/// A record's field: its name, its type when it's written, and whether it's a `state` field, whose
+/// slot holds the cell its value lives in.
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false }
 
 /// A name bound in a body, its type when it's known, and whether it may narrow: a binding whose type
 /// isn't known still stands in front of every name further out, and only one that can't be written
@@ -84,6 +85,17 @@ export type Checking = {
     meanings: bool = false,
     /// The type each node's seat wanted, by its index, where the body was checked as the core it means.
     seats: Cell<Map<string, SignedType>>,
+}
+
+impl CheckedProgram {
+    /// The enum `ty` is, `Result` among them, absent when it's none.
+    fn enum_shape(ty: SignedType) -> EnumShape? {
+        if ty.nullable() || ty.dynamic { return null }
+        match ty.head {
+            .Owned(name) -> if name == "Result" && ty.args.length == 2 { result_shape() } else { null },
+            rest -> (self.enum_of)(ty),
+        }
+    }
 }
 
 /// `Result<T, E>`: `Ok` holding a `T`, `Err` an `E`.
@@ -340,13 +352,7 @@ impl Checking {
     }
 
     /// The enum `ty` is, `Result` among them, absent when it's none.
-    fn enum_of(ty: SignedType) -> EnumShape? {
-        if ty.nullable() || ty.dynamic { return null }
-        match ty.head {
-            .Owned(name) -> if name == "Result" && ty.args.length == 2 { result_shape() } else { null },
-            rest -> (self.program.enum_of)(ty),
-        }
-    }
+    fn enum_of(ty: SignedType) -> EnumShape? { self.program.enum_shape(ty) }
 
     /// The payload types of the variant `name` on a value of `subject`'s type, bound to the arguments
     /// the enum is applied to; absent when it has no such variant.
