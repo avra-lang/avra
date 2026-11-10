@@ -5,9 +5,13 @@
 //! node no rule lowers yet is named, never guessed at.
 use @std.program.address.{SourceFileAddress}
 
-/// What a lowering reads of the program: what the checked program answers, and what a top-level
-/// name the body reads or calls is.
-export type LoweredProgram = { checked: CheckedProgram, named: fn(string) -> NamedValue? }
+/// What a lowering reads of the program: what the checked program answers, what a top-level name
+/// the body reads or calls is, and the declared method a value of a type has by a name.
+export type LoweredProgram = {
+    checked: CheckedProgram,
+    named: fn(string) -> NamedValue?,
+    method: fn(SignedType, string) -> CalledFn?,
+}
 
 /// What a top-level name a body reads or calls is, as its code reads it.
 export enum NamedValue {
@@ -17,9 +21,17 @@ export enum NamedValue {
 }
 
 /// A fn a body calls: where it's declared, the symbol its code is known by, whether C defines it,
-/// and whether a call hands it its arguments by position into seats that promise nothing and have no
-/// default.
-export type CalledFn = { file: SourceFileAddress, name: string, symbol: string, external: bool, plain: bool }
+/// whether a call hands it its arguments by position into seats that promise nothing and have no
+/// default, and for a method, the type it's a method of and whether it writes its receiver.
+export type CalledFn = {
+    file: SourceFileAddress,
+    name: string,
+    symbol: string,
+    external: bool,
+    plain: bool,
+    owner: string? = null,
+    writes: bool = false,
+}
 
 /// A value written as a literal.
 export enum Literal {
@@ -147,7 +159,7 @@ impl Lowering {
     /// `s`, emitted: what it means, by its rule.
     mut fn lower_stmt(s: StmtId) {
         let meant? = self.store.stmt_meant(s) else { return self.store.stmt(s).stmt_lowered(self, s) }
-        for m in meant { self.lower_stmt(m) }
+        self.store.stmt(s).meant_lowered(self, s, meant)
     }
 
     /// A branch whose value nothing reads: a block's statements in a scope of names of their own, or
@@ -237,6 +249,9 @@ impl Lowering {
     /// What a top-level name the body reads or calls is.
     fn named(name: string) -> NamedValue? { (self.program.named)(name) }
 
+    /// The declared method `name` a value of `ty` has, absent where the program declares none.
+    fn method(ty: SignedType, name: string) -> CalledFn? { (self.program.method)(ty, name) }
+
     // ── Names ───────────────────────────────────────────────────────
 
     /// A scope opened inside the current one.
@@ -288,6 +303,9 @@ impl Lowering {
 
     /// `i`, emitted.
     mut fn emit(i: Ins) { self.ins.push(i) }
+
+    /// What register `r` is to the machine.
+    fn layout_of(r: Reg) -> Layout { self.layouts.get()[r.index] }
 
     // ── Constants ───────────────────────────────────────────────────
 
@@ -384,6 +402,23 @@ impl Lowering {
 
     /// A call of the runtime's row `row`, which answers nothing.
     mut fn run_row(row: RtSig, args: List<Reg>) { self.emit(Ins.CallRtVoid(row.name, args)) }
+
+    /// A call of the runtime's row `row` answering a value of layout `l`, where the answer and each
+    /// argument cross as the one word each is; a wider value crosses boxed, which isn't lowered yet.
+    mut fn call_words(l: Layout, row: RtSig, args: List<Reg>) -> Reg {
+        if !l.one_word() || !self.words(args) { return self.missed_as(wider_than_a_word(row)) }
+        self.call_row(l, row, args)
+    }
+
+    /// A call of the runtime's row `row`, which answers nothing, each argument crossing as the one
+    /// word it is; a wider value crosses boxed, which isn't lowered yet.
+    mut fn run_words(row: RtSig, args: List<Reg>) {
+        if !self.words(args) { return self.missed(wider_than_a_word(row)) }
+        self.run_row(row, args)
+    }
+
+    /// Whether each of `regs` is one word.
+    fn words(regs: List<Reg>) -> bool { [self.layout_of(r) for r in regs].all(it.one_word()) }
 
     // ── Regions ─────────────────────────────────────────────────────
     // A region is ONE expression whose arms are blocks handed the context, so no rule opens a bracket
@@ -563,6 +598,9 @@ impl Lowering {
         }
     }
 }
+
+/// A value wider than a word crossing `row`, which isn't lowered yet.
+fn wider_than_a_word(row: RtSig) -> string { "a value wider than a word crossing `${row.name}`" }
 
 /// An enum's spare tag: the one no variant has, which its nullable spends on absence.
 const ABSENT_TAG: int = -1

@@ -1,0 +1,15 @@
+//! The lowering rule of a map literal of pairs: every key, then every value, then the map, then
+//! each pair written into it. A literal that spreads a map isn't lowered yet.
+use core.{ExprId, Lowering, Lowers, Reg, map_keys, map_spreads, map_values, rt_sig_of}
+use core.expr.{MapLit}
+
+impl Lowers for MapLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if !map_spreads(self.entries).is_empty() { return cx.missed_as("a map literal's spread") }
+        let keys = [cx.lower(k) for k in map_keys(self.entries)]
+        let values = [cx.lower(v) for v in map_values(self.entries)]
+        let dst = cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
+        for at, k in keys { cx.run_words(rt_sig_of("avra_map_set")!, [dst, k, values[at]]) }
+        dst
+    }
+}

@@ -92,22 +92,17 @@ impl SignedType {
 
     /// The element of a list type, held directly: absent for any other type, and for a list that may
     /// be null or is dynamic.
-    fn listed() -> SignedType? {
-        if self.nullable() || self.dynamic || self.args.length != 1 { return null }
-        match self.head {
-            .Owned(name) -> if name == "List" { self.args[0] } else { null },
-            rest -> null,
-        }
-    }
+    fn listed() -> SignedType? { if self.args.length == 1 && self.owned() == "List" { self.args[0] } else { null } }
 
     /// The value type of a map type, held directly: absent for any other type, and for a map that may
     /// be null or is dynamic.
-    fn mapped() -> SignedType? {
-        if self.nullable() || self.dynamic || self.args.length != 2 { return null }
-        match self.head {
-            .Owned(name) -> if name == "Map" { self.args[1] } else { null },
-            rest -> null,
-        }
+    fn mapped() -> SignedType? { if self.args.length == 2 && self.owned() == "Map" { self.args[1] } else { null } }
+
+    /// The name of the type the language owns this is, held directly: absent for a type the language
+    /// doesn't own, and for one that may be null or is dynamic.
+    fn owned() -> string? {
+        if self.nullable() || self.dynamic { return null }
+        match self.head { .Owned(name) -> name, rest -> null }
     }
 
     /// The one type this and `other` both are, absent when they're different types: `never` gives

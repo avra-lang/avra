@@ -12,6 +12,7 @@ use @std.avrac.core.{
     CalledFn,
     DeclId,
     ExprId,
+    FileId,
     Ins,
     Layout,
     Reg,
@@ -614,10 +615,16 @@ fn callee_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>) -> Map<str
     mut renames: Map<string, string> = {}
     for c in callees {
         let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
-        let d = ws.visible(id).fn_decl(c.name)
+        let d = if c.owner == null { ws.visible(id).fn_decl(c.name) } else { method_decl(ws, id, c.owner!, c.name) }
         if d != null { renames.set(c.symbol, ws.decls.symbol(d!)) }
     }
     renames
+}
+
+/// The workspace's method `name` of the type `owner` names from the file `id`.
+fn method_decl(ws: Workspace, id: FileId, owner: string, name: string) -> DeclId? {
+    let t? = ws.visible(id).type_decl(owner) else { return null }
+    ws.decls.method(t, name)
 }
 
 /// What a register of the workspace's type is to the machine, read off its registry the way the

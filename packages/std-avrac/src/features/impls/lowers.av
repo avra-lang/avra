@@ -1,0 +1,88 @@
+//! The lowering rule of a method call: a verb the language owns that is one runtime row is that row,
+//! handed the receiver then each argument; a method a type the program declares has in one impl is a
+//! call of the method's own symbol, the receiver its first seat. Any other method call isn't lowered
+//! yet, and says what it is.
+use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, RtSig, SignedType, own_row, rt_sig_of}
+use core.expr.{MethodCall}
+
+impl Lowers for MethodCall {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let subject? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        if subject.described() != null { return cx.missed_as("a call through a type") }
+        if subject.dynamic { return cx.missed_as("a `dyn` dispatch") }
+        if subject.nullable() { return cx.unlowered(e) }
+        match subject.head {
+            .Owned(word) -> owned_verb(cx, self, e, word),
+            .Declared(_, _) -> declared_method(cx, self, e, subject),
+            .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.unlowered(e),
+        }
+    }
+}
+
+/// A verb on a type the language owns: its row, handed the receiver then each argument.
+fn owned_verb(mut cx: Lowering, m: MethodCall, e: ExprId, word: string) -> Reg {
+    let own? = own_row(word, m.name.of) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+    let row? = rt_sig_of(own.row) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+    match own.answer {
+        .Answer -> row_called(cx, m, e, row),
+        .Zero -> cx
+            .bin(
+                Layout.Truth,
+                BinOp.Eq,
+                cx.call_words(Layout.Word, row, [cx.lower(m.subject)]),
+                cx.const_int(0),
+            ),
+        .Folds -> {
+            let code = folded_code(cx, m)
+            if code == null { row_called(cx, m, e, row) } else { cx.const_int(code!) }
+        },
+    }
+}
+
+/// The row handed the receiver then each argument, answering the call's value.
+fn row_called(mut cx: Lowering, m: MethodCall, e: ExprId, row: RtSig) -> Reg {
+    cx.call_words(cx.layout_at(e), row, [cx.lower(m.subject)].concat([cx.lower(a) for a in m.args]))
+}
+
+/// The code a literal receiver holds at a literal index inside it, absent for any other.
+fn folded_code(cx: Lowering, m: MethodCall) -> int? {
+    let s? = cx.store.expr(m.subject).text_of() else { return null }
+    let index = if m.args.is_empty() { 0 } else { cx.store.valued(m.args[0]).int_of() }
+    let at? = index else { return null }
+    if at < 0 || at >= s.length { null } else { s.char_code(at) }
+}
+
+/// A method a type the program declares has: a call of its symbol, the receiver its first seat.
+fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
+    if !subject.args.is_empty() { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
+    let callee? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    if callee.writes { return cx.missed_as("a method that writes its receiver") }
+    if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let seats? = seated(cx, m) else { return cx.missed_as("a receiver on a path through a cell") }
+    cx.call_fn(cx.layout_at(e), callee, seats)
+}
+
+/// The receiver then each argument, lowered left to right; a receiver read out of a `mut` binding's
+/// cell is read after the arguments, which may write the cell. Absent for a receiver on a path that
+/// starts in a cell.
+fn seated(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
+    if !in_cell(cx, m.subject) { return [cx.lower(m.subject)].concat([cx.lower(a) for a in m.args]) }
+    if cx.store.place_root(m.subject)?.index != m.subject.index { return null }
+    let args = [cx.lower(a) for a in m.args]
+    [cx.lower(m.subject)].concat(args)
+}
+
+/// Whether a receiver is a place whose root a `mut` binding's cell holds.
+fn in_cell(cx: Lowering, subject: ExprId) -> bool {
+    let root? = cx.store.place_root(subject) else { return false }
+    let step? = cx.store.place_step(root) else { return false }
+    let name? = match step { .Root(n) -> n.of, rest -> null } else { return false }
+    let b? = cx.bound(name) else { return false }
+    match b { .Slot(_, _) -> true, rest -> false }
+}
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn verb_unlowered(word: string, name: string) -> string { "`${word}.${name}`" }
+
+fn method_unlowered(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`" }

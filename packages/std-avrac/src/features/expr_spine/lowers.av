@@ -1,8 +1,8 @@
 //! The lowering rules of the literals, names and operators this feature reads: a literal is its
 //! constant, a name what it's bound to, and an operator over the language's own numbers, truths and
 //! text one instruction or one runtime row; `&&` and `||` take their right side inside a region.
-use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, SignedType, rt_sig_of}
-use core.expr.{Binary, FloatLit, Ident, IntLit, Not, Prop}
+use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, RtSig, SignedType, own_row, rt_sig_of}
+use core.expr.{Binary, FloatLit, Ident, Index, IntLit, Not, Prop}
 
 impl Lowers for IntLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_int(self.value) }
@@ -25,11 +25,25 @@ impl Lowers for Ident {
     }
 }
 
+impl Lowers for Index {
+    /// `xs[i]` is the runtime's read of the list's slot `i`; an element wider than a word isn't
+    /// lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if cx.type_at(self.subject)?.listed() == null { return cx.unlowered(e) }
+        let xs = cx.lower(self.subject)
+        let at = cx.lower(self.index)
+        cx.call_words(cx.layout_at(e), rt_sig_of("avra_array_get")!, [xs, at])
+    }
+}
+
 impl Lowers for Prop {
-    /// A record's field: what a flat record's registers hold at its place, or a boxed one's slots past
-    /// the fields before it. A `state` field, and a property that isn't a field, aren't lowered yet.
+    /// A property of a type the language owns is its row, handed the receiver. A record's field is
+    /// what a flat record's registers hold at its place, or a boxed one's slots past the fields
+    /// before it. A `state` field, and any other property, aren't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let own = owned_property(ty, self.name.of)
+        if own != null { return cx.call_words(cx.layout_at(e), own!, [cx.lower(self.subject)]) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
         let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
         if fields[n].state { return cx.missed_as("a `state` field's read") }
@@ -67,6 +81,13 @@ fn both(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
 /// `l || r`: true where `l` holds, else `r`.
 fn either(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
     cx.region(cx.lower(l), Layout.Truth) { cx -> cx.const_bool(true) } else { cx -> cx.lower(r) }
+}
+
+/// The row a property of a type the language owns is, absent for any other property.
+fn owned_property(ty: SignedType, name: string) -> RtSig? {
+    let word? = ty.owned() else { return null }
+    let own? = own_row(word, name) else { return null }
+    rt_sig_of(own.row)
 }
 
 /// What an operator's operands are, by their layout.

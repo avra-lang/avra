@@ -1,6 +1,17 @@
 //! WHAT A FN DOES, AS IR: the core its body means, lowered node by node by each node's feature, every
 //! register typed by its layout. A node no rule lowers yet is named, never guessed at.
-use core.{CalledFn, Expr, Ins, Layout, Literal, LoweredProgram, NamedValue, Param, lowering}
+use core.{
+    CalledFn,
+    Expr,
+    Ins,
+    Layout,
+    Literal,
+    LoweredProgram,
+    NamedValue,
+    Param,
+    SignedType,
+    lowering,
+}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -46,6 +57,7 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
                 Signing { engine: engine, file: file, type_params: signature.type_params },
             ),
             named: (n: string) -> named_value(engine, file, n),
+            method: (ty: SignedType, m: string) -> method_callee(engine, ty, m),
         },
         body.core,
         body.seats,
@@ -118,6 +130,30 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
         symbol: declared_symbol(d.file, d.name),
         external: false,
         plain: declared.tparams.is_empty() && declared.params.all(plain_seat),
+    }
+}
+
+/// The method `name` a value of `subject`'s type has, as a call reaches it: the method the one impl
+/// that gives it writes, on a type the program declares applied to nothing, by the symbol its body is
+/// known by. Absent for any other.
+fn method_callee(engine: QueryEngine, subject: SignedType, name: string) -> CalledFn? {
+    if subject.nullable() || subject.dynamic || !subject.args.is_empty() { return null }
+    let declared? = declared_at(subject) else { return null }
+    let impls = impls_with(engine, declared.file, declared.name, name, false)
+    if impls.length != 1 { return null }
+    let at = impls[0]
+    let item = read_item(engine, at.file, at.item)
+    let fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() ?? []
+    let m? = fns.find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
+    let parts = item.store.fn_parts(m)!
+    CalledFn {
+        file: at.file,
+        name: name,
+        symbol: declared_symbol(at.file, "${declared.name}.${name}"),
+        external: false,
+        plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
+        owner: declared.name,
+        writes: item.store.is_mutating(m),
     }
 }
 
