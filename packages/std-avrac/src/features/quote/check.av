@@ -59,7 +59,7 @@ export fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
         }
     }
     let answered: MetaKind? = match whole {
-        .Expr -> if [c! for c in classes].any(it is .Id || it is .PatId) { MetaKind.Rewrite } else { expression_kind(cx, e) },
+        .Expr -> if [c! for c in classes].any(fills_by_node(it)) { MetaKind.Rewrite } else { expression_kind(cx, e) },
         .Stmts -> MetaKind.Stmts,
         .Arms -> MetaKind.Arms,
         .Decls -> MetaKind.Decls,
@@ -71,7 +71,7 @@ export fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
         let kind = if whole is .Holes { holes_seat(answer, q.holes.length) } else { kinds[k] }
         let class = classes[k]!
         if class is .Text && (kind is .Expression || kind is .Tail) { return cx.spoken(ambiguous_text(cx.loc_of(h))) }
-        if answer == MetaKind.Rewrite && !(class is .Id || class is .PatId) { return cx.spoken(rewrite_hole(cx.loc_of(h), cx.name_at(h))) }
+        if answer == MetaKind.Rewrite && !fills_by_node(class) { return cx.spoken(rewrite_hole(cx.loc_of(h), cx.name_at(h))) }
         if !fits(class, kind) { return cx.spoken(hole_refused(cx.loc_of(h), kind, cx.name_at(h))) }
     }
     let d? = cx.view.decls.meta_named(meta_name(answer)) else { return cx.spoken(no_meta(cx.loc_of(e), meta_name(answer))) }
@@ -84,6 +84,14 @@ fn expression_kind(cx: TypeCx, e: ExprId) -> MetaKind {
     let wants? = cx.want_at(e) else { return MetaKind.Code }
     let kind? = template_kind(cx.view.decls, wants) else { return MetaKind.Code }
     match kind { .Stmts -> MetaKind.Stmts, rest -> MetaKind.Code }
+}
+
+/// Whether a fill splices a node of the tree being rewritten, which makes its quote a `Rewrite`.
+fn fills_by_node(c: FillClass) -> bool {
+    match c {
+        .Id or .PatId or .Node -> true,
+        .Template(_) or .Templates(_) or .Int or .Bool or .Text or .Texts or .Named or .Held or .Pattern -> false,
+    }
 }
 
 /// The template kind a type names, when it does.
