@@ -78,12 +78,18 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
     }
 }
 
-/// The type a top-level value's name has from `file`: a fn's, as a fn type. Absent for a name that
-/// names no fn.
+/// The type a top-level value's name has from `file`: a fn's, as a fn type, and a const's or a
+/// collection's, as it's written. Absent for a name that names no value.
 fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
-    let s? = fn_signature(engine, d.file, d.name) else { return null }
-    fn_typed([], s)
+    match d.kind {
+        .Fn -> {
+            let s? = fn_signature(engine, d.file, d.name) else { return null }
+            fn_typed([], s)
+        },
+        .Const or .Collect -> binding_type(engine, d.file, d.name),
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .State -> null,
+    }
 }
 
 /// A signature as a fn type, after `leading` seats; absent when a parameter's type isn't written.

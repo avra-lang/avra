@@ -58,6 +58,21 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
     }
 }
 
+/// The type a top-level binding — a `const` or a `collect` — `file` declares as `name` is written
+/// with, resolved where it's declared; absent when it declares none.
+@query
+export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
+    let item? = declaring_item(engine, file, name, ItemKind.Const) ?? declaring_item(
+        engine,
+        file,
+        name,
+        ItemKind.Collect,
+    ) else { return null }
+    let written? = [t! for s in item.stmts if item.store.let_name(s) == name for t in [item.store.binding_ty(s)] if t != null]
+        .first() else { return null }
+    Signing { engine: engine, file: file, type_params: [] }.signed(written)
+}
+
 /// What the alias `file` declares as `name` stands for, absent when it declares none.
 @query
 export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: string) -> AliasTarget? {
