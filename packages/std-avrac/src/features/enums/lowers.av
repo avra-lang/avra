@@ -17,7 +17,7 @@ use core.{
     VariantSeat,
     owned_type,
 }
-use core.expr.{Match, VariantLit}
+use core.expr.{Is, Match, VariantLit}
 
 impl Lowers for VariantLit {
     /// The variant's tag and the payloads it's written with, in order. One the binary holds as data,
@@ -30,6 +30,31 @@ impl Lowers for VariantLit {
         if self.args.any((a) -> by_name(cx.store, a)) { return cx.missed_as("a variant's payload by name") }
         cx.tagged_value(cx.laid_out(ty), tag, [cx.lower(a) for a in self.args])
     }
+}
+
+impl Lowers for Is {
+    /// Whether the subject's tag is the variant's. An `is` that binds what the variant carries, or
+    /// tests a type, isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(self.left) else { return cx.unlowered(e) }
+        let variants? = cx.variants_of(ty) else { return cx.unlowered(e) }
+        let tag? = asked_tag(cx.store, variants, self.right) else { return cx.missed_as("an `is` that binds or tests a type") }
+        cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(cx.lower(self.left)), cx.const_int(tag))
+    }
+}
+
+/// The tag of the variant a pattern asks for, absent for one that binds a payload or names no
+/// variant of `variants`.
+fn asked_tag(store: SyntaxArena, variants: List<VariantSeat>, p: PatId) -> int? {
+    match store.pat(p) {
+        .Variant(name, args) -> if args.all((a) -> holed(store, a)) { variants.find_index(it.name == name.of) } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether a pattern is a hole, taking whatever stands there unnamed.
+fn holed(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) { .Wild -> true, rest -> false }
 }
 
 /// Whether an argument names its seat.

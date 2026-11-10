@@ -1,7 +1,80 @@
-//! The lowering rule of a string literal: its text, the binary's own.
-use core.{ExprId, Lowering, Lowers, Reg}
-use core.expr.{StrLit}
+//! The lowering rules of a string literal and an interpolated one: a literal is its text, the
+//! binary's own; an interpolated string joins its runs and its holes' text, one piece as itself, two
+//! by the runtime's concatenation, more by its join.
+use core.{BoxKind, ExprId, Layout, Lowering, Lowers, Reg, body_behavior, flatten, rt_sig_of}
+use core.expr.{Body, StrLit}
 
 impl Lowers for StrLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_str(self.value) }
+}
+
+impl Lowers for Body {
+    /// A text body's pieces, joined. A quote, or another language's body, isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        match body_behavior(self.word) {
+            .Text -> text_lowered(cx, e, self),
+            .Quote -> cx.missed_as("a quote body"),
+            .Foreign -> cx.missed_as("another language's body"),
+        }
+    }
+}
+
+/// An interpolated string: each run that holds text, and each hole as text, in written order, joined.
+/// A hole whose text the runtime doesn't spell isn't lowered yet.
+fn text_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
+    if b.holes.any((h) -> spelling(cx, h) == null) { return cx.missed_as("a hole that isn't a number, a truth or text") }
+    let lead = run(cx, b.parts[0])
+    let pieces = lead
+        .concat(flatten([[texted(cx, h)].concat(run(cx, b.parts[j + 1])) for j, h in b.holes]))
+    let l = cx.layout_at(e)
+    match pieces.length {
+        0 -> cx.const_str(""),
+        1 -> pieces[0],
+        2 -> cx.call_row(l, rt_sig_of("avra_str_concat")!, pieces),
+        _ -> joined(cx, l, pieces),
+    }
+}
+
+/// A run of text between holes as its constant; an empty run is nothing.
+fn run(mut cx: Lowering, s: string) -> List<Reg> { if s == "" { [] } else { [cx.const_str(s)] } }
+
+/// The pieces in a box sized for them, joined by the runtime with nothing between.
+fn joined(mut cx: Lowering, l: Layout, pieces: List<Reg>) -> Reg {
+    let parts = cx.call_row(l, rt_sig_of("avra_array_sized")!, [cx.const_int(pieces.length)])
+    for p in pieces { cx.run_row(rt_sig_of("avra_array_push")!, [parts, p]) }
+    cx.call_row(l, rt_sig_of("avra_str_join")!, [parts, cx.const_str("")])
+}
+
+/// How a hole's value is spelled as text: itself, or the runtime row that spells it.
+enum Spelling {
+    Itself
+    Row(name: string)
+}
+
+/// How the hole `h` is spelled: a string as itself, an `int`, a `float` or a `bool` by its row; absent
+/// for any other type, or one the language doesn't own.
+fn spelling(cx: Lowering, h: ExprId) -> Spelling? {
+    let ty? = cx.type_at(h) else { return null }
+    if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return null }
+    let own? = match ty.head { .Owned(_) -> ty, rest -> null } else { return null }
+    let l? = cx.program.checked.layout(own) else { return null }
+    match l {
+        .Word -> Spelling.Row("avra_int_text"),
+        .Real -> Spelling.Row("avra_float_text"),
+        .Truth -> Spelling.Row("avra_bool_text"),
+        .Boxed(box) -> match box {
+            .Text -> Spelling.Itself,
+            .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}
+
+/// The hole `h` as text.
+fn texted(mut cx: Lowering, h: ExprId) -> Reg {
+    let v = cx.lower(h)
+    match spelling(cx, h)! {
+        .Itself -> v,
+        .Row(name) -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(name)!, [v]),
+    }
 }

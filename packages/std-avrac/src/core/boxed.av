@@ -34,6 +34,19 @@ impl Lowering {
         }
     }
 
+    /// The element at the place `at` holds in the list `v`, as a value of layout `l`: a nullable
+    /// scalar as its pair, its presence the slot's mark.
+    mut fn element_at(l: Layout, v: Reg, at: Reg) -> Reg {
+        match l {
+            .Maybe(value) -> {
+                let present = self.call_row(Layout.Truth, rt_sig_of("avra_slot_present")!, [v, at])
+                self.pack(l, [present, self.call_row(value, rt_sig_of("avra_array_get")!, [v, at])])
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.call_row(l, rt_sig_of("avra_array_get")!, [v, at]),
+            .Fields(_) or .Tagged(_) -> self.missed_as("an element laid inline"),
+        }
+    }
+
     /// A value of layout `l` laid inline in the box `v` from slot `at`: a value enum's tag and word,
     /// a value record's fields.
     mut fn unboxed_at(l: Layout, v: Reg, at: int) -> Reg {

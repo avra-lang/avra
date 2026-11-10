@@ -1,6 +1,8 @@
 //! The lowering rules of absence: `null` is a null constant its seat gives a layout, and a match on
-//! presence is one region, its present arm holding what the subject carries.
+//! presence is one region, its present arm holding what the subject carries. `v?` is one region too:
+//! what `v` carries on, else the fn leaves with its absence or its failure.
 use core.{
+    BinOp,
     Bound,
     ExprId,
     Layout,
@@ -13,7 +15,7 @@ use core.{
     owned_type,
     rt_sig_of,
 }
-use core.expr.{Force, MatchOpt, NullLit}
+use core.expr.{Force, MatchOpt, NullLit, Propagate}
 use core.stmt.{LetElse}
 
 impl Lowers for NullLit {
@@ -54,6 +56,47 @@ fn insisted(mut cx: Lowering, v: Reg, opt: SignedType) -> Reg {
 fn tested(mut cx: Lowering, v: Reg, present: Reg, word: Reg) -> Reg {
     let _ = cx.call_row(Layout.Word, rt_sig_of("avra_insist_scalar")!, [present, word])
     v
+}
+
+impl Lowers for Propagate {
+    /// A region answering what the subject carries on: a nullable's value where it's present, a
+    /// `Result`'s ok side where its tag is `Ok`; the other arm leaves the fn.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let carried? = cx.type_at(e) else { return cx.unlowered(e) }
+        if held.resulted() { return failed_on(cx, e, held, carried, cx.lower(self.subject)) }
+        if !held.nullable() || !cx.answer.nullable() { return cx.missed_as("a `?` the fn's answer can't carry the absence of") }
+        let v = cx.lower(self.subject)
+        cx
+            .region(cx.present(v, held), cx.laid_out(carried)) { cx -> cx.carried(v, held) } else { cx ->
+                cx.answer_exit(cx.absent_of(cx.answer, cx.laid_out(cx.answer)))
+                cx.hollow_of(carried)
+            }
+    }
+}
+
+/// `v?` on the `Result` `v` of `held`: its ok side where its tag is `Ok`, else the fn leaves failing
+/// with `v` itself, laid out alike as the fn's `Result`. A failure that the fn's answer holds another
+/// way isn't lowered yet.
+fn failed_on(mut cx: Lowering, e: ExprId, held: SignedType, carried: SignedType, v: Reg) -> Reg {
+    if !fails_alike(cx, held, cx.answer) { return cx.missed_as("a failure carried into another `Result`") }
+    let ok = cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(v), cx.const_int(0))
+    cx
+        .region(ok, cx.laid_out(carried)) { cx -> cx.payload_at(v, 0, [cx.laid_out(carried)]) } else { cx ->
+            cx.answer_exit(v)
+            cx.hollow_of(carried)
+        }
+}
+
+/// Whether a failure of the `Result` `from` is one of the `Result` `into` as it stands: the error
+/// sides are one type, or both unions, and both lay out as a value or both in a box.
+fn fails_alike(mut cx: Lowering, from: SignedType, into: SignedType) -> bool {
+    if !into.resulted() { return false }
+    let fe = from.args[1]
+    let ie = into.args[1]
+    let agrees = fe.spelled() == ie.spelled() ||
+        !fe.alternatives.is_empty() && !ie.alternatives.is_empty()
+    agrees && cx.laid_out(from).inline() == cx.laid_out(into).inline()
 }
 
 impl Lowers for MatchOpt {

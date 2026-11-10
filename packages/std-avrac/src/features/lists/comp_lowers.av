@@ -1,0 +1,120 @@
+//! The lowering rule of a list comprehension: an empty list, then each head a walk inside the one
+//! before, each filter a region around what follows it, and past the last clause the element pushed.
+use core.{
+    BinOp,
+    Bound,
+    CompClause,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    SignedType,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{Comp}
+
+impl Lowers for Comp {
+    /// A comprehension whose heads each walk a list or count up to a bound. One over any other
+    /// source, or a list whose elements lay out inline, isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let elem? = ty.listed() else { return cx.unlowered(e) }
+        if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as("a comprehension over a source that isn't a list or a count") }
+        if cx.laid_out(elem).inline() { return cx.missed_as("a comprehension whose elements lay out inline") }
+        let built = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+        walked(cx, self, 0, built)
+        built
+    }
+}
+
+/// Whether a clause is one this rule walks: a filter, or a head over a list it reads as it is, or
+/// counting from its source to its bound.
+fn walkable(cx: Lowering, c: CompClause) -> bool {
+    match c {
+        .Head(_, _, source, hi) -> {
+            let from? = cx.type_at(source) else { return false }
+            if hi != null { return from.spelled() == owned_type("int").spelled() }
+            let elem? = from.listed() else { return false }
+            let l? = cx.program.checked.layout(elem) else { return false }
+            !l.inline() && !viewed(cx, source)
+        },
+        .Filter(_) -> true,
+    }
+}
+
+/// Whether a source is a method's answer that a walk may read another way: a text's `chars`, or a
+/// method of something the body doesn't bind, which may name a relation the walk narrows.
+fn viewed(cx: Lowering, source: ExprId) -> bool {
+    match cx.store.expr(cx.meaning_of(source)) {
+        .MethodCall(subject, name, _) -> name.of == "chars" || !bound_here(cx, subject),
+        rest -> false,
+    }
+}
+
+/// Whether an expression is a name the body binds, or reads through one.
+fn bound_here(cx: Lowering, e: ExprId) -> bool {
+    match cx.store.expr(e) {
+        .Ident(name) -> cx.bound(name.of) != null,
+        .Prop(subject, _) -> bound_here(cx, subject),
+        rest -> false,
+    }
+}
+
+/// Clause `at` onward, inside every walk before it; past the last, the element pushed onto `built`.
+fn walked(mut cx: Lowering, c: Comp, at: int, built: Reg) {
+    if at == c.clauses.length { return cx.push_leaf(built, cx.lower(c.elem)) }
+    match c.clauses[at] {
+        .Head(index, name, source, hi) -> {
+            let w = if hi == null { listed_walk(cx, source) } else { counted_walk(cx, source, hi!) }
+            let here = turned(cx, w)
+            let v = if w.list == null { here } else { cx.element_at(w.elem_layout, w.list!, here) }
+            if index != null { cx.bind(index!.of, Bound.Value(here, owned_type("int"))) }
+            cx.bind(name.of, Bound.Value(v, w.elem))
+            walked(cx, c, at + 1, built)
+            cx.loop_end()
+        },
+        .Filter(cond) -> cx.void_region(cx.lower(cond)) { cx -> walked(cx, c, at + 1, built) },
+    }
+}
+
+/// A head's walk: the list it reads, absent for a count; how far it goes; the cell holding where it
+/// stands; and what each turn binds, with its layout.
+type Walk = { list: Reg?, len: Reg, at: Reg, elem: SignedType, elem_layout: Layout }
+
+/// A walk over the list `source` is, from its start to its length.
+fn listed_walk(mut cx: Lowering, source: ExprId) -> Walk {
+    let elem = cx.type_at(source)!.listed()!
+    let list = cx.lower(source)
+    let len = cx.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [list])
+    Walk {
+        list: list,
+        len: len,
+        at: cx.seeded_cell(Layout.Word, cx.const_int(0)),
+        elem: elem,
+        elem_layout: cx.laid_out(elem),
+    }
+}
+
+/// A count from `lo` up to `hi`, the bound read first.
+fn counted_walk(mut cx: Lowering, lo: ExprId, hi: ExprId) -> Walk {
+    let len = cx.lower(hi)
+    Walk {
+        list: null,
+        len: len,
+        at: cx.seeded_cell(Layout.Word, cx.lower(lo)),
+        elem: owned_type("int"),
+        elem_layout: Layout.Word,
+    }
+}
+
+/// A turn of the walk opened: the loop, its test that the walk stands short of its length, the turn's
+/// scope, then the step past this place. Answers the place.
+fn turned(mut cx: Lowering, w: Walk) -> Reg {
+    cx.loop_start()
+    let here = cx.loaded(Layout.Word, w.at)
+    cx.loop_cond(cx.bin(Layout.Truth, BinOp.Lt, here, w.len))
+    cx.stored(w.at, cx.bin(Layout.Word, BinOp.Add, here, cx.const_int(1)))
+    here
+}

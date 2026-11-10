@@ -440,6 +440,19 @@ impl Lowering {
         self.emit(Ins.RegionEnd(dst, last))
     }
 
+    /// A region whose value nothing reads: `body` runs where `cond` holds, and nothing where it doesn't.
+    mut fn void_region(cond: Reg, body: fn(mut Lowering) -> void) {
+        // LICENSED compiler.if_start_raw: this IS the verb
+        self.emit(Ins.IfStart(cond))
+        body(self)
+        // LICENSED compiler.arm_end_raw: this IS the verb
+        self.emit(Ins.ArmEnd(self.const_int(0)))
+        let last = self.const_int(0)
+        let dst = self.mint(Layout.Word)
+        // LICENSED compiler.region_end_raw: this IS the verb
+        self.emit(Ins.RegionEnd(dst, last))
+    }
+
     // ── Scopes ──────────────────────────────────────────────────────
 
     /// A scope opens: what it makes is released where it ends.
