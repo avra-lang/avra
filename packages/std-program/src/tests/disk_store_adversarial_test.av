@@ -37,37 +37,42 @@ fn length_question(path: string) -> ContentHash {
         .known_as
 }
 
-/// A whole process asking the length of `path` with nobody asking: its query, and a deep record.
-/// Answers how many queries ran.
+/// A whole process asking the length of `path` with nobody asking: its query, its record, and the
+/// frontier it leaves. Answers how many queries ran.
 fn length_asked(directory: string, path: string) -> int {
     let store = disk_store_at(directory)
     let engine = engine_on(store)
     let _ = kept_length(engine, path)
+    engine.frontier_kept()
     let _ = store.saved()
     engine.computed_count()
 }
 
 fn packs_in(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
 
-/// Each record a later process finds for `path`'s length: how many, and how many are deep.
-type Found = { records: int, deep: int }
-
-fn found(directory: string, path: string) -> Found {
-    let records = disk_store_at(directory).records_of(length_question(path))
-    Found { records: records.length, deep: records.filter(it.deep).length }
+/// The length each record a later process finds for `path` answered, in the order it finds them:
+/// a pack's oldest first.
+fn lengths_found(directory: string, path: string) -> List<int> {
+    let store = disk_store_at(directory)
+    [store.answer_bytes(r.answer)!.root().number_at(0) for r in store.records_of(length_question(path))]
 }
+
+fn spelled(lengths: List<int>) -> string { ["${n}" for n in lengths].join(",") }
 
 /// A text of `n` octets.
 fn octets(n: int, mark: string) -> string { [mark for _i in 0..n].join("") }
 
 spec "a store's records, streamed and compacted" {
     given "a question kept twice in one process" {
-        then "the pack holds its shallow record and its deep one, each once" {
+        then "the pack holds both its records, each once, oldest first" {
             let directory = directory_named("twice")
+            let store = disk_store_at(directory)
             kept_world().put("a.av", "alpha")
-            let _ = length_asked(directory, "a.av")
-            let f = found(directory, "a.av")
-            f.records == 2 && f.deep == 1
+            let _ = kept_length(engine_on(store), "a.av")
+            kept_world().put("a.av", "alpha beta")
+            let _ = kept_length(engine_on(store), "a.av")
+            let _ = store.saved()
+            spelled(lengths_found(directory, "a.av")) == "5,10"
         }
     }
     given "a question's records in a pack and in the draft that absorbs it" {
@@ -77,8 +82,7 @@ spec "a store's records, streamed and compacted" {
             let _ = length_asked(directory, "b.av")
             kept_world().put("b.av", "alpha beta")
             let _ = length_asked(directory, "b.av")
-            let f = found(directory, "b.av")
-            packs_in(directory).length == 1 && f.records == 4 && f.deep == 2
+            packs_in(directory).length == 1 && spelled(lengths_found(directory, "b.av")) == "5,10"
         }
     }
     given "two processes keeping the same records beside each other, one with more, then merged" {
@@ -95,8 +99,9 @@ spec "a store's records, streamed and compacted" {
             let _ = other.saved_alone()
             let two = packs_in(directory).length
             let _ = disk_store_at(directory).merged()
-            let f = found(directory, "c.av")
-            two == 2 && packs_in(directory).length == 1 && f.records == 2 && f.deep == 1
+            two == 2 &&
+                packs_in(directory).length == 1 &&
+                spelled(lengths_found(directory, "c.av")) == "5"
         }
     }
     given "a root answered more ways than a question keeps, then compacted" {
@@ -106,10 +111,11 @@ spec "a store's records, streamed and compacted" {
                 kept_world().put("d.av", text)
                 let _ = length_asked(directory, "d.av")
             }
-            let before = found(directory, "d.av")
+            let before = lengths_found(directory, "d.av")
             let _ = disk_store_at(directory).compacted()
-            let after = found(directory, "d.av")
-            before.records == 10 && after.records == 3 && length_asked(directory, "d.av") == 1
+            before.length == 5 &&
+                spelled(lengths_found(directory, "d.av")) == "3,4,5" &&
+                length_asked(directory, "d.av") == 1
         }
     }
     given "answers enough to map the draft again while a process runs" {
@@ -141,7 +147,7 @@ spec "a store's records, streamed and compacted" {
             first == 5 &&
                 again == 5 &&
                 engine.computed_count() == 2 &&
-                store.records_of(length_question("e.av")).length == 2 &&
+                store.records_of(length_question("e.av")).length == 1 &&
                 (store.saved() catch -1) == 0
         }
     }
@@ -181,12 +187,14 @@ spec "a store's records, streamed and compacted" {
             reused == 1 && !exists("${directory}/old.pack") && length_asked(directory, "f.av") == 1
         }
     }
-    given "a compaction by a process that has only a draft" {
+    given "a compaction by a process that has only a draft and the frontier it left" {
         then "what it learned is published, and a later process runs only its input" {
             let directory = directory_named("draft_only")
             kept_world().put("g.av", "alpha")
             let store = disk_store_at(directory)
-            let _ = kept_length(engine_on(store), "g.av")
+            let engine = engine_on(store)
+            let _ = kept_length(engine, "g.av")
+            engine.frontier_kept()
             let _ = store.compacted()
             packs_in(directory).length == 1 && length_asked(directory, "g.av") == 1
         }

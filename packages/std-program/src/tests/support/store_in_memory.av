@@ -1,20 +1,24 @@
 //! A store in memory, standing in for the one on disk, shared by the engine's tests.
 use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question}
+use frontier.{Frontier, FrontierEntry, frontier_in, frontier_runs}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use query_engine.{AnswerStore}
-use saved_layout.{SavedBytes, saved_bytes_in_memory}
+use saved_layout.{SavedBytes, SavedSource, saved_bytes_in_memory}
 
 export type StoreInMemory = {
     records: HashKeyedTable<List<AnswerRecord>>,
     questions: HashKeyedTable<Question>,
     answers: HashKeyedTable<Bytes>,
+    /// Each binary's frontier, by its print, as one run of octets.
+    frontiers: Cell<Map<string, Bytes>>,
 }
 
 export fn store_in_memory() -> StoreInMemory {
     let records: HashKeyedTable<List<AnswerRecord>> = hash_keyed_table()
     let questions: HashKeyedTable<Question> = hash_keyed_table()
     let answers: HashKeyedTable<Bytes> = hash_keyed_table()
-    StoreInMemory { records: records, questions: questions, answers: answers }
+    let frontiers: Cell<Map<string, Bytes>> = Cell.new({})
+    StoreInMemory { records: records, questions: questions, answers: answers, frontiers: frontiers }
 }
 
 impl AnswerStore for StoreInMemory {
@@ -35,4 +39,11 @@ impl AnswerStore for StoreInMemory {
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) { self.answers.put(answer, bytes) }
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.answers.put(answer, bytes) }
+
+    fn frontier_of(print: string) -> Frontier? {
+        let octets? = self.frontiers.get().get(print) else { return null }
+        frontier_in(SavedSource.InMemory(octets), octets.length)
+    }
+
+    fn keep_frontier(print: string, entries: List<FrontierEntry>) { self.frontiers.put(print, frontier_runs(entries, 0).bytes()) }
 }

@@ -4,6 +4,7 @@
 use @std.io.{exists, list_dir, read_bytes, remove, write_bytes}
 use @std.time.{stamp}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
+use answer_record.{question}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use worked_ahead.{WorkAhead, engine_worked_ahead}
@@ -52,16 +53,57 @@ fn engine_over(store: DiskStore) -> QueryEngine { query_engine(store, definition
 
 fn fresh_directory(label: string) -> string { "/tmp/avra-disk-store/${stamp()}-${label}" }
 
-/// A whole process: opens the store, asks, publishes, and says how many queries ran.
-fn process_asking(directory: string, path: string, word: string) -> int {
+/// A whole process: opens the store, asks, publishes, and leaves its frontier. Answers its engine.
+fn process_over(directory: string, path: string, word: string) -> QueryEngine {
     let store = disk_store_at(directory)
     let engine = engine_over(store)
     let _ = disk_is_named(engine, path, word)
+    engine.frontier_kept()
     let _ = store.saved()
-    engine.computed_count()
+    engine
+}
+
+/// How many queries a whole process ran.
+fn process_asking(directory: string, path: string, word: string) -> int { process_over(directory, path, word).computed_count() }
+
+/// A binary whose one query, `measured`, reads `disk_text` and whose code is `version`: binaries of
+/// other versions ask other questions of the same input.
+fn binary_of(version: string) -> List<QueryDefinition> {
+    [
+        disk_text_definition(),
+        QueryDefinition {
+            query_name: "measured",
+            code_hash: version,
+            is_input: false,
+            compute: (e, a) -> "${disk_text(e, a.text() ?? "").length}".bytes(),
+        },
+    ]
+}
+
+/// A whole process of the binary `version`, asking how long `path` is. Answers its engine.
+fn version_asking(directory: string, version: string, path: string) -> QueryEngine {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, binary_of(version))
+    let _ = engine.answer_to(question("measured", version, path.bytes()))
+    engine.frontier_kept()
+    let _ = store.saved()
+    engine
+}
+
+/// A process of each of three binaries over one store, oldest first, then a compaction. Answers
+/// the oldest's engine.
+fn three_binaries_compacted(directory: string) -> QueryEngine {
+    disk_world().put("p.av", "alpha")
+    let oldest = version_asking(directory, "v1", "p.av")
+    let _ = version_asking(directory, "v2", "p.av")
+    let _ = version_asking(directory, "v3", "p.av")
+    let _ = disk_store_at(directory).compacted()
+    oldest
 }
 
 fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
+
+fn frontier_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".front")) }
 
 spec "disk_store — answers outlive the process" {
     given "an input's text" {
@@ -143,7 +185,8 @@ spec "disk_store — answers outlive the process" {
                 let _ = process_asking(directory, "many${i}.av", "word${i}")
             }
             pack_files(directory).length <= 7 &&
-                (0..64).all((i) -> process_asking(directory, "many${i}.av", "word${i}") == 1)
+                (0..64)
+                    .all((i) -> process_over(directory, "many${i}.av", "word${i}").worked_count() == 0)
         }
     }
     given "two processes at once" {
@@ -153,12 +196,16 @@ spec "disk_store — answers outlive the process" {
             disk_world().put("f.av", "beta")
             let one = disk_store_at(directory)
             let other = disk_store_at(directory)
-            let _ = disk_is_named(engine_over(one), "e.av", "alpha")
-            let _ = disk_is_named(engine_over(other), "f.av", "beta")
+            let one_engine = engine_over(one)
+            let other_engine = engine_over(other)
+            let _ = disk_is_named(one_engine, "e.av", "alpha")
+            let _ = disk_is_named(other_engine, "f.av", "beta")
+            one_engine.frontier_kept()
             let _ = one.saved()
+            other_engine.frontier_kept()
             let _ = other.saved()
-            process_asking(directory, "e.av", "alpha") == 1 &&
-                process_asking(directory, "f.av", "beta") == 1
+            process_over(directory, "e.av", "alpha").worked_count() == 0 &&
+                process_over(directory, "f.av", "beta").worked_count() == 0
         }
     }
     given "a compaction" {
@@ -170,8 +217,8 @@ spec "disk_store — answers outlive the process" {
             let compacting = disk_store_at(directory)
             let _ = process_asking(directory, "o.av", "beta")
             let _ = compacting.compacted()
-            process_asking(directory, "o.av", "beta") == 1 &&
-                process_asking(directory, "n.av", "alpha") == 1
+            process_over(directory, "o.av", "beta").worked_count() == 0 &&
+                process_over(directory, "n.av", "alpha").worked_count() == 0
         }
         then "of an empty store, it writes nothing" {
             let directory = fresh_directory("compact-empty")
@@ -207,6 +254,21 @@ spec "disk_store — answers outlive the process" {
             let one_back = process_asking(directory, "l.av", "alpha")
             disk_world().put("l.av", "alpha w1")
             one_back == 1 && process_asking(directory, "l.av", "alpha") == 2
+        }
+    }
+    given "three binaries' frontiers in one store, then a compaction" {
+        then "the two written most recently stand whole, and the oldest's file goes" {
+            let directory = fresh_directory("binaries")
+            let oldest = three_binaries_compacted(directory)
+            frontier_files(directory).length == 2 &&
+                !exists("${directory}/frontier-${oldest.print()}.front") &&
+                version_asking(directory, "v3", "p.av").worked_count() == 0 &&
+                version_asking(directory, "v2", "p.av").worked_count() == 0
+        }
+        then "what only the oldest named is worked out again" {
+            let directory = fresh_directory("binaries-oldest")
+            let _ = three_binaries_compacted(directory)
+            version_asking(directory, "v1", "p.av").worked_count() == 1
         }
     }
     given "damage to the directory" {

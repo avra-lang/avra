@@ -13,8 +13,9 @@ use @std.hash.{Hasher, hasher}
 use @std.io.{Draft, IoError, abandoned_drafts, drafted, list_dir, make_dirs, remove}
 use @std.meta.{derive}
 use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, entry_keyed}
+use frontier.{Frontier, FrontierEntry, frontier_in, frontier_runs}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
-use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in, root_candidate}
+use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in}
 use query_engine.{AnswerStore}
 use saved_derive.{Saved}
 use saved_layout.{
@@ -274,7 +275,12 @@ export type DiskStore = {
     generation: int,
     /// Packs this store can't read: torn, or in another format.
     foreign: List<ForeignPack>,
+    /// The frontier this process will leave, written once the pack holding its answers is.
+    pending_frontier: Cell<List<PendingFrontier>>,
 }
+
+/// A frontier waiting for its answers to be published: whose it is, and what it holds.
+type PendingFrontier = { print: string, entries: List<FrontierEntry> }
 
 /// A pack this store can't read, and its size: it counts against the store's room, and goes when
 /// the store compacts. A binary that wrote it only ever loses work.
@@ -298,6 +304,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
     let held_answers: HashKeyedTable<Bytes> = hash_keyed_table()
     let held_questions: HashKeyedTable<Bytes> = hash_keyed_table()
     let segment: Cell<List<Segment>> = Cell.new([])
+    let pending: Cell<List<PendingFrontier>> = Cell.new([])
     DiskStore {
         directory: directory,
         packs: Cell.new(packs),
@@ -305,6 +312,7 @@ export fn disk_store_at(directory: string) -> DiskStore {
         held_answers: held_answers,
         held_questions: held_questions,
         foreign: foreign,
+        pending_frontier: pending,
         generation: 1 +
             packs
                 .fold(
@@ -313,6 +321,26 @@ export fn disk_store_at(directory: string) -> DiskStore {
                 ),
     }
 }
+
+/// A frontier file and what it holds, read where it lies.
+type Held = { path: string, frontier: Frontier }
+
+/// How many binaries' frontiers a store keeps.
+const KEPT_FRONTIERS: int = 2
+
+/// The frontier the file at `path` holds; its mapping stays for the process, as a pack's does.
+fn frontier_at(path: string) -> Frontier? {
+    let mapping? = avra_mmap_open(path) else { return null }
+    frontier_in(SavedSource.Mapped(mapping), avra_mmap_len(mapping))
+}
+
+/// The frontier files in `directory`, by name.
+fn frontier_names_in(directory: string) -> List<string> {
+    (list_dir(directory) catch []).filter(it.starts_with("frontier-") && it.ends_with(".front"))
+}
+
+/// Where the binary printed `print` keeps its frontier.
+fn frontier_path(directory: string, print: string) -> string { "${directory}/frontier-${print}.front" }
 
 fn pack_names_in(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(PACK_SUFFIX)) }
 
@@ -362,9 +390,45 @@ impl AnswerStore for DiskStore {
     }
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.held_answers.put(answer, bytes) }
+
+    /// The frontier file the binary printed `print` wrote, read where it lies; its mapping stays
+    /// for the process, as a pack's does.
+    fn frontier_of(print: string) -> Frontier? { frontier_at(frontier_path(self.directory, print)) }
+
+    /// A draft made the frontier by one rename, so a reader finds the old one or the new one whole.
+    /// A frontier that can't be written costs the next process a walk, never a wrong answer.
+    fn keep_frontier(print: string, entries: List<FrontierEntry>) { self.pending_frontier.set([PendingFrontier { print: print, entries: entries }]) }
 }
 
 impl DiskStore {
+    /// What a compaction keeps alive: every question the newest frontiers hold, one per binary that
+    /// last wrote here, so two binaries sharing a store each keep theirs and a third repeats work.
+    /// Every older frontier goes, as the answers only it named do.
+    fn frontier_seeds() -> List<ContentHash> {
+        let pending = self.pending_frontier.get()
+        let own = [frontier_path(self.directory, p.print) for p in pending]
+        let read = [Held { path: path, frontier: f! } for name in frontier_names_in(self.directory) for path in ["${self.directory}/${name}"] if !own.contains(path) for f in [frontier_at(path)] if f != null]
+        let newest = sorted_by(read, (a, b) -> a.frontier.generation > b.frontier.generation)
+            .take(KEPT_FRONTIERS - pending.length)
+        for h in read { if !newest.any(it.path == h.path) { let _ = remove(h.path) } }
+        [e.question for p in pending for e in p.entries]
+            .concat([q for h in newest for q in h.frontier.questions()])
+    }
+
+    /// The pending frontier written, once what it names is published. One rename makes it, so a
+    /// reader finds the old one or the new one whole; a frontier that can't be written costs the
+    /// next process a walk, never a wrong answer.
+    fn frontier_published() {
+        let pending? = self.pending_frontier.get().first() else { return }
+        self.pending_frontier.set([])
+        let draft? = match drafted("${self.directory}/frontier") { .Ok(d) -> d, .Err(_) -> null } else { return }
+        for run in frontier_runs(pending.entries, self.generation) {
+            let wrote = draft.write(run) catch -1
+            if wrote < 0 { return }
+        }
+        let _ = draft.published(frontier_path(self.directory, pending.print)) catch ""
+    }
+
     fn unpublished_answer(answer: ContentHash) -> SavedBytes? {
         let held? = self.held_answers.get(answer) else {
             let segment? = self.segment.get().first() else { return null }
@@ -416,15 +480,17 @@ impl DiskStore {
     /// Publishes what this process learned as one pack, absorbing packs no bigger than it, and
     /// answers how many octets it wrote. A process that learned nothing writes nothing.
     fn saved() -> Result<int, IoError> {
-        if !self.has_news() { return 0 }
-        if self.outgrown() { return self.compacted() }
-        self.published(absorbed_by(self.entries_learned(), self.packs.get()), false)
+        if self.has_news() && self.outgrown() { return self.compacted() }
+        let written = if self.has_news() { self.published(absorbed_by(self.entries_learned(), self.packs.get()), false)? } else { 0 }
+        self.frontier_published()
+        written
     }
 
-    /// Every pack as one, keeping only what a recent root reaches; packs it can't read go.
+    /// Every pack as one, keeping only what the newest frontiers reach; packs it can't read go.
     fn compacted() -> Result<int, IoError> {
         let written = if self.packs.get().is_empty() && !self.has_news() { 0 } else { self.published(self.packs.get(), true)? }
         for pack in self.foreign { let _ = remove(pack.path) }
+        self.frontier_published()
         written
     }
 
@@ -460,8 +526,8 @@ impl DiskStore {
     }
 
     /// What this process learned and what `absorbed` holds, sealed as one pack, which the store
-    /// then reads in place of `absorbed`, and has nothing new. Collecting, it keeps only what a
-    /// recent root reaches. Answers how many octets it wrote.
+    /// then reads in place of `absorbed`, and has nothing new. Collecting, it keeps only what the
+    /// newest frontiers reach. Answers how many octets it wrote.
     fn published(absorbed: List<MappedPack>, collecting: bool) -> Result<int, IoError> {
         let segment? = self.writing() else { return 0 }
         let spoiled_before? = segment.spoiled_by.get().first() else { return self.sealed_if_whole(segment, absorbed, collecting) }
@@ -475,7 +541,7 @@ impl DiskStore {
         IoError,
     > {
         let packs = sorted_by(absorbed, (a, b) -> a.generation < b.generation)
-        let live: Live? = if collecting { live_over(packs, segment) } else { null }
+        let live: Live? = if collecting { live_over(packs, segment, self.frontier_seeds()) } else { null }
         let questions = questions_merged(segment, packs, live)
         let answers = answers_merged(segment, packs, live)
         let runs = index_runs(
@@ -596,13 +662,10 @@ fn carried(segment: Segment, packs: List<MappedPack>, p: Placed) -> KeptSpan {
     p.span with { at: segment.appended(pack.source.octets_at(p.span.at, p.span.at + p.span.length)) }
 }
 
-/// What a recent root among `packs` and the draft reaches, every record read where it lies.
-fn live_over(packs: List<MappedPack>, segment: Segment) -> Live {
-    let draft_entries = [segment.saved_in(segment.questions, span.key)!.root() for span in segment.questions.spans.values()]
-    let candidates = [c! for pack in packs for span in pack.question_spans() for c in [root_candidate(pack.saved_at(span).root())] if c != null]
-        .concat([c! for entry in draft_entries for c in [root_candidate(entry)] if c != null])
+/// What the questions `seeds` reach among `packs` and the draft, every record read where it lies.
+fn live_over(packs: List<MappedPack>, segment: Segment, seeds: List<ContentHash>) -> Live {
     live_in(
-        candidates,
+        seeds,
         (question) -> merged_records(
             [entry! for pack in packs for entry in [pack.question_entry(question)] if entry != null]
                 .concat(

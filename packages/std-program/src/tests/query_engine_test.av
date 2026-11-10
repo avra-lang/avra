@@ -33,13 +33,13 @@ fn definitions(world: Cell<string>) -> List<QueryDefinition> {
 }
 
 /// `summary` reads `middle`, which has no code hash.
-fn unhashed_below() -> List<QueryDefinition> {
+fn unhashed_below(middle: string) -> List<QueryDefinition> {
     [
         QueryDefinition {
             query_name: "middle",
             code_hash: "",
             is_input: false,
-            compute: (_e, _a) -> "m".bytes(),
+            compute: (_e, _a) -> middle.bytes(),
         },
         QueryDefinition {
             query_name: "summary",
@@ -54,6 +54,7 @@ fn unhashed_below() -> List<QueryDefinition> {
 fn process(store: StoreInMemory, text: string) -> QueryEngine {
     let engine = query_engine(store, definitions(Cell.new(text)))
     let _ = ask_text(engine, "summary", "main")
+    engine.frontier_kept()
     engine
 }
 
@@ -80,11 +81,12 @@ spec "query_engine — answers remembered across processes" {
         }
     }
     given "going back to an earlier input" {
-        then "that state's answer is reached with nothing between" {
+        then "that state's answer is reached without working anything out" {
             let store = store_in_memory()
             let _ = process(store, "short")
             let _ = process(store, "tiny")
-            process(store, "short").settled_answers.values().length == 2
+            let back = process(store, "short")
+            back.worked_count() == 0 && ask_text(back, "summary", "main") == "long: false"
         }
     }
     given "an input that moves the answer" {
@@ -94,12 +96,13 @@ spec "query_engine — answers remembered across processes" {
             summary_in(store, "much longer") == "long: true"
         }
     }
-    given "a query with no code hash below a root" {
-        then "the root gets no deep record" {
+    given "a query with no code hash below a root, its code changed between processes" {
+        then "the later process answers from the code it runs, its frontier notwithstanding" {
             let store = store_in_memory()
-            let engine = query_engine(store, unhashed_below())
-            let _ = ask_text(engine, "summary", "main")
-            !store.records_of(question("summary", "code", "main".bytes()).known_as).any(it.deep)
+            let earlier = query_engine(store, unhashed_below("m"))
+            let _ = ask_text(earlier, "summary", "main")
+            earlier.frontier_kept()
+            ask_text(query_engine(store, unhashed_below("n")), "summary", "main") == "n"
         }
     }
     given "an empty store" {

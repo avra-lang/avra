@@ -1,0 +1,96 @@
+//! THE FRONTIER: what one binary last knew to hold, written whole by the process that knew it. It
+//! holds every answer that process settled or carried, each with what it read as places in the same
+//! table, and marks the inputs. The next process of that binary asks the inputs first: an answer no
+//! changed input reaches stands untouched, and only the rest are checked against their records. A
+//! frontier is closed — whatever an entry read is an entry too — so it is right at the inputs it
+//! names, whatever other processes write.
+use @std.meta.{derive}
+use answer_record.{ContentHash}
+use saved_derive.{Saved}
+use saved_layout.{SavedList, SavedSource, saved_layout_writer, saved_root_record}
+
+/// One answer a frontier holds: its question, its answer, the places of what it read, and whether it
+/// is an input, read afresh in every process.
+@derive(Saved)
+export type FrontierEntry = { question: ContentHash, answer: ContentHash, reads: List<int>, input: bool }
+
+/// A frontier as written: its entries sorted by question, beside their keys' high words.
+@derive(Saved)
+type FrontierIndex = { high_words: List<int>, entries: List<FrontierEntry>, generation: int }
+
+/// What ends a whole frontier: a torn one never reads as one.
+export const FRONTIER_SEAL: string = "avrafront1"
+
+/// A frontier read where it lies.
+export type Frontier = { high_words: SavedList, entries: SavedList, generation: int }
+
+impl Frontier {
+    /// Every question it holds.
+    fn questions() -> List<ContentHash> { [self.question_at(at) for at in 0..self.length()] }
+
+    /// How many answers it holds.
+    fn length() -> int { self.entries.length }
+
+    /// The place `question` stands at, absent when the frontier doesn't hold it.
+    fn place_of(question: ContentHash) -> int? {
+        mut at = self.high_words.first_at_or_after(question.high_word)
+        while at < self.high_words.length && self.high_words.number_at(at) == question.high_word {
+            if self.question_at(at).same_as(question) { return at }
+            at = at + 1
+        }
+        null
+    }
+
+    fn question_at(at: int) -> ContentHash { ContentHash.read_from(FrontierEntry.question_in_place(self.entries.record_at(at)!)) }
+
+    fn answer_at(at: int) -> ContentHash { ContentHash.read_from(FrontierEntry.answer_in_place(self.entries.record_at(at)!)) }
+
+    fn input_at(at: int) -> bool { FrontierEntry.input_in(self.entries.record_at(at)!) }
+
+    /// The places of what the answer at `at` read.
+    fn reads_at(at: int) -> List<int> {
+        let reads = FrontierEntry.reads_in_place(self.entries.record_at(at)!)
+        [reads.number_at(i) for i in 0..reads.length]
+    }
+
+    /// Every place reached from `changed` by reading: each answer that read one, and each that read
+    /// one of those, each once.
+    fn readers_of(changed: List<int>) -> List<bool> {
+        mut readers: List<List<int>> = [[] for _i in 0..self.length()]
+        for at in 0..self.length() { for r in self.reads_at(at) { readers[r].push(at) } }
+        mut reached = [false for _i in 0..self.length()]
+        mut pending = changed
+        while !pending.is_empty() {
+            let at = pending.pop()
+            if reached[at] { continue }
+            reached.set(at, true)
+            for r in readers[at] { if !reached[r] { pending.push(r) } }
+        }
+        reached
+    }
+}
+
+/// The frontier the octets of `source` hold, `length` long; absent when they don't end in its seal.
+export fn frontier_in(source: SavedSource, length: int) -> Frontier? {
+    let index_ends_at = length - FRONTIER_SEAL.length
+    if index_ends_at < FRONTIER_SEAL.length ||
+        source.octets_at(index_ends_at, length).text() != FRONTIER_SEAL { return null }
+    let index = saved_root_record(source, index_ends_at)
+    Frontier {
+        high_words: FrontierIndex.high_words_in_place(index),
+        entries: FrontierIndex.entries_in_place(index),
+        generation: FrontierIndex.generation_in(index),
+    }
+}
+
+/// A frontier's octets, in the runs they're written in, its seal last: `entries`, sorted by question
+/// already, as the store's `generation` wrote them.
+export fn frontier_runs(entries: List<FrontierEntry>, generation: int) -> List<Bytes> {
+    let index = FrontierIndex {
+        high_words: [e.question.high_word for e in entries],
+        entries: entries,
+        generation: generation,
+    }
+    let writer = saved_layout_writer()
+    writer.finished_runs_of(index.written_into(writer)).concat([FRONTIER_SEAL.bytes()])
+}

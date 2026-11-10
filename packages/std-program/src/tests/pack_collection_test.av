@@ -1,5 +1,5 @@
-// A compaction keeps what a recent root reaches: each root's newest code versions, each question's
-// newest records, and the answers and questions those records read.
+// A compaction keeps what the questions a frontier names reach: each question's newest records, and
+// the answers and questions those records read.
 use answer_record.{
     AnswerRecord,
     ContentHash,
@@ -9,7 +9,7 @@ use answer_record.{
     content_hash,
     question,
 }
-use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in, root_candidate}
+use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in}
 use saved_layout.{SavedRecord, saved_bytes_in_memory}
 
 fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
@@ -32,23 +32,23 @@ fn entry(q: Question, records: List<AnswerRecord>, written_in: int) -> QuestionR
 /// Each entry saved and read where it lies, as a store reads it.
 fn laid(questions: List<QuestionRecords>) -> List<SavedRecord> { [saved_bytes_in_memory(q.saved_bytes()).root() for q in questions] }
 
-/// What a compaction of `questions` keeps alive.
-fn live_of(questions: List<QuestionRecords>) -> Live {
+/// What a compaction of `questions` keeps alive from the questions `seeds`.
+fn live_of(seeds: List<Question>, questions: List<QuestionRecords>) -> Live {
     let entries = laid(questions)
     live_in(
-        [c! for e in entries for c in [root_candidate(e)] if c != null],
+        [s.known_as for s in seeds],
         (question) -> [r for at, e in entries if questions[at].question.same_as(question) for r in records_in(e)],
     )
 }
 
-fn kept(questions: List<QuestionRecords>, q: Question) -> bool { live_of(questions).questions.get(q.known_as) != null }
+fn kept(live: Live, q: Question) -> bool { live.questions.get(q.known_as) != null }
 
 /// How many of the records of `q`, the entry at `at`, a compaction keeps.
 fn records_kept(questions: List<QuestionRecords>, at: int) -> int { newest_records(records_in(laid(questions)[at])).length }
 
 spec "pack_collection — what a compaction keeps" {
     given "nothing" {
-        then "nothing is kept" { live_of([]).questions.is_empty() }
+        then "nothing is kept" { live_of([], []).questions.is_empty() }
     }
     given "a root and what it read" {
         then "both stay, with the answers they found, and a question nobody reads goes" {
@@ -60,10 +60,10 @@ spec "pack_collection — what a compaction keeps" {
                 entry(root, [record("root answer", [leaf], true)], 1),
                 entry(stray, [record("stray answer", [], false)], 1),
             ]
-            let live = live_of(questions)
-            kept(questions, root) &&
-                kept(questions, leaf) &&
-                !kept(questions, stray) &&
+            let live = live_of([root], questions)
+            kept(live, root) &&
+                kept(live, leaf) &&
+                !kept(live, stray) &&
                 live.answers.get(hash_of("leaf answer")) != null &&
                 live.answers.get(hash_of("stray answer")) == null
         }
@@ -85,9 +85,9 @@ spec "pack_collection — what a compaction keeps" {
                     4,
                 ),
             ]
-            let live = live_of(questions)
+            let live = live_of([root], questions)
             records_kept(questions, 1) == 3 &&
-                !kept(questions, old_read) &&
+                !kept(live, old_read) &&
                 live.answers.get(hash_of("r1")) == null &&
                 live.answers.get(hash_of("r4")) != null
         }
@@ -109,33 +109,7 @@ spec "pack_collection — what a compaction keeps" {
                     4,
                 ),
             ]
-            records_kept(questions, 1) == 4 && kept(questions, leaf)
-        }
-    }
-    given "one root under three versions of its code" {
-        then "the two written most recently stay" {
-            let v1 = asked("root", "v1", "x")
-            let v2 = asked("root", "v2", "x")
-            let v3 = asked("root", "v3", "x")
-            let questions = [
-                entry(v1, [record("a1", [], true)], 1),
-                entry(v3, [record("a3", [], true)], 3),
-                entry(v2, [record("a2", [], true)], 2),
-            ]
-            !kept(questions, v1) && kept(questions, v2) && kept(questions, v3)
-        }
-        then "a root asked of other arguments is its own" {
-            let one = asked("root", "v1", "x")
-            let newer = asked("root", "v2", "x")
-            let newest = asked("root", "v3", "x")
-            let other = asked("root", "v1", "y")
-            let questions = [
-                entry(one, [record("a1", [], true)], 1),
-                entry(newer, [record("a2", [], true)], 2),
-                entry(newest, [record("a3", [], true)], 3),
-                entry(other, [record("b1", [], true)], 1),
-            ]
-            kept(questions, other) && !kept(questions, one)
+            records_kept(questions, 1) == 4 && kept(live_of([root], questions), leaf)
         }
     }
 }

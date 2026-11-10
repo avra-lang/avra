@@ -1,8 +1,8 @@
-//! WHAT A STORE KEEPS WHEN IT COMPACTS: everything a recent root reaches, and nothing else. A root
-//! is a question asked with nobody asking, the one that holds a deep record. From each, every record
-//! kept is followed through its reads to the questions it read and the answers it found. A question
-//! keeps its newest few records, so going back an edit or two still finds its answer, and a root
-//! keeps its newest few code versions, so binaries sharing a store each keep theirs. What's dropped
+//! WHAT A STORE KEEPS WHEN IT COMPACTS: everything the newest frontiers name and what they reach, and
+//! nothing else. From each question a frontier holds, every record kept is followed through its reads
+//! to the questions it read and the answers it found. A question keeps its newest few records, so
+//! going back an edit or two still finds its answer, and the store keeps the frontiers of its newest
+//! few binaries, so binaries sharing a store each keep theirs. What's dropped
 //! is only ever work: a record whose read can't be asked doesn't stand, and runs again. Records are
 //! read where they lie, so the walk holds only which questions and answers live.
 use @std.meta.{derive}
@@ -15,9 +15,6 @@ use sorted.{sorted_by}
 /// The most records a question keeps, newest first.
 const KEPT_RECORDS: int = 3
 
-/// The most code versions a root keeps, newest first.
-const KEPT_VERSIONS: int = 2
-
 /// One question, once, every way it was answered, oldest first, and the generation of the pack its
 /// newest record was first written in.
 @derive(Saved)
@@ -29,30 +26,15 @@ export fn records_in(entry: SavedRecord) -> List<KeptRecord> {
     [kept_in_place(records.record_at(i)!) for i in 0..records.length]
 }
 
-/// A question that may be a root: what it asks whatever its code, and the generation its newest
-/// record was written in.
-export type RootCandidate = { question: ContentHash, slot: ContentHash, written_in: int }
-
-/// The question saved at `entry` as a root, absent when none of its records is deep. Only a root's
-/// question is decoded.
-export fn root_candidate(entry: SavedRecord) -> RootCandidate? {
-    if !records_in(entry).any(it.deep) { return null }
-    RootCandidate {
-        question: ContentHash.read_from(QuestionRecords.question_in_place(entry)),
-        slot: slot_of(QuestionRecords.asked_in(entry)),
-        written_in: QuestionRecords.written_in_in(entry),
-    }
-}
-
 /// What a compaction keeps: each live question, and every answer its kept records found.
 export type Live = { questions: HashKeyedTable<bool>, answers: HashKeyedTable<bool> }
 
-/// What the kept roots among `candidates` keep alive, each question's records asked of
-/// `records_of`: a walk from the roots, each question queued once.
-export fn live_in(candidates: List<RootCandidate>, records_of: fn(ContentHash) -> List<KeptRecord>) -> Live {
+/// What the questions `seeds` keep alive, each question's records asked of `records_of`: a walk from
+/// the seeds, each question queued once.
+export fn live_in(seeds: List<ContentHash>, records_of: fn(ContentHash) -> List<KeptRecord>) -> Live {
     let questions: HashKeyedTable<bool> = hash_keyed_table()
     let answers: HashKeyedTable<bool> = hash_keyed_table()
-    mut pending = kept_roots(candidates)
+    mut pending = seeds
     for root in pending { questions.put(root, true) }
     // LICENSED loops.index_walk: a queue read by position while it grows
     mut next = 0
@@ -71,9 +53,8 @@ export fn live_in(candidates: List<RootCandidate>, records_of: fn(ContentHash) -
     Live { questions: questions, answers: answers }
 }
 
-/// A question's newest records, oldest first, and always its newest shallow one: a root reused
-/// through a shallow record writes only deep ones after it, and a deep record reads inputs alone,
-/// so without it nothing below the root would be reached.
+/// A question's newest records, oldest first, and always its newest shallow one: a deep record reads
+/// inputs alone, so without the shallow one nothing beneath would be reached.
 export fn newest_records(records: List<KeptRecord>) -> List<KeptRecord> {
     if records.length <= KEPT_RECORDS { return records }
     let newest = records.drop(records.length - KEPT_RECORDS)
@@ -81,25 +62,3 @@ export fn newest_records(records: List<KeptRecord>) -> List<KeptRecord> {
     let shallow? = records.filter(!it.deep).last() else { return newest }
     [shallow].concat(newest)
 }
-
-/// The roots kept: each query asked of the same arguments keeps its newest code versions, a
-/// question met more than once counted at its newest.
-fn kept_roots(candidates: List<RootCandidate>) -> List<ContentHash> {
-    let newest_of: HashKeyedTable<RootCandidate> = hash_keyed_table()
-    for c in candidates {
-        let met = newest_of.get(c.question)
-        if met == null || met!.written_in < c.written_in { newest_of.put(c.question, c) }
-    }
-    let by_slot: HashKeyedTable<List<RootCandidate>> = hash_keyed_table()
-    for c in newest_of.values() { by_slot.put(c.slot, (by_slot.get(c.slot) ?? []).concat([c])) }
-    [c.question for versions in by_slot.values() for c in newest(versions)]
-}
-
-/// The newest versions of one root, by the generation they were last written in.
-fn newest(versions: List<RootCandidate>) -> List<RootCandidate> {
-    sorted_by(versions, (a, b) -> a.written_in > b.written_in).take(KEPT_VERSIONS)
-}
-
-/// What a question asks whatever its code: its query and its arguments, the name counted so it
-/// can't trade octets with them.
-fn slot_of(asked: Question) -> ContentHash { content_hash("${asked.query_name.length}:${asked.query_name}".bytes().concat(asked.arguments)) }
