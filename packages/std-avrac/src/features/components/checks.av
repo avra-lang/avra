@@ -1,0 +1,25 @@
+//! The typing rules of a component instance: its heads and block check for what they are, and a
+//! named instance binds its name; an instance fn binds its seats in a fenced scope over its
+//! statements. What either is isn't named yet.
+use core.{Checking, Checks, ExprId, Expected, SignedType}
+use core.expr.{Component}
+
+impl Checks for Component {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        cx.checked_free(self.heads)
+        if self.key != null { let _ = cx.check(self.key!, Expected.Free) }
+        if self.body != null { let _ = cx.check(self.body!, Expected.Unknown) }
+        if self.name != null { cx.bind(self.name!.of, null) }
+        null
+    }
+}
+
+impl Checks for InstanceFn {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        cx.fenced()
+        for p in self.seats { cx.bind(p.name.of, if p.ty == null { null } else { cx.written(p.ty!) }) }
+        for s in self.stmts { cx.check_stmt(s) }
+        cx.closed()
+        null
+    }
+}

@@ -1,8 +1,23 @@
-//! The typing rule of a list literal: each element checks against the element type its seat wants,
-//! and the literal is the list that seat names; with none, the list of its elements' join. `[]`
-//! is its own type wherever it stands.
-use core.{Checking, Checks, ExprId, Expected, SignedType, never_type, owned_type, types_joined}
-use core.expr.{ListLit}
+//! The typing rules of lists. A literal: each element checks against the element type its seat
+//! wants, and the literal is the list that seat names; with none, the list of its elements' join.
+//! `[]` is its own type wherever it stands. A comprehension binds each head's names in a scope of its
+//! own and is the list of its element. A list pattern binds its ends' elements and its middle's list.
+use core.{
+    Checking,
+    Checks,
+    CompClause,
+    ExprId,
+    Expected,
+    PatChecks,
+    PatId,
+    SignedType,
+    never_type,
+    owned_type,
+    types_joined,
+    walk_binds,
+}
+use core.expr.{Collect, Comp, ListLit}
+use core.pat.{Seq}
 
 impl Checks for ListLit {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
@@ -16,5 +31,58 @@ impl Checks for ListLit {
             [cx.check(v, if expected is .Unknown { Expected.Unknown } else { Expected.Free }) for v in self.elems],
         )
         if held == null { null } else { owned_type("List") with { args: [held!] } }
+    }
+}
+
+impl Checks for Comp {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        cx.opened()
+        for c in self.clauses { clause_checked(cx, c) }
+        let wanted = match expected {
+            .Exactly(ty) -> (ty with { nulls: 0 }).listed(),
+            rest -> null,
+        }
+        let element = cx
+            .check(self.elem, if wanted == null { Expected.Free } else { Expected.Exactly(wanted!) })
+        cx.closed()
+        let held = wanted ?? element
+        if element == null || held == null { null } else { owned_type("List") with { args: [held!] } }
+    }
+}
+
+/// One clause of a comprehension's head: a walk binding its names, or a filter that is a `bool`.
+fn clause_checked(mut cx: Checking, c: CompClause) {
+    match c {
+        .Head(index, name, source, hi) -> {
+            let from = cx.check(source, Expected.Free)
+            if hi != null { let _ = cx.check(hi!, Expected.Exactly(owned_type("int"))) }
+            let walk = if hi != null { walk_binds(owned_type("Range")) } else { walk_binds(from) }
+            if index != null { cx.bind(index!.of, walk.index) }
+            cx.bind(name.of, walk.element)
+        },
+        .Filter(cond) -> { let _ = cx.check(cond, Expected.Exactly(owned_type("bool"))) },
+    }
+}
+
+impl Checks for Collect {
+    /// A collection's statements check in a scope of their own, each value it gathers under the seat
+    /// the gathering gives it, which isn't known yet; what it collects isn't either.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        cx.opened()
+        for s in self.stmts {
+            let value = cx.store.answer_of(s)
+            if value == null { cx.check_stmt(s) } else { let _ = cx.check(value!, Expected.Unknown) }
+        }
+        cx.closed()
+        null
+    }
+}
+
+impl PatChecks for Seq {
+    /// The patterns before and after a `..` bind elements; the middle binds the list.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let element = subject?.listed()
+        for b in self.before.concat(self.after) { cx.check_pat(b, element) }
+        for r in self.rest { cx.check_pat(r, subject) }
     }
 }

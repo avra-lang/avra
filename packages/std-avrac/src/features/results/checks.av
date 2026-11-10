@@ -1,7 +1,36 @@
-//! The typing rule of `fail`: its value is checked for what it is.
-use core.{Checking, Expected, StmtChecks, StmtId}
+//! The typing rules of failure: `fail`'s value is checked for what it is; a `catch` is its subject's
+//! ok side.
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId}
+use core.expr.{Catch}
 use core.stmt.{Fail}
 
 impl StmtChecks for Fail {
     fn stmt_checked(mut cx: Checking, s: StmtId) { let _ = cx.check(self.value, Expected.Free) }
+}
+
+impl Checks for Catch {
+    /// `r catch { … }` is `r`'s ok side: each arm binds the failure it names — the whole failure for a
+    /// catch-all, a variant's payload or a union's member — and checks against the ok side.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        let answer = cx.payload_of(subject, "Ok")
+        let err = cx.payload_of(subject, "Err")
+        for arm in self.arms {
+            cx.opened()
+            if !arm.bind.of.is_empty() { cx.bind(arm.bind.of, caught(cx, err, arm.variant.of)) }
+            let _ = cx
+                .check(arm.value, if answer == null { Expected.Free } else { Expected.Exactly(answer!) })
+            cx.closed()
+        }
+        answer
+    }
+}
+
+/// What an arm catching `variant` binds of the failure `err`: all of it for a catch-all, the member a
+/// union names, or the one payload the variant carries.
+fn caught(cx: Checking, err: SignedType?, variant: string) -> SignedType? {
+    let e? = err else { return null }
+    if variant.is_empty() { return e }
+    if !e.alternatives.is_empty() { return e.alternatives.find(it.word() == variant) }
+    cx.payload_of(e, variant)
 }

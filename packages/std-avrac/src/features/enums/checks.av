@@ -1,0 +1,69 @@
+//! The typing rules of enums: a variant pattern binds its payloads, each typed by the variant's
+//! payload on the subject's enum; `match` checks each arm against its seat and is their join; `is`
+//! proves its pattern's names in the branch where it holds; a variant literal is the enum its seat
+//! names.
+use core.{Checking, Checks, ExprId, Expected, PatChecks, PatId, Proof, SignedType, owned_type}
+use core.expr.{Is, Match, VariantLit}
+use core.pat.{Bind, Lit, Member, Rest, Variant, Wild}
+
+impl PatChecks for Wild {
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {}
+}
+
+impl PatChecks for Rest {
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {}
+}
+
+impl PatChecks for Bind {
+    /// A name binds the whole subject.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) { cx.bind(self.name.of, subject) }
+}
+
+impl PatChecks for Variant {
+    /// `.V(a, b)` binds each payload's pattern against that payload.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let payloads = cx.payloads_of(subject, self.name.of)
+        for at, a in self.args {
+            cx
+                .check_pat(a, if payloads != null && at < payloads!.length { payloads![at] } else { null })
+        }
+    }
+}
+
+impl PatChecks for Lit {
+    /// A literal binds nothing; it checks as the value it compares.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) { let _ = cx.check(self.value, Expected.Free) }
+}
+
+impl PatChecks for Member {
+    /// `.V as r` binds `r` as the member's record, which typing doesn't name yet.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) { cx.bind(self.bind.of, null) }
+}
+
+impl Checks for Match {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        cx.arms_met([cx.arm_checked(a, subject, expected) for a in self.arms], expected)
+    }
+}
+
+impl Checks for Is {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.left, Expected.Free)
+        cx.proved(e, Proof { names: cx.pattern_binds(self.right, subject), truth: true })
+        owned_type("bool")
+    }
+}
+
+impl Checks for VariantLit {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
+        let payloads = cx.payloads_of(wanted, self.name.of)
+        if payloads == null || payloads!.length != self.args.length || payloads!.any(it == null) {
+            cx.checked_free(self.args)
+            return null
+        }
+        for at, a in self.args { let _ = cx.check(a, Expected.Exactly(payloads![at]!)) }
+        wanted
+    }
+}

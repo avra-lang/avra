@@ -1,18 +1,17 @@
 //! The typing rule of `if`: the condition is a `bool`, both branches check against what the seat
-//! wants, a presence test narrowing its name in the branch its truth proves, and the value is the
-//! branches' join; an `if` whose value is dropped is `void` once its branches are known.
+//! wants, each under what the condition proves where it holds (a presence test's narrowed name, an
+//! `is`'s pattern), and the value is where the branches meet; an `if` whose value is dropped is
+//! `void` once its branches are known.
 use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
 use core.expr.{If}
 
 impl Checks for If {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        if expected is .Unknown { return cx.held_checked(e) }
         let _ = cx.check(self.cond, Expected.Exactly(owned_type("bool")))
-        let asked = cx.ask_of(self.cond)
-        let yes = if asked != null && asked!.on_present { cx.check_narrowed(self.on_true, expected, asked!.name) } else { cx.check(self.on_true, expected) }
+        let yes = cx.check_proven(self.on_true, expected, cx.proof_when(self.cond, true))
         let other? = self.on_false else { return if expected is .Dropped && yes != null { owned_type("void") } else { null } }
-        let no = if asked != null && !asked!.on_present { cx.check_narrowed(other, expected, asked!.name) } else { cx.check(other, expected) }
-        if expected is .Dropped { return if yes != null && no != null { owned_type("void") } else { null } }
-        if yes == null || no == null { null } else { yes!.joined_with(no!) }
+        let no = cx.check_proven(other, expected, cx.proof_when(self.cond, false))
+        if !(expected is .Dropped) { return cx.branches_met([yes, no], expected) }
+        if yes == null || no == null { null } else { owned_type("void") }
     }
 }

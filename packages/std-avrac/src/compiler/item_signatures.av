@@ -101,16 +101,48 @@ export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: s
 
 /// The fields a spread of `spread` brings, its record's own, bound to the arguments it's applied to.
 fn spread_fields(engine: QueryEngine, spread: SignedType) -> List<SignedField> {
-    let at? = match spread.head {
-        .Declared(file, name) -> RecordAt { file: file, name: name },
-        rest -> null,
-    } else { return [] }
+    let at? = declared_at(spread) else { return [] }
     let record? = record_signature(engine, at.file, at.name) else { return [] }
     [f with { ty: f.ty?.bound(spread.args) } for f in record.fields]
 }
 
-/// Where a record is declared.
-type RecordAt = { file: SourceFileAddress, name: string }
+/// Where a type is declared: its file and its name there.
+type DeclaredAt = { file: SourceFileAddress, name: string }
+
+/// Where the type `ty` names is declared, absent for a type the program doesn't declare.
+fn declared_at(ty: SignedType) -> DeclaredAt? {
+    match ty.head {
+        .Declared(file, name) -> DeclaredAt { file: file, name: name },
+        .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> null,
+    }
+}
+
+/// A variant: its name and its payloads, each typed where the enum is declared.
+@derive(Saved)
+export type SignedVariant = { name: string, payloads: List<SignedField> }
+
+/// An enum's signature: its type parameters and its variants, in order.
+@derive(Saved)
+export type EnumSignature = { type_params: List<string>, variants: List<SignedVariant> }
+
+/// The signature of the enum `file` declares as `name`, absent when it declares none.
+@query
+export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.Enum) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.enum_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
+    EnumSignature {
+        type_params: parts.tparams,
+        variants: [SignedVariant {
+            name: v.name.of,
+            payloads: [SignedField {
+                name: p.name.of,
+                ty: if p.ty == null { null } else { signing.signed(p.ty!) },
+            } for p in v.payloads],
+        } for v in parts.variants],
+    }
+}
 
 /// The item at `at` in `file`, read back.
 fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {

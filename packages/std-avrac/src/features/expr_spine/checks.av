@@ -1,6 +1,6 @@
 //! The typing rules of the literals, names and operators this feature reads.
 use core.{BinOp, Checking, Checks, ExprId, SignedType, Expected, TypeHead, owned_type}
-use core.expr.{Binary, FloatLit, Ident, Index, IntLit, Not, Prop}
+use core.expr.{Binary, Bitnot, FloatLit, Ident, Index, IntLit, Neg, Not, Prop}
 
 impl Checks for IntLit {
     /// An integer literal is an `int`.
@@ -66,7 +66,7 @@ fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right
     let subject = if asked! == left { l } else { r }
     if subject == null || !subject!.nullable() { return null }
     let name = cx.store.ident_name(asked!)
-    if name != null { cx.asked(e, name!, asks_present) }
+    if name != null { cx.presence_asked(e, name!, asks_present) }
     owned_type("bool")
 }
 
@@ -103,5 +103,26 @@ impl Checks for Index {
         let subject = cx.check(self.subject, Expected.Free)
         let _ = cx.check(self.index, Expected.Exactly(owned_type("int")))
         subject?.listed()
+    }
+}
+
+impl Checks for BlockLambda {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.lambda_checked(self.seats, self.body, expected) }
+}
+
+impl Checks for Neg {
+    /// `-v` is `v`'s number.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let v? = cx.check(self.value, Expected.Free) else { return null }
+        let word = plain_owned(v)
+        if word == "int" || word == "float" { v } else { null }
+    }
+}
+
+impl Checks for Bitnot {
+    /// `~v` is an `int`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let _ = cx.check(self.value, Expected.Exactly(owned_type("int")))
+        owned_type("int")
     }
 }

@@ -3,7 +3,9 @@
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
     CheckedProgram,
+    EnumShape,
     FieldSeat,
+    VariantSeat,
     RecordShape,
     TypeRef,
     ExprId,
@@ -40,6 +42,7 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
             written: (written: TypeRef) -> signing.signed(written),
             type_named: (n: string) -> signing.named(n),
             record_of: (ty: SignedType) -> record_shape(engine, ty),
+            enum_of: (ty: SignedType) -> enum_shape(engine, ty),
             method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
         },
         signature.answer,
@@ -49,13 +52,24 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
     TypedBody { types: cx.types.get() }
 }
 
+/// The enum `ty` is: its type parameters and its variants, typed where it's declared. Absent for a
+/// type that isn't an enum the program declares.
+fn enum_shape(engine: QueryEngine, ty: SignedType) -> EnumShape? {
+    let at? = declared_at(ty) else { return null }
+    let declared? = enum_signature(engine, at.file, at.name) else { return null }
+    EnumShape {
+        params: declared.type_params.length,
+        variants: [VariantSeat {
+            name: v.name,
+            payloads: [FieldSeat { name: p.name, ty: p.ty } for p in v.payloads],
+        } for v in declared.variants],
+    }
+}
+
 /// The record `ty` is: its type parameters and its fields, typed where it's declared. Absent for a
 /// type that isn't a record the program declares.
 fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
-    let at? = match ty.head {
-        .Declared(file, name) -> RecordAt { file: file, name: name },
-        rest -> null,
-    } else { return null }
+    let at? = declared_at(ty) else { return null }
     let record? = record_signature(engine, at.file, at.name) else { return null }
     RecordShape {
         params: record.type_params.length,

@@ -1,8 +1,8 @@
 //! The typing rules of loops: `while`'s condition is a `bool`; `for` binds its element, and its
 //! index when it names one, from what its subject is walked as; each body checks in a scope of its
 //! own, its values dropped.
-use core.{Checking, Expected, SignedType, StmtChecks, StmtId, owned_type}
-use core.stmt.{ForEach, While}
+use core.{Checking, Expected, StmtChecks, StmtId, owned_type, walk_binds}
+use core.stmt.{ForEach, Jump, While}
 
 impl StmtChecks for While {
     fn stmt_checked(mut cx: Checking, s: StmtId) {
@@ -15,7 +15,7 @@ impl StmtChecks for While {
 
 impl StmtChecks for ForEach {
     fn stmt_checked(mut cx: Checking, s: StmtId) {
-        let walk = walked(cx.check(self.subject, Expected.Free))
+        let walk = walk_binds(cx.check(self.subject, Expected.Free))
         cx.opened()
         if self.index != null { cx.bind(self.index!.of, walk.index) }
         cx.bind(self.name.of, walk.element)
@@ -24,15 +24,6 @@ impl StmtChecks for ForEach {
     }
 }
 
-/// What a walk binds at each turn: its index (a list's position, a map's key) and its element.
-type Walk = { index: SignedType?, element: SignedType? }
-
-/// What walking a value of `subject`'s type binds: a list's position and element, a map's key and
-/// value; nothing known for any other type.
-fn walked(subject: SignedType?) -> Walk {
-    let s? = subject else { return Walk { index: null, element: null } }
-    let element = s.listed()
-    if element != null { return Walk { index: owned_type("int"), element: element } }
-    if s.nullable() || s.dynamic || s.args.length != 2 || !s.names_as(owned_type("Map")) { return Walk { index: null, element: null } }
-    Walk { index: s.args[0], element: s.args[1] }
+impl StmtChecks for Jump {
+    fn stmt_checked(mut cx: Checking, s: StmtId) { if self.label != null { let _ = cx.check(self.label!, Expected.Free) } }
 }

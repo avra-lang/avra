@@ -1,6 +1,6 @@
-//! WHAT A TYPE'S METHODS ARE: every impl in the type's package whose target, read from the impl's
-//! own file, is that very declaration — never one that only shares its name — and each method
-//! signed under the impl's type parameters. Impls are found off the items' headers alone.
+//! WHAT A TYPE'S METHODS ARE: every impl in the type's package whose target, resolved from the impl's
+//! own file, is that very declaration — never one that only shares its name, and never missing one
+//! written under an import's other name — and each method signed under the impl's type parameters.
 use core.{SignedSeat, SignedType, TypeHead, headed_type}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
@@ -14,59 +14,49 @@ use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, 
 @derive(Saved)
 export type ImplAt = { file: SourceFileAddress, item: int, params: List<string> }
 
-/// An impl filed under the name its target is written with: where it stands, and the methods it
-/// gives.
+/// An impl filed under the type its target names: where it stands, the file declaring that type,
+/// and the methods it gives.
 @derive(Saved)
-type FiledImpl = { at: ImplAt, methods: List<string> }
+type FiledImpl = { at: ImplAt, of: SourceFileAddress, methods: List<string> }
 
-/// The impls filed under one written name.
+/// The impls filed under one declared name.
 @derive(Saved)
 type Filed = { impls: List<FiledImpl> }
 
-/// Every impl in a package, one part per name its target is written with, so a reader of one type's
-/// impls stands when another's move.
+/// Every impl in a package, one part per name of the type its target resolves to from the impl's own
+/// file, so an import's other name files with the type it names, and a reader of one type's impls
+/// stands when another's move.
 @parted_query
 export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts {
-    mut by_target: Map<string, List<FiledImpl>> = {}
+    mut by_type: Map<string, List<FiledImpl>> = {}
     for path in package_sources(engine, package, "src") {
         let f = SourceFileAddress { package_name: package, path_in_package: path }
         for at, held in file_impls(engine, f) {
             for i in held {
+                let d? = resolved(engine, f, Space.Type, i.target).named() else { continue }
                 let filed = FiledImpl {
                     at: ImplAt { file: f, item: at, params: i.params },
+                    of: d.file,
                     methods: i.methods,
                 }
-                by_target.set(i.target, (by_target.get(i.target) ?? []).concat([filed]))
+                by_type.set(d.name, (by_type.get(d.name) ?? []).concat([filed]))
             }
         }
     }
     answer_parts(
-        [NamedValue { name: name, value: Filed { impls: held }.saved_bytes() } for name, held in by_target],
+        [NamedValue { name: name, value: Filed { impls: held }.saved_bytes() } for name, held in by_type],
     )
 }
 
-/// The impls the type `file` declares as `name` has in its package, each holding `method`: those
-/// filed under its name whose target, read from the impl's own file, is that declaration.
+/// The impls the type `file` declares as `name` has in its package, each holding `method`.
 @query
 export fn impls_with(engine: QueryEngine, file: SourceFileAddress, name: string, method: string) -> List<
     ImplAt,
 > {
     let part? = package_impls_part(engine, file.package_name, name) else { return [] }
-    [i.at for i in Filed.from_saved_bytes(part).impls if i.methods.contains(method) && aims_at(engine, i.at.file, name, file, name)]
-}
-
-/// Whether `target`, read from `from`'s top level, is the type `file` declares as `name`.
-fn aims_at(
-    engine: QueryEngine,
-    from: SourceFileAddress,
-    target: string,
-    file: SourceFileAddress,
-    name: string,
-) -> bool {
-    let d? = resolved(engine, from, Space.Type, target).named() else { return false }
-    d.name == name &&
-        d.file.package_name == file.package_name &&
-        d.file.path_in_package == file.path_in_package
+    [i.at for i in Filed.from_saved_bytes(part).impls if i.methods.contains(method) &&
+        i.of.path_in_package == file.path_in_package &&
+        i.of.package_name == file.package_name]
 }
 
 /// The method `name` an impl gives, signed under the impl's type parameters and its own; absent
@@ -93,10 +83,7 @@ export fn method_signature(engine: QueryEngine, at: ImplAt, name: string) -> FnS
 /// give the impl every argument it names.
 export fn method_type(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if subject.nullable() || subject.dynamic { return null }
-    let at? = match subject.head {
-        .Declared(file, declared) -> RecordAt { file: file, name: declared },
-        rest -> null,
-    } else { return null }
+    let at? = declared_at(subject) else { return null }
     let impls = impls_with(engine, at.file, at.name, name)
     if impls.length != 1 { return null }
     let s? = method_signature(engine, impls[0], name) else { return null }

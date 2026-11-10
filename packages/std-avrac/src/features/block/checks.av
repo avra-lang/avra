@@ -6,7 +6,6 @@ use core.expr.{Block}
 
 impl Checks for Block {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        if expected is .Unknown { return cx.held_checked(e) }
         if cx.store.leaves(e) { return left(cx, self.stmts) }
         cx.opened()
         let ending = self.stmts.last()
@@ -18,7 +17,8 @@ impl Checks for Block {
             let _ = cx.check(tail!, Expected.Dropped)
             owned_type("void")
         } else {
-            cx.check(tail!, expected)
+            let read = cx.check(tail!, expected)
+            if expected is .Unknown { null } else { read }
         }
         cx.closed()
         answered

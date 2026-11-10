@@ -2,7 +2,7 @@
 //! checks in a scope of its own, its value dropped, before `x` is bound to what `v` holds when it's
 //! present.
 use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, null_type}
-use core.expr.{Coalesce, Force, NullLit}
+use core.expr.{Coalesce, Force, MatchOpt, NullLit, Propagate}
 use core.stmt.{LetElse}
 
 impl StmtChecks for LetElse {
@@ -40,5 +40,27 @@ impl Checks for Force {
     /// `v!` is what `v` holds when present.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         present(cx.check(self.subject, Expected.Free))
+    }
+}
+
+impl Checks for MatchOpt {
+    /// `match v { b? -> p, null -> a }`: `b` binds what `v` holds in `p`'s scope; the value is where
+    /// the arms meet.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let held = present(cx.check(self.subject, Expected.Free))
+        cx.opened()
+        cx.bind(self.bind.of, held)
+        let arm = if expected is .Dropped { Expected.Free } else { expected }
+        let yes = cx.check(self.present, arm)
+        cx.closed()
+        cx.arms_met([yes, cx.check(self.absent, arm)], expected)
+    }
+}
+
+impl Checks for Propagate {
+    /// `v?` is what `v` holds when it carries on: a `Result`'s ok side, an optional's value.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let s? = cx.check(self.subject, Expected.Free) else { return null }
+        cx.payload_of(s, "Ok") ?? present(s)
     }
 }

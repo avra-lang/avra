@@ -1,8 +1,9 @@
 //! The typing rule of a record literal: each value checks against its field's type, and the literal
 //! is the record. A generic record's arguments come from the seat it fills when that names the
 //! record, else from what its values fill.
-use core.{Checking, Checks, ExprId, Expected, SignedType}
-use core.expr.{StructLit}
+use core.{Checking, Checks, ExprId, Expected, PatChecks, PatId, SignedType}
+use core.expr.{StructLit, With}
+use core.pat.{Fields}
 
 impl Checks for StructLit {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
@@ -30,4 +31,27 @@ fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType?
     let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
     if !wanted.names_as(named) || wanted.dynamic || wanted.args.length != params { return null }
     wanted with { nulls: 0 }
+}
+
+impl Checks for With {
+    /// `r with { f: v }` is `r`'s record, each value checked against its field.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        for at, v in self.values {
+            let field = if subject == null { null } else { cx.field_of(subject!, self.fields[at].of) }
+            let _ = cx
+                .check(v, if field == null { Expected.Free } else { Expected.Exactly(field!) })
+        }
+        subject
+    }
+}
+
+impl PatChecks for Fields {
+    /// A record pattern binds each field's pattern against that field.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let named = cx.type_named(self.name.of)
+        let record = if cx.record_of(named) != null { named } else { subject }
+        for f in self.fields { cx.check_pat(f.pat, if record == null { null } else { cx.field_of(record!, f.name.of) }) }
+        for r in self.rests { cx.check_pat(r, null) }
+    }
 }

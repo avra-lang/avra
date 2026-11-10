@@ -1,6 +1,7 @@
 //! The typing rules of `let` and `mut`: a value checked against its annotation, or read as it is,
 //! and its name bound to the type.
-use core.{Checking, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeRef}
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeRef}
+use core.expr.{LetPattern}
 use core.stmt.{Let, MutLet}
 
 impl StmtChecks for Let {
@@ -18,4 +19,18 @@ fn bound_to(mut cx: Checking, name: string, annotation: TypeRef?, value: ExprId,
     let read = cx
         .check(value, if declared == null { Expected.Free } else { Expected.Exactly(declared!) })
     cx.bind(name, declared ?? read, narrowable)
+}
+
+impl Checks for LetPattern {
+    /// `let P = v else { … }` and what follows it: the pattern binds against `v` for the rest, which is
+    /// the value; the else checks as a dropped value.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        if self.otherwise != null { let _ = cx.check(self.otherwise!, Expected.Dropped) }
+        cx.opened()
+        cx.check_pat(self.pat, subject)
+        let rest = if self.rest == null { null } else { cx.check(self.rest!, expected) }
+        cx.closed()
+        rest
+    }
 }

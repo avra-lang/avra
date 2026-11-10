@@ -1,29 +1,18 @@
 //! `Checks` — a node's typing rule: its type, checked against what its seat wants. A
-//! `collect enum Expr: Checks` derives a default for a member with no rule of its own, read off its
-//! fields: one that holds nothing able to bind a name checks each node it holds and answers nothing
-//! itself; one that holds a binder (parameters, arms, clauses, a pattern, statements, a name) may
-//! bind a name no scope here holds, so every name beneath it answers nothing too. Either way a
-//! node whose feature has no rule yet is unchecked while everything beneath it still is.
+//! `collect enum Expr: Checks` derives a default for a member with nothing that can bind a name: it
+//! checks each node it holds against what isn't known and answers nothing itself. A member holding a
+//! binder (parameters, arms, clauses, a pattern, statements, a name) gets none, so it doesn't build
+//! until its feature writes the rule that says what it binds.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
 use @std.meta.{Type as MetaType, Directive, beside}
 
 export trait Checks {
-    /// This node's type, checked against `expected`; absent while its feature has no rule.
-    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.held_checked(e) }
+    /// This node's type, checked against `expected`; absent when it isn't known.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.children_checked(e) }
 
     static fn derive(t: MetaType) -> List<Directive> {
-        if t.fields.any((f) -> BINDERS.contains(f.ty)) { return [beside(t, quote { impl Checks for ${t} {} })] }
-        [
-            beside(
-                t,
-                quote {
-                    impl Checks for ${t} {
-                        fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.unbinding_checked(e) }
-                    }
-                },
-            ),
-        ]
+        if t.fields.any((f) -> BINDERS.contains(f.ty)) { [] } else { [beside(t, quote { impl Checks for ${t} {} })] }
     }
 }
 
