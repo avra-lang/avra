@@ -118,6 +118,10 @@ impl SignedType {
         if args.any(it == null) { null } else { self with { nulls: nulls, args: [x! for x in args] } }
     }
 
+    /// Whether this type holds `never` anywhere: the type of `null`, `[]` or `{}`, which says less than
+    /// the type it stands for.
+    fn partial() -> bool { self.head is .Never || self.args.any((a) -> a.partial()) }
+
     /// Whether this is `never`, the type no value has.
     fn bottom() -> bool { self.head is .Never && self.nulls == 0 }
 
@@ -159,13 +163,14 @@ impl SignedType {
 
     /// Whether `actual` is this type with its type parameters filled, each fill recorded in `found`
     /// and fills of one parameter joining. A parameter seat under nulls takes as many
-    /// off what fills it, and no more than it has; `never` fits every parameter and fills none.
+    /// off what fills it, and no more than it has; a fill holding `never` (`null`, `[]`) fits and pins
+    /// nothing, joining what pins it.
     fn unifies(actual: SignedType, mut found: Map<string, SignedType>) -> bool {
         let at = match self.head { .Parameter(index, _) -> index, rest -> -1 }
         if at >= 0 {
             let fill = actual with { nulls: if actual.nulls > self.nulls { actual.nulls - self.nulls } else { 0 } }
-            if fill.head is .Never { return true }
             let known = found.get("${at}")
+            if known == null && fill.partial() { return true }
             let joined = if known == null { fill } else { known!.joined_with(fill) }
             if joined == null { return false }
             found.set("${at}", joined!)
@@ -182,6 +187,19 @@ impl SignedType {
             actual.answer != null &&
             !self.answer!.unifies(actual.answer!, found) { return false }
         true
+    }
+
+    /// Whether `found` fills every type parameter this type names.
+    fn fills_all(found: Map<string, SignedType>) -> bool { self.parameters().all((at) -> found.has("${at}")) }
+
+    /// The places of the type parameters this type names, each once per naming.
+    fn parameters() -> List<int> {
+        let own = match self.head { .Parameter(index, _) -> [index], rest -> [] }
+        let parts = self
+            .args
+            .concat([s.ty for s in self.seats])
+            .concat(if self.answer == null { [] } else { [self.answer!] })
+        own.concat(flatten([p.parameters() for p in parts]))
     }
 
     /// One past the highest type parameter place this type names.

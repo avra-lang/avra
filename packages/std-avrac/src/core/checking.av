@@ -16,8 +16,8 @@ export enum Expected {
 
 /// What a body's checking reads of the program: the type a top-level value's name has from the
 /// body's file, absent when it names none; a type written in the body, and one named, resolved where
-/// it stands; the record or enum a type is, and the method a value of it has, absent when the
-/// program names none.
+/// it stands; the record or enum a type is, and the method or property a value of it has as a fn of
+/// its receiver first, absent when the program names none.
 export type CheckedProgram = {
     value_named: fn(string) -> SignedType?,
     written: fn(TypeRef) -> SignedType,
@@ -25,6 +25,7 @@ export type CheckedProgram = {
     record_of: fn(SignedType) -> RecordShape?,
     enum_of: fn(SignedType) -> EnumShape?,
     method_of: fn(SignedType, string) -> SignedType?,
+    property_of: fn(SignedType, string) -> SignedType?,
 }
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
@@ -329,14 +330,17 @@ impl Checking {
     fn type_named(name: string) -> SignedType { (self.program.type_named)(name) }
 
     /// What the values checked into `seats` fill of the type parameters the seats name, beyond those
-    /// `pinned` already fills: each value
-    /// whose seat isn't a fn first, then each fn value against its seat with what's filled so far, a
-    /// seat still naming an unfilled parameter unseen. Absent when a value can't fill its seat or two
-    /// fill one parameter differently.
-    mut fn fills(seats: List<SignedType>, values: List<ExprId>, pinned: Map<string, SignedType>) -> Map<
-        string,
-        SignedType,
-    >? {
+    /// `pinned` already fills: each value whose seat isn't a fn first; then what the seat the call
+    /// fills wants of `answer`, for parameters still open; then each fn value against its seat with
+    /// what's filled so far, a seat still naming an unfilled parameter unseen. Absent when a value
+    /// can't fill its seat or two fill one parameter differently.
+    mut fn fills(
+        seats: List<SignedType>,
+        values: List<ExprId>,
+        pinned: Map<string, SignedType>,
+        answer: SignedType?,
+        expected: Expected,
+    ) -> Map<string, SignedType>? {
         mut found = pinned
         mut agreed = true
         for at, v in values {
@@ -345,6 +349,11 @@ impl Checking {
             let read = self
                 .check(v, if seat.generic() { Expected.Free } else { Expected.Exactly(seat) })
             if seat.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+        }
+        let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
+        if answer != null && wanted != null {
+            mut from_seat: Map<string, SignedType> = {}
+            if answer!.unifies(wanted!, from_seat) { for k, v in from_seat { if !found.has(k) { found.set(k, v) } } }
         }
         for at, v in values {
             let seat = seats[at]
@@ -360,8 +369,27 @@ impl Checking {
     /// Each value checked against nothing.
     mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
 
-    /// The fn type of the method `name` on a value of `subject`'s type, absent when the program names
-    /// none.
+    /// The property `name` of a value of `subject`'s type, as a fn of the receiver alone; absent when
+    /// the program names none.
+    fn property_of(subject: SignedType, name: string) -> SignedType? { (self.program.property_of)(subject, name) }
+
+    /// What a method answers called on a value of `subject`'s type with `args`: its first seat takes
+    /// the receiver, filling what it names, and the rest fill as a call's do. Absent when a seat can't
+    /// take what it's given or the answer names a parameter nothing filled.
+    mut fn applied(method: SignedType, subject: SignedType, args: List<ExprId>, expected: Expected) -> SignedType? {
+        mut pinned: Map<string, SignedType> = {}
+        if method.seats.length != args.length + 1 || !method.seats[0].ty.unifies(subject, pinned) {
+            self.checked_free(args)
+            return null
+        }
+        let found? = self
+            .fills([s.ty for s in method.seats.drop(1)], args, pinned, method.answer, expected) else { return null }
+        let answer? = method.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// The fn type of the method `name` on a value of `subject`'s type, its receiver the first seat;
+    /// absent when the program names none.
     fn method_of(subject: SignedType, name: string) -> SignedType? { (self.program.method_of)(subject, name) }
 
     /// A type written in the body, resolved.

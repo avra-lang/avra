@@ -77,21 +77,47 @@ export fn method_signature(engine: QueryEngine, at: ImplAt, name: string) -> FnS
     }
 }
 
-/// The type of the method `name` on a value of `subject`'s type, the impl's parameters bound to the
-/// subject's arguments: absent for an optional or dynamic subject, a type the program doesn't
-/// declare, a method no impl gives, one with type parameters of its own, or a subject that doesn't
-/// give the impl every argument it names.
+/// The fn type of the method `name` on a value of `subject`'s type, its receiver the first seat and
+/// every type parameter (the impl's, then the method's own) left for the call to fill: an impl's
+/// method on a type the program declares, a verb (`@std/prelude`'s `verbs/`) on one the language
+/// owns. Absent for an optional or dynamic subject and a method nothing gives.
 export fn method_type(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if subject.nullable() || subject.dynamic { return null }
-    let at? = declared_at(subject) else { return null }
-    let impls = impls_with(engine, at.file, at.name, name)
+    match subject.head {
+        .Declared(file, declared) -> impl_method(engine, file, declared, name),
+        .Owned(word) -> own_verb(engine, "verbs/${word}.av", name),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> null,
+    }
+}
+
+/// The property `name` of a value of `subject`'s type, as a fn of the receiver alone: one the
+/// language's own type has (`@std/prelude`'s `verbs/props/`).
+export fn property_type(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
+    if subject.nullable() || subject.dynamic { return null }
+    match subject.head {
+        .Owned(word) -> own_verb(engine, "verbs/props/${word}.av", name),
+        .Declared(_, _) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> null,
+    }
+}
+
+/// The method `name` the one impl of the type `file` declares as `declared` that gives it, its
+/// receiver the type over the impl's own parameters.
+fn impl_method(engine: QueryEngine, file: SourceFileAddress, declared: string, name: string) -> SignedType? {
+    let impls = impls_with(engine, file, declared, name)
     if impls.length != 1 { return null }
     let s? = method_signature(engine, impls[0], name) else { return null }
-    if s.type_params.length != impls[0].params.length ||
-        subject.args.length != impls[0].params.length ||
-        s.params.any(it.ty == null) { return null }
-    let made = headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: p.ty!.bound(subject.args), mutable: p.mutable, settled: p.settled } for p in s.params], answer: s.answer.bound(subject.args) }
-    if made.generic() { null } else { made }
+    let receiver = headed_type(TypeHead.Declared(file, declared)) with { args: [headed_type(TypeHead.Parameter(at, p)) for at, p in impls[0].params] }
+    fn_typed([SignedSeat { ty: receiver, mutable: false, settled: false }], s)
+}
+
+/// The verb `name` the file at `path` in `@std/prelude` declares.
+fn own_verb(engine: QueryEngine, path: string, name: string) -> SignedType? {
+    let s? = fn_signature(
+        engine,
+        SourceFileAddress { package_name: PRELUDE, path_in_package: path },
+        name,
+    ) else { return null }
+    fn_typed([], s)
 }
 
 collect listed_method_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

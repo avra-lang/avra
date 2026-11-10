@@ -90,10 +90,14 @@ fn plain_owned(ty: SignedType?) -> string? {
 }
 
 impl Checks for Prop {
-    /// A field read is the field's type, read off the subject's.
+    /// A field read is the field's type, read off the subject's; or the property the subject's type
+    /// has.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject? = cx.check(self.subject, Expected.Free) else { return null }
-        cx.field_of(subject, self.name.of)
+        let field = cx.field_of(subject, self.name.of)
+        if field != null { return field }
+        let property? = cx.property_of(subject, self.name.of) else { return null }
+        cx.applied(property, subject, [], expected)
     }
 }
 

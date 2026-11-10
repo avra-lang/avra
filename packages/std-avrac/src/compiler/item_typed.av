@@ -44,6 +44,7 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
             record_of: (ty: SignedType) -> record_shape(engine, ty),
             enum_of: (ty: SignedType) -> enum_shape(engine, ty),
             method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
+            property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
         },
         signature.answer,
     )
@@ -82,19 +83,14 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
 fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
     let s? = fn_signature(engine, d.file, d.name) else { return null }
-    SignedType {
-        head: TypeHead.Function,
-        args: [],
-        nulls: 0,
-        dynamic: false,
-        seats: [SignedSeat {
-            ty: p.ty ?? headed_type(TypeHead.Inferred),
-            mutable: p.mutable,
-            settled: p.settled,
-        } for p in s.params],
-        answer: s.answer,
-        alternatives: [],
-    }
+    fn_typed([], s)
+}
+
+/// A signature as a fn type, after `leading` seats; absent when a parameter's type isn't written.
+fn fn_typed(leading: List<SignedSeat>, s: FnSignature) -> SignedType? {
+    if s.params.any(it.ty == null) { return null }
+    headed_type(TypeHead.Function) with { seats: leading
+        .concat([SignedSeat { ty: p.ty!, mutable: p.mutable, settled: p.settled } for p in s.params]), answer: s.answer }
 }
 
 /// Where each node of the fn `file` declares as `name` stands, by its index in the item read back,
