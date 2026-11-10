@@ -1,0 +1,44 @@
+//! `meaning` — what a sugar means, written in the language it means:
+//! `meaning coalesce { quote { ${a} ?? ${b} } -> quote { match ${a} { v? -> v, null -> ${b} } } }`
+//! is an instance of `component meaning` below, its arms filling `run` as a `rule`'s do (the arms
+//! sugar's `_ -> null` tail included). The subject is `it`, one node of an item typing has read; a
+//! pattern's holes bind nodes of that item, and a template splices each back as the node it is,
+//! never as its text, so its span, its type and its own meaning come with it.
+use core.{At, SignedType, SyntaxArena}
+use @std.meta.{Rewrite}
+
+/// An item's syntax, where a quote pattern reads it.
+export type TypedView = { store: SyntaxArena }
+
+/// What a meaning reads of the item it rewrites: its syntax, and each expression's type as typing
+/// found it.
+export type TypedItem = { view: TypedView, types: List<SignedType?> }
+
+/// One node of a typed item: the subject a meaning matches, and what its pattern's holes bind.
+export type TypedCode = { of: TypedItem, at: At }
+
+impl TypedCode {
+    /// The type typing found for this node, absent for a node that isn't an expression or wasn't
+    /// typed.
+    fn type() -> SignedType? {
+        match self.at {
+            .Expr(id) -> if id.index < self.of.types.length { self.of.types[id.index] } else { null },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+}
+
+/// The arena index of the node a handle holds: what a template splices where the hole stands.
+export fn typed_code_index(m: TypedCode) -> int {
+    match m.at {
+        .Expr(id) -> id.index,
+        .Pat(id) -> id.index,
+        .Stmt(id) -> id.index,
+        .Field(_, _) or .Param(_, _) -> 0 - 1,
+    }
+}
+
+export component meaning {
+    run: fn(TypedCode) -> Rewrite?
+    doc: string = ""
+}
