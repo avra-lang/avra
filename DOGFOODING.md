@@ -2073,3 +2073,16 @@ test all read them, and no walker reads `meant` itself. `kids()` and
   and `x |> f()` stays as written) and the call it means is minted beside
   it. A stage that is no call means nothing and is refused where it is
   written.
+
+## A meaning that reads typing is a `meaning`, and one door splices every rewrite
+
+A sugar whose meaning depends on what typing found is a `meaning` component
+(`packages/std-avrac/src/features/meaning.av`): its arms are quote patterns over
+a typed item and its rewrites are templates, so `if may_be_absent(left)` reads a
+type where a `means()` could not. `packages/std-avrac/src/compiler/sugars.av`'s
+`rewritten_beside` is the one door every expression rewrite takes — a `means()`
+and a `meaning` alike — and its template's own names are made fresh by the
+sugar's index, so none meets a name of the code it lands in. Meanings and rules
+are filed by root kind through one index, `RootIndex<T>`
+(`packages/std-avrac/src/compiler/rules_table.av`), so an entry no pattern can
+narrow is tried at every node for both.

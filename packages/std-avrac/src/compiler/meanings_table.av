@@ -1,6 +1,5 @@
 //! EVERY MEANING, gathered: a `meaning` declared in any feature dir joins this with no edit here,
 //! filed under the node kinds its arms are rooted at.
-use core.{flatten}
 use features.{TypedCode, meaning}
 use @std.meta.{Rewrite}
 
@@ -9,24 +8,5 @@ export type MeaningEntry = { name: string, module: string, run: fn(TypedCode) ->
 
 export collect meanings: List<MeaningEntry> = meaning in closure as MeaningEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, doc: it.doc } by it.module, it.name
 
-/// The meanings by root kind: each kind some meaning is rooted at, and the meanings a node of that
-/// kind is tried against.
-export type MeaningIndex = { roots: List<int>, at_root: List<List<MeaningEntry>> }
-
-impl MeaningIndex {
-    /// The meanings a node of `kind` is tried against, in table order.
-    fn at(kind: int) -> List<MeaningEntry> {
-        let i = self.roots.index_of(kind)
-        if i < 0 { [] } else { self.at_root[i] }
-    }
-}
-
 /// The meaning table's index, built once.
-export once fn meaning_index() -> MeaningIndex {
-    let rooted = flatten([m.root for m in meanings])
-    let roots = [k for i, k in rooted if rooted.index_of(k) == i]
-    MeaningIndex {
-        roots: roots,
-        at_root: [[m for m in meanings if m.root.contains(k)] for k in roots],
-    }
-}
+export once fn meaning_index() -> RootIndex<MeaningEntry> { root_indexed(meanings, (m: MeaningEntry) -> m.root) }

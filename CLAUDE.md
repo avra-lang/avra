@@ -1693,6 +1693,7 @@ Wants the typer does not carry yet:
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
 - `==`, `contains`/`index_of` and a literal pattern compare a scalar, text, a tagged enum, or a one-field record; two fields is "`==` compares by value — …", and an enum carrying a payload is refused too (help: match on it).
 - A named type is opaque at a seat and transparent at a read: a `Rows` seat refuses a computed `List<int>` ("wants `Rows`, found `List<int>`") and takes a literal.
+- `r catch null` answers the ok side, so `let x? = r catch null else { … }` is "a `catch` arm answers the ok side: `D`, this is `null`" (and "`x?` asks a nullable"); a `Result` read as absence is a `match` (`.Ok(d) -> d, .Err(_) -> null`).
 
 Methods the runtime lacks:
 - `List.reverse()` / `sort()` are "calls a method, and `List<int>` has none"; core's `reversed` is the helper.

@@ -28,17 +28,22 @@ export fn content_hash(octets: Bytes) -> ContentHash {
     ContentHash { high_word: word_in(hash, 0), low_word: word_in(hash, 8) }
 }
 
-/// The entry keyed by `wanted` in a table sorted by hash and held in place: a list of the keys'
-/// high words beside a list of entries, each entry's first field its key. A search touches the
-/// list of numbers, and opens only the entries it might have found.
-export fn entry_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> SavedRecord? {
+/// Where the entry keyed by `wanted` stands in a table sorted by hash and held in place: a list of
+/// the keys' high words beside a list of entries, each entry's first field its key. A search
+/// touches the list of numbers, and opens only the entries it might have found.
+export fn place_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> int? {
     mut position = high_words.first_at_or_after(wanted.high_word)
     while position < high_words.length && high_words.number_at(position) == wanted.high_word {
-        let entry = entries.record_at(position)!
-        if ContentHash.read_from(entry.record_at(0)!).same_as(wanted) { return entry }
+        if ContentHash.read_from(entries.record_at(position)!.record_at(0)!).same_as(wanted) { return position }
         position = position + 1
     }
     null
+}
+
+/// The entry keyed by `wanted` in such a table.
+export fn entry_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> SavedRecord? {
+    let at? = place_keyed(high_words, entries, wanted) else { return null }
+    entries.record_at(at)
 }
 
 /// A question: which query, a hash of its code, and its arguments as bytes.

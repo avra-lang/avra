@@ -4,6 +4,7 @@
 use core.{
     meta_type,
     CheckedProgram,
+    Checking,
     EnumShape,
     FieldSeat,
     VariantSeat,
@@ -31,15 +32,30 @@ export type TypedBody = { types: List<SignedType?> }
 /// The body of the fn `file` declares as `name`, typed; absent when it declares none with a body.
 @query
 export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> TypedBody? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    TypedBody { types: body_checked(engine, file, signed, false).types.get() }
+}
+
+/// A fn's body beside the signature it is typed under, and the item that holds it.
+type SignedBody = { signature: FnSignature, item: ReadItem, body: ExprId }
+
+/// The fn `file` declares as `name`, its body signed; absent when it declares none with a body.
+fn signed_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedBody? {
     let signature? = fn_signature(engine, file, name) else { return null }
     let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
     let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
         .first() else { return null }
-    let signing = Signing { engine: engine, file: file, type_params: signature.type_params }
-    mut cx = checking(item.store, program_of(engine, file, signing), signature.answer)
-    for p in signature.params { cx.bind(p.name, p.ty, true) }
-    let _ = cx.check(body, Expected.Exactly(signature.answer))
-    TypedBody { types: cx.types.get() }
+    SignedBody { signature: signature, item: item, body: body }
+}
+
+/// The body checked under its signature in `file`: each sugar by its own rule, or as the core it
+/// means when `meanings`.
+fn body_checked(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody, meanings: bool) -> Checking {
+    let signing = Signing { engine: engine, file: file, type_params: signed.signature.type_params }
+    mut cx = checking(signed.item.store, program_of(engine, file, signing), signed.signature.answer) with { meanings: meanings }
+    for p in signed.signature.params { cx.bind(p.name, p.ty, true) }
+    let _ = cx.check(signed.body, Expected.Exactly(signed.signature.answer))
+    cx
 }
 
 /// The enum `ty` is: its type parameters and its variants, typed where it's declared. Absent for a
@@ -69,7 +85,7 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
 
 /// What a body in `file` reads of the program: every answer typing asks, from the queries that hold
 /// it, under `signing`'s type parameters.
-export fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) -> CheckedProgram {
+fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) -> CheckedProgram {
     CheckedProgram {
         value_named: (n: string) -> value_type(engine, file, n),
         written: (written: TypeRef) -> signing.signed(written),

@@ -5,9 +5,9 @@
 //! frontier is closed — whatever an entry read is an entry too — so it is right at the inputs it
 //! names, whatever other processes write.
 use @std.meta.{derive}
-use answer_record.{ContentHash}
+use answer_record.{ContentHash, place_keyed}
 use saved_derive.{Saved}
-use saved_layout.{SavedList, SavedSource, saved_layout_writer, saved_root_record}
+use saved_layout.{SavedList, SavedSource, saved_layout_writer, sealed_root_record}
 
 /// One answer a frontier holds: its question, its answer, the places of what it read, and whether it
 /// is an input, read afresh in every process.
@@ -32,14 +32,7 @@ impl Frontier {
     fn length() -> int { self.entries.length }
 
     /// The place `question` stands at, absent when the frontier doesn't hold it.
-    fn place_of(question: ContentHash) -> int? {
-        mut at = self.high_words.first_at_or_after(question.high_word)
-        while at < self.high_words.length && self.high_words.number_at(at) == question.high_word {
-            if self.question_at(at).same_as(question) { return at }
-            at = at + 1
-        }
-        null
-    }
+    fn place_of(question: ContentHash) -> int? { place_keyed(self.high_words, self.entries, question) }
 
     fn question_at(at: int) -> ContentHash { ContentHash.read_from(FrontierEntry.question_in_place(self.entries.record_at(at)!)) }
 
@@ -72,10 +65,7 @@ impl Frontier {
 
 /// The frontier the octets of `source` hold, `length` long; absent when they don't end in its seal.
 export fn frontier_in(source: SavedSource, length: int) -> Frontier? {
-    let index_ends_at = length - FRONTIER_SEAL.length
-    if index_ends_at < FRONTIER_SEAL.length ||
-        source.octets_at(index_ends_at, length).text() != FRONTIER_SEAL { return null }
-    let index = saved_root_record(source, index_ends_at)
+    let index? = sealed_root_record(source, length, FRONTIER_SEAL) else { return null }
     Frontier {
         high_words: FrontierIndex.high_words_in_place(index),
         entries: FrontierIndex.entries_in_place(index),

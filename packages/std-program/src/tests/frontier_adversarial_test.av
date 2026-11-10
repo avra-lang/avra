@@ -6,7 +6,7 @@ use @std.process.{cmd, tool_at}
 use @std.text.{parse_int}
 use @std.time.{stamp}
 use answer_record.{ContentHash, content_hash, question}
-use disk_store.{disk_store_at}
+use disk_store.{disk_store_at, frontier_path}
 use frontier.{FrontierEntry, frontier_runs}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use sorted.{sorted_by}
@@ -99,7 +99,15 @@ fn fresh(label: string) -> string { "/tmp/avra-frontier-attack/${stamp()}-${labe
 
 /// Where `binary` keeps its frontier in `directory`.
 fn frontier_file(directory: string, binary: List<QueryDefinition>) -> string {
-    "${directory}/frontier-${query_engine(disk_store_at("/dev/null/none"), binary).print()}.front"
+    frontier_path(directory, printed(binary))
+}
+
+/// What tells `binary` apart from another binary.
+fn printed(binary: List<QueryDefinition>) -> string { query_engine(disk_store_at("/dev/null/none"), binary).print() }
+
+/// Whether the store at `directory` holds a frontier `binary` can read.
+fn reads_a_frontier(directory: string, binary: List<QueryDefinition>) -> bool {
+    disk_store_at(directory).frontier_of(printed(binary)) != null
 }
 
 fn files_ending(directory: string, suffix: string) -> List<string> {
@@ -247,26 +255,31 @@ spec "frontier — attacked" {
             let warm = reported(directory, two("abc", "xy"))
             first.answer == "odd/2" && warm.engine.worked_count() == 0
         }
-        then "a frontier cut in half is no frontier, and a changed world still answers" {
+        then "a frontier that read whole, cut in half, is no frontier, and a changed world still answers" {
             let directory = fresh("torn_half")
             let _ = reported(directory, two("abc", "xy"))
+            let whole = reads_a_frontier(directory, binary(two("abc", "xy")))
             let path = frontier_file(directory, binary(two("abc", "xy")))
             let _ = truncate_to(path, octets_of(path) / 2) catch ""
-            reported(directory, two("abcd", "xy")).answer == "even/2" &&
+            whole &&
+                !reads_a_frontier(directory, binary(two("abc", "xy"))) &&
+                reported(directory, two("abcd", "xy")).answer == "even/2" &&
                 reported(directory, two("abc", "xy")).answer == "odd/2"
         }
-        then "a frontier missing its seal's last octet is no frontier" {
+        then "a frontier missing its seal's last octet is no frontier, and a changed world still answers" {
             let directory = fresh("torn_seal")
             let _ = reported(directory, two("abc", "xy"))
             let path = frontier_file(directory, binary(two("abc", "xy")))
             let _ = truncate_to(path, octets_of(path) - 1) catch ""
-            reported(directory, two("abcd", "xy")).answer == "even/2"
+            !reads_a_frontier(directory, binary(two("abc", "xy"))) &&
+                reported(directory, two("abcd", "xy")).answer == "even/2"
         }
-        then "a frontier of zero octets is no frontier" {
+        then "a frontier of zero octets is no frontier, and a changed world still answers" {
             let directory = fresh("torn_zero")
             let _ = reported(directory, two("abc", "xy"))
             let _ = truncate_to(frontier_file(directory, binary(two("abc", "xy"))), 0) catch ""
-            reported(directory, two("abcd", "xy")).answer == "even/2"
+            !reads_a_frontier(directory, binary(two("abc", "xy"))) &&
+                reported(directory, two("abcd", "xy")).answer == "even/2"
         }
         then "a frontier whose packs were removed under it answers a changed world and an unchanged one" {
             let directory = fresh("packs_gone")

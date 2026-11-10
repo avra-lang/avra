@@ -7,7 +7,19 @@
 //! the pack itself runs. Reads are the spine's property ladder (a
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
-use core.{ExprId, StmtId, Reg, TypeId, DeclId, Binding, filled, flatten, spread_entry, same_decl}
+use core.{
+    ExprId,
+    StmtId,
+    Reg,
+    TypeId,
+    DeclId,
+    Binding,
+    distinct_ints,
+    filled,
+    flatten,
+    spread_entry,
+    same_decl,
+}
 use features.{
     LowerCx,
     StructSig,
@@ -262,7 +274,7 @@ fn receiver_slots(mut cx: LowerCx, lam: ExprId, body: ExprId) -> List<int>? {
     if names.any(it == null) { return null }
     let slots: List<int?> = [sig.slot_of(n!) for n in names]
     if slots.any((s) -> s == null || !sig.state_at(s!)) { return null }
-    deduped_slots([s! for s in slots])
+    distinct_ints([s! for s in slots])
 }
 
 /// The cells those slots hold in the receiver, read in this body.
@@ -274,13 +286,6 @@ fn receiver_cells(mut cx: LowerCx, lam: ExprId, body: ExprId) -> List<Reg>? {
     let sig? = cx.fields_of(ty) else { return null }
     let at? = cx.capture_reg(lam, j) else { return null }
     [cx.field_read(at, ty, s, sig.types[s]) for s in slots]
-}
-
-/// Each slot once, in first-read order.
-fn deduped_slots(slots: List<int>) -> List<int> {
-    mut out: List<int> = []
-    for s in slots { if !out.contains(s) { out.push(s) } }
-    out
 }
 
 /// The closure the builder minted beside a literal: the node that extends it

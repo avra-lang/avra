@@ -26,7 +26,7 @@ use saved_layout.{
     SavedSource,
     saved_bytes_in_memory,
     saved_layout_writer,
-    saved_root_record,
+    sealed_root_record,
     word_in,
 }
 use sorted.{sorted_by}
@@ -85,13 +85,10 @@ fn mapped_pack(path: string) -> MappedPack? {
     let mapping? = avra_mmap_open(path) else { return null }
     let source = SavedSource.Mapped(mapping)
     let length = avra_mmap_len(mapping)
-    let index_ends_at = length - PACK_SEAL.length
-    if index_ends_at < PACK_SEAL.length ||
-        source.octets_at(index_ends_at, length).text() != PACK_SEAL {
+    let index? = sealed_root_record(source, length, PACK_SEAL) else {
         avra_mmap_close(mapping)
         return null
     }
-    let index = saved_root_record(source, index_ends_at)
     MappedPack {
         path: path,
         length: length,
@@ -331,7 +328,11 @@ const KEPT_FRONTIERS: int = 2
 /// The frontier the file at `path` holds; its mapping stays for the process, as a pack's does.
 fn frontier_at(path: string) -> Frontier? {
     let mapping? = avra_mmap_open(path) else { return null }
-    frontier_in(SavedSource.Mapped(mapping), avra_mmap_len(mapping))
+    let held? = frontier_in(SavedSource.Mapped(mapping), avra_mmap_len(mapping)) else {
+        avra_mmap_close(mapping)
+        return null
+    }
+    held
 }
 
 /// The frontier files in `directory`, by name.
@@ -340,7 +341,7 @@ fn frontier_names_in(directory: string) -> List<string> {
 }
 
 /// Where the binary printed `print` keeps its frontier.
-fn frontier_path(directory: string, print: string) -> string { "${directory}/frontier-${print}.front" }
+export fn frontier_path(directory: string, print: string) -> string { "${directory}/frontier-${print}.front" }
 
 fn pack_names_in(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(PACK_SUFFIX)) }
 
@@ -391,12 +392,11 @@ impl AnswerStore for DiskStore {
 
     fn hold_answer_bytes(answer: ContentHash, bytes: Bytes) { self.held_answers.put(answer, bytes) }
 
-    /// The frontier file the binary printed `print` wrote, read where it lies; its mapping stays
-    /// for the process, as a pack's does.
+    /// The frontier file the binary printed `print` wrote, read where it lies.
     fn frontier_of(print: string) -> Frontier? { frontier_at(frontier_path(self.directory, print)) }
 
-    /// A draft made the frontier by one rename, so a reader finds the old one or the new one whole.
-    /// A frontier that can't be written costs the next process a walk, never a wrong answer.
+    /// Holds `entries` as the frontier this process leaves, written once the pack holding their
+    /// answers is.
     fn keep_frontier(print: string, entries: List<FrontierEntry>) { self.pending_frontier.set([PendingFrontier { print: print, entries: entries }]) }
 }
 

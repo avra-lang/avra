@@ -358,6 +358,7 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
         let file = disk.file_at(path)
         for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
             let body? = elaborated_fn(engine, file, own.name) else { continue }
+            let site = "${path} ${own.name}"
             statements = statements + body.statements.length
             let roots = [e.index for e in body.sugars]
             for at, surface in body.surface {
@@ -365,12 +366,9 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                 let core? = body.core[at] else { continue }
                 if roots.contains(at) { continue }
                 nodes = nodes + 1
-                if surface.spelled() != core.spelled() &&
-                    !meets_its_seat(surface, core, body.seats.get("${at}")) {
-                    differing
-                        .push(
-                            "${path} ${own.name}: a node ${surface.spelled()} on the surface, ${core.spelled()} in the core, ${body.seats.get("${at}")?.spelled() ?? "no seat"} wanted",
-                        )
+                let seat = body.seat_at(at)
+                if surface.spelled() != core.spelled() && !meets_its_seat(surface, core, seat) {
+                    differing.push(differs(site, "a node ", surface, core, seat))
                 }
             }
             for e in body.sugars {
@@ -381,7 +379,7 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                     untyped = untyped + 1
                     if shown {
                         println(
-                            "untyped: ${path} ${own.name}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
+                            "untyped: ${site}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
                         )
                     }
                 }
@@ -391,15 +389,12 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                     alike = alike + 1
                     continue
                 }
-                if meets_its_seat(surface, core, body.seats.get("${e.index}")) {
+                let seat = body.seat_at(e.index)
+                if meets_its_seat(surface, core, seat) {
                     seated = seated + 1
                     continue
                 }
-                let seat = body.seats.get("${e.index}")?.spelled() ?? "no seat"
-                differing
-                    .push(
-                        "${path} ${own.name}: ${surface.spelled()} on the surface, ${core.spelled()} in the core, ${seat} wanted",
-                    )
+                differing.push(differs(site, "", surface, core, seat))
             }
         }
     }
@@ -408,6 +403,11 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
         "core: ${sugars} sugars and ${statements} statements meant; sugars ${alike} typed alike, ${seated} answering their seat, ${untyped} untyped on a side; ${nodes} other nodes typed on both sides; ${differing.length} differing",
     )
     if differing.is_empty() { 0 } else { 1 }
+}
+
+/// A node of the fn at `site` typed one way on the surface and another in the core.
+fn differs(site: string, what: string, surface: SignedType, core: SignedType, seat: SignedType?) -> string {
+    "${site}: ${what}${surface.spelled()} on the surface, ${core.spelled()} in the core, ${seat?.spelled() ?? "no seat"} wanted"
 }
 
 /// Whether a core answering its seat's want stands for a surface type that fits that seat.

@@ -2,7 +2,7 @@
 //! states it in a `meaning`, and the whole typed again as the core it means. A sugar is typed twice,
 //! by its own rule on the surface and as its meaning in the core, and the two agree, or the core
 //! answers the type its seat wants and the surface's type fits that seat, or a meaning is wrong.
-use core.{At, Expected, ExprId, SignedType, StmtId, SyntaxArena, checking, flatten, minting}
+use core.{At, ExprId, SignedType, StmtId, SyntaxArena, flatten, minting}
 use @std.meta.{Rewrite}
 use features.{TypedCode, TypedItem, TypedView}
 use @std.program.address.{SourceFileAddress}
@@ -17,33 +17,29 @@ export type ElaboratedBody = {
     statements: List<StmtId>,
     surface: List<SignedType?>,
     core: List<SignedType?>,
-    /// The type each sugar's seat wanted, by its node's index, where its seat names one.
+    /// The type each node's seat wanted in the core, by the node's index, where its seat names one.
     seats: Map<string, SignedType>,
+}
+
+impl ElaboratedBody {
+    /// The type the seat of the node at `index` wanted in the core, absent where it names none.
+    fn seat_at(index: int) -> SignedType? { self.seats.get("${index}") }
 }
 
 /// The body of the fn `file` declares as `name`, elaborated; absent when it declares none with a
 /// body.
 export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> ElaboratedBody? {
-    let signature? = fn_signature(engine, file, name) else { return null }
-    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
-    let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
-        .first() else { return null }
-    let program = program_of(
-        engine,
-        file,
-        Signing { engine: engine, file: file, type_params: signature.type_params },
-    )
-    mut surface = checking(item.store, program, signature.answer)
-    for p in signature.params { surface.bind(p.name, p.ty, true) }
-    let _ = surface.check(body, Expected.Exactly(signature.answer))
-    let typed = TypedItem { view: TypedView { store: item.store }, types: surface.types.get() }
-    let statements = [s for s in every_stmt(item.store, At.Expr(body)) if stmt_meant_beside(typed, s)]
-    let sugars = [e for e in item.store.every_expr(body) if meant_beside(typed, e)]
-    mut core = checking(item.store, program, signature.answer) with { meanings: true }
-    for p in signature.params { core.bind(p.name, p.ty, true) }
-    let _ = core.check(body, Expected.Exactly(signature.answer))
+    let signed? = signed_body(engine, file, name) else { return null }
+    let store = signed.item.store
+    let typed = TypedItem {
+        view: TypedView { store: store },
+        types: body_checked(engine, file, signed, false).types.get(),
+    }
+    let statements = [s for s in every_stmt(store, At.Expr(signed.body)) if stmt_meant_beside(typed, s)]
+    let sugars = [e for e in store.every_expr(signed.body) if meant_beside(typed, e)]
+    let core = body_checked(engine, file, signed, true)
     ElaboratedBody {
-        store: item.store,
+        store: store,
         sugars: sugars,
         statements: statements,
         surface: typed.types,
@@ -53,13 +49,13 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
 }
 
 /// Whether `e` is a sugar some meaning rewrites, its meaning then spliced beside it: the first of
-/// the meanings rooted at its kind whose arms match. A node the parse already gave a meaning keeps
+/// the meanings filed under it whose arms match. A node the parse already gave a meaning keeps
 /// that one.
 fn meant_beside(typed: TypedItem, e: ExprId) -> bool {
     let store = typed.view.store
     if store.meant(e) != null { return false }
     let said? = meaning_said(typed, At.Expr(e)) else { return false }
-    let made = rewritten_beside(store, e, said.rewrite)
+    let made = rewritten_beside(avra(), store, e, said.rewrite)
     if made.is_empty() { return false }
     store.means_as(e, minting(made), "`${said.by}`")
     true
@@ -70,7 +66,7 @@ fn stmt_meant_beside(typed: TypedItem, s: StmtId) -> bool {
     let store = typed.view.store
     if store.stmt_meant(s) != null { return false }
     let said? = meaning_said(typed, At.Stmt(s)) else { return false }
-    let made = stmts_rewritten_beside(store, s, said.rewrite)
+    let made = stmts_rewritten_beside(avra(), store, s, said.rewrite)
     if made.is_empty() { return false }
     store.stmt_means_as(s, made)
     true
@@ -79,11 +75,10 @@ fn stmt_meant_beside(typed: TypedItem, s: StmtId) -> bool {
 /// What a meaning says a node means, and the meaning that said it.
 type MeaningSaid = { rewrite: Rewrite, by: string }
 
-/// What the first meaning rooted at the node's kind whose arms match says it means.
+/// What the first meaning filed under the node whose arms match says the node means.
 fn meaning_said(typed: TypedItem, at: At) -> MeaningSaid? {
     let store = typed.view.store
-    let index = meaning_index()
-    for m in flatten([index.at(k) for k in [store.kind_at(at), store.shallow_at(at)]]) {
+    for m in meaning_index().at_node(store.shallow_at(at), store.kind_at(at)) {
         let said? = (m.run)(TypedCode { of: typed, at: at }) else { continue }
         return MeaningSaid { rewrite: said, by: "${m.module}.${m.name}" }
     }

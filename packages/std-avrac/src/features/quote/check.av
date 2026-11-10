@@ -58,18 +58,20 @@ export fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
                 )
         }
     }
+    let fills = [c! for c in classes]
+    let rewrites = fills.any(fills_by_node(it))
     let answered: MetaKind? = match whole {
-        .Expr -> if [c! for c in classes].any(fills_by_node(it)) { MetaKind.Rewrite } else { expression_kind(cx, e) },
-        .Stmts -> if [c! for c in classes].any(fills_by_node(it)) { MetaKind.Rewrite } else { MetaKind.Stmts },
+        .Expr -> if rewrites { MetaKind.Rewrite } else { expression_kind(cx, e) },
+        .Stmts -> if rewrites { MetaKind.Rewrite } else { MetaKind.Stmts },
         .Arms -> MetaKind.Arms,
         .Decls -> MetaKind.Decls,
-        .Holes -> holes_kind([c! for c in classes]),
+        .Holes -> holes_kind(fills),
     }
     if answered == null { return cx.spoken(mixed_holes(cx.loc_of(e))) }
     let answer = answered!
     for k, h in q.holes {
         let kind = if whole is .Holes { holes_seat(answer, q.holes.length) } else { kinds[k] }
-        let class = classes[k]!
+        let class = fills[k]
         if class is .Text && (kind is .Expression || kind is .Tail) { return cx.spoken(ambiguous_text(cx.loc_of(h))) }
         if answer == MetaKind.Rewrite && !rewrite_takes(class) { return cx.spoken(rewrite_hole(cx.loc_of(h), cx.name_at(h))) }
         if !fits(class, kind) { return cx.spoken(hole_refused(cx.loc_of(h), kind, cx.name_at(h))) }
@@ -94,12 +96,12 @@ fn fills_by_node(c: FillClass) -> bool {
     }
 }
 
-/// Whether a rewrite's hole may hold this fill: a node of the tree, or a name. A number or a
-/// template would read as a node's index.
+/// Whether a rewrite's hole may hold this fill: a node of the tree, a run of them, or one name. A
+/// number or a template would read as a node's index, and a run of names as a run of nodes.
 fn rewrite_takes(c: FillClass) -> bool {
     match c {
-        .Id or .PatId or .Node or .Nodes or .Text or .Texts or .Named -> true,
-        .Template(_) or .Templates(_) or .Int or .Bool or .Held or .Pattern -> false,
+        .Id or .PatId or .Node or .Nodes or .Text or .Named -> true,
+        .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Held or .Pattern -> false,
     }
 }
 
@@ -155,9 +157,9 @@ fn rewrite_hole(at: Loc?, found: string) -> Diag {
     refusal(
         "type.quote_hole",
         at,
-        "a rewrite's holes are arena ids — `ExprId` or `PatId`, as `\${self.value}` — and this one is `${found}`",
+        "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `${found}`",
         "this hole",
-        "a hole in a rewrite names the node it stands for — `\${self.value}`, an `ExprId` — never its text",
+        "a hole in a rewrite names the node it stands for — `\${self.value}`, an `ExprId` — or the one name it writes",
     )
 }
 
