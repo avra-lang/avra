@@ -74,6 +74,8 @@ export type QueryEngine = {
     /// The query each question this process computed belongs to, in the order they ran: what a
     /// budget test reads.
     computed: Cell<List<string>>,
+    /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
+    records_checked: Cell<int>,
     /// Each input this process reached, by the place its bit stands at in a set of inputs.
     input_places: HashKeyedTable<int>,
     input_order: Cell<List<ContentHash>>,
@@ -102,6 +104,7 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         settled_answers: settled_answers,
         open_questions: open_questions,
         computed: computed,
+        records_checked: Cell.new(0),
         input_places: input_places,
         input_order: input_order,
         reached_inputs: reached_inputs,
@@ -155,6 +158,7 @@ impl QueryEngine {
 
     /// Whether every read of a record still sees what it saw.
     fn stands_now(record: KeptRecord) -> bool {
+        self.records_checked.set(self.records_checked.get() + 1)
         record
             .every_read(
                 (question, seen) -> self.answer_holds(question, seen),
@@ -204,6 +208,9 @@ impl QueryEngine {
 
     /// How many questions this process computed.
     fn computed_count() -> int { self.computed.get().length }
+
+    /// How many kept records this process checked.
+    fn records_checked_count() -> int { self.records_checked.get() }
 
     /// The query of each question this process computed, in the order they ran.
     fn computed_queries() -> List<string> { self.computed.get() }
