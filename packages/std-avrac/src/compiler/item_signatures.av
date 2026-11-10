@@ -4,9 +4,7 @@
 //! name, never by where it stands, so a signature moves only when what it writes or what its names
 //! name does.
 use core.{
-    Expr,
     Member,
-    owned_type,
     INFERRED,
     headed_type,
     Param,
@@ -62,7 +60,7 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
 }
 
 /// The type a top-level binding — a `const` or a `collect` — `file` declares as `name` is written
-/// with, resolved where it's declared, or else its literal value's; absent when it declares none.
+/// with, resolved where it's declared; absent when it declares none or writes no type.
 @query
 export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let item? = declaring_item(engine, file, name, ItemKind.Const) ?? declaring_item(
@@ -73,20 +71,7 @@ export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: strin
     ) else { return null }
     let written = [t! for s in item.stmts if item.store.let_name(s) == name for t in [item.store.binding_ty(s)] if t != null]
         .first()
-    if written != null { return Signing { engine: engine, file: file, type_params: [] }.signed(written!) }
-    let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
-        .first() else { return null }
-    literal_type(item.store.valued(value))
-}
-
-/// The type a literal value is, read through the value protocol: absent for any value that isn't a
-/// scalar or text literal.
-fn literal_type(value: Expr) -> SignedType? {
-    if value.int_of() != null { return owned_type("int") }
-    if value.text_of() != null { return owned_type("string") }
-    if value.bool_of() != null { return owned_type("bool") }
-    if value.bits_of() != null { return owned_type("float") }
-    null
+    if written == null { null } else { Signing { engine: engine, file: file, type_params: [] }.signed(written!) }
 }
 
 /// Every fn `file` declares as `name`, signed, in the order they're declared: a verb file may

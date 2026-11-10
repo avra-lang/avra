@@ -36,22 +36,7 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
     let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
         .first() else { return null }
     let signing = Signing { engine: engine, file: file, type_params: signature.type_params }
-    mut cx = checking(
-        item.store,
-        CheckedProgram {
-            value_named: (n: string) -> value_type(engine, file, n),
-            written: (written: TypeRef) -> signing.signed(written),
-            type_named: (n: string) -> signing.named(n),
-            record_of: (ty: SignedType) -> record_shape(engine, ty),
-            enum_of: (ty: SignedType) -> enum_shape(engine, ty),
-            method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
-            property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
-            type_value: (n: string) -> type_value(engine, file, signing, n),
-            static_of: (described: SignedType, s: string) -> static_type(engine, described, s),
-            meta_type: (n: string) -> meta_declared(engine, n),
-        },
-        signature.answer,
-    )
+    mut cx = checking(item.store, program_of(engine, file, signing), signature.answer)
     for p in signature.params { cx.bind(p.name, p.ty, true) }
     let _ = cx.check(body, Expected.Exactly(signature.answer))
     TypedBody { types: cx.types.get() }
@@ -82,8 +67,40 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
     }
 }
 
+/// What a body in `file` reads of the program: every answer typing asks, from the queries that hold
+/// it, under `signing`'s type parameters.
+fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) -> CheckedProgram {
+    CheckedProgram {
+        value_named: (n: string) -> value_type(engine, file, n),
+        written: (written: TypeRef) -> signing.signed(written),
+        type_named: (n: string) -> signing.named(n),
+        record_of: (ty: SignedType) -> record_shape(engine, ty),
+        enum_of: (ty: SignedType) -> enum_shape(engine, ty),
+        method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
+        property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
+        type_value: (n: string) -> type_value(engine, file, signing, n),
+        static_of: (described: SignedType, s: string) -> static_type(engine, described, s),
+        meta_type: (n: string) -> meta_declared(engine, n),
+    }
+}
+
+/// The type the const `file` declares as `name` written with no type has: its value's, checked as
+/// any body is. Absent when it declares no such const, or its value's type isn't known.
+@query
+export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
+    let item? = declaring_item(engine, file, name, ItemKind.Const) else { return null }
+    let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
+        .first() else { return null }
+    mut cx = checking(
+        item.store,
+        program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
+        null,
+    )
+    cx.check(value, Expected.Free)
+}
+
 /// The type a top-level value's name has from `file`: a fn's, as a fn type, and a const's or a
-/// collection's, as it's written. Absent for a name that names no value.
+/// collection's, as it's written or else as its value is. Absent for a name that names no value.
 fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
     match d.kind {
@@ -91,7 +108,7 @@ fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> Sig
             let s? = fn_signature(engine, d.file, d.name) else { return null }
             fn_typed([], s)
         },
-        .Const or .Collect -> binding_type(engine, d.file, d.name),
+        .Const or .Collect -> binding_type(engine, d.file, d.name) ?? const_value_type(engine, d.file, d.name),
         .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .State -> null,
     }
 }
