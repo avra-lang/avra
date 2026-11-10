@@ -259,22 +259,31 @@ impl QueryEngine {
         asker.reads.put(read.read_key(), read)
     }
 
-    /// Keeps the deep form of a settled question's answer, unless it's kept already. A query with
-    /// no code hash can't vouch for its old answers, so nothing reaching one gets a deep record.
+    /// Keeps the deep form of a settled root's answer, unless it's kept already. A query with no
+    /// code hash can't vouch for its old answers, so nothing reaching one gets a deep record. On the
+    /// way, each question beneath it whose inputs are no more than its own reads keeps a deep record
+    /// too: never more to keep or to check, and an edit elsewhere then never walks beneath it.
     fn deep_record_kept(question: ContentHash) {
         let root? = self.settled_answers.get(question) else { return }
         if root.deep_kept { return }
         let asked? = self.store.question_known_as(question) else { return }
         let reached = self.inputs_reached(question, root)
-        if !reached.vouched { return }
+        if !reached.vouched || self.settled_answers.get(question)!.deep_kept { return }
+        self.deep_kept_of(question, root, bits_of(reached.words))
+    }
+
+    /// The deep record of a settled question, reading the inputs at `inputs` alone, kept unless it's
+    /// kept already.
+    fn deep_kept_of(question: ContentHash, settled: SettledAnswer, inputs: List<int>) {
+        let asked? = self.store.question_known_as(question) else { return }
         let reads = [RecordedRead {
             question: input,
             whole_answer: self.settled_answers.get(input)!.answer,
             part: null,
-        } for at in bits_of(reached.words) for input in [self.input_order.get()[at]]]
-        let record = answer_record(root.answer, reads, true)
+        } for at in inputs for input in [self.input_order.get()[at]]]
+        let record = answer_record(settled.answer, reads, true)
         if !self.store.records_of(question).any(it.same_as(record)) { self.store.keep_record(asked, record) }
-        let _ = self.settled(asked, root.answer, true, root.reused_through)
+        let _ = self.settled(asked, settled.answer, true, settled.reused_through)
     }
 
     /// The inputs a settled answer reached, worked out once per question and shared by every root
@@ -302,6 +311,8 @@ impl QueryEngine {
             if !child.vouched { return unvouched() }
             if words.is_empty() { words = child.words } else { ored_into(words, child.words) }
         }
+        let inputs = bits_of(words)
+        if !settled.deep_kept && inputs.length <= record.read_questions().length { self.deep_kept_of(question, settled, inputs) }
         InputSet { words: words, vouched: true }
     }
 
