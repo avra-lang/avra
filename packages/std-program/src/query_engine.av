@@ -146,7 +146,9 @@ impl QueryEngine {
     }
 
     /// What this process knows the answer is, reusing a record that stands, or running the query.
+    /// The frontier is read before anything is looked up, so an input it holds is asked once.
     fn settled_answer(asked: Question) -> ContentHash {
+        self.frontier_read_once()
         self.settled_answers.get(asked.known_as)?.answer ?? self
             .settled_from_frontier(asked.known_as)?.answer ?? self.reused_answer(asked) ?? self
             .computed_answer(asked)
@@ -214,11 +216,14 @@ impl QueryEngine {
     /// This binary's frontier with its suspects known; absent while there's none, or while its
     /// inputs are being asked.
     fn frontier_ready() -> Frontier? {
-        if !self.frontier_read.get() { self.frontier_opened() }
+        self.frontier_read_once()
         let f? = self.frontier.get().first() else { return null }
         if self.suspects.get().length != f.length() { return null }
         f
     }
+
+    /// Reads this binary's frontier the first time anything is asked.
+    fn frontier_read_once() { if !self.frontier_read.get() { self.frontier_opened() } }
 
     /// Reads this binary's frontier and asks its inputs first, so every answer a changed input
     /// reaches is a suspect.
@@ -242,9 +247,10 @@ impl QueryEngine {
         self.settled_answer(asked).same_as(f.answer_at(at))
     }
 
-    /// What tells this binary's queries apart from another's: each one's name and code.
+    /// What tells this binary's queries apart from another's: each one's name, its code, and whether
+    /// it reads the world.
     fn print() -> string {
-        let defined = [d.query_name + ":" + d.code_hash for d in self.definitions.get().values()]
+        let defined = ["${d.query_name}:${d.code_hash}:${d.is_input}" for d in self.definitions.get().values()]
             .join("\n")
         let h = content_hash(defined.bytes())
         "${h.high_word}_${h.low_word}"
@@ -252,8 +258,9 @@ impl QueryEngine {
 
     /// Writes what this process knows as this binary's frontier: every answer it settled, with what
     /// it read, and every answer of the frontier it read that no changed input reached. Writes
-    /// nothing when it learned nothing the frontier doesn't hold.
+    /// nothing when it asked nothing, or learned nothing the frontier doesn't hold.
     fn frontier_kept() {
+        if !self.frontier_read.get() { return }
         let f = self.frontier.get().first()
         if f != null && !self.suspects.get().any(it) && !self.learned_beyond_frontier() { return }
         let carried = match f {

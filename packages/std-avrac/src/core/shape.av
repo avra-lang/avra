@@ -318,7 +318,7 @@ export fn typed_node_shallow_at(store: SyntaxArena, at: At, kids: List<Shape>, o
     if !blank_name && !blank_type && !blank_run { return store.shallow_at(at) }
     match at {
         .Expr(id) -> store.shallow_expr(folded_expr(store.expr(id), blank_name, blank_type, blank_run)),
-        .Stmt(id) -> store.shallow_stmt(folded_stmt(store.stmt(id), blank_name, blank_type)),
+        .Stmt(id) -> store.shallow_stmt(folded_stmt(store.stmt(id), blank_name, blank_type, blank_run)),
         .Pat(id) -> store.shallow_pat(folded_pat(store.pat(id), blank_name)),
         .Param(owner, index) -> shallow_param(store, owner, index),
         .Field(owner, index) -> shallow_field(if blank_name { "" } else { field_name_of(store, owner, index) }),
@@ -326,8 +326,9 @@ export fn typed_node_shallow_at(store: SyntaxArena, at: At, kids: List<Shape>, o
 }
 
 /// `own_name_at`'s catalog, the name blanked when `blank_name`, ALSO
-/// blanking the node's own written-type field when `blank_type`.
-fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool) -> Stmt {
+/// blanking the node's own written-type field when `blank_type`, and
+/// its statements when a run stands among them (`blank_run`).
+fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool, blank_run: bool) -> Stmt {
     match s {
         .Let(name, ty, value) -> Stmt
             .Let(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
@@ -335,7 +336,15 @@ fn folded_stmt(s: Stmt, blank_name: bool, blank_type: bool) -> Stmt {
             .MutLet(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
         .ConstDecl(name, ty, value) -> Stmt
             .ConstDecl(if blank_name { Scoped("") } else { name }, if blank_type { null } else { ty }, value),
-        .ForEach(index, name, subject, stmts) -> Stmt.ForEach(index, if blank_name { Scoped("") } else { name }, subject, stmts),
+        .ForEach(index, name, subject, stmts) -> Stmt
+            .ForEach(
+                index,
+                if blank_name { Scoped("") } else { name },
+                subject,
+                if blank_run { [] } else { stmts },
+            ),
+        .While(cond, stmts) -> Stmt.While(cond, if blank_run { [] } else { stmts }),
+        .LetElse(name, subject, stmts) -> Stmt.LetElse(name, subject, if blank_run { [] } else { stmts }),
         rest -> s,
     }
 }

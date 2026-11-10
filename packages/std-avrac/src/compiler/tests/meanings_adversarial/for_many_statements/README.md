@@ -1,0 +1,1 @@
+`avra tapes <this dir> --core --left` says `core: 0 sugars and 3 statements meant; sugars 0 typed alike, 0 answering their seat, 0 untyped on a side; 56 other nodes typed on both sides; 0 differing` — every `for` body of any length is meant, except the one naming its loop.

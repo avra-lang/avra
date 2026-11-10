@@ -1,0 +1,1 @@
+`avra tapes <this dir> --core --left` says `core: 1 sugars and 0 statements meant; sugars 1 typed alike, 0 answering their seat, 0 untyped on a side; 31 other nodes typed on both sides; 0 differing` — a `??` whose left is never absent has no meaning of its own, and prints no `untyped:` line.

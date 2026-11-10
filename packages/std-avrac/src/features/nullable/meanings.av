@@ -1,12 +1,16 @@
 //! What the nullable sugars mean, in the core.
-use features.{meaning}
+use features.{TypedCode, meaning}
 
-/// `a ?? b` is what `a` holds when it holds a value, else `b`.
+/// `a ?? b` is what `a` holds when it holds a value, else `b`. Over an `a` that is never absent it
+/// asks nothing, and has no meaning of its own.
 export meaning coalesce {
-    quote { ${left} ?? ${right} } -> quote {
+    quote { ${left} ?? ${right} } if may_be_absent(left) -> quote {
         match ${left} {
             v? -> v
             null -> ${right}
         }
     },
 }
+
+/// Whether the left side may be absent, as typing found it; a side typing didn't type may be.
+fn may_be_absent(left: TypedCode) -> bool { left.type()?.nullable() ?? true }

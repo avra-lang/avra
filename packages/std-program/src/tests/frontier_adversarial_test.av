@@ -1,0 +1,548 @@
+// Attacks on the frontier: what one binary last knew to hold, read by its next process. Separate
+// stores over one directory stand in for separate processes, each with its own world. Every attack
+// ends in the answer the world holds now: never a trap, never an answer the world moved past.
+use @std.io.{list_dir, make_dirs, read_bytes, remove, truncate_to, write_bytes}
+use @std.process.{cmd, tool_at}
+use @std.text.{parse_int}
+use @std.time.{stamp}
+use answer_record.{ContentHash, content_hash, question}
+use disk_store.{disk_store_at}
+use frontier.{FrontierEntry, frontier_runs}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use sorted.{sorted_by}
+
+/// What `name` answers about `argument`, asked as this binary asks it.
+fn asked(e: QueryEngine, name: string, argument: string) -> string {
+    e
+        .answer_to(question(name, e.definitions.get().get(name)!.code_hash, argument.bytes()))
+        .copied()
+        .text() ?? ""
+}
+
+/// An input reading a path's text out of `world`.
+fn read_from(name: string, code: string, world: Cell<Map<string, string>>, is_input: bool) -> QueryDefinition {
+    QueryDefinition {
+        query_name: name,
+        code_hash: code,
+        is_input: is_input,
+        compute: (_e, a) -> (world.get().get(a.text() ?? "") ?? "").bytes(),
+    }
+}
+
+fn computing(name: string, code: string, compute: fn(QueryEngine, Bytes) -> Bytes) -> QueryDefinition {
+    QueryDefinition { query_name: name, code_hash: code, is_input: false, compute: compute }
+}
+
+/// `text` reads the world; `length` counts a path's text; `parity` throws most of that away;
+/// `report` reads one path's parity and another's length; `pick` measures the path `which` names.
+fn binary(world: Map<string, string>) -> List<QueryDefinition> {
+    [
+        read_from("text", "c1", Cell.new(world), true),
+        computing("length", "c1", length_of),
+        computing("parity", "c1", parity_of),
+        computing("report", "c1", report_of),
+        computing("pick", "c1", pick_of),
+    ]
+}
+
+fn length_of(e: QueryEngine, a: Bytes) -> Bytes { "${asked(e, "text", a.text() ?? "").length}".bytes() }
+
+fn parity_of(e: QueryEngine, a: Bytes) -> Bytes {
+    let n = parse_int(asked(e, "length", a.text() ?? "")) ?? 0
+    if n % 2 == 0 { "even" } else { "odd" }.bytes()
+}
+
+fn report_of(e: QueryEngine, a: Bytes) -> Bytes {
+    let paths = (a.text() ?? "").split(",")
+    "${asked(e, "parity", paths[0])}/${asked(e, "length", paths[1])}".bytes()
+}
+
+fn pick_of(e: QueryEngine, _a: Bytes) -> Bytes { asked(e, "length", asked(e, "text", "which")).bytes() }
+
+/// A world of two paths.
+fn two(a: string, b: string) -> Map<string, string> {
+    let w: Map<string, string> = {"a": a, "b": b}
+    w
+}
+
+/// A world naming which path `pick` measures.
+fn picking(which: string) -> Map<string, string> {
+    let w: Map<string, string> = {"which": which, "a": "abc", "b": "wxyz", "c": "c"}
+    w
+}
+
+/// A process and what it answered.
+type Ran = { engine: QueryEngine, answer: string }
+
+/// One whole process of `binary` over the store at `directory`: asks `name` about `argument`, leaves
+/// its frontier, publishes.
+fn ran(directory: string, binary: List<QueryDefinition>, name: string, argument: string) -> Ran {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, binary)
+    let answer = asked(engine, name, argument)
+    engine.frontier_kept()
+    let _ = store.saved()
+    Ran { engine: engine, answer: answer }
+}
+
+/// A process asking `report` of `a,b` in `world`.
+fn reported(directory: string, world: Map<string, string>) -> Ran { ran(directory, binary(world), "report", "a,b") }
+
+/// A process that asks nothing, and still leaves its frontier and publishes.
+fn idle(directory: string, binary: List<QueryDefinition>) {
+    let store = disk_store_at(directory)
+    query_engine(store, binary).frontier_kept()
+    let _ = store.saved()
+}
+
+fn fresh(label: string) -> string { "/tmp/avra-frontier-attack/${stamp()}-${label}" }
+
+/// Where `binary` keeps its frontier in `directory`.
+fn frontier_file(directory: string, binary: List<QueryDefinition>) -> string {
+    "${directory}/frontier-${query_engine(disk_store_at("/dev/null/none"), binary).print()}.front"
+}
+
+fn files_ending(directory: string, suffix: string) -> List<string> {
+    ["${directory}/${name}" for name in list_dir(directory) catch [] if name.ends_with(suffix)]
+}
+
+fn octets_of(path: string) -> int { (read_bytes(path) catch "".bytes()).length }
+
+/// An answer a planted frontier holds, its reads still questions.
+type Plant = { question: ContentHash, answer: ContentHash, reads: List<ContentHash>, input: bool }
+
+/// What `name` of `argument` is known by, in the code `c1`.
+fn known_as(name: string, argument: string) -> ContentHash { question(name, "c1", argument.bytes()).known_as }
+
+fn plant(name: string, argument: string, answer: string, reads: List<ContentHash>, input: bool) -> Plant {
+    Plant {
+        question: known_as(name, argument),
+        answer: content_hash(answer.bytes()),
+        reads: reads,
+        input: input,
+    }
+}
+
+/// `plants` written as the frontier of `binary` in `directory`, sorted as a frontier is, each read
+/// the place of what it names; a read naming nothing planted lands five past the end.
+fn planted(directory: string, binary: List<QueryDefinition>, plants: List<Plant>) {
+    let _ = make_dirs(directory) catch ""
+    let sorted = sorted_by(plants, (x, y) -> x.question.comes_before(y.question))
+    let entries = [FrontierEntry {
+        question: p.question,
+        answer: p.answer,
+        reads: [place_in(sorted, r) for r in p.reads],
+        input: p.input,
+    } for p in sorted]
+    let _ = write_bytes(frontier_file(directory, binary), frontier_runs(entries, 1).bytes())
+}
+
+fn place_in(sorted: List<Plant>, read: ContentHash) -> int {
+    [at for at, p in sorted if p.question.same_as(read)].first() ?? sorted.length + 5
+}
+
+fn mode_set(directory: string, mode: string) { let _ = cmd(tool_at("chmod", "/bin/chmod"), [mode, directory]).run() }
+
+/// The binary `binary` makes, over a world whose `a` is edited to `after` once it's first read: a
+/// file saved while a process runs.
+fn edited_while_read(world: Map<string, string>, after: string) -> List<QueryDefinition> {
+    let held = Cell.new(world)
+    [
+        QueryDefinition {
+            query_name: "text",
+            code_hash: "c1",
+            is_input: true,
+            compute: (_e, a) -> read_then_edited(held, a.text() ?? "", after),
+        },
+        computing("length", "c1", length_of),
+        computing("parity", "c1", parity_of),
+        computing("report", "c1", report_of),
+        computing("pick", "c1", pick_of),
+    ]
+}
+
+/// What `world` holds at `path`, and then `a` edited to `after`.
+fn read_then_edited(world: Cell<Map<string, string>>, path: string, after: string) -> Bytes {
+    let seen = world.get().get(path) ?? ""
+    if path == "a" { world.put("a", after) }
+    seen.bytes()
+}
+
+/// A binary whose `probe` reads the world itself, declared an input or not; its code is the same.
+fn probing(world: Map<string, string>, is_input: bool) -> List<QueryDefinition> {
+    [read_from("probe", "c1", Cell.new(world), is_input)]
+}
+
+/// A binary whose root `top` reads `middle`, whose code has no hash and which answers `version`
+/// beside the length of `a`.
+fn unhashed_middle(world: Map<string, string>, version: string) -> List<QueryDefinition> {
+    [
+        read_from("text", "c1", Cell.new(world), true),
+        computing("length", "c1", length_of),
+        QueryDefinition {
+            query_name: "middle",
+            code_hash: "",
+            is_input: false,
+            compute: (e, _a) -> "${version}:${asked(e, "length", "a")}".bytes(),
+        },
+        computing("top", "c1", (e, _a) -> "top ${asked(e, "middle", "")}".bytes()),
+    ]
+}
+
+/// A binary of `report` whose `length` is code `version`.
+fn versioned(world: Map<string, string>, version: string) -> List<QueryDefinition> {
+    [
+        read_from("text", "c1", Cell.new(world), true),
+        computing("length", version, length_of),
+        computing("parity", "c1", parity_of),
+        computing("report", "c1", report_of),
+    ]
+}
+
+spec "frontier — attacked" {
+    given "degenerate shapes" {
+        then "a process that asks nothing over an empty directory leaves nothing a later process trips on" {
+            let directory = fresh("idle_empty")
+            let _ = make_dirs(directory) catch ""
+            idle(directory, binary(two("abc", "xy")))
+            let first = reported(directory, two("abc", "xy"))
+            let warm = reported(directory, two("abc", "xy"))
+            first.answer == "odd/2" &&
+                warm.answer == "odd/2" &&
+                warm.engine.worked_count() == 0 &&
+                warm.engine.records_checked_count() == 0
+        }
+        then "a process that asks nothing leaves the frontier before it standing" {
+            let directory = fresh("idle_after")
+            let _ = reported(directory, two("abc", "xy"))
+            idle(directory, binary(two("abc", "xy")))
+            reported(directory, two("abc", "xy")).engine.records_checked_count() == 0
+        }
+        then "a process after one that asked nothing answers its world" {
+            let directory = fresh("idle_after_answer")
+            let _ = reported(directory, two("abc", "xy"))
+            idle(directory, binary(two("abc", "xy")))
+            reported(directory, two("abcd", "xy")).answer == "even/2"
+        }
+        then "a frontier of one input: the input runs once, with the world's answer" {
+            let directory = fresh("only_input")
+            let _ = ran(directory, binary(two("abc", "xy")), "text", "a")
+            ran(directory, binary(two("abcd", "xy")), "text", "a").engine.computed_count() == 1
+        }
+        then "a frontier of one input: the input answers the world" {
+            let directory = fresh("only_input_answer")
+            let _ = ran(directory, binary(two("abc", "xy")), "text", "a")
+            ran(directory, binary(two("abcd", "xy")), "text", "a").answer == "abcd"
+        }
+        then "a frontier of one answer that reads nothing stands with nothing run" {
+            let directory = fresh("one_entry")
+            let one = [computing("one", "c1", (_e, _a) -> "1".bytes())]
+            let _ = ran(directory, one, "one", "")
+            let later = ran(directory, one, "one", "")
+            later.answer == "1" && later.engine.computed_count() == 0
+        }
+        then "a store directory that isn't there yet answers, and its next process runs nothing" {
+            let directory = "${fresh("missing")}/deeper/still"
+            let first = reported(directory, two("abc", "xy"))
+            let warm = reported(directory, two("abc", "xy"))
+            first.answer == "odd/2" && warm.engine.worked_count() == 0
+        }
+        then "a frontier cut in half is no frontier, and a changed world still answers" {
+            let directory = fresh("torn_half")
+            let _ = reported(directory, two("abc", "xy"))
+            let path = frontier_file(directory, binary(two("abc", "xy")))
+            let _ = truncate_to(path, octets_of(path) / 2) catch ""
+            reported(directory, two("abcd", "xy")).answer == "even/2" &&
+                reported(directory, two("abc", "xy")).answer == "odd/2"
+        }
+        then "a frontier missing its seal's last octet is no frontier" {
+            let directory = fresh("torn_seal")
+            let _ = reported(directory, two("abc", "xy"))
+            let path = frontier_file(directory, binary(two("abc", "xy")))
+            let _ = truncate_to(path, octets_of(path) - 1) catch ""
+            reported(directory, two("abcd", "xy")).answer == "even/2"
+        }
+        then "a frontier of zero octets is no frontier" {
+            let directory = fresh("torn_zero")
+            let _ = reported(directory, two("abc", "xy"))
+            let _ = truncate_to(frontier_file(directory, binary(two("abc", "xy"))), 0) catch ""
+            reported(directory, two("abcd", "xy")).answer == "even/2"
+        }
+        then "a frontier whose packs were removed under it answers a changed world and an unchanged one" {
+            let directory = fresh("packs_gone")
+            let _ = reported(directory, two("abc", "xy"))
+            for path in files_ending(directory, ".pack") { let _ = remove(path) }
+            let unchanged = reported(directory, two("abc", "xy"))
+            for path in files_ending(directory, ".pack") { let _ = remove(path) }
+            unchanged.answer == "odd/2" &&
+                reported(directory, two("abcd", "xyz")).answer == "even/3"
+        }
+    }
+    given "wrong data" {
+        then "an input the store has never heard of reads as changed, and its readers answer the world" {
+            let directory = fresh("unknown_input")
+            planted(
+                directory,
+                binary(two("abc", "xy")),
+                [
+                    plant("text", "a", "abc", [], true),
+                    plant("length", "a", "3", [known_as("text", "a")], false),
+                ],
+            )
+            let later = ran(directory, binary(two("abcd", "xy")), "length", "a")
+            later.answer == "4"
+        }
+        then "an answer the frontier names whose bytes no store holds is worked out again" {
+            let directory = fresh("no_bytes")
+            let _ = ran(directory, binary(two("abc", "xy")), "text", "b")
+            planted(
+                directory,
+                binary(two("abc", "xy")),
+                [
+                    plant("text", "b", "xy", [], true),
+                    plant("length", "b", "2", [known_as("text", "b")], false),
+                ],
+            )
+            let later = ran(directory, binary(two("abc", "xy")), "length", "b")
+            later.answer == "2" && later.engine.computed_queries().join(",") == "text,length"
+        }
+        then "another binary's frontier is never this one's: each answers the world it runs in" {
+            let directory = fresh("other_binary")
+            let _ = ran(directory, versioned(two("abc", "xy"), "v1"), "report", "a,b")
+            let _ = ran(directory, versioned(two("abcd", "xy"), "v2"), "report", "a,b")
+            let back = ran(directory, versioned(two("abcd", "xy"), "v1"), "report", "a,b")
+            back.answer == "even/2" &&
+                ran(directory, versioned(two("abcd", "xyz"), "v2"), "report", "a,b").answer == "even/3"
+        }
+        then "a query declared an input, its code the same, reads the world it runs in" {
+            let directory = fresh("now_input")
+            let _ = ran(directory, probing(two("x", ""), false), "probe", "a")
+            ran(directory, probing(two("y", ""), true), "probe", "a").answer == "y"
+        }
+        then "a query declared an input, its code the same, reads the world in every process after" {
+            let directory = fresh("now_input_after")
+            let _ = ran(directory, probing(two("x", ""), false), "probe", "a")
+            let _ = ran(directory, probing(two("y", ""), true), "probe", "a")
+            ran(directory, probing(two("z", ""), true), "probe", "a").answer == "z"
+        }
+    }
+    given "change shapes" {
+        then "one input changed: its readers run, with the world's answer" {
+            let directory = fresh("one_changed")
+            let _ = reported(directory, two("abc", "xy"))
+            let later = reported(directory, two("abcd", "xy"))
+            later.answer == "even/2" && later.engine.worked_count() == 3
+        }
+        then "an input added: the reader that names it reads it" {
+            let directory = fresh("added")
+            let _ = ran(directory, binary(picking("a")), "pick", "")
+            ran(directory, binary(picking("b")), "pick", "").answer == "4"
+        }
+        then "an input removed from the world reads as empty" {
+            let directory = fresh("removed")
+            let _ = reported(directory, two("abc", "xy"))
+            let w: Map<string, string> = {"a": "abc"}
+            reported(directory, w).answer == "odd/0"
+        }
+        then "the world going back finds its earlier answers, working nothing out" {
+            let directory = fresh("reverted")
+            let _ = reported(directory, two("abc", "xy"))
+            let _ = reported(directory, two("abcd", "xyz"))
+            let back = reported(directory, two("abc", "xy"))
+            back.answer == "odd/2" && back.engine.worked_count() == 0
+        }
+        then "changed, back, and changed again: each answers its world, and the returns work nothing out" {
+            let directory = fresh("flip_flop")
+            let one = reported(directory, two("abc", "xy"))
+            let other = reported(directory, two("abcd", "xyz"))
+            let back = reported(directory, two("abc", "xy"))
+            let again = reported(directory, two("abcd", "xyz"))
+            one.answer == "odd/2" &&
+                other.answer == "even/3" &&
+                back.answer == "odd/2" &&
+                again.answer == "even/3" &&
+                back.engine.worked_count() == 0 &&
+                again.engine.worked_count() == 0
+        }
+        then "two inputs changed at once" {
+            let directory = fresh("two_changed")
+            let _ = reported(directory, two("abc", "xy"))
+            reported(directory, two("ab", "wxyz")).answer == "even/4"
+        }
+        then "a change its reader throws away stops there" {
+            let directory = fresh("cutoff")
+            let _ = reported(directory, two("abc", "xy"))
+            let later = reported(directory, two("xyz", "xy"))
+            later.answer == "odd/2" && later.engine.worked_count() == 1
+        }
+        then "a query with no code hash answers from the code it runs" {
+            let directory = fresh("unhashed_code")
+            let _ = ran(directory, unhashed_middle(two("abc", ""), "m"), "top", "")
+            ran(directory, unhashed_middle(two("abc", ""), "n"), "top", "").answer == "top n:3"
+        }
+        then "a query with no code hash between an input and a root answers the changed input" {
+            let directory = fresh("unhashed_input")
+            let _ = ran(directory, unhashed_middle(two("abc", ""), "m"), "top", "")
+            ran(directory, unhashed_middle(two("abcd", ""), "m"), "top", "").answer == "top m:4"
+        }
+        then "the path a reader names moves back: the earlier reader stands, and an unread path's change moves nothing" {
+            let directory = fresh("pick_back")
+            let _ = ran(directory, binary(picking("a")), "pick", "")
+            let _ = ran(directory, binary(picking("b")), "pick", "")
+            let back = ran(directory, binary(picking("a")), "pick", "")
+            let w: Map<string, string> = {"which": "a", "a": "abc", "b": "w", "c": "c"}
+            back.answer == "3" &&
+                back.engine.worked_count() == 0 &&
+                ran(directory, binary(w), "pick", "").answer == "3"
+        }
+    }
+    given "processes beside each other" {
+        then "an input edited while a process reads it: what the process answers, the next one answers too" {
+            let directory = fresh("edited_while_read")
+            let _ = reported(directory, two("abc", "xy"))
+            let store = disk_store_at(directory)
+            let engine = query_engine(store, edited_while_read(two("abc", "xy"), "abcd"))
+            let first_read = asked(engine, "text", "a")
+            let report = asked(engine, "report", "a,b")
+            let _ = asked(engine, "length", "c")
+            engine.frontier_kept()
+            let _ = store.saved()
+            "${first_read} ${report} ${reported(directory, two("abcd", "xy")).answer}" == "abc odd/2 even/2"
+        }
+        then "two processes of one binary publishing in the order they asked" {
+            let directory = fresh("two_in_order")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let one_engine = query_engine(one, binary(two("abc", "xy")))
+            let other_engine = query_engine(other, binary(two("abcd", "xy")))
+            let _ = asked(one_engine, "report", "a,b")
+            let _ = asked(other_engine, "report", "a,b")
+            one_engine.frontier_kept()
+            let _ = one.saved()
+            other_engine.frontier_kept()
+            let _ = other.saved()
+            reported(directory, two("abcd", "xy")).answer == "even/2" &&
+                reported(directory, two("abc", "xy")).answer == "odd/2"
+        }
+        then "two processes of one binary publishing in the other order" {
+            let directory = fresh("two_reversed")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let one_engine = query_engine(one, binary(two("abc", "xy")))
+            let other_engine = query_engine(other, binary(two("abcd", "xy")))
+            let _ = asked(one_engine, "report", "a,b")
+            let _ = asked(other_engine, "report", "a,b")
+            other_engine.frontier_kept()
+            let _ = other.saved()
+            one_engine.frontier_kept()
+            let _ = one.saved()
+            reported(directory, two("abcd", "xy")).answer == "even/2" &&
+                reported(directory, two("abc", "xy")).answer == "odd/2"
+        }
+        then "a process reading the frontier another replaces under it" {
+            let directory = fresh("replaced")
+            let _ = reported(directory, two("abc", "xy"))
+            let store = disk_store_at(directory)
+            let engine = query_engine(store, binary(two("abc", "xy")))
+            let first = asked(engine, "report", "a,b")
+            let _ = reported(directory, two("abcd", "xyz"))
+            let second = asked(engine, "parity", "b")
+            engine.frontier_kept()
+            let _ = store.saved()
+            first == "odd/2" &&
+                second == "even" &&
+                reported(directory, two("abcd", "xyz")).answer == "even/3" &&
+                reported(directory, two("abc", "xy")).answer == "odd/2"
+        }
+        then "a compaction between a process's asking and its publishing" {
+            let directory = fresh("compacted_between")
+            let _ = reported(directory, two("abc", "xy"))
+            let store = disk_store_at(directory)
+            let engine = query_engine(store, binary(two("abc", "xy")))
+            let first = asked(engine, "report", "a,b")
+            let _ = reported(directory, two("abcd", "xyz"))
+            let _ = disk_store_at(directory).compacted()
+            let second = asked(engine, "length", "a")
+            engine.frontier_kept()
+            let _ = store.saved()
+            first == "odd/2" &&
+                second == "3" &&
+                reported(directory, two("abc", "xy")).answer == "odd/2" &&
+                reported(directory, two("abcd", "xyz")).answer == "even/3"
+        }
+    }
+    given "compaction" {
+        then "with no frontier anywhere, a later process still answers" {
+            let directory = fresh("no_frontier")
+            let store = disk_store_at(directory)
+            let _ = asked(query_engine(store, binary(two("abc", "xy"))), "report", "a,b")
+            let _ = store.saved()
+            let _ = disk_store_at(directory).compacted()
+            reported(directory, two("abc", "xy")).answer == "odd/2"
+        }
+        then "one binary's frontier: everything it names stands" {
+            let directory = fresh("one_binary")
+            let _ = reported(directory, two("abc", "xy"))
+            let _ = disk_store_at(directory).compacted()
+            let warm = reported(directory, two("abc", "xy"))
+            warm.answer == "odd/2" && warm.engine.worked_count() == 0
+        }
+        then "two binaries' frontiers: both stand whole" {
+            let directory = fresh("two_binaries")
+            let _ = ran(directory, versioned(two("abc", "xy"), "v1"), "report", "a,b")
+            let _ = ran(directory, versioned(two("abc", "xy"), "v2"), "report", "a,b")
+            let _ = disk_store_at(directory).compacted()
+            let v1 = ran(directory, versioned(two("abc", "xy"), "v1"), "report", "a,b")
+            let v2 = ran(directory, versioned(two("abc", "xy"), "v2"), "report", "a,b")
+            v1.engine.worked_count() == 0 && v2.engine.worked_count() == 0 && v1.answer == "odd/2"
+        }
+        then "a frontier naming answers in a pack another format wrote" {
+            let directory = fresh("foreign_pack")
+            let _ = reported(directory, two("abc", "xy"))
+            for path in files_ending(directory, ".pack") { let _ = write_bytes(path, "not a pack at all".bytes()) }
+            let unchanged = reported(directory, two("abc", "xy"))
+            let _ = disk_store_at(directory).compacted()
+            unchanged.answer == "odd/2" && reported(directory, two("abcd", "xy")).answer == "even/2"
+        }
+    }
+    given "a store that can't write" {
+        then "a process over a directory it can't write answers its world, and so do the ones after" {
+            let directory = fresh("read_only")
+            let _ = reported(directory, two("abc", "xy"))
+            let packs_before = files_ending(directory, ".pack").join(",")
+            mode_set(directory, "555")
+            let blocked = reported(directory, two("abcd", "xy"))
+            let blocked_again = reported(directory, two("abcd", "xy"))
+            let packs_blocked = files_ending(directory, ".pack").join(",")
+            mode_set(directory, "755")
+            let back = reported(directory, two("abc", "xy"))
+            let moved = reported(directory, two("abcd", "xy"))
+            packs_blocked == packs_before &&
+                blocked.answer == "even/2" &&
+                blocked_again.answer == "even/2" &&
+                back.answer == "odd/2" &&
+                moved.answer == "even/2"
+        }
+    }
+    given "the count claims" {
+        then "an unchanged world checks no record and works nothing out" {
+            let directory = fresh("warm")
+            let _ = reported(directory, two("abc", "xy"))
+            let warm = reported(directory, two("abc", "xy"))
+            warm.engine.records_checked_count() == 0 && warm.engine.worked_count() == 0
+        }
+        then "an unchanged world after a compaction checks no record and works nothing out" {
+            let directory = fresh("warm_compacted")
+            let _ = reported(directory, two("abc", "xy"))
+            let _ = disk_store_at(directory).compacted()
+            let warm = reported(directory, two("abc", "xy"))
+            warm.engine.records_checked_count() == 0 && warm.engine.worked_count() == 0
+        }
+        then "an unchanged world with a query of no code hash works out only that query" {
+            let directory = fresh("warm_unhashed")
+            let _ = ran(directory, unhashed_middle(two("abc", ""), "m"), "top", "")
+            let warm = ran(directory, unhashed_middle(two("abc", ""), "m"), "top", "")
+            warm.answer == "top m:3" && warm.engine.computed_queries().join(",") == "text,middle"
+        }
+    }
+}
