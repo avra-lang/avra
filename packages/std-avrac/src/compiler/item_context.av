@@ -171,7 +171,16 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
             methods: [f!.name for m in p!.fns if !store.is_static(m) for f in [store.fn_parts(m)] if f != null],
             statics: [f!.name for m in p!.fns if store.is_static(m) for f in [store.fn_parts(m)] if f != null],
             implements: p!.of,
-        } for s in stmts for p in [store.impl_parts(s)] if p != null],
+        } for s in stmts for p in [store.impl_parts(s)] if p != null]
+            .concat(
+                [ItemImpl {
+                    target: c!.name,
+                    params: c!.tparams,
+                    methods: [f!.name for m in c!.fns if !store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+                    statics: [f!.name for m in c!.fns if store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+                    implements: null,
+                } for s in stmts for c in [store.component_parts(s)] if c != null],
+            ),
     }
         .saved_bytes()
 }

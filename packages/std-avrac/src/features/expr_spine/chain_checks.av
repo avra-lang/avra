@@ -1,0 +1,17 @@
+//! The typing rule of a method called through `?.` (`a?.m(x)`): the method on what the subject holds
+//! when present, its answer made optional.
+use core.{Checking, Checks, ExprId, Expected, SignedType}
+
+impl Checks for ChainCall {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        let held = if subject == null || !subject!.nullable() { null } else { subject!.unwrapped() }
+        let method = if held == null { null } else { cx.method_of(held!, self.name.of) }
+        if method == null {
+            cx.checked_free(self.args)
+            return null
+        }
+        let answer = cx.applied(method!, held!, self.args, Expected.Free)
+        cx.chained(subject, (_s: SignedType) -> answer)
+    }
+}

@@ -5,6 +5,7 @@
 //! name does.
 use core.{
     Expr,
+    Member,
     owned_type,
     INFERRED,
     headed_type,
@@ -141,7 +142,7 @@ export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: s
         ItemKind.Component,
     ) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
-        .find(it.name == name) else { return null }
+        .find(it.name == name) else { return component_signature(engine, file, item, name) }
     let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
     let written = [SignedField { name: f.name.of, ty: if f.ty == null { null } else { signing.signed(f.ty!) } } for f in parts.fields]
     let spread = (at: int) -> [g for x in parts.spreads if x.at == at for g in spread_fields(engine, signing.signed(x.of))]
@@ -150,6 +151,22 @@ export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: s
         fields: [f for at in 0..written.length + 1 for f in spread(at).concat(if at < written.length { [written[at]] } else { [] })],
     }
 }
+
+/// A component's signature as a record's: its type parameters, and its fields — its head's, then the
+/// fields among its members, in order.
+fn component_signature(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> RecordSignature? {
+    let parts? = [p! for s in item.stmts for p in [item.store.component_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
+    let members = [p! for m in parts.members for p in [field_of_member(m)] if p != null]
+    RecordSignature {
+        type_params: parts.tparams,
+        fields: [SignedField { name: p.name.of, ty: if p.ty == null { null } else { signing.signed(p.ty!) } } for p in parts.head.concat(members)],
+    }
+}
+
+/// A component member that is a field, absent for an event.
+fn field_of_member(m: Member) -> Param? { match m { .Field(p) -> p, .Event(_) -> null } }
 
 /// The fields a spread of `spread` brings, its record's own, bound to the arguments it's applied to.
 fn spread_fields(engine: QueryEngine, spread: SignedType) -> List<SignedField> {

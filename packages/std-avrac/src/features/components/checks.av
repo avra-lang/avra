@@ -1,7 +1,7 @@
 //! The typing rules of a component instance: its heads and block check for what they are, and a
-//! named instance binds its name; an instance fn binds its seats in a fenced scope over its
-//! statements. What either is isn't named yet.
-use core.{Checking, Checks, ExprId, Expected, SignedType}
+//! instance is the component's type, which a named instance binds its name to; an instance fn binds
+//! its seats in a fenced scope over its statements.
+use core.{Checking, Checks, ExprId, Expected, SignedType, TypeRef}
 use core.expr.{Component}
 
 impl Checks for Component {
@@ -9,8 +9,9 @@ impl Checks for Component {
         cx.checked_free(self.heads)
         if self.key != null { let _ = cx.check(self.key!, Expected.Free) }
         if self.body != null { let _ = cx.check(self.body!, Expected.Unknown) }
-        if self.name != null { cx.bind(self.name!.of, null) }
-        null
+        let instance = instance_type(cx, self.word, self.targs)
+        if self.name != null { cx.bind(self.name!.of, instance) }
+        instance
     }
 }
 
@@ -21,5 +22,15 @@ impl Checks for InstanceFn {
         for s in self.stmts { cx.check_stmt(s) }
         cx.closed()
         null
+    }
+}
+
+/// The type an instance of the component `word` is: the component, applied to the type arguments
+/// written; absent when the word names no component the program declares.
+fn instance_type(cx: Checking, word: string, targs: List<TypeRef>) -> SignedType? {
+    let named = cx.type_named(word)
+    match named.head {
+        .Declared(_, _) -> if targs.is_empty() { named } else { named with { args: [cx.written(t) for t in targs] } },
+        rest -> null,
     }
 }

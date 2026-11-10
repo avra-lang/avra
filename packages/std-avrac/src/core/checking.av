@@ -398,6 +398,16 @@ impl Checking {
         f.answer
     }
 
+    /// What a read through `?.` answers: what `read` answers on the subject's present value, made
+    /// optional, since an absent subject answers absent. Absent when the subject isn't optional or
+    /// the read isn't known.
+    fn chained(subject: SignedType?, read: fn(SignedType) -> SignedType?) -> SignedType? {
+        let s? = subject else { return null }
+        if !s.nullable() { return null }
+        let answer? = read(s.unwrapped()) else { return null }
+        answer with { nulls: if answer.nulls > 0 { answer.nulls } else { 1 } }
+    }
+
     /// What a name reads as when it names a type and no value: the type, standing as a value.
     fn type_value(name: string) -> SignedType? { (self.program.type_value)(name) }
 

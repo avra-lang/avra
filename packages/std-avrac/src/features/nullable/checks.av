@@ -2,7 +2,7 @@
 //! checks in a scope of its own, its value dropped, before `x` is bound to what `v` holds when it's
 //! present.
 use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, null_type}
-use core.expr.{Coalesce, Force, MatchOpt, NullLit, Propagate}
+use core.expr.{Chain, Coalesce, Force, MatchOpt, NullLit, Propagate}
 use core.stmt.{LetElse}
 
 impl StmtChecks for LetElse {
@@ -62,5 +62,13 @@ impl Checks for Propagate {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let s? = cx.check(self.subject, Expected.Free) else { return null }
         cx.payload_of(s, "Ok") ?? present(s)
+    }
+}
+
+impl Checks for Chain {
+    /// `a?.b` is `b` on what `a` holds when present, made optional.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        cx.chained(subject, (s: SignedType) -> cx.field_of(s, self.name.of))
     }
 }
