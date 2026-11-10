@@ -39,7 +39,7 @@ if [ "$want" != "$got" ]; then
     echo "seed-guard: the committed seed LAGS $where — a fresh Sprite takes one build, not the fast path"
     echo "seed-guard:   tree $want"
     echo "seed-guard:   seed $got"
-    echo "seed-guard: \`make seed\` on a CLEAN tree restores the fast path (commit bootstrap/seed.ll"
+    echo "seed-guard: \`make seed\` on a CLEAN tree restores the fast path (commit bootstrap/seed.ll.gz"
     echo "seed-guard: and bootstrap/seed.sources together); whether the seed still COMPILES HEAD is checked next"
     if [ "${SEED_STRICT:-0}" = "1" ]; then exit 1; fi
     exit 0

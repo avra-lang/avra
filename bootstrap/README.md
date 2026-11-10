@@ -1,15 +1,17 @@
 # The seed
 
-`seed.ll` is the compiler, emitted. It exists so the self-hosting
-chain cannot be lost: `build/avra` is built by the `build/avra` that
-is already there, and the seed is the only other thing that can make
-one.
+`seed.ll.gz` is the compiler, emitted and compressed (`gzip -9 -n`,
+about a twelfth of the IR, which keeps a refresh under the host's
+per-file limit; gzip because every machine and image has it). It exists so the self-hosting chain cannot be lost:
+`build/avra` is built by the `build/avra` that is already there, and
+the seed is the only other thing that can make one. Every rule that
+reads it takes `build/seed.ll`, decompressed from it by one rule.
 
 ## Rebuilding from cold
 
     make bootstrap
 
-which links `seed.ll` against the runtime and the LLVM wrapper, then
+which links the seed against the runtime and the LLVM wrapper, then
 uses the result to build the compiler from source. Needs clang and
 LLVM 21 (`LLVM_PREFIX`), the same as any build here. `./avra` runs it
 by itself when `build/avra` is missing.

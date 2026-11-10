@@ -429,6 +429,10 @@ SEED_FLOOR := 100000
 # Every C object the compiler and the packages link, built from its source.
 objects: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 
+# THE SEED IS COMMITTED COMPRESSED: `bootstrap/seed.ll.gz`, about a twelfth of the IR, so a refresh
+# stays under the host's per-file limit and adds megabytes to history, not a hundred. gzip because
+# every machine and image has it; `-n` keeps the bytes a function of the IR alone.
+# Every reader takes `build/seed.ll`, made from it by the one rule below.
 seed: $(COMPILER_OBJS)
 	@./avra emit packages/cli > build/seed.ll.new
 	@n=$$(wc -l < build/seed.ll.new | tr -d ' '); \
@@ -436,9 +440,14 @@ seed: $(COMPILER_OBJS)
 		echo "seed: refused — the emit wrote $$n lines, under $(SEED_FLOOR); the committed seed stands"; \
 		rm -f build/seed.ll.new; exit 1; \
 	fi; \
-	mv build/seed.ll.new bootstrap/seed.ll; \
+	gzip -9 -n -c build/seed.ll.new > bootstrap/seed.ll.gz || exit 1; \
+	mv build/seed.ll.new build/seed.ll; \
 	sh tools/sources_hash.sh > bootstrap/seed.sources; \
-	echo "seed: bootstrap/seed.ll ($$n lines)"
+	echo "seed: bootstrap/seed.ll.gz ($$n lines)"
+
+build/seed.ll: bootstrap/seed.ll.gz
+	@mkdir -p build
+	@gzip -d -c bootstrap/seed.ll.gz > build/seed.ll
 
 # THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
 # recovery must take — `seed` and `avra` link through the compiler.
@@ -451,9 +460,9 @@ seed: $(COMPILER_OBJS)
 # source — so a source that traps while compiling itself (a probe in an
 # analysis path, a broken pass) has no way back: every rebuild traps
 # again. `make recover` is that way back.
-recover: $(COMPILER_OBJS)
+recover: $(COMPILER_OBJS) build/seed.ll
 	@mkdir -p build
-	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
+	@clang -w -O1 -rdynamic build/seed.ll $(SEED_LINK_OBJS) \
 	    $(LLVM_LINK) -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
@@ -520,6 +529,10 @@ compiler-files:
 # GENS times (one `make avra` advances one generation; two reach a fixed point), and where none stands or
 # it cannot read the tree — new syntax, a refusal about its own source — the
 # seed bootstraps it, a FULL build, so a source wrong for real still dies.
+# A SEED EMITTED FROM THIS VERY SOURCE comes first: linking it already is the
+# compiler this tree builds (tools/seed_is_tree.sh), so no ladder and no
+# standing compiler can do better, and a tree too new for every published one
+# still builds.
 # RUNGS are the tree's `Rung:` commits, oldest first (tools/rungs.sh): each is
 # built by the product of the one before (tools/ladder.sh), starting from the
 # standing compiler or the seed as linked, and HEAD by the last; a laddered
@@ -538,7 +551,10 @@ GENS ?= 2
 BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
 compiler:
 	@gens() { n=$(GENS); while [ "$$n" -gt 0 ]; do $(BOUNDED)$(MAKE) -s avra || return 1; n=$$((n - 1)); done; }; \
-	if [ -n "$(strip $(RUNGS))" ]; then \
+	if [ "$$(sh tools/seed_is_tree.sh "$$(sh tools/sources_hash.sh)" "$$(cat bootstrap/seed.sources 2>/dev/null)")" = seed ]; then \
+	  echo "compiler: the committed seed was emitted from this tree — linked, not climbed"; \
+	  $(BOUNDED)$(MAKE) -s bootstrap; \
+	elif [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
 	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
@@ -818,10 +834,10 @@ clean:
 # manifest still carried its rows, and it fails the day they go. The
 # binary links beside `build/avra`, which is the layout the resolver
 # describes; the scratch keeps its own directory.
-seed-check: $(COMPILER_OBJS)
+seed-check: $(COMPILER_OBJS) build/seed.ll
 	@sh tools/seed_guard.sh
 	@mkdir -p build/seed-check
-	@cp bootstrap/seed.ll build/seed-check/seed.ll
+	@cp build/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
 	    $(LLVM_LINK) -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }

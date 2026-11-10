@@ -27,7 +27,7 @@ stop() {
 
 settle_seed() {
     # The seed is regenerated, never merged by hand.
-    for s in bootstrap/seed.ll bootstrap/seed.sources; do
+    for s in bootstrap/seed.ll.gz bootstrap/seed.sources; do
         if git diff --name-only --diff-filter=U | grep -qx "$s"; then git checkout --theirs "$s" && git add "$s"; fi
     done
 }

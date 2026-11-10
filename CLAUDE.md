@@ -27,7 +27,7 @@ Clean restart of the Avra compiler, built slowly, one reviewed file at a
 time. Front end first: an extensible grammar assembled from
 LanguageFeature components, producing an AST for later passes.
 Toolchain: the compiler builds itself — `./avra` runs `build/avra`,
-and a cold tree bootstraps from `bootstrap/seed.ll` (`make bootstrap`;
+and a cold tree bootstraps from `bootstrap/seed.ll.gz` (`make bootstrap`;
 README.md).
 
 Design sources of truth (in `../forge-crafting-intepreters`):
