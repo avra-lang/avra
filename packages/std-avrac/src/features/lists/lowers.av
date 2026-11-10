@@ -5,8 +5,7 @@ use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, rt_sig_of}
 use core.expr.{ListLit}
 
 impl Lowers for ListLit {
-    /// The elements first, then the size, then the box, then what fills it; an element wider than a
-    /// word isn't lowered yet.
+    /// The elements first, then the size, then the box, then what fills it.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let data = if self.elems.is_empty() { null } else { cx.static_literal(e) }
         if data != null { return data! }
@@ -25,13 +24,7 @@ impl Lowers for ListLit {
             }
         }
         let dst = cx.call_row(cx.layout_at(e), rt_sig_of("avra_array_sized")!, [size])
-        for at, r in regs {
-            cx
-                .run_words(
-                    rt_sig_of(if spread[at] { "avra_array_extend" } else { "avra_array_push" })!,
-                    [dst, r],
-                )
-        }
+        for at, r in regs { if spread[at] { cx.run_row(rt_sig_of("avra_array_extend")!, [dst, r]) } else { cx.push_slot(dst, r) } }
         dst
     }
 }

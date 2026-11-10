@@ -1,0 +1,27 @@
+//! The lowering rule of a wrapping verb on an `int`: the operator's own low 64 bits, over the receiver
+//! and the one argument.
+use core.{BinOp, ExprId, Lowering, Reg}
+use core.expr.{MethodCall}
+
+impl Lowering {
+    /// `m`, a wrapping verb on a value of the type the language names `word`: the operator over the
+    /// receiver then the argument; absent, with nothing emitted, for any other verb.
+    mut fn int_wrapped(m: MethodCall, e: ExprId, word: string) -> Reg? {
+        if word != "int" || m.args.length != 1 { return null }
+        let op? = wrapping_op(m.name.of) else { return null }
+        let a = self.lower(m.subject)
+        let b = self.lower(m.args[0])
+        self.bin(self.layout_at(e), op, a, b)
+    }
+}
+
+/// The operator a wrapping verb is, absent for a verb that isn't one.
+fn wrapping_op(verb: string) -> BinOp? {
+    match verb {
+        "wrapping_add" -> BinOp.Add,
+        "wrapping_sub" -> BinOp.Sub,
+        "wrapping_mul" -> BinOp.Mul,
+        "wrapping_shl" -> BinOp.Shl,
+        _ -> null,
+    }
+}

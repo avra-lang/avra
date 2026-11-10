@@ -16,13 +16,12 @@ use core.{
 use core.expr.{Comp}
 
 impl Lowers for Comp {
-    /// A comprehension whose heads each walk a list or count up to a bound. One over any other
-    /// source, or a list whose elements lay out inline, isn't lowered yet.
+    /// A comprehension whose heads each walk a list or count up to a bound. One over any other source
+    /// isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
-        let elem? = ty.listed() else { return cx.unlowered(e) }
+        if ty.listed() == null { return cx.unlowered(e) }
         if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as("a comprehension over a source that isn't a list or a count") }
-        if cx.laid_out(elem).inline() { return cx.missed_as("a comprehension whose elements lay out inline") }
         let built = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
         walked(cx, self, 0, built)
         built
@@ -37,8 +36,7 @@ fn walkable(cx: Lowering, c: CompClause) -> bool {
             let from? = cx.type_at(source) else { return false }
             if hi != null { return from.spelled() == owned_type("int").spelled() }
             let elem? = from.listed() else { return false }
-            let l? = cx.program.checked.layout(elem) else { return false }
-            !l.inline() && !viewed(cx, source)
+            cx.program.checked.layout(elem) != null && !viewed(cx, source)
         },
         .Filter(_) -> true,
     }
@@ -64,7 +62,7 @@ fn bound_here(cx: Lowering, e: ExprId) -> bool {
 
 /// Clause `at` onward, inside every walk before it; past the last, the element pushed onto `built`.
 fn walked(mut cx: Lowering, c: Comp, at: int, built: Reg) {
-    if at == c.clauses.length { return cx.push_leaf(built, cx.lower(c.elem)) }
+    if at == c.clauses.length { return cx.push_slot(built, cx.lower(c.elem)) }
     match c.clauses[at] {
         .Head(index, name, source, hi) -> {
             let w = if hi == null { listed_walk(cx, source) } else { counted_walk(cx, source, hi!) }

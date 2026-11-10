@@ -1,0 +1,86 @@
+//! The lowering rules of the failure channel: `fail` leaves the fn with its `Err`, and a `catch` is
+//! one region on the subject's tag, its `Ok` side what it carries and its failure side the arm that
+//! recovers — the catch-all over the whole error, or a region over the error's tag whose arms each
+//! take a variant, a catch naming only some of them leaving with the rest.
+use core.{
+    BinOp,
+    Bound,
+    CatchArm,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    VariantSeat,
+}
+use core.expr.{Catch}
+use core.stmt.{Fail}
+
+impl StmtLowers for Fail {
+    /// The value, as the `Err` of the fn's `Result`, leaving. A value its union boxes isn't lowered yet.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        if !cx.answer.resulted() { return cx.missed("a `fail` from a fn that answers no `Result`") }
+        if !cx.fails_as(cx.type_at(cx.meaning_of(self.value)), cx.answer) { return cx.missed("a failure boxed into its union, tagged by its type's number") }
+        cx.fail_exit(cx.failure_of(cx.answer, cx.lower(self.value)))
+    }
+}
+
+impl Lowers for Catch {
+    /// A region on whether the subject is `Ok`: what it carries, else its failure recovered. A catch
+    /// over a read whose failure is its row's own, or whose arms take a union's members, isn't lowered
+    /// yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(cx.meaning_of(self.subject)) else { return cx.unlowered(e) }
+        if !held.resulted() { return cx.missed_as("a catch over a read whose failure is its row's own") }
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        let ok = cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(v), cx.const_int(0))
+        cx
+            .region(ok, cx.laid_out(ty)) { cx -> cx.payload_at(v, 0, [cx.laid_out(held.args[0])]) } else { cx -> recovered(cx, self.arms, v, held, ty) }
+    }
+}
+
+/// The failure of `v`, a `Result` of `held`, recovered by `arms` into a value of `ty`.
+fn recovered(mut cx: Lowering, arms: List<CatchArm>, v: Reg, held: SignedType, ty: SignedType) -> Reg {
+    let err = held.args[1]
+    if arms.length == 1 && arms[0].variant.of == "" {
+        if arms[0].bind.of == "" { return cx.lower(arms[0].value) }
+        return bound_arm(cx, arms[0], err, cx.payload_at(v, 0, [cx.laid_out(err)]))
+    }
+    if !err.alternatives.is_empty() { return cx.missed_as("a catch whose arms take a union's members") }
+    let variants? = cx.variants_of(err) else { return cx.missed_as("a catch whose arms take no enum's variants") }
+    let tags = [variants.find_index(it.name == a.variant.of) for a in arms]
+    if tags.any(it == null) { return cx.missed_as("a catch arm naming no variant of its error") }
+    let selective = !variants.all((vs) -> arms.any(it.variant.of == vs.name))
+    let failed = cx.payload_at(v, 0, [cx.laid_out(err)])
+    let cases = [t! for t in tags].take(if selective { arms.length } else { arms.length - 1 })
+    cx
+        .switched(cx.tag_of(failed), cases, cx.laid_out(ty)) { cx, j ->
+            if j == arms.length { failing_on(cx, v, held, ty) } else { variant_arm(cx, arms[j], variants[tags[j]!], failed) }
+        }
+}
+
+/// The arm a catch naming only some variants takes for the rest: the fn leaves failing with `v`.
+fn failing_on(mut cx: Lowering, v: Reg, held: SignedType, ty: SignedType) -> Reg {
+    cx.fail_exit(cx.propagated(v, held))
+    cx.hollow_of(ty)
+}
+
+/// A variant's arm: its name bound to the one payload the variant carries, when it names one.
+fn variant_arm(mut cx: Lowering, arm: CatchArm, variant: VariantSeat, failed: Reg) -> Reg {
+    if arm.bind.of == "" || variant.payloads.length != 1 { return cx.lower(arm.value) }
+    let carried? = variant.payloads[0].ty else { return cx.missed_as("a payload whose type isn't known") }
+    bound_arm(cx, arm, carried, cx.payload_at(failed, 0, [cx.laid_out(carried)]))
+}
+
+/// An arm whose name is bound to `bound`, a value of `ty`, in a scope of its own: the arm's value.
+fn bound_arm(mut cx: Lowering, arm: CatchArm, ty: SignedType, bound: Reg) -> Reg {
+    cx.opened()
+    cx.bind(arm.bind.of, Bound.Value(bound, ty))
+    let r = cx.lower(arm.value)
+    cx.closed()
+    r
+}

@@ -1,9 +1,10 @@
 //! The lowering rules of the walks a list takes a fn for — `find`, `any`, `all`, `map`, `filter`,
-//! `fold`: the list first, then what the answer gathers in, then the fn, then one walk over the list
-//! handing each element to the fn. A lambda capturing nothing, of one expression that leaves nothing
+//! `fold` — and of `contains`, `take` and `drop`: the list first, then what the answer gathers in, then the fn or the
+//! value sought, then one walk over the list handing each element to the fn or comparing it. A lambda capturing nothing, of one expression that leaves nothing
 //! to the walk's frame, is asked in place, its seats bound to what it's handed; any other fn through
 //! its box, its code read once before the walk.
 use core.{
+    BinOp,
     Bound,
     ExprId,
     Layout,
@@ -27,6 +28,9 @@ enum WalkVerb {
     Map
     Filter
     Fold
+    Contains
+    Take
+    Drop
 }
 
 /// The walk the verb `name` is, absent for any other verb.
@@ -38,6 +42,9 @@ fn walk_verb(name: string) -> WalkVerb? {
         "map" -> WalkVerb.Map,
         "filter" -> WalkVerb.Filter,
         "fold" -> WalkVerb.Fold,
+        "contains" -> WalkVerb.Contains,
+        "take" -> WalkVerb.Take,
+        "drop" -> WalkVerb.Drop,
         rest -> null,
     }
 }
@@ -69,11 +76,9 @@ impl Lowering {
     }
 }
 
-/// The walk `verb` over `m`'s receiver. One over elements laid inline, or over a walk it runs as one
-/// with, isn't lowered yet.
+/// The walk `verb` over `m`'s receiver. One over a walk it runs as one with isn't lowered yet.
 fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> Reg {
     let elem? = cx.type_at(m.subject)?.listed() else { return cx.unlowered(e) }
-    if cx.laid_out(elem).inline() { return cx.missed_as("a walk over elements laid inline") }
     if runs_as_one(cx, m.subject) { return cx.missed_as("a walk over a walk it runs as one with") }
     if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.unlowered(e) }
     match verb {
@@ -83,6 +88,9 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
         .Map -> gathered(cx, m, e, elem, true),
         .Filter -> gathered(cx, m, e, elem, false),
         .Fold -> folded(cx, m, e, elem),
+        .Contains -> contained(cx, m, e, elem),
+        .Take -> limited(cx, m, e, elem, true),
+        .Drop -> limited(cx, m, e, elem, false),
     }
 }
 
@@ -135,16 +143,15 @@ fn gathered(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, mappin
     if m.args.length != 1 { return cx.unlowered(e) }
     let ty? = cx.type_at(e) else { return cx.unlowered(e) }
     let out? = ty.listed() else { return cx.unlowered(e) }
-    if cx.laid_out(out).inline() { return cx.missed_as("a walk gathering values laid inline") }
     let xs = cx.lower(m.subject)
     let f = asked(cx, m.args[0], 1)
     let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
     let w = list_walk(cx, xs, elem)
     let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
     if mapping {
-        cx.push_leaf(dst, answered(cx, f, [v], cx.laid_out(out)))
+        cx.push_slot(dst, answered(cx, f, [v], cx.laid_out(out)))
     } else {
-        cx.void_region(answered(cx, f, [v], Layout.Truth)) { cx -> cx.push_leaf(dst, v) }
+        cx.void_region(answered(cx, f, [v], Layout.Truth)) { cx -> cx.push_slot(dst, v) }
     }
     cx.loop_end()
     dst
@@ -164,6 +171,53 @@ fn folded(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     cx.loop_end()
     cx.loaded(l, cell)
 }
+
+/// `xs.contains(x)`: a truth seeded false, made true and the walk ended at the first element that is
+/// the same value as `x`. One over elements that don't compare by value isn't lowered yet.
+fn contained(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    if !cx.equatable(elem) { return cx.missed_as("a `contains` over elements that don't compare by value") }
+    let xs = cx.lower(m.subject)
+    let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(false))
+    let needle = cx.lower(m.args[0])
+    let w = list_walk(cx, xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    cx.void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, cx.const_bool(true)) }
+    cx.loop_end()
+    cx.loaded(Layout.Truth, cell)
+}
+
+/// `xs.take(n)` / `xs.drop(n)`: an empty list, and a count of the elements that reach the limit; each
+/// element pushed while the count stands short of `n` and the walk ended once it doesn't, for `take`,
+/// or each once the count reaches `n`, for `drop`.
+fn limited(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, taking: bool) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let xs = cx.lower(m.subject)
+    let count = cx.seeded_cell(Layout.Word, cx.const_int(0))
+    let n = cx.lower(m.args[0])
+    let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+    let w = list_walk(cx, xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let seen = cx.loaded(Layout.Word, count)
+    if taking {
+        let keep = cx.bin(Layout.Truth, BinOp.Lt, seen, n)
+        cx
+            .void_region(keep) { cx ->
+                counted_past(cx, count, seen)
+                cx.push_slot(dst, v)
+            }
+        cx.void_region(cx.not(keep)) { cx -> cx.jumped(false) }
+    } else {
+        counted_past(cx, count, seen)
+        cx.void_region(cx.bin(Layout.Truth, BinOp.Ge, seen, n)) { cx -> cx.push_slot(dst, v) }
+    }
+    cx.loop_end()
+    dst
+}
+
+/// One more element counted past the limit's count `count`, which stood at `seen`.
+fn counted_past(mut cx: Lowering, count: Reg, seen: Reg) { cx.stored(count, cx.bin(Layout.Word, BinOp.Add, seen, cx.const_int(1))) }
 
 /// The answer `v` written into `cell`, and the walk ended.
 fn ended(mut cx: Lowering, cell: Reg, v: Reg) {

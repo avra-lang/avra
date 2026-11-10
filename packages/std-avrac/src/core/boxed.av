@@ -6,7 +6,7 @@ impl Lowering {
     // ── Reads ───────────────────────────────────────────────────────
 
     /// Slot `at` of the box `v`, past the runtime's bounds test, as a value of layout `l`: a nullable
-    /// scalar as its pair, its presence the slot's mark.
+    /// scalar as its pair, its presence the slot's mark; a value wider than a word out of its own box.
     mut fn slot_read(l: Layout, v: Reg, at: int) -> Reg {
         let index = self.const_int(at)
         match l {
@@ -16,31 +16,28 @@ impl Lowering {
                 self
                     .pack(l, [present, self.call_row(value, rt_sig_of("avra_array_get")!, [v, index])])
             },
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.call_row(l, rt_sig_of("avra_array_get")!, [v, index]),
-            .Fields(_) or .Tagged(_) -> self.missed_as("a slot read of a value laid inline"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_array_get")!, [v, index]),
         }
     }
 
     /// Slot `at` of the box `v`, which the box's type proves is there, as a value of layout `l`: read
-    /// with no bounds test, but for a nullable scalar's pair.
+    /// with no bounds test, but for a nullable scalar's pair; a value wider than a word out of its own box.
     mut fn proven_read(l: Layout, v: Reg, at: int) -> Reg {
         match l {
             .Maybe(_) -> self.slot_read(l, v, at),
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.call_row(l, rt_sig_of("avra_slot_get")!, [v, self.const_int(at)]),
-            .Fields(_) or .Tagged(_) -> self.missed_as("a slot read of a value laid inline"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_slot_get")!, [v, self.const_int(at)]),
         }
     }
 
     /// The element at the place `at` holds in the list `v`, as a value of layout `l`: a nullable
-    /// scalar as its pair, its presence the slot's mark.
+    /// scalar as its pair, its presence the slot's mark; a value wider than a word out of its own box.
     mut fn element_at(l: Layout, v: Reg, at: Reg) -> Reg {
         match l {
             .Maybe(value) -> {
                 let present = self.call_row(Layout.Truth, rt_sig_of("avra_slot_present")!, [v, at])
                 self.pack(l, [present, self.call_row(value, rt_sig_of("avra_array_get")!, [v, at])])
             },
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.call_row(l, rt_sig_of("avra_array_get")!, [v, at]),
-            .Fields(_) or .Tagged(_) -> self.missed_as("an element laid inline"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_array_get")!, [v, at]),
         }
     }
 

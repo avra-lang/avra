@@ -1,7 +1,7 @@
 //! The lowering rule of `==` and `!=` past the values the language owns: a nullable against `null`
 //! is its presence, only the nullable side read; an enum compares by its tag, and a record of one
 //! field by that field, all the way down.
-use core.{BinOp, ExprId, Layout, Lowering, Reg, SignedType, rt_sig_of}
+use core.{ExprId, Lowering, Reg, SignedType}
 
 /// `l == r`, or `l != r` when `negated`, where one side is `null` or both are one enum or one record
 /// of one field; absent, with nothing emitted, for any other operands.
@@ -13,10 +13,10 @@ fn compared_beyond(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg
         let present = cx.present(cx.lower(asked!), cx.type_at(asked!)!)
         return if negated { present } else { cx.not(present) }
     }
-    if lt.spelled() != rt.spelled() || lt.owned() != null || !equatable(cx, lt) { return null }
+    if lt.spelled() != rt.spelled() || lt.owned() != null || !cx.equatable(lt) { return null }
     let a = cx.lower(l)
     let b = cx.lower(r)
-    let same = same_value(cx, a, b, lt)
+    let same = cx.same_value(a, b, lt)
     if negated { cx.not(same) } else { same }
 }
 
@@ -25,60 +25,4 @@ fn absence_asked(lt: SignedType, rt: SignedType, l: ExprId, r: ExprId) -> ExprId
     if lt.nullable() && !lt.absence() && rt.absence() { return l }
     if rt.nullable() && !rt.absence() && lt.absence() { return r }
     null
-}
-
-/// Whether two values of `ty` compare by value here: a number, a truth, text or bytes, an enum by
-/// its tag, or a record of one field that does.
-fn equatable(cx: Lowering, ty: SignedType) -> bool {
-    if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return false }
-    if ty.owned() != null { return comparing(cx.program.checked.layout(ty)) != null }
-    if cx.variants_of(ty) != null { return true }
-    let fields? = cx.fields_of(ty) else { return false }
-    fields.length == 1 && !fields[0].state && fields[0].ty != null && equatable(cx, fields[0].ty!)
-}
-
-/// How two values of a layout the language owns compare.
-enum Comparing {
-    /// By one instruction.
-    Instruction
-    /// By the runtime's row.
-    Row(name: string)
-}
-
-/// How two values of the layout `l` compare, absent for a layout that doesn't compare by value.
-fn comparing(l: Layout?) -> Comparing? {
-    let laid? = l else { return null }
-    match laid {
-        .Word or .Real or .Truth -> Comparing.Instruction,
-        .Boxed(box) -> match box {
-            .Text -> Comparing.Row("avra_streq"),
-            .Bytes -> Comparing.Row("avra_bytes_eq"),
-            .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
-        },
-        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
-    }
-}
-
-/// Whether `a` and `b`, two values of `ty` that `equatable` passes, are the same value.
-fn same_value(mut cx: Lowering, a: Reg, b: Reg, ty: SignedType) -> Reg {
-    if ty.owned() != null {
-        return match comparing(cx.program.checked.layout(ty))! {
-            .Instruction -> cx.bin(Layout.Truth, BinOp.Eq, a, b),
-            .Row(name) -> cx.call_row(Layout.Truth, rt_sig_of(name)!, [a, b]),
-        }
-    }
-    if cx.variants_of(ty) != null { return cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(a), cx.tag_of(b)) }
-    let field = cx.fields_of(ty)![0].ty!
-    let fa = only_field(cx, a, ty, field)
-    let fb = only_field(cx, b, ty, field)
-    same_value(cx, fa, fb, field)
-}
-
-/// The one field of the record `v` of `ty`, a value of `field`.
-fn only_field(mut cx: Lowering, v: Reg, ty: SignedType, field: SignedType) -> Reg {
-    let l = cx.laid_out(field)
-    match cx.laid_out(ty) {
-        .Boxed(_) -> cx.boxed_field(v, [l], 0, l),
-        .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> cx.extracted(l, v, 0),
-    }
 }

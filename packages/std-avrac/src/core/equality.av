@@ -1,0 +1,63 @@
+//! TWO VALUES THE SAME: a number or a truth by one instruction, text and bytes by the runtime's row,
+//! an enum by its tag, and a record of one field by that field, all the way down.
+
+impl Lowering {
+    /// Whether two values of `ty` compare by value: a number, a truth, text or bytes, an enum by its
+    /// tag, or a record of one field that does.
+    fn equatable(ty: SignedType) -> bool {
+        if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return false }
+        if ty.owned() != null { return comparing(self.program.checked.layout(ty)) != null }
+        if self.variants_of(ty) != null { return true }
+        let fields? = self.fields_of(ty) else { return false }
+        fields.length == 1 &&
+            !fields[0].state &&
+            fields[0].ty != null &&
+            self.equatable(fields[0].ty!)
+    }
+
+    /// Whether `a` and `b`, two values of `ty` that `equatable` passes, are the same value.
+    mut fn same_value(a: Reg, b: Reg, ty: SignedType) -> Reg {
+        if ty.owned() != null {
+            return match comparing(self.program.checked.layout(ty))! {
+                .Instruction -> self.bin(Layout.Truth, BinOp.Eq, a, b),
+                .Row(name) -> self.call_row(Layout.Truth, rt_sig_of(name)!, [a, b]),
+            }
+        }
+        if self.variants_of(ty) != null { return self.bin(Layout.Truth, BinOp.Eq, self.tag_of(a), self.tag_of(b)) }
+        let field = self.fields_of(ty)![0].ty!
+        let fa = self.only_field(a, ty, field)
+        let fb = self.only_field(b, ty, field)
+        self.same_value(fa, fb, field)
+    }
+
+    /// The one field of the record `v` of `ty`, a value of `field`.
+    mut fn only_field(v: Reg, ty: SignedType, field: SignedType) -> Reg {
+        let l = self.laid_out(field)
+        match self.laid_out(ty) {
+            .Boxed(_) -> self.boxed_field(v, [l], 0, l),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.extracted(l, v, 0),
+        }
+    }
+}
+
+/// How two values of a layout the language owns compare.
+enum Comparing {
+    /// By one instruction.
+    Instruction
+    /// By the runtime's row.
+    Row(name: string)
+}
+
+/// How two values of the layout `l` compare, absent for a layout that doesn't compare by value.
+fn comparing(l: Layout?) -> Comparing? {
+    let laid? = l else { return null }
+    match laid {
+        .Word or .Real or .Truth -> Comparing.Instruction,
+        .Boxed(box) -> match box {
+            .Text -> Comparing.Row("avra_streq"),
+            .Bytes -> Comparing.Row("avra_bytes_eq"),
+            .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}

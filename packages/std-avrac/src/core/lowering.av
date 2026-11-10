@@ -123,6 +123,8 @@ export type Lowering = {
     callees: Cell<List<CalledFn>>,
     /// How many loops stand open around what's being lowered.
     loops: Cell<int>,
+    /// The type each register was made as, by its index, where its node's type says more.
+    worn: Cell<Map<string, SignedType>>,
 }
 
 /// A body of `store` to lower, typed in the core as `types` with its seats' wants `seats`, its fn
@@ -140,6 +142,7 @@ export fn lowering(
     let missing: Cell<List<string>> = Cell.new([])
     let callees: Cell<List<CalledFn>> = Cell.new([])
     let loops: Cell<int> = Cell.new(0)
+    let worn: Cell<Map<string, SignedType>> = Cell.new({})
     Lowering {
         store: store,
         program: program,
@@ -152,6 +155,7 @@ export fn lowering(
         missing: missing,
         callees: callees,
         loops: loops,
+        worn: worn,
     }
 }
 
@@ -179,7 +183,7 @@ impl Lowering {
         let born = self.born(e)
         let seat? = self.seat_at(e) else { return born }
         let ty? = self.type_at(self.meaning_of(e)) else { return born }
-        self.lifted(born, ty, seat)
+        self.lifted(born, self.worn_as(born) ?? ty, seat)
     }
 
     /// `e`'s value as its own type holds it, emitted by the rule of the core node it means: what a
@@ -473,19 +477,16 @@ impl Lowering {
     /// A call of the runtime's row `row` answering a value of layout `l`, where the answer and each
     /// argument cross as the one word each is; a wider value crosses boxed, which isn't lowered yet.
     mut fn call_words(l: Layout, row: RtSig, args: List<Reg>) -> Reg {
-        if !l.one_word() || !self.words(args) { return self.missed_as(wider_than_a_word(row)) }
-        self.call_row(l, row, args)
+        if !(l.one_word() || l.inline()) || !self.crossable(args) { return self.missed_as(wider_than_a_word(row)) }
+        self.call_crossed(l, row, args)
     }
 
     /// A call of the runtime's row `row`, which answers nothing, each argument crossing as the one
     /// word it is; a wider value crosses boxed, which isn't lowered yet.
     mut fn run_words(row: RtSig, args: List<Reg>) {
-        if !self.words(args) { return self.missed(wider_than_a_word(row)) }
-        self.run_row(row, args)
+        if !self.crossable(args) { return self.missed(wider_than_a_word(row)) }
+        self.run_crossed(row, args)
     }
-
-    /// Whether each of `regs` is one word.
-    fn words(regs: List<Reg>) -> bool { [self.layout_of(r) for r in regs].all(it.one_word()) }
 
     // ── Regions ─────────────────────────────────────────────────────
     // A region is ONE expression whose arms are blocks handed the context, so no rule opens a bracket

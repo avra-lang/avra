@@ -155,7 +155,7 @@ impl Lowering {
     }
 
     /// The value at the probe's word `probe` of the map `m`, a value of layout `l`: a nullable scalar
-    /// as its pair.
+    /// as its pair, a value wider than a word out of its own box.
     mut fn map_value(l: Layout, m: Reg, probe: Reg) -> Reg {
         match l {
             .Maybe(value) -> {
@@ -167,8 +167,7 @@ impl Lowering {
                         [present, self.call_row(value, rt_sig_of("avra_map_value_at")!, [m, probe])],
                     )
             },
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.call_row(l, rt_sig_of("avra_map_value_at")!, [m, probe]),
-            .Fields(_) or .Tagged(_) -> self.missed_as("a map value laid inline"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_map_value_at")!, [m, probe]),
         }
     }
 
@@ -187,8 +186,7 @@ impl Lowering {
                     rt_sig_of("avra_map_set_maybe")!,
                     [map, k, self.extracted(Layout.Truth, x, 0), self.extracted(carried, x, 1)],
                 ),
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.run_row(rt_sig_of("avra_map_set")!, [map, k, x]),
-            .Fields(_) or .Tagged(_) -> self.missed("a value laid inline written into a map"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.run_crossed(rt_sig_of("avra_map_set")!, [map, k, x]),
         }
         self.nothing()
     }
@@ -224,7 +222,8 @@ impl Lowering {
     }
 
     /// `x` written into slot `at` of the box `box`: a nullable scalar beside its presence; else the
-    /// word, by the row that skips the bounds test where the box's type `proven` the slot is there.
+    /// value as a row's seat takes it, by the row that skips the bounds test where the box's type
+    /// `proven` the slot is there.
     mut fn slot_written(box: Reg, at: Reg, x: Reg, proven: bool) {
         match self.layout_of(x) {
             .Maybe(carried) -> self
@@ -232,14 +231,13 @@ impl Lowering {
                     rt_sig_of("avra_slot_set_maybe")!,
                     [box, at, self.extracted(Layout.Truth, x, 0), self.extracted(carried, x, 1)],
                 ),
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self
-                .run_row(rt_sig_of(if proven { "avra_slot_put" } else { "avra_slot_set" })!, [box, at, x]),
-            .Fields(_) or .Tagged(_) -> self.missed("a value laid inline written into a slot"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self
+                .run_crossed(rt_sig_of(if proven { "avra_slot_put" } else { "avra_slot_set" })!, [box, at, x]),
         }
     }
 
     /// `w` pushed as one more slot of the box `box`: a nullable scalar beside its presence, else the
-    /// word.
+    /// value as a row's seat takes it.
     mut fn push_slot(box: Reg, w: Reg) {
         match self.layout_of(w) {
             .Maybe(value) -> self
@@ -247,8 +245,7 @@ impl Lowering {
                     rt_sig_of("avra_array_push_maybe")!,
                     [box, self.extracted(Layout.Truth, w, 0), self.extracted(value, w, 1)],
                 ),
-            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> self.run_row(rt_sig_of("avra_array_push")!, [box, w]),
-            .Fields(_) or .Tagged(_) -> self.missed("a value laid inline pushed as a slot"),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.run_crossed(rt_sig_of("avra_array_push")!, [box, w]),
         }
     }
 

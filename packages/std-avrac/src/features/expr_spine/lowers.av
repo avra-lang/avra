@@ -27,22 +27,24 @@ impl Lowers for Ident {
 }
 
 impl Lowers for Index {
-    /// `xs[i]` is the runtime's read of the list's slot `i`; an element wider than a word isn't
-    /// lowered yet.
+    /// `xs[i]` is the runtime's read of the list's slot `i`.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         if cx.type_at(self.subject)?.listed() == null { return cx.unlowered(e) }
         let xs = cx.lower(self.subject)
         let at = cx.lower(self.index)
-        cx.call_words(cx.layout_at(e), rt_sig_of("avra_array_get")!, [xs, at])
+        cx.element_at(cx.layout_at(e), xs, at)
     }
 }
 
 impl Lowers for Prop {
-    /// A property of a type the language owns is its row, handed the receiver. A record's field is
+    /// A property of a type is its variant of that name, which carries nothing. A property of a type
+    /// the language owns is its row, handed the receiver. A record's field is
     /// what a flat record's registers hold at its place, or a boxed one's slots past the fields
     /// before it. A `state` field, and any other property, aren't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let described = ty.described()
+        if described != null { return variant_named(cx, e, described!, self.name.of) }
         let own = owned_property(ty, self.name.of)
         if own != null { return cx.call_words(cx.layout_at(e), own!, [cx.lower(self.subject)]) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
@@ -56,6 +58,14 @@ impl Lowers for Prop {
             .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> cx.extracted(l, v, n),
         }
     }
+}
+
+/// The variant `name` of the enum `ty`, carrying nothing.
+fn variant_named(mut cx: Lowering, e: ExprId, ty: SignedType, name: string) -> Reg {
+    let made? = cx.type_at(e) else { return cx.unlowered(e) }
+    if !made.names_as(ty) { return cx.unlowered(e) }
+    let tag? = cx.variants_of(made)?.find_index(it.name == name) else { return cx.unlowered(e) }
+    cx.tagged_value(cx.laid_out(made), tag, [])
 }
 
 impl Lowers for Not {

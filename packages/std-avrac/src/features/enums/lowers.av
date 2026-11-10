@@ -1,7 +1,7 @@
 //! The lowering rules of a variant and of a `match`. A variant is the value of its tag and its
 //! payloads. A match on a `bool`, what an `if` means, is one region, its first arm taken where the
 //! subject holds; a match on an enum is a region over the subject's tag, each arm reading what its
-//! pattern binds inside its own region.
+//! pattern binds inside its own region; a match on a number or text tries each arm in turn.
 use core.{
     Arm,
     BinOp,
@@ -16,6 +16,7 @@ use core.{
     SyntaxArena,
     VariantSeat,
     owned_type,
+    types_joined,
 }
 use core.expr.{Is, Match, VariantLit}
 
@@ -59,12 +60,16 @@ fn holed(store: SyntaxArena, p: PatId) -> bool {
 }
 
 impl Lowers for Match {
-    /// A region answering each arm's value, or where an arm leaves, nothing of the region's type.
+    /// A region answering each arm's value, or where an arm leaves, nothing of the region's type. On a
+    /// `bool`, the region answers the type its arms meet at, which is what its seat lifts it from.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let arms? = truth_arms(cx, self) else { return variant_matched(cx, e, self) }
         let ty = region_type(cx, e)
-        cx
-            .region(cx.lower(self.subject), cx.laid_out(ty)) { cx -> yielded(cx, arms.taken, ty) } else { cx -> yielded(cx, arms.other, ty) }
+        let met = arms_met(cx, [arms.taken, arms.other]) ?? ty
+        let r = cx
+            .region(cx.lower(self.subject), cx.laid_out(met)) { cx -> met_at(cx, arms.taken, met) } else { cx -> met_at(cx, arms.other, met) }
+        if met.spelled() != ty.spelled() { cx.wear(r, met) }
+        r
     }
 
     /// A region whose arms are statements and whose value is nothing; a match on an enum, as its value.
@@ -101,6 +106,22 @@ fn region_type(cx: Lowering, e: ExprId) -> SignedType {
     if seat != null && !seat!.bottom() { seat! } else { cx.answer }
 }
 
+/// The type arms' values meet at, absent where one isn't known, every arm leaves, or the meeting
+/// says less than a type.
+fn arms_met(cx: Lowering, values: List<ExprId>) -> SignedType? {
+    let met? = types_joined([cx.type_at(cx.meaning_of(v)) for v in values]) else { return null }
+    if met.bottom() || met.partial() { null } else { met }
+}
+
+/// An arm's value as a region answering `met` yields it: born as its own type and lifted into `met`,
+/// or where it leaves, nothing of that type.
+fn met_at(mut cx: Lowering, value: ExprId, met: SignedType) -> Reg {
+    let made = cx.born(value)
+    if cx.store.leaves(value) { return cx.hollow_of(met) }
+    let own? = cx.worn_as(made) ?? cx.type_at(cx.meaning_of(value)) else { return made }
+    cx.lifted(made, own, met)
+}
+
 /// An arm's value: what it makes, or where it leaves, nothing of the region's type.
 fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
     let made = cx.lower(value)
@@ -109,11 +130,12 @@ fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
 
 // ── A match on an enum ──────────────────────────────────────────────
 
-/// What a pattern takes of the subject: all of it, under a name or none; or one variant, each payload
-/// under a name or none.
+/// What a pattern takes of the subject: all of it, under a name or none; one variant, each payload
+/// under a name or none; or the value a literal is.
 enum Taken {
     Whole(name: string?)
     Variant(tag: int, names: List<string?>)
+    Equal(lit: ExprId)
 }
 
 /// An arm as a match on an enum reads it: what each of its patterns takes, its guard, and its value.
@@ -125,16 +147,22 @@ type Chosen = { v: Reg, ty: SignedType, variants: List<VariantSeat>, region: Sig
 
 /// A match on an enum: its one arm's value; a region over the subject's tag, each arm but the last
 /// taken at its variant's tag and the last at any other, where each arm but the last takes one
-/// variant whole; else each arm in turn, taken where it accepts the subject. A match with a pattern
-/// that tests more than one variant, an arm of several patterns that binds, or one that leaves a
-/// variant to an absent tail, isn't lowered yet.
+/// variant whole; else each arm in turn, taken where it accepts the subject. A match on a number,
+/// text or bytes: each arm in turn, the last taking the rest. A match with a pattern that tests more
+/// than one variant, an arm of several patterns that binds, or one that leaves its subject to an
+/// absent tail, isn't lowered yet.
 fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
     let ty? = cx.type_at(m.subject) else { return cx.unlowered(e) }
-    let variants? = cx.variants_of(ty) else { return cx.unlowered(e) }
-    let planned = [arm_planned(cx, variants, a) for a in m.arms]
+    let scalar = ty.owned() != null &&
+        ty.spelled() != owned_type("bool").spelled() &&
+        cx.equatable(ty)
+    let found = cx.variants_of(ty)
+    if found == null && !scalar { return cx.unlowered(e) }
+    let variants = found ?? []
+    let planned = [arm_planned(cx, variants, a, scalar) for a in m.arms]
     if m.arms.is_empty() || planned.any(it == null) { return cx.missed_as("a match whose patterns aren't each one variant or the rest") }
     let arms = [a! for a in planned]
-    if !covers(variants, arms) { return cx.missed_as("a match leaving a variant to an absent tail") }
+    if !if scalar { ends_in_rest(arms) } else { covers(variants, arms) } { return cx.missed_as("a match leaving a variant to an absent tail") }
     let s = Chosen {
         v: cx.lower(m.subject),
         ty: ty,
@@ -148,18 +176,19 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
         .switched(cx.tag_of(s.v), cases, cx.laid_out(s.region)) { cx, j -> arm_lowered(cx, s, arms[j]) }
 }
 
-/// An arm as a match on a subject with `variants` reads it, absent where a pattern tests more than
-/// one variant, or an arm of several patterns binds a name.
-fn arm_planned(cx: Lowering, variants: List<VariantSeat>, a: Arm) -> Planned? {
-    let pats = [pattern_taken(cx, variants, p) for p in a.pats]
+/// An arm as a match on a subject with `variants`, or compared by value where `scalar`, reads it;
+/// absent where a pattern tests more than one variant, or an arm of several patterns binds a name.
+fn arm_planned(cx: Lowering, variants: List<VariantSeat>, a: Arm, scalar: bool) -> Planned? {
+    let pats = [pattern_taken(cx, variants, p, scalar) for p in a.pats]
     if pats.any(it == null) { return null }
     let taken = [p! for p in pats]
     if taken.length > 1 && taken.any((p) -> binds(p)) { return null }
     Planned { pats: taken, guard: a.guard, value: a.value }
 }
 
-/// What a pattern takes of a subject with `variants`, absent for one that tests more than one variant.
-fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId) -> Taken? {
+/// What a pattern takes of a subject with `variants`, or compared by value where `scalar`; absent for
+/// one that tests more than one variant.
+fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bool) -> Taken? {
     match cx.store.pat(p) {
         .Wild or .Rest -> Taken.Whole(null),
         .Bind(name) -> if compares(cx, name.of) { null } else { Taken.Whole(name.of) },
@@ -168,8 +197,17 @@ fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId) -> Taken? 
             if args.length > variants[tag].payloads.length || !args.all((a) -> takes_any(cx, a)) { return null }
             Taken.Variant(tag, [bind_name(cx.store, a) for a in args])
         },
-        .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+        .Lit(lit) -> if scalar && !cx.store.null_literal(lit) { Taken.Equal(lit) } else { null },
+        .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
     }
+}
+
+/// Whether the last arm takes whatever the subject is: unguarded, one pattern taking it whole.
+fn ends_in_rest(arms: List<Planned>) -> bool {
+    let last = arms.last()!
+    last.guard == null &&
+        last.pats.length == 1 &&
+        match last.pats[0] { .Whole(_) -> true, .Variant(_, _) or .Equal(_) -> false }
 }
 
 /// Whether a payload's pattern takes whatever it holds: a hole, or a name that binds.
@@ -196,7 +234,11 @@ fn compares(cx: Lowering, name: string) -> bool {
 
 /// Whether what a pattern takes binds a name.
 fn binds(t: Taken) -> bool {
-    match t { .Whole(name) -> name != null, .Variant(_, names) -> names.any(it != null) }
+    match t {
+        .Whole(name) -> name != null,
+        .Variant(_, names) -> names.any(it != null),
+        .Equal(_) -> false,
+    }
 }
 
 /// The tag an arm takes whole: an unguarded arm of one pattern that tests one variant.
@@ -237,11 +279,13 @@ fn accepted(mut cx: Lowering, s: Chosen, a: Planned) -> Reg {
     cx.region(any, Layout.Truth) { cx -> guarded(cx, s, a, g) } else { cx -> cx.const_bool(false) }
 }
 
-/// Whether a pattern accepts the subject: one taking the rest always, a variant where the tag is its.
+/// Whether a pattern accepts the subject: one taking the rest always, a variant where the tag is its,
+/// a literal where the subject is its value.
 fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
     match t {
         .Whole(_) -> cx.const_bool(true),
         .Variant(tag, _) -> cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag)),
+        .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
     }
 }
 
@@ -268,11 +312,15 @@ fn arm_lowered(mut cx: Lowering, s: Chosen, a: Planned) -> Reg {
 fn bound(mut cx: Lowering, s: Chosen, a: Planned) {
     if a.pats.length != 1 { return }
     match a.pats[0] {
-        .Whole(name) -> {
-            if name != null { cx.bind(name!, Bound.Value(s.v, s.ty)) }
-        },
+        .Whole(name) -> subject_bound(cx, s, name),
         .Variant(tag, names) -> payloads_bound(cx, s.v, s.variants[tag], names),
+        .Equal(_) -> subject_bound(cx, s, null),
     }
+}
+
+/// The subject bound to `name`, where a pattern names it.
+fn subject_bound(mut cx: Lowering, s: Chosen, name: string?) {
+    if name != null { cx.bind(name!, Bound.Value(s.v, s.ty)) }
 }
 
 /// Each payload a name stands for, read from the variant `v` holds and bound to it, in order.
