@@ -1,0 +1,56 @@
+//! The lowering rules of absence: `null` is a null constant its seat gives a layout, and a match on
+//! presence is one region, its present arm holding what the subject carries.
+use core.{Bound, ExprId, Lowering, Lowers, Reg, StmtId, StmtLowers, owned_type}
+use core.expr.{MatchOpt, NullLit}
+use core.stmt.{LetElse}
+
+impl Lowers for NullLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.word_at(cx.layout_at(e), 0) }
+}
+
+impl Lowers for MatchOpt {
+    /// A region on the subject's presence, answering the arm taken.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        cx
+            .region(cx.present(v, held), cx.layout_at(e)) { cx -> present_arm(cx, self, v) } else { cx -> cx.lower(self.absent) }
+    }
+
+    /// A region on the subject's presence whose arms are run for what they do.
+    fn lowered_dropped(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        cx
+            .void_branches(cx.present(v, held)) { cx -> let _ = present_arm(cx, self, v) } else { cx -> let _ = cx.lower(self.absent) }
+        cx.hollow_of(owned_type("void"))
+    }
+}
+
+/// The present arm: its name bound to what the subject carries, in a scope of its own.
+fn present_arm(mut cx: Lowering, m: MatchOpt, v: Reg) -> Reg {
+    let held = cx.type_at(m.subject)!
+    cx.opened()
+    cx.bind(m.bind.of, Bound.Value(cx.carried(v, held), held.unwrapped()))
+    let r = cx.lower(m.present)
+    cx.closed()
+    r
+}
+
+impl StmtLowers for LetElse {
+    /// A region on the subject's presence whose answer is the binding: what the subject carries, or
+    /// where it's absent, the `else`, which leaves.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let held? = cx.type_at(self.subject) else { return cx.stmt_unlowered(s) }
+        let v = cx.lower(self.subject)
+        let carried = held.unwrapped()
+        let r = cx
+            .region(cx.present(v, held), cx.laid_out(carried)) { cx -> cx.carried(v, held) } else { cx ->
+                cx.opened()
+                for st in self.stmts { cx.lower_stmt(st) }
+                cx.closed()
+                cx.hollow_of(carried)
+            }
+        cx.bind(self.name.of, Bound.Value(r, carried))
+    }
+}

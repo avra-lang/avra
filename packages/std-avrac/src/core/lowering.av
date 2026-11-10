@@ -119,23 +119,29 @@ impl Lowering {
     /// `e` as a value nothing reads, emitted: what it does.
     mut fn dropped(e: ExprId) -> Reg { self.lowered_as(e, true) }
 
-    /// `e` emitted by its rule, or by the rule of what it means; a value its seat lifts (into a
-    /// nullable, a `Result`, a `dyn`) isn't lowered yet.
+    /// `e` emitted, then lifted into what its seat takes; a dropped value is lifted nowhere.
     mut fn lowered_as(e: ExprId, dropped: bool) -> Reg {
-        let lift = self.lift_at(e)
-        if lift != null { return self.missed_as("a lift into `${lift!.spelled()}`") }
-        let meant = self.store.meant(e)
-        if meant != null { return self.lowered_as(meant!, dropped) }
-        let node = self.store.expr(e)
-        if dropped { node.lowered_dropped(self, e) } else { node.lowered(self, e) }
+        if dropped {
+            let core = self.meaning_of(e)
+            return self.store.expr(core).lowered_dropped(self, core)
+        }
+        let born = self.born(e)
+        let seat? = self.seat_at(e) else { return born }
+        let ty? = self.type_at(self.meaning_of(e)) else { return born }
+        self.lifted(born, ty, seat)
     }
 
-    /// The type `e`'s seat lifts its value into, absent where the seat takes it as it is.
-    fn lift_at(e: ExprId) -> SignedType? {
-        let seat? = self.seat_at(e) else { return null }
-        let ty? = self.type_at(e) else { return null }
-        if ty.spelled() == seat.spelled() || ty.bottom() || !ty.reaches(seat) { return null }
-        seat
+    /// `e`'s value as its own type holds it, emitted by the rule of the core node it means: what a
+    /// node that hands its seat on (a block its tail) asks for.
+    mut fn born(e: ExprId) -> Reg {
+        let core = self.meaning_of(e)
+        self.store.expr(core).lowered(self, core)
+    }
+
+    /// The core node `e` means: itself where it's core already.
+    fn meaning_of(e: ExprId) -> ExprId {
+        let meant? = self.store.meant(e) else { return e }
+        self.meaning_of(meant)
     }
 
     /// `s`, emitted: what it means, by its rule.
@@ -233,12 +239,17 @@ impl Lowering {
     /// The fn's seat `name` of type `ty`: the next register, as the seats mint in order.
     mut fn seated(name: string, ty: SignedType) { self.bind(name, Bound.Value(self.mint(self.laid_out(ty)), ty)) }
 
-    /// A read of `b` at `e`, wearing the binding's own type: its register, or what its cell holds now.
-    /// A read typed otherwise, a narrowed nullable's, isn't lowered yet.
+    /// A read of `b` at `e`: its register, or what its cell holds now; where a test proved a nullable
+    /// binding present, what it carries. A read typed any other way isn't lowered yet.
     mut fn read(e: ExprId, b: Bound) -> Reg {
         let ty = match b { .Value(_, t) or .Slot(_, t) -> t }
-        if self.type_at(e)?.spelled() != ty.spelled() { return self.missed_as("a narrowed read") }
-        match b { .Value(r, _) -> r, .Slot(cell, _) -> self.loaded(self.laid_out(ty), cell) }
+        let worn = self.type_at(e)?.spelled()
+        if worn != ty.spelled() && !(ty.nullable() && worn == ty.unwrapped().spelled()) { return self.missed_as("a narrowed read") }
+        let held = match b {
+            .Value(r, _) -> r,
+            .Slot(cell, _) -> self.loaded(self.laid_out(ty), cell),
+        }
+        if worn == ty.spelled() { held } else { self.carried(held, ty) }
     }
 
     // ── Registers ───────────────────────────────────────────────────
@@ -347,6 +358,9 @@ impl Lowering {
 
     /// A call of the runtime's row `row`, answering a value of layout `l`.
     mut fn call_row(l: Layout, row: RtSig, args: List<Reg>) -> Reg { self.call_c(l, row.name, args) }
+
+    /// A call of the runtime's row `row`, which answers nothing.
+    mut fn run_row(row: RtSig, args: List<Reg>) { self.emit(Ins.CallRtVoid(row.name, args)) }
 
     // ── Regions ─────────────────────────────────────────────────────
     // A region is ONE expression whose arms are blocks handed the context, so no rule opens a bracket

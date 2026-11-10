@@ -1,0 +1,88 @@
+//! A VALUE LIFTED INTO ITS SEAT: what `SignedType.reaches` judges, made. A seat that takes a value
+//! as more than it is (a nullable of it, a `Result` it's the `Ok` of) is where that value takes its
+//! wider layout, at the one edge every node passes through.
+
+impl Lowering {
+    /// `r`, a value of `from`, as a seat of `into` holds it: itself where the seat takes it as it is
+    /// or doesn't take it at all.
+    mut fn lifted(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        if from.spelled() == into.spelled() || from.bottom() || !from.reaches(into) { return r }
+        if into.dynamic && !into.nullable() { return self.missed_as("a lift into `${into.spelled()}`") }
+        if into.nullable() { return self.adopted(r, from, into) }
+        self.okayed(into, self.lifted(r, from, into.args[0]))
+    }
+
+    /// `r` adopted by the nullable `into`: `null` is its absence, any other value is lifted into
+    /// what `into` holds when present, then worn present.
+    mut fn adopted(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        let l = self.laid_out(into)
+        if from.absence() { return if l.pointer() && !l.slot_box() { r } else { self.absent_of(into, l) } }
+        let held = self.lifted(r, from, into.unwrapped())
+        match l {
+            .Maybe(_) -> self.pack(l, [self.const_bool(true), held]),
+            .Boxed(_) -> if l.slot_box() { self.missed_as("a lift into `${into.spelled()}`, a flat record's box") } else { held },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) -> held,
+        }
+    }
+
+    /// `r` as the `Ok` of the `Result` `into`: tag 0 beside its word, or in a box behind its tag.
+    mut fn okayed(into: SignedType, r: Reg) -> Reg {
+        let l = self.laid_out(into)
+        match l {
+            .Tagged(_) -> self.pack(l, [self.const_int(0), r]),
+            .Boxed(_) -> self.tagged_box(l, 0, r),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> self.missed_as("a lift into `${into.spelled()}`"),
+        }
+    }
+
+    /// A box of layout `l` holding `tag`, then the one-slot payload `r`; a payload that takes more
+    /// than a slot isn't lowered yet.
+    mut fn tagged_box(l: Layout, tag: int, r: Reg) -> Reg {
+        match self.layouts.get()[r.index] {
+            .Word or .Truth or .Real or .Boxed(_) or .Bare -> {
+                let dst = self.call_row(l, rt_sig_of("avra_array_sized")!, [self.const_int(2)])
+                self.run_row(rt_sig_of("avra_array_push")!, [dst, self.const_int(tag)])
+                self.run_row(rt_sig_of("avra_array_push")!, [dst, r])
+                dst
+            },
+            .Void or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.missed_as("a boxed payload wider than a slot"),
+        }
+    }
+
+    // ── Presence ────────────────────────────────────────────────────
+
+    /// Whether `v`, a nullable of `opt`, holds a value: a pointer that isn't null, a tag that isn't
+    /// the spare one, or the pair's own flag.
+    mut fn present(v: Reg, opt: SignedType) -> Reg {
+        let l = self.laid_out(opt)
+        match l {
+            .Maybe(_) -> self.extracted(Layout.Truth, v, 0),
+            .Boxed(_) or .Bare -> self.bin(Layout.Truth, BinOp.Ne, v, self.word_at(l, 0)),
+            .Word or .Tagged(_) -> self
+                .bin(
+                    Layout.Truth,
+                    BinOp.Ne,
+                    self.extracted(Layout.Word, v, 0),
+                    self.const_int(ABSENT_TAG),
+                ),
+            .Void or .Truth or .Real or .Fields(_) -> self.missed_as("a presence test of `${opt.spelled()}`"),
+        }
+    }
+
+    /// What `v`, a nullable of `opt`, holds, once it's known present: the pair's second, else itself.
+    mut fn carried(v: Reg, opt: SignedType) -> Reg {
+        let l = self.laid_out(opt)
+        match l {
+            .Maybe(value) -> self.extracted(value, v, 1),
+            .Boxed(_) -> if l.slot_box() { self.missed_as("a read of `${opt.spelled()}`, a flat record's box") } else { v },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) -> v,
+        }
+    }
+
+    /// Element `at` of the packed value `v`, a value of layout `l`.
+    mut fn extracted(l: Layout, v: Reg, at: int) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Extract(dst, v, at))
+        dst
+    }
+}
