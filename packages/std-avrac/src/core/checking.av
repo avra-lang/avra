@@ -27,6 +27,7 @@ export type CheckedProgram = {
     method_of: fn(SignedType, string) -> SignedType?,
     property_of: fn(SignedType, string) -> SignedType?,
     type_value: fn(string) -> SignedType?,
+    static_of: fn(SignedType, string) -> SignedType?,
 }
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
@@ -369,6 +370,22 @@ impl Checking {
 
     /// Each value checked against nothing.
     mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
+
+    /// The static `name` of the type `described`, as a fn of what it's called with; absent when the
+    /// program names none.
+    fn static_of(described: SignedType, name: string) -> SignedType? { (self.program.static_of)(described, name) }
+
+    /// What a call of the fn type `f` with `args` answers: each argument fills its seat as
+    /// `Checking.fills` has it, and the answer is claimed when every parameter it names is filled.
+    mut fn called(f: SignedType, args: List<ExprId>, expected: Expected) -> SignedType? {
+        if f.seats.length != args.length {
+            self.checked_free(args)
+            return null
+        }
+        let found? = self.fills([s.ty for s in f.seats], args, {}, f.answer, expected) else { return null }
+        let answer? = f.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
 
     /// What a name reads as when it names a type and no value: the type, standing as a value.
     fn type_value(name: string) -> SignedType? { (self.program.type_value)(name) }

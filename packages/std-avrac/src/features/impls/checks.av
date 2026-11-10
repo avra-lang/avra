@@ -7,7 +7,11 @@ impl Checks for MethodCall {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
         let described = subject?.described()
-        if described != null { return cx.variant_built(described!, self.name.of, self.args, expected) }
+        if described != null {
+            let statics = cx.static_of(described!, self.name.of)
+            if statics != null { return cx.called(statics!, self.args, expected) }
+            return cx.variant_built(described!, self.name.of, self.args, expected)
+        }
         let method = if subject == null { null } else { cx.method_of(subject!, self.name.of) }
         if method == null {
             cx.checked_free(self.args)
