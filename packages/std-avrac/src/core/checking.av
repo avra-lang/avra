@@ -74,6 +74,9 @@ export type Checking = {
     scopes: Cell<List<CheckScope>>,
     /// What each condition proves, by its node's index.
     proofs: Cell<Map<string, Proof>>,
+    /// Whether a sugar with a meaning is checked as what it means: the core's typing, where the
+    /// sugar's own rule is the surface's.
+    meanings: bool = false,
 }
 
 /// `Result<T, E>`: `Ok` holding a `T`, `Err` an `E`.
@@ -134,7 +137,8 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
 impl Checking {
     /// `e` checked against `expected`, its type kept.
     mut fn check(e: ExprId, expected: Expected) -> SignedType? {
-        let made = self.store.expr(e).checked(self, e, expected)
+        let meant = if self.meanings { self.store.meant(e) } else { null }
+        let made = if meant != null { self.check(meant!, expected) } else { self.store.expr(e).checked(self, e, expected) }
         // a type the body decides is known only once typing infers it
         let ty = if made != null && made!.inferred() { null } else { made }
         if ty != null { self.types.set_at(e.index, ty) }

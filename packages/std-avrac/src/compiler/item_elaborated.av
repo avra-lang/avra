@@ -1,0 +1,62 @@
+//! WHAT A FN MEANS: its body with every sugar's meaning spliced beside it, as the sugar's feature
+//! states it in a `meaning`, and the whole typed again as the core it means. A sugar is typed twice,
+//! by its own rule on the surface and as its meaning in the core, and the two agree or a meaning is
+//! wrong.
+use core.{At, Expected, ExprId, SignedType, SyntaxArena, checking, flatten, minting}
+use features.{TypedCode, TypedItem, TypedView}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// A fn's body and what it means: the store holding both, each sugar given a meaning, each
+/// expression's type on the surface, and its type in the core.
+export type ElaboratedBody = {
+    store: SyntaxArena,
+    sugars: List<ExprId>,
+    surface: List<SignedType?>,
+    core: List<SignedType?>,
+}
+
+/// The body of the fn `file` declares as `name`, elaborated; absent when it declares none with a
+/// body.
+export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> ElaboratedBody? {
+    let signature? = fn_signature(engine, file, name) else { return null }
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let body? = [p!.body for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
+        .first() else { return null }
+    let program = program_of(
+        engine,
+        file,
+        Signing { engine: engine, file: file, type_params: signature.type_params },
+    )
+    mut surface = checking(item.store, program, signature.answer)
+    for p in signature.params { surface.bind(p.name, p.ty, true) }
+    let _ = surface.check(body, Expected.Exactly(signature.answer))
+    let typed = TypedItem { view: TypedView { store: item.store }, types: surface.types.get() }
+    let sugars = [e for e in item.store.every_expr(body) if meant_beside(typed, e)]
+    mut core = checking(item.store, program, signature.answer) with { meanings: true }
+    for p in signature.params { core.bind(p.name, p.ty, true) }
+    let _ = core.check(body, Expected.Exactly(signature.answer))
+    ElaboratedBody {
+        store: item.store,
+        sugars: sugars,
+        surface: typed.types,
+        core: core.types.get(),
+    }
+}
+
+/// Whether `e` is a sugar some meaning rewrites, its meaning then spliced beside it: the first of
+/// the meanings rooted at its kind whose arms match.
+fn meant_beside(typed: TypedItem, e: ExprId) -> bool {
+    let store = typed.view.store
+    let at = At.Expr(e)
+    let index = meaning_index()
+    let kinds = [store.kind_at(at), store.shallow_at(at)]
+    for m in flatten([index.at(k) for k in kinds]) {
+        let said? = (m.run)(TypedCode { of: typed, at: at }) else { continue }
+        let made = rewritten_beside(store, e, said)
+        if made.is_empty() { continue }
+        store.means_as(e, minting(made), "`${m.module}.${m.name}`")
+        return true
+    }
+    false
+}

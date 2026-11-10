@@ -25,6 +25,7 @@ use @std.avrac.compiler.{
     node_kinds,
     file_declares,
     ItemKind,
+    elaborated_fn,
     resolved_in,
     respelled_origins,
     refusal_difference,
@@ -61,6 +62,7 @@ impl Runnable for TapesCmd {
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
+        if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
         let ws = root_workspace(root)
         let files = package_sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
@@ -325,15 +327,57 @@ export flag signatures {
 }
 
 export flag left {
-    description: "with --signatures, show where the nodes the workspace types and this layer doesn't stand"
+    description: "with --signatures or --core, show where the nodes that don't agree stand"
     aliases: ["--left"]
+}
+
+export flag core {
+    description: "elaborate every fn into the core its sugars mean, and hold each sugar's type to its meaning's"
+    aliases: ["--core"]
 }
 
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures, left]
+    flags: [program_only, signatures, left, core]
     args: [file]
     run: TapesCmd {}
+}
+
+/// Every fn of the package elaborated: each sugar a meaning rewrote, and whether the core it means
+/// is typed as its own rule typed it. Answers 1 when any differs.
+fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
+    mut sugars = 0
+    mut alike = 0
+    mut untyped = 0
+    mut differing: List<string> = []
+    for path in package_sources(engine, disk.name, "src") {
+        let file = disk.file_at(path)
+        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+            let body? = elaborated_fn(engine, file, own.name) else { continue }
+            for e in body.sugars {
+                sugars = sugars + 1
+                let surface = body.surface[e.index]
+                let core = body.core[e.index]
+                if surface == null || core == null {
+                    untyped = untyped + 1
+                    continue
+                }
+                if surface!.spelled() == core!.spelled() {
+                    alike = alike + 1
+                    continue
+                }
+                differing
+                    .push(
+                        "${path} ${own.name}: ${surface!.spelled()} on the surface, ${core!.spelled()} in the core",
+                    )
+            }
+        }
+    }
+    if shown { for d in differing { println("differs: ${d}") } }
+    println(
+        "core: ${sugars} sugars meant, ${alike} typed alike, ${differing.length} differing, ${untyped} untyped on a side",
+    )
+    if differing.is_empty() { 0 } else { 1 }
 }
 
 /// The source at `lo` in the package's file `path`, one line of it at most.
