@@ -69,6 +69,48 @@ export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: strin
     }
 }
 
+/// A record's field: its name and its type, resolved where the record is declared.
+@derive(Saved)
+export type SignedField = { name: string, ty: SignedType? }
+
+/// A record's signature: its type parameters and its fields, in order, a spread's in its place.
+@derive(Saved)
+export type RecordSignature = { type_params: List<string>, fields: List<SignedField> }
+
+/// The signature of the record (or component) `file` declares as `name`, absent when it declares
+/// none.
+@query
+export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.Record) ?? declaring_item(
+        engine,
+        file,
+        name,
+        ItemKind.Component,
+    ) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
+    let written = [SignedField { name: f.name.of, ty: if f.ty == null { null } else { signing.signed(f.ty!) } } for f in parts.fields]
+    let spread = (at: int) -> [g for x in parts.spreads if x.at == at for g in spread_fields(engine, signing.signed(x.of))]
+    RecordSignature {
+        type_params: parts.tparams,
+        fields: [f for at in 0..written.length + 1 for f in spread(at).concat(if at < written.length { [written[at]] } else { [] })],
+    }
+}
+
+/// The fields a spread of `spread` brings, its record's own, bound to the arguments it's applied to.
+fn spread_fields(engine: QueryEngine, spread: SignedType) -> List<SignedField> {
+    let at? = match spread.head {
+        .Declared(file, name) -> RecordAt { file: file, name: name },
+        rest -> null,
+    } else { return [] }
+    let record? = record_signature(engine, at.file, at.name) else { return [] }
+    [f with { ty: f.ty?.bound(spread.args) } for f in record.fields]
+}
+
+/// Where a record is declared.
+type RecordAt = { file: SourceFileAddress, name: string }
+
 /// The item that declares `name` as `kind` in `file`, read back, absent when none does.
 type ReadItem = { store: SyntaxArena, stmts: List<StmtId> }
 

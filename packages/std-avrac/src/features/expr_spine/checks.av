@@ -1,6 +1,6 @@
 //! The typing rules of the literals, names and operators this feature reads.
 use core.{BinOp, Checking, Checks, ExprId, SignedType, Expected, TypeHead, owned_type}
-use core.expr.{Binary, FloatLit, Ident, IntLit, Not}
+use core.expr.{Binary, FloatLit, Ident, IntLit, Not, Prop}
 
 impl Checks for IntLit {
     /// An integer literal is an `int`.
@@ -86,5 +86,13 @@ fn plain_owned(ty: SignedType?) -> string? {
     match t.head {
         .Owned(name) -> name,
         .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> null,
+    }
+}
+
+impl Checks for Prop {
+    /// A field read is the field's type, read off the subject's.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject? = cx.check(self.subject, Expected.Free) else { return null }
+        cx.field_of(subject, self.name.of)
     }
 }

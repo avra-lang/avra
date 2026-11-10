@@ -15,21 +15,28 @@ export enum Expected {
 }
 
 /// What a body's checking reads of the program: the type a top-level value's name has from the
-/// body's file, absent when it names none; and a type written in the body, resolved where it stands.
-export type CheckedProgram = { value_named: fn(string) -> SignedType?, written: fn(TypeRef) -> SignedType }
+/// body's file, absent when it names none; a type written in the body, resolved where it stands; and
+/// the type of a value's field, absent when the value has no such field the program can name.
+export type CheckedProgram = {
+    value_named: fn(string) -> SignedType?,
+    written: fn(TypeRef) -> SignedType,
+    field_of: fn(SignedType, string) -> SignedType?,
+}
 
 /// A name bound in a body, its type when it's known, and whether it may narrow: a binding whose type
 /// isn't known still stands in front of every name further out, and only one that can't be written
 /// again (a `let`, a parameter) narrows where a test proves it present.
-export type Local = { ty: SignedType?, narrowable: bool }
+export type Local = { ty: SignedType?, narrowable: bool, wide: SignedType? = null }
 
 /// A presence test a condition makes: the name it asks of, and whether it's true when the name is
 /// present.
 export type Ask = { name: string, on_present: bool }
 
-/// One scope of a body: the names bound in it, and whether a statement in it with no rule of its
-/// own may have bound names it doesn't hold, so a name further out can't be read through it.
-type CheckScope = { names: Map<string, Local>, opaque: bool }
+/// One scope of a body: the names bound in it; whether a statement in it with no rule of its own
+/// may have bound names it doesn't hold, so a name further out can't be read through it; and
+/// whether it's a lambda's, which reads a name further out as it may be when the lambda runs, never
+/// as a test around the lambda narrowed it.
+type CheckScope = { names: Map<string, Local>, opaque: bool, fenced: bool = false }
 
 /// One body being checked. An identity: every rule writes the one table.
 export type Checking = {
@@ -68,12 +75,22 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
 impl Checking {
     /// `e` checked against `expected`, its type kept.
     mut fn check(e: ExprId, expected: Expected) -> SignedType? {
-        let ty = self.store.expr(e).checked(self, e, expected)
+        let made = self.store.expr(e).checked(self, e, expected)
+        // a type the body decides is known only once typing infers it
+        let ty = if made != null && made!.inferred() { null } else { made }
         if ty != null { self.types.set_at(e.index, ty) }
         ty
     }
 
-    /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked.
+    /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked; `e`
+    /// binds no name, so a name beneath it reads as it does here.
+    mut fn unbinding_checked(e: ExprId) -> SignedType? {
+        for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Unknown) }
+        null
+    }
+
+    /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked; `e` may
+    /// bind a name no scope here holds, so a name beneath it answers nothing.
     mut fn held_checked(e: ExprId) -> SignedType? {
         self.unruled.set(self.unruled.get() + 1)
         for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Unknown) }
@@ -104,10 +121,12 @@ impl Checking {
     /// The type a name has here: the innermost binding of it, else what the program names by it;
     /// absent past a scope that may have bound it unseen.
     fn bound(name: string) -> SignedType? {
+        mut fenced = false
         for scope in reversed(self.scopes.get()) {
             let local = scope.names.get(name)
-            if local != null { return local!.ty }
+            if local != null { return if fenced && local!.wide != null { local!.wide } else { local!.ty } }
             if scope.opaque { return null }
+            if scope.fenced { fenced = true }
         }
         (self.program.value_named)(name)
     }
@@ -134,7 +153,12 @@ impl Checking {
         let held = local?.ty
         if local == null || !local!.narrowable || held == null || !held!.optional { return self.check(branch, expected) }
         self.opened()
-        self.bind(name, held! with { optional: false }, true)
+        let scopes = self.scopes.get()
+        mut innermost = scopes.last()!
+        innermost
+            .names
+            .set(name, Local { ty: held! with { optional: false }, narrowable: true, wide: held })
+        self.scopes.set_at(scopes.length - 1, innermost)
         let ty = self.check(branch, expected)
         self.closed()
         ty
@@ -142,6 +166,9 @@ impl Checking {
 
     /// A scope opened inside the current one.
     mut fn opened() { self.scopes.push(open_scope()) }
+
+    /// A lambda's scope opened inside the current one.
+    mut fn fenced() { self.scopes.push(open_scope() with { fenced: true }) }
 
     /// The innermost scope closed.
     mut fn closed() {
@@ -160,6 +187,9 @@ impl Checking {
         let scopes = self.scopes.get()
         self.scopes.set_at(scopes.length - 1, scopes.last()! with { opaque: true })
     }
+
+    /// The type of `name` read off a value of `subject`'s type, absent when the program names none.
+    fn field_of(subject: SignedType, name: string) -> SignedType? { (self.program.field_of)(subject, name) }
 
     /// A type written in the body, resolved.
     fn written(ty: TypeRef) -> SignedType { (self.program.written)(ty) }

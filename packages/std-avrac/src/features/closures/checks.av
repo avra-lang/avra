@@ -1,22 +1,25 @@
 //! The typing rule of a lambda: each parameter is its written type, or else its seat's when the
 //! lambda checks into a fn type; its body checks in a scope of its own against the seat's answer,
 //! which is the lambda's answer, the body's widening into it; and the lambda is the fn type it makes
-//! once all of that is known.
+//! once all of that is known, and where it stands is: a seat it can't see may widen it. A name from
+//! further out reads in the body as it may be when the lambda runs, never narrowed by a test around
+//! it.
 use core.{Checking, Checks, ExprId, Expected, SignedSeat, SignedType, TypeHead, headed_type}
 use core.expr.{Lambda}
 
 impl Checks for Lambda {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let seat = seat_fn(expected, self.params.length)
+        let seated = !(expected is .Unknown)
         let params = [if p.ty != null { cx.written(p.ty!) } else { seat_at(seat, at) } for at, p in self.params]
-        cx.opened()
+        cx.fenced()
         for at, p in self.params { cx.bind(p.name.of, params[at]) }
         let wanted = seat?.answer
         let read = cx
             .check(self.body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
         let answer = wanted ?? read
         cx.closed()
-        if answer == null || params.any(it == null) { return null }
+        if !seated || answer == null || params.any(it == null) { return null }
         headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: t!, mutable: false, settled: false } for t in params], answer: answer }
     }
 }

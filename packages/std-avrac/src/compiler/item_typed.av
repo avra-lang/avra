@@ -36,12 +36,26 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
         CheckedProgram {
             value_named: (n: string) -> value_type(engine, file, n),
             written: (written: TypeRef) -> signing.signed(written),
+            field_of: (subject: SignedType, field: string) -> field_type(engine, subject, field),
         },
         signature.answer,
     )
     for p in signature.params { cx.bind(p.name, p.ty, true) }
     let _ = cx.check(body, Expected.Exactly(signature.answer))
     TypedBody { types: cx.types.get() }
+}
+
+/// The type of `field` on a value of `subject`'s type: a record's field, bound to the arguments the
+/// record is applied to. Absent for an optional or dynamic subject, and for any type that isn't a
+/// record the program declares.
+fn field_type(engine: QueryEngine, subject: SignedType, field: string) -> SignedType? {
+    if subject.optional || subject.dynamic { return null }
+    let at? = match subject.head {
+        .Declared(file, name) -> RecordAt { file: file, name: name },
+        rest -> null,
+    } else { return null }
+    let record? = record_signature(engine, at.file, at.name) else { return null }
+    record.fields.find(it.name == field)?.ty?.bound(subject.args)
 }
 
 /// The type a top-level value's name has from `file`: a fn's, as a fn type. Absent for a name that
