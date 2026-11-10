@@ -66,7 +66,7 @@ impl Runnable for TapesCmd {
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
         for d in differing { println("differs: ${d}") }
         println("tapes: ${files.length} read, ${differing.length} differing")
-        if args.has_flag("signatures") { println("typed: ${typed_share(engine, ws, disk, files)}") }
+        if args.has_flag("signatures") { println("typed: ${typed_share(engine, ws, disk, files, args.has_flag("left"))}") }
         if differing.is_empty() { 0 } else { 1 }
     }
 }
@@ -146,13 +146,22 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, sign
 }
 
 /// How much of the fns `files` declare the program layer types: its typed nodes of all their nodes.
-fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<string>) -> string {
+fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<string>, shown: bool) -> string {
     let pairs = flatten([typed_pairs(engine, ws, disk, f) for f in files])
     let typed = pairs.filter(it.new != null).length
     mut missing: Map<string, int> = {}
     for p in pairs.filter(it.new == null) { missing.set(p.kind, (missing.get(p.kind) ?? 0) + 1) }
     let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
         .take(12)
+    if shown {
+        for kind in most {
+            for p in pairs.filter(it.new == null && it.kind == kind).take(6) {
+                println(
+                    "left: ${kind} ${p.old} at ${p.path}:${p.lo} `${snippet(disk, p.path, p.lo)}`",
+                )
+            }
+        }
+    }
     "${typed} of the ${pairs.length} nodes the workspace types, ${if pairs.is_empty() { 0 } else { typed * 100 / pairs.length }}%; left most: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}"
 }
 
@@ -160,8 +169,8 @@ fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<strin
 /// when every node both type reads alike: nodes paired by where they stand, and a node the
 /// workspace left untyped (a literal it folded into another) read as nothing to hold.
 /// A node of a fn the workspace types, beside what the program layer types it as (absent when it
-/// doesn't): the fn, the node's place, its kind and the workspace's spelling.
-type TypedPair = { name: string, lo: int, kind: string, new: SignedType?, old: string }
+/// doesn't): its file, the fn, the node's place, its kind and the workspace's spelling.
+type TypedPair = { path: string, name: string, lo: int, kind: string, new: SignedType?, old: string }
 
 /// Each node of each fn `path` declares that the workspace typed, paired by span with the program
 /// layer's node.
@@ -198,6 +207,7 @@ fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> 
             pairs
                 .push(
                     TypedPair {
+                        path: path,
                         name: own.name,
                         lo: span.lo,
                         kind: kinds[at],
@@ -314,9 +324,22 @@ export flag signatures {
     aliases: ["--signatures"]
 }
 
+export flag left {
+    description: "with --signatures, show where the nodes the workspace types and this layer doesn't stand"
+    aliases: ["--left"]
+}
+
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures]
+    flags: [program_only, signatures, left]
     args: [file]
     run: TapesCmd {}
+}
+
+/// The source at `lo` in the package's file `path`, one line of it at most.
+fn snippet(disk: Disk, path: string, lo: int) -> string {
+    let text = text_at(disk.on_disk(disk.name, path)) ?? ""
+    let rest = text.substring(lo, if lo + 60 < text.length { lo + 60 } else { text.length })
+    let line_end = rest.index_of("\n")
+    if line_end < 0 { rest } else { rest.substring(0, line_end) }
 }

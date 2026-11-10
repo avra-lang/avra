@@ -4,6 +4,8 @@
 //! name, never by where it stands, so a signature moves only when what it writes or what its names
 //! name does.
 use core.{
+    Expr,
+    owned_type,
     INFERRED,
     headed_type,
     Param,
@@ -59,7 +61,7 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
 }
 
 /// The type a top-level binding — a `const` or a `collect` — `file` declares as `name` is written
-/// with, resolved where it's declared; absent when it declares none.
+/// with, resolved where it's declared, or else its literal value's; absent when it declares none.
 @query
 export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
     let item? = declaring_item(engine, file, name, ItemKind.Const) ?? declaring_item(
@@ -68,9 +70,44 @@ export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: strin
         name,
         ItemKind.Collect,
     ) else { return null }
-    let written? = [t! for s in item.stmts if item.store.let_name(s) == name for t in [item.store.binding_ty(s)] if t != null]
+    let written = [t! for s in item.stmts if item.store.let_name(s) == name for t in [item.store.binding_ty(s)] if t != null]
+        .first()
+    if written != null { return Signing { engine: engine, file: file, type_params: [] }.signed(written!) }
+    let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
         .first() else { return null }
-    Signing { engine: engine, file: file, type_params: [] }.signed(written)
+    literal_type(item.store.valued(value))
+}
+
+/// The type a literal value is, read through the value protocol: absent for any value that isn't a
+/// scalar or text literal.
+fn literal_type(value: Expr) -> SignedType? {
+    if value.int_of() != null { return owned_type("int") }
+    if value.text_of() != null { return owned_type("string") }
+    if value.bool_of() != null { return owned_type("bool") }
+    if value.bits_of() != null { return owned_type("float") }
+    null
+}
+
+/// Every fn `file` declares as `name`, signed, in the order they're declared: a verb file may
+/// declare one name over several receivers.
+@query
+export fn fn_signatures(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
+    FnSignature,
+> {
+    [s! for d in file_declares(engine, file).names if d.name == name && d.kind == ItemKind.Fn for s in [item_fn_signature(engine, file, d.item, name)] if s != null]
+}
+
+/// The signature of the fn `name` the item at `at` in `file` declares.
+fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> FnSignature? {
+    let item = read_item(engine, file, at)
+    let written? = written_fn(item.store, item.stmts, name) else { return null }
+    let signing = Signing { engine: engine, file: file, type_params: written.type_params }
+    FnSignature {
+        type_params: written.type_params,
+        params: [signing.param(p) for p in written.params],
+        answer: signing.signed(widthless(written.ret)!),
+        answer_width: width_of(written.ret),
+    }
 }
 
 /// What the alias `file` declares as `name` stands for, absent when it declares none.
@@ -204,8 +241,9 @@ fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenF
     null
 }
 
-/// Where a signature's types are resolved: its file's top level, under the fn's own type parameters.
-type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string> }
+/// Where a signature's types are resolved: its file's top level, under the fn's own type parameters,
+/// and `Self` as the type a trait's method is asked for.
+type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null }
 
 impl Signing {
     fn param(p: Param) -> SignedParam {
@@ -221,6 +259,9 @@ impl Signing {
     /// A written type with every name in it resolved, an alias standing for what it names, and a
     /// union's members in one order whatever order they were written in.
     fn signed(written: TypeRef) -> SignedType {
+        if written.name == "Self" && self.self_type != null && written.applied.is_empty() {
+            return self.self_type! with { nulls: if written.optional { 1 } else { 0 }, dynamic: written.dynamic }
+        }
         let made = SignedType {
             head: if written.arrow { TypeHead.Function } else { self.head_of(written.name) },
             args: [self.signed(a) for a in written.applied],

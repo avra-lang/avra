@@ -15,9 +15,13 @@ use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, 
 export type ImplAt = { file: SourceFileAddress, item: int, params: List<string> }
 
 /// An impl filed under the type its target names: where it stands, the file declaring that type,
-/// and the methods it gives.
+/// the methods and statics it writes, and the trait it implements, resolved from its own file.
 @derive(Saved)
-type FiledImpl = { at: ImplAt, of: SourceFileAddress, methods: List<string> }
+type FiledImpl = { at: ImplAt, of: SourceFileAddress, methods: List<string>, statics: List<string>, implements: TraitAt? }
+
+/// Where a trait is declared: its file and its name there.
+@derive(Saved)
+export type TraitAt = { file: SourceFileAddress, name: string }
 
 /// The impls filed under one declared name.
 @derive(Saved)
@@ -34,10 +38,13 @@ export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts {
         for at, held in file_impls(engine, f) {
             for i in held {
                 let d? = resolved(engine, f, Space.Type, i.target).named() else { continue }
+                let tr = if i.implements == null { null } else { resolved(engine, f, Space.Type, i.implements!).named() }
                 let filed = FiledImpl {
                     at: ImplAt { file: f, item: at, params: i.params },
                     of: d.file,
                     methods: i.methods,
+                    statics: i.statics,
+                    implements: if tr == null { null } else { TraitAt { file: tr!.file, name: tr!.name } },
                 }
                 by_type.set(d.name, (by_type.get(d.name) ?? []).concat([filed]))
             }
@@ -48,15 +55,49 @@ export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts {
     )
 }
 
-/// The impls the type `file` declares as `name` has in its package, each holding `method`.
-@query
-export fn impls_with(engine: QueryEngine, file: SourceFileAddress, name: string, method: string) -> List<
-    ImplAt,
-> {
+/// The impls the type `file` declares as `name` has in its package.
+fn impls_of(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<FiledImpl> {
     let part? = package_impls_part(engine, file.package_name, name) else { return [] }
-    [i.at for i in Filed.from_saved_bytes(part).impls if i.methods.contains(method) &&
-        i.of.path_in_package == file.path_in_package &&
-        i.of.package_name == file.package_name]
+    [i for i in Filed.from_saved_bytes(part).impls if i.of.path_in_package == file.path_in_package && i.of.package_name == file.package_name]
+}
+
+/// The impls the type `file` declares as `name` has in its package that write `method`, as a method
+/// or, when `statics`, as a static.
+@query
+export fn impls_with(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: string,
+    statics: bool,
+) -> List<ImplAt> {
+    [i.at for i in impls_of(engine, file, name) if if statics { i.statics } else { i.methods }.contains(method)]
+}
+
+/// The method `method` a trait declares, its `Self` standing for `receiver`; absent when it declares
+/// none.
+@query
+export fn trait_method_signature(
+    engine: QueryEngine,
+    held: TraitAt,
+    method: string,
+    receiver: SignedType,
+) -> FnSignature? {
+    let item? = declaring_item(engine, held.file, held.name, ItemKind.Trait) else { return null }
+    let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
+    let written? = written_fn(item.store, [m for m in fns if !item.store.is_static(m)], method) else { return null }
+    let signing = Signing {
+        engine: engine,
+        file: held.file,
+        type_params: written.type_params,
+        self_type: receiver,
+    }
+    FnSignature {
+        type_params: written.type_params,
+        params: [signing.param(p) for p in written.params],
+        answer: signing.signed(written.ret),
+        answer_width: null,
+    }
 }
 
 /// The method `name` an impl gives, signed under the impl's type parameters and its own; absent
@@ -85,7 +126,7 @@ export fn method_type(engine: QueryEngine, subject: SignedType, name: string) ->
     if subject.nullable() || subject.dynamic { return null }
     match subject.head {
         .Declared(file, declared) -> impl_method(engine, file, declared, name),
-        .Owned(word) -> own_verb(engine, "verbs/${word}.av", name),
+        .Owned(word) -> own_verb(engine, "verbs/${word}.av", name, subject),
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
 }
@@ -94,8 +135,14 @@ export fn method_type(engine: QueryEngine, subject: SignedType, name: string) ->
 /// own type has (`@std/prelude`'s `verbs/statics/`).
 export fn static_type(engine: QueryEngine, described: SignedType, name: string) -> SignedType? {
     match described.head {
-        .Owned(word) -> own_verb(engine, "verbs/statics/${word}.av", name),
-        .Declared(_, _) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Owned(word) -> own_verb(engine, "verbs/statics/${word}.av", name, null),
+        .Declared(file, declared) -> {
+            let impls = impls_with(engine, file, declared, name, true)
+            if impls.length != 1 { return null }
+            let s? = method_signature(engine, impls[0], name) else { return null }
+            fn_typed([], s)
+        },
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
 }
 
@@ -104,7 +151,7 @@ export fn static_type(engine: QueryEngine, described: SignedType, name: string) 
 export fn property_type(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if subject.nullable() || subject.dynamic { return null }
     match subject.head {
-        .Owned(word) -> own_verb(engine, "verbs/props/${word}.av", name),
+        .Owned(word) -> own_verb(engine, "verbs/props/${word}.av", name, subject),
         .Declared(_, _) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
 }
@@ -112,21 +159,38 @@ export fn property_type(engine: QueryEngine, subject: SignedType, name: string) 
 /// The method `name` the one impl of the type `file` declares as `declared` that gives it, its
 /// receiver the type over the impl's own parameters.
 fn impl_method(engine: QueryEngine, file: SourceFileAddress, declared: string, name: string) -> SignedType? {
-    let impls = impls_with(engine, file, declared, name)
-    if impls.length != 1 { return null }
+    let impls = impls_with(engine, file, declared, name, false)
+    if impls.length > 1 { return null }
+    if impls.is_empty() { return trait_method(engine, file, declared, name) }
     let s? = method_signature(engine, impls[0], name) else { return null }
     let receiver = headed_type(TypeHead.Declared(file, declared)) with { args: [headed_type(TypeHead.Parameter(at, p)) for at, p in impls[0].params] }
     fn_typed([SignedSeat { ty: receiver, mutable: false, settled: false }], s)
 }
 
-/// The verb `name` the file at `path` in `@std/prelude` declares.
-fn own_verb(engine: QueryEngine, path: string, name: string) -> SignedType? {
-    let s? = fn_signature(
-        engine,
-        SourceFileAddress { package_name: PRELUDE, path_in_package: path },
-        name,
-    ) else { return null }
-    fn_typed([], s)
+/// The method `name` the one trait the type implements that declares it gives, `Self` the type:
+/// what a trait's own body supplies to every impl that doesn't write it. A generic type's trait
+/// methods aren't claimed yet.
+fn trait_method(engine: QueryEngine, file: SourceFileAddress, declared: string, name: string) -> SignedType? {
+    let receiver = headed_type(TypeHead.Declared(file, declared))
+    let found = [s! for i in impls_of(engine, file, declared) if i.at.params.is_empty() && i.implements != null for s in [trait_method_signature(engine, i.implements!, name, receiver)] if s != null]
+    if found.length != 1 { return null }
+    fn_typed([SignedSeat { ty: receiver, mutable: false, settled: false }], found[0])
+}
+
+/// The verb `name` the file at `path` in `@std/prelude` declares for a receiver of `subject`'s type:
+/// the first declared whose receiver seat takes it, or for a static (no subject) the one declared.
+fn own_verb(engine: QueryEngine, path: string, name: string, subject: SignedType?) -> SignedType? {
+    let file = SourceFileAddress { package_name: PRELUDE, path_in_package: path }
+    let typed = [f! for s in fn_signatures(engine, file, name) for f in [fn_typed([], s)] if f != null]
+    let s? = subject else { return typed.first() }
+    typed.find((f) -> takes_receiver(f, s))
+}
+
+/// Whether a verb's receiver seat takes a value of `subject`'s type.
+fn takes_receiver(verb: SignedType, subject: SignedType) -> bool {
+    if verb.seats.is_empty() { return false }
+    mut found: Map<string, SignedType> = {}
+    verb.seats[0].ty.unifies(subject, found)
 }
 
 collect listed_method_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

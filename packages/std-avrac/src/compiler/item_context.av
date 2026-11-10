@@ -129,9 +129,9 @@ type ItemAbout = {
 }
 
 /// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
-/// them, and the methods it gives.
+/// them, the methods and statics it writes, and the trait it implements, as written.
 @derive(Saved)
-export type ItemImpl = { target: string, params: List<string>, methods: List<string> }
+export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string? }
 
 /// A component an item declares: its name, whether its instance binds a name, whether it's exported.
 @derive(Saved)
@@ -168,7 +168,9 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
         impls: [ItemImpl {
             target: p!.target,
             params: [x.of for x in store.impl_tparams_of(s)?.target ?? []],
-            methods: [f!.name for m in p!.fns for f in [store.fn_parts(m)] if f != null],
+            methods: [f!.name for m in p!.fns if !store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+            statics: [f!.name for m in p!.fns if store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+            implements: p!.of,
         } for s in stmts for p in [store.impl_parts(s)] if p != null],
     }
         .saved_bytes()

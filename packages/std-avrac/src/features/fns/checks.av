@@ -10,10 +10,7 @@ impl Checks for Call {
         let callee = cx.read(self.callee.of)
         let f? = callee else { return free_args(cx, self.args) }
         if !(f.head is .Function) || f.seats.length != self.args.length { return free_args(cx, self.args) }
-        if cx.local(self.callee.of) != null {
-            for at, a in self.args { let _ = cx.check(a, Expected.Exactly(f.seats[at].ty)) }
-            return f.answer
-        }
+        if cx.local(self.callee.of) != null { return cx.rigidly_called(f, self.args) }
         if self.pins.is_empty() { return cx.called(f, self.args, expected) }
         mut pinned: Map<string, SignedType> = {}
         for at, pin in self.pins { pinned.set("${at}", cx.written(pin)) }

@@ -1,0 +1,12 @@
+//! The typing rule of `when`: each condition is a `bool`, each value checks against the seat, and
+//! the `when` is where its arms meet, the seat's type first.
+use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
+use core.expr.{When}
+
+impl Checks for When {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        for c in self.conds { let _ = cx.check(c, Expected.Exactly(owned_type("bool"))) }
+        let arm = if expected is .Dropped { Expected.Free } else { expected }
+        cx.arms_met([cx.check(v, arm) for v in self.values.concat(self.defaults)], expected)
+    }
+}
