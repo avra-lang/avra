@@ -206,6 +206,7 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
     let m? = fns
         .find((s) -> item.store.fn_parts(s)?.name == name && item.store.is_static(s) == statics) else { return null }
     let parts = item.store.fn_parts(m)!
+    let used = if statics { ReceiverUse.Read } else { receiver_use(engine, declared.file, declared.name, name) }
     CalledFn {
         file: at.file,
         name: name,
@@ -213,7 +214,8 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
         external: false,
         plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
         owner: declared.name,
-        writes: item.store.is_mutating(m),
+        writes: used.written(),
+        unproved: used.unproved(),
     }
 }
 

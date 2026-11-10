@@ -112,16 +112,64 @@ fn folded_code(cx: Lowering, m: MethodCall) -> int? {
     if at < 0 || at >= s.length { null } else { s.char_code(at) }
 }
 
-/// A method a type the program declares has: a call of its symbol, the receiver its first seat.
-/// Whether a method writes its receiver is the whole program's to say, its `mut` mark only one
-/// witness, so a receiver in a `mut` binding's cell counts as written.
+/// A method a type the program declares has: a call of its symbol, the receiver its first seat. One
+/// that writes its receiver is handed it as `written_seats` opens it.
 fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
     if !subject.args.is_empty() { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
     let callee? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    if (callee.writes || in_cell(cx, m.subject)) && !cell_rooted(cx, m.subject) { return cx.missed_as("a method that may write its receiver") }
     if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    let seats? = seated(cx, m) else { return cx.missed_as("a receiver on a path through a cell") }
-    cx.call_fn(cx.layout_at(e), callee, seats)
+    if callee.unproved != null { return cx.missed_as(write_unproved(callee.unproved!)) }
+    let seats = if callee.writes { written_seats(cx, m) } else { seated(cx, m) }
+    if seats == null { return cx.missed_as(written_unlowered(cx, m.subject, callee.writes)) }
+    cx.call_fn(cx.layout_at(e), callee, seats!)
+}
+
+/// The receiver a method writes, then each argument: a `mut` binding's own cell holding a value that
+/// rides no pointer, or a `mut` seat itself, read as it is; a value, or one a seat holds, that rides
+/// a pointer thawed once, here. Absent for any other receiver.
+fn written_seats(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
+    if cell_rooted(cx, m.subject) || mut_seat_rooted(cx, m.subject) { return seated(cx, m) }
+    if !thawed_here(cx, m.subject) { return null }
+    let ty = cx.type_at(m.subject)!
+    let thawed = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
+    [thawed].concat([cx.lower(a) for a in m.args])
+}
+
+/// Whether a written receiver is thawed at the call: it rides a pointer, and it's a value or a place
+/// rooted in one of the fn's seats that isn't `mut`, which the write reaches through.
+fn thawed_here(cx: Lowering, subject: ExprId) -> bool {
+    let ty? = cx.type_at(subject) else { return false }
+    let l? = cx.program.checked.layout(ty) else { return false }
+    if !l.pointer() { return false }
+    if cx.store.place_root(subject) == null { return true }
+    let name? = root_name(cx, subject) else { return false }
+    let b? = cx.bound(name) else { return false }
+    match b {
+        .Value(_, _) -> cx.seat_named(name) && !mut_seat(cx, name),
+        .Slot(_, _) or .Outer(_, _, _) -> false,
+    }
+}
+
+/// Whether a receiver is a `mut` seat's own name, which the write reaches through.
+fn mut_seat_rooted(cx: Lowering, subject: ExprId) -> bool {
+    let name? = root_name(cx, subject) else { return false }
+    let b? = cx.bound(name) else { return false }
+    let seat = match b {
+        .Value(_, _) -> cx.seat_named(name),
+        .Slot(_, _) or .Outer(_, _, _) -> false,
+    }
+    seat && cx.store.place_root(subject)?.index == subject.index && mut_seat(cx, name)
+}
+
+/// Whether a fn the body's item declares has a `mut` seat named `name`.
+fn mut_seat(cx: Lowering, name: string) -> bool {
+    cx
+        .store
+        .stmt_ids()
+        .any(
+            (s) -> (cx.store.fn_parts(s)?.params ?? [])
+                .any(it.name.of == name && it.promises.mutable),
+        )
 }
 
 /// A call through the `dyn` box `subject` is of: the receiver then each argument lowered, the value
@@ -150,8 +198,7 @@ fn seated(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
 }
 
 /// Whether a receiver a method writes is read out of its cell as it is: a `mut` binding's own name,
-/// its cell holding a value that rides no pointer. One that rides a pointer is opened or thawed by
-/// where its seed came from, which isn't lowered yet.
+/// its cell holding a value that rides no pointer.
 fn cell_rooted(cx: Lowering, subject: ExprId) -> bool {
     let ty? = cx.type_at(subject) else { return false }
     let l? = cx.program.checked.layout(ty) else { return false }
@@ -160,11 +207,16 @@ fn cell_rooted(cx: Lowering, subject: ExprId) -> bool {
 
 /// Whether a receiver is a place whose root a `mut` binding's cell holds.
 fn in_cell(cx: Lowering, subject: ExprId) -> bool {
-    let root? = cx.store.place_root(subject) else { return false }
-    let step? = cx.store.place_step(root) else { return false }
-    let name? = match step { .Root(n) -> n.of, rest -> null } else { return false }
+    let name? = root_name(cx, subject) else { return false }
     let b? = cx.bound(name) else { return false }
     match b { .Slot(_, _) -> true, rest -> false }
+}
+
+/// The name a place is rooted in, absent for a value.
+fn root_name(cx: Lowering, subject: ExprId) -> string? {
+    let root? = cx.store.place_root(subject) else { return null }
+    let step? = cx.store.place_step(root) else { return null }
+    match step { .Root(n) -> n.of, rest -> null }
 }
 
 // ── Voices ──────────────────────────────────────────────────────────
@@ -174,3 +226,18 @@ fn verb_unlowered(word: string, name: string) -> string { "`${word}.${name}`" }
 fn method_unlowered(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`" }
 
 fn static_unlowered(ty: SignedType, name: string) -> string { "the static fn `${name}` of `${ty.spelled()}`" }
+
+fn write_unproved(why: string) -> string { "a method that may write its receiver: ${why}" }
+
+/// Why a receiver isn't lowered: a written one by where it's held, a read one on a path through a
+/// cell.
+fn written_unlowered(cx: Lowering, subject: ExprId, writes: bool) -> string {
+    if !writes { return "a receiver on a path through a cell" }
+    let name? = root_name(cx, subject) else { return "a written receiver that rides no pointer" }
+    let b? = cx.bound(name) else { return "a written receiver the body doesn't bind" }
+    match b {
+        .Value(_, _) -> if cx.seat_named(name) { "a written receiver a seat holds that rides no pointer, or on a `mut` seat's path" } else { "a written receiver a `let` holds, its seed boxed" },
+        .Slot(_, _) -> "a written receiver in a `mut` binding's cell, opened or thawed by where its seed came from",
+        .Outer(_, _, _) -> "a written receiver a lambda captures",
+    }
+}
