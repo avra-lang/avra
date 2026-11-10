@@ -14,14 +14,15 @@ impl Lowers for FloatLit {
 
 impl Lowers for Ident {
     /// A name is what it's bound to here: a parameter's or a `let`'s register, what a `mut`'s cell
-    /// holds now, or the literal a `const` is written as.
+    /// holds now, the literal a `const` is written as, or a declared fn as a value.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let b = cx.bound(self.name.of)
         if b != null { return cx.read(e, b!) }
         let named? = cx.named(self.name.of) else { return cx.unlowered(e) }
-        let value? = match named { .Literal(v) -> v, .Fn(_) -> null } else { return cx.missed_as("a fn as a value, which the binary holds as data") }
-        if cx.type_at(e)?.spelled() != value.type().spelled() { return cx.unlowered(e) }
-        cx.constant(value)
+        match named {
+            .Fn(callee) -> cx.fn_value(e, callee),
+            .Literal(value) -> if cx.type_at(e)?.spelled() != value.type().spelled() { cx.unlowered(e) } else { cx.constant(value) },
+        }
     }
 }
 

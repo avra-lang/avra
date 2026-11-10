@@ -20,7 +20,7 @@ impl Lowering {
         let held = self.lifted(r, from, into.unwrapped())
         match l {
             .Maybe(_) -> self.pack(l, [self.const_bool(true), held]),
-            .Boxed(_) -> if l.slot_box() { self.missed_as("a lift into `${into.spelled()}`, a flat record's box") } else { held },
+            .Boxed(_) -> if l.slot_box() { self.slot_boxed(l, held) } else { held },
             .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) -> held,
         }
     }
@@ -54,12 +54,13 @@ impl Lowering {
         }
     }
 
-    /// What `v`, a nullable of `opt`, holds, once it's known present: the pair's second, else itself.
+    /// What `v`, a nullable of `opt`, holds, once it's known present: the pair's second, a flat
+    /// record's box's one slot, else itself.
     mut fn carried(v: Reg, opt: SignedType) -> Reg {
         let l = self.laid_out(opt)
         match l {
             .Maybe(value) -> self.extracted(value, v, 1),
-            .Boxed(_) -> if l.slot_box() { self.missed_as("a read of `${opt.spelled()}`, a flat record's box") } else { v },
+            .Boxed(_) -> if l.slot_box() { self.slot_read(self.laid_out(opt.unwrapped()), v, 0) } else { v },
             .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) -> v,
         }
     }

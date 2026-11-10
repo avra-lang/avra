@@ -3,6 +3,7 @@
 use core.{
     CalledFn,
     Expr,
+    ExprId,
     Ins,
     Layout,
     LiftedBody,
@@ -11,13 +12,15 @@ use core.{
     NamedValue,
     Param,
     SignedType,
+    Static,
     lowering,
 }
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
 /// A fn's body as IR: its seats' layouts and its answer's, its instructions, each register's layout
-/// by its index, the fns it calls, and what wasn't lowered yet, in the order it was met.
+/// by its index, the fns it calls, what wasn't lowered yet, in the order it was met, and the data it
+/// and its lambdas read.
 export type LoweredFn = {
     params: List<Layout>,
     answer: Layout,
@@ -27,6 +30,7 @@ export type LoweredFn = {
     missing: List<string>,
     /// The lambdas its body lifts, each body its own unit.
     lifts: List<LiftedBody>,
+    statics: List<Static>,
 }
 
 impl LoweredFn {
@@ -48,11 +52,13 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
             callees: [],
             missing: [refused!],
             lifts: [],
+            statics: [],
         }
     }
     let body = elaborated(engine, file, signed)
     let signature = signed.signature
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
+    let data: Cell<List<Static>> = Cell.new([])
     mut cx = lowering(
         body.store,
         LoweredProgram {
@@ -66,6 +72,8 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
             statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
             lifts: lifts,
             lift_symbol: (lo: int) -> declared_symbol(file, "${name}.lambda${lo}"),
+            data: data,
+            literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, body.store, e, ty),
         },
         body.core,
         body.seats,
@@ -73,7 +81,7 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
     )
     for p in signature.params { cx.seated(p.name, p.ty!) }
     cx.scope_enter()
-    let r = cx.lower(body.body)
+    let r = if signed.item.store.is_once(signed.stmt) { cx.once_answered(declared_symbol(file, name), body.body, signature.answer) } else { cx.lower(body.body) }
     cx.scope_exit(r)
     cx.emit(Ins.RetVal(r))
     LoweredFn {
@@ -84,14 +92,14 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
         callees: cx.callees.get(),
         missing: cx.missing.get(),
         lifts: lifts.get(),
+        statics: data.get(),
     }
 }
 
 /// Why a fn's body isn't lowered yet before any of it is read: its signature is one only units by
-/// layout, a slot of its own or a seat's place can carry, or an annotation may make what it does.
+/// layout or a seat's place can carry, or an annotation may make what it does.
 fn lowering_refused(signed: SignedBody) -> string? {
     if !signed.signature.type_params.is_empty() { return "a generic fn" }
-    if signed.item.store.is_once(signed.stmt) { return "a `once` fn" }
     if !signed.item.store.annotations_of(signed.stmt).is_empty() { return "an annotated fn, whose body its annotation may make" }
     let params = signed.item.store.fn_parts(signed.stmt)!.params
     if params.any(it.ty == null) { return "an untyped seat" }

@@ -1,6 +1,6 @@
 //! The lowering rules of a call and `return`: a call of a declared fn hands it each argument, its
 //! answer minted last; `return` leaves the fn with its value.
-use core.{CalledFn, ExprId, Lowering, Lowers, Reg, StmtId, StmtLowers, SyntaxArena}
+use core.{CalledFn, ExprId, Lowering, Lowers, Reg, StmtId, StmtLowers}
 use core.expr.{Call}
 use core.stmt.{Return}
 
@@ -20,12 +20,7 @@ fn called(cx: Lowering, call: Call) -> CalledFn? {
     if !call.pins.is_empty() || cx.bound(call.callee.of) != null { return null }
     let named? = cx.named(call.callee.of) else { return null }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
-    if !callee.plain || call.args.any((a) -> by_name(cx.store, a)) { null } else { callee }
-}
-
-/// Whether an argument names its seat.
-fn by_name(store: SyntaxArena, a: ExprId) -> bool {
-    match store.expr(a) { .Named(_, _) -> true, rest -> false }
+    if !callee.plain || call.args.any((a) -> cx.store.names_its_seat(a)) { null } else { callee }
 }
 
 impl StmtLowers for Return {

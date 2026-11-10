@@ -19,6 +19,9 @@ use @std.avrac.core.{
     Reg,
     RtFlag,
     SignedType,
+    Slot,
+    Static,
+    StaticBox,
     TypeId,
     alpha_renamed,
     canon_not_if,
@@ -31,10 +34,11 @@ use @std.avrac.core.{
 }
 use @std.avrac.compiler.lower.{Body}
 use @std.avrac.features.{Namespace}
-use @std.avrac.compiler.backend.{body_lines}
+use @std.avrac.compiler.backend.{body_lines, static_block}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
+    declared_symbol,
     Space,
     file_meant,
     package_read,
@@ -475,6 +479,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     mut tested = 0
     mut ticked = 0
     mut lambdas = 0
+    mut statics = 0
     mut differing: List<string> = []
     mut missing: Map<string, int> = {}
     let paths = package_sources(engine, disk.name, "src")
@@ -501,7 +506,8 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                 differing.push("${path} ${own.name}: the workspace lowers no body for it")
                 continue
             }
-            let lifted = lift_names(ws, ids[at], mine.lifts)
+            mut lifted = lift_names(ws, ids[at], mine.lifts)
+            lifted.set(declared_symbol(file, own.name), ws.decls.symbol(d))
             let cut = flag_tests_cut(theirs.ins)
             let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins }, lifted) ?? lifts_difference(
                 ws,
@@ -509,13 +515,14 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                 mine.lifts,
                 unit.bodies,
                 lifted,
-            )
+            ) ?? statics_difference(ws, disk, mine, unit.statics, lifted)
             if how != null {
                 differing.push("${path} ${own.name}: ${how!}")
                 continue
             }
             alike = alike + 1
             lambdas = lambdas + mine.lifts.length
+            statics = statics + mine.statics.length
             if cut.calls > 0 { tested = tested + 1 }
             if cut.edges > 0 { ticked = ticked + 1 }
         }
@@ -523,7 +530,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     if shown { for d in differing { println("differs: ${d}") } }
     let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
     println(
-        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge, ${lambdas} lambdas lifted alike), ${differing.length} differing; not lowered yet: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}",
+        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge, ${lambdas} lambdas lifted alike, ${statics} statics laid out alike), ${differing.length} differing; not lowered yet: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}",
     )
     if differing.is_empty() { 0 } else { 1 }
 }
@@ -627,6 +634,7 @@ fn lifts_difference(
             callees: l.callees,
             missing: [],
             lifts: [],
+            statics: [],
         }
         let how = lowered_difference(
             ws,
@@ -655,9 +663,9 @@ fn lowered_difference(
     }
     let answer = old_layout(ws, theirs.ret)
     if mine.answer.spelled() != answer.spelled() { return "answers ${mine.answer.spelled()}, the workspace's ${answer.spelled()}" }
-    let renames = callee_symbols(ws, disk, mine.callees)
+    let renames = known_symbols(callee_symbols(ws, disk, mine.callees), lifted)
     let ours = numbered(
-        [resymbolled(i, (s) -> renames.get(s) ?? lifted.get(s) ?? s) for i in mine.ins],
+        [resymbolled(i, (s) -> workspace_symbol(ws, disk, renames, s)) for i in mine.ins],
         mine.params.length,
     )
     let workspace = numbered(theirs.ins, theirs.params.length)
@@ -672,6 +680,97 @@ fn lowered_difference(
         if new.spelled() != old.spelled() { return "the register instruction ${at} defines is ${new.spelled()}, the workspace's ${old.spelled()}" }
     }
     null
+}
+
+/// How the data a fn and its lambdas read differs from what the workspace lays out under the same
+/// names, absent when each static holds alike; `lifted` names each lambda's symbol as the workspace's.
+fn statics_difference(
+    ws: Workspace,
+    disk: Disk,
+    mine: LoweredFn,
+    theirs: List<Static>,
+    lifted: Map<string, string>,
+) -> string? {
+    let renames = known_symbols(
+        callee_symbols(ws, disk, mine.callees.concat(flatten([l.callees for l in mine.lifts]))),
+        lifted,
+    )
+    for st in mine.statics {
+        let name = workspace_symbol(ws, disk, renames, st.name)
+        let old? = theirs.find(it.name == name) else { return "the workspace lays out no static `${name}`" }
+        let ours = static_block(
+            Static {
+                name: name,
+                boxes: [box_renamed(b, (s) -> workspace_symbol(ws, disk, renames, s)) for b in st.boxes],
+            },
+        )
+            .join(" ")
+        let workspace = static_block(old).join(" ")
+        if ours != workspace { return "the static `${name}` is `${ours}`, the workspace's `${workspace}`" }
+    }
+    null
+}
+
+/// `a`'s symbols beside `b`'s, `a`'s first where both name one.
+fn known_symbols(a: Map<string, string>, b: Map<string, string>) -> Map<string, string> {
+    mut known = b
+    for k, v in a { known.set(k, v) }
+    known
+}
+
+/// A symbol the program layer names, as the workspace's lowering names it: a declared fn's or a lifted
+/// lambda's by `renames`, a fn value's data and its wrapper by the code they hold, and a literal's data
+/// by its file's own symbol for its site.
+fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: string) -> string {
+    if s.starts_with(FN_DATA) { return FN_DATA + workspace_symbol(ws, disk, renames, s.substring(FN_DATA.length, s.length)) }
+    if s.ends_with(WRAPPER) {
+        return workspace_symbol(ws, disk, renames, s.substring(0, s.length - WRAPPER.length)) +
+            WRAPPER
+    }
+    let lit = s.index_of(LITERAL_DATA)
+    if lit >= 0 {
+        return literal_symbol_of(
+            ws,
+            disk,
+            s.substring(0, lit),
+            s.substring(lit + LITERAL_DATA.length, s.length),
+        ) ?? s
+    }
+    renames.get(s) ?? s
+}
+
+/// The workspace's name for the literal data at `site` of the package's file `spelled`, absent for a
+/// file the workspace doesn't know.
+fn literal_symbol_of(ws: Workspace, disk: Disk, spelled: string, site: string) -> string? {
+    let own = "${disk.name}/"
+    if !spelled.starts_with(own) { return null }
+    let id? = ws
+        .decls
+        .known_file_id(disk.on_disk(disk.name, spelled.substring(own.length, spelled.length))) else { return null }
+    ws.decls.file_symbol(id, "lit${site}")
+}
+
+/// What a fn value's data is named for: the code it holds.
+const FN_DATA: string = "fn\$"
+
+/// What a declared fn's wrapper as a value is named for: the fn it calls.
+const WRAPPER: string = "\$w"
+
+/// What a literal's data is named for beside its file: its site.
+const LITERAL_DATA: string = "\$lit"
+
+/// `b` with each code address it holds named by `named`.
+fn box_renamed(b: StaticBox, named: fn(string) -> string) -> StaticBox {
+    match b {
+        .Slots(cells) -> StaticBox.Slots([slot_renamed(c, named) for c in cells]),
+        .Table(keys, values) -> StaticBox.Table(keys, [slot_renamed(c, named) for c in values]),
+        .Octets(_) -> b,
+    }
+}
+
+/// `c` named by `named` where it's a code address, else itself.
+fn slot_renamed(c: Slot, named: fn(string) -> string) -> Slot {
+    match c { .Code(sym) -> Slot.Code(named(sym)), rest -> c }
 }
 
 /// One instruction as the IR's text writes it.

@@ -4,12 +4,14 @@ use core.{ExprId, Lowering, Lowers, Reg, spread_entry}
 use core.expr.{StructLit}
 
 impl Lowers for StructLit {
-    /// A literal that writes every field. One the binary holds as data, or that leaves a field to its
-    /// default, spreads, or builds a record with a `state` field, isn't lowered yet.
+    /// A literal that writes every field, or one the source alone spells, which is the binary's own
+    /// data. One that leaves a field to its default, spreads, or builds a record with a `state` field,
+    /// isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
-        if cx.held_as_data(e) { return cx.missed_as("a literal the binary holds as data") }
+        let data = cx.static_literal(e)
+        if data != null { return data! }
         let written = [f.of for f in self.fields]
         if written.contains(spread_entry) { return cx.missed_as("a record literal that spreads") }
         if fields.any(it.state) { return cx.missed_as("a record literal with a `state` field") }

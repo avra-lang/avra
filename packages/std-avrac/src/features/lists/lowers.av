@@ -1,6 +1,6 @@
 //! The lowering rule of a list literal: one box sized for every plain element and every spread's
 //! length, then each plain element pushed and each spread's slots appended, in written order. A list
-//! every element of which is written as a literal is laid out as static data, which isn't lowered yet.
+//! the source alone spells is the binary's own data, read by its address.
 use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, rt_sig_of}
 use core.expr.{ListLit}
 
@@ -8,7 +8,8 @@ impl Lowers for ListLit {
     /// The elements first, then the size, then the box, then what fills it; an element wider than a
     /// word isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
-        if !self.elems.is_empty() && cx.held_as_data(e) { return cx.missed_as("a literal the binary holds as data") }
+        let data = if self.elems.is_empty() { null } else { cx.static_literal(e) }
+        if data != null { return data! }
         let spread = [cx.store.spread_operand(k) != null for k in self.elems]
         let regs = [cx.lower(cx.store.spread_operand(k) ?? k) for k in self.elems]
         mut size = cx.const_int([s for s in spread if !s].length)

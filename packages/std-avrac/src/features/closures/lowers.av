@@ -5,16 +5,15 @@ use core.{ExprId, Lowering, Lowers, Reg, lift_refusal}
 use core.expr.{CallValue, Lambda}
 
 impl Lowers for Lambda {
-    /// A lambda the source wrote, capturing at least one name; one capturing nothing is laid out as
-    /// static data, which isn't lowered yet.
+    /// A lambda the source wrote: its box, or where it captures nothing, its code laid out once as data.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
         let span? = cx.store.expr_span(e) else { return cx.missed_as("a lambda no source wrote") }
         let refused = lift_refusal(self, ty)
         if refused != null { return cx.missed_as(refused!) }
         let lift = cx.lift(self, ty, span, cx.program)
-        if lift.lanes.is_empty() { return cx.missed_as("a lambda capturing nothing, which the binary holds as data") }
         cx.kept_lift(lift)
+        if lift.lanes.is_empty() { return cx.fn_static(cx.laid_out(ty), lift.body.symbol) }
         let captures = [cx.held(cx.bound(name)!) for name in lift.lanes]
         if captures.any((c) -> cx.layout_of(c).inline()) { return cx.missed_as("a capture laid inline") }
         cx.fn_box(cx.laid_out(ty), lift.body.symbol, captures)
