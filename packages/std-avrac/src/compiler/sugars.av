@@ -59,7 +59,16 @@ fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Min
 /// none when the template can't be read here.
 export fn rewritten_beside(store: SyntaxArena, sugar: ExprId, said: Rewrite) -> List<ExprId> {
     match said.node {
-        .Template(_, _, parts, fills) -> spliced(avra(), store, sugar, parts, fills, "·${sugar.index}"),
+        .Template(_, _, parts, fills) -> spliced(avra(), store, sugar, parts, fills, "·e${sugar.index}"),
+        rest -> [],
+    }
+}
+
+/// A rewrite's statements copied in place of the statement `sugar`, holes filled and its own names
+/// made fresh: the statements made, in order; none when the template can't be read here.
+export fn stmts_rewritten_beside(store: SyntaxArena, sugar: StmtId, said: Rewrite) -> List<StmtId> {
+    match said.node {
+        .Template(_, _, parts, fills) -> copied_template(avra(), store, parts, fills, "·s${sugar.index}")?.stmts ?? [],
         rest -> [],
     }
 }
@@ -79,19 +88,34 @@ fn spliced(
     fills: List<Node>,
     fresh: string,
 ) -> List<ExprId> {
-    let source = woven_quote(parts)
-    let s? = scratch(lang, source) else { return [] }
-    let body? = s.store.expr(s.body).body_of() else { return [] }
+    let copy? = copied_template(lang, store, parts, fills, fresh) else { return [] }
+    let last? = copy.stmts.last() else { return [] }
+    let root? = store.answer_of(last) else { return [] }
+    let at = store.expr_span(sugar)
+    if at != null { for m in copy.exprs { store.place_expr(m, at!) } }
+    copy.exprs.filter(!same_expr(it, root)).concat([root])
+}
+
+/// A template copied into `store`: the statements it is, and every expression the copy made.
+type TemplateCopy = { stmts: List<StmtId>, exprs: List<ExprId> }
+
+/// The template's statements copied into `store`, holes filled and its own names marked `fresh`;
+/// absent when the template can't be read here.
+fn copied_template(
+    lang: Language,
+    store: SyntaxArena,
+    parts: List<string>,
+    fills: List<Node>,
+    fresh: string,
+) -> TemplateCopy? {
+    let s? = scratch(lang, woven_quote(parts)) else { return null }
+    let body? = s.store.expr(s.body).body_of() else { return null }
     let stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, rest -> [] }
-    let last? = stmts.last() else { return [] }
+    if stmts.is_empty() { return null }
     let thunks = [(kind: HoleKind) -> filled(kind, fill) for fill in fills]
     mut rb = copier(s.store, store, thunks, hole_runs(s.store, s.body), sugar_door(lang)) with { fresh: fresh }
     let copied = rb.stmts(stmts)
-    let root? = store.answer_of(copied.last()!) else { return [] }
-    let made = flatten([rb.made_exprs, rb.holed_exprs])
-    let at = store.expr_span(sugar)
-    if at != null { for m in made { store.place_expr(m, at!) } }
-    made.filter(!same_expr(it, root)).concat([root])
+    TemplateCopy { stmts: copied, exprs: flatten([rb.made_exprs, rb.holed_exprs]) }
 }
 
 /// A hole's fill in the seat it stands in: an id, as the seat reads it; a name, as written; a held

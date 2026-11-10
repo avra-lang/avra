@@ -1,0 +1,32 @@
+//! What a `for` loop means, in the core.
+use core.{At, Stmt, SyntaxArena}
+use features.{TypedCode, meaning}
+
+/// `for x in xs { … }` over a list walks its positions: each turn binds the element, counts past it
+/// before the body runs, so a `continue` never turns forever.
+export meaning for_each {
+    quote { for ${x} in ${xs} { ${..body} } } if walks_a_list(xs) && !breaks_by_label(body) -> quote {
+        let items = ${xs}
+        mut at = 0
+        while at < items.length {
+            let ${x} = items[at]
+            at = at + 1
+            ${body}
+        }
+    },
+}
+
+/// Whether the subject is a list, as typing found it.
+fn walks_a_list(xs: TypedCode) -> bool { xs.type()?.listed() != null }
+
+/// Whether any statement of the body leaves a loop by a label, which names the loop itself.
+fn breaks_by_label(body: List<TypedCode>) -> bool { body.any((s) -> labelled_within(s.of.view.store, s.at)) }
+
+/// Whether `at`, or any node under it, is a `break` or `continue` naming its loop.
+fn labelled_within(store: SyntaxArena, at: At) -> bool {
+    let own = match at { .Stmt(s) -> labelled(store.stmt(s)), rest -> false }
+    own || store.kids_at(at).any((k) -> labelled_within(store, k))
+}
+
+/// Whether a statement leaves a loop by a label.
+fn labelled(s: Stmt) -> bool { match s { .Jump(label, _) -> label != null, rest -> false } }

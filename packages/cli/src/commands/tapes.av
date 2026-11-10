@@ -350,20 +350,38 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     mut alike = 0
     mut seated = 0
     mut untyped = 0
+    mut statements = 0
+    mut nodes = 0
     mut differing: List<string> = []
     for path in package_sources(engine, disk.name, "src") {
         let file = disk.file_at(path)
         for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
             let body? = elaborated_fn(engine, file, own.name) else { continue }
+            statements = statements + body.statements.length
+            let roots = [e.index for e in body.sugars]
+            for at, surface in body.surface {
+                let core = body.core[at]
+                if surface == null || core == null || roots.contains(at) { continue }
+                nodes = nodes + 1
+                if surface!.spelled() != core!.spelled() &&
+                    !meets_its_seat(surface!, core!, body.seats.get("${at}")) {
+                    differing
+                        .push(
+                            "${path} ${own.name}: a node ${surface!.spelled()} on the surface, ${core!.spelled()} in the core, ${body.seats.get("${at}")?.spelled() ?? "no seat"} wanted",
+                        )
+                }
+            }
             for e in body.sugars {
                 sugars = sugars + 1
                 let surface = body.surface[e.index]
                 let core = body.core[e.index]
                 if surface == null || core == null {
                     untyped = untyped + 1
-                    if shown { println(
+                    if shown {
+                        println(
                             "untyped: ${path} ${own.name}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
-                        ) }
+                        )
+                    }
                     continue
                 }
                 if surface!.spelled() == core!.spelled() {
@@ -384,7 +402,7 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     }
     if shown { for d in differing { println("differs: ${d}") } }
     println(
-        "core: ${sugars} sugars meant, ${alike} typed alike, ${seated} answering their seat, ${differing.length} differing, ${untyped} untyped on a side",
+        "core: ${sugars} sugars and ${statements} statements meant; sugars ${alike} typed alike, ${seated} answering their seat, ${untyped} untyped on a side; ${nodes} other nodes typed on both sides; ${differing.length} differing",
     )
     if differing.is_empty() { 0 } else { 1 }
 }

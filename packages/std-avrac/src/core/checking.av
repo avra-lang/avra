@@ -77,7 +77,7 @@ export type Checking = {
     /// Whether a sugar with a meaning is checked as what it means: the core's typing, where the
     /// sugar's own rule is the surface's.
     meanings: bool = false,
-    /// The type each sugar's seat wanted, by its node's index, where it was checked as its meaning.
+    /// The type each node's seat wanted, by its index, where the body was checked as the core it means.
     seats: Cell<Map<string, SignedType>>,
 }
 
@@ -142,7 +142,7 @@ impl Checking {
     /// `e` checked against `expected`, its type kept.
     mut fn check(e: ExprId, expected: Expected) -> SignedType? {
         let meant = if self.meanings { self.store.meant(e) } else { null }
-        if meant != null { self.seat_kept(e, expected) }
+        if self.meanings { self.seat_kept(e, expected) }
         let made = if meant != null { self.check(meant!, expected) } else { self.store.expr(e).checked(self, e, expected) }
         // a type the body decides is known only once typing infers it
         let ty = if made != null && made!.inferred() { null } else { made }
@@ -150,7 +150,7 @@ impl Checking {
         ty
     }
 
-    /// The type a sugar's seat wants, kept by its node: what its meaning may answer in its place.
+    /// The type a node's seat wants, kept by the node: what the core may answer in its place.
     fn seat_kept(e: ExprId, expected: Expected) {
         let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
         self.seats.put("${e.index}", wanted)
@@ -177,12 +177,14 @@ impl Checking {
     /// One arm against a subject of type `subject`: its patterns bind in a scope of its own, its
     /// guard is a `bool`, and its value checks against `expected` — as a value even where the arms'
     /// meeting is dropped.
-    mut fn arm_checked(arm: Arm, subject: SignedType?, expected: Expected) -> SignedType? {
+    mut fn arm_checked(arm: Arm, subject: SignedType?, expected: Expected, proof: Proof? = null) -> SignedType? {
         self.opened()
+        if proof != null { self.scopes.push(CheckScope { names: proof!.names }) }
         for p in arm.pats { self.check_pat(p, subject) }
         if arm.guard != null { let _ = self.check(arm.guard!, Expected.Exactly(owned_type("bool"))) }
         let value = self
             .check(arm.value, if expected is .Dropped { Expected.Free } else { expected })
+        if proof != null { self.closed() }
         self.closed()
         value
     }
@@ -304,7 +306,11 @@ impl Checking {
     }
 
     /// `s` checked, binding what it declares where it stands.
-    mut fn check_stmt(s: StmtId) { self.store.stmt(s).stmt_checked(self, s) }
+    mut fn check_stmt(s: StmtId) {
+        let meant = if self.meanings { self.store.stmt_meant(s) } else { null }
+        if meant == null { return self.store.stmt(s).stmt_checked(self, s) }
+        for m in meant! { self.check_stmt(m) }
+    }
 
     /// Every expression `s` holds checked against what isn't known.
     mut fn stmt_children_checked(s: StmtId) { for e in self.store.stmt_children(s) { let _ = self.check(e, Expected.Unknown) } }

@@ -1,7 +1,7 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
 use @std.meta.{derive, identity, plain_field}
-use @std.relation.engine.{list_cell}
+use @std.relation.engine.{list_cell, map_cell}
 use @std.program.dense_window.{DenseWindow, dense_window}
 
 /// How a sugar's meaning is minted beside it: the language's own door,
@@ -240,6 +240,9 @@ export type SyntaxArena = {
     // the root of what a sugar means, by the sugar — the node a walk
     // descends into in its place; null for every other node
     @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, meaning_read) meaning: Cell<List<ExprId?>>,
+    // the statements a statement means, by the statement — few, so kept
+    // by key; none for a statement no meaning rewrote
+    @not_copied("a statement's meaning is made by elaboration, never by a copy") @remade("elaborated: elaboration makes a statement's meaning again once a tape is read") stmt_meanings: Cell<Map<string, List<StmtId>>>,
     // what a sugar node says its meaning is, by the sugar — the one
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
@@ -320,6 +323,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         minted_by: list_cell(),
         mints: list_cell(),
         meaning: list_cell(),
+        stmt_meanings: map_cell(),
         means_notes: list_cell(),
         extensions: list_cell(),
         instance_owners: list_cell(),
@@ -659,6 +663,12 @@ impl SyntaxArena {
     fn extended_by(e: ExprId) -> List<ExprId> {
         self.extensions.get()[e.index]
     }
+
+    /// Gives the statement `sugar` the statements it means.
+    fn stmt_means_as(sugar: StmtId, meant: List<StmtId>) { self.stmt_meanings.put("${sugar.index}", meant) }
+
+    /// The statements `s` means; null for a statement no meaning rewrote.
+    fn stmt_meant(s: StmtId) -> List<StmtId>? { self.stmt_meanings.get().get("${s.index}") }
 
     /// The root of what `sugar` means; null for any other node.
     fn meant(e: ExprId) -> ExprId? {

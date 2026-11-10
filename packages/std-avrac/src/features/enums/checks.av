@@ -2,7 +2,19 @@
 //! payload on the subject's enum; `match` checks each arm against its seat and is their join; `is`
 //! proves its pattern's names in the branch where it holds; a variant literal is the enum its seat
 //! names.
-use core.{Checking, Checks, ExprId, Expected, PatChecks, PatId, Proof, SignedType, owned_type}
+use core.{
+    Arm,
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    PatChecks,
+    PatId,
+    Proof,
+    SignedType,
+    SyntaxArena,
+    owned_type,
+}
 use core.expr.{Is, Match, VariantLit}
 use core.pat.{Bind, Lit, Member, Rest, Variant, Wild}
 
@@ -43,8 +55,45 @@ impl PatChecks for Member {
 impl Checks for Match {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
-        cx.arms_met([cx.arm_checked(a, subject, expected) for a in self.arms], expected)
+        let truths = arm_truths(cx.store, self.arms)
+        cx
+            .arms_met(
+                [cx
+                    .arm_checked(
+                        a,
+                        subject,
+                        expected,
+                        if truths[at] == null { null } else { cx.proof_when(self.subject, truths[at]!) },
+                    ) for at, a in self.arms],
+                expected,
+            )
     }
+}
+
+/// The truth of its subject each arm of a match stands under, so a match on a condition proves
+/// what an `if` on it does: a `true` or `false` arm its own literal, a catch-all after one literal
+/// the other; none for any other arm.
+fn arm_truths(store: SyntaxArena, arms: List<Arm>) -> List<bool?> {
+    let said = [said_truth(store, a) for a in arms]
+    [if said[at] != null { said[at] } else if catches_all(store, a) { the_other(said.take(at)) } else { null } for at, a in arms]
+}
+
+/// The literal truth an arm's one pattern names, absent for any other arm.
+fn said_truth(store: SyntaxArena, a: Arm) -> bool? {
+    if a.pats.length != 1 || a.guard != null { return null }
+    match store.pat(a.pats[0]) { .Lit(v) -> store.expr(v).bool_of(), rest -> null }
+}
+
+/// Whether an arm takes every subject: one pattern, no guard, that binds or discards it.
+fn catches_all(store: SyntaxArena, a: Arm) -> bool {
+    if a.pats.length != 1 || a.guard != null { return false }
+    match store.pat(a.pats[0]) { .Wild or .Rest or .Bind(_) -> true, rest -> false }
+}
+
+/// The truth no arm before took, when exactly one literal arm stands before.
+fn the_other(before: List<bool?>) -> bool? {
+    let told = [t! for t in before if t != null]
+    if told.length == 1 { !told[0] } else { null }
 }
 
 impl Checks for Is {

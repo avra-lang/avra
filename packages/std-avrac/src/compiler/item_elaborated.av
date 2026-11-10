@@ -2,7 +2,8 @@
 //! states it in a `meaning`, and the whole typed again as the core it means. A sugar is typed twice,
 //! by its own rule on the surface and as its meaning in the core, and the two agree, or the core
 //! answers the type its seat wants and the surface's type fits that seat, or a meaning is wrong.
-use core.{At, Expected, ExprId, SignedType, SyntaxArena, checking, flatten, minting}
+use core.{At, Expected, ExprId, SignedType, StmtId, SyntaxArena, checking, flatten, minting}
+use @std.meta.{Rewrite}
 use features.{TypedCode, TypedItem, TypedView}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -12,6 +13,8 @@ use @std.program.query_engine.{QueryEngine}
 export type ElaboratedBody = {
     store: SyntaxArena,
     sugars: List<ExprId>,
+    /// The statements a meaning rewrote.
+    statements: List<StmtId>,
     surface: List<SignedType?>,
     core: List<SignedType?>,
     /// The type each sugar's seat wanted, by its node's index, where its seat names one.
@@ -34,6 +37,7 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
     for p in signature.params { surface.bind(p.name, p.ty, true) }
     let _ = surface.check(body, Expected.Exactly(signature.answer))
     let typed = TypedItem { view: TypedView { store: item.store }, types: surface.types.get() }
+    let statements = [s for s in every_stmt(item.store, At.Expr(body)) if stmt_meant_beside(typed, s)]
     let sugars = [e for e in item.store.every_expr(body) if meant_beside(typed, e)]
     mut core = checking(item.store, program, signature.answer) with { meanings: true }
     for p in signature.params { core.bind(p.name, p.ty, true) }
@@ -41,6 +45,7 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
     ElaboratedBody {
         store: item.store,
         sugars: sugars,
+        statements: statements,
         surface: typed.types,
         core: core.types.get(),
         seats: core.seats.get(),
@@ -53,15 +58,40 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
 fn meant_beside(typed: TypedItem, e: ExprId) -> bool {
     let store = typed.view.store
     if store.meant(e) != null { return false }
-    let at = At.Expr(e)
+    let said? = meaning_said(typed, At.Expr(e)) else { return false }
+    let made = rewritten_beside(store, e, said.rewrite)
+    if made.is_empty() { return false }
+    store.means_as(e, minting(made), "`${said.by}`")
+    true
+}
+
+/// Whether `s` is a statement some meaning rewrites, the statements it means then standing for it.
+fn stmt_meant_beside(typed: TypedItem, s: StmtId) -> bool {
+    let store = typed.view.store
+    if store.stmt_meant(s) != null { return false }
+    let said? = meaning_said(typed, At.Stmt(s)) else { return false }
+    let made = stmts_rewritten_beside(store, s, said.rewrite)
+    if made.is_empty() { return false }
+    store.stmt_means_as(s, made)
+    true
+}
+
+/// What a meaning says a node means, and the meaning that said it.
+type MeaningSaid = { rewrite: Rewrite, by: string }
+
+/// What the first meaning rooted at the node's kind whose arms match says it means.
+fn meaning_said(typed: TypedItem, at: At) -> MeaningSaid? {
+    let store = typed.view.store
     let index = meaning_index()
-    let kinds = [store.kind_at(at), store.shallow_at(at)]
-    for m in flatten([index.at(k) for k in kinds]) {
+    for m in flatten([index.at(k) for k in [store.kind_at(at), store.shallow_at(at)]]) {
         let said? = (m.run)(TypedCode { of: typed, at: at }) else { continue }
-        let made = rewritten_beside(store, e, said)
-        if made.is_empty() { continue }
-        store.means_as(e, minting(made), "`${m.module}.${m.name}`")
-        return true
+        return MeaningSaid { rewrite: said, by: "${m.module}.${m.name}" }
     }
-    false
+    null
+}
+
+/// Every statement at and under `root`, inner statements before the ones holding them.
+fn every_stmt(store: SyntaxArena, root: At) -> List<StmtId> {
+    let own = match root { .Stmt(s) -> [s], rest -> [] }
+    flatten([every_stmt(store, k) for k in store.kids_at(root)]).concat(own)
 }
