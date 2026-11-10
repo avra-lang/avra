@@ -7,7 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{DeclId, ExprId, TypeId}
+use @std.avrac.core.{DeclId, ExprId, SignedType, TypeId, flatten}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -22,7 +22,7 @@ use @std.avrac.compiler.{
     fn_signature,
     fn_body_spans,
     typed_fn,
-    untyped_kinds,
+    node_kinds,
     file_declares,
     ItemKind,
     resolved_in,
@@ -66,7 +66,7 @@ impl Runnable for TapesCmd {
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
         for d in differing { println("differs: ${d}") }
         println("tapes: ${files.length} read, ${differing.length} differing")
-        if args.has_flag("signatures") { println("typed: ${typed_share(engine, disk, files)}") }
+        if args.has_flag("signatures") { println("typed: ${typed_share(engine, ws, disk, files)}") }
         if differing.is_empty() { 0 } else { 1 }
     }
 }
@@ -146,25 +146,26 @@ fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, sign
 }
 
 /// How much of the fns `files` declare the program layer types: its typed nodes of all their nodes.
-fn typed_share(engine: QueryEngine, disk: Disk, files: List<string>) -> string {
-    let bodies = [b! for f in files for own in file_declares(engine, disk.file_at(f)).names.filter(it.kind == ItemKind.Fn) for b in [typed_fn(engine, disk.file_at(f), own.name)] if b != null]
-    let held = [b.types.length for b in bodies].sum()
-    let typed = [b.types.filter(it != null).length for b in bodies].sum()
-    mut untyped: Map<string, int> = {}
-    for f in files {
-        for own in file_declares(engine, disk.file_at(f)).names.filter(it.kind == ItemKind.Fn) {
-            for kind in untyped_kinds(engine, disk.file_at(f), own.name) { untyped.set(kind, (untyped.get(kind) ?? 0) + 1) }
-        }
-    }
-    let most = sorted_by([k for k, _n in untyped], (a, b) -> untyped.get(a)! > untyped.get(b)!)
+fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<string>) -> string {
+    let pairs = flatten([typed_pairs(engine, ws, disk, f) for f in files])
+    let typed = pairs.filter(it.new != null).length
+    mut missing: Map<string, int> = {}
+    for p in pairs.filter(it.new == null) { missing.set(p.kind, (missing.get(p.kind) ?? 0) + 1) }
+    let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
         .take(12)
-    "${typed} of ${held} nodes, ${if held == 0 { 0 } else { typed * 100 / held }}%; untyped most: ${[k + " " + "${untyped.get(k)!}" for k in most].join(", ")}"
+    "${typed} of the ${pairs.length} nodes the workspace types, ${if pairs.is_empty() { 0 } else { typed * 100 / pairs.length }}%; left most: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}"
 }
 
 /// How a fn `path` declares is typed differently from the workspace's typing of its body, absent
 /// when every node both type reads alike: nodes paired by where they stand, and a node the
 /// workspace left untyped (a literal it folded into another) read as nothing to hold.
-fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+/// A node of a fn the workspace types, beside what the program layer types it as (absent when it
+/// doesn't): the fn, the node's place, its kind and the workspace's spelling.
+type TypedPair = { name: string, lo: int, kind: string, new: SignedType?, old: string }
+
+/// Each node of each fn `path` declares that the workspace typed, paired by span with the program
+/// layer's node.
+fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> List<TypedPair> {
     let file = disk.file_at(path)
     let id = ws.file_id(joined_path(disk.root, path))
     let names = ws.visible(id)
@@ -176,6 +177,7 @@ fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string)
         let key = "${span.lo}:${span.hi}"
         old_at.set(key, (old_at.get(key) ?? []).concat([e]))
     }
+    mut pairs: List<TypedPair> = []
     for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
         let d? = names.fn_decl(own.name) else { continue }
         let x = ws.decls.decl(d)
@@ -185,21 +187,35 @@ fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string)
         let mine? = typed_fn(engine, file, own.name) else { continue }
         let facts = ws.typed(d)
         let spans = fn_body_spans(engine, file, own.name)
+        let kinds = node_kinds(engine, file, own.name)
         for at, ty in mine.types {
-            let new? = ty else { continue }
-            // a block that leaves never answers; the workspace dresses it in the fn's answer
-            if new.head is .Never { continue }
             let span? = spans[at] else { continue }
             let olds = old_at.get("${span.lo}:${span.hi}") ?? []
             if olds.length != 1 || !facts.of_expr.holds(olds[0].index) { continue }
             let old_type = facts.type_at(olds[0])
             // a node the workspace's typing never reached holds the error it was born with
             if ws.decls.types.shape_of(old_type) is .Error { continue }
-            let old = workspace_spelled(ws, old_type)
-            if old != new.spelled() { return "${path}: `${own.name}` types the node at ${span.lo} ${new.spelled()}, the workspace ${old}" }
+            pairs
+                .push(
+                    TypedPair {
+                        name: own.name,
+                        lo: span.lo,
+                        kind: kinds[at],
+                        new: ty,
+                        old: workspace_spelled(ws, old_type),
+                    },
+                )
         }
     }
-    null
+    pairs
+}
+
+/// The first node `path`'s fns type differently from the workspace, absent when none does.
+fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    // a block that leaves never answers; the workspace dresses it in the fn's answer
+    let p? = typed_pairs(engine, ws, disk, path)
+        .find(it.new != null && !(it.new!.head is .Never) && it.new!.spelled() != it.old) else { return null }
+    "${path}: `${p.name}` types the node at ${p.lo} ${p.new!.spelled()}, the workspace ${p.old}"
 }
 
 /// A type as the workspace writes it, each union's members in the order the program layer writes
