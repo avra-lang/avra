@@ -532,7 +532,7 @@ compiler-files:
 # A SEED EMITTED FROM THIS VERY SOURCE comes first: linking it already is the
 # compiler this tree builds (tools/seed_is_tree.sh), so no ladder and no
 # standing compiler can do better, and a tree too new for every published one
-# still builds.
+# still builds; with rungs named, it is their product too.
 # RUNGS are the tree's `Rung:` commits, oldest first (tools/rungs.sh): each is
 # built by the product of the one before (tools/ladder.sh), starting from the
 # standing compiler or the seed as linked, and HEAD by the last; a laddered
@@ -553,7 +553,8 @@ compiler:
 	@gens() { n=$(GENS); while [ "$$n" -gt 0 ]; do $(BOUNDED)$(MAKE) -s avra || return 1; n=$$((n - 1)); done; }; \
 	if [ "$$(sh tools/seed_is_tree.sh "$$(sh tools/sources_hash.sh)" "$$(cat bootstrap/seed.sources 2>/dev/null)")" = seed ]; then \
 	  echo "compiler: the committed seed was emitted from this tree — linked, not climbed"; \
-	  $(BOUNDED)$(MAKE) -s bootstrap; \
+	  $(BOUNDED)$(MAKE) -s bootstrap || exit 1; \
+	  [ -z "$(strip $(RUNGS))" ] || cp build/avra build/avra-ladder; \
 	elif [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
 	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
