@@ -1,12 +1,49 @@
-//! The typing rule of a block word's body: a text body (an interpolated string) is a `string`, its
-//! holes checked for what they are; any other is another language's text, so only its holes are
-//! this body's expressions, and what it is isn't named here.
-use core.{BodyBehavior, Checking, Checks, ExprId, Expected, SignedType, body_behavior, owned_type}
+//! The typing rule of a block word's body: a text body (an interpolated string) is a `string`, a quote
+//! is the `@std/meta` shape its body holds, its holes checked for what they are; another language's
+//! text has only its holes as this body's expressions, and what it is isn't named here.
+use core.{
+    BodyBehavior,
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    SignedType,
+    body_behavior,
+    owned_type,
+    quote_kind,
+}
 use core.expr.{Body}
 
 impl Checks for Body {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         cx.checked_free(self.holes)
-        match body_behavior(self.word) { .Text -> owned_type("string"), .Quote or .Foreign -> null }
+        match body_behavior(self.word) {
+            .Text -> owned_type("string"),
+            .Quote -> quoted(cx, e, [cx.type_of(h) for h in self.holes], expected),
+            .Foreign -> null,
+        }
     }
+}
+
+/// What a quote is, by what its body holds: statements are `Stmts`, arms `Arms`, declarations
+/// `Decls`, and an expression `Rewrite` when a hole fills with a node, else `Code`, or `Stmts` where
+/// its seat wants statements. A body of holes alone, or one with a hole not yet known, isn't named.
+fn quoted(cx: Checking, e: ExprId, holes: List<SignedType?>, expected: Expected) -> SignedType? {
+    match quote_kind(cx.store, e) {
+        .Stmts -> cx.meta_type("Stmts"),
+        .Arms -> cx.meta_type("Arms"),
+        .Decls -> cx.meta_type("Decls"),
+        .Expr -> if holes.any(it == null) { null } else if holes.any((h) -> names_a_node(h!)) { cx.meta_type("Rewrite") } else { expression_quoted(cx, expected) },
+        .Holes -> null,
+    }
+}
+
+/// Whether a hole fills with a node of the tree being rewritten: an `ExprId` or a `PatId`.
+fn names_a_node(ty: SignedType) -> bool { ty.nulls == 0 && (ty.word() == "ExprId" || ty.word() == "PatId") }
+
+/// An expression quoted over no node: `Code`, or `Stmts` where its seat wants statements.
+fn expression_quoted(cx: Checking, expected: Expected) -> SignedType? {
+    let stmts = cx.meta_type("Stmts")
+    let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
+    if wanted != null && stmts != null && wanted!.names_as(stmts!) { stmts } else { cx.meta_type("Code") }
 }

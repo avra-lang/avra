@@ -48,6 +48,7 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
             property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
             type_value: (n: string) -> type_value(engine, file, signing, n),
             static_of: (described: SignedType, s: string) -> static_type(engine, described, s),
+            meta_type: (n: string) -> meta_declared(engine, n),
         },
         signature.answer,
     )
@@ -105,6 +106,15 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
 }
+
+/// The type `@std/meta`'s root module declares as `name`, absent when it declares none.
+fn meta_declared(engine: QueryEngine, name: string) -> SignedType? {
+    let d? = declarations_of(engine, META, [], false, name).find(space_of(it.kind) == Space.Type) else { return null }
+    headed_type(TypeHead.Declared(d.file, d.name))
+}
+
+/// The package that holds the language's compile-time shapes.
+const META: string = "@std/meta"
 
 /// A signature as a fn type, after `leading` seats; absent when a parameter's type isn't written.
 fn fn_typed(leading: List<SignedSeat>, s: FnSignature) -> SignedType? {
