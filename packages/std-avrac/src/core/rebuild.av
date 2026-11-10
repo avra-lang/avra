@@ -100,6 +100,11 @@ export type Rebuilder = {
     // the source reaches twice is one node in the copy. A cell, because it is
     // an identity — a walk that copies the rebuilder shares it.
     copies: Cell<List<ExprId?>>,
+    // a meaning's own names are made fresh: every scope name the template
+    // writes gains this mark, so none meets a name of the code it lands
+    // in; a name that comes through a hole keeps its own. Empty for every
+    // other copy.
+    fresh: string = "",
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
@@ -455,7 +460,9 @@ impl Rebuilder {
     /// where the code lands.
     mut fn scoped_name(text: Scoped) -> Scoped {
         if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
-        Scoped(self.rewritten(text.of))
+        let named = self.rewritten(text.of)
+        if self.copying && !self.verbatim && !self.fresh.is_empty() && hole_name(text.of) == null { return Scoped("${named}${self.fresh}") }
+        Scoped(named)
     }
 
     mut fn scoped_name_opt(text: Scoped?) -> Scoped? {

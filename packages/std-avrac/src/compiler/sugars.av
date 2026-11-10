@@ -49,16 +49,17 @@ fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> Result<Min
     }
     let said? = node.means(cx) else { return node.minted(cx) }
     match (said?).node {
-        .Template(_, _, parts, fills) -> .Ok(minting(spliced(lang, store, sugar, parts, fills))),
+        .Template(_, _, parts, fills) -> .Ok(minting(spliced(lang, store, sugar, parts, fills, ""))),
         rest -> .Ok(minting([])),
     }
 }
 
-/// A rewrite's template copied beside `sugar` with its holes filled: the nodes made, the root last;
+/// A rewrite's template copied beside `sugar` with its holes filled and its own names made fresh, so
+/// none captures or is captured by a name of the code it lands in: the nodes made, the root last;
 /// none when the template can't be read here.
 export fn rewritten_beside(store: SyntaxArena, sugar: ExprId, said: Rewrite) -> List<ExprId> {
     match said.node {
-        .Template(_, _, parts, fills) -> spliced(avra(), store, sugar, parts, fills),
+        .Template(_, _, parts, fills) -> spliced(avra(), store, sugar, parts, fills, "·${sugar.index}"),
         rest -> [],
     }
 }
@@ -76,6 +77,7 @@ fn spliced(
     sugar: ExprId,
     parts: List<string>,
     fills: List<Node>,
+    fresh: string,
 ) -> List<ExprId> {
     let source = woven_quote(parts)
     let s? = scratch(lang, source) else { return [] }
@@ -83,7 +85,7 @@ fn spliced(
     let stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, rest -> [] }
     let last? = stmts.last() else { return [] }
     let thunks = [(kind: HoleKind) -> filled(kind, fill) for fill in fills]
-    mut rb = copier(s.store, store, thunks, hole_runs(s.store, s.body), sugar_door(lang))
+    mut rb = copier(s.store, store, thunks, hole_runs(s.store, s.body), sugar_door(lang)) with { fresh: fresh }
     let copied = rb.stmts(stmts)
     let root? = store.answer_of(copied.last()!) else { return [] }
     let made = flatten([rb.made_exprs, rb.holed_exprs])
