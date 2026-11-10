@@ -1,0 +1,36 @@
+//! A VALUE BOXED AS A TRAIT: a `dyn` box holds the value, then the code of each method the trait
+//! declares as the value's type gives it, in the trait's order, then the value's type tag. A call
+//! through the box reads the code at its method's place and hands it the value.
+
+/// A method a trait declares, as a call through a `dyn` box reads it: its name, whether it writes its
+/// receiver, and whether a call hands it its arguments by position into seats that promise nothing.
+export type TraitMember = { name: string, writes: bool, plain: bool }
+
+impl Lowering {
+    /// `r`, a value of `from`, boxed as the trait `into` names.
+    mut fn dyn_boxed(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        let members? = (self.program.traits)(into) else { return self.missed_as("a lift into `${into.spelled()}`") }
+        if !self.layout_of(r).one_word() { return self.missed_as("a `dyn` box over a value laid inline") }
+        let callees = [(self.program.method)(from, m.name) for m in members]
+        if callees.any(it == null) { return self.missed_as("a `dyn` box over a method the type doesn't write") }
+        let tag? = self.type_tag(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
+        let dst = self.call_row(self.laid_out(into), rt_sig_of("avra_array_new")!, [])
+        self.run_row(rt_sig_of("avra_array_push")!, [dst, r])
+        for c in callees {
+            self.reached(c!)
+            let code = self.mint(Layout.Word)
+            self.emit(Ins.FnAddr(code, c!.symbol))
+            self.run_row(rt_sig_of("avra_array_push")!, [dst, code])
+        }
+        self.run_row(rt_sig_of("avra_array_push")!, [dst, self.const_int(tag)])
+        dst
+    }
+
+    /// The tag a `dyn` box holds for a value of `ty`: its symbol's fingerprint, the same in every unit
+    /// and every run; `ty` kept among the types tagged.
+    mut fn type_tag(ty: SignedType) -> int? {
+        let symbol? = (self.program.type_symbol)(ty) else { return null }
+        if !self.program.tagged.get().any(it.spelled() == ty.spelled()) { self.program.tagged.push(ty) }
+        fp_str(symbol)
+    }
+}

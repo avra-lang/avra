@@ -1,0 +1,11 @@
+//! A field a record literal leaves out: a call of the fn whose body is that field's default.
+use core.{FieldSeat, Lowering, Reg, SignedType}
+
+/// The default of the field `f` of the record `ty`, called. A generic record's, and a field no
+/// default the program declares fills, isn't lowered yet.
+fn defaulted(mut cx: Lowering, ty: SignedType, f: FieldSeat) -> Reg {
+    if cx.generic_declared(ty) { return cx.missed_as("a default of the generic `${ty.spelled()}`") }
+    let field? = f.ty else { return cx.missed_as("an untyped field left to its default") }
+    let callee? = (cx.program.defaults)(ty, f.name) else { return cx.missed_as("a record literal leaving a field no declared default fills") }
+    cx.call_fn(cx.laid_out(field), callee, [])
+}

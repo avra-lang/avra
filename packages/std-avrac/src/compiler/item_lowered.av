@@ -13,6 +13,7 @@ use core.{
     Param,
     SignedType,
     Static,
+    TraitMember,
     lowering,
 }
 use @std.program.address.{SourceFileAddress}
@@ -31,6 +32,8 @@ export type LoweredFn = {
     /// The lambdas its body lifts, each body its own unit.
     lifts: List<LiftedBody>,
     statics: List<Static>,
+    /// The types whose tags it and its lambdas hold in a `dyn` box.
+    tagged: List<SignedType> = [],
 }
 
 impl LoweredFn {
@@ -59,6 +62,7 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
     let signature = signed.signature
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
     let data: Cell<List<Static>> = Cell.new([])
+    let tagged: Cell<List<SignedType>> = Cell.new([])
     mut cx = lowering(
         body.store,
         LoweredProgram {
@@ -74,6 +78,10 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
             lift_symbol: (lo: int) -> declared_symbol(file, "${name}.lambda${lo}"),
             data: data,
             literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, body.store, e, ty),
+            traits: (ty: SignedType) -> trait_members(engine, ty),
+            type_symbol: (ty: SignedType) -> type_symbol(ty),
+            tagged: tagged,
+            defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         },
         body.core,
         body.seats,
@@ -93,6 +101,7 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
         missing: cx.missing.get(),
         lifts: lifts.get(),
         statics: data.get(),
+        tagged: tagged.get(),
     }
 }
 
@@ -174,6 +183,63 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
         writes: item.store.is_mutating(m),
     }
 }
+
+/// The methods a `dyn` of the trait `ty` names has, in the trait's order: each it declares with a
+/// receiver. Absent for a type that's no trait the program declares applied to nothing.
+fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
+    if !ty.dynamic || ty.nullable() || !ty.args.is_empty() { return null }
+    let at? = declared_at(ty) else { return null }
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return null }
+    let fns? = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null && p!.name == at.name]
+        .first() else { return null }
+    [TraitMember {
+        name: p!.name,
+        writes: item.store.is_mutating(m),
+        plain: p!.tparams.is_empty() && p!.params.all(plain_seat),
+    } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
+}
+
+/// The symbol the type `ty` names is known by, absent for one the program doesn't declare.
+fn type_symbol(ty: SignedType) -> string? {
+    let at? = declared_at(ty) else { return null }
+    declared_symbol(at.file, at.name)
+}
+
+/// The fn whose body is the default the record `ty` writes for its field `field`, as a call reaches
+/// it. Absent for a record applied to arguments, a field it doesn't write itself or writes without a
+/// default, and one the compiler fills.
+fn default_callee(engine: QueryEngine, ty: SignedType, field: string) -> CalledFn? {
+    if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return null }
+    let at? = declared_at(ty) else { return null }
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Record) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
+        .find(it.name == at.name) else { return null }
+    let written? = parts.fields.find(it.name.of == field) else { return null }
+    if written.default == null { return null }
+    let signed = (record_signature(engine, at.file, at.name)?.fields ?? []).find(it.name == field)?.ty
+    if signed != null && compiler_filled(signed!) { return null }
+    CalledFn {
+        file: at.file,
+        name: field,
+        symbol: declared_symbol(at.file, "${at.name}.${field}\$default"),
+        external: false,
+        plain: true,
+        owner: at.name,
+        defaulted: true,
+    }
+}
+
+/// Whether a field of type `ty` is one the compiler fills where a literal leaves it out: a type of
+/// `@std/meta` that stands for the literal's own place, text or cells.
+fn compiler_filled(ty: SignedType) -> bool {
+    match ty.head {
+        .Declared(file, name) -> file.package_name == META && COMPILER_FILLED.contains(name),
+        rest -> false,
+    }
+}
+
+/// The `@std/meta` types the compiler fills a field of where a literal leaves it out.
+const COMPILER_FILLED: List<string> = ["Site", "Cells", "Words", "Structural", "Opaque"]
 
 /// Whether a seat takes its argument as it is: typed, promising nothing, with no default, one value.
 fn plain_seat(p: Param) -> bool {

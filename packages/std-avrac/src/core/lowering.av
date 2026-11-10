@@ -22,6 +22,16 @@ export type LoweredProgram = {
     /// The name a literal at a node, of a type, is laid out under as data; absent for one no source
     /// wrote.
     literal_symbol: fn(ExprId, SignedType) -> string?,
+    /// The methods a `dyn` of a trait has, in the trait's order; absent for a type that's no trait the
+    /// program declares.
+    traits: fn(SignedType) -> List<TraitMember>?,
+    /// The symbol a type the program declares is known by, absent for any other.
+    type_symbol: fn(SignedType) -> string?,
+    /// The types tagged so far, each once.
+    tagged: Cell<List<SignedType>>,
+    /// The fn whose body is the default of the field of that name a record declares, absent where
+    /// the program declares none.
+    defaults: fn(SignedType, string) -> CalledFn?,
 }
 
 /// What a top-level name a body reads or calls is, as its code reads it.
@@ -42,6 +52,8 @@ export type CalledFn = {
     plain: bool,
     owner: string? = null,
     writes: bool = false,
+    /// Whether it's the default of the field `name` of the record `owner`.
+    defaulted: bool = false,
 }
 
 /// A value written as a literal.
@@ -417,11 +429,14 @@ impl Lowering {
 
     /// A call of a declared fn by its symbol, answering a value of layout `l`.
     mut fn call_fn(l: Layout, callee: CalledFn, args: List<Reg>) -> Reg {
-        if !self.callees.get().any(it.symbol == callee.symbol) { self.callees.push(callee) }
+        self.reached(callee)
         let dst = self.mint(l)
         self.emit(Ins.Call(dst, callee.symbol, args))
         dst
     }
+
+    /// `callee` among the fns the body reaches, once.
+    mut fn reached(callee: CalledFn) { if !self.callees.get().any(it.symbol == callee.symbol) { self.callees.push(callee) } }
 
     /// A call of a fn C defines, answering a value of layout `l`; one answering nothing answers a
     /// void's register.
