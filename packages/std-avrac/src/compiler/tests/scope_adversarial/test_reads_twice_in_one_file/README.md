@@ -1,0 +1,1 @@
+`avra tapes <this dir> --signatures` says `tapes: 3 read, 0 differing` — a module's own test importing a name one file of its module declares privately twice binds nothing, as the workspace refuses it (`resolve.private_apart`).

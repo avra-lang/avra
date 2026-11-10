@@ -5,10 +5,13 @@
 // and a compaction of a store that has only a draft.
 use @std.io.{IoError, exists, list_dir, write_bytes}
 use @std.time.{stamp}
+use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{ContentHash}
 use disk_store.{DiskStore, KeptSpan, PACK_SEAL, disk_store_at, index_runs}
+use pack_collection.{QuestionRecords}
+use sorted.{sorted_by}
 use query_engine.{QueryEngine, query_engine}
-use saved_query.{ListedQuery, definitions_of, input, query, query_definition}
+use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
 
 once fn kept_world() -> Cell<Map<string, string>> {
     let world: Map<string, string> = {}
@@ -23,6 +26,16 @@ fn kept_length(engine: QueryEngine, path: string) -> int { kept_text(engine, pat
 
 @query
 fn kept_echo(_engine: QueryEngine, text: string) -> string { text }
+
+@parted_query
+fn kept_words(engine: QueryEngine, path: string) -> AnswerParts {
+    answer_parts(
+        [NamedValue { name: word, value: word.bytes() } for word in kept_text(engine, path).split(" ")],
+    )
+}
+
+@query
+fn kept_has(engine: QueryEngine, path: string, word: string) -> bool { kept_words_part(engine, path, word) != null }
 
 collect kept_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 
@@ -244,6 +257,158 @@ spec "a store's records, streamed and compacted" {
             engine.frontier_kept()
             let _ = store.compacted()
             packs_in(directory).length == 1 && length_asked(directory, "g.av") == 1
+        }
+    }
+}
+
+spec "a draft spoiled, and a store compacted while its process runs" {
+    given "a draft spoiled before it was ever mapped, then kept past a mapping's worth" {
+        then "everything it kept still answers, nothing runs again, publishing is refused, and nothing is left" {
+            let directory = directory_named("spoiled_unmapped")
+            kept_world().put("k.av", "alpha")
+            let store = disk_store_at(directory)
+            let first = kept_length(engine_on(store), "k.av")
+            store.writing()!.spoiled(IoError.Failed("${directory}/learned", 28))
+            let texts = [octets(1048576, "${i}") for i in 0..3]
+            let kept = [kept_echo(engine_on(store), text).length for text in texts]
+            let refused = (store.saved() catch -1) == -1
+            let later = engine_on(store)
+            first == 5 &&
+                kept.all(it == 1048576) &&
+                refused &&
+                kept_length(later, "k.av") == 5 &&
+                [kept_echo(later, text).length for text in texts].all(it == 1048576) &&
+                later.computed_count() == 1 &&
+                (list_dir(directory) catch []).is_empty()
+        }
+    }
+    given "a spoiled draft's process that kept its frontier" {
+        then "publishing is refused twice, no frontier file is left, and a later process works it out" {
+            let directory = directory_named("spoiled_frontier")
+            kept_world().put("l.av", "alpha")
+            let store = disk_store_at(directory)
+            let engine = engine_on(store)
+            let _ = kept_length(engine, "l.av")
+            store.writing()!.spoiled(IoError.Failed("${directory}/learned", 28))
+            engine.frontier_kept()
+            let refused = (store.saved() catch -1) == -1 && (store.saved() catch -1) == -1
+            refused &&
+                (list_dir(directory) catch []).is_empty() &&
+                length_asked(directory, "l.av") == 2
+        }
+    }
+    given "a process that compacts, then learns more and publishes again" {
+        then "a later process finds both without running either" {
+            let directory = directory_named("compacted_then_more")
+            kept_world().put("m1.av", "alpha")
+            kept_world().put("m2.av", "alpha beta")
+            let store = disk_store_at(directory)
+            let engine = engine_on(store)
+            let _ = kept_length(engine, "m1.av")
+            engine.frontier_kept()
+            let _ = store.compacted()
+            let _ = kept_length(engine, "m2.av")
+            engine.frontier_kept()
+            let _ = store.saved()
+            let later = engine_on(disk_store_at(directory))
+            kept_length(later, "m1.av") == 5 &&
+                kept_length(later, "m2.av") == 10 &&
+                later.computed_count() == 2
+        }
+    }
+    given "an answer reused from a pack its own process's compaction removes" {
+        then "it still answers there, and from the compacted pack in a later process" {
+            let directory = directory_named("reused_then_compacted")
+            kept_world().put("n.av", "alpha")
+            let _ = length_asked(directory, "n.av")
+            let store = disk_store_at(directory)
+            let engine = engine_on(store)
+            let reused = kept_length(engine, "n.av")
+            engine.frontier_kept()
+            let before = packs_in(directory)
+            let _ = store.compacted()
+            let after = packs_in(directory)
+            let again = kept_length(engine, "n.av")
+            let fresh = kept_length(engine_on(store), "n.av")
+            reused == 5 &&
+                again == 5 &&
+                fresh == 5 &&
+                engine.computed_count() == 1 &&
+                after.length == 1 &&
+                !before.contains(after[0]) &&
+                length_asked(directory, "n.av") == 1
+        }
+    }
+}
+
+/// Three processes over `p.av`: the first asks whether it holds `beta` while it reads `alpha`; the
+/// second, once it reads `alpha beta`, works out its words alone; the third asks again. With
+/// `damaged`, before the third, every pack is gone but one holding the first's record of the reader,
+/// its answer, and what the input was asked as — so the words the second worked out, and what they
+/// were asked as, are lost. Answers what the third found.
+fn beta_found_after(label: string, damaged: bool) -> bool {
+    let directory = directory_named(label)
+    kept_world().put("p.av", "alpha")
+    let one = disk_store_at(directory)
+    let first = engine_on(one)
+    let _ = kept_has(first, "p.av", "beta")
+    first.frontier_kept()
+    let _ = one.saved()
+    let reader = kept_has_definition()
+        .question_about(kept_has_arguments(first, "p.av", "beta"))
+        .known_as
+    let records = disk_store_at(directory).records_of(reader)
+    let entries = [entry_of(directory, reader)]
+    let answer = disk_store_at(directory).answer_bytes(records[0].answer)!.copied()
+    kept_world().put("p.av", "alpha beta")
+    let two = disk_store_at(directory)
+    let second = engine_on(two)
+    let _ = kept_words(second, "p.av")
+    second.frontier_kept()
+    let _ = two.saved()
+    if damaged {
+        let input = kept_text_definition()
+            .question_about(kept_text_arguments(second, "p.av"))
+            .known_as
+        let kept = entries.concat([entry_of(directory, input)])
+        for name in packs_in(directory) { let _ = write_bytes("${directory}/${name}", "".bytes()) }
+        let questions = [
+            KeptSpan { key: reader, at: answer.length, length: kept[0].length },
+            KeptSpan { key: input, at: answer.length + kept[0].length, length: kept[1].length },
+        ]
+        let runs = [answer]
+            .concat(kept)
+            .concat(
+                index_runs(
+                    sorted_by(questions, (a, b) -> a.key.comes_before(b.key)),
+                    [KeptSpan { key: records[0].answer, at: 0, length: answer.length }],
+                    1,
+                    0,
+                ),
+            )
+            .concat([PACK_SEAL.bytes()])
+        let _ = write_bytes("${directory}/planted.pack", runs.bytes())
+    }
+    kept_has(engine_on(disk_store_at(directory)), "p.av", "beta")
+}
+
+/// A question's records as a pack keeps them, read from the store at `directory`.
+fn entry_of(directory: string, question: ContentHash) -> Bytes {
+    let store = disk_store_at(directory)
+    QuestionRecords {
+        question: question,
+        asked: store.question_known_as(question)!,
+        records: [r.held() for r in store.records_of(question)],
+        written_in: 1,
+    }
+        .saved_bytes()
+}
+
+spec "a part read held to an answer nobody can read" {
+    given "a reader of a part, its answer since moved on in a process that never asked the reader" {
+        then "a later process finds the part" { beta_found_after("part_moved", false) }
+        then "it finds it too when the words' answer and what they were asked as are lost" {
+            beta_found_after("part_unread", true)
         }
     }
 }

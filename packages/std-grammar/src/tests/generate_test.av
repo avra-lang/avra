@@ -1,13 +1,19 @@
 // What the untold run is written as: a fn per rule and per branch, a memo only where a rule can
 // be asked twice at one cursor, and the same source for the same grammar.
 use @std.grammar.{
+    Build,
     Grammar,
     Rule,
+    Slot,
     UntoldTarget,
+    untold_made_from,
     untold_source,
     ready,
     rule_def,
+    render_grammar,
     seq,
+    seq_to,
+    cap,
     item,
     lit,
     rule_ref,
@@ -24,23 +30,64 @@ fn source_of(rules: List<Rule>) -> string {
     ) { .Ok(text) -> text, .Err(why) -> "refused: ${why}" }
 }
 
-/// `a = b "x"`, `b = "z"`: `b` named once, at `a`'s head.
+/// `a = b "x" -> made()`, `b = "z"`: `b` named once, at `a`'s head.
 fn headed() -> List<Rule> {
     [
-        rule_def("a", [seq([item(rule_ref("b")), item(lit("x"))])]),
+        rule_def("a", [seq_to([item(rule_ref("b")), item(lit("x"))], made())]),
         rule_def("b", [seq([item(lit("z"))])]),
     ]
 }
 
-/// `a = b "x" | "q" b`, `b = "z"`: `b` named twice.
+/// `a = b "x" -> made() | "q" b -> made()`, `b = "z"`: `b` named twice.
 fn twice() -> List<Rule> {
     [
         rule_def(
             "a",
-            [seq([item(rule_ref("b")), item(lit("x"))]), seq([item(lit("q")), item(rule_ref("b"))])],
+            [
+                seq_to([item(rule_ref("b")), item(lit("x"))], made()),
+                seq_to([item(lit("q")), item(rule_ref("b"))], made()),
+            ],
         ),
         rule_def("b", [seq([item(lit("z"))])]),
     ]
+}
+
+fn made() -> Build { Build.Call("made", []) }
+
+/// `a = a "x" -> made() | "x"`: left-recursive, which the engine refuses to run.
+fn left_recursive() -> List<Rule> {
+    [
+        rule_def(
+            "a",
+            [seq_to([item(rule_ref("a")), item(lit("x"))], made()), seq([item(lit("x"))])],
+        ),
+    ]
+}
+
+/// `a = "z"`, `b = "x"`, started at `b`.
+fn started_at(start: string) -> Grammar {
+    Grammar {
+        name: "t",
+        start: start,
+        rules: [rule_def("a", [seq([item(lit("z"))])]), rule_def("b", [seq([item(lit("x"))])])],
+    }
+}
+
+/// `a = p:"x" q:"y" -> N.P`, its node's payloads filled by `slots`.
+fn slotted(slots: List<Slot>) -> Grammar {
+    generate_g(
+        [
+            rule_def(
+                "a",
+                [
+                    seq_to(
+                        [cap("p", lit("x")), cap("q", lit("y"))],
+                        Build.Node("N", "P", [], slots),
+                    ),
+                ],
+            ),
+        ],
+    )
 }
 
 spec "grammar/generate" {
@@ -65,6 +112,32 @@ spec "grammar/generate" {
     given "a rule named twice" {
         then "the rule named keeps its memo" {
             source_of(twice()).contains("u.key(1, at, capped)")
+        }
+    }
+    given "a grammar the engine refuses to run" {
+        then "it is written as no parser" {
+            source_of(left_recursive()).starts_with("refused: ")
+        }
+    }
+    given "two grammars alike but for the order their node build's payloads are filled in" {
+        then "they render alike, are generated apart, and are made from apart" {
+            let pq = ready(slotted([Slot.Label("p"), Slot.Label("q")]), [])
+            let qp = ready(slotted([Slot.Label("q"), Slot.Label("p")]), [])
+            let target = UntoldTarget {
+                prefix: "t",
+                token: "Tok",
+                node: "Node",
+                uses: [],
+                print: 7,
+            }
+            render_grammar(pq.g) == render_grammar(qp.g) &&
+                (untold_source(pq, target) catch "") != (untold_source(qp, target) catch "") &&
+                untold_made_from(pq) != untold_made_from(qp)
+        }
+    }
+    given "two grammars alike but for their start rule" {
+        then "they are made from apart" {
+            untold_made_from(ready(started_at("a"), [])) != untold_made_from(ready(started_at("b"), []))
         }
     }
 }

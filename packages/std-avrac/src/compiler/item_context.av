@@ -269,8 +269,8 @@ export fn spelled_file(file: SourceFileAddress) -> string { "${file.package_name
 type LineShapes = { components: List<WordShape>, grammars: List<GrammarWord>, instances: List<NamedInstance> }
 
 /// The module a `use` line names, as a file reads it: its package, its path there, and whether it's
-/// read as its package's own. Absent for a malformed path, the file's own module, or a package the
-/// file's doesn't reach.
+/// read as its package's own. Absent for a malformed path, the file's own module, a package the
+/// file's doesn't reach, or a module that is both a directory and a file.
 type ModuleAt = { package: string, local: List<string>, as_root: bool }
 
 fn imported_module(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> ModuleAt? {
@@ -278,8 +278,18 @@ fn imported_module(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> 
     if m.malformed() { return null }
     let provider = m.package() ?? file.package_name
     if provider == file.package_name && m.local().join(".") == module_segments(file).join(".") { return null }
-    if !reaches(engine, file.package_name, provider) { return null }
+    if !reaches(engine, file.package_name, provider) || two_modules(engine, provider, m.local()) { return null }
     ModuleAt { package: provider, local: m.local(), as_root: provider == file.package_name }
+}
+
+/// Whether a module's name is both a directory and a file: a `use` of it names neither.
+fn two_modules(engine: QueryEngine, package: string, local: List<string>) -> bool {
+    let dir = module_dir(local)
+    listed(engine, DirectoryAddress { package_name: package, path_in_package: dir }) != null &&
+        source_text(
+            engine,
+            SourceFileAddress { package_name: package, path_in_package: "${dir}.av" },
+        ) != null
 }
 
 fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> LineShapes {
@@ -375,8 +385,6 @@ fn module_files(engine: QueryEngine, package: string, local: List<string>, as_ro
     let manifest = package_facts(engine, package)
     let entries = listed(engine, DirectoryAddress { package_name: package, path_in_package: dir })
     if entries != null {
-        let file = "${dir}.av"
-        if source_text(engine, SourceFileAddress { package_name: package, path_in_package: file }) != null { return [] }
         return [SourceFileAddress { package_name: package, path_in_package: "${dir}/${name}" } for name in entries! if name.ends_with(".av") && listed_in(manifest, as_root, "${dir}/${name}")]
     }
     let file = SourceFileAddress { package_name: package, path_in_package: "${dir}.av" }

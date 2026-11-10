@@ -59,8 +59,8 @@ fn held_file(lang: Language, path: string, mutants: int) -> List<Held> {
         .concat([held_tokens(lang, "${path} mutant ${k}", text, mutated(tokens, k)) for k in 0..mutants])
 }
 
-/// Mutant `k` of `tokens`: at a place `k` picks, one token dropped, doubled or swapped with the
-/// next — never the last, the end of input.
+/// Mutant `k` of `tokens`: at a place `k` picks, one token dropped, doubled or swapped with its
+/// neighbour — the next, or the one before for the last; never the end of input.
 fn mutated(tokens: List<Token>, k: int) -> List<Token> {
     if tokens.length < 3 { return tokens }
     let at = (k * 7919 + 13) % (tokens.length - 1)
@@ -69,8 +69,16 @@ fn mutated(tokens: List<Token>, k: int) -> List<Token> {
     match k % 3 {
         0 -> before.concat(after),
         1 -> before.concat([tokens[at], tokens[at]]).concat(after),
-        _ -> if at + 1 < tokens.length - 1 { before.concat([tokens[at + 1], tokens[at]]).concat(tokens.slice(at + 2, tokens.length)) } else { tokens },
+        _ -> swapped(tokens, if at + 1 < tokens.length - 1 { at } else { at - 1 }),
     }
+}
+
+/// `tokens` with the token at `at` and the next swapped.
+fn swapped(tokens: List<Token>, at: int) -> List<Token> {
+    tokens
+        .slice(0, at)
+        .concat([tokens[at + 1], tokens[at]])
+        .concat(tokens.slice(at + 2, tokens.length))
 }
 
 fn held_tokens(lang: Language, path: string, text: string, tokens: List<Token>) -> Held {

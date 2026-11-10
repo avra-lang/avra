@@ -18,14 +18,22 @@ use ast.{
     closer_of,
 }
 use executor.{Ready}
-use util.{flatten, distinct, filled, is_end}
+use render.{render_build, render_grammar}
+use util.{flatten, distinct, filled, is_end, some_list}
 
 /// What the generated source names: its fns' prefix, the token and node types and the lines
 /// that bring them into scope, and the print of the grammar it was made from.
 export type UntoldTarget = { prefix: string, token: string, node: string, uses: List<string>, print: int }
 
-/// The untold run of `rd` as source, or why a construct in it cannot be written.
+/// The untold run of `rd` as source, or why it has none: the engine refuses to run the grammar, or
+/// a construct in it cannot be written.
 export fn untold_source(rd: Ready, target: UntoldTarget) -> Result<string, string> {
+    let defect? = rd.defects.first() else { return written_source(rd, target) }
+    .Err("a grammar the engine refuses to run has no untold run: ${defect.message}")
+}
+
+/// The untold run of a grammar the engine runs, as source, or which construct in it can't be written.
+fn written_source(rd: Ready, target: UntoldTarget) -> Result<string, string> {
     mut gen = Gen {
         rd: rd,
         t: target,
@@ -53,6 +61,40 @@ export fn untold_source(rd: Ready, target: UntoldTarget) -> Result<string, strin
     }
     if gen.refusal != null { return .Err(gen.refusal!) }
     .Ok(gen.header().concat(gen.guard_fns).concat(gen.lines).join("\n"))
+}
+
+/// What a generated parser is made from, as text: the start rule, the rules as written, and each
+/// node build's slots, which a host fills from outside the notation.
+export fn untold_made_from(rd: Ready) -> string {
+    let builds = [b for r in rd.g.rules for s in r.body.seqs() for b in branch_builds(s)]
+    [rd.g.start, render_grammar(rd.g)].concat([slots_written(b) for b in builds]).join("\n")
+}
+
+/// A branch's builds: its own, then each operator tier's and each suffix's.
+fn branch_builds(s: Seq) -> List<Build> {
+    let tiers = s.operators?.tiers ?? []
+    some_list(s.build)
+        .concat([b for t in tiers for b in some_list(t.build)])
+        .concat([b for t in tiers for x in t.suffixes for b in some_list(x.build)])
+}
+
+/// The slots a build fills its node's payloads from, `?` before they're bound; `-` for a build
+/// that names no node.
+fn slots_written(b: Build) -> string {
+    match b {
+        .Node(_, _, _, slots) or .Computed(_, _, _, slots) -> if slots == null { "?" } else { "{${[slot_written(x) for x in slots!].join(", ")}}" },
+        .Call(_, _) or .Var(_) -> "-",
+    }
+}
+
+fn slot_written(x: Slot) -> string {
+    match x {
+        .Label(name) -> name,
+        .Fixed(text) -> quoted(text),
+        .Nested(b) -> "${render_build(b)}${slots_written(b)}",
+        .Items(slots) -> "[${[slot_written(y) for y in slots].join(", ")}]",
+        .Empty -> "_",
+    }
 }
 
 /// Every literal by its slot.

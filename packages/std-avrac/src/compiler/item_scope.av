@@ -56,6 +56,9 @@ impl Bound {
         }
     }
 
+    /// Every declaration bound, a space's in the order its names were bound.
+    fn declarations() -> List<DeclaredName> { self.values.values().concat(self.types.values()).concat(self.syntaxes.values()) }
+
     /// `name` bound to `d` in `space`.
     mut fn bind(space: Space, name: string, d: DeclaredName) {
         match space {
@@ -101,12 +104,10 @@ export fn module_bindings(engine: QueryEngine, package: string, local: List<stri
 /// Whether two declarations of one name are each their own file's: both private, in different files.
 fn kept_apart(a: DeclaredName, b: DeclaredName) -> bool { !a.exported && !b.exported && !same_file(a.file, b.file) }
 
-/// `held` with every kept-apart declaration taken out.
+/// `held`, each declaration bound under its own name, with every kept-apart one taken out.
 fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
     mut shared = nothing_bound()
-    for name, d in held.values { if !apart.any(it.is(d)) { shared.values.set(name, d) } }
-    for name, d in held.types { if !apart.any(it.is(d)) { shared.types.set(name, d) } }
-    for name, d in held.syntaxes { if !apart.any(it.is(d)) { shared.syntaxes.set(name, d) } }
+    for d in held.declarations() { if !apart.any(it.is(d)) { shared.bind(space_of(d.kind), d.name, d) } }
     shared
 }
 
@@ -114,10 +115,7 @@ fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
 /// binds in, so a reader of one name stands when another moves.
 @parted_query
 export fn module_winners(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
-    let shared = module_bindings(engine, package, local, as_root).shared
-    parts_by_name(
-        shared.values.values().concat(shared.types.values()).concat(shared.syntaxes.values()),
-    )
+    parts_by_name(module_bindings(engine, package, local, as_root).shared.declarations())
 }
 
 /// The winner `file`'s module shares for `name` in `space`, absent for none.
@@ -158,8 +156,9 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
         let at? = imported_module(engine, file, u) else { continue }
         let privately = tests_of(file, at)
         for j, item in u.items {
-            for d in declarations_of(engine, at.package, at.local, at.as_root, item) {
-                if !d.exported && !privately { continue }
+            let ds = declarations_of(engine, at.package, at.local, at.as_root, item)
+            for d in ds {
+                if !d.exported && !(privately && read_privately(ds, d)) { continue }
                 let clash = imported(engine, own, file, u.bound_as(j), d)
                 if clash != null { clashes.push(clash!) } else { own.bind(space_of(d.kind), u.bound_as(j), d) }
             }
@@ -171,6 +170,11 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
         clashes: [c for c in module.clashes if same_file(c.lost.file, file)].concat(clashes),
     }
 }
+
+/// Whether a module's own test reads its private `d`, among `ds`, every declaration of its name:
+/// it's the one declaration of that name in its space. An export there wins, and two private ones
+/// keep the name apart from the test too.
+fn read_privately(ds: List<DeclaredName>, d: DeclaredName) -> bool { ds.filter(space_of(it.kind) == space_of(d.kind)).length == 1 }
 
 /// The clash an import of `d` as `name` makes, absent when it binds: a name already this file's, or
 /// its module's export or its own, clashes unless it's that very declaration; a sibling's private
