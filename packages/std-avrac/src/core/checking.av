@@ -26,6 +26,7 @@ export type CheckedProgram = {
     enum_of: fn(SignedType) -> EnumShape?,
     method_of: fn(SignedType, string) -> SignedType?,
     property_of: fn(SignedType, string) -> SignedType?,
+    type_value: fn(string) -> SignedType?,
 }
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
@@ -369,6 +370,38 @@ impl Checking {
     /// Each value checked against nothing.
     mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
 
+    /// What a name reads as when it names a type and no value: the type, standing as a value.
+    fn type_value(name: string) -> SignedType? { (self.program.type_value)(name) }
+
+    /// A variant of the enum `enum_type` built from `args`: the enum, its arguments from the seat
+    /// when it names the enum, else from what the payloads fill. Absent when the enum has no such
+    /// variant, or the arguments don't fit it.
+    mut fn variant_built(
+        enum_type: SignedType,
+        name: string,
+        args: List<ExprId>,
+        expected: Expected,
+    ) -> SignedType? {
+        let shape = self.enum_of(enum_type)
+        let variant = shape?.variants?.find(it.name == name)
+        if variant == null ||
+            variant!.payloads.length != args.length ||
+            variant!.payloads.any(it.ty == null) {
+            self.checked_free(args)
+            return null
+        }
+        let params = shape!.params
+        let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
+        mut pinned: Map<string, SignedType> = {}
+        if wanted != null && wanted!.names_as(enum_type) && wanted!.args.length == params {
+            for at, a in wanted!.args { pinned.set("${at}", a) }
+        }
+        let found? = self
+            .fills([p.ty! for p in variant!.payloads], args, pinned, null, Expected.Free) else { return null }
+        let filled = [found.get("${at}") for at in 0..params]
+        if filled.any(it == null) { null } else { enum_type with { args: [a! for a in filled] } }
+    }
+
     /// The property `name` of a value of `subject`'s type, as a fn of the receiver alone; absent when
     /// the program names none.
     fn property_of(subject: SignedType, name: string) -> SignedType? { (self.program.property_of)(subject, name) }
@@ -407,6 +440,9 @@ export fn owned_type(name: string) -> SignedType { headed_type(TypeHead.Owned(na
 
 /// The absent value's own type: `never?`, a value that is only ever null.
 export fn null_type() -> SignedType { never_type() with { nulls: 1 } }
+
+/// The type `described`, standing as a value.
+export fn meta_type(described: SignedType) -> SignedType { headed_type(TypeHead.Meta) with { args: [described] } }
 
 /// The type of code that doesn't finish.
 export fn never_type() -> SignedType { headed_type(TypeHead.Never) }

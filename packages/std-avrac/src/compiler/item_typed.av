@@ -2,6 +2,7 @@
 //! each name it reads asked of the names layer and that declaration's signature alone. The answer is
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
+    meta_type,
     CheckedProgram,
     EnumShape,
     FieldSeat,
@@ -45,6 +46,7 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
             enum_of: (ty: SignedType) -> enum_shape(engine, ty),
             method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
             property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
+            type_value: (n: string) -> type_value(engine, file, signing, n),
         },
         signature.answer,
     )
@@ -89,6 +91,17 @@ fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> Sig
         },
         .Const or .Collect -> binding_type(engine, d.file, d.name),
         .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .State -> null,
+    }
+}
+
+/// What `name` reads as from `file` when it names a type and no value: the type, standing as a
+/// value. Absent for a name that names a value, or no type the program or the language declares.
+fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, name: string) -> SignedType? {
+    if resolved(engine, file, Space.Value, name).named() != null { return null }
+    let named = signing.named(name)
+    match named.head {
+        .Declared(_, _) or .Owned(_) -> meta_type(named),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
 }
 

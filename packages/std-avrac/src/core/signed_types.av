@@ -23,6 +23,8 @@ export enum TypeHead {
     Function
     /// No value: code that doesn't finish (`return`, `fail`), which joins with any type.
     Never
+    /// A type standing as a value (`Json` in `Json.Obj(x)`): the type is its one argument.
+    Meta
 }
 
 /// A written type, resolved: what it names, its type arguments, how many nulls wrap it (`T?` one, a
@@ -62,6 +64,8 @@ impl SignedType {
 
     /// The type as it's written when present.
     fn word() -> string {
+        let described = self.described()
+        if described != null { return "type ${described!.spelled()}" }
         if self.listed()?.bottom() ?? false { return "[]" }
         if self.mapped()?.bottom() ?? false { return "{}" }
         let named = match self.head {
@@ -71,9 +75,18 @@ impl SignedType {
             .Inferred -> INFERRED,
             .Function -> "fn(${[s.spelled() for s in self.seats].join(", ")})${answered(self.answer)}",
             .Never -> "never",
+            .Meta -> "type",
         }
         let applied = if self.args.is_empty() { named } else { "${named}<${[a.spelled() for a in self.args].join(", ")}>" }
         if self.dynamic { "dyn ${applied}" } else { applied }
+    }
+
+    /// The type this value stands for, when it's a type standing as a value.
+    fn described() -> SignedType? {
+        match self.head {
+            .Meta -> if self.args.length == 1 && self.nulls == 0 { self.args[0] } else { null },
+            rest -> null,
+        }
     }
 
     /// Whether `other` names the same type as this, whatever either is applied to.
@@ -245,6 +258,7 @@ fn head_word(h: TypeHead) -> string {
         .Inferred -> "inferred",
         .Function -> "function",
         .Never -> "never",
+        .Meta -> "meta",
     }
 }
 

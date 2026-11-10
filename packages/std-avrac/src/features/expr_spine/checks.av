@@ -13,8 +13,12 @@ impl Checks for FloatLit {
 }
 
 impl Checks for Ident {
-    /// A name is what it's bound to here: a local, a parameter, or what the program names by it.
-    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.read(self.name.of) }
+    /// A name is what it's bound to here: a local, a parameter, or what the program names by it; a
+    /// name that names a type and no value is that type, standing as a value.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let read = cx.read(self.name.of)
+        if read != null || cx.local(self.name.of) != null { read } else { cx.type_value(self.name.of) }
+    }
 }
 
 impl Checks for Not {
@@ -85,7 +89,7 @@ fn plain_owned(ty: SignedType?) -> string? {
     if t.nullable() || t.dynamic || !t.args.is_empty() { return null }
     match t.head {
         .Owned(name) -> name,
-        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> null,
+        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
 }
 
@@ -94,6 +98,8 @@ impl Checks for Prop {
     /// has.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject? = cx.check(self.subject, Expected.Free) else { return null }
+        let described = subject.described()
+        if described != null { return cx.variant_built(described!, self.name.of, [], expected) }
         let field = cx.field_of(subject, self.name.of)
         if field != null { return field }
         let property? = cx.property_of(subject, self.name.of) else { return null }
