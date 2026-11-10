@@ -355,11 +355,11 @@ impl Emit {
             .BitAnd -> avra_llvm_build_and(self.b, a, b, "band"),
             .BitOr -> avra_llvm_build_or(self.b, a, b, "bor"),
             .BitXor -> avra_llvm_build_xor(self.b, a, b, "bxor"),
-            // Guarded like Div/Mod: a shift past the width is POISON
-            // in LLVM and undefined in C, so one C body decides where
-            // the edge is and both engines call it.
-            .Shl -> self.call("avra_int_shl", [a, b]),
-            .Shr -> self.call("avra_int_shr", [a, b]),
+            // Guarded like Div/Mod unless the count is plain: a shift past
+            // the width is POISON in LLVM and undefined in C, so one C body
+            // decides where the edge is and both engines call it.
+            .Shl -> if plain_shift(b) { avra_llvm_build_shl(self.b, a, b, "shl") } else { self.call("avra_int_shl", [a, b]) },
+            .Shr -> if plain_shift(b) { avra_llvm_build_ashr(self.b, a, b, "ashr") } else { self.call("avra_int_shr", [a, b]) },
         }
     }
 
@@ -877,6 +877,13 @@ fn plain_divisor(v: ptr) -> bool {
     if avra_llvm_is_const_int(v) == 0 { return false }
     let d = avra_llvm_const_int_sext(v)
     d != 0 && d != -1
+}
+
+/// Whether a shift count is a constant within the word, which needs no guard.
+fn plain_shift(v: ptr) -> bool {
+    if avra_llvm_is_const_int(v) == 0 { return false }
+    let n = avra_llvm_const_int_sext(v)
+    n >= 0 && n < 64
 }
 
 /// The rows that count a value enum's word by its tag.

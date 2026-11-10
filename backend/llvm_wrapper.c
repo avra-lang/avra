@@ -506,6 +506,14 @@ LLVMValueRef avra_llvm_build_xor(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRe
     return LLVMBuildXor(b, lhs, rhs, name);
 }
 
+LLVMValueRef avra_llvm_build_shl(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
+    return LLVMBuildShl(b, lhs, rhs, name);
+}
+
+LLVMValueRef avra_llvm_build_ashr(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
+    return LLVMBuildAShr(b, lhs, rhs, name);
+}
+
 LLVMValueRef avra_llvm_build_not(LLVMBuilderRef b, LLVMValueRef val, const char* name) {
     return LLVMBuildNot(b, val, name);
 }
