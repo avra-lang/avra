@@ -6,7 +6,7 @@ use @std.time.{stamp}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
-use worked_ahead.{WorkAhead, store_worked_ahead}
+use worked_ahead.{WorkAhead, engine_worked_ahead}
 use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
 
 once fn disk_world() -> Cell<Map<string, string>> {
@@ -41,7 +41,7 @@ fn numbered(count: int) -> List<string> { ["text ${i}" for i in 0..count] }
 
 fn work_on(items: List<string>, process_count: int) -> WorkAhead<string, string> {
     WorkAhead {
-        items: items,
+        items: (_engine: QueryEngine) -> items,
         is_known: disk_echo_is_known,
         ask: disk_echo,
         process_count: process_count,
@@ -252,18 +252,20 @@ spec "disk_store — answers outlive the process" {
     given "too few unknown items to be worth a fork" {
         then "nothing is worked ahead, and the store is empty" {
             let directory = fresh_directory("few")
-            let store = store_worked_ahead<string, string>(
+            let store = engine_worked_ahead<string, string>(
                 directory,
                 definitions_listed(),
                 work_on(["a"], 8),
             )
+                .store
             store.packs.get().is_empty()
         }
     }
     given "no items" {
         then "nothing is worked ahead" {
             let directory = fresh_directory("no-items")
-            store_worked_ahead<string, string>(directory, definitions_listed(), work_on([], 8))
+            engine_worked_ahead<string, string>(directory, definitions_listed(), work_on([], 8))
+                .store
                 .packs
                 .get()
                 .is_empty()
@@ -272,11 +274,12 @@ spec "disk_store — answers outlive the process" {
     given "one process asked for" {
         then "nothing forks" {
             let directory = fresh_directory("one")
-            store_worked_ahead<string, string>(
+            engine_worked_ahead<string, string>(
                 directory,
                 definitions_listed(),
                 work_on(numbered(64), 1),
             )
+                .store
                 .packs
                 .get()
                 .is_empty()
@@ -285,11 +288,12 @@ spec "disk_store — answers outlive the process" {
     given "many unknown items" {
         then "a process finds every answer without running anything, in one pack" {
             let directory = fresh_directory("ahead")
-            let store = store_worked_ahead<string, string>(
+            let store = engine_worked_ahead<string, string>(
                 directory,
                 definitions_listed(),
                 work_on(numbered(64), 4),
             )
+                .store
             let engine = engine_over(store)
             numbered(64).all((text) -> disk_echo(engine, text) == text) &&
                 engine.computed_count() == 0 &&
@@ -297,11 +301,12 @@ spec "disk_store — answers outlive the process" {
         }
         then "more processes than items still answers them all" {
             let directory = fresh_directory("wide")
-            let store = store_worked_ahead<string, string>(
+            let store = engine_worked_ahead<string, string>(
                 directory,
                 definitions_listed(),
                 work_on(numbered(16), 32),
             )
+                .store
             let engine = engine_over(store)
             numbered(16).all((text) -> disk_echo(engine, text) == text) &&
                 engine.computed_count() == 0
@@ -310,17 +315,19 @@ spec "disk_store — answers outlive the process" {
     given "a second run over what was worked ahead" {
         then "nothing forks and nothing runs" {
             let directory = fresh_directory("again")
-            let _ = store_worked_ahead<string, string>(
+            let _ = engine_worked_ahead<string, string>(
                 directory,
                 definitions_listed(),
                 work_on(numbered(32), 4),
             )
+                .store
             let before = pack_files(directory).join(",")
-            let store = store_worked_ahead<string, string>(
+            let store = engine_worked_ahead<string, string>(
                 directory,
                 definitions_listed(),
                 work_on(numbered(32), 4),
             )
+                .store
             let engine = engine_over(store)
             numbered(32).all((text) -> disk_echo(engine, text) == text) &&
                 engine.computed_count() == 0 &&

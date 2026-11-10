@@ -3,9 +3,8 @@
 use core.{flatten}
 use @std.meta.{derive}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
-use @std.program.disk_store.{DiskStore, disk_store_at}
-use @std.program.query_engine.{QueryDefinition, QueryEngine, query_engine}
-use @std.program.worked_ahead.{WorkAhead, cores_online, store_worked_ahead}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.worked_ahead.{WorkAhead, Worked, cores_online, engine_worked_ahead}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.source_facts.{listed}
@@ -37,17 +36,16 @@ export fn file_tally(engine: QueryEngine, file: SourceFileAddress) -> FileTally 
     }
 }
 
-/// The store at `directory` a package is read from, every source file it knows nothing of read
+/// The store at `directory` a package is read from, and the engine to read it with, every source file it knows nothing of read
 /// first across the machine's cores. Each core reads its share of files' words, which lexes them
 /// and parses each item as it reads with no words, the parse most items mean; nothing it reads
 /// crosses to another file, so no core repeats another's work.
-export fn package_store(directory: string, package: string) -> DiskStore {
-    let lister = query_engine(disk_store_at(directory), avra_fact_definitions())
-    store_worked_ahead<SourceFileAddress, FileWords>(
+export fn package_worked(directory: string, package: string) -> Worked {
+    engine_worked_ahead<SourceFileAddress, FileWords>(
         directory,
         avra_fact_definitions(),
         WorkAhead {
-            items: [SourceFileAddress { package_name: package, path_in_package: f } for f in package_sources(lister, package, "src")],
+            items: (engine: QueryEngine) -> [SourceFileAddress { package_name: package, path_in_package: f } for f in package_sources(engine, package, "src")],
             is_known: file_words_is_known,
             ask: file_words,
             process_count: cores_online(),

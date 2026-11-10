@@ -60,12 +60,14 @@ int64_t avra_io_stamp(const char* path) {
    here rather than at the first read: `open` on one succeeds and
    `read` answers EISDIR only on some hosts, so the door says it. */
 int64_t avra_io_open(const char* path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return -errno;
-    if (S_ISDIR(st.st_mode)) return -EISDIR;
     int fd;
     while ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0 && errno == EINTR) {}
-    return fd < 0 ? -errno : fd;
+    if (fd < 0) return -errno;
+    // One path walk: the descriptor says what it opened.
+    struct stat st;
+    if (fstat(fd, &st) != 0) { int err = errno; close(fd); return -err; }
+    if (S_ISDIR(st.st_mode)) { close(fd); return -EISDIR; }
+    return fd;
 }
 
 /* A descriptor closed. EINTR does NOT mean try again: on every host

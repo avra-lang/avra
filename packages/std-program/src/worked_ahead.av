@@ -27,34 +27,43 @@ const NO_DESCRIPTOR: int = -1
 /// How many processes this machine runs at once.
 export fn cores_online() -> int { avra_cores_online() }
 
-/// What to work out ahead: the items, whether an item's answer is already kept, how to ask for it,
-/// and how many processes to use.
+/// What to work out ahead: the items, asked of the engine that works them out, whether an item's
+/// answer is already kept, how to ask for it, and how many processes to use.
 export type WorkAhead<T, R> = {
-    items: List<T>,
+    items: fn(QueryEngine) -> List<T>,
     is_known: fn(QueryEngine, T) -> bool,
     ask: fn(QueryEngine, T) -> R,
     process_count: int,
 }
 
-/// The store at `directory`, with every unknown item answered across processes first when there
-/// are enough to be worth it.
-export fn store_worked_ahead<T, R>(
+/// A store and the engine over it.
+export type Worked = { store: DiskStore, engine: QueryEngine }
+
+/// The store at `directory` and an engine over it, every unknown item answered across processes
+/// first when there are enough to be worth it. With nothing to fork, the engine is the one that
+/// asked what's known, so whatever it read stays read.
+export fn engine_worked_ahead<T, R>(
     directory: string,
     definitions: List<QueryDefinition>,
     work: WorkAhead<T, R>,
-) -> DiskStore {
+) -> Worked {
     let before = disk_store_at(directory)
-    if !forked_for<T, R>(before, definitions, work) { return before }
+    let asking = query_engine(before, definitions)
+    if !forked_for<T, R>(before, asking, definitions, work) { return Worked { store: before, engine: asking } }
     let after = disk_store_at(directory)
     let _ = after.merged()
-    after
+    Worked { store: after, engine: query_engine(after, definitions) }
 }
 
 /// Answers every unknown item across processes, and says whether any process ran.
-fn forked_for<T, R>(store: DiskStore, definitions: List<QueryDefinition>, work: WorkAhead<T, R>) -> bool {
+fn forked_for<T, R>(
+    store: DiskStore,
+    engine: QueryEngine,
+    definitions: List<QueryDefinition>,
+    work: WorkAhead<T, R>,
+) -> bool {
     let known_by = work.is_known
-    let engine = query_engine(store, definitions)
-    let unknown = work.items.filter((item) -> !known_by(engine, item))
+    let unknown = (work.items)(engine).filter((item) -> !known_by(engine, item))
     if unknown.length < WORTH_FORKING || work.process_count < 2 { return false }
     let group = avra_cores_group(work.process_count)
     if group < 0 { return false }

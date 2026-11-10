@@ -295,12 +295,12 @@ impl QueryEngine {
             let definition = self.definitions.get().get(below.query_name)!
             if definition.code_hash.is_empty() { return unvouched() }
             if definition.is_input {
-                words = with_bit(words, self.input_place(read))
+                bit_set(words, self.input_place(read))
                 continue
             }
             let child = self.inputs_reached(read, below)
             if !child.vouched { return unvouched() }
-            words = unioned(words, child.words)
+            if words.is_empty() { words = child.words } else { ored_into(words, child.words) }
         }
         InputSet { words: words, vouched: true }
     }
@@ -353,20 +353,16 @@ fn two_queries_named(definition: QueryDefinition) -> string {
     "two queries are named `${definition.query_name}`, so their saved answers would collide"
 }
 
-/// `words` with bit `at` set.
-fn with_bit(words: List<int>, at: int) -> List<int> {
+/// Bit `at` set in `words`, which grows to hold it.
+fn bit_set(mut words: List<int>, at: int) {
     let word = at / 64
-    let padded = if words.length > word { words } else { words.concat([0 for _i in 0..word + 1 - words.length]) }
-    [if i == word { w | (1 << at % 64) } else { w } for i, w in padded]
+    while words.length <= word { words.push(0) }
+    words.set(word, words[word] | (1 << at % 64))
 }
 
-/// Every bit set in either.
-fn unioned(a: List<int>, b: List<int>) -> List<int> {
-    if a.is_empty() { return b }
-    if b.is_empty() { return a }
-    let longer = if a.length >= b.length { a } else { b }
-    let shorter = if a.length >= b.length { b } else { a }
-    [if i < shorter.length { w | shorter[i] } else { w } for i, w in longer]
+/// Every bit `other` sets, set in `words` too, in place.
+fn ored_into(mut words: List<int>, other: List<int>) {
+    for i, w in other { if i < words.length { words.set(i, words[i] | w) } else { words.push(w) } }
 }
 
 /// The places of every bit set, in order.
