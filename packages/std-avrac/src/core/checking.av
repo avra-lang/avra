@@ -152,13 +152,11 @@ impl Checking {
     mut fn check_narrowed(branch: ExprId, expected: Expected, name: string) -> SignedType? {
         let local = self.local(name)
         let held = local?.ty
-        if local == null || !local!.narrowable || held == null || !held!.optional { return self.check(branch, expected) }
+        if local == null || !local!.narrowable || held == null || !held!.nullable() { return self.check(branch, expected) }
         self.opened()
         let scopes = self.scopes.get()
         mut innermost = scopes.last()!
-        innermost
-            .names
-            .set(name, Local { ty: held! with { optional: false }, narrowable: true, wide: held })
+        innermost.names.set(name, Local { ty: held!.unwrapped(), narrowable: true, wide: held })
         self.scopes.set_at(scopes.length - 1, innermost)
         let ty = self.check(branch, expected)
         self.closed()
@@ -217,7 +215,7 @@ export fn headed_type(head: TypeHead) -> SignedType {
     SignedType {
         head: head,
         args: [],
-        optional: false,
+        nulls: 0,
         dynamic: false,
         seats: [],
         answer: null,

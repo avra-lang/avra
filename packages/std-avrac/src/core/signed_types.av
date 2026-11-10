@@ -25,13 +25,14 @@ export enum TypeHead {
     Never
 }
 
-/// A written type, resolved: what it names, its type arguments, whether it's optional or dynamic, a fn
-/// type's seats and answer, and the members of a union.
+/// A written type, resolved: what it names, its type arguments, how many nulls wrap it (`T?` one, a
+/// `T?` whose `T` is optional two), whether it's dynamic, a fn type's seats and answer, and the
+/// members of a union.
 @derive(Saved)
 export type SignedType = {
     head: TypeHead,
     args: List<SignedType>,
-    optional: bool,
+    nulls: int,
     dynamic: bool,
     seats: List<SignedSeat>,
     answer: SignedType?,
@@ -48,7 +49,7 @@ impl SignedType {
         let inner = self with { args: [a.bound(args) for a in self.args], seats: [s with { ty: s.ty.bound(args) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.bound(args) }, alternatives: [a.bound(args) for a in self.alternatives] }
         let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
         if at >= args.length { return inner }
-        args[at] with { optional: args[at].optional || self.optional, dynamic: args[at].dynamic || self.dynamic }
+        args[at] with { nulls: args[at].nulls + self.nulls, dynamic: args[at].dynamic || self.dynamic }
     }
 
     /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`.
@@ -64,8 +65,14 @@ impl SignedType {
         }
         let applied = if self.args.is_empty() { named } else { "${named}<${[a.spelled() for a in self.args].join(", ")}>" }
         let dyn_named = if self.dynamic { "dyn ${applied}" } else { applied }
-        if self.optional { "${dyn_named}?" } else { dyn_named }
+        "${dyn_named}${["?" for _i in 0..self.nulls].join("")}"
     }
+
+    /// Whether the value may be null.
+    fn nullable() -> bool { self.nulls > 0 }
+
+    /// The type with its outermost null taken off: what a present value of it holds.
+    fn unwrapped() -> SignedType { self with { nulls: if self.nulls > 0 { self.nulls - 1 } else { 0 } } }
 }
 
 impl SignedSeat {
@@ -89,6 +96,55 @@ export fn seat_spelled(mutable: bool, settled: bool, word: string) -> string {
 export const INFERRED: string = "_"
 
 impl SignedType {
+    /// This type with each type parameter `found` names filled, the rest left as they are.
+    fn filled(found: Map<string, SignedType>) -> SignedType {
+        let inner = self with { args: [a.filled(found) for a in self.args], seats: [s with { ty: s.ty.filled(found) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.filled(found) }, alternatives: [a.filled(found) for a in self.alternatives] }
+        let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
+        let fill? = found.get("${at}") else { return inner }
+        fill with { nulls: fill.nulls + self.nulls, dynamic: fill.dynamic || self.dynamic }
+    }
+
+    /// Whether `actual` is this type with its type parameters filled, each fill recorded in `found`
+    /// and every fill agreeing with what's already there. A parameter seat under nulls takes as many
+    /// off what fills it, and no more than it has.
+    fn unifies(actual: SignedType, mut found: Map<string, SignedType>) -> bool {
+        let at = match self.head { .Parameter(index, _) -> index, rest -> -1 }
+        if at >= 0 {
+            let fill = actual with { nulls: if actual.nulls > self.nulls { actual.nulls - self.nulls } else { 0 } }
+            let known = found.get("${at}")
+            if known == null {
+                found.set("${at}", fill)
+                return true
+            }
+            return known!.spelled() == fill.spelled()
+        }
+        if actual.nulls > self.nulls { return false }
+        if self.dynamic != actual.dynamic ||
+            self.args.length != actual.args.length ||
+            self.seats.length != actual.seats.length { return false }
+        if !same_head(self.head, actual.head) { return false }
+        for i, a in self.args { if !a.unifies(actual.args[i], found) { return false } }
+        for i, s in self.seats { if !s.ty.unifies(actual.seats[i].ty, found) { return false } }
+        if self.answer != null &&
+            actual.answer != null &&
+            !self.answer!.unifies(actual.answer!, found) { return false }
+        true
+    }
+
+    /// One past the highest type parameter place this type names.
+    fn parameters_named() -> int {
+        let own = match self.head { .Parameter(index, _) -> index + 1, rest -> 0 }
+        let parts = self
+            .args
+            .concat([s.ty for s in self.seats])
+            .concat(if self.answer == null { [] } else { [self.answer!] })
+        parts
+            .fold(
+                own,
+                (most, p) -> if p.parameters_named() > most { p.parameters_named() } else { most },
+            )
+    }
+
     /// Whether any part of this type is one of its declaration's type parameters.
     fn generic() -> bool {
         self.head is .Parameter ||
@@ -105,5 +161,21 @@ impl SignedType {
             self.seats.any(it.ty.inferred()) ||
             self.answer?.inferred() ?? false ||
             self.alternatives.any(it.inferred())
+    }
+}
+
+/// Whether two heads name one type.
+fn same_head(a: TypeHead, b: TypeHead) -> bool { head_word(a) == head_word(b) }
+
+/// A head as one word: what it names, with its kind.
+fn head_word(h: TypeHead) -> string {
+    match h {
+        .Owned(name) -> "owned ${name}",
+        .Parameter(index, _) -> "parameter ${index}",
+        .Declared(file, name) -> "declared ${file.package_name}/${file.path_in_package} ${name}",
+        .Unnamed(name) -> "unnamed ${name}",
+        .Inferred -> "inferred",
+        .Function -> "function",
+        .Never -> "never",
     }
 }

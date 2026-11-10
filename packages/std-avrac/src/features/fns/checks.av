@@ -1,5 +1,5 @@
 //! The typing rules of a call and `return`. A call: each argument checks against its seat, and the call is what the fn
-//! answers. A generic fn's call waits for inference, so it checks its arguments against nothing.
+//! answers, its type parameters filled by its arguments.
 use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeHead}
 use core.expr.{Call}
 use core.stmt.{Return}
@@ -8,10 +8,39 @@ impl Checks for Call {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let callee = cx.read(self.callee.of)
         let f? = callee else { return free_args(cx, self.args) }
-        if !(f.head is .Function) || f.generic() || f.seats.length != self.args.length { return free_args(cx, self.args) }
-        for at, a in self.args { let _ = cx.check(a, Expected.Exactly(f.seats[at].ty)) }
-        f.answer
+        if !(f.head is .Function) || f.seats.length != self.args.length { return free_args(cx, self.args) }
+        if !f.generic() {
+            for at, a in self.args { let _ = cx.check(a, Expected.Exactly(f.seats[at].ty)) }
+            return f.answer
+        }
+        instantiated(cx, f, self.args)
     }
+}
+
+/// A generic fn's call: each argument that isn't a fn checks first, its type filling the type
+/// parameters its seat names; then each fn argument checks against its seat with what's filled so
+/// far, a seat still naming one unseen; and the call is the fn's answer, every parameter filled. A
+/// parameter no argument fills, or two that fill one differently, leave the call unchecked.
+fn instantiated(mut cx: Checking, f: SignedType, args: List<ExprId>) -> SignedType? {
+    mut found: Map<string, SignedType> = {}
+    mut agreed = true
+    for at, a in args {
+        let seat = f.seats[at].ty
+        if seat.head is .Function { continue }
+        let read = cx.check(a, if seat.generic() { Expected.Free } else { Expected.Exactly(seat) })
+        if seat.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+    }
+    for at, a in args {
+        let seat = f.seats[at].ty
+        if !(seat.head is .Function) { continue }
+        let wanted = seat.filled(found)
+        let read = cx
+            .check(a, if wanted.generic() { Expected.Unknown } else { Expected.Exactly(wanted) })
+        if wanted.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+    }
+    let answer? = f.answer else { return null }
+    let filled = answer.filled(found)
+    if !agreed || filled.generic() { null } else { filled }
 }
 
 /// Every argument checked against nothing, and the call unchecked.

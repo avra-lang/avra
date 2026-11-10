@@ -176,7 +176,7 @@ impl Signing {
         let made = SignedType {
             head: if written.arrow { TypeHead.Function } else { self.head_of(written.name) },
             args: [self.signed(a) for a in written.applied],
-            optional: written.optional,
+            nulls: if written.optional { 1 } else { 0 },
             dynamic: written.dynamic,
             seats: [SignedSeat { ty: self.signed(s.ty), mutable: s.mutable, settled: s.settled } for s in written.seats],
             answer: if written.answer == null { null } else { self.signed(written.answer!) },
@@ -186,7 +186,7 @@ impl Signing {
             ),
         }
         let target? = self.aliased(made.head) else { return made }
-        target.of.bound(made.args) with { optional: target.of.optional || made.optional, dynamic: target.of.dynamic || made.dynamic }
+        target.of.bound(made.args) with { nulls: target.of.nulls + made.nulls, dynamic: target.of.dynamic || made.dynamic }
     }
 
     /// What a head names when it names an alias.

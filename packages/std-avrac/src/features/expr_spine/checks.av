@@ -64,7 +64,7 @@ fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right
     let asked = if cx.store.null_literal(right) { left } else if cx.store.null_literal(left) { right } else { null }
     if asked == null { return if l != null && r != null { owned_type("bool") } else { null } }
     let subject = if asked! == left { l } else { r }
-    if subject == null || !subject!.optional { return null }
+    if subject == null || !subject!.nullable() { return null }
     let name = cx.store.ident_name(asked!)
     if name != null { cx.asked(e, name!, asks_present) }
     owned_type("bool")
@@ -82,7 +82,7 @@ fn operands(mut cx: Checking, left: ExprId, right: ExprId) -> string? {
 /// The name of a type the language owns with nothing applied, nothing optional; absent otherwise.
 fn plain_owned(ty: SignedType?) -> string? {
     let t? = ty else { return null }
-    if t.optional || t.dynamic || !t.args.is_empty() { return null }
+    if t.nullable() || t.dynamic || !t.args.is_empty() { return null }
     match t.head {
         .Owned(name) -> name,
         .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Never -> null,
