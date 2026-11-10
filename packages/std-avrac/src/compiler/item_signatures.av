@@ -111,18 +111,23 @@ fn spread_fields(engine: QueryEngine, spread: SignedType) -> List<SignedField> {
 /// Where a record is declared.
 type RecordAt = { file: SourceFileAddress, name: string }
 
-/// The item that declares `name` as `kind` in `file`, read back, absent when none does.
-type ReadItem = { store: SyntaxArena, stmts: List<StmtId> }
-
-fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ReadItem? {
-    let declared? = file_declares(engine, file).names.find(it.name == name && it.kind == kind) else { return null }
-    let item = items_under(engine, file)[declared.item]
+/// The item at `at` in `file`, read back.
+fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {
+    let item = items_under(engine, file)[at]
     let store = new_node_store()
     let stmts = item_read_back(
         store,
         PlacedTape { start: item.start, tape: SyntaxTape.read_from(meant_tape(engine, file, item)) },
     )
     ReadItem { store: store, stmts: stmts }
+}
+
+/// The item that declares `name` as `kind` in `file`, read back, absent when none does.
+type ReadItem = { store: SyntaxArena, stmts: List<StmtId> }
+
+fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ReadItem? {
+    let declared? = file_declares(engine, file).names.find(it.name == name && it.kind == kind) else { return null }
+    read_item(engine, file, declared.item)
 }
 
 /// The width a written type names, if it names one.

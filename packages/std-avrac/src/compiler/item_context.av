@@ -125,7 +125,13 @@ type ItemAbout = {
     uses: List<UseLine>,
     instance_words: List<string>,
     block_words: List<string>,
+    impls: List<ItemImpl>,
 }
+
+/// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
+/// them, and the methods it gives.
+@derive(Saved)
+export type ItemImpl = { target: string, params: List<string>, methods: List<string> }
 
 /// A component an item declares: its name, whether its instance binds a name, whether it's exported.
 @derive(Saved)
@@ -159,6 +165,11 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
         block_words: distinct(
             [w! for e in every_expr(store) if store.deferred_block(e) != null for w in [store.expr(e).body_of()?.word] if w != null],
         ),
+        impls: [ItemImpl {
+            target: p!.target,
+            params: [x.of for x in store.impl_tparams_of(s)?.target ?? []],
+            methods: [f!.name for m in p!.fns for f in [store.fn_parts(m)] if f != null],
+        } for s in stmts for p in [store.impl_parts(s)] if p != null],
     }
         .saved_bytes()
 }
@@ -191,10 +202,14 @@ fn about_of(octets: Bytes?) -> ItemAbout {
             uses: [],
             instance_words: [],
             block_words: [],
+            impls: [],
         }
     }
     ItemAbout.from_saved_bytes(held)
 }
+
+/// The impls each item of a file holds, by the item's place, read off their headers.
+export fn file_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<ItemImpl>> { [a.impls for a in file_abouts(engine, file)] }
 
 /// What a file declares of block words and imports: every component it declares, each saying
 /// whether it's exported, the sublanguages and named instances it exports, and its `use` lines.

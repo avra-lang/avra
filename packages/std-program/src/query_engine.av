@@ -74,19 +74,37 @@ export type QueryEngine = {
     /// The query each question this process computed belongs to, in the order they ran: what a
     /// budget test reads.
     computed: Cell<List<string>>,
+    /// Each input this process reached, by the place its bit stands at in a set of inputs.
+    input_places: HashKeyedTable<int>,
+    input_order: Cell<List<ContentHash>>,
+    /// The inputs each settled question reached, worked out once and shared by every root above it.
+    reached_inputs: HashKeyedTable<InputSet>,
 }
+
+/// The inputs a question reached, as bits over the engine's input places; unvouched when it reached
+/// a question whose code has no hash, which can't vouch for an old answer.
+type InputSet = { words: List<int>, vouched: bool }
+
+/// The set a question that can't be vouched for holds.
+fn unvouched() -> InputSet { InputSet { words: [], vouched: false } }
 
 export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition>) -> QueryEngine {
     let by_name: Map<string, QueryDefinition> = {}
     let settled_answers: HashKeyedTable<SettledAnswer> = hash_keyed_table()
     let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
     let computed: Cell<List<string>> = Cell.new([])
+    let input_places: HashKeyedTable<int> = hash_keyed_table()
+    let input_order: Cell<List<ContentHash>> = Cell.new([])
+    let reached_inputs: HashKeyedTable<InputSet> = hash_keyed_table()
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
         settled_answers: settled_answers,
         open_questions: open_questions,
         computed: computed,
+        input_places: input_places,
+        input_order: input_order,
+        reached_inputs: reached_inputs,
     }
     for definition in definitions {
         if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
@@ -247,36 +265,54 @@ impl QueryEngine {
         let root? = self.settled_answers.get(question) else { return }
         if root.deep_kept { return }
         let asked? = self.store.question_known_as(question) else { return }
-        let reached: HashKeyedTable<RecordedRead> = hash_keyed_table()
-        let seen: HashKeyedTable<bool> = hash_keyed_table()
-        if !self.inputs_gathered(question, root, reached, seen) { return }
-        let record = answer_record(root.answer, reached.values(), true)
+        let reached = self.inputs_reached(question, root)
+        if !reached.vouched { return }
+        let reads = [RecordedRead {
+            question: input,
+            whole_answer: self.settled_answers.get(input)!.answer,
+            part: null,
+        } for at in bits_of(reached.words) for input in [self.input_order.get()[at]]]
+        let record = answer_record(root.answer, reads, true)
         if !self.store.records_of(question).any(it.same_as(record)) { self.store.keep_record(asked, record) }
         let _ = self.settled(asked, root.answer, true, root.reused_through)
     }
 
-    /// Gathers every input a settled answer reached, each once, and says whether all of it could.
-    fn inputs_gathered(
-        question: ContentHash,
-        settled: SettledAnswer,
-        reached: HashKeyedTable<RecordedRead>,
-        seen: HashKeyedTable<bool>,
-    ) -> bool {
-        let record? = settled.reused_through ?? self.settling_record(question, settled.answer) else { return false }
+    /// The inputs a settled answer reached, worked out once per question and shared by every root
+    /// above it: its record's inputs, and what each other read reached.
+    fn inputs_reached(question: ContentHash, settled: SettledAnswer) -> InputSet {
+        let known = self.reached_inputs.get(question)
+        if known != null { return known! }
+        let reached = self.inputs_read(question, settled)
+        self.reached_inputs.put(question, reached)
+        reached
+    }
+
+    fn inputs_read(question: ContentHash, settled: SettledAnswer) -> InputSet {
+        let record? = settled.reused_through ?? self.settling_record(question, settled.answer) else { return unvouched() }
+        mut words: List<int> = []
         for read in record.read_questions() {
-            if seen.get(read) != null { continue }
-            seen.put(read, true)
-            let below? = self.settled_answers.get(read) else { return false }
+            let below? = self.settled_answers.get(read) else { return unvouched() }
             let definition = self.definitions.get().get(below.query_name)!
-            if definition.code_hash.is_empty() { return false }
+            if definition.code_hash.is_empty() { return unvouched() }
             if definition.is_input {
-                reached
-                    .put(read, RecordedRead { question: read, whole_answer: below.answer, part: null })
-            } else if !self.inputs_gathered(read, below, reached, seen) {
-                return false
+                words = with_bit(words, self.input_place(read))
+                continue
             }
+            let child = self.inputs_reached(read, below)
+            if !child.vouched { return unvouched() }
+            words = unioned(words, child.words)
         }
-        true
+        InputSet { words: words, vouched: true }
+    }
+
+    /// The place an input's bit stands at, given it the first time it's asked.
+    fn input_place(input: ContentHash) -> int {
+        let known = self.input_places.get(input)
+        if known != null { return known! }
+        let at = self.input_order.get().length
+        self.input_order.push(input)
+        self.input_places.put(input, at)
+        at
     }
 
     /// A record the store keeps of how `question` came to `answer` that stands now, its newest: how
@@ -315,4 +351,25 @@ fn asked_while_being_answered(asked: Question) -> string {
 
 fn two_queries_named(definition: QueryDefinition) -> string {
     "two queries are named `${definition.query_name}`, so their saved answers would collide"
+}
+
+/// `words` with bit `at` set.
+fn with_bit(words: List<int>, at: int) -> List<int> {
+    let word = at / 64
+    let padded = if words.length > word { words } else { words.concat([0 for _i in 0..word + 1 - words.length]) }
+    [if i == word { w | (1 << at % 64) } else { w } for i, w in padded]
+}
+
+/// Every bit set in either.
+fn unioned(a: List<int>, b: List<int>) -> List<int> {
+    if a.is_empty() { return b }
+    if b.is_empty() { return a }
+    let longer = if a.length >= b.length { a } else { b }
+    let shorter = if a.length >= b.length { b } else { a }
+    [if i < shorter.length { w | shorter[i] } else { w } for i, w in longer]
+}
+
+/// The places of every bit set, in order.
+fn bits_of(words: List<int>) -> List<int> {
+    [i * 64 + b for i, w in words if w != 0 for b in 0..64 if (w >> b) & 1 == 1]
 }

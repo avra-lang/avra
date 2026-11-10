@@ -1,0 +1,17 @@
+//! The typing rule of a method call: each argument checks against its seat in the method's fn type,
+//! read off the subject's, and the call is what the method answers.
+use core.{Checking, Checks, ExprId, Expected, SignedType}
+use core.expr.{MethodCall}
+
+impl Checks for MethodCall {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        let method = if subject == null { null } else { cx.method_of(subject!, self.name.of) }
+        if method == null || method!.seats.length != self.args.length {
+            for a in self.args { let _ = cx.check(a, Expected.Free) }
+            return null
+        }
+        for at, a in self.args { let _ = cx.check(a, Expected.Exactly(method!.seats[at].ty)) }
+        method!.answer
+    }
+}
