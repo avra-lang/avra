@@ -268,7 +268,10 @@ fn subject_types(
     holes: List<QuoteHole>,
     names: List<string>,
 ) -> List<TypeId> {
-    if cx.view.decls.meta_type(expected, "Subject") { return subject_binders(cx, p, expected, holes, names) }
+    if cx.view.decls.meta_type(expected, "Subject") ||
+        cx.view.decls.avrac_type(expected, "TypedCode") {
+        return subject_binders(cx, p, expected, holes, names)
+    }
     let run_ty? = avrac_answer(cx, "run_coded") else { return no_avrac(cx, p) }
     let code_ty? = cx.view.decls.elem_of(run_ty) else { return no_avrac(cx, p) }
     if cx.types_disagree(expected, code_ty) { return wrong_subject(cx, p, cx.view.types.name_of(expected)) }
@@ -278,10 +281,11 @@ fn subject_types(
     [binder_type(holes, n, string_ty, run_ty, type_ty, code_ty) for n in names]
 }
 
-/// A rule's own subject, `dyn Subject` — a package's rule, where no
-/// compiler handle is in hand: a code binder answers the subject, a run
-/// a list of it, and a name its text. A type binder reads the
-/// compiler's own `TypeRef`, which a package has none of.
+/// A subject that is no rule's `Code`: `dyn Subject` — a package's rule,
+/// where no compiler handle is in hand — or a meaning's `TypedCode`. A
+/// code binder answers the subject, a run a list of it, and a name its
+/// text. A type binder reads the compiler's own `TypeRef`, which neither
+/// holds.
 fn subject_binders(
     mut cx: TypeCx,
     p: PatId,
