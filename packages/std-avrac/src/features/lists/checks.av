@@ -1,5 +1,6 @@
 //! The typing rules of lists. A literal: each element checks against the element type its seat
-//! wants, and the literal is the list that seat names; with none, the list of its elements' join.
+//! wants (a spread, the list it names), and the literal is the list that seat names; with none, the
+//! list of its elements' join, a spread bringing its own elements.
 //! `[]` is its own type wherever it stands. A comprehension binds each head's names in a scope of its
 //! own and is the list of its element. A list pattern binds its ends' elements and its middle's list.
 use core.{
@@ -24,14 +25,31 @@ impl Checks for ListLit {
         let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
         let element = wanted?.listed()
         if element != null {
-            for v in self.elems { let _ = cx.check(v, Expected.Exactly(element!)) }
+            for v in self.elems {
+                let _ = cx
+                    .check(
+                        v,
+                        Expected
+                            .Exactly(if cx.store.spread_operand(v) != null { wanted! } else { element! }),
+                    )
+            }
             return if self.elems.is_empty() { owned_type("List") with { args: [never_type()] } } else { wanted }
         }
         let held = types_joined(
-            [cx.check(v, if expected is .Unknown { Expected.Unknown } else { Expected.Free }) for v in self.elems],
+            [contributed(
+                cx,
+                v,
+                cx.check(v, if expected is .Unknown { Expected.Unknown } else { Expected.Free }),
+            ) for v in self.elems],
         )
         if held == null { null } else { owned_type("List") with { args: [held!] } }
     }
+}
+
+/// What an element of type `read` brings to a list's elements: a spread its own elements, any other
+/// itself.
+fn contributed(cx: Checking, v: ExprId, read: SignedType?) -> SignedType? {
+    if cx.store.spread_operand(v) == null { read } else { read?.listed() }
 }
 
 impl Checks for Comp {

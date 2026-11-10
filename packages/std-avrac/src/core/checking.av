@@ -375,14 +375,22 @@ impl Checking {
     /// program names none.
     fn static_of(described: SignedType, name: string) -> SignedType? { (self.program.static_of)(described, name) }
 
+    /// The seats `count` arguments fill, in order, absent when they're too many, or too few to leave
+    /// only defaulted seats behind.
+    fn seats_filled(f: SignedType, count: int) -> List<SignedSeat>? {
+        if count > f.seats.length || f.seats.drop(count).any(!it.defaulted) { return null }
+        f.seats.take(count)
+    }
+
     /// What a call of the fn type `f` with `args` answers: each argument fills its seat as
     /// `Checking.fills` has it, and the answer is claimed when every parameter it names is filled.
     mut fn called(f: SignedType, args: List<ExprId>, expected: Expected) -> SignedType? {
-        if f.seats.length != args.length {
+        let seats = self.seats_filled(f, args.length)
+        if seats == null {
             self.checked_free(args)
             return null
         }
-        let found? = self.fills([s.ty for s in f.seats], args, {}, f.answer, expected) else { return null }
+        let found? = self.fills([s.ty for s in seats!], args, {}, f.answer, expected) else { return null }
         let answer? = f.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -390,11 +398,12 @@ impl Checking {
     /// What a call of `f` answers when its type parameters are the body's own, which nothing here
     /// fills: each argument checks against its seat as written.
     mut fn rigidly_called(f: SignedType, args: List<ExprId>) -> SignedType? {
-        if f.seats.length != args.length {
+        let seats = self.seats_filled(f, args.length)
+        if seats == null {
             self.checked_free(args)
             return null
         }
-        for at, a in args { let _ = self.check(a, Expected.Exactly(f.seats[at].ty)) }
+        for at, a in args { let _ = self.check(a, Expected.Exactly(seats![at].ty)) }
         f.answer
     }
 
@@ -449,12 +458,13 @@ impl Checking {
     /// take what it's given or the answer names a parameter nothing filled.
     mut fn applied(method: SignedType, subject: SignedType, args: List<ExprId>, expected: Expected) -> SignedType? {
         mut pinned: Map<string, SignedType> = {}
-        if method.seats.length != args.length + 1 || !method.seats[0].ty.unifies(subject, pinned) {
+        let seats = self.seats_filled(method, args.length + 1)
+        if seats == null || !method.seats[0].ty.unifies(subject, pinned) {
             self.checked_free(args)
             return null
         }
         let found? = self
-            .fills([s.ty for s in method.seats.drop(1)], args, pinned, method.answer, expected) else { return null }
+            .fills([s.ty for s in seats!.drop(1)], args, pinned, method.answer, expected) else { return null }
         let answer? = method.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }

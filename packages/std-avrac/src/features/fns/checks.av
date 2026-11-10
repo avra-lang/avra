@@ -2,19 +2,26 @@
 //! call is what the fn answers. A declared fn's type parameters are the call's, filled by its
 //! arguments (`Checking.fills`); a fn the body holds names the body's own, which nothing fills.
 use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, TypeHead}
-use core.expr.{Call}
+use core.expr.{Call, Named}
 use core.stmt.{FnDecl, Return}
 
 impl Checks for Call {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let callee = cx.read(self.callee.of)
         let f? = callee else { return free_args(cx, self.args) }
-        if !(f.head is .Function) || f.seats.length != self.args.length { return free_args(cx, self.args) }
+        if !(f.head is .Function) || cx.seats_filled(f, self.args.length) == null { return free_args(cx, self.args) }
         if cx.local(self.callee.of) != null { return cx.rigidly_called(f, self.args) }
         if self.pins.is_empty() { return cx.called(f, self.args, expected) }
         mut pinned: Map<string, SignedType> = {}
         for at, pin in self.pins { pinned.set("${at}", cx.written(pin)) }
-        let found? = cx.fills([s.ty for s in f.seats], self.args, pinned, f.answer, expected) else { return null }
+        let found? = cx
+            .fills(
+                [s.ty for s in cx.seats_filled(f, self.args.length)!],
+                self.args,
+                pinned,
+                f.answer,
+                expected,
+            ) else { return null }
         let answer? = f.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -38,4 +45,9 @@ fn free_args(mut cx: Checking, args: List<ExprId>) -> SignedType? {
 impl StmtChecks for FnDecl {
     /// A fn declared in a body binds its name there; its own body is typed as its own declaration.
     fn stmt_checked(mut cx: Checking, s: StmtId) { cx.bind(self.name.of, null) }
+}
+
+impl Checks for Named {
+    /// A named argument is its value, checked against what its seat wants.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.check(self.value, expected) }
 }
