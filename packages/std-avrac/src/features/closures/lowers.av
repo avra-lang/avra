@@ -1,0 +1,33 @@
+//! The lowering rules of a lambda and a call through a fn value: a lambda is its body lifted as its
+//! own unit and the box holding that body's code then what it captures, read where it stands; a call
+//! through a value reads the code from the box and hands it the box, then each argument.
+use core.{ExprId, Lowering, Lowers, Reg, lift_refusal}
+use core.expr.{CallValue, Lambda}
+
+impl Lowers for Lambda {
+    /// A lambda the source wrote, capturing at least one name; one capturing nothing is laid out as
+    /// static data, which isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let span? = cx.store.expr_span(e) else { return cx.missed_as("a lambda no source wrote") }
+        let refused = lift_refusal(self, ty)
+        if refused != null { return cx.missed_as(refused!) }
+        let lift = cx.lift(self, ty, span, cx.program)
+        if lift.lanes.is_empty() { return cx.missed_as("a lambda capturing nothing, which the binary holds as data") }
+        cx.kept_lift(lift)
+        let captures = [cx.held(cx.bound(name)!) for name in lift.lanes]
+        if captures.any((c) -> cx.layout_of(c).inline()) { return cx.missed_as("a capture laid inline") }
+        cx.fn_box(cx.laid_out(ty), lift.body.symbol, captures)
+    }
+}
+
+impl Lowers for CallValue {
+    /// The fn value, then each argument, then the code read from its box, then the call.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let f? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        if f.seats.any(it.mutable || it.settled || it.defaulted) { return cx.missed_as("a call through a fn value whose seat promises") }
+        let box = cx.lower(self.subject)
+        let args = [cx.lower(a) for a in self.args]
+        cx.called_code(cx.layout_at(e), cx.code_of(box), box, args)
+    }
+}

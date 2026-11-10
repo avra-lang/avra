@@ -127,6 +127,60 @@ impl Lowering {
         }
     }
 
+    /// The word `w` written over slot `at` of the box `box`, which its type proves is there: a value
+    /// enum's tag then its word, counted where its variant carries a pointer; a nullable scalar's value
+    /// beside its presence; else one slot.
+    mut fn leaf_written(box: Reg, at: int, w: Reg) {
+        match self.layout_of(w) {
+            .Tagged(counted) -> {
+                let tag = self.extracted(Layout.Word, w, 0)
+                self.run_row(rt_sig_of("avra_slot_set")!, [box, self.const_int(at), tag])
+                self
+                    .run_row(
+                        rt_sig_of("avra_slot_set_tagged")!,
+                        [
+                            box,
+                            self.const_int(at + 1),
+                            self.extracted(Layout.Word, w, 1),
+                            tag,
+                            self.const_int(counted),
+                        ],
+                    )
+            },
+            .Maybe(value) -> self
+                .run_row(
+                    rt_sig_of("avra_slot_set_maybe")!,
+                    [
+                        box,
+                        self.const_int(at),
+                        self.extracted(Layout.Truth, w, 0),
+                        self.extracted(value, w, 1),
+                    ],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) -> self.run_row(rt_sig_of("avra_slot_put")!, [box, self.const_int(at), w]),
+        }
+    }
+
+    /// The boxed record `v` of layout `l`, whose fields lay out as `fields`, copied whole.
+    mut fn record_copied(l: Layout, v: Reg, fields: List<Layout>) -> Reg {
+        self
+            .call_row(
+                l,
+                rt_sig_of("avra_array_slice")!,
+                [v, self.const_int(0), self.const_int(slots_before(fields, fields.length))],
+            )
+    }
+
+    /// Field `n` of the boxed record `box`, whose fields lay out as `fields`, written over with `v`: each
+    /// of its words over the slots from where the field starts.
+    mut fn field_rewritten(box: Reg, fields: List<Layout>, n: int, v: Reg) {
+        mut at = slots_before(fields, n)
+        for w in self.leaves(v) {
+            self.leaf_written(box, at, w)
+            at = at + self.layout_of(w).slots()
+        }
+    }
+
     /// A box of layout `l` holding the words `lead` then `words`, sized for them.
     mut fn boxed_words(l: Layout, lead: List<int>, words: List<Reg>) -> Reg {
         let dst = self

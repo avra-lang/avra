@@ -19,7 +19,7 @@ impl Lowers for Ident {
         let b = cx.bound(self.name.of)
         if b != null { return cx.read(e, b!) }
         let named? = cx.named(self.name.of) else { return cx.unlowered(e) }
-        let value? = match named { .Literal(v) -> v, rest -> null } else { return cx.unlowered(e) }
+        let value? = match named { .Literal(v) -> v, .Fn(_) -> null } else { return cx.missed_as("a fn as a value, which the binary holds as data") }
         if cx.type_at(e)?.spelled() != value.type().spelled() { return cx.unlowered(e) }
         cx.constant(value)
     }
@@ -130,7 +130,7 @@ fn owned_only(t: SignedType) -> SignedType? { match t.head { .Owned(_) -> t, res
 /// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number or a
 /// truth by one instruction.
 fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) -> Reg {
-    let kind? = operands(cx, l, r) else { return cx.unlowered(e) }
+    let kind? = operands(cx, l, r) else { return compared_beyond(cx, negated, l, r) ?? cx.unlowered(e) }
     let a = cx.lower(l)
     let b = cx.lower(r)
     let row = match kind {

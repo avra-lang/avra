@@ -15,6 +15,7 @@ use @std.avrac.core.{
     FileId,
     Ins,
     Layout,
+    LiftedBody,
     Reg,
     RtFlag,
     SignedType,
@@ -464,7 +465,8 @@ fn snippet(disk: Disk, path: string, lo: int) -> string {
 /// defined, and each register's layout to the one the workspace's type for it has. The workspace
 /// tests the unwinding flag after a call that may reach a cancel point, which the program layer
 /// can't tell yet, and the tick at a loop's back edge where the program links a scheduler, which it
-/// can't tell yet either; those tests are cut and counted. Says what isn't lowered yet, by the first thing
+/// can't tell yet either; those tests are cut and counted. Each lambda a whole fn lifts is held to the
+/// workspace's lift of the lambda written at the same place, and counted. Says what isn't lowered yet, by the first thing
 /// each fn met. Answers 1 when any differs.
 fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
     mut fns = 0
@@ -472,6 +474,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     mut alike = 0
     mut tested = 0
     mut ticked = 0
+    mut lambdas = 0
     mut differing: List<string> = []
     mut missing: Map<string, int> = {}
     let paths = package_sources(engine, disk.name, "src")
@@ -493,17 +496,26 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                 continue
             }
             whole = whole + 1
-            let theirs? = lowered_unit_of(ws, ws.decls.plain_want(d)).bodies.first() else {
+            let unit = lowered_unit_of(ws, ws.decls.plain_want(d))
+            let theirs? = unit.bodies.first() else {
                 differing.push("${path} ${own.name}: the workspace lowers no body for it")
                 continue
             }
+            let lifted = lift_names(ws, ids[at], mine.lifts)
             let cut = flag_tests_cut(theirs.ins)
-            let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins })
+            let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins }, lifted) ?? lifts_difference(
+                ws,
+                disk,
+                mine.lifts,
+                unit.bodies,
+                lifted,
+            )
             if how != null {
                 differing.push("${path} ${own.name}: ${how!}")
                 continue
             }
             alike = alike + 1
+            lambdas = lambdas + mine.lifts.length
             if cut.calls > 0 { tested = tested + 1 }
             if cut.edges > 0 { ticked = ticked + 1 }
         }
@@ -511,7 +523,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     if shown { for d in differing { println("differs: ${d}") } }
     let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
     println(
-        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge), ${differing.length} differing; not lowered yet: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}",
+        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge, ${lambdas} lambdas lifted alike), ${differing.length} differing; not lowered yet: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}",
     )
     if differing.is_empty() { 0 } else { 1 }
 }
@@ -579,9 +591,64 @@ fn numbered(raw: List<Ins>, seats: int) -> Numbered {
     }
 }
 
+/// Each lambda the program layer lifted, mapped to the symbol the workspace lifts the lambda written
+/// at the same place under.
+fn lift_names(ws: Workspace, id: FileId, lifts: List<LiftedBody>) -> Map<string, string> {
+    mut names: Map<string, string> = {}
+    if lifts.is_empty() { return names }
+    let store = ws.parsed(id).store
+    for i in 0..store.exprs.count() {
+        let x = ExprId { index: i }
+        let span? = store.expr_span(x) else { continue }
+        if store.lambda_parts(x) == null { continue }
+        let l? = lifts.find(it.lo == span.lo && it.hi == span.hi) else { continue }
+        names.set(l.symbol, ws.decls.lifted_symbol(id, x))
+    }
+    names
+}
+
+/// How the lambdas a fn lifts here differ from the workspace's lifts of them, absent when each reads
+/// alike.
+fn lifts_difference(
+    ws: Workspace,
+    disk: Disk,
+    lifts: List<LiftedBody>,
+    bodies: List<Body>,
+    lifted: Map<string, string>,
+) -> string? {
+    for l in lifts {
+        let name? = lifted.get(l.symbol) else { return "the workspace lifts no lambda at ${l.lo}" }
+        let theirs? = bodies.find(it.name == name) else { return "the workspace lowers no body for the lambda at ${l.lo}" }
+        let mine = LoweredFn {
+            params: l.params,
+            answer: l.answer,
+            ins: l.ins,
+            layouts: l.layouts,
+            callees: l.callees,
+            missing: [],
+            lifts: [],
+        }
+        let how = lowered_difference(
+            ws,
+            disk,
+            mine,
+            theirs with { ins: flag_tests_cut(theirs.ins).ins },
+            lifted,
+        )
+        if how != null { return "the lambda at ${l.lo}: ${how!}" }
+    }
+    null
+}
+
 /// How a fn lowered here differs from the workspace's lowering of it, absent when every seat,
-/// instruction and register reads alike.
-fn lowered_difference(ws: Workspace, disk: Disk, mine: LoweredFn, theirs: Body) -> string? {
+/// instruction and register reads alike; `lifted` names each lambda's symbol as the workspace's.
+fn lowered_difference(
+    ws: Workspace,
+    disk: Disk,
+    mine: LoweredFn,
+    theirs: Body,
+    lifted: Map<string, string>,
+) -> string? {
     let seats = [old_layout(ws, t) for t in theirs.params]
     if [l.spelled() for l in mine.params].join(", ") != [l.spelled() for l in seats].join(", ") {
         return "seats ${[l.spelled() for l in mine.params].join(", ")}, the workspace's ${[l.spelled() for l in seats].join(", ")}"
@@ -590,7 +657,7 @@ fn lowered_difference(ws: Workspace, disk: Disk, mine: LoweredFn, theirs: Body) 
     if mine.answer.spelled() != answer.spelled() { return "answers ${mine.answer.spelled()}, the workspace's ${answer.spelled()}" }
     let renames = callee_symbols(ws, disk, mine.callees)
     let ours = numbered(
-        [resymbolled(i, (s) -> renames.get(s) ?? s) for i in mine.ins],
+        [resymbolled(i, (s) -> renames.get(s) ?? lifted.get(s) ?? s) for i in mine.ins],
         mine.params.length,
     )
     let workspace = numbered(theirs.ins, theirs.params.length)

@@ -5,6 +5,7 @@ use core.{
     Expr,
     Ins,
     Layout,
+    LiftedBody,
     Literal,
     LoweredProgram,
     NamedValue,
@@ -24,6 +25,8 @@ export type LoweredFn = {
     layouts: List<Layout>,
     callees: List<CalledFn>,
     missing: List<string>,
+    /// The lambdas its body lifts, each body its own unit.
+    lifts: List<LiftedBody>,
 }
 
 impl LoweredFn {
@@ -44,10 +47,12 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
             layouts: [],
             callees: [],
             missing: [refused!],
+            lifts: [],
         }
     }
     let body = elaborated(engine, file, signed)
     let signature = signed.signature
+    let lifts: Cell<List<LiftedBody>> = Cell.new([])
     mut cx = lowering(
         body.store,
         LoweredProgram {
@@ -58,6 +63,8 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
             ),
             named: (n: string) -> named_value(engine, file, n),
             method: (ty: SignedType, m: string) -> method_callee(engine, ty, m),
+            lifts: lifts,
+            lift_symbol: (lo: int) -> declared_symbol(file, "${name}.lambda${lo}"),
         },
         body.core,
         body.seats,
@@ -75,6 +82,7 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
         layouts: cx.layouts.get(),
         callees: cx.callees.get(),
         missing: cx.missing.get(),
+        lifts: lifts.get(),
     }
 }
 

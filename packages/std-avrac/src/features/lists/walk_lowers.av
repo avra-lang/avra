@@ -1,0 +1,249 @@
+//! The lowering rules of the walks a list takes a fn for — `find`, `any`, `all`, `map`, `filter`,
+//! `fold`: the list first, then what the answer gathers in, then the fn, then one walk over the list
+//! handing each element to the fn. A lambda capturing nothing, of one expression that leaves nothing
+//! to the walk's frame, is asked in place, its seats bound to what it's handed; any other fn through
+//! its box, its code read once before the walk.
+use core.{
+    Bound,
+    ExprId,
+    Layout,
+    LiftedBody,
+    Lowering,
+    Param,
+    Reg,
+    SignedType,
+    Span,
+    SyntaxArena,
+    lift_refusal,
+    rt_sig_of,
+}
+use core.expr.{Lambda, MethodCall}
+
+/// A walk a list takes a fn for.
+enum WalkVerb {
+    Find
+    Any
+    All
+    Map
+    Filter
+    Fold
+}
+
+/// The walk the verb `name` is, absent for any other verb.
+fn walk_verb(name: string) -> WalkVerb? {
+    match name {
+        "find" -> WalkVerb.Find,
+        "any" -> WalkVerb.Any,
+        "all" -> WalkVerb.All,
+        "map" -> WalkVerb.Map,
+        "filter" -> WalkVerb.Filter,
+        "fold" -> WalkVerb.Fold,
+        rest -> null,
+    }
+}
+
+/// Whether the verb `name` hands its walk on to a walk after it, which runs both as one.
+fn adapts(name: string) -> bool {
+    [
+        "map",
+        "filter",
+        "filter_map",
+        "flat_map",
+        "flatten",
+        "chars",
+        "take",
+        "drop",
+        "take_while",
+        "drop_while",
+    ]
+        .contains(name)
+}
+
+impl Lowering {
+    /// `m`, a verb on a value of the type the language names `word`, when it's a walk a list takes a
+    /// fn for; absent, with nothing emitted, for any other verb.
+    mut fn list_walked(m: MethodCall, e: ExprId, word: string) -> Reg? {
+        if word != "List" { return null }
+        let verb? = walk_verb(m.name.of) else { return null }
+        walk_lowered(self, verb, m, e)
+    }
+}
+
+/// The walk `verb` over `m`'s receiver. One over elements laid inline, or over a walk it runs as one
+/// with, isn't lowered yet.
+fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> Reg {
+    let elem? = cx.type_at(m.subject)?.listed() else { return cx.unlowered(e) }
+    if cx.laid_out(elem).inline() { return cx.missed_as("a walk over elements laid inline") }
+    if runs_as_one(cx, m.subject) { return cx.missed_as("a walk over a walk it runs as one with") }
+    if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.unlowered(e) }
+    match verb {
+        .Find -> found(cx, m, e, elem),
+        .Any -> judged(cx, m, e, elem, false),
+        .All -> judged(cx, m, e, elem, true),
+        .Map -> gathered(cx, m, e, elem, true),
+        .Filter -> gathered(cx, m, e, elem, false),
+        .Fold -> folded(cx, m, e, elem),
+    }
+}
+
+/// Whether a receiver is itself a walk that runs as one with the walk over it.
+fn runs_as_one(cx: Lowering, subject: ExprId) -> bool {
+    match cx.store.expr(cx.meaning_of(subject)) {
+        .MethodCall(_, name, _) -> adapts(name.of),
+        rest -> false,
+    }
+}
+
+// ── The verbs ───────────────────────────────────────────────────────
+
+/// `xs.any(p)` / `xs.all(p)`: a truth seeded with `all`, overturned and the walk ended at the first
+/// element that settles it: the first `p` holds of for `any`, the first it doesn't for `all`.
+fn judged(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, all: bool) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let xs = cx.lower(m.subject)
+    let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(all))
+    let f = asked(cx, m.args[0], 1)
+    let w = list_walk(cx, xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let hit = answered(cx, f, [v], Layout.Truth)
+    cx
+        .void_region(if all { cx.not(hit) } else { hit }) { cx -> ended(cx, cell, cx.const_bool(!all)) }
+    cx.loop_end()
+    cx.loaded(Layout.Truth, cell)
+}
+
+/// `xs.find(p)`: absent until the first element `p` holds of, which is kept and ends the walk.
+fn found(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    if elem.nullable() { return cx.missed_as("a `find` over nullable elements") }
+    let opt? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(opt)
+    let xs = cx.lower(m.subject)
+    let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
+    let f = asked(cx, m.args[0], 1)
+    let w = list_walk(cx, xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    cx
+        .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(v, elem, opt)) }
+    cx.loop_end()
+    cx.loaded(l, cell)
+}
+
+/// `xs.map(f)` / `xs.filter(p)`: an empty list, each element's answer pushed onto it, or each
+/// element `p` holds of.
+fn gathered(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, mapping: bool) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let out? = ty.listed() else { return cx.unlowered(e) }
+    if cx.laid_out(out).inline() { return cx.missed_as("a walk gathering values laid inline") }
+    let xs = cx.lower(m.subject)
+    let f = asked(cx, m.args[0], 1)
+    let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+    let w = list_walk(cx, xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    if mapping {
+        cx.push_leaf(dst, answered(cx, f, [v], cx.laid_out(out)))
+    } else {
+        cx.void_region(answered(cx, f, [v], Layout.Truth)) { cx -> cx.push_leaf(dst, v) }
+    }
+    cx.loop_end()
+    dst
+}
+
+/// `xs.fold(seed, f)`: the seed in a cell, rewritten with `f`'s answer about it and each element.
+fn folded(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 2 { return cx.unlowered(e) }
+    let ret? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(ret)
+    let xs = cx.lower(m.subject)
+    let cell = cx.seeded_cell(l, cx.lower(m.args[0]))
+    let f = asked(cx, m.args[1], 2)
+    let w = list_walk(cx, xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    cx.stored(cell, answered(cx, f, [cx.loaded(l, cell), v], l))
+    cx.loop_end()
+    cx.loaded(l, cell)
+}
+
+/// The answer `v` written into `cell`, and the walk ended.
+fn ended(mut cx: Lowering, cell: Reg, v: Reg) {
+    cx.stored(cell, v)
+    cx.jumped(false)
+}
+
+// ── The fn a walk asks ──────────────────────────────────────────────
+
+/// How a walk asks its fn about an element: its body in place, its seats bound to what it's handed,
+/// or a call of the code read from its box.
+enum Asked {
+    InPlace(params: List<Param>, seats: List<SignedType>, body: ExprId)
+    Boxed(box: Reg, code: Reg)
+}
+
+/// The fn `f` of `seats` seats, as a walk asks it: in place where it can be, else boxed, its code
+/// read once.
+fn asked(mut cx: Lowering, f: ExprId, seats: int) -> Asked {
+    let here = in_place(cx, f, seats)
+    if here != null { return here! }
+    let box = cx.lower(f)
+    Asked.Boxed(box, cx.code_of(box))
+}
+
+/// `f` asked in place: a lambda of `seats` plain seats, capturing nothing, whose body is one
+/// expression with no `?`, `catch` or statement acting on the frame it would stand in. Absent for any
+/// other fn.
+fn in_place(mut cx: Lowering, f: ExprId, seats: int) -> Asked? {
+    let at = cx.meaning_of(f)
+    let lam? = match cx.store.expr(at) {
+        .Lambda(params, body) -> Lambda { params: params, body: body },
+        rest -> null,
+    } else { return null }
+    let ty? = cx.type_at(at) else { return null }
+    if lam.params.length != seats || lift_refusal(lam, ty) != null { return null }
+    let body? = inline_body(cx.store, lam.body) else { return null }
+    if !inline_safe(cx.store, body) || !captures_nothing(cx, lam, ty, at) { return null }
+    Asked.InPlace(lam.params, [s.ty for s in ty.seats], body)
+}
+
+/// Whether the lambda `lam` at `at` reads nothing from further out: its body lowered as its own unit
+/// and set aside.
+fn captures_nothing(mut cx: Lowering, lam: Lambda, ty: SignedType, at: ExprId) -> bool {
+    let aside: Cell<List<LiftedBody>> = Cell.new([])
+    cx
+        .lift(lam, ty, cx.store.expr_span(at) ?? Span { lo: 0, hi: 0 }, cx.program with { lifts: aside })
+        .lanes
+        .is_empty()
+}
+
+/// What `f` answers about `args`, a value of layout `l`.
+fn answered(mut cx: Lowering, f: Asked, args: List<Reg>, l: Layout) -> Reg {
+    match f {
+        .InPlace(params, seats, body) -> {
+            cx.opened()
+            for at, p in params { cx.bind(p.name.of, Bound.Value(args[at], seats[at])) }
+            let r = cx.lower(body)
+            cx.closed()
+            r
+        },
+        .Boxed(box, code) -> cx.called_code(l, code, box, args),
+    }
+}
+
+/// The expression a lambda's body is, unwrapped from a block holding only it; absent for a body of
+/// statements.
+fn inline_body(store: SyntaxArena, body: ExprId) -> ExprId? {
+    match store.expr(body) { .Block(_) -> store.lone_value(body), rest -> body }
+}
+
+/// Whether `e` stands in another fn's frame unchanged: no block of statements, `?` or `catch` in it
+/// that a walk reaches, a lambda's own body aside.
+fn inline_safe(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Block(_) -> store.lead_of(e).is_empty() &&
+            store.tail_of(e) != null &&
+            inline_safe(store, store.tail_of(e)!),
+        .Propagate(_) or .Catch(_, _) -> false,
+        .Lambda(_, _) -> true,
+        rest -> store.walked(e).all((k) -> inline_safe(store, k)),
+    }
+}

@@ -11,6 +11,10 @@ export type LoweredProgram = {
     checked: CheckedProgram,
     named: fn(string) -> NamedValue?,
     method: fn(SignedType, string) -> CalledFn?,
+    /// The lambdas lifted so far, each body its own unit.
+    lifts: Cell<List<LiftedBody>>,
+    /// The symbol a lambda written at an offset lifts under.
+    lift_symbol: fn(int) -> string,
 }
 
 /// What a top-level name a body reads or calls is, as its code reads it.
@@ -60,6 +64,16 @@ impl Literal {
 export enum Bound {
     Value(r: Reg, ty: SignedType)
     Slot(cell: Reg, ty: SignedType)
+    /// A name a lambda's body reads from further out: a lane of its box, `lanes` naming each in the
+    /// order the body first reads it.
+    Outer(name: string, ty: SignedType, lanes: Cell<List<string>>)
+}
+
+impl Bound {
+    /// The binding's type.
+    fn type() -> SignedType {
+        match self { .Value(_, t) or .Slot(_, t) or .Outer(_, t, _) -> t }
+    }
 }
 
 /// One body being lowered. An identity: every rule writes the one table.
@@ -280,14 +294,20 @@ impl Lowering {
     /// A read of `b` at `e`: its register, or what its cell holds now; where a test proved a nullable
     /// binding present, what it carries. A read typed any other way isn't lowered yet.
     mut fn read(e: ExprId, b: Bound) -> Reg {
-        let ty = match b { .Value(_, t) or .Slot(_, t) -> t }
+        let ty = b.type()
         let worn = self.type_at(e)?.spelled()
         if worn != ty.spelled() && !(ty.nullable() && worn == ty.unwrapped().spelled()) { return self.missed_as("a narrowed read") }
-        let held = match b {
-            .Value(r, _) -> r,
-            .Slot(cell, _) -> self.loaded(self.laid_out(ty), cell),
-        }
+        let held = self.held(b)
         if worn == ty.spelled() { held } else { self.carried(held, ty) }
+    }
+
+    /// What `b` holds now, as its own type: its register, what its cell holds, or its lane of the box.
+    mut fn held(b: Bound) -> Reg {
+        match b {
+            .Value(r, _) -> r,
+            .Slot(cell, ty) -> self.loaded(self.laid_out(ty), cell),
+            .Outer(name, ty, lanes) -> self.slot_read(self.laid_out(ty), Reg { index: 0 }, capture_lane(lanes, name)),
+        }
     }
 
     // ── Registers ───────────────────────────────────────────────────
