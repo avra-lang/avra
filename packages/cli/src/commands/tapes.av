@@ -36,7 +36,7 @@ use @std.avrac.core.{
     same_ins,
     same_reg,
 }
-use @std.avrac.compiler.lower.{Body, Lowered}
+use @std.avrac.compiler.lower.{Body, Lowered, Unit}
 use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of}
 use @std.avrac.compiler.backend.{
     Owned,
@@ -102,13 +102,14 @@ use @std.avrac.compiler.{
     seen_names,
     statement_difference,
 }
-use @std.io.{list_dir, make_dirs, read_text}
+use @std.io.{env, list_dir, make_dirs, read_text}
 use @std.path.{dir_of, file_name, joined_path}
 use @std.process.{Exit, cmd, inherited, tool as process_tool, tool_at}
 use @std.time.{now_ns, secs}
 use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.query_times.{TimedSide}
 use @std.program.sorted.{sorted_by}
 use @std.program.source_facts.{use_source_world}
 use @std.program.syntax_tape.{SyntaxTape}
@@ -140,12 +141,35 @@ impl Runnable for TapesCmd {
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
+        if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
         let code = held(engine, disk, args, root, argued)
         engine.frontier_kept()
         let _ = store.saved()
         eprintln("worked: ${engine.worked_count()} answers here; ${worked_by_query(engine)}")
+        times_said(engine)
         code
     }
+}
+
+/// Where `engine`'s process spent its time, when it timed its asks: the families with the most time
+/// of their own, then the whole split by side.
+fn times_said(engine: QueryEngine) {
+    let times? = engine.kept_times() else { return }
+    eprintln("time: ${times.spoken(15)}")
+    eprintln("split: ${times.split()}")
+}
+
+/// `run`'s answer, timed as the phase `name` outside every query when `engine` times its asks.
+fn phase<T>(engine: QueryEngine, name: string, run: fn() -> T) -> T {
+    engine.kept_times()?.opened(name, TimedSide.Outside)
+    let answer = run()
+    engine.kept_times()?.closed()
+    answer
+}
+
+/// The workspace's lowering of the want `w`, timed as its own phase.
+fn unit_timed(engine: QueryEngine, ws: Workspace, w: Wanted) -> Unit {
+    phase(engine, "workspace lowering", () -> lowered_unit_of(ws, w))
 }
 
 /// How many answers `engine` worked out here, by the query that asked each, inputs aside.
@@ -160,9 +184,14 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
     if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
     if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
-    let ws = root_workspace(root)
+    let ws = phase(engine, "workspace opened", () -> root_workspace(root))
     // every file the receipt reads is the workspace's before any is held to it
-    for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
+    let sources = package_sources(engine, disk.name, "src")
+    let _ = phase(
+        engine,
+        "workspace files named",
+        () -> [ws.file_id(joined_path(disk.root, f)) for f in sources],
+    )
     if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
     let files = disk.held(engine)
     let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
@@ -682,9 +711,9 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     mut methods = HeldUnits {}
     let paths = disk.held(engine)
     let ids = [ws.file_id(joined_path(disk.root, p)) for p in paths]
-    for id in ids { let _ = ws.parsed(id) }
-    let scopes = [ws.visible(id) for id in ids]
-    workspace_settled(ws)
+    let _ = phase(engine, "workspace parse", () -> [ws.parsed(id) for id in ids])
+    let scopes = phase(engine, "workspace names", () -> [ws.visible(id) for id in ids])
+    let _ = phase(engine, "workspace settled", () -> workspace_settled(ws))
     mut wants: List<Wanted> = []
     for at, path in paths {
         let file = disk.file_at(path)
@@ -694,9 +723,10 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             let mine? = lowered_fn(engine, file, own.name) else { continue }
             let signature = fn_signature(engine, file, own.name)
             let generic = signature != null && !signature!.type_params.is_empty()
-            if !generic { wants = wants.concat(lowered_unit_of(ws, ws.decls.plain_want(d)).wants) }
+            if !generic { wants = wants.concat(unit_timed(engine, ws, ws.decls.plain_want(d)).wants) }
             fns
                 .hold(
+                    engine,
                     ws,
                     disk,
                     "${path} ${own.name}",
@@ -714,6 +744,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             let mine? = lowered_fn(engine, file, own.name) else { continue }
             made
                 .hold(
+                    engine,
                     ws,
                     disk,
                     "${path} ${own.name}",
@@ -734,9 +765,10 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                     for m in if statics { i.statics } else { i.methods } {
                         let d? = ws.decls.method(t, m) else { continue }
                         let mine? = lowered_method(engine, impl_at, m, statics) else { continue }
-                        wants = wants.concat(lowered_unit_of(ws, ws.decls.plain_want(d)).wants)
+                        wants = wants.concat(unit_timed(engine, ws, ws.decls.plain_want(d)).wants)
                         methods
                             .hold(
+                                engine,
                                 ws,
                                 disk,
                                 "${path} ${owner}.${m}",
@@ -790,6 +822,7 @@ impl HeldUnits {
     /// The unit `mine`, lowered here as `symbol`, held to the workspace's lowering of the want `w`, and
     /// counted.
     mut fn hold(
+        engine: QueryEngine,
         ws: Workspace,
         disk: Disk,
         site: string,
@@ -810,7 +843,7 @@ impl HeldUnits {
             self.reshaped = self.reshaped + 1
             return
         }
-        let unit = lowered_unit_of(ws, w)
+        let unit = unit_timed(engine, ws, w)
         let theirs? = unit.bodies.first() else {
             self.differing.push("${site}: the workspace lowers no body for it")
             return
@@ -897,10 +930,11 @@ fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted
         if defaulted != null {
             let g = defaulted!
             let mine? = lowered_default(engine, g.file, g.owner, g.method) else { continue }
-            queue = queue.concat(lowered_unit_of(ws, w).wants)
+            queue = queue.concat(unit_timed(engine, ws, w).wants)
             let giver? = default_giver(engine, g.file, g.owner, g.method) else { continue }
             defaults
                 .hold(
+                    engine,
                     ws,
                     disk,
                     "${spelled_file(g.file)} the default ${w.name}",
@@ -915,9 +949,10 @@ fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted
         if method != null {
             let m = method!
             let mine? = lowered_method_under(engine, m.at, m.name, false, m.parameters) else { continue }
-            queue = queue.concat(lowered_unit_of(ws, w).wants)
+            queue = queue.concat(unit_timed(engine, ws, w).wants)
             generic
                 .hold(
+                    engine,
                     ws,
                     disk,
                     "${spelled_file(m.at.file)} the generic method unit ${w.name}",
@@ -933,9 +968,10 @@ fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted
         }
         let target? = generic_target(ws, disk, w) else { continue }
         let mine? = lowered_generic(engine, target.file, target.name, target.parameters) else { continue }
-        queue = queue.concat(lowered_unit_of(ws, w).wants)
+        queue = queue.concat(unit_timed(engine, ws, w).wants)
         generic
             .hold(
+                engine,
                 ws,
                 disk,
                 "${spelled_file(target.file)} the generic unit ${w.name}",
@@ -1096,8 +1132,9 @@ fn wanted_layouts(ws: Workspace, w: Wanted) -> string? {
 
 /// The workspace with every file it reaches named and its references gathered, before any of its
 /// lowering runs: lowering a fn asks the references, whose gathering reads each file's names, and
-/// naming a file the workspace hasn't met yet mints it under the question that reads them.
-fn workspace_settled(ws: Workspace) {
+/// naming a file the workspace hasn't met yet mints it under the question that reads them. Answers
+/// how many files it named.
+fn workspace_settled(ws: Workspace) -> int {
     mut named = 0
     while ws.decls.all_files().length > named {
         let files = ws.decls.all_files()
@@ -1105,6 +1142,7 @@ fn workspace_settled(ws: Workspace) {
         named = files.length
     }
     let _ = ws.references()
+    named
 }
 
 /// How many tests of the running task's flags a body holds: the unwinding test after a call that
