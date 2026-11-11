@@ -13,6 +13,7 @@ use core.{
     Layout,
     LiftedBody,
     Lowering,
+    OwnType,
     Param,
     Reg,
     SignedType,
@@ -21,6 +22,7 @@ use core.{
     lift_refusal,
     owned_type,
     rt_sig_of,
+    two_absences,
 }
 use core.expr.{Lambda, MethodCall}
 
@@ -42,35 +44,62 @@ enum WalkVerb {
     Sum
 }
 
-/// The walk the verb `name` is, absent for any other verb.
-fn walk_verb(name: string) -> WalkVerb? {
-    match name {
-        "find" -> WalkVerb.Find,
-        "find_index" -> WalkVerb.FindIndex,
-        "find_map" -> WalkVerb.FindMap,
-        "any" -> WalkVerb.Any,
-        "all" -> WalkVerb.All,
-        "map" -> WalkVerb.Map,
-        "filter" -> WalkVerb.Filter,
-        "fold" -> WalkVerb.Fold,
-        "count" -> WalkVerb.Count,
-        "contains" -> WalkVerb.Contains,
-        "index_of" -> WalkVerb.IndexOf,
-        "take" -> WalkVerb.Take,
-        "drop" -> WalkVerb.Drop,
-        "sum" -> WalkVerb.Sum,
-        rest -> null,
+/// A verb a list's walk answers to: its name, the walk it is and the stage it is in a walk after it,
+/// each where it's lowered here, and whether it hands its walk on to a walk after it, which runs both
+/// as one.
+type WalkRow = { verb: string, walk: WalkVerb?, stage: StageVerb?, hands_on: bool }
+
+/// A stage a walk hands each element through before the walk after it reads it.
+enum StageVerb {
+    Map
+    Filter
+    Take
+    Drop
+}
+
+/// Every verb a list's walk answers to.
+once fn walk_rows() -> List<WalkRow> {
+    table<WalkRow> {
+        verb         | walk               | stage            | hands_on
+        "find"       | WalkVerb.Find      | null             | false
+        "find_index" | WalkVerb.FindIndex | null             | false
+        "find_map"   | WalkVerb.FindMap   | null             | false
+        "any"        | WalkVerb.Any       | null             | false
+        "all"        | WalkVerb.All       | null             | false
+        "map"        | WalkVerb.Map       | StageVerb.Map    | true
+        "filter"     | WalkVerb.Filter    | StageVerb.Filter | true
+        "fold"       | WalkVerb.Fold      | null             | false
+        "count"      | WalkVerb.Count     | null             | false
+        "contains"   | WalkVerb.Contains  | null             | false
+        "index_of"   | WalkVerb.IndexOf   | null             | false
+        "take"       | WalkVerb.Take      | StageVerb.Take   | true
+        "drop"       | WalkVerb.Drop      | StageVerb.Drop   | true
+        "sum"        | WalkVerb.Sum       | null             | false
+        "filter_map" | null               | null             | true
+        "flat_map"   | null               | null             | true
+        "flatten"    | null               | null             | true
+        "chars"      | null               | null             | true
+        "take_while" | null               | null             | true
+        "drop_while" | null               | null             | true
     }
 }
 
+/// The row of the verb `name`, absent for a verb no walk answers to.
+fn walk_row(name: string) -> WalkRow? { walk_rows().find(it.verb == name) }
+
 impl Lowering {
-    /// `m`, a verb on a value of the type the language names `word`, when it's a walk a list takes a
-    /// fn for; absent, with nothing emitted, for any other verb.
-    mut fn list_walked(m: MethodCall, e: ExprId, word: string) -> Reg? {
-        if word == "Map" && m.name.of == "filter" { return map_filtered(self, m, e) }
-        if word != "List" && word != "Range" { return null }
-        let verb? = walk_verb(m.name.of) else { return null }
-        walk_lowered(self, verb, m, e)
+    /// `m`, a verb on a value of the type the language owns `own`, when it's a walk a list or a range
+    /// takes a fn for, or a map's `filter`; absent, with nothing emitted, for any other verb.
+    mut fn list_walked(m: MethodCall, e: ExprId, own: OwnType) -> Reg? {
+        let verb? = walk_row(m.name.of)?.walk else { return null }
+        match own {
+            .List or .Range -> walk_lowered(self, verb, m, e),
+            .Map -> match verb {
+                .Filter -> map_filtered(self, m, e),
+                .Find or .FindIndex or .FindMap or .Any or .All or .Map or .Fold or .Count or .Contains or .IndexOf or .Take or .Drop or .Sum -> null,
+            },
+            .Int or .Float or .Bool or .Str or .Ptr or .Void or .Bytes or .Cell or .Result or .Task or .Tasks -> null,
+        }
     }
 }
 
@@ -137,7 +166,7 @@ enum Source {
 /// What a walk over a value of `ty` hands on: a list's elements, a range's integers.
 fn walked_element(ty: SignedType?) -> SignedType? {
     let t? = ty else { return null }
-    t.listed() ?? if t.word() == "Range" && !t.nullable() { owned_type("int") } else { null }
+    t.listed() ?? if t.owns(OwnType.Range) { owned_type("int") } else { null }
 }
 
 /// What the receiver `e` starts a walk from, read once.
@@ -155,39 +184,19 @@ enum Stage {
     Dropped(count: Reg, n: Reg)
 }
 
-/// Whether the verb `name` hands its walk on to a walk after it, which runs both as one.
-fn adapts(name: string) -> bool {
-    [
-        "map",
-        "filter",
-        "filter_map",
-        "flat_map",
-        "flatten",
-        "chars",
-        "take",
-        "drop",
-        "take_while",
-        "drop_while",
-    ]
-        .contains(name)
-}
-
-/// Whether the verb `name` is a stage here.
-fn stages_here(name: string) -> bool { ["map", "filter", "take", "drop"].contains(name) }
-
 /// The walk `e` is, when it's a list's walk that hands it on: its receiver and its call.
 fn handed_on(cx: Lowering, e: ExprId) -> MethodCall? {
     let m? = match cx.store.expr(cx.meaning_of(e)) {
         .MethodCall(subject, name, args) -> MethodCall { subject: subject, name: name, args: args },
         rest -> null,
     } else { return null }
-    if !adapts(m.name.of) || cx.type_at(m.subject)?.listed() == null { null } else { m }
+    if !(walk_row(m.name.of)?.hands_on ?? false) || cx.type_at(m.subject)?.listed() == null { null } else { m }
 }
 
 /// Whether every walk the receiver `e` hands on is a stage here, of one argument by position.
 fn stages_of(cx: Lowering, e: ExprId) -> bool {
     let m? = handed_on(cx, e) else { return true }
-    stages_here(m.name.of) &&
+    walk_row(m.name.of)?.stage != null &&
         m.args.length == 1 &&
         cx.store.arg_label(m.args[0]) == null &&
         stages_of(cx, m.subject)
@@ -201,13 +210,13 @@ fn chain_of(mut cx: Lowering, e: ExprId) -> Chain {
     before with { stages: before.stages.concat([stage_of(cx, m, cx.meaning_of(e))]) }
 }
 
-/// The stage the walk `m` at `at` is.
+/// The stage the walk `m` at `at` is, `stages_of` holding that it's one.
 fn stage_of(mut cx: Lowering, m: MethodCall, at: ExprId) -> Stage {
-    match m.name.of {
-        "map" -> Stage.Mapped(asked(cx, m.args[0], 1), cx.type_at(at)!.listed()!),
-        "filter" -> Stage.Kept(asked(cx, m.args[0], 1)),
-        "take" -> Stage.Taken(cx.seeded_cell(Layout.Word, cx.const_int(0)), cx.lower(m.args[0])),
-        rest -> Stage.Dropped(cx.seeded_cell(Layout.Word, cx.const_int(0)), cx.lower(m.args[0])),
+    match walk_row(m.name.of)!.stage! {
+        .Map -> Stage.Mapped(asked(cx, m.args[0], 1), cx.type_at(at)!.listed()!),
+        .Filter -> Stage.Kept(asked(cx, m.args[0], 1)),
+        .Take -> Stage.Taken(cx.seeded_cell(Layout.Word, cx.const_int(0)), cx.lower(m.args[0])),
+        .Drop -> Stage.Dropped(cx.seeded_cell(Layout.Word, cx.const_int(0)), cx.lower(m.args[0])),
     }
 }
 
@@ -285,7 +294,7 @@ fn judged(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, all: boo
 /// `xs.find(p)`: absent until the first element `p` holds of, which is kept and ends the walk.
 fn found(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     if m.args.length != 1 { return cx.unlowered(e) }
-    if elem.nullable() { return cx.missed_as("a `find` over nullable elements") }
+    if elem.nullable() { return cx.missed_as(two_absences()) }
     let opt? = cx.type_at(e) else { return cx.unlowered(e) }
     let l = cx.laid_out(opt)
     let c = chain_of(cx, m.subject)
@@ -380,7 +389,7 @@ fn one_more(mut cx: Lowering, tally: Reg) { counted_past(cx, tally, cx.loaded(La
 /// `xs.sum()`: a count seeded zero before the list is read, each element added to it. One over
 /// elements that aren't `int` isn't lowered yet.
 fn summed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
-    if !m.args.is_empty() || elem.spelled() != "int" { return cx.unlowered(e) }
+    if !m.args.is_empty() || !elem.owns(OwnType.Int) { return cx.unlowered(e) }
     let cell = cx.seeded_cell(Layout.Word, cx.const_int(0))
     let c = chain_of(cx, m.subject)
     turned(cx, c) { cx, v, _at -> cx.stored(cell, cx.bin(Layout.Word, BinOp.Add, cx.loaded(Layout.Word, cell), v)) }

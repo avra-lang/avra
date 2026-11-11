@@ -194,8 +194,15 @@ fn lowered_program(
         ) with { parameters: parameters ?? [] },
         named: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> named_value(engine, f, n)),
-        method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
-        statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
+        method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false, null),
+        trait_method: (ty: SignedType, tr: SignedType, m: string) -> method_callee(
+            engine,
+            ty,
+            m,
+            false,
+            package_of(tr),
+        ),
+        statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true, null),
         lifts: lifts,
         lift_symbol: (lo: int) -> declared_symbol(file, "${unit}.lambda${lo}"),
         data: data,
@@ -591,17 +598,29 @@ fn signed_seats(signed: List<SignedParam>) -> List<CalledSeat> {
     [CalledSeat { name: s.name, ty: s.ty!, mutable: s.mutable, defaulted: s.defaulted, rest: s.rest } for s in signed]
 }
 
+/// The package the type `ty` the program declares stands in, absent for any other type.
+fn package_of(ty: SignedType) -> string? {
+    let at? = declared_at(ty) else { return null }
+    at.file.package_name
+}
+
 /// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
-/// as a call reaches it: the one the one impl that gives it writes, or the body the one trait it
-/// implements gives where the type is applied to nothing, on a type the program declares, by the
-/// symbol its body is known by. Absent for any other, and for a trait's own static, which no impl
-/// gives.
-fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics: bool) -> CalledFn? {
+/// as a call reaches it: the one the one impl that gives it writes — in the type's package, else in
+/// `via`'s — or the body the one trait it implements gives where the type is applied to nothing, on
+/// a type the program declares, by the symbol its body is known by. Absent for any other, and for a
+/// trait's own static, which no impl gives.
+fn method_callee(
+    engine: QueryEngine,
+    subject: SignedType,
+    name: string,
+    statics: bool,
+    via: string?,
+) -> CalledFn? {
     if subject.nullable() || subject.dynamic { return null }
     if !subject.args.is_empty() && statics { return null }
     let declared? = declared_at(subject) else { return null }
     if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return trait_static_callee(engine, declared, name) }
-    let impls = impls_with(engine, declared.file, declared.name, name, statics)
+    let impls = impls_given(engine, declared.file, declared.name, name, statics, via)
     if impls.is_empty() && !statics && subject.args.is_empty() { return given_callee(engine, declared.file, declared.name, name) }
     if impls.is_empty() && statics { return every_variant_callee(engine, subject, declared, name) }
     if impls.length != 1 { return null }

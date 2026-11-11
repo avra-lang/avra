@@ -5,6 +5,7 @@
 //! `.await` is one region on whether the join found it cancelled: the arm over the `Cancelled` the join
 //! carried, else what the task answered.
 use core.{
+    payload_unknown,
     BinOp,
     Bound,
     CatchArm,
@@ -53,7 +54,7 @@ impl Lowers for Catch {
 /// ended cancelled, the catch-all arm then bound to the record they make; else the task's answer.
 fn caught_await(mut cx: Lowering, e: ExprId, arms: List<CatchArm>, task: ExprId) -> Reg {
     let ty? = cx.type_at(e) else { return cx.unlowered(e) }
-    if arms.length != 1 || arms[0].variant.of != "" { return cx.missed_as("a caught `.await` whose arms name variants") }
+    if arms.length != 1 || !catches_all(arms[0]) { return cx.missed_as("a caught `.await` whose arms name variants") }
     let cancelled? = (cx.program.checked.toolchain_type)("@std.prelude", "Cancelled") else { return cx.missed_as("a caught `.await` without the prelude's `Cancelled`") }
     let fields? = cx.fields_of(cancelled) else { return cx.missed_as("a `Cancelled` that is no record") }
     let laid? = cx.seat_layouts(fields) else { return cx.missed_as("a `Cancelled` whose fields aren't laid out") }
@@ -65,15 +66,15 @@ fn caught_await(mut cx: Lowering, e: ExprId, arms: List<CatchArm>, task: ExprId)
             let held = cx.carried(cells, ended)
             let c = cx
                 .record_packed(cx.laid_out(cancelled), [cx.slot_read(l, held, at) for at, l in laid])
-            if arms[0].bind.of == "" { cx.lower(arms[0].value) } else { bound_arm(cx, arms[0], cancelled, c) }
+            if !binds(arms[0]) { cx.lower(arms[0].value) } else { bound_arm(cx, arms[0], cancelled, c) }
         } else { cx -> cx.awaited_reg(cx.layout_at(e), t) }
 }
 
 /// The failure of `v`, a `Result` of `held`, recovered by `arms` into a value of `ty`.
 fn recovered(mut cx: Lowering, arms: List<CatchArm>, v: Reg, held: SignedType, ty: SignedType) -> Reg {
     let err = held.args[1]
-    if arms.length == 1 && arms[0].variant.of == "" {
-        if arms[0].bind.of == "" { return cx.lower(arms[0].value) }
+    if arms.length == 1 && catches_all(arms[0]) {
+        if !binds(arms[0]) { return cx.lower(arms[0].value) }
         return bound_arm(cx, arms[0], err, cx.payload_at(v, 0, [cx.laid_out(err)]))
     }
     if !err.alternatives.is_empty() { return cx.missed_as("a catch whose arms take a union's members") }
@@ -97,8 +98,8 @@ fn failing_on(mut cx: Lowering, v: Reg, held: SignedType, ty: SignedType) -> Reg
 
 /// A variant's arm: its name bound to the one payload the variant carries, when it names one.
 fn variant_arm(mut cx: Lowering, arm: CatchArm, variant: VariantSeat, failed: Reg) -> Reg {
-    if arm.bind.of == "" || variant.payloads.length != 1 { return cx.lower(arm.value) }
-    let carried? = variant.payloads[0].ty else { return cx.missed_as("a payload whose type isn't known") }
+    if !binds(arm) || variant.payloads.length != 1 { return cx.lower(arm.value) }
+    let carried? = variant.payloads[0].ty else { return cx.missed_as(payload_unknown()) }
     bound_arm(cx, arm, carried, cx.payload_at(failed, 0, [cx.laid_out(carried)]))
 }
 
@@ -110,3 +111,9 @@ fn bound_arm(mut cx: Lowering, arm: CatchArm, ty: SignedType, bound: Reg) -> Reg
     cx.closed()
     r
 }
+
+/// Whether a catch arm takes every failure, naming no variant: its variant is written empty.
+fn catches_all(arm: CatchArm) -> bool { arm.variant.of.is_empty() }
+
+/// Whether a catch arm binds what it takes: its binder is written, not left empty.
+fn binds(arm: CatchArm) -> bool { !arm.bind.of.is_empty() }
