@@ -4,6 +4,7 @@
 //! its word, an aggregate the binary's own data under the const's symbol, read by its address.
 use core.{
     CheckedProgram,
+    EmbedKind,
     FieldSeat,
     Layout,
     NamedValue,
@@ -19,7 +20,8 @@ use core.{
 use features.{MetaHeap, MetaVal, budgets_of, new_meta_heap, unsettled_label}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
-use compiler.backend.{run_lifted}
+use @std.program.source_facts.{source_text}
+use compiler.backend.{EmbedReader, run_lifted}
 
 /// What the const `d` names settles to, as code reads it: the words its value is carried in and the
 /// data the binary holds for them, or why it doesn't settle yet.
@@ -46,6 +48,9 @@ fn settled_const(engine: QueryEngine, d: DeclaredName) -> NamedValue {
         new_meta_heap(),
         budgets_of(),
         (n: string) -> named_lifted(engine, d.file, n),
+        EmbedReader {
+            read: (path: string, kind: EmbedKind) -> embedded(engine, d.file, path, kind),
+        },
     ) {
         .Ok(lifted) -> lifted,
         .Err(why) -> { return NamedValue.Unsettled(unsettled_label(d.name, why)) },
@@ -58,6 +63,37 @@ fn settled_const(engine: QueryEngine, d: DeclaredName) -> NamedValue {
     }
     let carried? = crossing.words(ran.answer, ty) else { return NamedValue.Unsettled("a const whose value doesn't cross as `${ty.spelled()}`") }
     NamedValue.Settled(carried, Static { name: const_symbol(d.file, d.name), boxes: boxes.get() })
+}
+
+/// The file a const of `reader` embeds as `path`, through the build's own read of its text, so the
+/// const's value depends on the file: one under `@scope/name/` from that package's root, any other
+/// beside `reader`. Octets aren't read on this layer yet.
+fn embedded(engine: QueryEngine, reader: SourceFileAddress, path: string, kind: EmbedKind) -> Result<
+    Bytes,
+    string,
+> {
+    let at? = embedded_at(reader, path) else { return .Err("`embed` names no package in `${path}`") }
+    let text? = source_text(engine, at) else { return .Err("`embed` finds no `${path}`") }
+    match kind {
+        .Text -> .Ok(text.bytes()),
+        .Octets -> .Err("`embed_octets` isn't read on the program layer yet"),
+    }
+}
+
+/// Where `path`, embedded by a file of `reader`, stands: under its package where it names one, else
+/// beside `reader`.
+fn embedded_at(reader: SourceFileAddress, path: string) -> SourceFileAddress? {
+    if !path.starts_with("@") {
+        let dir = reader.path_in_package.split("/")
+        let beside = dir.take(dir.length - 1).concat([path]).join("/")
+        return SourceFileAddress { package_name: reader.package_name, path_in_package: beside }
+    }
+    let parts = path.split("/")
+    if parts.length < 3 { return null }
+    SourceFileAddress {
+        package_name: parts.take(2).join("/"),
+        path_in_package: parts.drop(2).join("/"),
+    }
 }
 
 /// The `const` `d`'s value as a body of no seats answering its type, or why it has none.

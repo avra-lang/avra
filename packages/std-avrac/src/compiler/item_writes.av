@@ -34,13 +34,15 @@ impl ReceiverUse {
     }
 }
 
-/// A method of a type the program declares: the type's file and name, and the method's.
+/// A method of a type the program declares: the type's file and name, the method's, and the package
+/// whose code calls it, which sees the impls its reach writes.
 @derive(Saved)
-type MethodAt = { file: SourceFileAddress, owner: string, name: string }
+type MethodAt = { file: SourceFileAddress, owner: string, name: string, reader: string }
 
 fn same_method(a: MethodAt, b: MethodAt) -> bool {
     a.name == b.name &&
         a.owner == b.owner &&
+        a.reader == b.reader &&
         a.file.package_name == b.file.package_name &&
         a.file.path_in_package == b.file.path_in_package
 }
@@ -48,8 +50,14 @@ fn same_method(a: MethodAt, b: MethodAt) -> bool {
 /// What the method `method` of the type `file` declares as `owner` does to its receiver: each method
 /// it reaches through its receiver surveyed once, in one walk, so a recursion asks nothing twice.
 @query
-export fn receiver_use(engine: QueryEngine, file: SourceFileAddress, owner: string, method: string) -> ReceiverUse {
-    mut reached = [MethodAt { file: file, owner: owner, name: method }]
+export fn receiver_use(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+    reader: string,
+) -> ReceiverUse {
+    mut reached = [MethodAt { file: file, owner: owner, name: method, reader: reader }]
     mut unproved: string? = null
     mut at = 0
     while at < reached.length {
@@ -75,7 +83,7 @@ type Surveyed = { name: string, evidence: Evidence }
 /// trait its type implements. One no body gives is unproved.
 @query
 fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
-    let impls = impls_with(engine, m.file, m.owner, m.name, false)
+    let impls = impls_given(engine, m.file, m.owner, m.name, false, m.reader)
     if impls.length > 1 { return unread(not_one_impl(m)) }
     if impls.is_empty() { return gathered_evidence(engine, m) ?? defaulted(engine, m) }
     impl_evidence(engine, impls[0], m.file, m.owner).find(it.name == m.name)?.evidence ?? unread(
@@ -283,11 +291,20 @@ impl Survey {
         }
         let ty? = self.place_type(subject) else { return self.unread(untyped_place(self.path_words(subject))) }
         if ty.dynamic { return self.contract_evidence(ty, name, args) }
-        let seats = method_type(self.engine, ty, name)?.seats
+        let seats = method_type(self.engine, ty, name, self.file.package_name)?.seats
         if seats == null { return self.field_fn_evidence(ty, name, args) }
         let declared = declared_at(ty)
         if declared != null {
-            self.reached.push(MethodAt { file: declared!.file, owner: declared!.name, name: name })
+            self
+                .reached
+                .push(
+                    MethodAt {
+                        file: declared!.file,
+                        owner: declared!.name,
+                        name: name,
+                        reader: self.file.package_name,
+                    },
+                )
         } else if seats!.first()?.mutable ?? false {
             self.written = true
         }

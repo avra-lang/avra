@@ -137,8 +137,8 @@ fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
 
 /// What a pattern takes of the subject: all of it, under a name or none; one variant, each payload
 /// under a name or none, or where a pattern of its own stands for it, what that one takes; one
-/// gathered variant whole, its member's record under a name; the value a literal is; the value a
-/// top-level const is; or a nullable payload's absence.
+/// gathered variant whole, its member's record under a name; the value a literal is; or the value a
+/// top-level const is.
 enum Taken {
     Whole(name: string?)
     Variant(tag: int, names: List<string?>, subs: List<Taken?>)
@@ -146,6 +146,7 @@ enum Taken {
     Quoted(body: ExprId, names: List<string>)
     Equal(lit: ExprId)
     Compared(name: string)
+    /// A nullable payload's absence, which `null` in its place tests.
     Absent
 }
 
@@ -212,7 +213,15 @@ fn presence_matched(mut cx: Lowering, e: ExprId, m: Match, ty: SignedType) -> Re
 }
 
 /// Whether an arm takes only the absence: one `null` pattern, unguarded.
-fn absence_arm(cx: Lowering, a: Arm) -> bool { a.guard == null && a.pats.length == 1 && absence_pat(cx, a.pats[0]) }
+fn absence_arm(cx: Lowering, a: Arm) -> bool { a.guard == null && a.pats.length == 1 && absence_pattern(cx, a.pats[0]) }
+
+/// Whether a pattern is `null`.
+fn absence_pattern(cx: Lowering, p: PatId) -> bool {
+    match cx.store.pat(p) {
+        .Lit(lit) -> cx.store.null_literal(lit),
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
 
 /// The name a pattern taking whatever the subject is binds it to, empty for a hole; absent for any
 /// other pattern.
@@ -297,21 +306,15 @@ fn takes_any(cx: Lowering, p: PatId) -> bool {
     }
 }
 
-/// What the pattern `p` takes of a payload of type `ty`: its absence where it is nullable and `p` is
-/// `null`, a variant of the enum it is, or the value a literal is where it compares by value; absent
-/// for any other.
+/// What the pattern `p` takes of a payload of type `ty`: a variant of the enum it is, or the value a
+/// literal is where it compares by value; absent for any other.
 fn sub_taken(cx: Lowering, ty: SignedType?, p: PatId) -> Taken? {
     let held? = ty else { return null }
-    if held.nullable() && absence_pat(cx, p) { return Taken.Absent }
+    if held.nullable() && absence_pattern(cx, p) { return Taken.Absent }
     let scalar = !held.nullable() && held.owned() != null && cx.equatable(held)
     let variants = cx.variants_of(held)
     if variants == null && !scalar { return null }
     pattern_taken(cx, variants ?? [], p, scalar)
-}
-
-/// Whether a pattern is `null`.
-fn absence_pat(cx: Lowering, p: PatId) -> bool {
-    match cx.store.pat(p) { .Lit(lit) -> cx.store.null_literal(lit), rest -> false }
 }
 
 /// The name a pattern binds, absent for a hole.

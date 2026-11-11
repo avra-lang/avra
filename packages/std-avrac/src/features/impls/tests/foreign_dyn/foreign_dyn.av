@@ -1,5 +1,7 @@
 // proves: a `dyn` box over a type of another package, its impl written in
-// the trait's package, calls the methods that impl gives.
+// the trait's package, calls the methods that impl gives, and so does a
+// bare call on a value of that type, through a method of another such
+// impl that reaches them through its receiver.
 use @std.time.{Duration, ms}
 
 trait Shown {
@@ -12,7 +14,15 @@ impl Shown for Duration {
     fn weight() -> int { self.ms() * 2 }
 }
 
+trait Labelled {
+    fn labelled() -> string
+}
+
+impl Labelled for Duration {
+    fn labelled() -> string { "${self.shown()} weighs ${self.weight()}" }
+}
+
 fn boxed(d: Duration) -> dyn Shown { d }
 
 let views = [boxed(ms(5)), boxed(ms(40))]
-"${[v.shown() for v in views].join(", ")} ${views.fold(0, (a, v) -> a + v.weight())}"
+"${[v.shown() for v in views].join(", ")} ${views.fold(0, (a, v) -> a + v.weight())} ${ms(3).shown()} ${ms(4).weight()} | ${ms(2).labelled()}"

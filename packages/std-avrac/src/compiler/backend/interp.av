@@ -596,9 +596,13 @@ fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
     Lifted { answer: answer, heap: heap }
 }
 
+/// How a compile-time run reads the files it embeds: the build's own read, which records each as
+/// an input of what the run answers.
+export type EmbedReader = { read: fn(string, EmbedKind) -> Result<Bytes, string> }
+
 /// A fn run at compile time over crossing values: the body under its
 /// arguments, its answer crossed back. The reach law holds here — no
-/// world, no embed.
+/// world, and no embed unless `embeds` reads them.
 export fn run_lifted(
     l: Lowered,
     symbol: string,
@@ -606,11 +610,13 @@ export fn run_lifted(
     heap: MetaHeap,
     budgets: Budgets,
     named: fn(string) -> Lifted = no_named_type,
+    embeds: EmbedReader? = null,
 ) -> Result<Lifted, Unsettled> {
-    let world: string? = world_reached(l, false)
+    let world: string? = world_reached(l, embeds != null)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     let target? = body_named(l, symbol) else { return .Err(Unsettled.Trap(no_body_named(symbol))) }
     mut m = budgeted_machine(l, budgets, named)
+    if embeds != null { m.embed = embeds!.read }
     let vals = [m.val_of(heap, a) for a in args]
     let answer: Val? = m.run_body(target, vals)
     m.spent(symbol, budgets)
