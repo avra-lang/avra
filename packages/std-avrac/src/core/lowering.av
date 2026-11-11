@@ -247,6 +247,8 @@ export type Lowering = {
     /// The task tests met, each lowered beside the instructions and placed once the program's reach
     /// is known.
     tests: Cell<List<TaskTest>>,
+    /// The `once` bodies lowered, each with the held tests that stand inside it.
+    guards: Cell<List<OnceGuard>>,
     /// Whether a task test is being lowered: one met inside it stands in it.
     holding: bool = false,
     /// The body's seats past a receiver that a write reaches the caller through: its `mut` ones.
@@ -283,6 +285,7 @@ export fn lowering(
     let loop_floors: Cell<List<int>> = Cell.new([])
     let labels: Cell<List<List<string>>> = Cell.new([])
     let tests: Cell<List<TaskTest>> = Cell.new([])
+    let guards: Cell<List<OnceGuard>> = Cell.new([])
     Lowering {
         store: store,
         program: program,
@@ -303,6 +306,7 @@ export fn lowering(
         loop_floors: loop_floors,
         labels: labels,
         tests: tests,
+        guards: guards,
     }
 }
 
@@ -687,6 +691,7 @@ impl Lowering {
             site: site,
             at: ins.get().length,
             ins: self.ins.get(),
+            leaves: self.ins.get().any((i) -> fn_exit(i)),
             first: first,
             count: self.layouts.get().length - first,
             missed_at: missing.get().length,

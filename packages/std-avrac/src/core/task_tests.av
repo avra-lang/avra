@@ -15,36 +15,52 @@ export enum TestSite {
 }
 
 /// A task test held beside a body: its site, how many of the body's instructions stand before it,
-/// its own instructions, its `count` registers from `first`, and what it noted wasn't lowered, after
-/// `missed_at` of the body's notes.
+/// its own instructions, whether they leave the fn, its `count` registers from `first`, and what it
+/// noted wasn't lowered, after `missed_at` of the body's notes.
 export type TaskTest = {
     site: TestSite,
     at: int,
     ins: List<Ins>,
+    leaves: bool,
     first: int,
     count: int,
     missed_at: int,
     missing: List<string>,
 }
 
+/// A `once` fn's guarded body: the held tests from `tests_from` up to `tests_to` stand inside it, and
+/// it ends after `missed_at` of the body's notes. A kept test inside that leaves the fn refuses it.
+export type OnceGuard = { tests_from: int, tests_to: int, missed_at: int }
+
+/// Notes spliced in after `at` of a body's notes.
+type Noted = { at: int, notes: List<string> }
+
 /// A body with its tests placed: its instructions, each register's layout, and its notes.
 export type Placed = { ins: List<Ins>, layouts: List<Layout>, missing: List<string> }
 
-/// A body of `ins`, `layouts` and `missing`, holding `tests`, with each test `kept` answers for placed.
+/// A body of `ins`, `layouts` and `missing`, holding `tests` and the `once` bodies `guards`, with each
+/// test `kept` answers for placed.
 export fn tests_placed(
     ins: List<Ins>,
     layouts: List<Layout>,
     missing: List<string>,
     tests: List<TaskTest>,
+    guards: List<OnceGuard>,
     kept: fn(TestSite) -> bool,
 ) -> Placed {
     if tests.is_empty() { return Placed { ins: ins, layouts: layouts, missing: missing } }
     let keep = [kept(t.site) for t in tests]
     let placing = [t for j, t in tests if keep[j]]
+    let refused = guards.filter((g) -> leaves_inside(g, tests, keep))
     let spliced = Placed {
         ins: spliced_ins(ins, placing),
         layouts: layouts,
-        missing: spliced_notes(missing, placing.filter(!it.missing.is_empty())),
+        missing: spliced_notes(
+            missing,
+            flatten(
+                [refusals_at(refused, j).concat(test_noted(tests, keep, j)) for j in 0..tests.length + 1],
+            ),
+        ),
     }
     if placing.length == tests.length { return spliced }
     let index = renumbering(layouts.length, [t for j, t in tests if !keep[j]])
@@ -60,13 +76,29 @@ fn spliced_ins(ins: List<Ins>, tests: List<TaskTest>) -> List<Ins> {
     )
 }
 
-/// `notes` with each of `tests`' notes spliced in where they stood.
-fn spliced_notes(notes: List<string>, tests: List<TaskTest>) -> List<string> {
-    if tests.is_empty() { return notes }
-    let starts = [0].concat([t.missed_at for t in tests])
+/// Whether a test of `tests` that `keep` keeps inside `g` leaves the fn.
+fn leaves_inside(g: OnceGuard, tests: List<TaskTest>, keep: List<bool>) -> bool {
+    (g.tests_from..g.tests_to).any((j) -> keep[j] && tests[j].leaves)
+}
+
+/// The refusals of the `once` bodies of `refused` whose held tests end before the `j`th.
+fn refusals_at(refused: List<OnceGuard>, j: int) -> List<Noted> {
+    [Noted { at: g.missed_at, notes: [once_leaves()] } for g in refused if g.tests_to == j]
+}
+
+/// The notes of the `j`th of `tests`, where `keep` keeps it and it noted any.
+fn test_noted(tests: List<TaskTest>, keep: List<bool>, j: int) -> List<Noted> {
+    if j == tests.length || !keep[j] || tests[j].missing.is_empty() { return [] }
+    [Noted { at: tests[j].missed_at, notes: tests[j].missing }]
+}
+
+/// `notes` with each of `noted` spliced in where it stood.
+fn spliced_notes(notes: List<string>, noted: List<Noted>) -> List<string> {
+    if noted.is_empty() { return notes }
+    let starts = [0].concat([n.at for n in noted])
     flatten(
-        flatten([[notes.slice(starts[k], t.missed_at), t.missing] for k, t in tests])
-            .concat([notes.slice(starts[tests.length], notes.length)]),
+        flatten([[notes.slice(starts[k], n.at), n.notes] for k, n in noted])
+            .concat([notes.slice(starts[noted.length], notes.length)]),
     )
 }
 
@@ -93,7 +125,7 @@ fn renumbered(index: List<int>, r: Reg) -> Reg { if r.index < 0 { r } else { Reg
 impl LiftedBody {
     /// The lambda's body with each test `kept` answers for placed.
     fn placed_by(kept: fn(TestSite) -> bool) -> LiftedBody {
-        let p = tests_placed(self.ins, self.layouts, [], self.tests, kept)
+        let p = tests_placed(self.ins, self.layouts, [], self.tests, [], kept)
         self with { ins: p.ins, layouts: p.layouts, tests: [] }
     }
 }

@@ -5,7 +5,7 @@
 impl Lowering {
     /// The answer of the `once` fn known by `symbol`, its body `body` answering `answer`: what its slot
     /// holds, else the body's value, kept. An answer laid inline or that is nothing, and a body that
-    /// leaves before its end, aren't lowered yet.
+    /// leaves before its end, aren't lowered yet; a held test inside it is judged where it's placed.
     mut fn once_answered(symbol: string, body: ExprId, answer: SignedType) -> Reg {
         let carried = self.laid_out(answer)
         let boxed = answer.nullable() || !carried.pointer()
@@ -14,6 +14,7 @@ impl Lowering {
         let held = self.mint(self.laid_out(slot))
         self.emit(Ins.OnceRead(held, symbol))
         let exits = self.exits()
+        let tests_from = self.tests.get().length
         let r = self
             .region(self.present(held, slot), carried) { cx ->
                 let kept = cx.carried(held, slot)
@@ -24,13 +25,25 @@ impl Lowering {
                 cx.emit(Ins.OnceCommit(symbol, kept))
                 made
             }
-        if self.exits() != exits { return self.missed_as("a `once` fn's body that leaves before its end") }
+        if self.exits() != exits { return self.missed_as(once_leaves()) }
+        self
+            .guards
+            .push(
+                OnceGuard {
+                    tests_from: tests_from,
+                    tests_to: self.tests.get().length,
+                    missed_at: self.missing.get().length,
+                },
+            )
         r
     }
 
     /// How many exits from the fn are emitted so far.
     fn exits() -> int { [i for i in self.ins.get() if fn_exit(i)].length }
 }
+
+/// Why a `once` fn's body that leaves before its end isn't lowered yet.
+fn once_leaves() -> string { "a `once` fn's body that leaves before its end" }
 
 /// Whether `i` leaves the fn.
 fn fn_exit(i: Ins) -> bool {
