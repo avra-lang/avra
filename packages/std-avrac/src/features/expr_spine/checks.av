@@ -96,7 +96,7 @@ fn plain_owned(ty: SignedType?) -> string? {
     if t.nullable() || t.dynamic || !t.args.is_empty() { return null }
     match t.head {
         .Owned(name) -> name,
-        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Parameter(_, _) or .Declared(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
 }
 
@@ -107,10 +107,7 @@ impl Checks for Prop {
         let subject? = cx.check(self.subject, Expected.Free) else { return null }
         let described = subject.described()
         if described != null { return cx.variant_built(described!, self.name.of, [], expected) }
-        let field = cx.field_of(subject, self.name.of)
-        if field != null { return field }
-        let property? = cx.property_of(subject, self.name.of) else { return null }
-        cx.applied(property, subject, [], expected)
+        cx.member_read(subject, self.name.of)
     }
 }
 

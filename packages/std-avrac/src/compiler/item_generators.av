@@ -36,14 +36,26 @@ export enum GeneratorKind {
     /// A trait's own `static fn derive`, `name` the trait's: handed the `Type` a `@derive` naming the
     /// trait stands on.
     Derive
-    /// A declaring annotation's own fn: handed the `Fn` the annotation stands on.
+    /// A declaring annotation's own fn over a fn: handed the `Fn` the annotation stands on.
     Annotation
+    /// A declaring annotation's own fn over a type: handed the `Type` the annotation stands on.
+    TypeAnnotation
 }
 
 impl GeneratorAt {
     /// The unit the generator's body is lowered as in its file.
     fn unit() -> string {
-        match self.kind { .Derive -> "${self.name}.${GENERATOR}", .Annotation -> self.name }
+        match self.kind {
+            .Derive -> "${self.name}.${GENERATOR}",
+            .Annotation or .TypeAnnotation -> self.name,
+        }
+    }
+}
+
+impl GeneratorKind {
+    /// Whether the generator is handed a fn, rather than a type.
+    fn handed_a_fn() -> bool {
+        match self { .Annotation -> true, .Derive or .TypeAnnotation -> false }
     }
 }
 
@@ -51,7 +63,7 @@ impl GeneratorAt {
 fn generator_body(engine: QueryEngine, g: GeneratorAt) -> SignedBody? {
     match g.kind {
         .Derive -> trait_generator(engine, TraitAt { file: g.file, name: g.name }),
-        .Annotation -> signed_body(engine, g.file, g.name),
+        .Annotation or .TypeAnnotation -> signed_body(engine, g.file, g.name),
     }
 }
 
@@ -204,7 +216,7 @@ fn meta_handed(
     mut heap: MetaHeap,
 ) -> MetaVal? {
     match kind {
-        .Derive -> {
+        .Derive or .TypeAnnotation -> {
             let t? = meta_of_decl(engine, file, name) else { return null }
             meta_of_type(t, heap)
         },
@@ -269,25 +281,27 @@ fn annotation_sites(
             generator: GeneratorAt { file: t!.file, name: t!.name, kind: GeneratorKind.Derive },
         } for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
     }
-    if d.kind != ItemKind.Fn ||
-        named.kind != ItemKind.Fn ||
-        !declares_over_fn(engine, named.file, named.name) { return [] }
+    if named.kind != ItemKind.Fn { return [] }
+    let kind? = annotation_kind(engine, named.file, named.name) else { return [] }
+    if kind.handed_a_fn() != (d.kind == ItemKind.Fn) { return [] }
     [
         GeneratorSite {
             name: d.name,
             item: d.item,
-            generator: GeneratorAt { file: named.file, name: named.name, kind: GeneratorKind.Annotation },
+            generator: GeneratorAt { file: named.file, name: named.name, kind: kind },
         },
     ]
 }
 
-/// Whether the fn `file` declares as `name` is a declaring annotation over a fn: its first seat takes
-/// `@std/meta`'s `Fn` and it answers `Declared`.
-export fn declares_over_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
-    let sig? = fn_signature(engine, file, name) else { return false }
-    let first? = sig.params.first()?.ty else { return false }
-    meta_named(first, META_FN) &&
-        (meta_named(sig.answer, DECLARED) || directives_listed(sig.answer))
+/// What generator the fn `file` declares as `name` is when it's a declaring annotation: one over a
+/// fn when its first seat takes `@std/meta`'s `Fn`, over a type when it takes its `Type`, and either
+/// answering `Declared` or a list of directives. Absent for any other fn.
+export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratorKind? {
+    let sig? = fn_signature(engine, file, name) else { return null }
+    let first? = sig.params.first()?.ty else { return null }
+    if !meta_named(sig.answer, DECLARED) && !directives_listed(sig.answer) { return null }
+    if meta_named(first, META_FN) { return GeneratorKind.Annotation }
+    if meta_named(first, META_TYPE) { GeneratorKind.TypeAnnotation } else { null }
 }
 
 /// Whether `ty` is a list of `@std/meta`'s `Directive`s.
@@ -314,6 +328,9 @@ const DERIVE: string = "derive"
 /// The record a declaring annotation's first seat takes.
 const META_FN: string = "Fn"
 
+/// The record a declaring annotation over a type's first seat takes.
+const META_TYPE: string = "Type"
+
 /// What a declaring annotation answers.
 const DECLARED: string = "Declared"
 
@@ -327,7 +344,7 @@ export fn generator_fact_definitions() -> List<QueryDefinition> { definitions_of
 
 fn not_handed(kind: GeneratorKind, name: string) -> string {
     match kind {
-        .Derive -> "`${name}` declares no type with fields, variants or a shape",
+        .Derive or .TypeAnnotation -> "`${name}` declares no type with fields, variants or a shape",
         .Annotation -> "`${name}` declares no fn",
     }
 }

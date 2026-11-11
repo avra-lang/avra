@@ -157,7 +157,7 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
         let at? = imported_module(engine, file, u) else { continue }
         let privately = tests_of(file, at)
         for j, item in u.items {
-            let ds = declarations_of(engine, at.package, at.local, at.as_root, item)
+            let ds = module_declarations_of(engine, at, item)
             for d in ds {
                 if !d.exported && !(privately && read_privately(ds, d)) { continue }
                 let clash = imported(engine, own, file, u.bound_as(j), d)
@@ -170,6 +170,13 @@ export fn file_scope(engine: QueryEngine, file: SourceFileAddress) -> FileScope?
         siblings: [d for d in module.apart if !same_file(d.file, file)],
         clashes: [c for c in module.clashes if same_file(c.lost.file, file)].concat(clashes),
     }
+}
+
+/// Every declaration of `name` the module `at` makes: what its files write, and only where they
+/// write none of it, what its generators declare.
+fn module_declarations_of(engine: QueryEngine, at: ModuleAt, name: string) -> List<DeclaredName> {
+    let written = declarations_of(engine, at.package, at.local, at.as_root, name)
+    if written.is_empty() { generated_declarations_of(engine, at.package, at.local, at.as_root, name) } else { written }
 }
 
 /// Whether a module's own test reads its private `d`, among `ds`, every declaration of its name:

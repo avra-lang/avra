@@ -183,30 +183,26 @@ export fn method_type(engine: QueryEngine, subject: SignedType, name: string) ->
     match subject.head {
         .Declared(file, declared) -> impl_method(engine, file, declared, name),
         .Owned(word) -> own_verb(engine, "verbs/${word}.av", name, subject),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
 }
 
 /// The static `name` of the type `described`, as a fn of what it's called with: one the language's
-/// own type has (`@std/prelude`'s `verbs/statics/`).
+/// own type has (`@std/prelude`'s `verbs/statics/`); a trait's own, written in its body, which a
+/// generator calls, so asking it never asks what generators make; else an impl's.
 export fn static_type(engine: QueryEngine, described: SignedType, name: string) -> SignedType? {
     match described.head {
         .Owned(word) -> own_verb(engine, "verbs/statics/${word}.av", name, null),
         .Declared(file, declared) -> {
+            let own = trait_static(engine, file, declared, name)
+            if own != null { return own }
             let impls = impls_with(engine, file, declared, name, true)
-            if impls.is_empty() {
-                return enum_static(engine, described, file, declared, name) ?? trait_static(
-                    engine,
-                    file,
-                    declared,
-                    name,
-                )
-            }
+            if impls.is_empty() { return enum_static(engine, described, file, declared, name) }
             if impls.length != 1 { return null }
             let s? = method_signature(engine, impls[0], name) else { return null }
             fn_typed([], s)
         },
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
 }
 
@@ -260,7 +256,7 @@ export fn property_type(engine: QueryEngine, subject: SignedType, name: string) 
             subject,
             name,
         ),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
 }
 
@@ -306,7 +302,7 @@ fn impl_method(engine: QueryEngine, file: SourceFileAddress, declared: string, n
 fn contract_method(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     let at? = match subject.head {
         .Declared(file, declared) -> TraitAt { file: file, name: declared },
-        .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     } else { return null }
     let s? = trait_method_signature(engine, at, name, subject) else { return null }
     fn_typed([SignedSeat { ty: subject, mutable: false, settled: false }], s)

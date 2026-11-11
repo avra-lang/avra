@@ -5,7 +5,7 @@
 //! differs and how many it read.
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.avrac.compiler.{Workspace}
-use @std.avrac.compiler.host.{read_manifest}
+use @std.avrac.compiler.host.{Manifest, read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.core.{
     CalledFn,
@@ -52,6 +52,7 @@ use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
     declared_symbol,
+    fn_generated,
     Space,
     file_meant,
     package_read,
@@ -90,7 +91,7 @@ use @std.avrac.compiler.{
     ProgramCall,
     made_generator,
     generator_sites,
-    declares_over_fn,
+    annotation_kind,
     GeneratorAt,
     GeneratorKind,
     item_difference,
@@ -123,15 +124,15 @@ impl Runnable for TapesCmd {
     fn run(args: CliResult) -> int {
         let argued? = argued_path(args) else { return 1 }
         let root = if args.has_flag("program_runs") { package_holding(argued) ?? argued } else { argued }
-        let named = read_manifest(
-            new_source_file("avra.toml", text_at(joined_path(root, "avra.toml")) ?? ""),
-        )
-            .name
+        let named = manifest_at(root).name
+        mut deps: Map<string, string> = {}
+        path_dependencies(root, deps)
         let disk = Disk {
             root: root,
             name: named,
             std: rooted(std_root() ?? ""),
             only: args.option("only") ?? "",
+            deps: deps,
         }
         use_source_world(
             avra_source_world(
@@ -202,8 +203,9 @@ fn program_timed(directory: string, disk: Disk) -> int {
 }
 
 /// The packages being read on disk: the one named (`root`, addressed by its manifest's `name`), and
-/// the toolchain's under its std root; a receipt holds the named package's files under `only` alone.
-type Disk = { root: string, name: string, std: string, only: string }
+/// the toolchain's under its std root, a package a manifest names by a path at that path; a receipt
+/// holds the named package's files under `only` alone.
+type Disk = { root: string, name: string, std: string, only: string, deps: Map<string, string> = {} }
 
 impl Disk {
     /// The named package's source files a receipt holds: each under `only`.
@@ -211,6 +213,8 @@ impl Disk {
 
     /// Where a package's file stands.
     fn on_disk(package: string, path: string) -> string {
+        let dep = self.deps.get(package)
+        if dep != null { return joined_path(dep!, path) }
         if package != self.name && package.starts_with(STD) {
             joined_path(
                 joined_path(self.std, "std-${package.substring(STD.length, package.length)}"),
@@ -226,12 +230,28 @@ impl Disk {
 
     /// A file on disk as the program spells it: its package, then its path.
     fn spelled(path: string) -> string {
+        for key, dir in self.deps { if path.starts_with("${dir}/") { return "${key}/${path.substring(dir.length + 1, path.length)}" } }
         if path.starts_with("${self.root}/") { return "${self.name}/${path.substring(self.root.length + 1, path.length)}" }
         let std_dir = "${self.std}/std-"
         if !path.starts_with(std_dir) { return path }
         let rest = path.substring(std_dir.length, path.length)
         let cut = rest.index_of("/") ?? rest.length
         "${STD}${rest.substring(0, cut)}${rest.substring(cut, rest.length)}"
+    }
+}
+
+/// The manifest of the package at `dir`; an empty one where it has none.
+fn manifest_at(dir: string) -> Manifest { read_manifest(new_source_file("avra.toml", text_at(joined_path(dir, "avra.toml")) ?? "")) }
+
+/// Each package past the toolchain's the manifest at `dir` names by a path, and each of theirs, by
+/// its directory, the first naming of a package winning.
+fn path_dependencies(dir: string, mut found: Map<string, string>) {
+    for d in manifest_at(dir).deps {
+        let p? = d.path else { continue }
+        if d.key.starts_with(STD) || found.has(d.key) { continue }
+        let at = if p.starts_with("/") { p } else { joined_path(dir, p) }
+        found.set(d.key, at)
+        path_dependencies(at, found)
     }
 }
 
@@ -293,7 +313,7 @@ fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<strin
 type TypedPair = { path: string, name: string, lo: int, kind: string, new: SignedType?, old: string }
 
 /// Each node of each fn `path` declares that the workspace typed, paired by span with the program
-/// layer's node.
+/// layer's node; none of a fn a wrap stands in for, whose typed body is the wrapper's.
 fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> List<TypedPair> {
     let file = disk.file_at(path)
     let id = ws.file_id(joined_path(disk.root, path))
@@ -309,6 +329,7 @@ fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> 
     mut pairs: List<TypedPair> = []
     for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
         let d? = written_decl(ws, disk, names, file, own.name) else { continue }
+        if fn_generated(engine, file, own.name).items.any(it.wraps) { continue }
         let mine? = typed_fn(engine, file, own.name) else { continue }
         let facts = ws.typed(d)
         let spans = fn_body_spans(engine, file, own.name)
@@ -363,7 +384,7 @@ fn agrees(new: SignedType, old: string) -> bool { new.spelled() == old && !names
 fn names_no_type(t: SignedType) -> bool {
     match t.head {
         .Unnamed(_) -> true,
-        .Owned(_) or .Parameter(_, _) or .Declared(_, _) or .Inferred or .Function or .Never or .Meta -> t.args.any((a) -> names_no_type(a)) ||
+        .Owned(_) or .Parameter(_, _) or .Declared(_, _) or .Inferred or .Function or .Union or .Never or .Meta -> t.args.any((a) -> names_no_type(a)) ||
             t.seats.any((s) -> names_no_type(s.ty)) ||
             t.alternatives.any((a) -> names_no_type(a)) ||
             t.answer != null && names_no_type(t.answer!),
@@ -531,7 +552,7 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
             let missed: Cell<List<Missed>> = Cell.new([])
             let m? = made_generator(engine, g, missed) else { continue }
             written = written + 1
-            if g.kind == GeneratorKind.Annotation { annotations = annotations + 1 }
+            annotations = annotations + by_annotation(g.kind)
             let l = match m {
                 .Made(l) -> l,
                 .Unmade(why, at) -> {
@@ -554,7 +575,7 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                         site.generator.kind != g.kind ||
                         spelled_file(site.generator.file) != spelled_file(file) { continue }
                     sites = sites + 1
-                    if g.kind == GeneratorKind.Annotation { annotation_sites = annotation_sites + 1 }
+                    annotation_sites = annotation_sites + by_annotation(g.kind)
                     directives = directives + directives_made(engine, l, g, at, site.name)
                     let item = site_generated(engine, at, site)
                     let tape = item.items.first()?.tape
@@ -582,6 +603,11 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     if failing.is_empty() { 0 } else { 1 }
 }
 
+/// One for a generator an annotation names, none for a derive.
+fn by_annotation(k: GeneratorKind) -> int {
+    match k { .Derive -> 0, .Annotation or .TypeAnnotation -> 1 }
+}
+
 /// How many directives the made generator `l` of `t` makes over the declaration `file` writes as
 /// `name`; none where it doesn't run.
 fn directives_made(
@@ -602,7 +628,7 @@ fn written_generators(engine: QueryEngine, file: SourceFileAddress) -> List<Gene
     let names = file_declares(engine, file).names
     [GeneratorAt { file: file, name: d.name, kind: GeneratorKind.Derive } for d in names if d.kind == ItemKind.Trait]
         .concat(
-            [GeneratorAt { file: file, name: d.name, kind: GeneratorKind.Annotation } for d in names if d.kind == ItemKind.Fn && d.exported && declares_over_fn(engine, file, d.name)],
+            [GeneratorAt { file: file, name: d.name, kind: k! } for d in names if d.kind == ItemKind.Fn && d.exported for k in [annotation_kind(engine, file, d.name)] if k != null],
         )
 }
 
