@@ -117,6 +117,23 @@ export fn impls_with(
     [i.at for i in impls_in(package_generated_impls_part(engine, file.package_name, name), file) if gives(i, method, statics)]
 }
 
+/// The impls of the type `file` declares as `name` that write `method`: its own package's, and where
+/// none does, the package `via` names — a trait's, where an impl of that trait for a type of another
+/// package stands.
+export fn impls_given(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: string,
+    statics: bool,
+    via: string?,
+) -> List<ImplAt> {
+    let own = impls_with(engine, file, name, method, statics)
+    let package? = via else { return own }
+    if !own.is_empty() || package == file.package_name { return own }
+    [i.at for i in impls_in(package_impls_part(engine, package, name), file) if gives(i, method, statics)]
+}
+
 /// The traits the written impls of the type `file` declares as `name` implement, by name.
 fn written_traits(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
     [i.implements!.name for i in impls_in(package_impls_part(engine, file.package_name, name), file) if i.implements != null]
