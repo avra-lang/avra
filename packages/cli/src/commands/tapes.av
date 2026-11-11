@@ -3,7 +3,7 @@
 //! every node where it was; and what its top level sees held to what the workspace's namespace
 //! binds, name for name, wherever the workspace's declaration was written. Says each file that
 //! differs and how many it read.
-use @std.cli.{CliResult, Runnable, command, flag}
+use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
@@ -124,7 +124,12 @@ impl Runnable for TapesCmd {
             new_source_file("avra.toml", text_at(joined_path(root, "avra.toml")) ?? ""),
         )
             .name
-        let disk = Disk { root: root, name: named, std: rooted(std_root() ?? "") }
+        let disk = Disk {
+            root: root,
+            name: named,
+            std: rooted(std_root() ?? ""),
+            only: args.option("only") ?? "",
+        }
         use_source_world(
             avra_source_world(
                 (f) -> text_at(disk.on_disk(f.package_name, f.path_in_package)),
@@ -159,7 +164,7 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
     // every file the receipt reads is the workspace's before any is held to it
     for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
     if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
-    let files = package_sources(engine, disk.name, "src")
+    let files = disk.held(engine)
     let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
     for d in differing { println("differs: ${d}") }
     println("tapes: ${files.length} read, ${differing.length} differing")
@@ -186,10 +191,13 @@ fn program_timed(directory: string, disk: Disk) -> int {
 }
 
 /// The packages being read on disk: the one named (`root`, addressed by its manifest's `name`), and
-/// the toolchain's under its std root.
-type Disk = { root: string, name: string, std: string }
+/// the toolchain's under its std root; a receipt holds the named package's files under `only` alone.
+type Disk = { root: string, name: string, std: string, only: string }
 
 impl Disk {
+    /// The named package's source files a receipt holds: each under `only`.
+    fn held(engine: QueryEngine) -> List<string> { package_sources(engine, self.name, "src").filter(it.starts_with(self.only)) }
+
     /// Where a package's file stands.
     fn on_disk(package: string, path: string) -> string {
         if package != self.name && package.starts_with(STD) {
@@ -251,13 +259,15 @@ fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<strin
     let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
         .take(12)
     if shown {
-        for kind in most {
-            for p in pairs.filter(it.new == null && it.kind == kind).take(6) {
-                println(
-                    "left: ${kind} ${p.old} at ${p.path}:${p.lo} `${snippet(disk, p.path, p.lo)}`",
-                )
-            }
+        mut by_fn: Map<string, int> = {}
+        for p in pairs.filter(it.new == null) {
+            let site = "${p.path} ${p.name}"
+            by_fn.set(site, (by_fn.get(site) ?? 0) + 1)
         }
+        for site in sorted_by([k for k, _n in by_fn], (a, b) -> by_fn.get(a)! > by_fn.get(b)!) { println("untyped: ${by_fn.get(site)!} in ${site}") }
+        for p in pairs.filter(it.new == null) { println(
+                "left: ${p.kind} ${p.old} at ${p.path}:${p.lo} `${snippet(disk, p.path, p.lo)}`",
+            ) }
     }
     "${typed} of the ${pairs.length} nodes the workspace types, ${if pairs.is_empty() { 0 } else { typed * 100 / pairs.length }}%; left most: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}"
 }
@@ -473,6 +483,7 @@ export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
     flags: [program_only, signatures, left, core, lowered, program_runs, generators]
     args: [file]
+    option only { description: "hold only the package's files whose path starts with this (`src/compiler/`)" }
     run: TapesCmd {}
 }
 
@@ -586,7 +597,7 @@ fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     mut statements = 0
     mut nodes = 0
     mut differing: List<string> = []
-    for path in package_sources(engine, disk.name, "src") {
+    for path in disk.held(engine) {
         let file = disk.file_at(path)
         for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
             let body? = elaborated_fn(engine, file, own.name) else { continue }
@@ -667,7 +678,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     mut fns = HeldUnits {}
     mut made = HeldUnits {}
     mut methods = HeldUnits {}
-    let paths = package_sources(engine, disk.name, "src")
+    let paths = disk.held(engine)
     let ids = [ws.file_id(joined_path(disk.root, p)) for p in paths]
     for id in ids { let _ = ws.parsed(id) }
     let scopes = [ws.visible(id) for id in ids]
