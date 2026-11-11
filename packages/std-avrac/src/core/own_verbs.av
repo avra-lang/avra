@@ -12,6 +12,10 @@ export enum OwnVerb {
     Got
     /// One more element written onto a list.
     Pushed
+    /// An element of a list written.
+    SetAt
+    /// The last element of a list, removed from it.
+    Popped
     /// A map's value under a key written.
     Put
     /// A cell made holding a value.
@@ -41,6 +45,8 @@ export once fn own_shapes() -> List<OwnShape> {
         "List"   | "first"  | OwnVerb.First
         "List"   | "last"   | OwnVerb.Last
         "List"   | "push"   | OwnVerb.Pushed
+        "List"   | "set"    | OwnVerb.SetAt
+        "List"   | "pop"    | OwnVerb.Popped
         "Map"    | "get"    | OwnVerb.Got
         "Map"    | "set"    | OwnVerb.Put
         "Cell"   | "new"    | OwnVerb.CellNew
@@ -62,12 +68,12 @@ impl OwnVerb {
     /// writes no value, and a receiver holding no such seat.
     fn stored_as(receiver: SignedType) -> SignedType? {
         match self {
-            .Pushed -> receiver.listed(),
+            .Pushed or .SetAt -> receiver.listed(),
             .Put -> receiver.mapped(),
             .CellSet -> receiver.args.first(),
             .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
             .CellPut -> receiver.args.first()?.mapped(),
-            .First or .Last or .Got or .CellNew or .CellGet or .Awaited -> null,
+            .First or .Last or .Popped or .Got or .CellNew or .CellGet or .Awaited -> null,
         }
     }
 
@@ -75,7 +81,7 @@ impl OwnVerb {
     fn on_the_type() -> bool {
         match self {
             .CellNew -> true,
-            .First or .Last or .Got or .Pushed or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
+            .First or .Last or .Got or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
         }
     }
 }
@@ -93,6 +99,13 @@ impl Lowering {
                 self.push_slot(list, self.stored_value(v, subject, args[0]))
                 self.nothing()
             },
+            .SetAt -> {
+                let list = self.opened_place(subject)
+                let at = self.lower(args[0])
+                self.slot_written(list, at, self.stored_value(v, subject, args[1]), false)
+                self.nothing()
+            },
+            .Popped -> self.popped(e, self.opened_place(subject)),
             .Put -> self.put(subject, args[0], args[1]),
             .CellNew -> self.cell_new(e, args[0]),
             .CellGet -> {
@@ -167,6 +180,23 @@ impl Lowering {
                 cx.stored(cell, cx.lifted(cx.element_at(held.l, xs, at), held.ty, held.opt))
             } else { cx -> }
         self.loaded(l, cell)
+    }
+
+    /// The last element of the list `list`, taken off it: a nullable scalar's presence read before
+    /// its word.
+    mut fn popped(e: ExprId, list: Reg) -> Reg {
+        match self.layout_at(e) {
+            .Maybe(value) -> {
+                let present = self
+                    .call_row(Layout.Truth, rt_sig_of("avra_array_last_present")!, [list])
+                self
+                    .pack(
+                        self.layout_at(e),
+                        [present, self.call_row(value, rt_sig_of("avra_array_pop")!, [list])],
+                    )
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(self.layout_at(e), rt_sig_of("avra_array_pop")!, [list]),
+        }
     }
 
     /// The value the map `subject` holds under `key`, present where the map's probe finds it.

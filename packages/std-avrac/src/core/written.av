@@ -81,18 +81,9 @@ impl Lowering {
         seat && self.store.place_root(subject)?.index == subject.index && self.mut_seat(name)
     }
 
-    /// Whether the seat `name` is one a write reaches through: a method's receiver, or a `mut` seat a
-    /// fn the body's item declares.
-    fn mut_seat(name: string) -> bool {
-        name == RECEIVER ||
-            self
-                .store
-                .stmt_ids()
-                .any(
-                    (s) -> (self.store.fn_parts(s)?.params ?? [])
-                        .any(it.name.of == name && it.promises.mutable),
-                )
-    }
+    /// Whether the seat `name` is one a write reaches through: a method's receiver, or one of the
+    /// body's `mut` seats.
+    fn mut_seat(name: string) -> bool { name == RECEIVER || self.written_seats.contains(name) }
 
     /// Whether a place is one whose root a `mut` binding's cell holds.
     fn in_cell(subject: ExprId) -> bool {
