@@ -230,7 +230,7 @@ export fn method_type(engine: QueryEngine, subject: SignedType, name: string) ->
     if subject.nullable() { return null }
     if subject.dynamic { return contract_method(engine, subject, name) }
     match subject.head {
-        .Declared(file, declared) -> impl_method(engine, file, declared, name),
+        .Declared(file, declared) -> impl_method(engine, file, declared, name) ?? shape_method(engine, subject, name),
         .Owned(word) -> own_verb(engine, "verbs/${word}.av", name, subject),
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
@@ -418,6 +418,15 @@ fn enum_property(
 
 /// The property every named type has, as a fn of the receiver: `of`, the shape it stands over. Absent
 /// for a type that isn't a named type.
+/// The method `name` the shape a named type stands over has, its receiver the named type: a read of
+/// a name sees its shape. Absent for any other type, or a shape with no such method.
+fn shape_method(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
+    let shape? = named_over(engine, subject) else { return null }
+    let m? = method_type(engine, shape, name) else { return null }
+    if m.seats.is_empty() { return null }
+    m with { seats: [m.seats[0] with { ty: subject }].concat(m.seats.drop(1)) }
+}
+
 fn named_property(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if name != NAMED_FIELD { return null }
     let shape? = named_over(engine, subject) else { return null }

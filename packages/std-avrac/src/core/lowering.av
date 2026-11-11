@@ -422,10 +422,26 @@ impl Lowering {
     /// What a value of `ty` is to the machine; a type whose layout isn't known is noted.
     mut fn laid_out(ty: SignedType) -> Layout {
         let laid? = self.program.checked.layout(ty) else {
-            self.missed("the layout of `${ty.spelled()}`")
+            self.missed("the layout of `${ty.spelled()}`${self.unlaid_part(ty, [])}")
             return Layout.Void
         }
         laid
+    }
+
+    /// Where `ty`, whose layout isn't known, holds the first part whose layout isn't: a field, a
+    /// variant's payload, or a type argument, followed down; or that it names no type at all;
+    /// nothing where every part is known.
+    fn unlaid_part(ty: SignedType, met: List<string>) -> string {
+        if met.contains(ty.spelled()) { return "" }
+        if ty.head is .Unnamed { return ", which names no type where it's read" }
+        let seen = met.concat([ty.spelled()])
+        let parts = [UnlaidPart { said: "its field `${f.name}`", ty: f.ty! } for f in self.fields_of(ty) ?? [] if f.ty != null]
+            .concat(
+                [UnlaidPart { said: "its variant `${v.name}`'s payload `${p.name}`", ty: p.ty! } for v in self.variants_of(ty) ?? [] for p in v.payloads if p.ty != null],
+            )
+            .concat([UnlaidPart { said: "its argument `${a.spelled()}`", ty: a } for a in ty.args])
+        let first? = parts.find((p) -> self.program.checked.layout(p.ty) == null) else { return "" }
+        ", ${first.said}${self.unlaid_part(first.ty, seen)}"
     }
 
     /// What `e`'s value is to the machine; an untyped node is noted.
@@ -1019,3 +1035,6 @@ export fn code_hash_target(symbol: string) -> string? {
 
 /// What a code hash's body is named by, before the fn whose hash it answers.
 const CODE_HASH_PREFIX: string = "avra.code_hash."
+
+/// A part of a type, as a layout's refusal names it, and its type.
+type UnlaidPart = { said: string, ty: SignedType }
