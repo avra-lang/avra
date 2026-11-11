@@ -2,6 +2,8 @@
 //! register typed by its layout. A node no rule lowers yet is named, never guessed at.
 use core.{
     CalledFn,
+    CalledSeat,
+    Defaulting,
     Expr,
     ExprId,
     FnWrapper,
@@ -278,7 +280,23 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
         external: false,
         plain: declared.params.all(plain_seat),
         type_params: declared.tparams.length,
+        params: called_seats(declared.params, fn_signature(engine, d.file, d.name)?.params ?? []),
     }
+}
+
+/// Each seat of `written`, signed as `signed` says, as a call fills it; none where one takes a
+/// `state` or `const` argument or isn't typed.
+fn called_seats(written: List<Param>, signed: List<SignedParam>) -> List<CalledSeat> {
+    if written.length != signed.length ||
+        written.any(it.state || it.promises.settled) ||
+        signed.any(it.ty == null) { return [] }
+    [CalledSeat {
+        name: s.name,
+        ty: s.ty!,
+        mutable: s.mutable,
+        defaulted: written[at].default != null,
+        rest: written[at].is_rest(),
+    } for at, s in signed]
 }
 
 /// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
@@ -355,7 +373,7 @@ fn default_callee(engine: QueryEngine, ty: SignedType, field: string) -> CalledF
         external: false,
         plain: true,
         owner: at.name,
-        defaulted: true,
+        defaulted: Defaulting.Field,
     }
 }
 
@@ -383,6 +401,28 @@ export fn lowered_field_default(
             stmt: stmt,
         },
         "${owner}.${field}\$default",
+        null,
+        checks,
+    )
+}
+
+/// The default the fn `file` declares as `owner` writes for its seat `seat`, lowered as a fn of nothing
+/// answering the seat's type. Absent where it writes none.
+export fn lowered_seat_default(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    seat: string,
+    checks: TaskChecks = TaskChecks.Tested,
+) -> LoweredFn? {
+    let signed? = signed_body(engine, file, owner) else { return null }
+    let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name.of == seat)?.default else { return null }
+    let ty? = signed.signature.params.find(it.name == seat)?.ty else { return null }
+    signed_lowered(
+        engine,
+        file,
+        signed with { signature: FnSignature { type_params: [], params: [], answer: ty, answer_width: null }, body: value },
+        "${owner}.${seat}\$default",
         null,
         checks,
     )

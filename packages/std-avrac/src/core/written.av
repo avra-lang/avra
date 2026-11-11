@@ -1,0 +1,110 @@
+//! A WRITTEN PLACE IS OPENED BY WHERE IT STANDS: a method's receiver, or the argument a `mut` seat
+//! writes through. One that rides a pointer, on a path below `self`, a `mut` seat or a `mut`
+//! binding's cell, is the path opened unique, so no other holder of what the path reaches sees the
+//! write. A `mut` binding's own name hands over its cell's box opened unique when the binding was
+//! seeded with a value read from a place, and thawed when it was made fresh for it, which copies only
+//! a box the binary laid out. One that rides no pointer, and the fn's own `self` or `mut` seat, is
+//! handed over as it is.
+
+/// How a written place's box is opened.
+export enum Opening {
+    /// The place opened along its path.
+    Path
+    /// A `mut` binding's cell opened unique.
+    Unique(cell: Reg)
+    /// A `mut` binding's cell thawed.
+    Thawed(cell: Reg)
+}
+
+impl Lowering {
+    /// How the written place `subject` is opened; absent for one that rides no pointer, or that
+    /// stands anywhere else.
+    fn written_opening(subject: ExprId) -> Opening? {
+        let ty? = self.type_at(subject) else { return null }
+        let l? = self.program.checked.layout(ty) else { return null }
+        if !l.pointer() { return null }
+        let root? = self.store.place_root(subject) else { return null }
+        let name? = self.root_name(subject) else { return null }
+        let b? = self.bound(name) else { return null }
+        if root.index != subject.index {
+            let opens = match b {
+                .Slot(_, _) -> true,
+                .Value(_, _) -> self.seat_named(name) && self.mut_seat(name),
+                .Outer(_, _, _) -> false,
+            }
+            return if opens { Opening.Path } else { null }
+        }
+        match b {
+            .Slot(cell, _) -> {
+                let lent? = self.seed_lent(cell) else { return null }
+                if lent { Opening.Unique(cell) } else { Opening.Thawed(cell) }
+            },
+            .Value(_, _) or .Outer(_, _, _) -> null,
+        }
+    }
+
+    /// The written place `subject`'s box, opened as `how` says.
+    mut fn opened_written(subject: ExprId, how: Opening) -> Reg {
+        match how {
+            .Path -> self.opened_place(subject),
+            .Unique(cell) -> self.call_row(self.layout_at(subject), rt_sig_of("avra_cell_unique")!, [cell]),
+            .Thawed(cell) -> self.call_row(self.layout_at(subject), rt_sig_of("avra_cell_thawed")!, [cell]),
+        }
+    }
+
+    /// The argument `a` a `mut` seat writes through, handed over as where it stands says; absent for
+    /// one that stands nowhere a write reaches back from.
+    mut fn written_arg(a: ExprId) -> Reg? {
+        if self.cell_rooted(a) || self.mut_seat_rooted(a) { return self.lower(a) }
+        let how? = self.written_opening(a) else { return null }
+        self.opened_written(a, how)
+    }
+
+    /// Whether a written place is read out of its cell as it is: a `mut` binding's own name, its cell
+    /// holding a value that rides no pointer.
+    fn cell_rooted(subject: ExprId) -> bool {
+        let ty? = self.type_at(subject) else { return false }
+        let l? = self.program.checked.layout(ty) else { return false }
+        !l.pointer() &&
+            self.store.place_root(subject)?.index == subject.index &&
+            self.in_cell(subject)
+    }
+
+    /// Whether a written place is a `mut` seat's own name, which the write reaches through.
+    fn mut_seat_rooted(subject: ExprId) -> bool {
+        let name? = self.root_name(subject) else { return false }
+        let b? = self.bound(name) else { return false }
+        let seat = match b {
+            .Value(_, _) -> self.seat_named(name),
+            .Slot(_, _) or .Outer(_, _, _) -> false,
+        }
+        seat && self.store.place_root(subject)?.index == subject.index && self.mut_seat(name)
+    }
+
+    /// Whether the seat `name` is one a write reaches through: a method's receiver, or a `mut` seat a
+    /// fn the body's item declares.
+    fn mut_seat(name: string) -> bool {
+        name == RECEIVER ||
+            self
+                .store
+                .stmt_ids()
+                .any(
+                    (s) -> (self.store.fn_parts(s)?.params ?? [])
+                        .any(it.name.of == name && it.promises.mutable),
+                )
+    }
+
+    /// Whether a place is one whose root a `mut` binding's cell holds.
+    fn in_cell(subject: ExprId) -> bool {
+        let name? = self.root_name(subject) else { return false }
+        let b? = self.bound(name) else { return false }
+        match b { .Slot(_, _) -> true, rest -> false }
+    }
+
+    /// The name a place is rooted in, absent for a value.
+    fn root_name(subject: ExprId) -> string? {
+        let root? = self.store.place_root(subject) else { return null }
+        let step? = self.store.place_step(root) else { return null }
+        match step { .Root(n) -> n.of, rest -> null }
+    }
+}

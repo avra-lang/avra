@@ -1,0 +1,14 @@
+//! The lowering rule of `defer` and `errdefer`: the lambda that is the statement's body boxed where
+//! the statement stands, its captures read now, and the box among what the scope it stands in ends,
+//! called where that scope ends or the fn leaves.
+use core.{Lowering, StmtId, StmtLowers, owned_type}
+use core.stmt.{Defer}
+
+impl StmtLowers for Defer {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let ty? = cx.type_at(self.body) else { return cx.stmt_unlowered(s) }
+        let box = cx.lower(self.body)
+        cx.deferred(box, cx.laid_out(ty.answer ?? owned_type("void")), self.on_error)
+        cx.reshaped()
+    }
+}

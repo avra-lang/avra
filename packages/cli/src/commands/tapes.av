@@ -131,20 +131,36 @@ impl Runnable for TapesCmd {
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
-        if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
-        if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
-        if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
-        let ws = root_workspace(root)
-        // every file the receipt reads is the workspace's before any is held to it
-        for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
-        if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
-        let files = package_sources(engine, disk.name, "src")
-        let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
-        for d in differing { println("differs: ${d}") }
-        println("tapes: ${files.length} read, ${differing.length} differing")
-        if args.has_flag("signatures") { println("typed: ${typed_share(engine, ws, disk, files, args.has_flag("left"))}") }
-        if differing.is_empty() { 0 } else { 1 }
+        let code = held(engine, disk, args, root, argued)
+        engine.frontier_kept()
+        let _ = store.saved()
+        eprintln("worked: ${engine.worked_count()} answers here; ${worked_by_query(engine)}")
+        code
     }
+}
+
+/// How many answers `engine` worked out here, by the query that asked each, inputs aside.
+fn worked_by_query(engine: QueryEngine) -> string {
+    mut counts: Map<string, int> = {}
+    for q in engine.computed_queries() { if !engine.input_named(q) { counts.set(q, (counts.get(q) ?? 0) + 1) } }
+    tallied(counts)
+}
+
+/// The receipt `args` names, held over the package on `disk`: its exit code.
+fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: string) -> int {
+    if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
+    if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
+    if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
+    let ws = root_workspace(root)
+    // every file the receipt reads is the workspace's before any is held to it
+    for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
+    if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
+    let files = package_sources(engine, disk.name, "src")
+    let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
+    for d in differing { println("differs: ${d}") }
+    println("tapes: ${files.length} read, ${differing.length} differing")
+    if args.has_flag("signatures") { println("typed: ${typed_share(engine, ws, disk, files, args.has_flag("left"))}") }
+    if differing.is_empty() { 0 } else { 1 }
 }
 
 /// The program layer alone: the package's store, its unknown files worked out across cores, then
@@ -1316,7 +1332,11 @@ fn callee_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>) -> Map<str
     mut renames: Map<string, string> = {}
     for c in callees.filter(it.parameters.is_empty() && it.given_by == null) {
         let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
-        let d = if c.defaulted { default_decl(ws, id, c.owner!, c.name) } else if c.owner == null { ws.visible(id).fn_decl(c.name) } else { method_decl(ws, id, c.owner!, c.name) }
+        let d = match c.defaulted {
+            .Field -> default_decl(ws, id, c.owner!, c.name),
+            .Seat -> seat_default_decl(ws, id, c.owner!, c.name),
+            .Not -> if c.owner == null { ws.visible(id).fn_decl(c.name) } else { method_decl(ws, id, c.owner!, c.name) },
+        }
         if d != null { renames.set(c.symbol, ws.decls.symbol(d!)) }
     }
     renames
@@ -1334,6 +1354,13 @@ fn default_decl(ws: Workspace, id: FileId, owner: string, field: string) -> Decl
         },
         rest -> null,
     }
+}
+
+/// The workspace's declaration of the default the fn `owner` names from the file `id` writes for its
+/// seat `seat`.
+fn seat_default_decl(ws: Workspace, id: FileId, owner: string, seat: string) -> DeclId? {
+    let f? = ws.visible(id).fn_decl(owner) else { return null }
+    ws.decls.default_named(f, seat)
 }
 
 /// The tag each of `tagged` has in a `dyn` box here, mapped to the one the workspace's lowering gives

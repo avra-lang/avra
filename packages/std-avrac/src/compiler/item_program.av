@@ -122,7 +122,8 @@ enum ReachedFn {
 }
 
 /// The body a call of `c` runs, lowered whole testing what `checks` says: the fn's, a method's or a
-/// static's, the body a trait gives a type that never writes the method, or a field's default, each
+/// static's, the body a trait gives a type that never writes the method, or a field's or a seat's
+/// default, each
 /// a generic one's unit under its layouts.
 fn reached_fn(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> ReachedFn {
     let f? = reached_body(engine, c, checks) else { return ReachedFn.Not("a call of a fn with no body here") }
@@ -133,7 +134,16 @@ fn reached_fn(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> ReachedFn
 /// The body a call of `c` runs, lowered testing what `checks` says; absent where its declaration
 /// gives none.
 fn reached_body(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> LoweredFn? {
-    if c.defaulted { return lowered_field_default(engine, c.file, c.owner!, c.name, checks) }
+    match c.defaulted {
+        .Field -> lowered_field_default(engine, c.file, c.owner!, c.name, checks),
+        .Seat -> lowered_seat_default(engine, c.file, c.owner!, c.name, checks),
+        .Not -> declared_body(engine, c, checks),
+    }
+}
+
+/// The body a call of the declared `c` runs, lowered testing what `checks` says: the fn's, a method's
+/// or a static's, or the body a trait gives a type that never writes the method.
+fn declared_body(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> LoweredFn? {
     let under = if c.parameters.is_empty() { null } else { c.parameters }
     let of? = c.of else { return lowered_under(engine, c.file, c.name, under, checks) }
     if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name, checks) }

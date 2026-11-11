@@ -1,0 +1,83 @@
+//! WHAT A CALL HANDS ITS SEATS: each argument lowered in the order it's written, into the seat its
+//! name or its place fills — a `mut` seat handed the place it writes through, opened as where it
+//! stands — then each seat in its own order; a seat no argument fills, its default's value; a seat
+//! taking the rest, one list of what's left.
+
+impl Lowering {
+    /// The registers a call of `callee` hands its seats, in the seats' order; absent for a call this
+    /// layer doesn't seat yet: one whose callee takes a `state` or `const` argument, one spreading a
+    /// record, a generic unit handed anything but plain positional arguments, and a `mut` seat's
+    /// argument standing where no write reaches back.
+    mut fn call_args(callee: CalledFn, args: List<ExprId>) -> List<Reg>? {
+        let named = args.any((a) -> self.store.names_its_seat(a))
+        if callee.plain && !named { return self.seated_args(callee, args) }
+        if callee.params.is_empty() || !callee.parameters.is_empty() { return null }
+        let rest = callee.params.find_index(it.rest)
+        if rest != null { return if named { null } else { self.rest_args(callee, rest!, args) } }
+        let seats = self.store.seat_plan(args, [p.name for p in callee.params])
+        let filling = [seats.index_of(at) for at in 0..args.length]
+        if filling.any(it < 0) || [j for j, i in seats if i < 0].any(!callee.params[it].defaulted) { return null }
+        let regs = [self.seat_arg(callee.params[filling[at]], self.store.unnamed(a)) for at, a in args]
+        if regs.any(it == null) { return null }
+        [if i >= 0 { regs[i]! } else { self.defaulted(callee, callee.params[j]) } for j, i in seats]
+    }
+
+    /// The seats before `callee`'s rest seat at `k` filled in order, then one list of every argument
+    /// past them, a spread one's elements joined in; a lone spread hands its list over as it stands.
+    mut fn rest_args(callee: CalledFn, k: int, args: List<ExprId>) -> List<Reg>? {
+        let before = [self.seat_arg(callee.params[at], a) for at, a in args.take(k)]
+        if before.length < k || before.any(it == null) { return null }
+        let extras = args.drop(k)
+        let spreads = [self.store.spread_operand(a) != null for a in extras]
+        let elem? = callee.params[k].ty.listed() else { return null }
+        let regs = [if spreads[at] { self.lower(self.store.spread_operand(a)!) } else { self.lowered_into(a, elem) } for at, a in extras]
+        let packed = if spreads.length == 1 && spreads[0] { regs[0] } else { self.listed(self.laid_out(callee.params[k].ty), regs, spreads) }
+        [r! for r in before].concat([packed])
+    }
+
+    /// The argument `a` into `seat`: the place a `mut` seat writes through, else its value lifted into
+    /// the seat's type. Absent for a spread, and for a `mut` seat's argument standing where no write
+    /// reaches back.
+    mut fn seat_arg(seat: CalledSeat, a: ExprId) -> Reg? {
+        if self.store.spread_operand(a) != null { return null }
+        if seat.mutable { self.written_arg(a) } else { self.lowered_into(a, seat.ty) }
+    }
+
+    /// The value the default `callee` writes for `seat` gives: a call of the default's own body.
+    mut fn defaulted(callee: CalledFn, seat: CalledSeat) -> Reg { self.call_fn(self.laid_out(seat.ty), callee.seat_default(seat.name), []) }
+
+    /// `regs` as one list of layout `l`, sized for each plain one and each spread one's length, then
+    /// each plain one pushed and each spread one's slots appended, in order.
+    mut fn listed(l: Layout, regs: List<Reg>, spreads: List<bool>) -> Reg {
+        mut size = self.const_int([s for s in spreads if !s].length)
+        for at, r in regs {
+            if spreads[at] {
+                size = self
+                    .bin(
+                        Layout.Word,
+                        BinOp.Add,
+                        size,
+                        self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [r]),
+                    )
+            }
+        }
+        let dst = self.call_row(l, rt_sig_of("avra_array_sized")!, [size])
+        for at, r in regs { if spreads[at] { self.run_row(rt_sig_of("avra_array_extend")!, [dst, r]) } else { self.push_slot(dst, r) } }
+        dst
+    }
+}
+
+impl CalledFn {
+    /// The fn whose body is the default this fn writes for its seat `seat`, as a call reaches it.
+    fn seat_default(seat: string) -> CalledFn {
+        CalledFn {
+            file: self.file,
+            name: seat,
+            symbol: "${self.symbol}.${seat}\$default",
+            external: false,
+            plain: true,
+            owner: self.name,
+            defaulted: Defaulting.Seat,
+        }
+    }
+}
