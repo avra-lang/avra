@@ -48,18 +48,23 @@ type SignedBody = {
     stmt: StmtId,
     receiver: SignedType? = null,
     want: Expected? = null,
+    /// What a generator an annotation on it names said instead of making its body.
+    unmade: string? = null,
 }
 
-/// The fn `file` declares as `name`, its body signed; absent when it declares none with a body.
+/// The fn `file` declares as `name`, its body signed; absent when it declares none with a body. A
+/// fn an annotation wraps is its wrapper.
 fn signed_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedBody? {
     let signature? = fn_signature(engine, file, name) else { return null }
-    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let annotated = annotated_body(engine, file, name)
+    let item? = annotated.wrapper ?? declaring_item(engine, file, name, ItemKind.Fn) else { return null }
     let stmt? = item.stmts.find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
     SignedBody {
         signature: signature,
         item: item,
         body: item.store.fn_parts(stmt)!.body,
         stmt: stmt,
+        unmade: annotated.said.first(),
     }
 }
 
@@ -182,14 +187,14 @@ fn fn_typed(leading: List<SignedSeat>, s: FnSignature) -> SignedType? {
 /// Where each node of the fn `file` declares as `name` stands, by its index in the item read back,
 /// for holding its types to another reading of the same text.
 export fn fn_body_spans(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<Span?> {
-    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return [] }
+    let item? = signed_body(engine, file, name)?.item else { return [] }
     [item.store.expr_span(ExprId { index: at }) for at in 0..item.store.exprs.count()]
 }
 
 /// The kind of each node of the fn `file` declares as `name`, by its place in the item read back,
 /// for measuring which rules are missing.
 export fn node_kinds(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
-    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return [] }
+    let item? = signed_body(engine, file, name)?.item else { return [] }
     [item.store.expr(ExprId { index: at }).surface().node for at in 0..item.store.exprs.count()]
 }
 

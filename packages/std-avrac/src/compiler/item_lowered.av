@@ -167,6 +167,18 @@ fn lowered_program(
         defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         meta_fn: (n: string) -> meta_callee(engine, n),
         home: template_home(file),
+        compared: (n: string) -> compared_value(engine, file, n),
+    }
+}
+
+/// Whether `name` names a const or a collection from `file`'s top level among written names: what a
+/// pattern's bare name compares with rather than binds.
+fn compared_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let scope? = file_scope(engine, file) else { return false }
+    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return false }
+    match d.kind {
+        .Const or .Collect -> true,
+        .Fn or .State or .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> false,
     }
 }
 
@@ -198,7 +210,7 @@ fn unit_name(name: string, parameters: List<ParameterLayout>?) -> string {
 /// an annotation may make what it does.
 fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> string? {
     if parameters?.length ?? 0 != signed.signature.type_params.length { return "a generic fn" }
-    if !signed.item.store.annotations_of(signed.stmt).is_empty() { return "an annotated fn, whose body its annotation may make" }
+    if signed.unmade != null { return "an annotated fn whose annotation made nothing: ${signed.unmade!}" }
     let params = signed.item.store.fn_parts(signed.stmt)!.params
     if params.any(it.ty == null) { return "an untyped seat" }
     if params.any(it.state || it.promises.settled) { return "a `state` or `const` seat" }
