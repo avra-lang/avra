@@ -1,7 +1,16 @@
 //! WHAT A TYPE'S METHODS ARE: every impl in the type's package whose target, resolved from the impl's
 //! own file, is that very declaration — never one that only shares its name, and never missing one
 //! written under an import's other name — and each method signed under the impl's type parameters.
-use core.{NAMED_FIELD, SignedSeat, SignedType, TypeHead, headed_type, owned_type}
+use core.{
+    NAMED_FIELD,
+    SignedSeat,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    TypeHead,
+    headed_type,
+    owned_type,
+}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -148,15 +157,29 @@ fn written_signature(signing: Signing, written: WrittenFn) -> FnSignature {
     }
 }
 
-/// The method `name` an impl gives, signed under the impl's type parameters and its own; absent
-/// when it gives none.
-@query
-export fn method_signature(engine: QueryEngine, at: ImplAt, name: string) -> FnSignature? {
+/// Every method an impl gives, signed under the impl's type parameters and its own: one part per
+/// name, so the impl is read once for every method asked of it.
+@parted_query
+export fn impl_signatures(engine: QueryEngine, at: ImplAt) -> AnswerParts {
     let item = read_item(engine, at.file, at.item)
     let impl_fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null]
         .concat([c!.fns for s in item.stmts for c in [item.store.component_parts(s)] if c != null])
         .first() ?? []
-    let written? = written_fn(item.store, impl_fns, name) else { return null }
+    let names = [n! for s in impl_fns for n in [written_name(item.store, s)] if n != null]
+    answer_parts(
+        [NamedValue {
+            name: n,
+            value: impl_signed(engine, at, written_fn(item.store, impl_fns, n)!).saved_bytes(),
+        } for i, n in names if names.index_of(n) == i],
+    )
+}
+
+/// The name the fn or extern `s` declares, absent for any other statement.
+fn written_name(store: SyntaxArena, s: StmtId) -> string? { store.fn_parts(s)?.name ?? store.extern_parts(s)?.name }
+
+/// What a method `written` in the impl at `at` is, signed under the impl's type parameters and its
+/// own.
+fn impl_signed(engine: QueryEngine, at: ImplAt, written: WrittenFn) -> FnSignature {
     let type_params = at.params.concat(written.type_params)
     let signing = Signing {
         engine: engine,
@@ -170,6 +193,13 @@ export fn method_signature(engine: QueryEngine, at: ImplAt, name: string) -> FnS
         answer: signing.signed(written.ret),
         answer_width: null,
     }
+}
+
+/// The method `name` an impl gives, signed under the impl's type parameters and its own; absent
+/// when it gives none.
+export fn method_signature(engine: QueryEngine, at: ImplAt, name: string) -> FnSignature? {
+    let part? = impl_signatures_part(engine, at, name) else { return null }
+    FnSignature.from_saved_bytes(part)
 }
 
 /// The fn type of the method `name` on a value of `subject`'s type, its receiver the first seat and
