@@ -179,15 +179,56 @@ fn owned_only(t: SignedType) -> SignedType? { match t.head { .Owned(_) -> t, res
 /// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number or a
 /// truth by one instruction.
 fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) -> Reg {
-    let kind? = operands(cx, l, r) else { return compared_beyond(cx, negated, l, r) ?? uncompared(cx, e, l, r) }
+    let kind? = operands(cx, l, r) else {
+        return compared_beyond(cx, negated, l, r) ?? compared_held(cx, negated, l, r) ?? uncompared(
+            cx,
+            e,
+            l,
+            r,
+        )
+    }
     let a = cx.lower(l)
     let b = cx.lower(r)
-    let row = match kind {
-        .Text -> "avra_streq",
-        .Octets -> "avra_bytes_eq",
-        .Number or .Truth -> { return cx.bin(Layout.Truth, if negated { BinOp.Ne } else { BinOp.Eq }, a, b) },
+    match kind {
+        .Number or .Truth -> cx.bin(Layout.Truth, if negated { BinOp.Ne } else { BinOp.Eq }, a, b),
+        .Text or .Octets -> {
+            let same = owned_same(cx, kind, a, b)
+            if negated { cx.not(same) } else { same }
+        },
     }
-    let same = cx.call_row(Layout.Truth, rt_sig_of(row)!, [a, b])
+}
+
+/// Whether two values of a type the language owns, of the operand kind `kind`, are one value.
+fn owned_same(mut cx: Lowering, kind: Operand, a: Reg, b: Reg) -> Reg {
+    match kind {
+        .Text -> cx.call_row(Layout.Truth, rt_sig_of("avra_streq")!, [a, b]),
+        .Octets -> cx.call_row(Layout.Truth, rt_sig_of("avra_bytes_eq")!, [a, b]),
+        .Number or .Truth -> cx.bin(Layout.Truth, BinOp.Eq, a, b),
+    }
+}
+
+/// `l == r`, or `l != r` when `negated`, where one side is a nullable of a type the language owns and
+/// the other a present value of that type: one value where the nullable holds one equal to it.
+/// Absent, with nothing emitted, for any other operands.
+fn compared_held(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? {
+    let lt? = cx.type_at(l) else { return null }
+    let rt? = cx.type_at(r) else { return null }
+    let opt = if lt.nullable() { lt } else { rt }
+    let plain = if lt.nullable() { rt } else { lt }
+    if plain.nullable() ||
+        !opt.nullable() ||
+        opt.absence() ||
+        opt.unwrapped().spelled() != plain.spelled() ||
+        plain.dynamic ||
+        !plain.args.is_empty() { return null }
+    let ours? = owned_only(plain) else { return null }
+    let kind? = operand_of(cx.laid_out(ours)) else { return null }
+    let a = cx.lower(l)
+    let b = cx.lower(r)
+    let held = if lt.nullable() { a } else { b }
+    let other = if lt.nullable() { b } else { a }
+    let same = cx
+        .region(cx.present(held, opt), Layout.Truth) { cx -> owned_same(cx, kind, cx.carried(held, opt), other) } else { cx -> cx.const_bool(false) }
     if negated { cx.not(same) } else { same }
 }
 

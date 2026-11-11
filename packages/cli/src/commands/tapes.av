@@ -68,6 +68,7 @@ use @std.avrac.compiler.{
     ItemKind,
     elaborated_fn,
     generated_at,
+    generated_declares,
     lowered_fn,
     lowered_generic,
     lowered_unit_of,
@@ -84,13 +85,15 @@ use @std.avrac.compiler.{
     quarrel,
     ProgramCall,
     made_generator,
-    derive_sites,
+    generator_sites,
+    declares_over_fn,
+    GeneratorAt,
+    GeneratorKind,
     item_difference,
     site_generated,
     generator_run,
     MadeProgram,
     Missed,
-    TraitAt,
     LoweredFn,
     resolved_in,
     respelled_origins,
@@ -472,14 +475,17 @@ export command tapes {
     run: TapesCmd {}
 }
 
-/// Each generator the package's traits write, made on the program layer with every body it reaches,
-/// one not made counted by why; and each made one run over every declaration a `@derive` names its
-/// trait on, each site's item spliced and held to the site before it, which it must differ from.
+/// Each generator the package writes, a trait's `derive` and a declaring annotation's fn, made on the
+/// program layer with every body it reaches, one not made counted by why; and each made one run over
+/// every declaration that names it, each site's item spliced and held to the site before it, which
+/// it must differ from.
 /// Answers 1 when a made generator says anything or splices nothing. What its items mean is held by
 /// `--signatures` and `--lowered`.
 fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     let sources = package_sources(engine, disk.name, "src")
     mut written = 0
+    mut annotations = 0
+    mut annotation_sites = 0
     mut made = 0
     mut unmade: Map<string, int> = {}
     mut sites = 0
@@ -490,38 +496,40 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     mut held_before: SyntaxTape? = null
     for path in sources {
         let file = disk.file_at(path)
-        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Trait) {
-            let t = TraitAt { file: file, name: own.name }
+        for g in written_generators(engine, file) {
             let missed: Cell<List<Missed>> = Cell.new([])
-            let m? = made_generator(engine, t, missed) else { continue }
+            let m? = made_generator(engine, g, missed) else { continue }
             written = written + 1
+            if g.kind == GeneratorKind.Annotation { annotations = annotations + 1 }
             let l = match m {
                 .Made(l) -> l,
                 .Unmade(why, at) -> {
                     let each = missed.get()
                     if each.is_empty() { unmade.set(why, (unmade.get(why) ?? 0) + 1) }
-                    if each.is_empty() && shown { println("left: ${why} in ${path} ${own.name}'s generator, at ${at}") }
+                    if each.is_empty() && shown { println("left: ${why} in ${path} ${g.name}'s generator, at ${at}") }
                     for x in each {
                         unmade.set(x.why, (unmade.get(x.why) ?? 0) + 1)
-                        if shown { println("left: ${x.why} in ${own.name}'s generator, at ${x.symbol}") }
+                        if shown { println("left: ${x.why} in ${g.name}'s generator, at ${x.symbol}") }
                     }
                     continue
                 },
             }
             made = made + 1
-            println("made: ${path} ${own.name}'s generator, ${l.fns.length} bodies")
+            println("made: ${path} ${g.name}'s generator, ${l.fns.length} bodies")
             for over in sources {
                 let at = disk.file_at(over)
-                for site in derive_sites(engine, at) {
-                    if site.generator.name != own.name ||
+                for site in generator_sites(engine, at) {
+                    if site.generator.name != g.name ||
+                        site.generator.kind != g.kind ||
                         spelled_file(site.generator.file) != spelled_file(file) { continue }
                     sites = sites + 1
-                    directives = directives + directives_made(engine, l, t, at, site.name)
+                    if g.kind == GeneratorKind.Annotation { annotation_sites = annotation_sites + 1 }
+                    directives = directives + directives_made(engine, l, g, at, site.name)
                     let item = site_generated(engine, at, site)
                     let tape = item.items.first()?.tape
                     let fails = if !item.said.is_empty() { "it said ${item.said[0]}" } else if tape == null { "it made nothing" } else if item.items.length > 1 { "${item.items.length} items" } else { null }
                     if fails != null {
-                        failing.push("${over} ${site.name}'s ${own.name}: ${fails!}")
+                        failing.push("${over} ${site.name}'s ${g.name}: ${fails!}")
                         continue
                     }
                     spliced = spliced + 1
@@ -535,7 +543,7 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     }
     for f in failing { println("fails: ${f}") }
     println(
-        "generators: ${written} written, ${made} made on the program layer, run over ${sites} declarations making ${directives} directives; not made yet: ${tallied(unmade)}",
+        "generators: ${written} written (${annotations} by annotations), ${made} made on the program layer, run over ${sites} declarations (${annotation_sites} by annotations) making ${directives} directives; not made yet: ${tallied(unmade)}",
     )
     println(
         "generated items: ${spliced} of ${sites} spliced, ${failing.length} failing; ${witnessed}",
@@ -548,14 +556,23 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
 fn directives_made(
     engine: QueryEngine,
     l: Lowered,
-    t: TraitAt,
+    g: GeneratorAt,
     file: SourceFileAddress,
     name: string,
 ) -> int {
-    match generator_run(engine, l, t, file, name, budgets_of()) {
+    match generator_run(engine, l, g, file, name, budgets_of()) {
         .Ran(made, _) -> made.length,
         .Stopped(_) -> 0,
     }
+}
+
+/// The generators `file` writes: each trait's `derive`, then each declaring annotation's fn.
+fn written_generators(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorAt> {
+    let names = file_declares(engine, file).names
+    [GeneratorAt { file: file, name: d.name, kind: GeneratorKind.Derive } for d in names if d.kind == ItemKind.Trait]
+        .concat(
+            [GeneratorAt { file: file, name: d.name, kind: GeneratorKind.Annotation } for d in names if d.kind == ItemKind.Fn && d.exported && declares_over_fn(engine, file, d.name)],
+        )
 }
 
 /// Every fn of the package elaborated: each sugar a meaning rewrote, and whether the core it means
@@ -647,6 +664,7 @@ fn snippet(disk: Disk, path: string, lo: int) -> string {
 /// each fn met. Answers 1 when any differs.
 fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
     mut fns = HeldUnits {}
+    mut made = HeldUnits {}
     mut methods = HeldUnits {}
     let paths = package_sources(engine, disk.name, "src")
     let ids = [ws.file_id(joined_path(disk.root, p)) for p in paths]
@@ -664,6 +682,23 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             let generic = signature != null && !signature!.type_params.is_empty()
             if !generic { wants = wants.concat(lowered_unit_of(ws, ws.decls.plain_want(d)).wants) }
             fns
+                .hold(
+                    ws,
+                    disk,
+                    "${path} ${own.name}",
+                    mine,
+                    ws.decls.plain_want(d),
+                    declared_symbol(file, own.name),
+                    shown,
+                )
+        }
+        let written = file_declares(engine, file).names
+        for own in generated_declares(engine, file)
+            .names
+            .filter((g) -> g.kind == ItemKind.Fn && !written.any(it.name == g.name)) {
+            let d? = file_fn_decl(ws, ws.file_id(joined_path(disk.root, path)), own.name) else { continue }
+            let mine? = lowered_fn(engine, file, own.name) else { continue }
+            made
                 .hold(
                     ws,
                     disk,
@@ -706,12 +741,13 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     let defaults = wanted.defaults
     let differing = fns
         .differing
+        .concat(made.differing)
         .concat(methods.differing)
         .concat(generic.differing)
         .concat(defaults.differing)
     if shown { for d in differing { println("differs: ${d}") } }
     println(
-        "lowered: ${fns.whole} of ${fns.units} fns whole, ${fns.alike} held alike to the workspace's (${fns.tested} with the cancel test after a call and ${fns.ticked} with the tick at a loop's back edge held alike, ${fns.theirs_alone} past a cancel test only the workspace's has cut, ${fns.ours_alone} past one only this layer's has cut, ${fns.edges_alone} past a tick only one side reads cut, ${fns.lambdas} lambdas lifted alike, ${fns.statics} statics laid out alike), ${fns.reshaped} lowered through a meaning the workspace shapes otherwise; ${methods.whole} of ${methods.units} methods whole, ${methods.alike} held alike (${methods.reshaped} through such a meaning); ${defaults.alike} trait defaults held alike of ${defaults.whole} whole of ${defaults.units} wanted (${defaults.reshaped} through such a meaning); ${generic.alike} generic units held alike of ${generic.whole} whole of ${generic.units} wanted (${generic.reshaped} through such a meaning), ${differing.length} differing; not lowered yet: ${tallied(fns.missing)}; methods not lowered yet: ${tallied(methods.missing)}; trait defaults not lowered yet: ${tallied(defaults.missing)}; generic units not lowered yet: ${tallied(generic.missing)}",
+        "lowered: ${fns.whole} of ${fns.units} fns whole, ${fns.alike} held alike to the workspace's (${fns.tested} with the cancel test after a call and ${fns.ticked} with the tick at a loop's back edge held alike, ${fns.theirs_alone} past a cancel test only the workspace's has cut, ${fns.ours_alone} past one only this layer's has cut, ${fns.edges_alone} past a tick only one side reads cut, ${fns.lambdas} lambdas lifted alike, ${fns.statics} statics laid out alike), ${fns.reshaped} lowered through a meaning the workspace shapes otherwise; ${made.whole} of ${made.units} generated fns whole, ${made.alike} held alike; ${methods.whole} of ${methods.units} methods whole, ${methods.alike} held alike (${methods.reshaped} through such a meaning); ${defaults.alike} trait defaults held alike of ${defaults.whole} whole of ${defaults.units} wanted (${defaults.reshaped} through such a meaning); ${generic.alike} generic units held alike of ${generic.whole} whole of ${generic.units} wanted (${generic.reshaped} through such a meaning), ${differing.length} differing; not lowered yet: ${tallied(fns.missing)}; generated fns not lowered yet: ${tallied(made.missing)}; methods not lowered yet: ${tallied(methods.missing)}; trait defaults not lowered yet: ${tallied(defaults.missing)}; generic units not lowered yet: ${tallied(generic.missing)}",
     )
     if differing.is_empty() { 0 } else { 1 }
 }
@@ -1335,11 +1371,20 @@ fn callee_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>) -> Map<str
         let d = match c.defaulted {
             .Field -> default_decl(ws, id, c.owner!, c.name),
             .Seat -> seat_default_decl(ws, id, c.owner!, c.name),
-            .Not -> if c.owner == null { ws.visible(id).fn_decl(c.name) } else { method_decl(ws, id, c.owner!, c.name) },
+            .Not -> if c.owner == null { file_fn_decl(ws, id, c.name) } else { method_decl(ws, id, c.owner!, c.name) },
         }
         if d != null { renames.set(c.symbol, ws.decls.symbol(d!)) }
     }
     renames
+}
+
+/// The workspace's top-level declaration of `name` the file `id` sees: one it binds, else one its
+/// annotations generated there.
+fn file_fn_decl(ws: Workspace, id: FileId, name: string) -> DeclId? {
+    ws.visible(id).fn_decl(name) ?? ws
+        .decls
+        .decls_of_file(id)
+        .find((d) -> ws.decls.decl(d).parent == null && ws.decls.decl(d).name == name)
 }
 
 /// The workspace's declaration of the default the record `owner` names from the file `id` writes for

@@ -1,9 +1,36 @@
 use @std.io.{env}
+use @std.process.{cmd, inherited, status_of, tool_at}
 use @std.text.{parse_int}
 use @std.time.{ms, sleep}
 
-let count = 1000000 * (parse_int(env("POOL_MB") ?? "100") ?? 100) / 8
-let xs = [i for i in 0..count]
+/// The number an environment variable names, or `fallback`.
+fn env_int(name: string, fallback: int) -> int { parse_int(env(name) ?? "") ?? fallback }
+
+/// How many numbers a list of `mb` megabytes holds.
+fn held_in(mb: int) -> int { 1000000 * mb / 8 }
+
+/// A list of `mb` megabytes made and dropped: how many it held.
+fn peaked(mb: int) -> int {
+    let xs = [i for i in 0..held_in(mb)]
+    xs.length
+}
+
+/// This program run again as a child holding `mb` megabytes: its exit status and what it said.
+fn child_said(mb: int) -> string {
+    let c = cmd(tool_at("probe", env("POOL_SELF") ?? ""), []) with { env: inherited().with_var("POOL_MB", "${mb}").with_var("PEAK_MB", "0").with_var("CHILD_MB", "0") }
+    match c.outcome() {
+        .Ok(ran) -> "child ${status_of(ran.exit)}: ${ran.out.stdout}${ran.out.stderr}",
+        .Err(_) -> "child unstarted",
+    }
+}
+
+if env_int("PEAK_MB", 0) > 0 {
+    println("peaked ${peaked(env_int("PEAK_MB", 0))}")
+}
+if env_int("CHILD_MB", 0) > 0 {
+    println(child_said(env_int("CHILD_MB", 0)))
+}
+let xs = [i for i in 0..held_in(env_int("POOL_MB", 100))]
 println("allocated ${xs.length}")
-sleep(ms(parse_int(env("HOLD_MS") ?? "0") ?? 0))
+sleep(ms(env_int("HOLD_MS", 0)))
 println("done ${xs[xs.length - 1]}")

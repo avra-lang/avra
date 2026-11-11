@@ -6,6 +6,7 @@
 //! and sublanguages are spaces apart. A file's scope holds only what is its own; the rest is read
 //! by name where it stands.
 use core.{distinct}
+use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -234,16 +235,46 @@ impl Resolution {
     fn named() -> DeclaredName? { match self { .Named(d) -> d, _ -> null } }
 }
 
-/// What `name` names in `space` from `file`'s top level: the file's own, else its module's shared
-/// winner, else its siblings' kept-apart declarations, else the prelude's. A file that isn't there
-/// names nothing. One question per name, so what reads a name depends on that name alone.
+/// What `name` names in `space` from `file`'s top level: what written names name, and only where
+/// they leave it unbound, what its module's generators declare. A file that isn't there names
+/// nothing. One question per name, so what reads a name depends on that name alone, and a name
+/// something writes never asks what generators make.
 @query
 export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
     let scope? = file_scope(engine, file) else { return Resolution.Unbound }
-    resolved_in(engine, scope, file, space, name)
+    let written = resolved_in(engine, scope, file, space, name)
+    match written {
+        .Unbound -> if written_elsewhere(engine, scope, file, space, name) { written } else { generated_resolution(engine, file, space, name) },
+        .Named(_) or .KeptApart(_) -> written,
+    }
 }
 
-/// What `name` names in `space` from the top level of `file`, whose scope is `scope`.
+/// Whether `name` is the language's own type, or written names bind it in a space but `space`: a
+/// name something writes never asks what generators make, in any space.
+fn written_elsewhere(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    space: Space,
+    name: string,
+) -> bool {
+    builtin_type_name(avra().rows.types, name) ||
+        SPACES.any((s) -> s != space && resolved_in(engine, scope, file, s, name).named() != null)
+}
+
+/// Every space a name is bound in.
+const SPACES: List<Space> = [Space.Value, Space.Type, Space.Syntax]
+
+/// What a declaration a generator of `file`'s module made names as `name` in `space`; unbound for none.
+fn generated_resolution(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
+    let d? = generated_declarations_of(engine, file.package_name, module_segments(file), true, name)
+        .find(space_of(it.kind) == space) else { return Resolution.Unbound }
+    Resolution.Named(d)
+}
+
+/// What `name` names in `space` from the top level of `file`, whose scope is `scope`, among written
+/// names alone: the file's own, else its module's shared winner, else its siblings' kept-apart
+/// declarations, else the prelude's.
 export fn resolved_in(
     engine: QueryEngine,
     scope: FileScope,

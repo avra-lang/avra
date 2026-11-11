@@ -573,6 +573,9 @@ static void acc_report(void) {
 static int64_t g_mem_ceiling;
 static int64_t g_mem_next;
 int64_t avra_pool_allowed(int64_t in_use);
+int64_t avra_pool_let_go(int64_t in_use);
+int64_t avra_pool_spare_at(void);
+int64_t avra_pool_held(void);
 int64_t avra_pool_free_bytes(void);
 #endif
 
@@ -648,9 +651,32 @@ static int64_t mem_in_use(void) {
 #endif
 }
 
+// What the allocator keeps of freed memory, handed back to the system: a slot given back is
+// memory the machine can have, not only memory this process no longer counts.
+static void mem_relieved(void) {
+#ifdef __APPLE__
+    malloc_zone_pressure_relief(NULL, 0);
+#else
+    malloc_trim(0);
+#endif
+}
+
+// The in-use at or under which a slot this process holds goes back, as a point on the ledger:
+// crossing it downward looks again. INT64_MIN while nothing could go back.
+static int64_t g_mem_low = INT64_MIN;
+
+// The next looks, up and down, from `used` measured while the ledger read `live`.
+static void mem_looks(int64_t live, int64_t used, int64_t allowed) {
+    int64_t limit = allowed < g_mem_ceiling ? allowed : g_mem_ceiling;
+    g_mem_next = live + (limit - used);
+    int64_t spare = avra_pool_spare_at();
+    g_mem_low = spare == INT64_MIN ? INT64_MIN : live - (used - spare);
+}
+
+// `taking` is what the caller is about to take: the look judges the use it is about to have.
 __attribute__((noinline, cold))
-static void mem_ceiling_measure(void) {
-    int64_t used = mem_in_use();
+static void mem_ceiling_measure(int64_t taking) {
+    int64_t used = mem_in_use() + taking;
     if (used > g_mem_ceiling) {
         char msg[96];
         avra_fmt(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
@@ -669,22 +695,57 @@ static void mem_ceiling_measure(void) {
         }
         avra_trap(msg); // LICENSED traps.process_limit: the pool is a limit of the machine
     }
-    int64_t limit = allowed < g_mem_ceiling ? allowed : g_mem_ceiling;
-    g_mem_next = g_live_bytes + (limit - used);
+    mem_looks(g_live_bytes + taking, used, allowed);
 }
 #endif
 
-static inline void mem_ceiling_check(void) {
+// THE POOL IS HELD FOR WHAT IS IN USE, NEVER FOR A PEAK: the slots this process's memory no
+// longer fills go back to the machine. Asked when the ledger falls past its low look, and
+// before a run waits on a child.
+__attribute__((noinline, cold))
+void avra_mem_settle(void) {
 #if AVRA_MEASURES_MEMORY
-    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_next, 0)) mem_ceiling_measure();
+    if (g_mem_ceiling <= 0) return;
+    int64_t used = mem_in_use();
+    int64_t held = avra_pool_held();
+    int64_t allowed = avra_pool_let_go(used);
+    if (avra_pool_held() < held) mem_relieved();
+    mem_looks(g_live_bytes, used, allowed);
 #endif
+}
+
+static inline void mem_ceiling_check(int64_t taking) {
+#if AVRA_MEASURES_MEMORY
+    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes + taking > g_mem_next, 0)) mem_ceiling_measure(taking);
+#else
+    (void)taking;
+#endif
+}
+
+#if AVRA_MEASURES_MEMORY
+// Memory handed back to the system, then the pool settled.
+__attribute__((noinline, cold))
+static void freed_settled(void* p) {
+    free(p);
+    avra_mem_settle();
+}
+#endif
+
+// Memory handed back to the system: past the low look, the pool hears of it. Out of line, so a
+// caller's free branch stays a tail call and the compare costs no caller a frame.
+__attribute__((noinline))
+static void mem_freed(void* p) {
+#if AVRA_MEASURES_MEMORY
+    if (__builtin_expect(g_live_bytes < g_mem_low, 0)) { freed_settled(p); return; }
+#endif
+    free(p);
 }
 
 // Fresh memory from the system, past the ceiling's check: one call in
 // the caller either way, so the check adds nothing to a caller's size.
 __attribute__((noinline))
 static void* fresh(size_t n) {
-    mem_ceiling_check();
+    mem_ceiling_check((int64_t)n);
     return malloc(n);
 }
 
@@ -829,7 +890,7 @@ static void box_free(void* p) {
         g_free[cls] = h;
         g_free_len[cls]++;
     } else {
-        free(h);
+        mem_freed(h);
     }
 }
 
@@ -1067,7 +1128,7 @@ static char* sized_moved(char* p, size_t need) {
         }
         return out;
     }
-    mem_ceiling_check();
+    mem_ceiling_check((int64_t)(sizeof(Header) + room + 1));
     Header* moved = (Header*)realloc(h, sizeof(Header) + room + 1);
     if (moved == NULL) avra_trap("out of memory growing a value in place");
     return (char*)(moved + 1);
@@ -1501,7 +1562,7 @@ static void buf_free(int64_t* buf, int64_t cap) {
         g_buf_free[cls] = buf;
         g_buf_free_len[cls]++;
     } else {
-        free(buf);
+        mem_freed(buf);
     }
 }
 
@@ -1626,7 +1687,7 @@ static void array_grow(AvraArray* a, void* pusher) {
         memcpy((uint8_t*)(buf + cap), a->marks, (size_t)old_cap);
         if (!fixed) buf_free(a->data, old_cap);
     } else {
-        mem_ceiling_check();
+        mem_ceiling_check((int64_t)buf_bytes(cap));
         buf = (int64_t*)realloc(a->data, buf_bytes(cap));
         acc_add(ACC_BUF, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)));
         if (g_acc_on > 0) { acc_buf(old_cap, -(int64_t)buf_bytes(old_cap), -1); acc_buf(cap, (int64_t)buf_bytes(cap), 1); }
@@ -2428,7 +2489,7 @@ static inline int64_t index_words(AvraMap* m) { return m->index ? m->icap + 1 : 
 
 static void index_free(AvraMap* m) {
     acc_add(ACC_INDEX, -index_words(m) * (int64_t)sizeof(int64_t));
-    if (m->index) free(m->index - 1);
+    if (m->index) mem_freed(m->index - 1);
     m->index = NULL;
     m->icap = 0;
 }
@@ -2444,7 +2505,7 @@ static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
     m->index = words + 1;
     m->icap = icap;
     acc_add(ACC_INDEX, index_words(m) * (int64_t)sizeof(int64_t));
-    mem_ceiling_check();
+    mem_ceiling_check(0);
     uint64_t mask = (uint64_t)icap - 1;
     for (int64_t s = 0; s < m->keys->len; s++) {
         uint64_t h = key_hash(keyed, (const char*)(uintptr_t)m->keys->data[s]);
@@ -4700,6 +4761,7 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     // a buffered stdout is flushed at the seam, or a pipe reorders
     fflush(NULL);
     pid_t pid;
+    avra_mem_settle();
     int started = posix_spawnp(&pid, prog, NULL, NULL, argv, environ);
     free(argv);
     if (started != 0) return 127;
@@ -4730,6 +4792,7 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
     if (posix_spawn_file_actions_init(&acts) != 0) { free(argv); return 127; }
     if (AVRA_ADDCHDIR(&acts, dir) != 0) { posix_spawn_file_actions_destroy(&acts); free(argv); return 127; }
     pid_t pid;
+    avra_mem_settle();
     int started = posix_spawnp(&pid, prog, &acts, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&acts);
     free(argv);

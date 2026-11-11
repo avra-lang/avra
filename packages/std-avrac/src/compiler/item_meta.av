@@ -19,10 +19,12 @@ use @std.meta.{
     Annotation as MetaAnnotation,
     Code as MetaCode,
     Field as MetaField,
+    Fn as MetaFn,
     Kind,
     Mark as MetaMark,
     MarkArg as MetaMarkArg,
     Node as MetaNode,
+    Param as MetaParam,
     Seat as MetaSeat,
     Type as MetaType,
     Variant as MetaVariant,
@@ -37,6 +39,38 @@ use @std.text.{text_before}
 export fn meta_of_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaType? {
     [t! for d in file_declares(engine, file).names if d.name == name for t in [declared_meta(engine, d)] if t != null]
         .first()
+}
+
+/// The fn `file` writes as `name`, as `@std/meta`'s `Fn`: each seat its name, its type as written
+/// and that type's shape, the promises it makes; its answer as written and as a shape; and the
+/// annotations it wears. Read as written, never as what an annotation on it made. Absent when it
+/// writes no fn of that name.
+export fn meta_of_fn_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaFn? {
+    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let item = read_item(engine, file, d.item)
+    let s? = item.stmts.find((x) -> item.store.fn_parts(x)?.name == name) else { return null }
+    let sig? = fn_signature(engine, file, name) else { return null }
+    let parts = item.store.fn_parts(s)!
+    MetaFn {
+        name: name,
+        params: [param_meta(p, sig.params[j].ty) for j, p in parts.params],
+        answer: spelled(parts.ret),
+        at: null,
+        answers: signed_kind(sig.answer),
+        annotations: [annotation_meta(item.store, a) for a in item.store.annotations_of(s)],
+    }
+}
+
+/// A fn's seat as a `Param`: its name, its type as written and `signed`'s shape, its promises.
+fn param_meta(p: Param, signed: SignedType?) -> MetaParam {
+    MetaParam {
+        name: p.name.of,
+        ty: if p.ty == null { "" } else { spelled(p.ty!) },
+        mutable: p.promises.mutable,
+        settled: p.promises.settled,
+        at: null,
+        kind: if signed == null { Kind.Unspelled("") } else { signed_kind(signed!) },
+    }
 }
 
 /// A declaration as a `Type`, absent for one that declares no type with fields, variants or a shape.

@@ -132,6 +132,22 @@ int64_t avra_pool_allowed(int64_t in_use) {
     return FREE_BYTES + (int64_t)g_held_count * SLOT_BYTES;
 }
 
+// The use at or under which this process holds a slot it does not fill: one slot gone still
+// leaves a whole slot of room, twice the half `avra_pool_allowed` asks for, so a run hovering at
+// a boundary neither takes nor gives back on every look. INT64_MIN while it holds none.
+int64_t avra_pool_spare_at(void) {
+    return g_held_count > 0 ? FREE_BYTES + (int64_t)(g_held_count - 2) * SLOT_BYTES : INT64_MIN;
+}
+
+// The slots this process holds that `in_use` does not fill, given back to the machine; what it
+// may use before it asks again.
+int64_t avra_pool_let_go(int64_t in_use) {
+    pool_settled();
+    if (g_slot_count <= 0) return INT64_MAX;
+    while (in_use <= avra_pool_spare_at()) close(g_held[--g_held_count]);
+    return FREE_BYTES + (int64_t)g_held_count * SLOT_BYTES;
+}
+
 // How many slots this process holds.
 int64_t avra_pool_held(void) { return g_held_count; }
 
@@ -141,6 +157,10 @@ int64_t avra_pool_free_bytes(void) { return FREE_BYTES; }
 #else
 
 int64_t avra_pool_allowed(int64_t in_use) { (void)in_use; return INT64_MAX; }
+
+int64_t avra_pool_let_go(int64_t in_use) { (void)in_use; return INT64_MAX; }
+
+int64_t avra_pool_spare_at(void) { return INT64_MIN; }
 
 int64_t avra_pool_held(void) { return 0; }
 

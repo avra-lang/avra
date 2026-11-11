@@ -1,11 +1,13 @@
-//! WHAT A FILE'S ANNOTATIONS MAKE: the declarations a trait's generator writes beside a declaration
-//! a `@derive` names it on, each an item of its file after the written ones, read back and signed as
-//! one. Each copied node carries the file whose template wrote it, so a type it names is read there.
+//! WHAT A FILE'S ANNOTATIONS MAKE: the declarations a generator writes beside a declaration that
+//! names it, a trait's under `@derive` or a declaring annotation's, each an item of its file after
+//! the written ones, read back and signed as one. Each copied node carries the file whose template
+//! wrote it, so a type it names is read there. A wrap's item holds the wrapper under the fn's own
+//! name and the written fn moved to its body's name.
 //!
 //! What a generator makes over a declaration is a saved answer keyed by the declaration's tape and
 //! the generator's made program, so it runs once per change of either. A generator the program
 //! layer doesn't make says why instead.
-use core.{ForeignOrigin, StmtId, SyntaxArena, flatten, new_node_store}
+use core.{ForeignOrigin, Scoped, Stmt, StmtId, SyntaxArena, flatten, new_node_store, some_list}
 use features.{budgets_of}
 use @std.meta.{Directive, derive}
 use @std.program.address.{SourceFileAddress}
@@ -16,45 +18,67 @@ use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definiti
 use @std.program.source_facts.{PlacedTape, item_tape}
 use @std.program.syntax_tape.{SyntaxTape}
 
-/// Declarations one generator made over one declaration, on one tape.
+/// Declarations one generator made over one declaration, on one tape, and whether they wrap it: hold
+/// the fn it's written as, under its own name, and its written body moved aside.
 @derive(Saved)
-export type GeneratedItem = { tape: SyntaxTape }
+export type GeneratedItem = { tape: SyntaxTape, wraps: bool = false }
 
 /// What generators made, in the order their declarations are written, and what they said instead
 /// wherever they made nothing or the splice couldn't place what they made.
 @derive(Saved)
 export type GeneratedItems = { items: List<GeneratedItem>, said: List<string> }
 
-/// What the trait `generator`'s derive makes over the declaration `file` writes as `name`, its item's
-/// tape meaning `_declaration` and the generator's made program printing as `print`.
+/// What `generator` makes over the declaration `file` writes as `name`, its item's tape meaning
+/// `_declaration` and the generator's made program printing as `print`.
 @query
 export fn generated(
     engine: QueryEngine,
     file: SourceFileAddress,
     _declaration: ContentHash,
     name: string,
-    generator: TraitAt,
+    generator: GeneratorAt,
     print: ContentHash,
 ) -> GeneratedItems {
     let l? = generator_program(engine, generator, print) else { return said_only(generator_moved(generator)) }
     match generator_run(engine, l, generator, file, name, budgets_of()) {
-        .Ran(made, problems) -> if problems.is_empty() { items_spliced(made) } else { said_only([p.message for p in problems]) },
+        .Ran(made, problems) -> if problems.is_empty() { items_spliced(engine, file, name, made) } else { said_only([p.message for p in problems]) },
         .Stopped(why) -> said_only([why]),
     }
 }
 
-/// What the generators of every declaration a file writes a `@derive` on make, in the order written.
+/// What the generators every declaration of a file names make, in the order written.
 @query
 export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
-    let made = [site_generated(engine, file, site) for site in derive_sites(engine, file)]
+    gathered_items([site_generated(engine, file, site) for site in generator_sites(engine, file)])
+}
+
+/// What the generators the fn `file` writes as `name` wears make: what the written declaration
+/// names, never what generated items do.
+export fn fn_generated(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratedItems {
+    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return said_only([]) }
+    gathered_items(
+        [site_generated(engine, file, site) for site in declaration_sites(engine, file, d)],
+    )
+}
+
+/// Several sites' items and words, in order.
+fn gathered_items(made: List<GeneratedItems>) -> GeneratedItems {
     GeneratedItems {
         items: flatten([m.items for m in made]),
         said: flatten([m.said for m in made]),
     }
 }
 
-/// What one `@derive` site's generator makes, or why its generator isn't made.
-export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: DeriveSite) -> GeneratedItems {
+/// What a file's generated items declare, each standing at its place past the file's written items.
+export fn generated_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
+    let first = items_under(engine, file).length
+    Declarations {
+        names: [tape_declared(file, first + at, n) for at, g in file_generated(engine, file).items for n in g.tape.declares],
+    }
+}
+
+/// What one site's generator makes, or why its generator isn't made.
+export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: GeneratorSite) -> GeneratedItems {
     let item = items_under(engine, file)[site.item]
     let declaration = item_tape(engine, item.text, item.context).meaning_hash
     let made = generator_print(engine, site.generator)
@@ -62,13 +86,56 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Der
     generated(engine, file, declaration, site.name, site.generator, print)
 }
 
-/// The declarations directives' sources make, spliced as one item; a twin or a wrap said instead.
-fn items_spliced(made: List<Directive>) -> GeneratedItems {
-    let spliced = generated_spliced([d.source!.node for d in made if d.source != null && !d.wraps])
-    let unmade = [not_spliced(d) for d in made if d.wraps || !d.twin.is_empty()]
+/// The declarations directives' sources make over what `file` writes as `name`, spliced as one
+/// item; a wrap's beside the written fn moved to its body's name, and a twin said instead.
+fn items_spliced(engine: QueryEngine, file: SourceFileAddress, name: string, made: List<Directive>) -> GeneratedItems {
+    let spliced = generated_spliced([d.source!.node for d in made if d.source != null])
+    let wraps = made.any(it.wraps)
+    let moved: StmtId? = if wraps { moved_body(engine, file, name, spliced.store) } else { null }
+    let unwrapped = if wraps &&
+        (moved == null || !spliced.stmts.any((s) -> spliced.store.fn_parts(s)?.name == name)) { [wrap_unmade(name)] } else { [] }
+    let stmts = spliced.stmts.concat(some_list(moved))
     GeneratedItems {
-        items: if spliced.stmts.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, spliced.stmts) }] },
-        said: spliced.refused.concat(unmade),
+        items: if stmts.is_empty() || !unwrapped.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, stmts), wraps: wraps }] },
+        said: spliced
+            .refused
+            .concat([not_spliced(d) for d in made if !d.twin.is_empty()])
+            .concat(unwrapped),
+    }
+}
+
+/// The fn `file` writes as `name`, read into `store` under the name a wrap moves its body to, at the
+/// place it's written; absent when it writes none.
+fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store: SyntaxArena) -> StmtId? {
+    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let s? = read_into(engine, file, store, d.item).find((x) -> store.fn_parts(x)?.name == name) else { return null }
+    let parts = store.fn_parts(s)!
+    store
+        .alloc_stmt(
+            Stmt
+                .FnDecl(Scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+            store.stmt_span(s),
+        )
+}
+
+/// The name a wrap moves a written fn's body to, which no written name can take.
+fn moved_name(name: string) -> string { "${name}\$body" }
+
+/// What annotations on the fn `file` writes as `name` make of its body: the item a wrap made, and
+/// what a generator said instead where one didn't run.
+type AnnotatedBody = { wrapper: ReadItem?, said: List<string> }
+
+fn annotated_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> AnnotatedBody {
+    let made = fn_generated(engine, file, name)
+    let wrap = made.items.find(it.wraps)
+    if wrap == null { return AnnotatedBody { wrapper: null, said: made.said } }
+    let store = new_node_store()
+    AnnotatedBody {
+        wrapper: ReadItem {
+            store: store,
+            stmts: item_read_back(store, PlacedTape { start: 0, tape: wrap!.tape }),
+        },
+        said: made.said,
     }
 }
 
@@ -129,6 +196,8 @@ collect listed_generated_facts: List<ListedQuery> = @query_definition in self as
 /// The queries what annotations make reads through, for a process to hand its engine.
 export fn generated_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generated_facts) }
 
-fn generator_moved(t: TraitAt) -> List<string> { ["`${t.name}`'s generator made here doesn't print as the one asked for"] }
+fn generator_moved(g: GeneratorAt) -> List<string> { ["`${g.name}`'s generator made here doesn't print as the one asked for"] }
 
-fn not_spliced(d: Directive) -> string { "`${d.name}` asks for a twin or a wrap, which isn't made on the program layer yet" }
+fn not_spliced(d: Directive) -> string { "`${d.name}` asks for a twin, which isn't made on the program layer yet" }
+
+fn wrap_unmade(name: string) -> string { "a wrap of `${name}` makes no fn of its name beside its written one" }

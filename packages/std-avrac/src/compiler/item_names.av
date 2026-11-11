@@ -11,7 +11,7 @@ use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
 use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, query_definition}
-use @std.program.syntax_tape.{SyntaxTape, TapeWriter, face_writer}
+use @std.program.syntax_tape.{SyntaxTape, TapeName, TapeWriter, face_writer}
 
 /// What a top-level item declares.
 @derive(Saved)
@@ -100,14 +100,19 @@ export type Declarations = { names: List<DeclaredName> }
 @query
 export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
     Declarations {
-        names: [DeclaredName {
-            name: n.name,
-            kind: ITEM_KINDS[n.kind],
-            file: file,
-            item: at,
-            exported: n.exported,
-            face: n.face,
-        } for at, item in items_under(engine, file) for n in SyntaxTape.declares_in(meant_tape(engine, file, item))],
+        names: [tape_declared(file, at, n) for at, item in items_under(engine, file) for n in SyntaxTape.declares_in(meant_tape(engine, file, item))],
+    }
+}
+
+/// A name a tape declares, as the item at `at` in `file` declares it.
+fn tape_declared(file: SourceFileAddress, at: int, n: TapeName) -> DeclaredName {
+    DeclaredName {
+        name: n.name,
+        kind: ITEM_KINDS[n.kind],
+        file: file,
+        item: at,
+        exported: n.exported,
+        face: n.face,
     }
 }
 
@@ -132,6 +137,26 @@ export fn declarations_of(
     name: string,
 ) -> List<DeclaredName> {
     declarations_in(module_declares_part(engine, package, local, as_root, name))
+}
+
+/// What a module's generators declare: one part per name, every declaration of it in listing order,
+/// as `module_declares` parts what its files write.
+@parted_query
+export fn generated_names(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> AnswerParts {
+    parts_by_name(
+        [n for f in module_files(engine, package, local, as_root) for n in generated_declares(engine, f).names],
+    )
+}
+
+/// Every declaration of `name` a module's generators make, in listing order.
+fn generated_declarations_of(
+    engine: QueryEngine,
+    package: string,
+    local: List<string>,
+    as_root: bool,
+    name: string,
+) -> List<DeclaredName> {
+    declarations_in(generated_names_part(engine, package, local, as_root, name))
 }
 
 /// Declarations as an answer of parts, one per name, each holding that name's in the order given.

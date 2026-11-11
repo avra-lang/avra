@@ -241,11 +241,14 @@ fn read_into(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, a
     )
 }
 
-/// The item that declares `name` as `kind` in `file`, read back, absent when none does.
+/// The item that declares `name` as `kind` in `file`, read back, absent when none does: a written
+/// one, and only where the file writes nothing of that name, one a generator made.
 type ReadItem = { store: SyntaxArena, stmts: List<StmtId> }
 
 fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> ReadItem? {
-    let declared? = file_declares(engine, file).names.find(it.name == name && it.kind == kind) else { return null }
+    let written = file_declares(engine, file).names.filter(it.name == name)
+    let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
+    let declared? = made.find(it.kind == kind) else { return null }
     read_item(engine, file, declared.item)
 }
 
