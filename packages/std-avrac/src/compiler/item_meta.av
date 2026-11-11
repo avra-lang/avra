@@ -171,6 +171,14 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName) -> MetaVariant {
     }
 }
 
+/// A gathered member's payload: its record's fields that are no facet, each typed where the member
+/// stands.
+fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<SignedField> {
+    let item = read_item(engine, m.file, m.item)
+    let carried = [p.name.of for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
+    [f for f in record_signature(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
+}
+
 /// A record's field or a variant's payload as a `Field`: its name, its type as written and that
 /// type's shape, its marks, and the code its default writes.
 fn field_meta(p: Param, kind: Kind, default: MetaCode?) -> MetaField {

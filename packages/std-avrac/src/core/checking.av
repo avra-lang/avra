@@ -28,7 +28,8 @@ export type CheckedProgram = {
     property_of: fn(SignedType, string) -> SignedType?,
     type_value: fn(string) -> SignedType?,
     static_of: fn(SignedType, string) -> SignedType?,
-    meta_type: fn(string) -> SignedType?,
+    /// The type a toolchain package's root module declares under a name.
+    toolchain_type: fn(string, string) -> SignedType?,
     /// What each type parameter of the body is to the machine, by its place, where the body is
     /// lowered under one instantiation's layouts.
     parameters: List<ParameterLayout> = [],
@@ -138,7 +139,7 @@ export fn all_known(types: List<SignedType?>?, arity: int) -> List<SignedType>? 
 
 /// A seat's part, when it names no type parameter still open: a part that does is the call's to fill
 /// from what the lambda turns out to be.
-fn known(part: SignedType?) -> SignedType? { if part == null || part!.generic() { null } else { part } }
+fn known(part: SignedType?) -> SignedType? { if part == null || part!.inferred() { null } else { part } }
 
 /// The fn type a lambda's seat wants, when it wants one of `arity` seats.
 fn seat_fn(expected: Expected, arity: int) -> SignedType? {
@@ -438,14 +439,14 @@ impl Checking {
         for at, v in values {
             let seat = seats[at]
             if !(seat.head is .Function) { continue }
-            let wanted = seat.filled(found)
+            let open = !seat.fills_all(found)
             let lambda = self.store.lambda_parts(v) != null
             let read = self
                 .check(
                     v,
-                    if wanted.generic() && !lambda { Expected.Unknown } else { Expected.Exactly(wanted) },
+                    if open && !lambda { Expected.Unknown } else { Expected.Exactly(seat.filled_or_inferred(found)) },
                 )
-            if wanted.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+            if open && (read == null || !seat.unifies(read!, found)) { agreed = false }
         }
         if agreed { found } else { null }
     }
@@ -500,7 +501,10 @@ impl Checking {
     }
 
     /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
-    fn meta_type(name: string) -> SignedType? { (self.program.meta_type)(name) }
+    fn meta_type(name: string) -> SignedType? { self.program.meta(name) }
+
+    /// The type a toolchain package's root module declares as `name` (`@std/grammar`'s `Grammar`).
+    fn toolchain_type(package: string, name: string) -> SignedType? { (self.program.toolchain_type)(package, name) }
 
     /// What a name reads as when it names a type and no value: the type, standing as a value.
     fn type_value(name: string) -> SignedType? { (self.program.type_value)(name) }
@@ -563,6 +567,14 @@ impl Checking {
 fn open_scope() -> CheckScope {
     let names: Map<string, Local> = {}
     CheckScope { names: names }
+}
+
+/// The package that holds the language's compile-time shapes.
+const META_PACKAGE: string = "@std/meta"
+
+impl CheckedProgram {
+    /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
+    fn meta(name: string) -> SignedType? { (self.toolchain_type)(META_PACKAGE, name) }
 }
 
 /// A type the language owns, with nothing applied.
