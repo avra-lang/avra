@@ -31,12 +31,24 @@ impl Lowers for MethodCall {
         if subject.dynamic { return dyn_dispatched(cx, self, e, subject) }
         if subject.nullable() { return cx.unlowered(e) }
         if fn_field_of(cx, subject, self.name.of) != null { return field_called(cx, self, e, subject) }
+        let shape = cx.named_over(subject)
+        if shape != null && cx.method(subject, self.name.of) == null { return shape_called(cx, self, e, shape!) }
         match subject.head {
             .Owned(word) -> owned_verb(cx, self, e, subject, word),
             .Declared(_, _) -> declared_method(cx, self, e, subject),
             .Parameter(_, _) -> cx.missed_as(witness_only("a method of a type parameter")),
             .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> cx.unlowered(e),
         }
+    }
+}
+
+/// A method of the shape a named type stands over, called on a value of the name: the value is its
+/// shape, so the call is the shape's.
+fn shape_called(mut cx: Lowering, m: MethodCall, e: ExprId, shape: SignedType) -> Reg {
+    match shape.head {
+        .Owned(word) -> owned_verb(cx, m, e, shape, word),
+        .Declared(_, _) -> declared_method(cx, m, e, shape),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> cx.unlowered(e),
     }
 }
 

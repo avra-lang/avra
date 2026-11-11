@@ -118,6 +118,23 @@ export fn impls_with(
     [i.at for i in impls_in(package_generated_impls_part(engine, file.package_name, name), file) if gives(i, method, statics)]
 }
 
+/// The impls of the type `file` declares as `name` that write `method`: its own package's, and where
+/// none does, the package `via` names — a trait's, where an impl of that trait for a type of another
+/// package stands.
+export fn impls_given(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: string,
+    statics: bool,
+    via: string?,
+) -> List<ImplAt> {
+    let own = impls_with(engine, file, name, method, statics)
+    let package? = via else { return own }
+    if !own.is_empty() || package == file.package_name { return own }
+    [i.at for i in impls_in(package_impls_part(engine, package, name), file) if gives(i, method, statics)]
+}
+
 /// The traits the written impls of the type `file` declares as `name` implement, by name.
 fn written_traits(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
     [i.implements!.name for i in impls_in(package_impls_part(engine, file.package_name, name), file) if i.implements != null]
@@ -231,7 +248,7 @@ export fn method_type(engine: QueryEngine, subject: SignedType, name: string) ->
     if subject.nullable() { return null }
     if subject.dynamic { return contract_method(engine, subject, name) }
     match subject.head {
-        .Declared(file, declared) -> impl_method(engine, file, declared, name),
+        .Declared(file, declared) -> impl_method(engine, file, declared, name) ?? shape_method(engine, subject, name),
         .Owned(word) -> own_verb(engine, "verbs/${word}.av", name, subject),
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
@@ -416,6 +433,17 @@ fn enum_property(
 
 /// The property every named type has, as a fn of the receiver: `of`, the shape it stands over. Absent
 /// for a type that isn't a named type.
+/// The method `name` the shape a named type stands over has, its receiver, and each seat and answer
+/// of the shape itself, the named type: a read of a name sees its shape. Absent for any other type,
+/// or a shape with no such method.
+fn shape_method(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
+    let shape? = named_over(engine, subject) else { return null }
+    let m? = method_type(engine, shape, name) else { return null }
+    if m.seats.is_empty() { return null }
+    let answer = if m.answer != null && m.answer!.spelled() == shape.spelled() { subject } else { m.answer }
+    m with { seats: [if at == 0 || s.ty.spelled() == shape.spelled() { s with { ty: subject } } else { s } for at, s in m.seats], answer: answer }
+}
+
 fn named_property(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if name != NAMED_FIELD { return null }
     let shape? = named_over(engine, subject) else { return null }

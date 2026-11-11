@@ -400,10 +400,14 @@ fn owned_kind(word: string, ty: SignedType) -> Kind {
 }
 
 /// What `type_named(name)` answers a generator run over a declaration of `file`: the type the name
-/// names from `file`'s top level, crossed into a heap of its own; absent for one naming none.
+/// names from `file`'s top level, or a dotted name (`@std.avrac.core.Arm`) from its module's,
+/// crossed into a heap of its own; absent for one naming none.
 export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: string) -> Lifted {
-    let scope? = file_scope(engine, file) else { return absent_lifted() }
-    let d? = resolved_in(engine, scope, file, Space.Type, name).named() else { return absent_lifted() }
+    let path = name.split(".")
+    let last? = path.last() else { return absent_lifted() }
+    let reader? = (if path.length == 1 { file } else { module_file(engine, path.take(path.length - 1).join(".")) }) else { return absent_lifted() }
+    let scope? = file_scope(engine, reader) else { return absent_lifted() }
+    let d? = resolved_in(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
     let t? = meta_of_decl(engine, d.file, d.name) else { return absent_lifted() }
     mut heap = new_meta_heap()
     Lifted { answer: meta_of_type(t, heap), heap: heap }

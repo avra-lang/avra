@@ -20,12 +20,11 @@ impl Lowers for Lambda {
 }
 
 impl Lowers for CallValue {
-    /// The fn value, then each argument, then the code read from its box, then the call.
+    /// The fn value, then each argument into its seat, then the code read from its box, then the call.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let f? = cx.type_at(self.subject) else { return cx.unlowered(e) }
-        if f.seats.any(it.mutable || it.settled || it.defaulted) { return cx.missed_as("a call through a fn value whose seat promises") }
         let box = cx.lower(self.subject)
-        let args = [cx.lower(a) for a in self.args]
+        let args? = cx.value_seated(f, self.args) else { return cx.missed_as("a call through a fn value whose seat promises") }
         cx.called_code(cx.layout_at(e), cx.code_of(box), box, args)
     }
 }

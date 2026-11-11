@@ -11,16 +11,15 @@ fn fn_field_of(cx: Lowering, subject: SignedType, name: string) -> FieldSeat? {
     if ty.head is .Function && !ty.nullable() && !field.state { field } else { null }
 }
 
-/// The call `m` of the fn its subject's field holds. One through a seat that promises, or handed an
-/// argument by name, isn't lowered yet.
+/// The call `m` of the fn its subject's field holds, a `mut` seat handed the place it writes through.
+/// One through a `const` or defaulted seat, or handed an argument by name, isn't lowered yet.
 fn field_called(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
     let fields = cx.fields_of(subject)!
     let n = fields.find_index(it.name == m.name.of)!
     let f = fields[n].ty!
-    if f.seats.any(it.mutable || it.settled || it.defaulted) { return cx.missed_as("a call through a fn field whose seat promises") }
     if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as("a call through a fn field naming an argument") }
     let laid? = cx.seat_layouts(fields) else { return cx.missed_as("a call through a fn field of `${subject.spelled()}`") }
     let box = cx.field_read(cx.lower(m.subject), subject, laid, n)
-    let args = [cx.lower(a) for a in m.args]
+    let args? = cx.value_seated(f, m.args) else { return cx.missed_as("a call through a fn field whose seat promises") }
     cx.called_code(cx.layout_at(e), cx.code_of(box), box, args)
 }
