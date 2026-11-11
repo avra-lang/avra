@@ -1,7 +1,10 @@
-//! The lowering rule of `spawn`: the runtime is handed a box over the body's task lift, which answers
-//! the body's value in a one-cell list, then what the body captures; the scope holding the task joins
-//! it as it ends.
-use core.{ExprId, Lowering, Lowers, Reg, rt_sig_of}
+//! The lowering rules of `spawn` and `within`. `spawn`: the runtime is handed a box over the body's
+//! task lift, which answers the body's value in a one-cell list, then what the body captures; the
+//! scope holding the task joins it as it ends. `within`: the body lowers inline in a one-turn loop
+//! whose scope arms the deadline and ends it, so a `return` or a `?` out of the body ends it too, and
+//! an unwind it asked for leaves the loop rather than the fn; after the loop, the deadline it ran
+//! past, or the body's answer.
+use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, RtFlag, SignedType, rt_sig_of}
 use core.expr.{Lambda}
 
 impl Lowers for Spawn {
@@ -15,4 +18,60 @@ impl Lowers for Spawn {
             .fn_box(cx.laid_out(ty), lift.body.symbol, [cx.held(cx.bound(name)!) for name in lift.lanes])
         cx.call_row(cx.layout_at(e), rt_sig_of("avra_task_spawn")!, [task])
     }
+}
+
+impl Lowers for Within {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let whole? = cx.type_at(e) else { return cx.unlowered(e) }
+        let body? = cx.type_at(cx.meaning_of(self.body)) else { return cx.unlowered(e) }
+        let span? = cx.type_at(self.limit) else { return cx.unlowered(e) }
+        let ms? = cx.method(span, "ms") else { return cx.missed_as("a `within` whose limit has no `ms`") }
+        let limit = cx.lower(self.limit)
+        let millis = cx.call_fn(Layout.Word, ms, [limit])
+        let answer = cx.seeded_cell(cx.laid_out(body), cx.hollow_of(body))
+        let landing = cx.seeded_cell(Layout.Word, cx.const_int(0))
+        cx.loop_start()
+        cx.loop_cond(cx.const_bool(true))
+        cx.within_opened(millis, landing)
+        cx.stored(answer, cx.lower(self.body))
+        cx.within_closed()
+        cx.jumped(false)
+        cx.loop_end()
+        let landed = cx
+            .bin(Layout.Truth, BinOp.Ne, cx.loaded(Layout.Word, landing), cx.const_int(0))
+        cx
+            .region(landed, cx.laid_out(whole)) { cx -> cx.failure_of(whole, timed_out(cx, whole, limit)) } else { cx ->
+                answered_unless_unwinding(cx, whole, body, answer)
+            }
+    }
+}
+
+/// The body's answer, made the `Ok` of `whole`; still unwinding, the frames outside have run and the
+/// fn leaves.
+fn answered_unless_unwinding(mut cx: Lowering, whole: SignedType, body: SignedType, answer: Reg) -> Reg {
+    cx
+        .region(cx.flag_read(RtFlag.Unwinding), cx.laid_out(whole)) { cx ->
+            cx.unwound_exit()
+            cx.hollow_of(whole)
+        } else { cx -> cx.lifted(cx.loaded(cx.laid_out(body), answer), body, whole) }
+}
+
+/// The `TimedOut` the deadline answers: the span it was given, and the frames the unwind left.
+fn timed_out(mut cx: Lowering, whole: SignedType, limit: Reg) -> Reg {
+    let late = whole.args[1]
+    let fields? = cx.fields_of(late) else { return cx.missed_as("a `TimedOut` that is no record") }
+    let frames? = fields.last()?.ty else { return cx.missed_as("a `TimedOut` without its frames") }
+    cx.record_packed(cx.laid_out(late), [limit, frames_left(cx, frames)])
+}
+
+/// The unwind's frames, read back as the list they are.
+fn frames_left(mut cx: Lowering, frames: SignedType) -> Reg {
+    let frame? = frames.listed() else { return cx.missed_as("a `TimedOut` whose frames are no list") }
+    let n = cx.call_row(Layout.Word, rt_sig_of("avra_unwind_count")!, [])
+    let out = cx.call_row(cx.laid_out(frames), rt_sig_of("avra_array_sized")!, [n])
+    let w = cx.walk_count(cx.const_int(0), n)
+    let here = cx.walk_turn(w)
+    cx.push_slot(out, cx.call_row(cx.laid_out(frame), rt_sig_of("avra_unwind_at")!, [here]))
+    cx.loop_end()
+    out
 }
