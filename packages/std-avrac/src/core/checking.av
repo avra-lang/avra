@@ -244,14 +244,30 @@ impl Checking {
 
     /// What the arms `arms`, of these types, are where they meet: the seat's type when it wants one,
     /// which each lifts into, else their join, which each arm of another type keeps as its seat where
-    /// the arms' value is read; nothing under a seat that isn't known, which may widen them.
-    fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
-        if expected is .Unknown || types.any(it == null) { return null }
+    /// the arms' value is read; nothing under a seat that isn't known, which may widen them. Under a
+    /// seat that wants nothing, an arm whose type isn't known is checked again where the others meet,
+    /// which pins a generic call's answer.
+    mut fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
+        if expected is .Unknown { return null }
+        let pinned = match expected {
+            .Free or .Dropped -> self.arms_pinned(arms, types),
+            .Exactly(_) or .Unknown -> types,
+        }
+        if pinned.any(it == null) { return null }
         match expected {
             .Exactly(wanted) -> wanted,
-            .Free -> self.met_seated(arms, types, types_joined(types)),
-            .Dropped or .Unknown -> types_joined(types),
+            .Free -> self.met_seated(arms, pinned, types_joined(pinned)),
+            .Dropped or .Unknown -> types_joined(pinned),
         }
+    }
+
+    /// Each arm's type, an arm whose type isn't known checked again against where the known ones meet.
+    mut fn arms_pinned(arms: List<ExprId>, types: List<SignedType?>) -> List<SignedType?> {
+        if !types.any(it == null) { return types }
+        let known = [t for t in types if t != null]
+        if known.is_empty() { return types }
+        let meeting? = types_joined(known) else { return types }
+        [if t == null { self.check(arms[at], Expected.Exactly(meeting)) } else { t } for at, t in types]
     }
 
     /// `met`, where the arms `arms` of these types meet, kept as the seat of each arm of another type.

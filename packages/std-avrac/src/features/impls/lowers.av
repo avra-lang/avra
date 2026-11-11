@@ -13,6 +13,7 @@ use core.{
     Reg,
     RtSig,
     SignedType,
+    TraitMember,
     OwnRow,
     own_row_of,
     own_shape,
@@ -174,12 +175,28 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
     if subject.nullable() { return cx.unlowered(e) }
     let members? = (cx.program.traits)(subject) else { return cx.missed_as("a `dyn` dispatch on `${subject.spelled()}`") }
     let at? = members.find_index(it.name == m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    if members[at].writes || cx.in_cell(m.subject) { return cx.missed_as("a method that may write its receiver") }
-    if !members[at].plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    let seats? = read_seats(cx, m, null) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let member = members[at]
+    if member.writes || cx.in_cell(m.subject) { return cx.missed_as("a method that may write its receiver") }
+    if m.args.any((a) -> cx.store.arg_label(a) != null) || !member.plain && !positional(member, m) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let seats? = (if member.plain { read_seats(cx, m, null) } else { member_seated(cx, m, member) }) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
     let code = cx.slot_read(Layout.Word, seats[0], 1 + at)
     cx.called_code(cx.layout_at(e), code, value, seats.drop(1))
+}
+
+/// Whether a call hands `member` an argument for each seat, by position, none a rest or left to its
+/// default.
+fn positional(member: TraitMember, m: MethodCall) -> bool {
+    member.seats.length == m.args.length && !member.seats.any(it.defaulted || it.rest)
+}
+
+/// The receiver, then each argument into its seat of `member`: a `mut` seat handed the place it
+/// writes through. Absent where a `mut` seat's argument stands where no write reaches back.
+fn member_seated(mut cx: Lowering, m: MethodCall, member: TraitMember) -> List<Reg>? {
+    let receiver = cx.lower(m.subject)
+    let args = [cx.seat_arg(member.seats[k], a) for k, a in m.args]
+    if args.any(it == null) { return null }
+    [receiver].concat([a! for a in args])
 }
 
 /// The receiver then each argument, lowered left to right, each argument into its seat of `callee`

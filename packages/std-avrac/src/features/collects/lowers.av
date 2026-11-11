@@ -15,16 +15,23 @@ export fn collected_list(
     if seats.any((s) -> !fields.contains(s.name)) { return cx.missed_as(defaulted_field()) }
     mut records: List<Reg> = []
     for r in rows {
+        mut built: Map<string, Reg> = {}
         mut parts: List<Reg> = []
-        for seat in seats { parts.push(collected_field(cx, seat.ty, r.values[fields.index_of(seat.name)])) }
+        for seat in seats { parts.push(collected_field(cx, built, seat.ty, r.values[fields.index_of(seat.name)])) }
         records.push(cx.record_packed(cx.laid_out(entry), parts))
     }
     cx.listed(cx.laid_out(ty), records, [false for _r in rows])
 }
 
 /// One projected field of a member, in a seat of type `seat`: the member as a fn value where the seat
-/// is a fn's, or the text its declaration spells.
-fn collected_field(mut cx: Lowering, seat: SignedType?, v: CollectedValue) -> Reg {
+/// is a fn's, the text its declaration spells, the numbers its written body answers listed, or the
+/// field of that name its own value holds, its unit called once per member and kept in `built`.
+fn collected_field(
+    mut cx: Lowering,
+    mut built: Map<string, Reg>,
+    seat: SignedType?,
+    v: CollectedValue,
+) -> Reg {
     match v {
         .Member(callee) -> {
             let ty? = seat else { return cx.missed_as(untyped_field()) }
@@ -32,6 +39,18 @@ fn collected_field(mut cx: Lowering, seat: SignedType?, v: CollectedValue) -> Re
             cx.fn_value_as(ty, callee)
         },
         .Spelled(value) -> cx.constant(value),
+        .Numbers(values) -> {
+            let ty? = seat else { return cx.missed_as(untyped_field()) }
+            cx.listed(cx.laid_out(ty), [cx.const_int(n) for n in values], [false for _n in values])
+        },
+        .Field(instance, of, name) -> {
+            let fields? = cx.fields_of(of) else { return cx.missed_as(unread_field(name)) }
+            let n? = fields.find_index(it.name == name) else { return cx.missed_as(unread_field(name)) }
+            let laid? = cx.seat_layouts(fields) else { return cx.missed_as(unread_field(name)) }
+            let value = built.get(instance.symbol) ?? cx.call_fn(cx.laid_out(of), instance, [])
+            built.set(instance.symbol, value)
+            cx.field_read(value, of, laid, n)
+        },
     }
 }
 
@@ -44,3 +63,5 @@ fn defaulted_field() -> string { "a collect whose projection leaves a field to i
 fn untyped_field() -> string { "a collect field of no type" }
 
 fn crossed_field() -> string { "a collect field that crosses a declaration as `@std/meta` sees it" }
+
+fn unread_field(name: string) -> string { "a collect field `${name}` its member's value holds no field of a known layout for" }

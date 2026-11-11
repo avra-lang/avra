@@ -48,7 +48,8 @@ export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts { i
 export fn package_generated_impls(engine: QueryEngine, package: string) -> AnswerParts { impls_filed(engine, package, true) }
 
 /// The impls of a package's generated items when `generated`, else of its written ones, one part
-/// per name of the type each impl's target resolves to.
+/// per name of the type each impl's target resolves to: read where the template that wrote the impl
+/// stands first, then from its file.
 fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerParts {
     mut by_type: Map<string, List<FiledImpl>> = {}
     for path in package_sources(engine, package, "src") {
@@ -57,8 +58,9 @@ fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerP
         let by_item = if generated { generated_impls(engine, f) } else { written_impls(engine, f) }
         for at, held in by_item {
             for i in held {
-                let d? = resolved(engine, f, Space.Type, i.target).named() else { continue }
-                let tr = if i.implements == null { null } else { resolved(engine, f, Space.Type, i.implements!).named() }
+                let homes = read_from(f, i.written_in)
+                let d? = homes.find_map((h) -> resolved(engine, h, Space.Type, i.target).named()) else { continue }
+                let tr = if i.implements == null { null } else { homes.find_map((h) -> resolved(engine, h, Space.Type, i.implements!).named()) }
                 let filed = FiledImpl {
                     at: ImplAt {
                         file: f,

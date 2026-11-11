@@ -104,6 +104,11 @@ export enum CollectedValue {
     Member(callee: CalledFn)
     /// A text its declaration spells (`it.name`).
     Spelled(value: Literal)
+    /// Numbers its declaration's written body answers (`it.root_kind`).
+    Numbers(values: List<int>)
+    /// A field of a component instance's own value (`it.run`): the unit its value is built by, called,
+    /// the value's type, and the field read off it.
+    Field(instance: CalledFn, of: SignedType, name: string)
 }
 
 /// One word a settled value is carried in: its slot, and the register it's read into.
@@ -346,9 +351,10 @@ impl Lowering {
         self.store.expr(core).lowered(self, core)
     }
 
-    /// The core node `e` means: itself where it's core already.
+    /// The core node `e` means: itself where it's core already; an instance's value, the literal its
+    /// meaning minted, where the meaning also judges it.
     fn meaning_of(e: ExprId) -> ExprId {
-        let meant? = self.store.meant(e) else { return e }
+        let meant? = self.store.instance_value(e) ?? self.store.meant(e) else { return e }
         self.meaning_of(meant)
     }
 

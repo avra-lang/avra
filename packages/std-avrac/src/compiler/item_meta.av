@@ -142,10 +142,11 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
 }
 
 /// The declarations a `collect` or a `collect enum` written in `owner` gathers, in its order: each
-/// wearing its mark in its scope, by name and a tie by where it's declared; a member in a test file
-/// only for an owner in that file; what generators make among them when `made`, which an enum's
-/// gathering never reads, since generators read the enum's shape. Absent for a gathering read here
-/// only once it's built: by a component word, over a program's closure, or by any key but the name.
+/// its kind takes in its scope, by its `by` keys and a tie by where it's declared; a member in a test
+/// file only for an owner in that file; what generators make among them when `made`, which an enum's
+/// gathering never reads, since generators read the enum's shape. A gathering `in closure` reads the
+/// files the owner's package reaches through imports, another package's exported members alone.
+/// Absent for a key that isn't a member's name or module.
 fn gathered(
     engine: QueryEngine,
     owner: SourceFileAddress,
@@ -154,15 +155,29 @@ fn gathered(
     order: List<Plain>,
     made: bool,
 ) -> List<DeclaredName>? {
-    let mark = match kind { .Annotated(name) -> name, .Component(_) -> { return null } }
     let files = match scope {
         .Self -> [owner],
         .Package -> [owner with { path_in_package: p } for p in package_sources(engine, owner.package_name, "src")],
-        .Closure or .UnknownScope(_) -> { return null },
+        .Closure -> package_closure(engine, owner.package_name).files,
+        .UnknownScope(_) -> { return null },
     }
-    if !order.all(it.of == "name") { return null }
-    let found = [d for f in files if gathers_from(f, owner) for d in declared_in(engine, f, made) if wears(engine, d, mark)]
-    sorted_by(found, member_before)
+    let keys = [k.of for k in order]
+    if !keys.all(member_key_word) { return null }
+    let found = [d for f in files if gathers_from(f, owner) for d in declared_in(engine, f, made) if seen_from(d, owner) && takes_member(engine, kind, d)]
+    sorted_by(found, (a, b) -> member_before(keys, a, b))
+}
+
+/// Whether a member another package declares is one a gathering in `owner` sees: its own package's
+/// every declaration, another's exported ones.
+fn seen_from(d: DeclaredName, owner: SourceFileAddress) -> bool { d.exported || d.file.package_name == owner.package_name }
+
+/// Whether a gathering of `kind` takes `d`: a declaration wearing its mark, or an instance of its
+/// component.
+fn takes_member(engine: QueryEngine, kind: CollectKind, d: DeclaredName) -> bool {
+    match kind {
+        .Annotated(mark) -> wears(engine, d, mark),
+        .Component(word) -> instance_of_word(engine, d, word),
+    }
 }
 
 /// What `file` declares: what it writes, then what generators make there when `made`.
@@ -177,18 +192,48 @@ fn gathers_from(file: SourceFileAddress, owner: SourceFileAddress) -> bool {
     !module_segments(file).contains(TESTS_DIR) || spelled_file(file) == spelled_file(owner)
 }
 
+/// The statement of `item` declaring `d`.
+fn declaring_stmt(item: ReadItem, d: DeclaredName) -> StmtId? {
+    item.stmts.find((x) -> item.store.declared_name(x) ?? item.store.let_name(x) == d.name)
+}
+
 /// Whether the declaration `d` is written wearing `@mark`.
 fn wears(engine: QueryEngine, d: DeclaredName, mark: string) -> bool {
     let item = read_item(engine, d.file, d.item)
-    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return false }
+    let s? = declaring_stmt(item, d) else { return false }
     item.store.annotations_of(s).any(it.name == mark)
 }
 
-/// Members by name, a tie by the module that declares each.
-fn member_before(a: DeclaredName, b: DeclaredName) -> bool {
+/// Whether the `const` `d` is an instance of the component `word` names.
+fn instance_of_word(engine: QueryEngine, d: DeclaredName, word: string) -> bool {
+    if d.kind != ItemKind.Const { return false }
+    let item = read_item(engine, d.file, d.item)
+    let s? = declaring_stmt(item, d) else { return false }
+    item.store.instance_of(s) == word
+}
+
+/// Whether a `by` key is one a member's declaration answers.
+fn member_key_word(key: string) -> bool { key == NAME_KEY || key == MODULE_KEY }
+
+/// What a member's declaration answers for the `by` key `key`: its name, or its module's last word.
+fn member_key(d: DeclaredName, key: string) -> string { if key == NAME_KEY { d.name } else { short_module(d.file) } }
+
+/// The last word of the module a file stands in; empty at its package's root.
+fn short_module(file: SourceFileAddress) -> string { module_segments(file).last() ?? "" }
+
+/// Members by `keys`, the first that differs deciding, a tie by where each is declared.
+fn member_before(keys: List<string>, a: DeclaredName, b: DeclaredName) -> bool {
+    let differs = keys.find((k) -> member_key(a, k) != member_key(b, k))
+    if differs != null { return text_before(member_key(a, differs!), member_key(b, differs!)) }
     if a.name != b.name { return text_before(a.name, b.name) }
     text_before(dotted_module(a.file), dotted_module(b.file))
 }
+
+/// The `by` key and projection word naming a member's name.
+const NAME_KEY: string = "name"
+
+/// The `by` key and projection word naming a member's module.
+const MODULE_KEY: string = "module"
 
 /// The directory a module's tests stand in.
 const TESTS_DIR: string = "tests"

@@ -24,24 +24,13 @@ use compiler.backend.{run_lifted}
 /// What the const `d` names settles to, as code reads it: the words its value is carried in and the
 /// data the binary holds for them, or why it doesn't settle yet.
 fn settled_const(engine: QueryEngine, d: DeclaredName) -> NamedValue {
-    let item = read_item(engine, d.file, d.item)
-    let stmt? = item
-        .stmts
-        .find((s) -> item.store.let_name(s) == d.name && item.store.const_value(s) != null) else { return NamedValue.Unsettled("a const with no value") }
-    let ty? = binding_type(engine, d.file, d.name) ?? const_value_type(engine, d.file, d.name) else { return NamedValue.Unsettled("a const whose value's type isn't known") }
+    let body = match const_body(engine, d) {
+        .Ok(b) -> b,
+        .Err(why) -> { return NamedValue.Unsettled(why) },
+    }
+    let ty = body.signature.answer
     let symbol = declared_symbol(d.file, d.name)
-    let root = signed_lowered(
-        engine,
-        d.file,
-        SignedBody {
-            signature: FnSignature { type_params: [], params: [], answer: ty, answer_width: null },
-            item: item,
-            body: item.store.const_value(stmt)!,
-            stmt: stmt,
-        },
-        d.name,
-        null,
-    )
+    let root = signed_lowered(engine, d.file, body, d.name, null)
     if !root.whole() { return NamedValue.Unsettled("a const whose value isn't lowered yet: ${root.missing[0]}") }
     let made = match made_reaching(task_survey(engine), root, symbol, [], TaskChecks.Surveyed) {
         .Made(l) -> l,
@@ -69,6 +58,23 @@ fn settled_const(engine: QueryEngine, d: DeclaredName) -> NamedValue {
     }
     let carried? = crossing.words(ran.answer, ty) else { return NamedValue.Unsettled("a const whose value doesn't cross as `${ty.spelled()}`") }
     NamedValue.Settled(carried, Static { name: const_symbol(d.file, d.name), boxes: boxes.get() })
+}
+
+/// The `const` `d`'s value as a body of no seats answering its type, or why it has none.
+fn const_body(engine: QueryEngine, d: DeclaredName) -> Result<SignedBody, string> {
+    let item = read_item(engine, d.file, d.item)
+    let stmt? = item
+        .stmts
+        .find((s) -> item.store.let_name(s) == d.name && item.store.const_value(s) != null) else { return .Err("a const with no value") }
+    let ty? = binding_type(engine, d.file, d.name) ?? const_value_type(engine, d.file, d.name) else { return .Err("a const whose value's type isn't known") }
+    .Ok(
+        SignedBody {
+            signature: FnSignature { type_params: [], params: [], answer: ty, answer_width: null },
+            item: item,
+            body: item.store.const_value(stmt)!,
+            stmt: stmt,
+        },
+    )
 }
 
 /// The name the data a const settles to is laid out under: its file, then its name.

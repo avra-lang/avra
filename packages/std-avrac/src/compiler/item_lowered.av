@@ -1,6 +1,11 @@
 //! WHAT A FN DOES, AS IR: the core its body means, lowered node by node by each node's feature, every
 //! register typed by its layout. A node no rule lowers yet is named, never guessed at.
 use core.{
+    Arm,
+    CollectKind,
+    doc_first_paragraph,
+    pattern_kinds,
+    root_kind_of,
     CalledFn,
     CalledSeat,
     CollectedRow,
@@ -95,7 +100,7 @@ fn lowered_under(
     name: string,
     parameters: List<ParameterLayout>?,
 ) -> LoweredFn? {
-    let signed? = signed_body(engine, file, name) else { return if parameters == null { lowered_collect(engine, file, name) } else { null } }
+    let signed? = signed_body(engine, file, name) else { return if parameters == null { lowered_collect(engine, file, name) ?? lowered_instance(engine, file, name) } else { null } }
     lowered_signed(engine, file, signed, name, parameters)
 }
 
@@ -308,7 +313,7 @@ fn collected(engine: QueryEngine, file: SourceFileAddress, name: string) -> Coll
     let parts? = [p! for s in item.stmts for p in [item.store.collect_parts(s)] if p != null]
         .find(it.name == name) else { return null }
     let members? = gathered(engine, file, parts.kind, parts.scope, parts.order, true) else { return null }
-    let read = [[projected(engine, f, m) for f in parts.proj.fields] for m in members]
+    let read = [[projected(engine, f, m, parts.kind) for f in parts.proj.fields] for m in members]
     if read.any((r) -> r.any((v) -> v == null)) { return null }
     Collected {
         fields: [f.field.of for f in parts.proj.fields],
@@ -363,17 +368,112 @@ export fn lowered_every_variant(
     unit_lowered(cx, 0, cx.laid_out(ty))
 }
 
-/// What one projected field reads off the member `m`: the member itself for a bare `it`, a fn as a
-/// value; its name for `it.name`. Absent for any other read.
-fn projected(engine: QueryEngine, f: ProjField, m: DeclaredName) -> CollectedValue? {
+/// What one projected field reads off the member `m` a gathering of `kind` took: the member itself
+/// for a bare `it`, a fn as a value; for `it.name`, `it.module`, `it.file` and `it.doc`, the text its
+/// declaration spells; for a component's instance, the kinds its written arms are rooted at and name
+/// (`it.root_kind`, `it.node_kinds`), and any other word the field of that name its value holds.
+/// Absent for any other read.
+fn projected(engine: QueryEngine, f: ProjField, m: DeclaredName, kind: CollectKind) -> CollectedValue? {
     if f.path.is_empty() {
         if m.kind != ItemKind.Fn { return null }
         let callee? = callee_of(engine, m) else { return null }
         return CollectedValue.Member(callee)
     }
-    if f.path.length == 1 && f.path[0].of == "name" { return CollectedValue.Spelled(Literal.Text(m.name)) }
-    null
+    if f.path.length != 1 { return null }
+    let word = f.path[0].of
+    let spelled = member_text(engine, m, word)
+    if spelled != null { return CollectedValue.Spelled(Literal.Text(spelled!)) }
+    match kind { .Component(_) -> instance_read(engine, m, word), .Annotated(_) -> null }
 }
+
+/// The text a member's declaration spells for `word`: its name, its module's last word, its file's
+/// path, its doc's first paragraph; absent for any other word.
+fn member_text(engine: QueryEngine, m: DeclaredName, word: string) -> string? {
+    if word == NAME_KEY { return m.name }
+    if word == MODULE_KEY { return short_module(m.file) }
+    if word == FILE_WORD { return m.file.path_in_package }
+    if word == DOC_WORD { member_doc(engine, m) } else { null }
+}
+
+/// The first paragraph of the doc a member's declaration is written under, its lines joined.
+fn member_doc(engine: QueryEngine, m: DeclaredName) -> string {
+    let item = read_item(engine, m.file, m.item)
+    let s? = declaring_stmt(item, m) else { return "" }
+    doc_first_paragraph(item.store.doc_comment(s) ?? []).join(" ")
+}
+
+/// What the component instance `m` answers for `word`: the kinds its written arms are rooted at, or
+/// that its patterns name; else the field of that name its value holds.
+fn instance_read(engine: QueryEngine, m: DeclaredName, word: string) -> CollectedValue? {
+    if word == ROOT_KIND_WORD {
+        let arms = instance_arms(engine, m)
+        return CollectedValue
+            .Numbers(
+                if arms == null { [any_root] } else { root_kind_of(arms!.store, arms!.arms) ?? [any_root] },
+            )
+    }
+    if word == NODE_KINDS_WORD {
+        let arms = instance_arms(engine, m)
+        return CollectedValue
+            .Numbers(if arms == null { [] } else { pattern_kinds(arms!.store, arms!.arms) })
+    }
+    match const_body(engine, m) {
+        .Ok(body) -> CollectedValue.Field(instance_callee(m), body.signature.answer, word),
+        .Err(_) -> null,
+    }
+}
+
+/// The arms a component instance's body is written as, and the store they stand in.
+type WrittenArms = { store: SyntaxArena, arms: List<Arm> }
+
+/// The arms the one fn of the instance `m`'s body is written as; absent for a body written otherwise.
+fn instance_arms(engine: QueryEngine, m: DeclaredName) -> WrittenArms? {
+    let item = read_item(engine, m.file, m.item)
+    let s? = declaring_stmt(item, m) else { return null }
+    let v? = item.store.const_value(s) else { return null }
+    let inst? = item.store.instance_parts(v) else { return null }
+    let body? = inst.body else { return null }
+    let f? = item.store.body_fn(body) else { return null }
+    let parts? = item.store.lambda_parts(f) else { return null }
+    let arms? = item.store.match_arms(parts.body) else { return null }
+    WrittenArms { store: item.store, arms: arms }
+}
+
+/// The unit a component instance's value is built by, as a call reaches it.
+fn instance_callee(m: DeclaredName) -> CalledFn {
+    CalledFn {
+        file: m.file,
+        name: m.name,
+        symbol: declared_symbol(m.file, m.name),
+        external: false,
+        plain: true,
+    }
+}
+
+/// The unit the component instance `file` declares as `name` builds its value by: no seats, its value
+/// answered. Absent for any other declaration.
+fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Const) else { return null }
+    let item = read_item(engine, file, d.item)
+    let s? = declaring_stmt(item, d) else { return null }
+    if item.store.instance_of(s) == null { return null }
+    match const_body(engine, d) {
+        .Ok(body) -> signed_lowered(engine, file, body, name, null),
+        .Err(_) -> null,
+    }
+}
+
+/// The projection word naming a member's file.
+const FILE_WORD: string = "file"
+
+/// The projection word naming a member's doc.
+const DOC_WORD: string = "doc"
+
+/// The projection word naming the kinds a component instance's arms are rooted at.
+const ROOT_KIND_WORD: string = "root_kind"
+
+/// The projection word naming every kind a component instance's patterns name.
+const NODE_KINDS_WORD: string = "node_kinds"
 
 /// The fn `@std/meta` declares as `name`, as a call reaches it.
 fn meta_callee(engine: QueryEngine, name: string) -> CalledFn? {
@@ -523,10 +623,12 @@ fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
     let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return null }
     let fns? = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null && p!.name == at.name]
         .first() else { return null }
+    let held = TraitAt { file: at.file, name: at.name }
     [TraitMember {
         name: p!.name,
         writes: item.store.is_mutating(m),
         plain: p!.tparams.is_empty() && p!.params.all(plain_seat),
+        seats: called_seats(p!.params, trait_method_signature(engine, held, p!.name, ty)?.params ?? []),
     } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
 }
 

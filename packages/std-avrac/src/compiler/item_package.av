@@ -63,6 +63,29 @@ export fn package_sources(engine: QueryEngine, package: string, dir: string) -> 
     )
 }
 
+/// The files a package reaches: its own sources, then each file of every module another package
+/// writes that one of them imports, and so on, each once.
+@derive(Saved)
+type ClosureFiles = { files: List<SourceFileAddress> }
+
+@query
+fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
+    mut files = [SourceFileAddress { package_name: package, path_in_package: p } for p in package_sources(engine, package, "src")]
+    mut at = 0
+    while at < files.length {
+        let f = files[at]
+        for u in file_words(engine, f).uses {
+            let m? = imported_module(engine, f, u) else { continue }
+            if m.package == package { continue }
+            for g in module_files(engine, m.package, m.local, m.as_root) {
+                if !files.any((x) -> same_file(x, g)) { files.push(g) }
+            }
+        }
+        at = at + 1
+    }
+    ClosureFiles { files: files }
+}
+
 collect listed_package_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 
 /// The queries a package read whole reads through, for a process to hand its engine.
