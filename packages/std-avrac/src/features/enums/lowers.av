@@ -145,6 +145,8 @@ enum Taken {
     Quoted(body: ExprId, names: List<string>)
     Equal(lit: ExprId)
     Compared(name: string)
+    /// A nullable payload's absence, which `null` in its place tests.
+    Absent
 }
 
 /// An arm as a match on an enum reads it: what each of its patterns takes, its guard, and its value.
@@ -210,9 +212,11 @@ fn presence_matched(mut cx: Lowering, e: ExprId, m: Match, ty: SignedType) -> Re
 }
 
 /// Whether an arm takes only the absence: one `null` pattern, unguarded.
-fn absence_arm(cx: Lowering, a: Arm) -> bool {
-    if a.guard != null || a.pats.length != 1 { return false }
-    match cx.store.pat(a.pats[0]) {
+fn absence_arm(cx: Lowering, a: Arm) -> bool { a.guard == null && a.pats.length == 1 && absence_pattern(cx, a.pats[0]) }
+
+/// Whether a pattern is `null`.
+fn absence_pattern(cx: Lowering, p: PatId) -> bool {
+    match cx.store.pat(p) {
         .Lit(lit) -> cx.store.null_literal(lit),
         .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
     }
@@ -288,7 +292,7 @@ fn ends_in_rest(arms: List<Planned>) -> bool {
 fn takes_rest(t: Taken) -> bool {
     match t {
         .Whole(_) -> true,
-        .Variant(_, _, _) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) -> false,
+        .Variant(_, _, _) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) or .Absent -> false,
     }
 }
 
@@ -305,6 +309,7 @@ fn takes_any(cx: Lowering, p: PatId) -> bool {
 /// literal is where it compares by value; absent for any other.
 fn sub_taken(cx: Lowering, ty: SignedType?, p: PatId) -> Taken? {
     let held? = ty else { return null }
+    if held.nullable() && absence_pattern(cx, p) { return Taken.Absent }
     let scalar = !held.nullable() && held.owned() != null && cx.equatable(held)
     let variants = cx.variants_of(held)
     if variants == null && !scalar { return null }
@@ -340,7 +345,7 @@ fn bound_names(t: Taken) -> List<string> {
             .concat(flatten([bound_names(t!) for t in subs if t != null])),
         .Member(_, name, _) -> [name],
         .Quoted(_, names) -> names,
-        .Equal(_) or .Compared(_) -> [],
+        .Equal(_) or .Compared(_) or .Absent -> [],
     }
 }
 
@@ -379,7 +384,7 @@ fn variant_taken(cx: Lowering, variant: VariantSeat, tag: int, taken: List<Taken
 fn payload_taken(t: Taken, tag: int) -> Taken? {
     match t {
         .Variant(at, _, subs) -> if at == tag && subs.length == 1 { subs[0] ?? Taken.Whole(null) } else { null },
-        .Whole(_) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) -> null,
+        .Whole(_) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) or .Absent -> null,
     }
 }
 
@@ -389,7 +394,7 @@ fn variant_tag(t: Taken) -> int? {
     match t {
         .Variant(tag, _, subs) -> if subs.all(it == null) { tag } else { null },
         .Member(tag, _, _) -> tag,
-        .Whole(_) or .Quoted(_, _) or .Equal(_) or .Compared(_) -> null,
+        .Whole(_) or .Quoted(_, _) or .Equal(_) or .Compared(_) or .Absent -> null,
     }
 }
 
@@ -432,6 +437,7 @@ fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
         },
         .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
         .Compared(name) -> compared_const(cx, s, name),
+        .Absent -> cx.not(cx.present(s.v, s.ty)),
     }
 }
 
@@ -513,7 +519,7 @@ fn taken_bound(mut cx: Lowering, s: Chosen, t: Taken) {
             let held? = cx.quote_binds(s.v, s.ty, body) else { return }
             for j, n in names { cx.bind(n, Bound.Value(held[j].reg, held[j].ty)) }
         },
-        .Equal(_) or .Compared(_) -> subject_bound(cx, s, null),
+        .Equal(_) or .Compared(_) or .Absent -> subject_bound(cx, s, null),
     }
 }
 
@@ -546,7 +552,7 @@ fn bound_types(s: Chosen, t: Taken) -> List<SignedType>? {
         },
         .Member(_, _, record) -> [record],
         .Quoted(_, _) -> null,
-        .Equal(_) or .Compared(_) -> [],
+        .Equal(_) or .Compared(_) or .Absent -> [],
     }
 }
 
@@ -582,7 +588,7 @@ fn taken_reads(mut cx: Lowering, s: Chosen, t: Taken) -> List<Reg> {
             .concat(flatten([sub_reads(cx, s, tag, k, sub) for k, sub in subs])),
         .Member(tag, _, record) -> [member_read(cx, s, tag, record)],
         .Quoted(body, _) -> [h.reg for h in cx.quote_binds(s.v, s.ty, body) ?? []],
-        .Equal(_) or .Compared(_) -> [],
+        .Equal(_) or .Compared(_) or .Absent -> [],
     }
 }
 
