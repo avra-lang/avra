@@ -29,7 +29,8 @@ impl Lowers for MethodCall {
         match subject.head {
             .Owned(word) -> owned_verb(cx, self, e, subject, word),
             .Declared(_, _) -> declared_method(cx, self, e, subject),
-            .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.unlowered(e),
+            .Parameter(_, _) -> cx.missed_as("a method of a type parameter, which only a witness answers"),
+            .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.unlowered(e),
         }
     }
 }
@@ -48,7 +49,8 @@ fn through_type(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> R
             cx.own_verb_lowered(shape, e, m.subject, m.args)
         },
         .Declared(_, _) -> static_called(cx, m, e, ty),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.missed_as("a call through a type"),
+        .Parameter(_, _) -> cx.missed_as("a static fn or variant of a type parameter, which only a witness answers"),
+        .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> cx.missed_as("a call through a type"),
     }
 }
 

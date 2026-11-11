@@ -1,0 +1,59 @@
+//! A GENERIC BODY BY LAYOUT: a type parameter is what the machine needs of the type filling it —
+//! its own layout, its nullable's, and what it makes of a `Result` side's word — so a generic body
+//! lowers once per descriptor list, never once per type. A call names that unit by the list spelled.
+
+/// What a type filling a type parameter is to the machine: its layout, its nullable's layout, and
+/// its word as a `Result` side (0 uncounted, 1 counted), absent where it isn't one word there.
+export type ParameterLayout = { layout: Layout, nullable: Layout, side: int? }
+
+impl ParameterLayout {
+    fn spelled() -> string { "${self.layout.spelled()}/${self.nullable.spelled()}/${self.side ?? -1}" }
+}
+
+/// A unit's descriptors as its symbol spells them.
+export fn parameters_spelled(ps: List<ParameterLayout>) -> string { [p.spelled() for p in ps].join(";") }
+
+/// The symbol of the unit a generic body lowers to under `ps`.
+export fn instance_symbol(symbol: string, ps: List<ParameterLayout>) -> string { "${symbol}\$${parameters_spelled(ps)}" }
+
+impl CheckedProgram {
+    /// What `t`, filling a type parameter, is to the machine; absent when its layout isn't known.
+    fn parameter_layout(t: SignedType) -> ParameterLayout? {
+        let own? = self.layout(t) else { return null }
+        let nullable? = self.layout(t with { nulls: t.nulls + 1 }) else { return null }
+        ParameterLayout { layout: own, nullable: nullable, side: self.side_word(t, []) }
+    }
+
+    /// The descriptor of the type parameter `t` names, held directly: absent for any other type, a
+    /// nullable or `dyn` one, and a parameter the body isn't lowered under.
+    fn parameter_of(t: SignedType) -> ParameterLayout? {
+        if t.nullable() || t.dynamic { return null }
+        let at? = match t.head { .Parameter(index, _) -> index, rest -> null } else { return null }
+        if at < self.parameters.length { self.parameters[at] } else { null }
+    }
+}
+
+impl Lowering {
+    /// `callee`, a generic fn, as the unit a call of it at `e` pinning `pins` and handing it `args`
+    /// reaches: its type parameters filled by the pins, else by unifying its seats with the arguments'
+    /// types and its answer with the call's, each laid out. Absent where a parameter stays unfilled or
+    /// its layout isn't known.
+    fn instantiated(callee: CalledFn, pins: List<TypeRef>, args: List<ExprId>, e: ExprId) -> CalledFn? {
+        let signed? = (self.program.checked.value_named)(callee.name) else { return null }
+        if signed.seats.length != args.length { return null }
+        mut found: Map<string, SignedType> = {}
+        for i, p in pins { found.set("${i}", self.written(p)) }
+        for i, s in signed.seats {
+            let actual? = self.type_at(self.meaning_of(args[i])) else { return null }
+            if !s.ty.unifies(actual, found) { return null }
+        }
+        let made = self.type_at(e)
+        if signed.answer != null && made != null && !signed.answer!.unifies(made!, found) { return null }
+        let fills = [found.get("${i}") for i in 0..callee.type_params]
+        if fills.any(it == null) { return null }
+        let ps = [self.program.checked.parameter_layout(f!) for f in fills]
+        if ps.any(it == null) { return null }
+        let laid = [p! for p in ps]
+        callee with { symbol: instance_symbol(callee.symbol, laid), parameters: laid }
+    }
+}

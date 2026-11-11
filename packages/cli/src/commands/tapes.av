@@ -16,6 +16,7 @@ use @std.avrac.core.{
     Ins,
     Layout,
     LiftedBody,
+    ParameterLayout,
     Reg,
     RtFlag,
     SignedType,
@@ -28,13 +29,15 @@ use @std.avrac.core.{
     dst_of,
     flatten,
     fp_str,
+    instance_symbol,
+    parameters_spelled,
     region_end,
     resymbolled,
     same_ins,
     same_reg,
 }
 use @std.avrac.compiler.lower.{Body}
-use @std.avrac.features.{DeclSig, Namespace}
+use @std.avrac.features.{DeclSig, Namespace, Wanted}
 use @std.avrac.compiler.backend.{body_lines, static_block}
 use @std.avrac.compiler.{
     avra_fact_definitions,
@@ -56,6 +59,7 @@ use @std.avrac.compiler.{
     ItemKind,
     elaborated_fn,
     lowered_fn,
+    lowered_generic,
     lowered_unit_of,
     LoweredFn,
     resolved_in,
@@ -481,6 +485,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     mut ticked = 0
     mut lambdas = 0
     mut statics = 0
+    mut reshaped = 0
     mut differing: List<string> = []
     mut missing: Map<string, int> = {}
     let paths = package_sources(engine, disk.name, "src")
@@ -488,6 +493,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
     for id in ids { let _ = ws.parsed(id) }
     let scopes = [ws.visible(id) for id in ids]
     workspace_settled(ws)
+    mut wants: List<Wanted> = []
     for at, path in paths {
         let file = disk.file_at(path)
         let names = scopes[at]
@@ -495,6 +501,9 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             let d? = written_decl(ws, disk, names, file, own.name) else { continue }
             let mine? = lowered_fn(engine, file, own.name) else { continue }
             fns = fns + 1
+            let signature = fn_signature(engine, file, own.name)
+            let generic = signature != null && !signature!.type_params.is_empty()
+            if !generic { wants = wants.concat(lowered_unit_of(ws, ws.decls.plain_want(d)).wants) }
             if !mine.whole() {
                 let first = mine.missing[0]
                 missing.set(first, (missing.get(first) ?? 0) + 1)
@@ -502,12 +511,19 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                 continue
             }
             whole = whole + 1
+            if mine.reshaped > 0 {
+                reshaped = reshaped + 1
+                continue
+            }
             let unit = lowered_unit_of(ws, ws.decls.plain_want(d))
             let theirs? = unit.bodies.first() else {
                 differing.push("${path} ${own.name}: the workspace lowers no body for it")
                 continue
             }
-            mut lifted = lift_names(ws, ids[at], mine.lifts)
+            mut lifted = known_symbols(
+                generic_symbols(ws, disk, every_callee(mine), unit.wants),
+                lift_names(ws, ids[at], mine.lifts),
+            )
             lifted.set(declared_symbol(file, own.name), ws.decls.symbol(d))
             let cut = flag_tests_cut(theirs.ins)
             let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins }, lifted) ?? lifts_difference(
@@ -529,12 +545,173 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             if cut.edges > 0 { ticked = ticked + 1 }
         }
     }
+    let generic = generic_held(engine, ws, disk, wants, shown)
+    differing = differing.concat(generic.differing)
     if shown { for d in differing { println("differs: ${d}") } }
-    let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
     println(
-        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge, ${lambdas} lambdas lifted alike, ${statics} statics laid out alike), ${differing.length} differing; not lowered yet: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}",
+        "lowered: ${whole} of ${fns} fns whole, ${alike} held alike to the workspace's (${tested} past a cancel test cut after a call, ${ticked} past a tick test cut at a loop's back edge, ${lambdas} lambdas lifted alike, ${statics} statics laid out alike), ${reshaped} lowered through a meaning the workspace shapes otherwise, ${generic.alike} generic units held alike of ${generic.whole} whole of ${generic.units} wanted (${generic.reshaped} through such a meaning), ${differing.length} differing; not lowered yet: ${tallied(missing)}; generic units not lowered yet: ${tallied(generic.missing)}",
     )
     if differing.is_empty() { 0 } else { 1 }
+}
+
+/// A tally, most first, as `what count` pairs.
+fn tallied(counts: Map<string, int>) -> string {
+    let most = sorted_by([k for k, _n in counts], (a, b) -> counts.get(a)! > counts.get(b)!)
+    [k + " " + "${counts.get(k)!}" for k in most].join(", ")
+}
+
+/// The generic units the workspace's lowering wants, each lowered here under its type arguments'
+/// layouts and held to the workspace's unit for that want: how many were wanted, lowered whole, held
+/// alike and lowered through a meaning the workspace shapes otherwise, how each that differs does, and what isn't lowered yet, by the first thing each met.
+type GenericHeld = { units: int, whole: int, alike: int, reshaped: int, differing: List<string>, missing: Map<string, int> }
+
+/// Each want of `seed`, and each want a generic unit among them wants in turn, that names a generic
+/// fn a file declares, held as `GenericHeld` says.
+fn generic_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted>, shown: bool) -> GenericHeld {
+    mut queue = seed
+    mut seen: Map<string, bool> = {}
+    mut units = 0
+    mut whole = 0
+    mut alike = 0
+    mut reshaped = 0
+    mut differing: List<string> = []
+    mut missing: Map<string, int> = {}
+    mut at = 0
+    while at < queue.length {
+        let w = queue[at]
+        at = at + 1
+        if seen.has(w.name) { continue }
+        seen.set(w.name, true)
+        let target? = generic_target(ws, disk, w) else { continue }
+        let mine? = lowered_generic(engine, target.file, target.name, target.parameters) else { continue }
+        let unit = lowered_unit_of(ws, w)
+        queue = queue.concat(unit.wants)
+        units = units + 1
+        let site = "${spelled_file(target.file)} ${w.name}"
+        if !mine.whole() {
+            let first = mine.missing[0]
+            missing.set(first, (missing.get(first) ?? 0) + 1)
+            if shown && missing.get(first)! <= 3 { println("left: ${first} in the generic unit ${site}") }
+            continue
+        }
+        whole = whole + 1
+        if mine.reshaped > 0 {
+            reshaped = reshaped + 1
+            continue
+        }
+        let theirs? = unit.bodies.first() else {
+            differing.push("${site}: the workspace lowers no body for it")
+            continue
+        }
+        let id = ws.decls.decl(w.decl!).file
+        mut lifted = known_symbols(
+            generic_symbols(ws, disk, every_callee(mine), unit.wants),
+            suffixed(
+                lift_names(ws, id, mine.lifts),
+                w.name.substring(ws.decls.symbol(w.decl!).length, w.name.length),
+            ),
+        )
+        lifted
+            .set(instance_symbol(declared_symbol(target.file, target.name), target.parameters), w.name)
+        let cut = flag_tests_cut(theirs.ins)
+        let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins }, lifted) ?? lifts_difference(
+            ws,
+            disk,
+            mine.lifts,
+            unit.bodies,
+            lifted,
+            mine.tagged,
+        ) ?? statics_difference(ws, disk, mine, unit.statics, lifted)
+        if how != null {
+            differing.push("${site}: ${how!}")
+            continue
+        }
+        alike = alike + 1
+    }
+    GenericHeld {
+        units: units,
+        whole: whole,
+        alike: alike,
+        reshaped: reshaped,
+        differing: differing,
+        missing: missing,
+    }
+}
+
+/// Each of `names` with `suffix` after the name it maps to: a lambda a generic unit lifts is named
+/// for its want as the unit is.
+fn suffixed(names: Map<string, string>, suffix: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for k, v in names { out.set(k, v + suffix) }
+    out
+}
+
+/// A generic fn a file declares, and the layouts a want of it lowers it under.
+type GenericTarget = { file: SourceFileAddress, name: string, parameters: List<ParameterLayout> }
+
+/// What the want `w` lowers when it's a generic fn's body under type arguments alone, written in a
+/// file the disk holds; absent for any other want.
+fn generic_target(ws: Workspace, disk: Disk, w: Wanted) -> GenericTarget? {
+    let sub? = w.sub else { return null }
+    let d? = w.decl else { return null }
+    if !sub.consts.is_empty() { return null }
+    let x = ws.decls.decl(d)
+    let declared_fn = match x.kind { .Fn -> true, rest -> false }
+    if !declared_fn || !x.maker.is_empty() || x.home == null { return null }
+    let file? = address_of(disk, ws.decls.file(x.file).path) else { return null }
+    GenericTarget { file: file, name: x.name, parameters: [old_parameter(ws, a) for a in sub.args] }
+}
+
+/// The address of the file at `path` on disk, absent for one in no package the disk holds.
+fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
+    let spelled = disk.spelled(path)
+    let own = "${disk.name}/"
+    if spelled.starts_with(own) { return disk.file_at(spelled.substring(own.length, spelled.length)) }
+    if !spelled.starts_with(STD) { return null }
+    let rest = spelled.substring(STD.length, spelled.length)
+    let cut = rest.index_of("/")
+    if cut < 0 { return null }
+    SourceFileAddress {
+        package_name: STD + rest.substring(0, cut),
+        path_in_package: rest.substring(cut + 1, rest.length),
+    }
+}
+
+/// What a type argument of the workspace's is to the machine as it fills a type parameter.
+fn old_parameter(ws: Workspace, a: TypeId) -> ParameterLayout {
+    ParameterLayout {
+        layout: old_layout(ws, a),
+        nullable: old_nullable(ws, a),
+        side: ws.decls.types.side_word(ws.decls.types.machine_type(a)),
+    }
+}
+
+/// The fns a lowered body and the lambdas it lifts call.
+fn every_callee(f: LoweredFn) -> List<CalledFn> { f.callees.concat(flatten([l.callees for l in f.lifts])) }
+
+/// Each generic fn's unit among `callees`, mapped to the name of the workspace's want of that fn
+/// whose type arguments lay out alike.
+fn generic_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>, wants: List<Wanted>) -> Map<
+    string,
+    string,
+> {
+    mut names: Map<string, string> = {}
+    for c in callees.filter(!it.parameters.is_empty()) {
+        let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
+        let d? = ws.visible(id).fn_decl(c.name) else { continue }
+        let spelled = parameters_spelled(c.parameters)
+        let want? = wants
+            .find((w) -> w.decl?.index ?? -1 == d.index && wanted_layouts(ws, w) == spelled) else { continue }
+        names.set(c.symbol, want.name)
+    }
+    names
+}
+
+/// The layouts a want's type arguments lower its generic body under, spelled; absent for a want of
+/// no type arguments.
+fn wanted_layouts(ws: Workspace, w: Wanted) -> string? {
+    let sub? = w.sub else { return null }
+    parameters_spelled([old_parameter(ws, a) for a in sub.args])
 }
 
 /// The workspace with every file it reaches named and its references gathered, before any of its
@@ -784,7 +961,7 @@ fn ins_text(i: Ins) -> string { body_lines([i]).join(" ") }
 /// Each callee's symbol, mapped to the one the workspace's lowering calls it by.
 fn callee_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>) -> Map<string, string> {
     mut renames: Map<string, string> = {}
-    for c in callees {
+    for c in callees.filter(it.parameters.is_empty()) {
         let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
         let d = if c.defaulted { default_decl(ws, id, c.owner!, c.name) } else if c.owner == null { ws.visible(id).fn_decl(c.name) } else { method_decl(ws, id, c.owner!, c.name) }
         if d != null { renames.set(c.symbol, ws.decls.symbol(d!)) }

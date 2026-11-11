@@ -131,7 +131,7 @@ fn owned_only(t: SignedType) -> SignedType? { match t.head { .Owned(_) -> t, res
 /// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number or a
 /// truth by one instruction.
 fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) -> Reg {
-    let kind? = operands(cx, l, r) else { return compared_beyond(cx, negated, l, r) ?? cx.unlowered(e) }
+    let kind? = operands(cx, l, r) else { return compared_beyond(cx, negated, l, r) ?? uncompared(cx, e, l, r) }
     let a = cx.lower(l)
     let b = cx.lower(r)
     let row = match kind {
@@ -141,6 +141,12 @@ fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) ->
     }
     let same = cx.call_row(Layout.Truth, rt_sig_of(row)!, [a, b])
     if negated { cx.not(same) } else { same }
+}
+
+/// `l == r` past every rule: over a type parameter, what only a witness answers.
+fn uncompared(mut cx: Lowering, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    if cx.type_at(l)?.generic() ?? false || cx.type_at(r)?.generic() ?? false { return cx.missed_as("`==` over a type parameter, which only a witness answers") }
+    cx.unlowered(e)
 }
 
 /// An arithmetic, comparison or bitwise operation over numbers, one instruction; `+` over text, the

@@ -167,7 +167,7 @@ const MOST_VALUED_VARIANTS: int = 62
 
 impl CheckedProgram {
     /// What a value of `ty` is to the machine; absent for a type no value has yet: one the body
-    /// decides, a type parameter, a name that names no type, or a declared type that's neither a
+    /// decides, a type parameter the body isn't lowered under, a name that names no type, or a declared type that's neither a
     /// record nor an enum.
     fn layout(ty: SignedType) -> Layout? { self.laid(ty, []) }
 
@@ -180,7 +180,8 @@ impl CheckedProgram {
             .Owned(name) -> self.owned_layout(name, ty.args, laying),
             .Declared(_, _) -> declared_layout(self.declared(ty, laying)),
             .Function -> Layout.Boxed(BoxKind.Closure),
-            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
+            .Parameter(_, _) -> self.parameter_of(ty)?.layout,
+            .Inferred or .Unnamed(_) or .Never or .Meta -> null,
         }
     }
 
@@ -189,6 +190,8 @@ impl CheckedProgram {
     /// else a pair.
     fn nullable_laid(inner: SignedType, laying: List<SignedType>) -> Layout? {
         if inner.bottom() { return Layout.Bare }
+        let parameter = self.parameter_of(inner)
+        if parameter != null { return parameter!.nullable }
         let carried? = self.laid(inner, laying) else { return null }
         if inner.nullable() { return Layout.Maybe(carried) }
         if carried.pointer() || carried.spare_tag() { return carried }
@@ -252,7 +255,8 @@ impl CheckedProgram {
                 }
             },
             .Function -> 1,
-            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
+            .Parameter(_, _) -> self.parameter_of(t)?.side,
+            .Inferred or .Unnamed(_) or .Never or .Meta -> null,
         }
     }
 

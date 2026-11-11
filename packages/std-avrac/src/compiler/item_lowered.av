@@ -11,9 +11,11 @@ use core.{
     LoweredProgram,
     NamedValue,
     Param,
+    ParameterLayout,
     SignedType,
     Static,
     TraitMember,
+    instance_symbol,
     lowering,
 }
 use @std.program.address.{SourceFileAddress}
@@ -34,6 +36,9 @@ export type LoweredFn = {
     statics: List<Static>,
     /// The types whose tags it and its lambdas hold in a `dyn` box.
     tagged: List<SignedType> = [],
+    /// How many of its and its lambdas' statements lower through a meaning other lowerings may shape
+    /// otherwise.
+    reshaped: int = 0,
 }
 
 impl LoweredFn {
@@ -43,9 +48,26 @@ impl LoweredFn {
 
 /// The body of the fn `file` declares as `name`, lowered: its seats the first registers, the body
 /// inside their scope, then its answer. Absent when it declares none with a body.
-export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? { lowered_under(engine, file, name, null) }
+
+/// The body of the generic fn `file` declares as `name`, lowered under `parameters`, one per type
+/// parameter it declares. Absent when it declares none with a body.
+export fn lowered_generic(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    parameters: List<ParameterLayout>,
+) -> LoweredFn? { lowered_under(engine, file, name, parameters) }
+
+/// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic.
+fn lowered_under(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    parameters: List<ParameterLayout>?,
+) -> LoweredFn? {
     let signed? = signed_body(engine, file, name) else { return null }
-    let refused = lowering_refused(signed)
+    let refused = lowering_refused(signed, parameters)
     if refused != null {
         return LoweredFn {
             params: [],
@@ -63,6 +85,7 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
     let data: Cell<List<Static>> = Cell.new([])
     let tagged: Cell<List<SignedType>> = Cell.new([])
+    let reshaped: Cell<int> = Cell.new(0)
     mut cx = lowering(
         body.store,
         LoweredProgram {
@@ -70,17 +93,18 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
                 engine,
                 file,
                 Signing { engine: engine, file: file, type_params: signature.type_params },
-            ),
+            ) with { parameters: parameters ?? [] },
             named: (n: string) -> named_value(engine, file, n),
             method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
             statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
             lifts: lifts,
-            lift_symbol: (lo: int) -> declared_symbol(file, "${name}.lambda${lo}"),
+            lift_symbol: (lo: int) -> declared_symbol(file, "${unit_name(name, parameters)}.lambda${lo}"),
             data: data,
             literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, body.store, e, ty),
             traits: (ty: SignedType) -> trait_members(engine, ty),
             type_symbol: (ty: SignedType) -> type_symbol(ty),
             tagged: tagged,
+            reshaped: reshaped,
             defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         },
         body.core,
@@ -102,13 +126,21 @@ export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string)
         lifts: lifts.get(),
         statics: data.get(),
         tagged: tagged.get(),
+        reshaped: reshaped.get(),
     }
 }
 
-/// Why a fn's body isn't lowered yet before any of it is read: its signature is one only units by
-/// layout or a seat's place can carry, or an annotation may make what it does.
-fn lowering_refused(signed: SignedBody) -> string? {
-    if !signed.signature.type_params.is_empty() { return "a generic fn" }
+/// The name a body's unit is known by in its file: a generic fn's names its layouts too.
+fn unit_name(name: string, parameters: List<ParameterLayout>?) -> string {
+    let ps? = parameters else { return name }
+    instance_symbol(name, ps)
+}
+
+/// Why a fn's body isn't lowered yet before any of it is read: it's generic and isn't lowered under
+/// one layout per type parameter, its signature is one only units by a seat's place can carry, or
+/// an annotation may make what it does.
+fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> string? {
+    if parameters?.length ?? 0 != signed.signature.type_params.length { return "a generic fn" }
     if !signed.item.store.annotations_of(signed.stmt).is_empty() { return "an annotated fn, whose body its annotation may make" }
     let params = signed.item.store.fn_parts(signed.stmt)!.params
     if params.any(it.ty == null) { return "an untyped seat" }
@@ -155,7 +187,8 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
         name: d.name,
         symbol: declared_symbol(d.file, d.name),
         external: false,
-        plain: declared.tparams.is_empty() && declared.params.all(plain_seat),
+        plain: declared.params.all(plain_seat),
+        type_params: declared.tparams.length,
     }
 }
 

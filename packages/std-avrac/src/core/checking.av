@@ -29,6 +29,9 @@ export type CheckedProgram = {
     type_value: fn(string) -> SignedType?,
     static_of: fn(SignedType, string) -> SignedType?,
     meta_type: fn(string) -> SignedType?,
+    /// What each type parameter of the body is to the machine, by its place, where the body is
+    /// lowered under one instantiation's layouts.
+    parameters: List<ParameterLayout> = [],
 }
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
@@ -212,20 +215,33 @@ impl Checking {
         value
     }
 
-    /// What branches of these types are where they meet: their join, or the seat's type where they
-    /// don't join, which each lifts into; nothing under a seat that isn't known, which may widen them.
-    fn branches_met(types: List<SignedType?>, expected: Expected) -> SignedType? {
+    /// What the branches `branches`, of these types, are where they meet: their join, which each
+    /// branch of another type keeps as its seat under a seat that wants nothing, or the seat's type
+    /// where they don't join, which each lifts into; nothing under a seat that isn't known, which may widen them.
+    fn branches_met(branches: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
         if expected is .Unknown || types.any(it == null) { return null }
         let joined = types_joined(types)
-        if joined != null { return joined }
+        if joined != null { return if expected is .Free { self.met_seated(branches, types, joined) } else { joined } }
         match expected { .Exactly(wanted) -> wanted, rest -> null }
     }
 
-    /// What arms of these types are where they meet: the seat's type when it wants one, which each lifts
-    /// into, else their join; nothing under a seat that isn't known, which may widen them.
-    fn arms_met(types: List<SignedType?>, expected: Expected) -> SignedType? {
+    /// What the arms `arms`, of these types, are where they meet: the seat's type when it wants one,
+    /// which each lifts into, else their join, which each arm of another type keeps as its seat where
+    /// the arms' value is read; nothing under a seat that isn't known, which may widen them.
+    fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
         if expected is .Unknown || types.any(it == null) { return null }
-        match expected { .Exactly(wanted) -> wanted, rest -> types_joined(types) }
+        match expected {
+            .Exactly(wanted) -> wanted,
+            .Free -> self.met_seated(arms, types, types_joined(types)),
+            .Dropped or .Unknown -> types_joined(types),
+        }
+    }
+
+    /// `met`, where the arms `arms` of these types meet, kept as the seat of each arm of another type.
+    fn met_seated(arms: List<ExprId>, types: List<SignedType?>, met: SignedType?) -> SignedType? {
+        let meeting? = met else { return null }
+        for at, a in arms { if types[at]?.spelled() != meeting.spelled() { self.seat_kept(a, Expected.Exactly(meeting)) } }
+        meeting
     }
 
     /// A lambda of `params` and `body` checked against `expected`: each parameter is its written type,

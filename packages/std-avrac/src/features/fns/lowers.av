@@ -1,26 +1,59 @@
 //! The lowering rules of a call and `return`: a call of a declared fn hands it each argument, its
 //! answer minted last; `return` leaves the fn with its value.
-use core.{CalledFn, ExprId, Lowering, Lowers, Reg, StmtId, StmtLowers}
+use core.{Bound, CalledFn, ExprId, Lowering, Lowers, Reg, SignedType, StmtId, StmtLowers}
 use core.expr.{Call}
 use core.stmt.{Return}
 
 impl Lowers for Call {
-    /// A call of a fn the program declares, by position into seats that promise nothing: its
-    /// arguments in order, then the call. Any other call isn't lowered yet.
+    /// A call of a fn value the body binds, or of a fn the program declares (a generic one's unit
+    /// under its arguments' layouts), by position into seats that promise nothing: its arguments in
+    /// order, then the call. Any other call isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
-        let callee? = called(cx, self) else { return cx.unlowered(e) }
+        let value = cx.bound(self.callee.of)
+        if value != null { return called_value(cx, self, e, value!) }
+        let named? = called(cx, self) else { return cx.unlowered(e) }
+        let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
         let args = [cx.lower(a) for a in self.args]
         let answer = cx.layout_at(e)
         if callee.external { cx.call_c(answer, callee.symbol, args) } else { cx.call_fn(answer, callee, args) }
     }
 }
 
-/// The fn a call names, when the program declares it and the call hands it plain arguments.
+/// The fn a call names, when the program declares it and the call hands it plain arguments, pinning
+/// each of its type parameters or none.
 fn called(cx: Lowering, call: Call) -> CalledFn? {
-    if !call.pins.is_empty() || cx.bound(call.callee.of) != null { return null }
+    if cx.bound(call.callee.of) != null { return null }
     let named? = cx.named(call.callee.of) else { return null }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
-    if !callee.plain || call.args.any((a) -> cx.store.names_its_seat(a)) { null } else { callee }
+    if !callee.plain ||
+        call.args.any((a) -> cx.store.names_its_seat(a)) ||
+        !call.pins.is_empty() && call.pins.length != callee.type_params { null } else { callee }
+}
+
+/// A call of a fn value the body binds, by position into seats that promise nothing: its arguments
+/// in order, then the code its box holds, handed the box first.
+fn called_value(mut cx: Lowering, call: Call, e: ExprId, b: Bound) -> Reg {
+    if !plain_value_call(cx, call, b.type()) { return cx.missed_as("a call of a fn value through a seat that promises or by name") }
+    let args = [cx.lower(a) for a in call.args]
+    let box = cx.held(b)
+    cx.called_code(cx.layout_at(e), cx.code_of(box), box, args)
+}
+
+/// Whether `call` hands the fn value of type `ty` its arguments by position into seats that promise
+/// nothing.
+fn plain_value_call(cx: Lowering, call: Call, ty: SignedType) -> bool {
+    ty.head is .Function &&
+        !ty.nullable() &&
+        ty.seats.length == call.args.length &&
+        !ty.seats.any(it.mutable || it.settled) &&
+        call.pins.is_empty() &&
+        !call.args.any((a) -> cx.store.names_its_seat(a))
+}
+
+/// The unit a call of `callee` reaches: the fn itself, or a generic fn's unit under its arguments'
+/// layouts.
+fn reached_unit(cx: Lowering, callee: CalledFn, call: Call, e: ExprId) -> CalledFn? {
+    if callee.type_params == 0 { callee } else { cx.instantiated(callee, call.pins, call.args, e) }
 }
 
 impl StmtLowers for Return {
@@ -30,3 +63,6 @@ impl StmtLowers for Return {
         cx.answer_exit(cx.lower(value))
     }
 }
+
+/// A call of a generic fn whose arguments don't lay out each of its type parameters.
+fn unlaid(callee: CalledFn) -> string { "a call of the generic `${callee.name}` whose arguments don't lay out its type parameters" }

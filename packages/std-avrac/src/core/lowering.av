@@ -29,6 +29,8 @@ export type LoweredProgram = {
     type_symbol: fn(SignedType) -> string?,
     /// The types tagged so far, each once.
     tagged: Cell<List<SignedType>>,
+    /// How many statements were lowered so far through a meaning other lowerings may shape otherwise.
+    reshaped: Cell<int>,
     /// The fn whose body is the default of the field of that name a record declares, absent where
     /// the program declares none.
     defaults: fn(SignedType, string) -> CalledFn?,
@@ -54,6 +56,10 @@ export type CalledFn = {
     writes: bool = false,
     /// Whether it's the default of the field `name` of the record `owner`.
     defaulted: bool = false,
+    /// How many type parameters it declares.
+    type_params: int = 0,
+    /// For a generic fn's unit, what each type parameter is to the machine under it.
+    parameters: List<ParameterLayout> = [],
 }
 
 /// A value written as a literal.
@@ -194,6 +200,9 @@ impl Lowering {
         let meant? = self.store.stmt_meant(s) else { return self.store.stmt(s).stmt_lowered(self, s) }
         self.store.stmt(s).meant_lowered(self, s, meant)
     }
+
+    /// A statement lowered through a meaning other lowerings may shape otherwise, counted.
+    mut fn reshaped() { self.program.reshaped.set(self.program.reshaped.get() + 1) }
 
     /// A branch whose value nothing reads: a block's statements in a scope of names of their own, or
     /// the one expression it is, dropped.
