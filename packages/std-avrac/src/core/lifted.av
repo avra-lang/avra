@@ -6,10 +6,27 @@ impl Lowering {
     /// `r`, a value of `from`, as a seat of `into` holds it: itself where the seat takes it as it is
     /// or doesn't take it at all.
     mut fn lifted(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        if self.rewrites(from, into.unwrapped()) { return if into.nullable() { self.adopted(r, from, into) } else { self.rewritten(r, into) } }
         if from.stands_as(into) || from.bottom() || !from.reaches(into) { return r }
         if into.dynamic && !into.nullable() { return self.dyn_boxed(r, from, into) }
         if into.nullable() { return self.adopted(r, from, into) }
         self.okayed(into, self.lifted(r, from, into.args[0]))
+    }
+
+    /// Whether a value of `from` lifts into `into` as a rule's rewrite: a template, `@std/meta`'s
+    /// `Code`, where a rule's `Fix` is wanted.
+    fn rewrites(from: SignedType, into: SignedType) -> bool {
+        if from.nullable() { return false }
+        let code? = self.program.checked.meta("Code") else { return false }
+        if !code.names_as(from) { return false }
+        FIX_MODULES
+            .any((m) -> (self.program.checked.toolchain_type)(m, "Fix")?.names_as(into) ?? false)
+    }
+
+    /// The template `r` as the rule's `Fix` `into`, its `Rewrite`.
+    mut fn rewritten(r: Reg, into: SignedType) -> Reg {
+        let tag? = self.variants_of(into)?.find_index(it.name == "Rewrite") else { return self.missed_as("a rule's `Fix` with no `Rewrite`") }
+        self.tagged_value(self.laid_out(into), tag, [r])
     }
 
     /// `e`'s value lifted into a seat of `seat`, from what its own seat, else its type, holds it as.
@@ -85,3 +102,6 @@ impl Lowering {
         dst
     }
 }
+
+/// The modules declaring a rule's `Fix`: the compiler's own, and `@std/meta`'s for a package's rules.
+const FIX_MODULES: List<string> = ["@std.avrac.features", "@std.meta"]

@@ -191,6 +191,7 @@ fn worked_by_query(engine: QueryEngine) -> string {
 fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: string) -> int {
     if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
+    if args.has_flag("entry_run") { return entry_ran(engine, disk, args.option("args") ?? "") }
     if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("built") {
         return built_held(
@@ -553,6 +554,11 @@ export flag program_runs {
     aliases: ["--ran"]
 }
 
+export flag entry_run {
+    description: "build the package's program through the program layer natively, a body not lowered yet trapping by name where it's reached, and run it with --args"
+    aliases: ["--run-entry"]
+}
+
 export flag built {
     description: "walk every body the package's program reaches, past each not lowered yet, and tally what isn't made by why"
     aliases: ["--built"]
@@ -560,10 +566,21 @@ export flag built {
 
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures, left, core, lowered, program_runs, generators, built]
+    flags: [
+        program_only,
+        signatures,
+        left,
+        core,
+        lowered,
+        program_runs,
+        generators,
+        built,
+        entry_run,
+    ]
     args: [file]
     option only { description: "hold only the package's files whose path starts with this (`src/compiler/`)" }
     option budget { description: "with --built, stop the walk after this many seconds and tally what it reached" }
+    option args { description: "with --run-entry, the arguments the program runs with, split on spaces" }
     run: TapesCmd {}
 }
 
@@ -1738,6 +1755,55 @@ fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool) -> int {
     if failing.is_empty() { 0 } else { 1 }
 }
 
+/// The package's program made on the program layer, a body not lowered yet trapping by name, built
+/// natively and run with `argv` split on spaces: what it printed and how it left.
+fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
+    let bin = read_manifest(
+        new_source_file("avra.toml", text_at(joined_path(disk.root, "avra.toml")) ?? ""),
+    )
+        .bin ?? "src/main.av"
+    let lowered = match made_program(engine, disk.file_at(bin), true) {
+        .Made(l) -> l,
+        .Unmade(why, at) -> {
+            println("unmade: ${why}, at ${at}")
+            return 1
+        },
+    }
+    let stem = joined_path(disk.root, ".avra-cache/tapes-run/${file_name(disk.root)}")
+    let refused = unbuilt(lowered, stem, linked_words(engine, disk))
+    if refused != null {
+        println("unbuilt: ${refused!}")
+        return 1
+    }
+    match (cmd(tool_at(stem, stem), [w for w in argv.split(" ") if !w.is_empty()]) with { timeout: secs(60) })
+        .outcome() {
+        .Ok(o) -> {
+            println("stdout: ${o.out.stdout}")
+            println("stderr: ${o.out.stderr}")
+            println("exit: ${exit_spelled(o.exit)}")
+            if clean(o.exit) { 0 } else { 1 }
+        },
+        .Err(e) -> {
+            println("didn't run: ${e.describe().message}")
+            1
+        },
+    }
+}
+
+/// The objects and flags the packages a program on `disk` reaches link with, as a workspace that
+/// read the whole program says them.
+fn linked_words(engine: QueryEngine, disk: Disk) -> List<string> {
+    mut ws = root_workspace(disk.root)
+    for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
+    ws.admit_all()
+    ws.link_words("")
+}
+
+/// How a child left, as words.
+fn exit_spelled(e: Exit) -> string {
+    match e { .Clean -> "clean", .Code(n) -> "code ${n}", .Signal(sig, _) -> "signal ${sig}" }
+}
+
 /// One engine's run of a program test: how it differs from what the test expects, absent when it
 /// printed exactly that under every schedule the case runner ran.
 type Ran = { engine: string, differs: string? }
@@ -1753,23 +1819,30 @@ fn native_differs(l: Lowered, stem: string) -> string? {
 }
 
 /// Why the program didn't build at `stem`, absent when it did: emitted as an object, then linked
-/// with the runtime.
-fn unbuilt(l: Lowered, stem: string) -> string? {
+/// with its packages' objects and flags `packaged` and the runtime.
+fn unbuilt(l: Lowered, stem: string, packaged: List<string> = []) -> string? {
     let _ = make_dirs(dir_of(stem))
     let object = "${stem}.o"
     emit_object(l, emit_index(l), object, Owned.Whole, 0, "") ?? objects_made() ?? link_refused(
         object,
         stem,
+        packaged,
     )
 }
 
-/// Why `object` didn't link into the binary `stem`, absent when it did.
-fn link_refused(object: string, stem: string) -> string? {
+/// Why `object` didn't link into the binary `stem`, its packages' own objects and flags `packaged`
+/// beside it, absent when it did.
+fn link_refused(object: string, stem: string, packaged: List<string>) -> string? {
     let cc = match process_tool("clang") {
         .Ok(t) -> t,
         .Err(_) -> { return "no `clang` on the PATH" },
     }
-    match (cmd(cc, ["-w", unreached_dropped(), object, runtime_library(), "-lm", "-o", stem]) with { env: inherited() })
+    match (cmd(
+        cc,
+        ["-w", unreached_dropped(), object]
+            .concat(packaged)
+            .concat([runtime_library(), "-lm", "-o", stem]),
+    ) with { env: inherited() })
         .outcome() {
         .Ok(o) -> if clean(o.exit) { null } else { "the link failed: ${o.out.stderr}" },
         .Err(e) -> "the link didn't run: ${e.describe().message}",

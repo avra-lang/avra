@@ -41,6 +41,8 @@ use core.{
     module_path,
     tests_placed,
     new_node_store,
+    rt_sig_of,
+    owned_type,
 }
 use features.collects.{collected_list}
 use @std.program.address.{SourceFileAddress}
@@ -352,6 +354,55 @@ fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string) -
     cx.emit(Ins.RetVal(r))
     unit_lowered(cx, 0, cx.laid_out(ty))
 }
+
+/// A body that isn't lowered yet, standing where the one `file` knows as `symbol` would: seats laid out as `seats`, an answer
+/// of layout `answer`, and a trap naming the body and why, run the moment the body is reached.
+export fn trapped_unit(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    symbol: string,
+    why: string,
+    seats: List<Layout>,
+    answer: Layout,
+) -> LoweredFn {
+    stand_in(engine, file, symbol, seats, answer, unlowered_reached(symbol, why))
+}
+
+/// The body a code hash this program doesn't compute stands in as, answering it absent: a run
+/// that can't compute a code hash keeps none, so whatever it keys keys nothing.
+export fn absent_hash_unit(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    symbol: string,
+    answer: Layout,
+) -> LoweredFn {
+    stand_in(engine, file, symbol, [], answer, null)
+}
+
+/// A body of `seats` answering `answer`'s zero, trapping first with `trap` where it says one.
+fn stand_in(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    symbol: string,
+    seats: List<Layout>,
+    answer: Layout,
+    trap: string?,
+) -> LoweredFn {
+    let store = new_node_store()
+    mut cx = lowering(
+        store,
+        lowered_program(engine, file, store, symbol, [], null),
+        [],
+        {},
+        owned_type("void"),
+    )
+    for l in seats { let _ = cx.mint(l) }
+    if trap != null { cx.run_row(rt_sig_of("avra_trap")!, [cx.const_str(trap!)]) }
+    cx.emit(Ins.RetVal(cx.zero_of(answer)))
+    unit_lowered(cx, seats.length, answer)
+}
+
+fn unlowered_reached(symbol: string, why: string) -> string { "a body not lowered yet was reached: ${symbol}: ${why}" }
 
 /// The unit of the static `all` the enum `file` declares as `name` has where its variants carry
 /// nothing: no seats, each variant in the order declared, listed and answered. Absent for any other
