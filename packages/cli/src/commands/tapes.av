@@ -8,13 +8,11 @@ use @std.avrac.compiler.{Workspace}
 use @std.avrac.compiler.host.{read_manifest}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.core.{
-    BoxKind,
     CalledFn,
     DeclId,
     ExprId,
     FileId,
     Ins,
-    Layout,
     LiftedBody,
     ParameterLayout,
     Reg,
@@ -1028,11 +1026,11 @@ fn lowered_difference(
     theirs: Body,
     lifted: Map<string, string>,
 ) -> string? {
-    let seats = [old_layout(ws, t) for t in theirs.params]
+    let seats = [ws.decls.register_layout(t) for t in theirs.params]
     if [l.spelled() for l in mine.params].join(", ") != [l.spelled() for l in seats].join(", ") {
         return "seats ${[l.spelled() for l in mine.params].join(", ")}, the workspace's ${[l.spelled() for l in seats].join(", ")}"
     }
-    let answer = old_layout(ws, theirs.ret)
+    let answer = ws.decls.register_layout(theirs.ret)
     if mine.answer.spelled() != answer.spelled() { return "answers ${mine.answer.spelled()}, the workspace's ${answer.spelled()}" }
     let renames = known_symbols(callee_symbols(ws, disk, mine.callees), lifted)
     let tags = type_tags(ws, disk, mine.tagged)
@@ -1049,7 +1047,7 @@ fn lowered_difference(
     }
     if workspace.ins.length > ours.ins.length { return "ends at instruction ${ours.ins.length}, where the workspace's has `${ins_text(workspace.ins[ours.ins.length])}`" }
     for at, r in ours.defined {
-        let old = old_layout(ws, theirs.reg_types[workspace.defined[at].index])
+        let old = ws.decls.register_layout(theirs.reg_types[workspace.defined[at].index])
         let new = mine.layouts[r.index]
         if new.spelled() != old.spelled() { return "the register instruction ${at} defines is ${new.spelled()}, the workspace's ${old.spelled()}" }
     }
@@ -1220,46 +1218,3 @@ fn method_decl(ws: Workspace, id: FileId, owner: string, name: string) -> DeclId
     ws.decls.method(t, name)
 }
 
-/// What a register of the workspace's type is to the machine, read off its registry the way the
-/// backend reads it: the receipt's one reading of a type the program layer never sees.
-fn old_layout(ws: Workspace, ty: TypeId) -> Layout {
-    let types = ws.decls.types
-    if types.valued_carrier(ty) { return Layout.Tagged(types.counted_mask(ty)) }
-    if types.travels_wide(ty) { return Layout.Fields([old_layout(ws, f) for f in types.flat_fields(types.machine_type(ty))]) }
-    match types.shape_of(types.machine_type(ty)) {
-        .Int or .Error or .TypeName(_, _) or .Var(_, _, _) -> Layout.Word,
-        .Void -> Layout.Void,
-        .Float -> Layout.Real,
-        .Bool -> Layout.Truth,
-        .Ptr or .Null -> Layout.Bare,
-        .Str -> Layout.Boxed(BoxKind.Text),
-        .Bytes -> Layout.Boxed(BoxKind.Bytes),
-        .List(_) or .EmptyList -> Layout.Boxed(BoxKind.List),
-        .Map(_, _) or .EmptyMap -> Layout.Boxed(BoxKind.Map),
-        .Cell(_) -> Layout.Boxed(BoxKind.Cell),
-        .Task(_) or .Tasks -> Layout.Boxed(BoxKind.Task),
-        .Range -> Layout.Boxed(BoxKind.Range),
-        .Struct(_, _) -> Layout.Boxed(BoxKind.Record),
-        .Enum(_, _) or .Res(_, _) -> Layout.Boxed(BoxKind.Enum),
-        .App(d, _, _) -> match ws.decls.decl(d).kind {
-            .Enum or .CollectEnum -> Layout.Boxed(BoxKind.Enum),
-            .Record or .Builtin or .Named or .Alias or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .State or .Fn or .Method -> Layout.Boxed(BoxKind.Record),
-        },
-        .Dyn(_, _) -> Layout.Boxed(BoxKind.Dyn),
-        .Fn(_, _, _) -> Layout.Boxed(BoxKind.Closure),
-        .Union(_) -> Layout.Boxed(BoxKind.Union),
-        .Opt(inner) -> old_nullable(ws, inner),
-    }
-}
-
-/// What a nullable of the workspace's type `inner` is: the pointer itself, the same registers where
-/// a spare tag stands for absence, a one-slot box over a flat record, else a pair.
-fn old_nullable(ws: Workspace, inner: TypeId) -> Layout {
-    let types = ws.decls.types
-    let carried = old_layout(ws, inner)
-    if types.seen_shape(inner) is .Opt { return Layout.Maybe(carried) }
-    if types.rides_pointer(inner) { return carried }
-    if types.is_word_enum(inner) { return Layout.Word }
-    if types.is_flat(inner) { return Layout.Boxed(BoxKind.Slot) }
-    Layout.Maybe(carried)
-}

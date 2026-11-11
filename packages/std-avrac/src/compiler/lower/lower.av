@@ -52,6 +52,8 @@ use core.{
     CollectScope,
     Plain,
     DeclKind,
+    Layout,
+    filled,
 }
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{
@@ -94,6 +96,13 @@ export type Body = {
     gives: Reg?,
     ins: List<Ins>,
     reg_types: List<TypeId>,
+    /// Each register's layout, by its index: what the memory pass reads of a register. Filled where
+    /// the lowering hands its bodies on (`Decls.laid`).
+    layouts: List<Layout> = [],
+    /// Each seat's layout and the answer's: what a declaration of the body reads. Filled with
+    /// `layouts`.
+    seats: List<Layout> = [],
+    answer: Layout? = null,
     /// The file whose unit lowered this — what lets a program's IR be split
     /// into one module per file. Absent for a body no file owns (a synthetic
     /// entry), which is a GROWTH: every existing construction site is
@@ -517,8 +526,8 @@ impl Decls {
         let every_body = fns.concat([entry_body])
         spoken = spoken.concat(minted_pointers(self.types, every_body))
         Lowered {
-            fns: fns,
-            entry: entry_body,
+            fns: [self.laid(b) for b in fns],
+            entry: self.laid(entry_body),
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
@@ -601,8 +610,8 @@ impl Decls {
             .concat(minted_pointers(self.types, every_body))
             .concat(if refuses_hash && !reached.is_empty() { [self.code_hash_in_const(root)] } else { [] })
         Lowered {
-            fns: fns,
-            entry: entry,
+            fns: [self.laid(b) for b in fns],
+            entry: self.laid(entry),
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
@@ -635,8 +644,8 @@ impl Decls {
         }
         if !hit { return null }
         Lowered {
-            fns: bodies.slice(1, bodies.length),
-            entry: bodies.first() ?? empty_main(self.types).body,
+            fns: [self.laid(b) for b in bodies.slice(1, bodies.length)],
+            entry: self.laid(bodies.first() ?? empty_main(self.types).body),
             types: self.types,
             diagnostics: [],
             externs: self.extern_rows(),
@@ -810,11 +819,11 @@ export fn hosted_within(l: Lowered) -> Lowered {
     l with { fns: [answering(b, own, nothing_ty) for b in l.fns], entry: answering(l.entry, own, nothing_ty) }
 }
 
-/// `b` with each call of a symbol in `own` made a call to that body.
+/// `b` with each call of a symbol in `own` made a call to that body, each register it gains a `void`.
 fn answering(b: Body, own: List<string>, nothing_ty: TypeId) -> Body {
     mut regs = [t for t in b.reg_types]
     let ins = [own_call(i, own, regs, nothing_ty) for i in b.ins]
-    b with { ins: ins, reg_types: regs }
+    b with { ins: ins, reg_types: regs, layouts: b.layouts.concat(filled(regs.length - b.reg_types.length, Layout.Void)) }
 }
 
 /// One step, a call of a host fn's symbol made a call to its body.

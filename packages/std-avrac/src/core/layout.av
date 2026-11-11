@@ -3,7 +3,12 @@
 //! type is its layout and never a language type. A type's layout is decided by its shape and, for a
 //! type the program declares, by its declaration.
 
+use @std.meta.{derive}
+use @std.relation.{codec}
+
 /// What a box holds, behind a pointer the runtime counts.
+@derive(Fingerprint)
+@codec
 export enum BoxKind {
     Text
     Bytes
@@ -27,6 +32,8 @@ export enum BoxKind {
 }
 
 /// What a value is to the machine.
+@derive(Fingerprint)
+@codec
 export enum Layout {
     /// No value: `void`, whose register is a word nobody reads.
     Void
@@ -70,6 +77,60 @@ impl Layout {
         match self {
             .Boxed(_) or .Bare -> true,
             .Void or .Word or .Truth or .Real or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+    }
+
+    /// Whether the runtime counts a reference the value holds: a box, a value record holding one, a
+    /// value enum a variant of which carries one, a nullable of any of these.
+    fn counted() -> bool {
+        match self {
+            .Boxed(_) -> true,
+            .Fields(fields) -> fields.any(it.counted()),
+            .Tagged(counted) -> counted != 0,
+            .Maybe(value) -> value.counted(),
+            .Void or .Word or .Truth or .Real or .Bare -> false,
+        }
+    }
+
+    /// Whether the value holds a `Cell` in its own registers: one, a nullable one, or a value record
+    /// with one among its fields.
+    fn carries_cell() -> bool {
+        match self {
+            .Boxed(box) -> match box {
+                .Cell -> true,
+                .Text or .Bytes or .List or .Map or .Record or .Enum or .Closure or .Task or .Dyn or .Union or .Range or .Slot -> false,
+            },
+            .Fields(fields) -> fields.any(it.carries_cell()),
+            .Maybe(value) -> value.carries_cell(),
+            .Void or .Word or .Truth or .Real or .Bare or .Tagged(_) -> false,
+        }
+    }
+
+    /// Whether the value rides several registers as one aggregate: a value record, a value enum, a
+    /// nullable pair.
+    fn aggregate() -> bool {
+        match self {
+            .Fields(_) or .Tagged(_) or .Maybe(_) -> true,
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> false,
+        }
+    }
+
+    /// Whether two layouts are one: a layout is what its spelling says.
+    fn same(other: Layout) -> bool { self.spelled() == other.spelled() }
+
+    /// A value enum's counted variants, bit `t` for tag `t`; absent for any other value.
+    fn tag_mask() -> int? {
+        match self {
+            .Tagged(counted) -> counted,
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Maybe(_) -> null,
+        }
+    }
+
+    /// Whether the value is a double.
+    fn real() -> bool {
+        match self {
+            .Real -> true,
+            .Void or .Word or .Truth or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
         }
     }
 

@@ -17,6 +17,7 @@ use core.{
     static_symbol,
     TypeId,
     TypeRegistry,
+    Layout,
     RtKind,
     RtSig,
     rt_sigs,
@@ -50,8 +51,11 @@ type Emit = {
     m: ptr,
     b: ptr,
     fn_val: ptr,
+    /// Each register's language type, read only where a layout cannot answer: a census label's
+    /// name, and whether a crossing seat holds text as the evaluator judges it.
     types: TypeRegistry,
     tys: List<TypeId>,
+    layouts: List<Layout>,
     vals: List<ptr>,
     frames: List<Region>,
     loops: List<LoopFrame>,
@@ -375,7 +379,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs, ix.hosted, wasm)
     let named_at = if refs.whole { [i for i in 0..l.fns.length] } else { ix.body_positions(refs.bodies.keys()) }
-    for p in named_at { declare_user(lc, m, l.types, l.fns[p]) }
+    for p in named_at { declare_user(lc, m, l.fns[p]) }
     let carried = if refs.whole { l.statics } else { [l.statics[p] for p in ix.static_positions(refs.statics.keys())] }
     for st in in_read_order(carried, scanned, refs, ix) { emit_static(lc, m, st) }
     let rt = rt_index()
@@ -662,6 +666,7 @@ fn emit_body(
         fn_val: f,
         types: types,
         tys: bd.reg_types,
+        layouts: bd.layouts,
         vals: vals,
         frames: [],
         loops: [],
@@ -774,12 +779,12 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
 }
 
 /// One user fn's declaration, typed from its signature's shapes.
-fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
+fn declare_user(lc: ptr, m: ptr, bd: Body) {
     declare(
         m,
         mangled(bd.name),
-        ll_type_of(lc, types, bd.ret),
-        [ll_type_of(lc, types, pt) for pt in bd.params],
+        ll_layout(lc, bd.answer!),
+        [ll_layout(lc, s) for s in bd.seats],
         false,
     )
 }
@@ -846,53 +851,41 @@ fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
 /// the identity: the value is already the slot, or is no slot at all.
 enum SlotForm { Address, Widened, Reinterpreted, Word }
 
-/// WHICH MACHINE CLASS a value of this type lands in — the third of
-/// the neighbouring questions stated at `rides_pointer`, and the only
-/// one that is not a bool: the pointer arm agrees with
-/// `rides_pointer` and the rest split a word from a double from a
-/// bit.
-fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
-    // a value enum: its tag and its word
-    if types.valued_carrier(ty) {
-        let word = types.type(int)
-        return wide_ll_type(lc, types, [word, word])
-    }
-    if types.travels_wide(ty) { return wide_ll_type(lc, types, types.flat_fields(types.machine_type(ty))) }
-    // THE MACHINE FORM decides, never the bare shape: a FLAT record
-    // IS its one field, so a name over `string` is a pointer and a
-    // name over `float` is a double.
-    match types.machine_shape(ty) {
-        // TypeName never materializes: no value ever has it — nor
-        // does Var: mono substitutes before any register minted.
-        .Float -> avra_llvm_double_type(lc),
-        .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
-        .Bool -> avra_llvm_int1_type(lc),
-        .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> avra_llvm_pointer_type(lc),
+/// WHICH CONVERSION A VALUE CATEGORY OWES THE WORD SLOT, asked in
+/// both directions so neither can be written alone. A CHAIN of `is`
+/// tests answers "no conversion" for every category nobody thought
+/// of, and an unconverted value is not a refusal: a double filed as
+/// a word rides an integer seat and the callee reads a different
+/// number. A nullable pair is a register pair no slot holds.
+fn slot_form(l: Layout) -> SlotForm {
+    match l {
+        .Truth -> SlotForm.Widened,
+        .Real -> SlotForm.Reinterpreted,
+        .Void or .Word or .Maybe(_) -> SlotForm.Word,
+        .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> SlotForm.Address,
     }
 }
 
-/// A VALUE RECORD's machine type: its fields as one aggregate, in
-/// registers.
-fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
-    let arr = avra_llvm_type_array_new(fields.length)
-    for j, f in fields { avra_llvm_type_array_set(arr, j, ll_type_of(lc, types, f)) }
-    let st = avra_llvm_struct_type(lc, arr, fields.length)
-    avra_llvm_type_array_free(arr)
-    st
+/// WHICH MACHINE CLASS a value lands in: a pointer, a word, a double, a bit, or an aggregate of
+/// these — a value record its fields, a value enum its tag and word, a nullable pair its presence
+/// and its value.
+fn ll_layout(lc: ptr, l: Layout) -> ptr {
+    match l {
+        .Void or .Word -> avra_llvm_int64_type(lc),
+        .Truth -> avra_llvm_int1_type(lc),
+        .Real -> avra_llvm_double_type(lc),
+        .Boxed(_) or .Bare -> avra_llvm_pointer_type(lc),
+        .Fields(fields) -> ll_aggregate(lc, [ll_layout(lc, f) for f in fields]),
+        .Tagged(_) -> ll_aggregate(lc, [avra_llvm_int64_type(lc), avra_llvm_int64_type(lc)]),
+        .Maybe(value) -> ll_aggregate(lc, [avra_llvm_int1_type(lc), ll_layout(lc, value)]),
+    }
 }
 
-/// A nullable's machine type: the niche IS its value's pointer; a
-/// WORD ENUM's nullable is its own register, the spare tag its
-/// absence; a scalar pair is a first-class {present: i1, value}
-/// aggregate that lives in registers and never touches memory.
-fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
-    if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
-    if types.is_word_enum(inner) { return ll_type_of(lc, types, inner) }
-    let arr = avra_llvm_type_array_new(2)
-    avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
-    avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))
-    let st = avra_llvm_struct_type(lc, arr, 2)
+/// An aggregate of `parts`, in registers.
+fn ll_aggregate(lc: ptr, parts: List<ptr>) -> ptr {
+    let arr = avra_llvm_type_array_new(parts.length)
+    for j, p in parts { avra_llvm_type_array_set(arr, j, p) }
+    let st = avra_llvm_struct_type(lc, arr, parts.length)
     avra_llvm_type_array_free(arr)
     st
 }
