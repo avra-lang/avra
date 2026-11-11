@@ -1,7 +1,18 @@
 //! The lowering rules of a string literal and an interpolated one: a literal is its text, the
 //! binary's own; an interpolated string joins its runs and its holes' text, one piece as itself, two
 //! by the runtime's concatenation, more by its join.
-use core.{BoxKind, ExprId, Layout, Lowering, Lowers, Reg, body_behavior, flatten, rt_sig_of}
+use core.{
+    BoxKind,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    body_behavior,
+    flatten,
+    rt_sig_of,
+    witness_only,
+}
 use core.expr.{Body, StrLit}
 
 impl Lowers for StrLit {
@@ -23,7 +34,7 @@ impl Lowers for Body {
 /// An interpolated string: each run that holds text, and each hole as text, in written order, joined.
 /// A hole whose text the runtime doesn't spell isn't lowered yet.
 fn text_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
-    if b.holes.any((h) -> cx.type_at(h)?.generic() ?? false) { return cx.missed_as("a type parameter's value as text, which only a witness answers") }
+    if b.holes.any((h) -> cx.type_at(h)?.generic() ?? false) { return cx.missed_as(witness_only("a type parameter's value as text")) }
     if b.holes.any((h) -> spelling(cx, h) == null) { return cx.missed_as("a hole that isn't a number, a truth or text") }
     let lead = run(cx, b.parts[0])
     let pieces = lead

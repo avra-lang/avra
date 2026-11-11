@@ -4,6 +4,7 @@
 use core.{
     BinOp,
     NAMED_FIELD,
+    witness_only,
     ExprId,
     Layout,
     Lowering,
@@ -13,7 +14,7 @@ use core.{
     RtSig,
     SignedType,
     VariantSeat,
-    own_row,
+    own_row_of,
     own_shape,
     rt_sig_of,
 }
@@ -132,16 +133,14 @@ fn either(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
 
 /// The row a property of a type the language owns is, absent for any other property.
 fn owned_property(ty: SignedType, name: string) -> RtSig? {
-    let word? = ty.owned() else { return null }
-    let own? = own_row(word, name) else { return null }
+    let own? = own_row_of(ty, name) else { return null }
     rt_sig_of(own.row)
 }
 
 /// The shape of rows the property `name` of a value of `ty`, a type the language owns, is; absent
 /// for one that's no such shape, or one called through the type.
 fn owned_shape(ty: SignedType, name: string) -> OwnVerb? {
-    let word? = ty.owned() else { return null }
-    let shape? = own_shape(word, name) else { return null }
+    let shape? = own_shape(ty, name) else { return null }
     if shape.on_the_type() { null } else { shape }
 }
 
@@ -241,7 +240,7 @@ fn compared_held(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? 
 
 /// `l == r` past every rule: over a type parameter, what only a witness answers.
 fn uncompared(mut cx: Lowering, e: ExprId, l: ExprId, r: ExprId) -> Reg {
-    if cx.type_at(l)?.generic() ?? false || cx.type_at(r)?.generic() ?? false { return cx.missed_as("`==` over a type parameter, which only a witness answers") }
+    if cx.type_at(l)?.generic() ?? false || cx.type_at(r)?.generic() ?? false { return cx.missed_as(witness_only("`==` over a type parameter")) }
     cx.unlowered(e)
 }
 

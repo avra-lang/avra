@@ -43,6 +43,67 @@ export type SignedType = {
     alternatives: List<SignedType>,
 }
 
+/// A type the language owns.
+export enum OwnType {
+    Int
+    Float
+    Bool
+    Str
+    Ptr
+    Void
+    Bytes
+    List
+    Map
+    Cell
+    Range
+    Result
+    Task
+    Tasks
+}
+
+impl OwnType {
+    /// The word the language spells the type with.
+    fn word() -> string {
+        match self {
+            .Int -> "int",
+            .Float -> "float",
+            .Bool -> "bool",
+            .Str -> "string",
+            .Ptr -> "ptr",
+            .Void -> "void",
+            .Bytes -> "Bytes",
+            .List -> "List",
+            .Map -> "Map",
+            .Cell -> "Cell",
+            .Range -> "Range",
+            .Result -> "Result",
+            .Task -> "Task",
+            .Tasks -> "Tasks",
+        }
+    }
+}
+
+/// The type the language owns spelled `word`; absent for a word that spells none.
+export fn own_type_named(word: string) -> OwnType? {
+    match word {
+        "int" -> OwnType.Int,
+        "float" -> OwnType.Float,
+        "bool" -> OwnType.Bool,
+        "string" -> OwnType.Str,
+        "ptr" -> OwnType.Ptr,
+        "void" -> OwnType.Void,
+        "Bytes" -> OwnType.Bytes,
+        "List" -> OwnType.List,
+        "Map" -> OwnType.Map,
+        "Cell" -> OwnType.Cell,
+        "Range" -> OwnType.Range,
+        "Result" -> OwnType.Result,
+        "Task" -> OwnType.Task,
+        "Tasks" -> OwnType.Tasks,
+        rest -> null,
+    }
+}
+
 /// A fn type's seat: its type, the promises it makes, and whether a call may leave it to its default.
 @derive(Saved)
 export type SignedSeat = { ty: SignedType, mutable: bool, settled: bool, defaulted: bool = false }
@@ -95,11 +156,11 @@ impl SignedType {
 
     /// The element of a list type, held directly: absent for any other type, and for a list that may
     /// be null or is dynamic.
-    fn listed() -> SignedType? { if self.args.length == 1 && self.owned() == "List" { self.args[0] } else { null } }
+    fn listed() -> SignedType? { if self.args.length == 1 && self.owns(OwnType.List) { self.args[0] } else { null } }
 
     /// The value type of a map type, held directly: absent for any other type, and for a map that may
     /// be null or is dynamic.
-    fn mapped() -> SignedType? { if self.args.length == 2 && self.owned() == "Map" { self.args[1] } else { null } }
+    fn mapped() -> SignedType? { if self.args.length == 2 && self.owns(OwnType.Map) { self.args[1] } else { null } }
 
     /// The name of the type the language owns this is, held directly: absent for a type the language
     /// doesn't own, and for one that may be null or is dynamic.
@@ -107,6 +168,15 @@ impl SignedType {
         if self.nullable() || self.dynamic { return null }
         match self.head { .Owned(name) -> name, rest -> null }
     }
+
+    /// The type the language owns this is, held directly: absent as `owned` is.
+    fn own() -> OwnType? {
+        let word? = self.owned() else { return null }
+        own_type_named(word)
+    }
+
+    /// Whether this is the type the language owns `o`, held directly.
+    fn owns(o: OwnType) -> bool { self.owned() == o.word() }
 
     /// The one type this and `other` both are, absent when they're different types: `never` gives
     /// way to the other, either one's nulls are kept, and their arguments join alike.
@@ -135,7 +205,7 @@ impl SignedType {
     fn bottom() -> bool { self.head is .Never && self.nulls == 0 }
 
     /// Whether a value of this type is one a statement leaves: neither `void` nor `never`.
-    fn holds_value() -> bool { !self.bottom() && self.owned() != "void" }
+    fn holds_value() -> bool { !self.bottom() && !self.owns(OwnType.Void) }
 
     /// Whether this is the type of `null` itself: absence, of no type yet.
     fn absence() -> bool { self.head is .Never && self.nulls > 0 }
@@ -169,7 +239,7 @@ impl SignedType {
     /// Whether this is a `Result`, present: an ok type and an error type.
     fn resulted() -> bool {
         match self.head {
-            .Owned(name) -> name == "Result" && self.args.length == 2 && self.nulls == 0,
+            .Owned(name) -> name == OwnType.Result.word() && self.args.length == 2 && self.nulls == 0,
             rest -> false,
         }
     }
@@ -182,8 +252,7 @@ impl SignedSeat {
 /// A fn type's answer as it follows its seats: nothing for `void`.
 fn answered(answer: SignedType?) -> string {
     let a? = answer else { return "" }
-    let word = a.spelled()
-    if word == "void" { "" } else { " -> ${word}" }
+    if a.owns(OwnType.Void) { "" } else { " -> ${a.spelled()}" }
 }
 
 /// A seat's type behind the promises it makes.

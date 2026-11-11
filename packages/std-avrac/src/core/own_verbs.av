@@ -42,37 +42,40 @@ export enum OwnVerb {
     Awaited
 }
 
-/// A verb on a type the language owns that is a shape of rows: the receiver's type word, the verb's
-/// name, and its shape.
-export type OwnShape = { receiver: string, verb: string, shape: OwnVerb }
+/// A verb on a type the language owns that is a shape of rows: the receiver's type, the verb's name,
+/// and its shape.
+export type OwnShape = { receiver: OwnType, verb: string, shape: OwnVerb }
 
 /// Every verb the language owns that is a shape of rows.
 export once fn own_shapes() -> List<OwnShape> {
     table<OwnShape> {
-        receiver | verb         | shape
-        "List"   | "first"      | OwnVerb.First
-        "List"   | "last"       | OwnVerb.Last
-        "List"   | "push"       | OwnVerb.Pushed
-        "List"   | "set"        | OwnVerb.SetAt
-        "List"   | "pop"        | OwnVerb.Popped
-        "List"   | "get"        | OwnVerb.GotAt
-        "List"   | "removed_at" | OwnVerb.RemovedAt
-        "List"   | "enumerate"  | OwnVerb.Enumerated
-        "Map"    | "get"        | OwnVerb.Got
-        "Map"    | "set"        | OwnVerb.Put
-        "Map"    | "remove"     | OwnVerb.Removed
-        "Cell"   | "new"        | OwnVerb.CellNew
-        "Cell"   | "get"        | OwnVerb.CellGet
-        "Cell"   | "set"        | OwnVerb.CellSet
-        "Cell"   | "push"       | OwnVerb.CellPushed
-        "Cell"   | "set_at"     | OwnVerb.CellSetAt
-        "Cell"   | "put"        | OwnVerb.CellPut
-        "Task"   | "await"      | OwnVerb.Awaited
+        receiver     | verb         | shape
+        OwnType.List | "first"      | OwnVerb.First
+        OwnType.List | "last"       | OwnVerb.Last
+        OwnType.List | "push"       | OwnVerb.Pushed
+        OwnType.List | "set"        | OwnVerb.SetAt
+        OwnType.List | "pop"        | OwnVerb.Popped
+        OwnType.List | "get"        | OwnVerb.GotAt
+        OwnType.List | "removed_at" | OwnVerb.RemovedAt
+        OwnType.List | "enumerate"  | OwnVerb.Enumerated
+        OwnType.Map  | "get"        | OwnVerb.Got
+        OwnType.Map  | "set"        | OwnVerb.Put
+        OwnType.Map  | "remove"     | OwnVerb.Removed
+        OwnType.Cell | "new"        | OwnVerb.CellNew
+        OwnType.Cell | "get"        | OwnVerb.CellGet
+        OwnType.Cell | "set"        | OwnVerb.CellSet
+        OwnType.Cell | "push"       | OwnVerb.CellPushed
+        OwnType.Cell | "set_at"     | OwnVerb.CellSetAt
+        OwnType.Cell | "put"        | OwnVerb.CellPut
+        OwnType.Task | "await"      | OwnVerb.Awaited
     }
 }
 
-/// The shape the verb `verb` on a receiver of the type word `receiver` is, absent when it's none.
-export fn own_shape(receiver: string, verb: string) -> OwnVerb? { own_shapes().find(it.receiver == receiver && it.verb == verb)?.shape }
+/// The shape the verb `verb` on a value of `ty`, or called through it, is; absent when it's none.
+export fn own_shape(ty: SignedType, verb: string) -> OwnVerb? {
+    let own? = ty.own() else { return null }
+    own_shapes().find(it.receiver == own && it.verb == verb)?.shape
+}
 
 impl OwnVerb {
     /// The type the value the verb writes through a receiver of `receiver`'s type takes: what the list,
@@ -278,7 +281,7 @@ impl Lowering {
     }
 
     /// What the nullable `e` answers holds when present, and how it's laid out; absent for a
-    /// nullable of a nullable, whose two absences aren't lowered yet.
+    /// nullable of a nullable, whose two absences aren't lowered yet (`two_absences`).
     mut fn held_of(e: ExprId) -> Held? {
         let opt? = self.type_at(e) else { return null }
         if !opt.nullable() || opt.unwrapped().nullable() { return null }
@@ -395,3 +398,6 @@ fn written_in_place(l: Layout) -> bool {
         .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
     }
 }
+
+/// Why a read into a nullable of a nullable isn't lowered yet.
+export fn two_absences() -> string { "a nullable of a nullable, whose two absences aren't lowered yet" }

@@ -277,14 +277,15 @@ export fn signed_fill_class(ty: SignedType, toolchain: fn(string, string) -> Sig
         if names_own(elem!, toolchain, OWN_FEATURES, "TypedCode") { return FillClass.Nodes }
         let inner = signed_template_kind(elem!, meta)
         if inner != null { return FillClass.Templates(inner!) }
-        return if elem!.owned() == "string" { FillClass.Texts } else { null }
+        return if elem!.owns(OwnType.Str) { FillClass.Texts } else { null }
     }
     if NAMED_META.any((n) -> meta(n)?.names_as(ty) ?? false) { return FillClass.Named }
-    match ty.owned() ?? "" {
-        "string" -> FillClass.Text,
-        "int" -> FillClass.Int,
-        "bool" -> FillClass.Bool,
-        rest -> null,
+    let own? = ty.own() else { return null }
+    match own {
+        .Str -> FillClass.Text,
+        .Int -> FillClass.Int,
+        .Bool -> FillClass.Bool,
+        .Float or .Ptr or .Void or .Bytes or .List or .Map or .Cell or .Range or .Result or .Task or .Tasks -> null,
     }
 }
 
@@ -312,7 +313,8 @@ const OWN_FEATURES: string = "@std.avrac.features"
 
 const OWN_CORE: string = "@std.avrac.core"
 
-const META_MODULE: string = "@std.meta"
+/// The module `@std/meta` is to the toolchain.
+export const META_MODULE: string = "@std.meta"
 
 /// The `@std/meta` values that name one declaration, spliced by its name.
 const NAMED_META: List<string> = ["Fn", "Type", "Named", "Trait", "Field", "Variant", "Param"]
