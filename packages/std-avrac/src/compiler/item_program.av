@@ -38,26 +38,29 @@ export enum MadeProgram {
 /// The program `file` runs: its entry and each body it reaches, lowered, the memory pass applied.
 /// Where the entry or a body it reaches links a scheduler, every `while` reads the tick.
 export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProgram {
-    let surveyed? = lowered_entry(engine, file, TaskChecks.Surveyed) else { return MadeProgram.Unmade("a file that runs no statement", spelled_file(file)) }
-    if !surveyed.whole() { return MadeProgram.Unmade(surveyed.missing[0], "the entry") }
-    let checks = if lowered_links(engine, surveyed) { TaskChecks.Scheduled } else { TaskChecks.Tested }
-    let entry = lowered_entry(engine, file, checks)!
+    let entry? = lowered_entry(engine, file) else { return MadeProgram.Unmade("a file that runs no statement", spelled_file(file)) }
     if !entry.whole() { return MadeProgram.Unmade(entry.missing[0], "the entry") }
-    made_reaching(engine, entry, ENTRY, [], checks)
+    let survey = task_survey(engine)
+    made_reaching(survey, entry, ENTRY, [], scheduled_by(survey, entry))
 }
 
+/// The tests a program whose entry is `entry` places: the tick too where it links a scheduler.
+export fn scheduled_by(survey: TaskSurvey, entry: LoweredFn) -> TaskChecks { if survey.links_from(entry) { TaskChecks.Scheduled } else { TaskChecks.Tested } }
+
 /// The program `root` and each body it reaches make, the memory pass applied: `root` the entry,
-/// known as `name` with `seats` its first registers, each body emitting the task tests `checks`
-/// names. With `missed`, the walk goes past each body not
-/// lowered yet and files it there.
+/// known as `name` with `seats` its first registers, each body taken from `survey` with the task
+/// tests `checks` names placed. With `missed`, the walk goes past each body not lowered yet and files
+/// it there.
 export fn made_reaching(
-    engine: QueryEngine,
-    root: LoweredFn,
+    survey: TaskSurvey,
+    unplaced: LoweredFn,
     name: string,
     seats: List<Layout>,
     checks: TaskChecks,
     missed: Cell<List<Missed>>? = null,
 ) -> MadeProgram {
+    let engine = survey.engine
+    let root = survey.placed(unplaced, checks)
     mut queue = every_callee_of(root)
     mut fns = lifted_bodies(root)
     mut statics = root.statics
@@ -74,7 +77,7 @@ export fn made_reaching(
             externs = externs.concat(some_list(declared_row(engine, c)))
             continue
         }
-        let reached = match reached_fn(engine, c, checks) {
+        let reached = match reached_fn(survey, c, checks) {
             .Lowered(f) -> f,
             .Not(why) -> {
                 let filed? = missed else { return MadeProgram.Unmade(why, c.symbol) }
@@ -121,34 +124,33 @@ enum ReachedFn {
     Not(why: string)
 }
 
-/// The body a call of `c` runs, lowered whole testing what `checks` says: the fn's, a method's or a
-/// static's, the body a trait gives a type that never writes the method, or a field's or a seat's
-/// default, each
-/// a generic one's unit under its layouts.
-fn reached_fn(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> ReachedFn {
-    let f? = reached_body(engine, c, checks) else { return ReachedFn.Not("a call of a fn with no body here") }
-    if !f.whole() { return ReachedFn.Not(f.missing[0]) }
-    ReachedFn.Lowered(f)
+/// The body a call of `c` runs, taken from `survey` and lowered whole with the tests `checks` names
+/// placed: the fn's, a method's or a static's, the body a trait gives a type that never writes the
+/// method, or a field's or a seat's default, each a generic one's unit under its layouts.
+fn reached_fn(survey: TaskSurvey, c: CalledFn, checks: TaskChecks) -> ReachedFn {
+    let f? = survey.body(c) else { return ReachedFn.Not("a call of a fn with no body here") }
+    let placed = survey.placed(f, checks)
+    if !placed.whole() { return ReachedFn.Not(placed.missing[0]) }
+    ReachedFn.Lowered(placed)
 }
 
-/// The body a call of `c` runs, lowered testing what `checks` says; absent where its declaration
-/// gives none.
-fn reached_body(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> LoweredFn? {
+/// The body a call of `c` runs, lowered with its tests held; absent where its declaration gives none.
+fn reached_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? {
     match c.defaulted {
-        .Field -> lowered_field_default(engine, c.file, c.owner!, c.name, checks),
-        .Seat -> lowered_seat_default(engine, c.file, c.owner!, c.name, checks),
-        .Not -> declared_body(engine, c, checks),
+        .Field -> lowered_field_default(engine, c.file, c.owner!, c.name),
+        .Seat -> lowered_seat_default(engine, c.file, c.owner!, c.name),
+        .Not -> declared_body(engine, c),
     }
 }
 
-/// The body a call of the declared `c` runs, lowered testing what `checks` says: the fn's, a method's
-/// or a static's, or the body a trait gives a type that never writes the method.
-fn declared_body(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> LoweredFn? {
+/// The body a call of the declared `c` runs, lowered with its tests held: the fn's, a method's or a
+/// static's, or the body a trait gives a type that never writes the method.
+fn declared_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? {
     let under = if c.parameters.is_empty() { null } else { c.parameters }
-    let of? = c.of else { return lowered_under(engine, c.file, c.name, under, checks) }
-    if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name, checks) }
+    let of? = c.of else { return lowered_under(engine, c.file, c.name, under) }
+    if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name) }
     let at? = impls_with(engine, of, c.owner!, c.name, c.statics).first() else { return null }
-    lowered_method_under(engine, at, c.name, c.statics, under, checks)
+    lowered_method_under(engine, at, c.name, c.statics, under)
 }
 
 /// The row C answers the extern `c` by: each seat and the answer at the width it writes, else as its

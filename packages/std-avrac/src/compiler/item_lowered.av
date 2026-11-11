@@ -23,10 +23,12 @@ use core.{
     SignedType,
     Static,
     SyntaxArena,
-    TaskChecks,
+    TaskTest,
+    TestSite,
     TraitMember,
     instance_symbol,
     lowering,
+    tests_placed,
     new_node_store,
 }
 use features.collects.{collected_list}
@@ -55,22 +57,25 @@ export type LoweredFn = {
     reshaped: int = 0,
     /// Whether it or a lambda it lifts lowers a `while`, whose back edge is a cancel point.
     spins: bool = false,
+    /// The task tests it holds, not placed yet.
+    tests: List<TaskTest> = [],
 }
 
 impl LoweredFn {
     /// Whether every node of the body was lowered.
     fn whole() -> bool { self.missing.is_empty() }
+
+    /// The body with each test `kept` answers for placed, and its lambdas' too.
+    fn placed_by(kept: fn(TestSite) -> bool) -> LoweredFn {
+        let p = tests_placed(self.ins, self.layouts, self.missing, self.tests, kept)
+        self with { ins: p.ins, layouts: p.layouts, missing: p.missing, tests: [], lifts: [l.placed_by(kept) for l in self.lifts] }
+    }
 }
 
-/// The body of the fn `file` declares as `name`, lowered testing what `checks` says: its seats the
+/// The body of the fn `file` declares as `name`, lowered with its task tests held: its seats the
 /// first registers, the body inside their scope, then its answer. Absent when it declares none with a
 /// body.
-export fn lowered_fn(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    name: string,
-    checks: TaskChecks = TaskChecks.Tested,
-) -> LoweredFn? { lowered_under(engine, file, name, null, checks) }
+export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? { lowered_under(engine, file, name, null) }
 
 /// The body of the generic fn `file` declares as `name`, lowered under `parameters`, one per type
 /// parameter it declares. Absent when it declares none with a body.
@@ -79,8 +84,7 @@ export fn lowered_generic(
     file: SourceFileAddress,
     name: string,
     parameters: List<ParameterLayout>,
-    checks: TaskChecks = TaskChecks.Tested,
-) -> LoweredFn? { lowered_under(engine, file, name, parameters, checks) }
+) -> LoweredFn? { lowered_under(engine, file, name, parameters) }
 
 /// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic.
 fn lowered_under(
@@ -88,10 +92,9 @@ fn lowered_under(
     file: SourceFileAddress,
     name: string,
     parameters: List<ParameterLayout>?,
-    checks: TaskChecks = TaskChecks.Tested,
 ) -> LoweredFn? {
-    let signed? = signed_body(engine, file, name) else { return if parameters == null { lowered_collect(engine, file, name, checks) } else { null } }
-    lowered_signed(engine, file, signed, name, parameters, checks)
+    let signed? = signed_body(engine, file, name) else { return if parameters == null { lowered_collect(engine, file, name) } else { null } }
+    lowered_signed(engine, file, signed, name, parameters)
 }
 
 /// A signed body `file` writes, lowered as the unit `name` under `parameters` where it's generic: a
@@ -102,7 +105,6 @@ fn lowered_signed(
     signed: SignedBody,
     name: string,
     parameters: List<ParameterLayout>?,
-    checks: TaskChecks,
 ) -> LoweredFn {
     let refused = lowering_refused(signed, parameters)
     if refused != null {
@@ -117,7 +119,7 @@ fn lowered_signed(
             statics: [],
         }
     }
-    signed_lowered(engine, file, signed, name, parameters, checks)
+    signed_lowered(engine, file, signed, name, parameters)
 }
 
 /// A signed body `file` writes, lowered as `lowered_signed` says, past its refusals.
@@ -127,7 +129,6 @@ fn signed_lowered(
     signed: SignedBody,
     name: string,
     parameters: List<ParameterLayout>?,
-    checks: TaskChecks,
 ) -> LoweredFn {
     let body = elaborated(engine, file, signed)
     let signature = signed.signature
@@ -140,7 +141,6 @@ fn signed_lowered(
             unit_name(name, parameters),
             signature.type_params,
             parameters,
-            checks,
         ),
         body.core,
         body.seats,
@@ -157,7 +157,7 @@ fn signed_lowered(
 }
 
 /// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
-/// of the program as it lowers, testing what `checks` says, the lambdas it lifts, the data it lays
+/// of the program as it lowers, the lambdas it lifts, the data it lays
 /// out and the types it tags gathered as they're met.
 fn lowered_program(
     engine: QueryEngine,
@@ -166,7 +166,6 @@ fn lowered_program(
     unit: string,
     type_params: List<string>,
     parameters: List<ParameterLayout>?,
-    checks: TaskChecks,
 ) -> LoweredProgram {
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
     let data: Cell<List<Static>> = Cell.new([])
@@ -190,8 +189,6 @@ fn lowered_program(
         defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         meta_fn: (n: string) -> meta_callee(engine, n),
         home: template_home(file),
-        checks: checks,
-        reaches: reach_test(engine, checks),
         spins: Cell.new(false),
         compared: (n: string) -> compared_value(engine, file, n),
     }
@@ -222,13 +219,6 @@ fn compares_kind(kind: ItemKind) -> bool {
     }
 }
 
-/// Whether a call of a fn may reach a cancel point, as a body testing what `checks` says asks it: a
-/// body that tests nothing never asks.
-fn reach_test(engine: QueryEngine, checks: TaskChecks) -> fn(CalledFn) -> bool {
-    if !checks.tests() { return (_c: CalledFn) -> false }
-    (c: CalledFn) -> call_reaches(engine, body_at(c))
-}
-
 /// The body `cx` lowered: its first `seats` registers its seats, answering `answer`.
 fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
     LoweredFn {
@@ -244,6 +234,7 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
         wrappers: cx.program.wrappers.get(),
         reshaped: cx.program.reshaped.get(),
         spins: cx.program.spins.get(),
+        tests: cx.tests.get(),
     }
 }
 
@@ -319,17 +310,11 @@ fn collected(engine: QueryEngine, file: SourceFileAddress, name: string) -> Coll
 
 /// The unit of the `collect` `file` declares as `name`: no seats, its list built and answered.
 /// Absent where it declares none, or what it gathers isn't read here.
-fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string, checks: TaskChecks) -> LoweredFn? {
+fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
     let made? = collected(engine, file, name) else { return null }
     let ty? = binding_type(engine, file, name) else { return null }
     let store = new_node_store()
-    mut cx = lowering(
-        store,
-        lowered_program(engine, file, store, name, [], null, checks),
-        [],
-        {},
-        ty,
-    )
+    mut cx = lowering(store, lowered_program(engine, file, store, name, [], null), [], {}, ty)
     cx.scope_enter()
     let r = collected_list(cx, ty, made.fields, made.rows)
     cx.scope_exit(r)
@@ -483,7 +468,6 @@ export fn lowered_field_default(
     file: SourceFileAddress,
     owner: string,
     field: string,
-    checks: TaskChecks = TaskChecks.Tested,
 ) -> LoweredFn? {
     let item? = declaring_item(engine, file, owner, ItemKind.Record) else { return null }
     let stmt? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == owner) else { return null }
@@ -501,7 +485,6 @@ export fn lowered_field_default(
         },
         "${owner}.${field}\$default",
         null,
-        checks,
     )
 }
 
@@ -512,7 +495,6 @@ export fn lowered_seat_default(
     file: SourceFileAddress,
     owner: string,
     seat: string,
-    checks: TaskChecks = TaskChecks.Tested,
 ) -> LoweredFn? {
     let signed? = signed_body(engine, file, owner) else { return null }
     let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name.of == seat)?.default else { return null }
@@ -523,7 +505,6 @@ export fn lowered_seat_default(
         signed with { signature: FnSignature { type_params: [], params: [], answer: ty, answer_width: null }, body: value },
         "${owner}.${seat}\$default",
         null,
-        checks,
     )
 }
 

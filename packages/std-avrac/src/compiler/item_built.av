@@ -1,7 +1,7 @@
 //! WHAT A PROGRAM REACHES, AND WHAT OF IT THE PROGRAM LAYER BUILDS: a program file's entry and every
 //! body it reaches, walked past each one not lowered yet, each filed as made or by why it isn't, with
 //! how many bodies call it.
-use core.{CalledFn, TaskChecks, rt_sig_of}
+use core.{CalledFn, rt_sig_of}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -52,9 +52,10 @@ export type ReachSurvey = { bodies: List<ReachedBody>, finished: bool }
 /// The bodies the program `file` runs reaches from its entry, each lowered as `made_program` lowers
 /// it, the walk going past each one not lowered yet into what it calls; it stops where `stop` says so.
 export fn reach_surveyed(engine: QueryEngine, file: SourceFileAddress, stop: fn() -> bool) -> ReachSurvey {
-    let surveyed? = lowered_entry(engine, file, TaskChecks.Surveyed) else { return ReachSurvey { bodies: [], finished: true } }
-    let checks = if lowered_links(engine, surveyed) { TaskChecks.Scheduled } else { TaskChecks.Tested }
-    let entry = lowered_entry(engine, file, checks)!
+    let unplaced? = lowered_entry(engine, file) else { return ReachSurvey { bodies: [], finished: true } }
+    let survey = task_survey(engine)
+    let checks = scheduled_by(survey, unplaced)
+    let entry = survey.placed(unplaced, checks)
     let found: Cell<List<ReachedBody>> = Cell.new([])
     let root = ReachedBody {
         symbol: ENTRY,
@@ -88,7 +89,7 @@ export fn reach_surveyed(engine: QueryEngine, file: SourceFileAddress, stop: fn(
                 )
             continue
         }
-        let f? = reached_body(engine, c, checks) else {
+        let held? = survey.body(c) else {
             found
                 .push(
                     ReachedBody {
@@ -101,6 +102,7 @@ export fn reach_surveyed(engine: QueryEngine, file: SourceFileAddress, stop: fn(
                 )
             continue
         }
+        let f = survey.placed(held, checks)
         filed(
             found,
             ReachedBody {

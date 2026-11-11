@@ -19,6 +19,7 @@ use @std.avrac.core.{
     RtFlag,
     SignedType,
     Slot,
+    TaskChecks,
     Static,
     StaticBox,
     TypeId,
@@ -83,6 +84,8 @@ use @std.avrac.compiler.{
     ImplAt,
     made_program,
     reach_surveyed,
+    TaskSurvey,
+    task_survey,
     BodyKind,
     ReachedBody,
     heard_as_case,
@@ -723,6 +726,7 @@ fn snippet(disk: Disk, path: string, lo: int) -> string {
 /// lambda written at the same place, and counted. Says what isn't lowered yet, by the first thing
 /// each fn met. Answers 1 when any differs.
 fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
+    let survey = task_survey(engine)
     mut fns = HeldUnits {}
     mut made = HeldUnits {}
     mut methods = HeldUnits {}
@@ -744,6 +748,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             fns
                 .hold(
                     engine,
+                    survey,
                     ws,
                     disk,
                     "${path} ${own.name}",
@@ -762,6 +767,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             made
                 .hold(
                     engine,
+                    survey,
                     ws,
                     disk,
                     "${path} ${own.name}",
@@ -786,6 +792,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                         methods
                             .hold(
                                 engine,
+                                survey,
                                 ws,
                                 disk,
                                 "${path} ${owner}.${m}",
@@ -799,7 +806,7 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
             }
         }
     }
-    let wanted = wanted_held(engine, ws, disk, wants, shown)
+    let wanted = wanted_held(engine, survey, ws, disk, wants, shown)
     let generic = wanted.generic
     let defaults = wanted.defaults
     let differing = fns
@@ -840,15 +847,17 @@ impl HeldUnits {
     /// counted.
     mut fn hold(
         engine: QueryEngine,
+        survey: TaskSurvey,
         ws: Workspace,
         disk: Disk,
         site: string,
-        mine: LoweredFn,
+        unplaced: LoweredFn,
         w: Wanted,
         symbol: string,
         shown: bool,
     ) {
         self.units = self.units + 1
+        let mine = survey.placed(unplaced, TaskChecks.Tested)
         if !mine.whole() {
             let first = mine.missing[0]
             self.missing.set(first, (self.missing.get(first) ?? 0) + 1)
@@ -932,7 +941,14 @@ type WantedHeld = { generic: HeldUnits, defaults: HeldUnits }
 
 /// Each want of `seed`, and each want a unit among them wants in turn, that names a generic fn a
 /// file declares or a body a trait gives, held as `WantedHeld` says.
-fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted>, shown: bool) -> WantedHeld {
+fn wanted_held(
+    engine: QueryEngine,
+    survey: TaskSurvey,
+    ws: Workspace,
+    disk: Disk,
+    seed: List<Wanted>,
+    shown: bool,
+) -> WantedHeld {
     mut queue = seed
     mut seen: Map<string, bool> = {}
     mut generic = HeldUnits {}
@@ -952,6 +968,7 @@ fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted
             defaults
                 .hold(
                     engine,
+                    survey,
                     ws,
                     disk,
                     "${spelled_file(g.file)} the default ${w.name}",
@@ -970,6 +987,7 @@ fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted
             generic
                 .hold(
                     engine,
+                    survey,
                     ws,
                     disk,
                     "${spelled_file(m.at.file)} the generic method unit ${w.name}",
@@ -989,6 +1007,7 @@ fn wanted_held(engine: QueryEngine, ws: Workspace, disk: Disk, seed: List<Wanted
         generic
             .hold(
                 engine,
+                survey,
                 ws,
                 disk,
                 "${spelled_file(target.file)} the generic unit ${w.name}",

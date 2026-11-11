@@ -11,7 +11,6 @@ use core.{
     SignedType,
     StmtId,
     SyntaxArena,
-    TaskChecks,
     lowering,
     new_node_store,
     owned_type,
@@ -23,14 +22,10 @@ use @std.program.query_engine.{QueryEngine}
 /// The unit a program file's entry is known by.
 const ENTRY: string = "main"
 
-/// The statements of `file` that run, lowered as its entry testing what `checks` says: a scope
+/// The statements of `file` that run, lowered as its entry, its task tests held: a scope
 /// holding them, the value of the last shown as text, the tasks they hold joined, then the entry's
 /// exit, which answers the process's status. Absent when it runs none.
-export fn lowered_entry(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    checks: TaskChecks = TaskChecks.Tested,
-) -> LoweredFn? {
+export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
     let read = entry_read(engine, file)
     let shown? = read.stmts.last() else { return null }
     let body = elaborated(
@@ -51,7 +46,7 @@ export fn lowered_entry(
     )
     mut cx = lowering(
         body.store,
-        lowered_program(engine, file, body.store, ENTRY, [], null, checks) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, e, ty) },
+        lowered_program(engine, file, body.store, ENTRY, [], null) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, e, ty) },
         body.core,
         body.seats,
         owned_type("int"),

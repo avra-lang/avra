@@ -1,0 +1,99 @@
+//! WHERE A BODY'S TASK TESTS STAND: each test is lowered once where it's met and held beside the
+//! body, its registers minted in place, and placed once the program's reach is known. A placement
+//! splices each test it keeps back where it stood and drops the rest with their registers, the
+//! others renumbered as they'd have minted, so the body reads as if lowered with exactly the tests
+//! kept. No register a test mints is read outside it.
+
+/// Where a task test stands, and what it waits on.
+export enum TestSite {
+    /// After a call of a row that may switch the task out, or through a value.
+    Waits
+    /// After a call of a declared fn, wanted where the fn may reach a cancel point.
+    Calls(callee: CalledFn)
+    /// At a `while`'s back edge: the tick, wanted where the program links a scheduler.
+    Ticks
+}
+
+/// A task test held beside a body: its site, how many of the body's instructions stand before it,
+/// its own instructions, its `count` registers from `first`, and what it noted wasn't lowered, after
+/// `missed_at` of the body's notes.
+export type TaskTest = {
+    site: TestSite,
+    at: int,
+    ins: List<Ins>,
+    first: int,
+    count: int,
+    missed_at: int,
+    missing: List<string>,
+}
+
+/// A body with its tests placed: its instructions, each register's layout, and its notes.
+export type Placed = { ins: List<Ins>, layouts: List<Layout>, missing: List<string> }
+
+/// A body of `ins`, `layouts` and `missing`, holding `tests`, with each test `kept` answers for placed.
+export fn tests_placed(
+    ins: List<Ins>,
+    layouts: List<Layout>,
+    missing: List<string>,
+    tests: List<TaskTest>,
+    kept: fn(TestSite) -> bool,
+) -> Placed {
+    if tests.is_empty() { return Placed { ins: ins, layouts: layouts, missing: missing } }
+    let keep = [kept(t.site) for t in tests]
+    let placing = [t for j, t in tests if keep[j]]
+    let spliced = Placed {
+        ins: spliced_ins(ins, placing),
+        layouts: layouts,
+        missing: spliced_notes(missing, placing.filter(!it.missing.is_empty())),
+    }
+    if placing.length == tests.length { return spliced }
+    let index = renumbering(layouts.length, [t for j, t in tests if !keep[j]])
+    spliced with { ins: [remapped(i, (r: Reg) -> renumbered(index, r)) for i in spliced.ins], layouts: [l for at, l in layouts if index[at] >= 0] }
+}
+
+/// `ins` with each of `tests` spliced in where it stood.
+fn spliced_ins(ins: List<Ins>, tests: List<TaskTest>) -> List<Ins> {
+    let starts = [0].concat([t.at for t in tests])
+    flatten(
+        flatten([[ins.slice(starts[k], t.at), t.ins] for k, t in tests])
+            .concat([ins.slice(starts[tests.length], ins.length)]),
+    )
+}
+
+/// `notes` with each of `tests`' notes spliced in where they stood.
+fn spliced_notes(notes: List<string>, tests: List<TaskTest>) -> List<string> {
+    if tests.is_empty() { return notes }
+    let starts = [0].concat([t.missed_at for t in tests])
+    flatten(
+        flatten([[notes.slice(starts[k], t.missed_at), t.missing] for k, t in tests])
+            .concat([notes.slice(starts[tests.length], notes.length)]),
+    )
+}
+
+/// Each of `count` registers' new index, `-1` for one a dropped test of `dropped` minted.
+fn renumbering(count: int, dropped: List<TaskTest>) -> List<int> {
+    mut index: List<int> = []
+    mut next = 0
+    mut d = 0
+    for r in 0..count {
+        while d < dropped.length && r >= dropped[d].first + dropped[d].count { d = d + 1 }
+        if d < dropped.length && r >= dropped[d].first {
+            index.push(0 - 1)
+            continue
+        }
+        index.push(next)
+        next = next + 1
+    }
+    index
+}
+
+/// `r` as `index` renumbers it; a defect's register stands.
+fn renumbered(index: List<int>, r: Reg) -> Reg { if r.index < 0 { r } else { Reg { index: index[r.index] } } }
+
+impl LiftedBody {
+    /// The lambda's body with each test `kept` answers for placed.
+    fn placed_by(kept: fn(TestSite) -> bool) -> LiftedBody {
+        let p = tests_placed(self.ins, self.layouts, [], self.tests, kept)
+        self with { ins: p.ins, layouts: p.layouts, tests: [] }
+    }
+}

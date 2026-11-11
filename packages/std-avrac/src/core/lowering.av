@@ -46,10 +46,6 @@ export type LoweredProgram = {
     /// names alone: a binder's question never asks what generators make, so it's absent for a name
     /// only a generator gives such a value.
     compared: fn(string) -> bool?,
-    /// What the body tests for its task.
-    checks: TaskChecks,
-    /// Whether a call of a fn may reach a cancel point.
-    reaches: fn(CalledFn) -> bool,
     /// Whether a `while` the body or a lambda it lifts writes was lowered: its back edge is a cancel
     /// point.
     spins: Cell<bool>,
@@ -73,6 +69,16 @@ impl TaskChecks {
     /// Whether a `while`'s back edge reads the tick.
     fn ticks() -> bool {
         match self { .Surveyed or .Tested -> false, .Scheduled -> true }
+    }
+
+    /// Whether a test at `site` is placed, a fn's call where `reaches` says the fn may reach a cancel
+    /// point.
+    fn keeps(site: TestSite, reaches: fn(CalledFn) -> bool) -> bool {
+        match site {
+            .Waits -> self.tests(),
+            .Calls(callee) -> self.tests() && reaches(callee),
+            .Ticks -> self.ticks(),
+        }
     }
 }
 
@@ -236,6 +242,11 @@ export type Lowering = {
     labels: Cell<List<List<string>>>,
     /// Whether the body is a task's, which answers its value in a one-cell list.
     tasked: bool = false,
+    /// The task tests met, each lowered beside the instructions and placed once the program's reach
+    /// is known.
+    tests: Cell<List<TaskTest>>,
+    /// Whether a task test is being lowered: one met inside it stands in it.
+    holding: bool = false,
 }
 
 /// A walk over a list's places, or a count's: the list it reads, absent for a count; how far it goes;
@@ -267,6 +278,7 @@ export fn lowering(
     let cleanups: Cell<int> = Cell.new(0)
     let loop_floors: Cell<List<int>> = Cell.new([])
     let labels: Cell<List<List<string>>> = Cell.new([])
+    let tests: Cell<List<TaskTest>> = Cell.new([])
     Lowering {
         store: store,
         program: program,
@@ -286,6 +298,7 @@ export fn lowering(
         cleanups: cleanups,
         loop_floors: loop_floors,
         labels: labels,
+        tests: tests,
     }
 }
 
@@ -587,7 +600,7 @@ impl Lowering {
         self.reached(callee)
         let dst = self.mint(l)
         self.emit(Ins.Call(dst, callee.symbol, args))
-        self.unwound_after((self.program.reaches)(callee))
+        self.task_test(TestSite.Calls(callee)) { cx -> cx.unwound_test() }
         dst
     }
 
@@ -639,12 +652,45 @@ impl Lowering {
     // ── The test after a call ───────────────────────────────────────
     // A call that may reach a cancel point is followed by one read of the running task's unwinding
     // flag; set, the fn leaves at once, answering a hollow its caller never reads, since the caller
-    // tests in turn.
+    // tests in turn. Each test is lowered where it stands and held beside the body, so one lowering
+    // serves every placement.
 
     /// The unwinding test, after a call that `may` reach a cancel point.
     mut fn unwound_after(may: bool) {
-        if !may || !self.program.checks.tests() { return }
-        self.void_region(self.flag_read(RtFlag.Unwinding)) { cx -> cx.unwound_exit() }
+        if !may { return }
+        self.task_test(TestSite.Waits) { cx -> cx.unwound_test() }
+    }
+
+    /// The running task's unwinding flag read, and the fn left where it's set.
+    mut fn unwound_test() { self.void_region(self.flag_read(RtFlag.Unwinding)) { cx -> cx.unwound_exit() } }
+
+    /// A task test at `site`, lowered by `body` with its own instructions and notes, its registers
+    /// minted in place, then held: every placement keeping it splices it back where it stood.
+    mut fn task_test(site: TestSite, body: fn(mut Lowering) -> void) {
+        if self.holding {
+            body(self)
+            return
+        }
+        let ins = self.ins
+        let missing = self.missing
+        let first = self.layouts.get().length
+        self.ins = Cell.new([])
+        self.missing = Cell.new([])
+        self.holding = true
+        body(self)
+        self.holding = false
+        let held = TaskTest {
+            site: site,
+            at: ins.get().length,
+            ins: self.ins.get(),
+            first: first,
+            count: self.layouts.get().length - first,
+            missed_at: missing.get().length,
+            missing: self.missing.get(),
+        }
+        self.ins = ins
+        self.missing = missing
+        self.tests.push(held)
     }
 
     /// What the fn answers leaving unwinding: a task an empty cell, which no joiner reads as a value;
@@ -666,7 +712,11 @@ impl Lowering {
     mut fn back_edge(s: StmtId) {
         if self.walks.get().contains(s.index) { return }
         self.program.spins.set(true)
-        if !self.program.checks.ticks() { return }
+        self.task_test(TestSite.Ticks) { cx -> cx.tick_test() }
+    }
+
+    /// The tick read, and the scheduler run where it's taken.
+    mut fn tick_test() {
         self
             .void_region(self.flag_read(RtFlag.Tick)) { cx -> cx.run_row(rt_sig_of("avra_tick_cold")!, []) }
     }
