@@ -10,6 +10,7 @@ use core.{
     Lowers,
     Reg,
     SignedType,
+    flatten,
     owned_type,
     rt_sig_of,
 }
@@ -21,41 +22,56 @@ impl Lowers for Comp {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
         if ty.listed() == null { return cx.unlowered(e) }
-        if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as("a comprehension over a source that isn't a list or a count") }
+        if (0..self.clauses.length)
+            .any((at) -> !walkable(cx, self.clauses[at], binders_before(self.clauses, at))) { return cx.missed_as("a comprehension over a source that isn't a list or a count") }
         let built = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
         walked(cx, self, 0, built)
         built
     }
 }
 
+/// The names the heads before clause `at` bind for every clause after them.
+fn binders_before(clauses: List<CompClause>, at: int) -> List<string> {
+    flatten([head_binders(c) for c in clauses.slice(0, at)])
+}
+
+/// The names a clause binds: a head its element's and its index's, a filter none.
+fn head_binders(c: CompClause) -> List<string> {
+    match c {
+        .Head(index, name, _, _) -> if index == null { [name.of] } else { [name.of, index!.of] },
+        .Filter(_) -> [],
+    }
+}
+
 /// Whether a clause is one this rule walks: a filter, or a head over a list it reads as it is, or
-/// counting from its source to its bound.
-fn walkable(cx: Lowering, c: CompClause) -> bool {
+/// counting from its source to its bound; `earlier` the names the heads before it bind.
+fn walkable(cx: Lowering, c: CompClause, earlier: List<string>) -> bool {
     match c {
         .Head(_, _, source, hi) -> {
             let from? = cx.type_at(source) else { return false }
             if hi != null { return from.spelled() == owned_type("int").spelled() }
             let elem? = from.listed() else { return false }
-            cx.program.checked.layout(elem) != null && !viewed(cx, source)
+            cx.program.checked.layout(elem) != null && !viewed(cx, source, earlier)
         },
         .Filter(_) -> true,
     }
 }
 
 /// Whether a source is a method's answer that a walk may read another way: a text's `chars`, or a
-/// method of something the body doesn't bind, which may name a relation the walk narrows.
-fn viewed(cx: Lowering, source: ExprId) -> bool {
+/// method of something neither the body nor an earlier head binds, which may name a relation the
+/// walk narrows.
+fn viewed(cx: Lowering, source: ExprId, earlier: List<string>) -> bool {
     match cx.store.expr(cx.meaning_of(source)) {
-        .MethodCall(subject, name, _) -> name.of == "chars" || !bound_here(cx, subject),
+        .MethodCall(subject, name, _) -> name.of == "chars" || !bound_here(cx, subject, earlier),
         rest -> false,
     }
 }
 
-/// Whether an expression is a name the body binds, or reads through one.
-fn bound_here(cx: Lowering, e: ExprId) -> bool {
+/// Whether an expression is a name the body or an earlier head binds, or reads through one.
+fn bound_here(cx: Lowering, e: ExprId, earlier: List<string>) -> bool {
     match cx.store.expr(e) {
-        .Ident(name) -> cx.bound(name.of) != null,
-        .Prop(subject, _) -> bound_here(cx, subject),
+        .Ident(name) -> cx.bound(name.of) != null || earlier.contains(name.of),
+        .Prop(subject, _) -> bound_here(cx, subject, earlier),
         rest -> false,
     }
 }

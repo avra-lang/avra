@@ -254,3 +254,34 @@ export enum QuoteKind {
     /// nothing but holes: the kind is what fills them
     Holes
 }
+
+/// The template kind `ty` is among `@std/meta`'s, each named by `meta`; absent for a type that's none.
+export fn signed_template_kind(ty: SignedType, meta: fn(string) -> SignedType?) -> MetaKind? {
+    if ty.nullable() || ty.dynamic { return null }
+    [MetaKind.Code, MetaKind.Stmts, MetaKind.Arms, MetaKind.Decls, MetaKind.Rewrite]
+        .find((k) -> meta(meta_name(k))?.names_as(ty) ?? false)
+}
+
+/// What a hole's value of type `ty` is, as a row lifts it: a template, a list of templates, a number,
+/// a truth, text, a list of texts, or a meta value naming one declaration, `@std/meta`'s types each
+/// named by `meta`; absent for any other.
+export fn signed_fill_class(ty: SignedType, meta: fn(string) -> SignedType?) -> FillClass? {
+    let own = signed_template_kind(ty, meta)
+    if own != null { return FillClass.Template(own!) }
+    let elem = ty.listed()
+    if elem != null {
+        let inner = signed_template_kind(elem!, meta)
+        if inner != null { return FillClass.Templates(inner!) }
+        return if elem!.owned() == "string" { FillClass.Texts } else { null }
+    }
+    if NAMED_META.any((n) -> meta(n)?.names_as(ty) ?? false) { return FillClass.Named }
+    match ty.owned() ?? "" {
+        "string" -> FillClass.Text,
+        "int" -> FillClass.Int,
+        "bool" -> FillClass.Bool,
+        rest -> null,
+    }
+}
+
+/// The `@std/meta` values that name one declaration, spliced by its name.
+const NAMED_META: List<string> = ["Fn", "Type", "Named", "Trait", "Field", "Variant", "Param"]

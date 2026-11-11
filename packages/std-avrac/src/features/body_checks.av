@@ -9,8 +9,11 @@ use core.{
     Expected,
     SignedType,
     body_behavior,
+    holes_kind,
+    meta_name,
     owned_type,
     quote_kind,
+    signed_fill_class,
 }
 use core.expr.{Body}
 
@@ -38,8 +41,18 @@ fn quoted(cx: Checking, e: ExprId, holes: List<SignedType?>, expected: Expected)
             holes.any((h) -> names_a_node(h!)) -> cx.meta_type("Rewrite")
             _ -> expression_quoted(cx, expected)
         },
-        .Holes -> null,
+        .Holes -> holes_quoted(cx, holes),
     }
+}
+
+/// A body of holes alone: the kind its fills make together; nothing named where a hole isn't known,
+/// its value is no template, or the fills disagree.
+fn holes_quoted(cx: Checking, holes: List<SignedType?>) -> SignedType? {
+    if holes.any(it == null) { return null }
+    let classes = [signed_fill_class(h!, cx.program.meta_type) for h in holes]
+    if classes.any(it == null) { return null }
+    let kind? = holes_kind([c! for c in classes]) else { return null }
+    cx.meta_type(meta_name(kind))
 }
 
 /// Whether a hole fills with a node of the tree being rewritten: an `ExprId`, a `PatId`, or a

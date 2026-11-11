@@ -2,20 +2,35 @@
 //! and an enum's variants, each typed where the declaration stands and that type's shape a `Kind`; a
 //! named type's shape; and the annotations its item writes. The crossing's own writer
 //! (`meta_of_type`) lays the value out, so the rows it's held to are the one contract.
-use core.{Annotation, Mark, Param, SignedType, SyntaxArena, Variant as VariantDecl, spelled}
+use core.{
+    Annotation,
+    CollectEnumParts,
+    Mark,
+    Param,
+    SignedType,
+    SyntaxArena,
+    Variant as VariantDecl,
+    faceted,
+    sorted_by,
+    spelled,
+}
 use features.{Lifted, arg_lit, meta_of_type, new_meta_heap}
 use @std.meta.{
     Annotation as MetaAnnotation,
+    Code as MetaCode,
     Field as MetaField,
     Kind,
     Mark as MetaMark,
     MarkArg as MetaMarkArg,
+    Node as MetaNode,
     Seat as MetaSeat,
     Type as MetaType,
     Variant as MetaVariant,
 }
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
+use @std.program.source_facts.{source_text}
+use @std.text.{text_before}
 
 /// The record, enum or named type `file` declares as `name`, as `@std/meta`'s `Type`; absent when it
 /// declares none of that name.
@@ -40,7 +55,11 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         .Record -> {
             let parts? = item.store.struct_parts(s) else { return null }
             let signed = record_signature(engine, d.file, d.name)?.fields ?? []
-            base with { fields: [field_meta(p, field_kind(signed, p.name.of)) for p in parts.fields] }
+            base with { fields: [field_meta(
+                p,
+                field_kind(signed, p.name.of),
+                written_default(engine, d.file, item.store, p),
+            ) for p in parts.fields] }
         },
         .Enum -> {
             let parts? = item.store.enum_parts(s) else { return null }
@@ -54,13 +73,73 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
                     .signed(parts.of),
             ) }
         },
-        .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .Const or .State -> null,
+        .CollectEnum -> {
+            let parts? = item.store.collect_enum_parts(s) else { return null }
+            let members? = gathered(engine, d.file, parts) else { return null }
+            base with { variants: [gathered_variant(engine, m) for m in members] }
+        },
+        .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .Const or .State -> null,
+    }
+}
+
+/// The declarations a `collect enum` written in `owner` gathers, in its order: each wearing its mark
+/// in its scope, by name and a tie by where it's declared; a member in a test file only for an owner
+/// in that file. Absent for a gathering read here only once it's built: by a component word, over a
+/// program's closure, or by any key but the name.
+fn gathered(engine: QueryEngine, owner: SourceFileAddress, parts: CollectEnumParts) -> List<
+    DeclaredName,
+>? {
+    let mark = match parts.kind { .Annotated(name) -> name, .Component(_) -> { return null } }
+    let files = match parts.scope {
+        .Self -> [owner],
+        .Package -> [owner with { path_in_package: p } for p in package_sources(engine, owner.package_name, "src")],
+        .Closure or .UnknownScope(_) -> { return null },
+    }
+    if !parts.order.all(it.of == "name") { return null }
+    let found = [d for f in files if gathers_from(f, owner) for d in file_declares(engine, f).names if wears(engine, d, mark)]
+    sorted_by(found, member_before)
+}
+
+/// Whether a gathering written in `owner` reads `file`'s members: any file outside a module's tests,
+/// and a test file only its own.
+fn gathers_from(file: SourceFileAddress, owner: SourceFileAddress) -> bool {
+    !module_segments(file).contains(TESTS_DIR) || spelled_file(file) == spelled_file(owner)
+}
+
+/// Whether the declaration `d` is written wearing `@mark`.
+fn wears(engine: QueryEngine, d: DeclaredName, mark: string) -> bool {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return false }
+    item.store.annotations_of(s).any(it.name == mark)
+}
+
+/// Members by name, a tie by the module that declares each.
+fn member_before(a: DeclaredName, b: DeclaredName) -> bool {
+    if a.name != b.name { return text_before(a.name, b.name) }
+    text_before(dotted_module(a.file), dotted_module(b.file))
+}
+
+/// The directory a module's tests stand in.
+const TESTS_DIR: string = "tests"
+
+/// A gathered member as a `Variant`: its name, and its record's fields as the payload, each typed
+/// where the member stands.
+fn gathered_variant(engine: QueryEngine, m: DeclaredName) -> MetaVariant {
+    let item = read_item(engine, m.file, m.item)
+    let fields = [p for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? []]
+    let signed = record_signature(engine, m.file, m.name)?.fields ?? []
+    MetaVariant {
+        name: m.name,
+        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
+        at: null,
+        fields: [field_meta(p, field_kind(signed, p.name.of), written_default(engine, m.file, item.store, p)) for p in fields],
+        marks: [],
     }
 }
 
 /// A record's field or a variant's payload as a `Field`: its name, its type as written and that
-/// type's shape, its marks.
-fn field_meta(p: Param, kind: Kind) -> MetaField {
+/// type's shape, its marks, and the code its default writes.
+fn field_meta(p: Param, kind: Kind, default: MetaCode?) -> MetaField {
     MetaField {
         name: p.name.of,
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
@@ -69,8 +148,23 @@ fn field_meta(p: Param, kind: Kind) -> MetaField {
         marks: [mark_meta(m) for m in p.marks],
         annotations: [mark_as_annotation(m) for m in p.marks],
         defaulted: p.default != null,
+        default: default,
         state: p.state,
         prop: p.prop,
+    }
+}
+
+/// A field's default as the code that writes it: the source the declaration wrote, a template of
+/// `file` at its offset; absent where it writes none, where it's a quote, which holds its offset
+/// already, or where its node was copied from another file.
+fn written_default(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, p: Param) -> MetaCode? {
+    let e? = p.default else { return null }
+    if store.foreign_of(e) != null { return null }
+    let at? = store.expr_span(e) else { return null }
+    if store.quote_at(at.lo) != null { return null }
+    let text? = source_text(engine, file) else { return null }
+    MetaCode {
+        node: MetaNode.Template(template_home(file), at.lo, [text.substring(at.lo, at.hi)], []),
     }
 }
 
@@ -80,7 +174,7 @@ fn variant_meta(v: VariantDecl, signed: List<SignedField>) -> MetaVariant {
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
         at: null,
-        fields: [field_meta(p, field_kind(signed, p.name.of)) for p in v.payloads],
+        fields: [field_meta(p, field_kind(signed, p.name.of), null) for p in v.payloads],
         marks: [mark_meta(m) for m in v.marks],
     }
 }
