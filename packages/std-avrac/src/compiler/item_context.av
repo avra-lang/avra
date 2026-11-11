@@ -60,12 +60,27 @@ impl WordShapes {
 }
 
 /// One item of a file, and the context it reads under: its file's words it could name.
+@derive(Saved)
 export type ItemUnder = { start: int, text: string, context: Bytes }
 
 /// A file's items, each with the context it reads under.
 export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<ItemUnder> {
-    let shapes = WordShapes.from_saved_bytes(file_context(engine, file))
-    [ItemUnder { start: item.start, text: item.text, context: shapes.named_in(item.text) } for item in file_items(engine, file)]
+    [item_under(engine, file, at) for at in 0..item_count(engine, file)]
+}
+
+/// How many items a file has.
+@query
+export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { file_items(engine, file).length }
+
+/// A file's item `at`, with the context it reads under.
+@query
+export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnder {
+    let item = file_items(engine, file)[at]
+    ItemUnder {
+        start: item.start,
+        text: item.text,
+        context: WordShapes.from_saved_bytes(file_context(engine, file)).named_in(item.text),
+    }
 }
 
 /// The words a parse under `context` reads by, each known by its shape alone.

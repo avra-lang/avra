@@ -27,6 +27,8 @@ export type CheckedProgram = {
     /// spells it) before where the body stands.
     type_named: fn(string, string?) -> SignedType,
     record_of: fn(SignedType) -> RecordShape?,
+    /// The shape a named type stands over, bound to its arguments; absent for any other type.
+    named_of: fn(SignedType) -> SignedType?,
     enum_of: fn(SignedType) -> EnumShape?,
     method_of: fn(SignedType, string) -> SignedType?,
     property_of: fn(SignedType, string) -> SignedType?,
@@ -97,11 +99,12 @@ export type Checking = {
 }
 
 impl CheckedProgram {
-    /// The enum `ty` is, `Result` among them, absent when it's none.
+    /// The enum `ty` is, `Result` among them, absent when it's none; the arguments it's applied to are
+    /// its reader's to hold to the shape's parameters.
     fn enum_shape(ty: SignedType) -> EnumShape? {
         if ty.nullable() || ty.dynamic { return null }
         match ty.head {
-            .Owned(name) -> if name == "Result" && ty.args.length == 2 { result_shape() } else { null },
+            .Owned(name) -> if name == "Result" { result_shape() } else { null },
             rest -> (self.enum_of)(ty),
         }
     }
@@ -187,6 +190,13 @@ impl Checking {
     fn seat_kept(e: ExprId, expected: Expected) {
         let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
         self.seats.put("${e.index}", wanted)
+    }
+
+    /// A node with no rule of its own: the core it means checked in its place, where it's a sugar;
+    /// else every node it holds checked against what isn't known, and itself left unchecked.
+    mut fn unruled(e: ExprId, expected: Expected) -> SignedType? {
+        let meant? = self.store.meant(e) else { return self.children_checked(e) }
+        self.check(meant, expected)
     }
 
     /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked.
@@ -414,6 +424,9 @@ impl Checking {
         if all.length == 1 { all[0] } else { null }
     }
 
+    /// The shape the named type `ty` stands over, absent for any other type.
+    fn named_over(ty: SignedType) -> SignedType? { (self.program.named_of)(ty) }
+
     /// The record `ty` is, absent when it's none.
     fn record_of(ty: SignedType) -> RecordShape? { (self.program.record_of)(ty) }
 
@@ -582,6 +595,9 @@ fn open_scope() -> CheckScope {
     let names: Map<string, Local> = {}
     CheckScope { names: names }
 }
+
+/// The one field a named type is a record over, read as the shape it stands over.
+export const NAMED_FIELD: string = "of"
 
 /// The package that holds the language's compile-time shapes.
 const META_PACKAGE: string = "@std/meta"
