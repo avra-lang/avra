@@ -19,14 +19,19 @@ export enum Expected {
 /// it stands; the record or enum a type is, and the method or property a value of it has as a fn of
 /// its receiver first, absent when the program names none.
 export type CheckedProgram = {
-    value_named: fn(string) -> SignedType?,
+    /// A top-level value's type by its name, read where the template that wrote the read stands
+    /// (its home, as an origin spells it) before where the body stands.
+    value_named: fn(string, string?) -> SignedType?,
     written: fn(TypeRef) -> SignedType,
-    type_named: fn(string) -> SignedType,
+    /// A type by its name, read where the template that wrote it stands (its home, as an origin
+    /// spells it) before where the body stands.
+    type_named: fn(string, string?) -> SignedType,
     record_of: fn(SignedType) -> RecordShape?,
     enum_of: fn(SignedType) -> EnumShape?,
     method_of: fn(SignedType, string) -> SignedType?,
     property_of: fn(SignedType, string) -> SignedType?,
-    type_value: fn(string) -> SignedType?,
+    /// What a name naming a type and no value reads as, from its home before where the body stands.
+    type_value: fn(string, string?) -> SignedType?,
     static_of: fn(SignedType, string) -> SignedType?,
     /// The type a toolchain package's root module declares under a name.
     toolchain_type: fn(string, string) -> SignedType?,
@@ -286,9 +291,6 @@ impl Checking {
     /// What `e` was checked as, absent when it wasn't.
     fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
 
-    /// The type a name read here has, absent when it isn't known.
-    fn read(name: string) -> SignedType? { self.bound(name) }
-
     /// The binding a name has in this body's scopes, absent when the body binds it nowhere in view.
     fn local(name: string) -> Local? {
         for scope in reversed(self.scopes.get()) {
@@ -300,7 +302,14 @@ impl Checking {
 
     /// The type a name has here: the innermost binding of it, else what the program names by it;
     /// absent past a scope that may have bound it unseen.
-    fn bound(name: string) -> SignedType? {
+    fn bound(name: string) -> SignedType? { self.bound_from(name, null) }
+
+    /// The type `name` read at `e` has: what `bound` answers, a name the program declares read from
+    /// the home of the template that wrote `e`.
+    fn read(e: ExprId, name: string) -> SignedType? { self.bound_from(name, self.home_of(e)) }
+
+    /// What `bound` answers, a name the program declares read from `home` first, when there is one.
+    fn bound_from(name: string, home: string?) -> SignedType? {
         mut fenced = false
         for scope in reversed(self.scopes.get()) {
             let local? = scope.names.get(name) else {
@@ -309,7 +318,7 @@ impl Checking {
             }
             return if fenced && local.wide != null { local.wide } else { local.ty }
         }
-        (self.program.value_named)(name)
+        (self.program.value_named)(name, home)
     }
 
     /// `name` bound in the innermost scope, to `ty` when it's known; `narrowable` when nothing can
@@ -407,8 +416,12 @@ impl Checking {
     /// The record `ty` is, absent when it's none.
     fn record_of(ty: SignedType) -> RecordShape? { (self.program.record_of)(ty) }
 
-    /// A type named in the body, resolved.
-    fn type_named(name: string) -> SignedType { (self.program.type_named)(name) }
+    /// A type named in the body, resolved from `home`, the template that wrote the name, first.
+    fn type_named(name: string, home: string?) -> SignedType { (self.program.type_named)(name, home) }
+
+    /// The home of the template that wrote `e`, as its origin spells it; absent for a node the body's
+    /// own file wrote.
+    fn home_of(e: ExprId) -> string? { self.store.foreign_of(e)?.path }
 
     /// What the values checked into `seats` fill of the type parameters the seats name, beyond those
     /// `pinned` already fills: each value whose seat isn't a fn first; then what the seat the call
@@ -507,7 +520,7 @@ impl Checking {
     fn toolchain_type(package: string, name: string) -> SignedType? { (self.program.toolchain_type)(package, name) }
 
     /// What a name reads as when it names a type and no value: the type, standing as a value.
-    fn type_value(name: string) -> SignedType? { (self.program.type_value)(name) }
+    fn type_value(name: string, home: string?) -> SignedType? { (self.program.type_value)(name, home) }
 
     /// A variant of the enum `enum_type` built from `args`: the enum, its arguments from the seat
     /// when it names the enum, else from what the payloads fill. Absent when the enum has no such

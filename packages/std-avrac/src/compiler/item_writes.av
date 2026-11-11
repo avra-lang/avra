@@ -1,7 +1,8 @@
 //! WHETHER A METHOD WRITES ITS RECEIVER: it does when it's marked `mut`, when its body assigns to a
 //! place rooted in `self` that crosses no `state` field, calls a verb whose receiver seat is `mut` on
 //! such a place, hands such a place to a `mut` seat, or calls a method on such a place that writes
-//! its own receiver. A lambda's `self` is a copy, so nothing inside one counts. A method whose answer
+//! its own receiver; a fn value a `let` binds writes what it's handed only through a seat its type
+//! marks `mut`. A lambda's `self` is a copy, so nothing inside one counts. A method whose answer
 //! turns on what can't be read here is unproved, and says why.
 use core.{ExprId, SignedType, StmtId, SyntaxArena, TypeHead, filled, flatten, headed_type}
 use @std.meta.{derive}
@@ -74,8 +75,27 @@ fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
     let item = read_item(engine, at.file, at.item)
     let fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() ?? []
     let owner = headed_type(TypeHead.Declared(m.file, m.owner)) with { args: [headed_type(TypeHead.Parameter(i, p)) for i, p in at.params] }
-    body_evidence(engine, at.file, item.store, fns, m, owner)
+    body_evidence(
+        engine,
+        at.file,
+        item.store,
+        fns,
+        m,
+        owner,
+        () -> method_typed(engine, at, m.name).types,
+    )
 }
+
+/// The body of the method `name` the impl at `at` gives, typed: each node's type by its index in the
+/// item read back; none where it gives none.
+@query
+fn method_typed(engine: QueryEngine, at: ImplAt, name: string) -> TypedBody {
+    let method? = signed_method(engine, at, name, false) else { return TypedBody { types: [] } }
+    TypedBody { types: body_checked(engine, at.file, method.signed, false).types.get() }
+}
+
+/// No node's type, for a body nothing types here.
+fn untyped_nodes() -> List<SignedType?> { [] }
 
 /// The evidence of the method `m` as the one trait its type implements that gives it a body writes it.
 fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
@@ -90,6 +110,7 @@ fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
         trait_fns(item),
         m,
         headed_type(TypeHead.Declared(m.file, m.owner)),
+        untyped_nodes,
     )
 }
 
@@ -113,6 +134,7 @@ fn body_evidence(
     fns: List<StmtId>,
     m: MethodAt,
     owner: SignedType,
+    types: fn() -> List<SignedType?>,
 ) -> Evidence {
     let s? = fns.find((f) -> store.fn_parts(f)?.name == m.name && !store.is_static(f)) else { return unread(not_one_impl(m)) }
     if store.is_mutating(s) { return Evidence { written: true, unproved: null, reached: [] } }
@@ -125,6 +147,7 @@ fn body_evidence(
         file: file,
         store: store,
         owner: owner,
+        types: types,
         own: own,
         locals: [p.name.of for p in parts.params]
             .concat([n! for x in store.stmt_ids() for n in [store.let_name(x)] if n != null]),
@@ -145,9 +168,10 @@ fn outside_lambdas(store: SyntaxArena, root: ExprId) -> List<ExprId> {
     flatten([outside_lambdas(store, k) for k in store.reached(root)]).concat([root])
 }
 
-/// One method's survey: where its body is read, the receiver's type, which nodes stand outside its
-/// lambdas, by index, the names its seats and `let`s bind, and the evidence as it accrues.
-type Survey = { engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, owner: SignedType, own: List<bool>, locals: List<string>, written: bool, unproved: string?, reached: List<MethodAt> }
+/// One method's survey: where its body is read, the receiver's type, its nodes' types when asked,
+/// which nodes stand outside its lambdas, by index, the names its seats and `let`s bind, and the
+/// evidence as it accrues.
+type Survey = { engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, owner: SignedType, types: fn() -> List<SignedType?>, own: List<bool>, locals: List<string>, written: bool, unproved: string?, reached: List<MethodAt> }
 
 impl Survey {
     /// Every assignment outside a lambda through a place rooted in the receiver writes it, unless the
@@ -180,8 +204,10 @@ impl Survey {
     /// called; its arguments feed its seats.
     mut fn method_evidence(subject: ExprId, name: string, args: List<ExprId>) {
         if !self.rooted(subject) {
-            if self.hands_write(args) { self.unread(handed_unread(name)) }
-            return
+            if !self.hands_write(args) { return }
+            let ty? = self.typed_at(subject) else { return self.unread(handed_unread(name)) }
+            let seats? = method_type(self.engine, ty, name)?.seats else { return self.unread(handed_unread(name)) }
+            return self.fed([s.mutable for s in seats.drop(1)], args, name)
         }
         let ty? = self.place_type(subject) else { return self.unread(untyped_place(self.path_words(subject))) }
         if ty.dynamic { return self.contract_evidence(ty, name, args) }
@@ -220,8 +246,11 @@ impl Survey {
     mut fn named_evidence(callee: string, args: List<ExprId>) {
         if !self.hands_receiver(args) { return }
         if self.locals.contains(callee) {
-            if self.hands_write(args) { self.unread(handed_unread(callee)) }
-            return
+            let marks? = self.bound_marks(callee) else {
+                if self.hands_write(args) { self.unread(handed_unread(callee)) }
+                return
+            }
+            return self.fed(marks, args, callee)
         }
         let d? = resolved(self.engine, self.file, Space.Value, callee).named() else { return }
         let marks? = written_seats(self.engine, d) else { return }
@@ -237,6 +266,23 @@ impl Survey {
             return
         }
         for j, a in args { if marks[j] && self.rooted(a) { self.written = true } }
+    }
+
+    /// Which seats of the fn value the one `let` binding `name` holds are `mut`, read off the type its
+    /// value has; absent where the body binds it otherwise, or its type isn't a fn's.
+    fn bound_marks(name: string) -> List<bool>? {
+        let lets = [s for s in self.store.stmt_ids() if self.store.let_name(s) == name]
+        if lets.length != 1 { return null }
+        let value? = self.store.stmt_value(lets[0]) else { return null }
+        let ty? = self.typed_at(value) else { return null }
+        if !(ty.head is .Function) || ty.nullable() { return null }
+        [s.mutable for s in ty.seats]
+    }
+
+    /// The type the body has `e` at, absent where it isn't typed.
+    fn typed_at(e: ExprId) -> SignedType? {
+        let types = (self.types)()
+        if e.index >= types.length { null } else { types[e.index] }
     }
 
     /// Whether any argument is a place rooted in the receiver.

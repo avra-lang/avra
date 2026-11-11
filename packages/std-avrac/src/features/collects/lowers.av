@@ -1,0 +1,46 @@
+//! The lowering of a `collect`: its own unit builds the list, one record per member, each field what
+//! the projection reads off the member.
+use core.{CollectedRow, CollectedValue, Lowering, Reg, SignedType}
+
+/// A `collect`'s list, of type `ty`: its projection's records, each filled from one member's `values`
+/// in the order the projection writes `fields`, every field written.
+export fn collected_list(
+    mut cx: Lowering,
+    ty: SignedType,
+    fields: List<string>,
+    rows: List<CollectedRow>,
+) -> Reg {
+    let entry? = ty.listed() else { return cx.missed_as(unlisted()) }
+    let seats? = cx.fields_of(entry) else { return cx.missed_as(unlisted()) }
+    if seats.any((s) -> !fields.contains(s.name)) { return cx.missed_as(defaulted_field()) }
+    mut records: List<Reg> = []
+    for r in rows {
+        mut parts: List<Reg> = []
+        for seat in seats { parts.push(collected_field(cx, seat.ty, r.values[fields.index_of(seat.name)])) }
+        records.push(cx.record_packed(cx.laid_out(entry), parts))
+    }
+    cx.listed(cx.laid_out(ty), records, [false for _r in rows])
+}
+
+/// One projected field of a member, in a seat of type `seat`: the member as a fn value where the seat
+/// is a fn's, or the text its declaration spells.
+fn collected_field(mut cx: Lowering, seat: SignedType?, v: CollectedValue) -> Reg {
+    match v {
+        .Member(callee) -> {
+            let ty? = seat else { return cx.missed_as(untyped_field()) }
+            if !(ty.head is .Function) || ty.nullable() { return cx.missed_as(crossed_field()) }
+            cx.fn_value_as(ty, callee)
+        },
+        .Spelled(value) -> cx.constant(value),
+    }
+}
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn unlisted() -> string { "a collect whose type is no list of records" }
+
+fn defaulted_field() -> string { "a collect whose projection leaves a field to its default" }
+
+fn untyped_field() -> string { "a collect field of no type" }
+
+fn crossed_field() -> string { "a collect field that crosses a declaration as `@std/meta` sees it" }

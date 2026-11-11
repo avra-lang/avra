@@ -4,9 +4,11 @@
 //! (`meta_of_type`) lays the value out, so the rows it's held to are the one contract.
 use core.{
     Annotation,
-    CollectEnumParts,
+    CollectKind,
+    CollectScope,
     Mark,
     Param,
+    Plain,
     SignedType,
     SyntaxArena,
     Variant as VariantDecl,
@@ -109,29 +111,41 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         },
         .CollectEnum -> {
             let parts? = item.store.collect_enum_parts(s) else { return null }
-            let members? = gathered(engine, d.file, parts) else { return null }
+            let members? = gathered(engine, d.file, parts.kind, parts.scope, parts.order, false) else { return null }
             base with { variants: [gathered_variant(engine, m) for m in members] }
         },
         .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .Const or .State -> null,
     }
 }
 
-/// The declarations a `collect enum` written in `owner` gathers, in its order: each wearing its mark
-/// in its scope, by name and a tie by where it's declared; a member in a test file only for an owner
-/// in that file. Absent for a gathering read here only once it's built: by a component word, over a
-/// program's closure, or by any key but the name.
-fn gathered(engine: QueryEngine, owner: SourceFileAddress, parts: CollectEnumParts) -> List<
-    DeclaredName,
->? {
-    let mark = match parts.kind { .Annotated(name) -> name, .Component(_) -> { return null } }
-    let files = match parts.scope {
+/// The declarations a `collect` or a `collect enum` written in `owner` gathers, in its order: each
+/// wearing its mark in its scope, by name and a tie by where it's declared; a member in a test file
+/// only for an owner in that file; what generators make among them when `made`, which an enum's
+/// gathering never reads, since generators read the enum's shape. Absent for a gathering read here
+/// only once it's built: by a component word, over a program's closure, or by any key but the name.
+fn gathered(
+    engine: QueryEngine,
+    owner: SourceFileAddress,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+    made: bool,
+) -> List<DeclaredName>? {
+    let mark = match kind { .Annotated(name) -> name, .Component(_) -> { return null } }
+    let files = match scope {
         .Self -> [owner],
         .Package -> [owner with { path_in_package: p } for p in package_sources(engine, owner.package_name, "src")],
         .Closure or .UnknownScope(_) -> { return null },
     }
-    if !parts.order.all(it.of == "name") { return null }
-    let found = [d for f in files if gathers_from(f, owner) for d in file_declares(engine, f).names if wears(engine, d, mark)]
+    if !order.all(it.of == "name") { return null }
+    let found = [d for f in files if gathers_from(f, owner) for d in declared_in(engine, f, made) if wears(engine, d, mark)]
     sorted_by(found, member_before)
+}
+
+/// What `file` declares: what it writes, then what generators make there when `made`.
+fn declared_in(engine: QueryEngine, file: SourceFileAddress, made: bool) -> List<DeclaredName> {
+    let written = file_declares(engine, file).names
+    if made { written.concat(generated_declares(engine, file).names) } else { written }
 }
 
 /// Whether a gathering written in `owner` reads `file`'s members: any file outside a module's tests,

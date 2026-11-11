@@ -24,6 +24,7 @@ use @std.avrac.core.{
     TypeId,
     alpha_renamed,
     canon_not_if,
+    code_hash_symbol,
     dst_of,
     flatten,
     fp_str,
@@ -810,6 +811,16 @@ impl HeldUnits {
             ),
         )
         lifted.set(symbol, w.name)
+        for l in mine.lifts.filter((l) -> !lifted.has(l.symbol)) {
+            // a lambda a template wrote stands at the template's places, which this file's parse lacks
+            let taken = [v for _k, v in lifted]
+            let open = unit.bodies.drop(1).filter((b) -> !taken.contains(b.name))
+            let unkept: Cell<List<FlagCuts>> = Cell.new([])
+            let next? = open
+                .find((b) -> lift_difference(ws, disk, l, b, lifted, mine.tagged, unkept) == null) ?? open
+                .first() else { break }
+            lifted.set(l.symbol, next.name)
+        }
         let agreed = tests_agreed(mine.ins, theirs.ins)
         let cuts: Cell<List<FlagCuts>> = Cell.new([agreed.cut])
         let how = lowered_difference(
@@ -1200,29 +1211,43 @@ fn lifts_difference(
     for l in lifts {
         let name? = lifted.get(l.symbol) else { return "the workspace lifts no lambda at ${l.lo}" }
         let theirs? = bodies.find(it.name == name) else { return "the workspace lowers no body for the lambda at ${l.lo}" }
-        let mine = LoweredFn {
-            params: l.params,
-            answer: l.answer,
-            ins: l.ins,
-            layouts: l.layouts,
-            callees: l.callees,
-            missing: [],
-            lifts: [],
-            statics: [],
-            tagged: tagged,
-        }
-        let agreed = tests_agreed(mine.ins, theirs.ins)
-        cuts.push(agreed.cut)
-        let how = lowered_difference(
-            ws,
-            disk,
-            mine with { ins: agreed.ours },
-            theirs with { ins: agreed.theirs },
-            lifted,
-        )
+        let how = lift_difference(ws, disk, l, theirs, lifted, tagged, cuts)
         if how != null { return "the lambda at ${l.lo}: ${how!}" }
     }
     null
+}
+
+/// How the lambda `l` lifts here differs from the workspace's body `theirs`, absent when alike; the
+/// cancel tests each side cuts go to `cuts`.
+fn lift_difference(
+    ws: Workspace,
+    disk: Disk,
+    l: LiftedBody,
+    theirs: Body,
+    lifted: Map<string, string>,
+    tagged: List<SignedType>,
+    cuts: Cell<List<FlagCuts>>,
+) -> string? {
+    let mine = LoweredFn {
+        params: l.params,
+        answer: l.answer,
+        ins: l.ins,
+        layouts: l.layouts,
+        callees: l.callees,
+        missing: [],
+        lifts: [],
+        statics: [],
+        tagged: tagged,
+    }
+    let agreed = tests_agreed(mine.ins, theirs.ins)
+    cuts.push(agreed.cut)
+    lowered_difference(
+        ws,
+        disk,
+        mine with { ins: agreed.ours },
+        theirs with { ins: agreed.theirs },
+        lifted,
+    )
 }
 
 /// How a fn lowered here differs from the workspace's lowering of it, absent when every seat,
@@ -1299,10 +1324,14 @@ fn known_symbols(a: Map<string, string>, b: Map<string, string>) -> Map<string, 
 }
 
 /// A symbol the program layer names, as the workspace's lowering names it: a declared fn's or a lifted
-/// lambda's by `renames`, a fn value's data and its wrapper by the code they hold, and a literal's data
+/// lambda's by `renames`, a fn value's data, its wrapper and a code hash's body by the code they hold, and a literal's data
 /// by its file's own symbol for its site.
 fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: string) -> string {
     if s.starts_with(FN_DATA) { return FN_DATA + workspace_symbol(ws, disk, renames, s.substring(FN_DATA.length, s.length)) }
+    let hashing = code_hash_symbol("")
+    if s.starts_with(hashing) { return code_hash_symbol(
+            workspace_symbol(ws, disk, renames, s.substring(hashing.length, s.length)),
+        ) }
     if s.ends_with(WRAPPER) {
         return workspace_symbol(ws, disk, renames, s.substring(0, s.length - WRAPPER.length)) +
             WRAPPER

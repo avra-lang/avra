@@ -3,6 +3,8 @@
 use core.{
     CalledFn,
     CalledSeat,
+    CollectedRow,
+    CollectedValue,
     Defaulting,
     Expr,
     ExprId,
@@ -13,6 +15,7 @@ use core.{
     Literal,
     LoweredProgram,
     Lowering,
+    ProjField,
     NamedValue,
     Param,
     ParameterLayout,
@@ -24,7 +27,9 @@ use core.{
     TraitMember,
     instance_symbol,
     lowering,
+    new_node_store,
 }
+use features.collects.{collected_list}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -85,7 +90,7 @@ fn lowered_under(
     parameters: List<ParameterLayout>?,
     checks: TaskChecks = TaskChecks.Tested,
 ) -> LoweredFn? {
-    let signed? = signed_body(engine, file, name) else { return null }
+    let signed? = signed_body(engine, file, name) else { return if parameters == null { lowered_collect(engine, file, name, checks) } else { null } }
     lowered_signed(engine, file, signed, name, parameters, checks)
 }
 
@@ -169,7 +174,8 @@ fn lowered_program(
     let wrappers: Cell<List<FnWrapper>> = Cell.new([])
     LoweredProgram {
         checked: program_of(engine, file, Signing { engine: engine, file: file, type_params: type_params }) with { parameters: parameters ?? [] },
-        named: (n: string) -> named_value(engine, file, n),
+        named: (n: string, home: string?) -> read_from(file, home)
+            .find_map((f) -> named_value(engine, f, n)),
         method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
         statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
         lifts: lifts,
@@ -192,11 +198,22 @@ fn lowered_program(
 }
 
 /// Whether `name` names a const or a collection from `file`'s top level among written names: what a
-/// pattern's bare name compares with rather than binds.
-fn compared_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+/// pattern's bare name compares with rather than binds. Absent where only a generator makes a const
+/// or a collection of that name in `file`, which a binder's question doesn't read.
+fn compared_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool? {
     let scope? = file_scope(engine, file) else { return false }
-    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return false }
-    match d.kind {
+    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else {
+        return if generated_declares(engine, file)
+            .names
+            .any((g) -> g.name == name && compares_kind(g.kind)) { null } else { false }
+    }
+    compares_kind(d.kind)
+}
+
+/// Whether a declaration of `kind` is a value a pattern's bare name compares with: a const's or a
+/// collection's.
+fn compares_kind(kind: ItemKind) -> bool {
+    match kind {
         .Const or .Collect -> true,
         .Fn or .State or .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> false,
     }
@@ -258,8 +275,75 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
             let value? = const_literal(engine, d) else { return null }
             NamedValue.Literal(value)
         },
-        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State -> null,
+        .Collect -> collected_value(engine, d),
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .State -> null,
     }
+}
+
+/// The `collect` `d` names, as code reads it: a call of the unit that builds its list. Absent where
+/// what it gathers isn't read here.
+fn collected_value(engine: QueryEngine, d: DeclaredName) -> NamedValue? {
+    if collected(engine, d.file, d.name) == null { return null }
+    NamedValue
+        .Collected(
+            CalledFn {
+                file: d.file,
+                name: d.name,
+                symbol: declared_symbol(d.file, d.name),
+                external: false,
+                plain: true,
+            },
+        )
+}
+
+/// What the `collect` `file` declares as `name` gathers: its projection's fields, in the order
+/// written, and each member, in its order, as the values those fields read off it. Absent where it
+/// declares none, gathers only once built, or a field reads what only a built program answers.
+type Collected = { fields: List<string>, rows: List<CollectedRow> }
+
+fn collected(engine: QueryEngine, file: SourceFileAddress, name: string) -> Collected? {
+    let item? = declaring_item(engine, file, name, ItemKind.Collect) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.collect_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let members? = gathered(engine, file, parts.kind, parts.scope, parts.order, true) else { return null }
+    let read = [[projected(engine, f, m) for f in parts.proj.fields] for m in members]
+    if read.any((r) -> r.any((v) -> v == null)) { return null }
+    Collected {
+        fields: [f.field.of for f in parts.proj.fields],
+        rows: [CollectedRow { values: [v! for v in r] } for r in read],
+    }
+}
+
+/// The unit of the `collect` `file` declares as `name`: no seats, its list built and answered.
+/// Absent where it declares none, or what it gathers isn't read here.
+fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string, checks: TaskChecks) -> LoweredFn? {
+    let made? = collected(engine, file, name) else { return null }
+    let ty? = binding_type(engine, file, name) else { return null }
+    let store = new_node_store()
+    mut cx = lowering(
+        store,
+        lowered_program(engine, file, store, name, [], null, checks),
+        [],
+        {},
+        ty,
+    )
+    cx.scope_enter()
+    let r = collected_list(cx, ty, made.fields, made.rows)
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(ty))
+}
+
+/// What one projected field reads off the member `m`: the member itself for a bare `it`, a fn as a
+/// value; its name for `it.name`. Absent for any other read.
+fn projected(engine: QueryEngine, f: ProjField, m: DeclaredName) -> CollectedValue? {
+    if f.path.is_empty() {
+        if m.kind != ItemKind.Fn { return null }
+        let callee? = callee_of(engine, m) else { return null }
+        return CollectedValue.Member(callee)
+    }
+    if f.path.length == 1 && f.path[0].of == "name" { return CollectedValue.Spelled(Literal.Text(m.name)) }
+    null
 }
 
 /// The fn `@std/meta` declares as `name`, as a call reaches it.
@@ -474,6 +558,13 @@ export fn template_file(home: string) -> SourceFileAddress? {
         package_name: home.substring(0, at),
         path_in_package: home.substring(at + 1, home.length),
     }
+}
+
+/// Where a name a body in `file` reads is looked up, in order: the file of the template that wrote
+/// the read when one did (`home`), then `file`.
+fn read_from(file: SourceFileAddress, home: string?) -> List<SourceFileAddress> {
+    let h? = (if home == null { null } else { template_file(home!) }) else { return [file] }
+    [h, file]
 }
 
 /// The symbol a declared fn's body is known by: its file, then its name.
