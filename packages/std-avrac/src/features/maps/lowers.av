@@ -1,7 +1,20 @@
-//! The lowering rule of a map literal of pairs: every key, then every value, then the map, then
-//! each pair written into it. A literal that spreads a map isn't lowered yet.
-use core.{ExprId, Lowering, Lowers, Reg, map_keys, map_spreads, map_values, rt_sig_of}
-use core.expr.{MapLit}
+//! The lowering rules of a map literal of pairs: every key, then every value, then the map, then
+//! each pair written into it; a literal that spreads a map isn't lowered yet. `m.entries()` is its
+//! keys and its values read once, side by side, each pair a record in a list sized for them.
+use core.{
+    BoxKind,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    map_keys,
+    map_spreads,
+    map_values,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{MapLit, MethodCall}
 
 impl Lowers for MapLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
@@ -9,7 +22,31 @@ impl Lowers for MapLit {
         let keys = [cx.lower(k) for k in map_keys(self.entries)]
         let values = [cx.lower(v) for v in map_values(self.entries)]
         let dst = cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
-        for at, k in keys { cx.run_words(rt_sig_of("avra_map_set")!, [dst, k, values[at]]) }
+        for at, k in keys { cx.map_written(dst, k, values[at]) }
+        dst
+    }
+}
+
+impl Lowering {
+    /// `m.entries()` over a map: each key beside its value, in the map's order. Absent for any other
+    /// verb.
+    mut fn map_entries(m: MethodCall, e: ExprId, word: string) -> Reg? {
+        if word != "Map" || m.name.of != "entries" || !m.args.is_empty() { return null }
+        let ty? = self.type_at(e) else { return null }
+        let entry? = ty.listed() else { return null }
+        let value? = self.type_at(m.subject)?.mapped() else { return null }
+        let map = self.lower(m.subject)
+        let keys = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_keys")!, [map])
+        let values = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_vals")!, [map])
+        let w = self.walk_list(keys, owned_type("string"))
+        let dst = self.call_row(self.laid_out(ty), rt_sig_of("avra_array_sized")!, [w.len])
+        let here = self.walk_turn(w)
+        let pair = [
+            self.element_at(w.elem_layout, keys, here),
+            self.element_at(self.laid_out(value), values, here),
+        ]
+        self.push_slot(dst, self.record_packed(self.laid_out(entry), pair))
+        self.loop_end()
         dst
     }
 }

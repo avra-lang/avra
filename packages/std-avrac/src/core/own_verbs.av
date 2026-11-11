@@ -132,9 +132,7 @@ impl Lowering {
             .CellPut -> {
                 let map = self.held_opened(subject)
                 let k = self.lower(args[0])
-                let x = self.stored_value(v, subject, args[1])
-                if !self.layout_of(x).one_word() { return self.missed_as("a nullable scalar put into the map a cell holds") }
-                self.run_row(rt_sig_of("avra_map_set")!, [map, k, x])
+                self.map_written(map, k, self.stored_value(v, subject, args[1]))
                 self.nothing()
             },
             .Awaited -> self.awaited(e, subject),
@@ -240,13 +238,17 @@ impl Lowering {
 
     // ── Writes ──────────────────────────────────────────────────────
 
-    /// `m.set(k, x)`: the place opened, then the key and the value, then the write. A value that reads
-    /// a map's `get` may share its probe with the write, which isn't lowered yet.
+    /// `m.set(k, x)`: the place opened, then the key and the value, then the write.
     mut fn put(subject: ExprId, key: ExprId, value: ExprId) -> Reg {
-        if self.store.every_expr(value).any((x) -> self.reads_a_get(x)) { return self.missed_as("a `set` whose value reads a `get`") }
         let map = self.opened_place(subject)
         let k = self.lower(key)
-        let x = self.stored_value(OwnVerb.Put, subject, value)
+        self.map_written(map, k, self.stored_value(OwnVerb.Put, subject, value))
+        self.nothing()
+    }
+
+    /// `x` written into the map `map` under the key `k`: a nullable scalar beside its presence, else
+    /// the value as a row's seat takes it.
+    mut fn map_written(map: Reg, k: Reg, x: Reg) {
         match self.layout_of(x) {
             .Maybe(carried) -> self
                 .run_row(
@@ -254,15 +256,6 @@ impl Lowering {
                     [map, k, self.extracted(Layout.Truth, x, 0), self.extracted(carried, x, 1)],
                 ),
             .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.run_crossed(rt_sig_of("avra_map_set")!, [map, k, x]),
-        }
-        self.nothing()
-    }
-
-    /// Whether `x` calls a map's `get`.
-    fn reads_a_get(x: ExprId) -> bool {
-        match self.store.expr(x) {
-            .MethodCall(subject, name, _) -> name.of == "get" && self.type_at(subject)?.mapped() != null,
-            rest -> false,
         }
     }
 

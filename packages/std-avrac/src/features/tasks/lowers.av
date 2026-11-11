@@ -11,9 +11,8 @@ impl Lowers for Spawn {
         let span? = cx.store.expr_span(self.body) else { return cx.missed_as("a spawn no source wrote") }
         let lift = cx.lift(Lambda { params: [], body: parts.body }, ty, span, cx.program, true)
         cx.kept_lift(lift)
-        let captures = [cx.held(cx.bound(name)!) for name in lift.lanes]
-        if captures.any((c) -> cx.layout_of(c).inline()) { return cx.missed_as("a capture laid inline") }
-        let task = cx.fn_box(cx.laid_out(ty), lift.body.symbol, captures)
+        let task = cx
+            .fn_box(cx.laid_out(ty), lift.body.symbol, [cx.held(cx.bound(name)!) for name in lift.lanes])
         cx.call_row(cx.layout_at(e), rt_sig_of("avra_task_spawn")!, [task])
     }
 }

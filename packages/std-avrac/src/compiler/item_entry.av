@@ -46,7 +46,7 @@ export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> Lowered
     )
     mut cx = lowering(
         body.store,
-        lowered_program(engine, file, body.store, ENTRY, [], null) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, e, ty) },
+        lowered_program(engine, file, body.store, ENTRY, [], null) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, body.store, e, ty) },
         body.core,
         body.seats,
         owned_type("int"),
@@ -67,16 +67,28 @@ type EntryRead = { store: SyntaxArena, stmts: List<StmtId>, items: List<ItemBase
 type ItemBase = { at: int, base: int }
 
 impl EntryRead {
-    /// The name the literal at `e` is laid out under: the item's own, read where it stands alone.
-    fn literal_symbol(engine: QueryEngine, file: SourceFileAddress, e: ExprId, ty: SignedType) -> string? {
-        let item? = self.items.filter(it.base <= e.index).last() else { return null }
-        literal_symbol(
-            engine,
-            file,
-            read_item(engine, file, item.at).store,
-            ExprId { index: e.index - item.base },
-            ty,
-        )
+    /// The name the literal at `e`, standing in `store`, is laid out under: the item's own, read where
+    /// it stands alone, else the entry's for a literal no source wrote.
+    fn literal_symbol(
+        engine: QueryEngine,
+        file: SourceFileAddress,
+        store: SyntaxArena,
+        e: ExprId,
+        ty: SignedType,
+    ) -> string {
+        let item = self.items.filter(it.base <= e.index).last()
+        let sourced = if item == null {
+            null
+        } else {
+            sourced_symbol(
+                engine,
+                file,
+                read_item(engine, file, item!.at).store,
+                ExprId { index: e.index - item!.base },
+                ty,
+            )
+        }
+        sourced ?? made_symbol(file, store, ENTRY, e, ty)
     }
 }
 

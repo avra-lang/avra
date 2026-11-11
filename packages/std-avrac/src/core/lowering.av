@@ -21,9 +21,8 @@ export type LoweredProgram = {
     statics: fn(SignedType, string) -> CalledFn?,
     /// The data laid out so far, each under its own name once.
     data: Cell<List<Static>>,
-    /// The name a literal at a node, of a type, is laid out under as data; absent for one no source
-    /// wrote.
-    literal_symbol: fn(ExprId, SignedType) -> string?,
+    /// The name a literal at a node, of a type, is laid out under as data.
+    literal_symbol: fn(ExprId, SignedType) -> string,
     /// The methods a `dyn` of a trait has, in the trait's order; absent for a type that's no trait the
     /// program declares.
     traits: fn(SignedType) -> List<TraitMember>?,
@@ -194,7 +193,7 @@ export enum Bound {
     Slot(cell: Reg, ty: SignedType)
     /// A name a lambda's body reads from further out: a lane of its box, `lanes` naming each in the
     /// order the body first reads it.
-    Outer(name: string, ty: SignedType, lanes: Cell<List<string>>)
+    Outer(name: string, ty: SignedType, lanes: Cell<List<Lane>>)
 }
 
 impl Bound {
@@ -509,7 +508,10 @@ impl Lowering {
         match b {
             .Value(r, _) -> r,
             .Slot(cell, ty) -> self.loaded(self.laid_out(ty), cell),
-            .Outer(name, ty, lanes) -> self.slot_read(self.laid_out(ty), Reg { index: 0 }, capture_lane(lanes, name)),
+            .Outer(name, ty, lanes) -> {
+                let l = self.laid_out(ty)
+                self.unboxed_at(l, Reg { index: 0 }, capture_slot(lanes, name, l.slots()))
+            },
         }
     }
 

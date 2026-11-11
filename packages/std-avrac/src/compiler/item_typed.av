@@ -76,6 +76,7 @@ fn body_checked(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody
         file: file,
         type_params: signed.signature.type_params,
         self_type: signed.receiver,
+        writer: written_by(signed.item.store, signed.stmt),
     }
     mut cx = checking(signed.item.store, program_of(engine, file, signing), signed.signature.answer) with { meanings: meanings }
     if signed.receiver != null { cx.bind(RECEIVER, signed.receiver, true) }
@@ -110,13 +111,14 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
 }
 
 /// What a body in `file` reads of the program: every answer typing asks, from the queries that hold
-/// it, under `signing`'s type parameters.
+/// it, under `signing`'s type parameters; a type written in the body is read where `signing`'s writer
+/// stands, a type named by a node where the template that wrote the node stands.
 fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) -> CheckedProgram {
     CheckedProgram {
         value_named: (n: string, home: string?) -> read_from(file, home)
             .find_map((f) -> value_type(engine, f, n)),
         written: (written: TypeRef) -> signing.signed(written),
-        type_named: (n: string, home: string?) -> named_from(signing, home, n),
+        type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
         record_of: (ty: SignedType) -> record_shape(engine, ty),
         named_of: (ty: SignedType) -> named_over(engine, ty),
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
