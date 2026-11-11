@@ -166,7 +166,7 @@ fn lowered_program(
         reshaped: Cell.new(0),
         defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         meta_fn: (n: string) -> meta_callee(engine, n),
-        home: "${file.package_name}:${file.path_in_package}",
+        home: template_home(file),
     }
 }
 
@@ -380,6 +380,19 @@ fn plain_seat(p: Param) -> bool {
         !p.state &&
         p.default == null &&
         p.spread == null
+}
+
+/// How a template written in `file` names it: its package, then its path.
+export fn template_home(file: SourceFileAddress) -> string { "${file.package_name}:${file.path_in_package}" }
+
+/// The file a template's own name for it names; absent for a name no program layer wrote.
+export fn template_file(home: string) -> SourceFileAddress? {
+    let at = home.index_of(":")
+    if at < 0 { return null }
+    SourceFileAddress {
+        package_name: home.substring(0, at),
+        path_in_package: home.substring(at + 1, home.length),
+    }
 }
 
 /// The symbol a declared fn's body is known by: its file, then its name.

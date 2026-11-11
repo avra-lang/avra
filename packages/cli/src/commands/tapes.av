@@ -67,6 +67,7 @@ use @std.avrac.compiler.{
     ItemKind,
     elaborated_fn,
     expansion_door,
+    use_generator_door,
     generated_at,
     lowered_fn,
     lowered_generic,
@@ -82,6 +83,10 @@ use @std.avrac.compiler.{
     made_program,
     made_generator,
     derive_sites,
+    DeriveSite,
+    DerivedCopy,
+    copy_difference,
+    site_generated,
     generator_run,
     GeneratorRun,
     MadeProgram,
@@ -93,7 +98,6 @@ use @std.avrac.compiler.{
     refusal_difference,
     seen_names,
     statement_difference,
-    use_generator_door,
 }
 use @std.io.{list_dir, make_dirs, read_text}
 use @std.path.{dir_of, file_name, joined_path}
@@ -104,6 +108,7 @@ use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.sorted.{sorted_by}
 use @std.program.source_facts.{use_source_world}
+use @std.program.syntax_tape.{SyntaxTape}
 use @std.text.{text_before}
 
 type TapesCmd = {}
@@ -471,6 +476,10 @@ fn generators_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) 
     mut alike = 0
     mut directives = 0
     mut differing: List<string> = []
+    mut items_alike = 0
+    mut items_differing: List<string> = []
+    mut witnessed = "no two sites to witness the item comparison by"
+    mut held_before: DerivedCopy? = null
     for path in sources {
         let file = disk.file_at(path)
         for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Trait) {
@@ -499,6 +508,12 @@ fn generators_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) 
                     if site.generator.name != own.name ||
                         spelled_file(site.generator.file) != spelled_file(file) { continue }
                     sites = sites + 1
+                    let item = item_held(engine, ws, disk, at, site)
+                    if item.differs == null { items_alike = items_alike + 1 } else { items_differing.push("${over} ${site.name}'s ${own.name}: ${item.differs!}") }
+                    if held_before != null && item.made != null {
+                        witnessed = if copy_difference(item.made!, held_before!) == null { "an item held to another site's copy reads alike: the comparison can't fail" } else { "an item held to another site's copy differs, as it must" }
+                    }
+                    if item.copy != null { held_before = item.copy }
                     let held = run_held(engine, ws, disk, l, t, at, site.name)
                     directives = directives + held.directives
                     let differs? = held.differs else {
@@ -511,10 +526,43 @@ fn generators_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) 
         }
     }
     for d in differing { println("differs: ${d}") }
+    for d in items_differing { println("item differs: ${d}") }
     println(
         "generators: ${written} written, ${made} made on the program layer, run over ${sites} declarations making ${directives} directives, ${alike} making what the workspace's derive made, ${differing.length} differing; not made yet: ${tallied(unmade)}",
     )
-    if differing.is_empty() { 0 } else { 1 }
+    println(
+        "generated items: ${items_alike} of ${sites} spliced as the workspace's derive spliced them, ${items_differing.length} differing; ${witnessed}",
+    )
+    if differing.is_empty() && items_differing.is_empty() { 0 } else { 1 }
+}
+
+/// What the program layer's `generated` made over one site, held to the workspace's copy: the item,
+/// the copy, and how they differ, absent when alike.
+type ItemHeld = { made: SyntaxTape?, copy: DerivedCopy?, differs: string? }
+
+fn item_held(
+    engine: QueryEngine,
+    ws: Workspace,
+    disk: Disk,
+    file: SourceFileAddress,
+    site: DeriveSite,
+) -> ItemHeld {
+    let made = site_generated(engine, file, site)
+    let copy = ws
+        .derived_copy(disk.on_disk(file.package_name, file.path_in_package), site.name, site.generator.name)
+    let tape = made.items.first()?.tape
+    let differs: string? = if !made.said.is_empty() {
+        "it said ${made.said[0]}"
+    } else if copy == null {
+        if tape == null { null } else { "the workspace's derive made nothing" }
+    } else if tape == null {
+        "it made nothing"
+    } else if made.items.length > 1 {
+        "${made.items.length} items, the workspace's one"
+    } else {
+        copy_difference(tape!, copy!)
+    }
+    ItemHeld { made: tape, copy: copy, differs: differs }
 }
 
 /// What a generator's run over one declaration made, held to the workspace's derive: how many
@@ -966,21 +1014,6 @@ fn generic_target(ws: Workspace, disk: Disk, w: Wanted) -> GenericTarget? {
     if !declared_fn || !x.maker.is_empty() || x.home == null { return null }
     let file? = address_of(disk, ws.decls.file(x.file).path) else { return null }
     GenericTarget { file: file, name: x.name, parameters: [old_parameter(ws, a) for a in sub.args] }
-}
-
-/// The address of the file at `path` on disk, absent for one in no package the disk holds.
-fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
-    let spelled = disk.spelled(path)
-    let own = "${disk.name}/"
-    if spelled.starts_with(own) { return disk.file_at(spelled.substring(own.length, spelled.length)) }
-    if !spelled.starts_with(STD) { return null }
-    let rest = spelled.substring(STD.length, spelled.length)
-    let cut = rest.index_of("/")
-    if cut < 0 { return null }
-    SourceFileAddress {
-        package_name: STD + rest.substring(0, cut),
-        path_in_package: rest.substring(cut + 1, rest.length),
-    }
 }
 
 /// What a type argument of the workspace's is to the machine as it fills a type parameter.
@@ -1498,3 +1531,18 @@ fn ran_natively(stem: string) -> Leg {
 
 /// Whether a child ended cleanly.
 fn clean(e: Exit) -> bool { match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false } }
+
+/// The address of the file at `path` on disk, absent for one in no package the disk holds.
+fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
+    let spelled = disk.spelled(path)
+    let own = "${disk.name}/"
+    if spelled.starts_with(own) { return disk.file_at(spelled.substring(own.length, spelled.length)) }
+    if !spelled.starts_with(STD) { return null }
+    let rest = spelled.substring(STD.length, spelled.length)
+    let cut = rest.index_of("/")
+    if cut < 0 { return null }
+    SourceFileAddress {
+        package_name: STD + rest.substring(0, cut),
+        path_in_package: rest.substring(cut + 1, rest.length),
+    }
+}

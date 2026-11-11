@@ -2,11 +2,15 @@
 //! every body it reaches into a program the evaluator runs over a declaration's meta value.
 use core.{flatten}
 use features.{Budgets, arg_lit, meta_of_type, new_meta_heap, unsettled_label}
-use @std.meta.{Diagnostic, Directive}
+use @std.meta.{Diagnostic, Directive, derive}
 use @std.program.address.{SourceFileAddress}
-use @std.program.query_engine.{QueryEngine}
+use @std.program.answer_record.{ContentHash, content_hash}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.relation.engine.{map_cell}
 use compiler.lower.{Lowered}
-use compiler.backend.{run_lifted}
+use compiler.backend.{body_lines, run_lifted, static_block}
 
 /// What a trait's generator is named in its own body.
 const GENERATOR: string = "derive"
@@ -25,7 +29,12 @@ fn generator_body(engine: QueryEngine, t: TraitAt) -> SignedBody? {
     let written = written_fn(item.store, [s], GENERATOR)!
     SignedBody {
         signature: written_signature(
-            Signing { engine: engine, file: t.file, type_params: written.type_params },
+            Signing {
+                engine: engine,
+                file: t.file,
+                type_params: written.type_params,
+                writer: written.writer,
+            },
             written,
         ),
         item: item,
@@ -46,6 +55,61 @@ export fn made_generator(engine: QueryEngine, t: TraitAt, missed: Cell<List<Miss
     if !root.whole() { return MadeProgram.Unmade(root.missing[0], "the generator") }
     made_reaching(engine, root, generator_symbol(t), root.params, missed)
 }
+
+/// What a trait's generator is: the hash of the program made of it, printed, or why it isn't made.
+@derive(Saved)
+export type GeneratorPrint = { print: ContentHash?, unmade: string }
+
+/// The trait `t`'s generator as the content of the program made of it: the hash of its printed IR,
+/// the program kept for this process under that hash.
+@query
+export fn generator_print(engine: QueryEngine, t: TraitAt) -> GeneratorPrint {
+    let m? = made_generator(engine, t) else { return GeneratorPrint { print: null, unmade: "`${t.name}` writes no generator" } }
+    match m {
+        .Made(l) -> GeneratorPrint { print: kept_program(l), unmade: "" },
+        .Unmade(why, at) -> GeneratorPrint {
+            print: null,
+            unmade: "`${t.name}`'s generator isn't made yet: ${why} at ${at}",
+        },
+    }
+}
+
+/// The program `t`'s generator is made of, by the hash its print answered: the one this process
+/// keeps under it, or made again; absent when made again it prints otherwise.
+fn generator_program(engine: QueryEngine, t: TraitAt, print: ContentHash) -> Lowered? {
+    let kept = made_programs().get().get(print_key(print))
+    if kept != null { return kept }
+    let m? = made_generator(engine, t) else { return null }
+    match m {
+        .Made(l) -> if kept_program(l).same_as(print) { l } else { null },
+        .Unmade(_, _) -> null,
+    }
+}
+
+/// The hash of a made program's printed IR, the program kept under it for this process.
+fn kept_program(l: Lowered) -> ContentHash {
+    let print = content_hash(printed_program(l).bytes())
+    made_programs().put(print_key(print), l)
+    print
+}
+
+/// A made program as text: each body's name, the layouts of its seats and its answer, and its
+/// instructions; then its statics.
+fn printed_program(l: Lowered) -> string {
+    flatten(
+        [[
+            "fn ${b.name}(${[s.spelled() for s in b.seats].join(", ")}) -> ${b.answer?.spelled() ?? "void"}",
+        ]
+            .concat(body_lines(b.ins)) for b in l.fns],
+    )
+        .concat(flatten([static_block(s) for s in l.statics]))
+        .join("\n")
+}
+
+/// The programs this process has made generators into, by their print.
+once fn made_programs() -> Cell<Map<string, Lowered>> { map_cell() }
+
+fn print_key(print: ContentHash) -> string { "${print.high_word}:${print.low_word}" }
 
 /// What a generator made over one declaration: the directives it answered and what it said about
 /// the declaration, or why it didn't run.
@@ -80,9 +144,9 @@ export fn generator_run(
     }
 }
 
-/// A declaration a generator runs over: the name its file declares it as, and the trait a `@derive`
-/// on it names.
-export type DeriveSite = { name: string, generator: TraitAt }
+/// A declaration a generator runs over: the name its file declares it as, the item declaring it, and
+/// the trait a `@derive` on it names.
+export type DeriveSite = { name: string, item: int, generator: TraitAt }
 
 /// Each trait a `@derive` on a declaration `file` writes names, in the order written.
 export fn derive_sites(engine: QueryEngine, file: SourceFileAddress) -> List<DeriveSite> {
@@ -96,7 +160,7 @@ fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress
 > {
     let item = read_item(engine, file, d.item)
     let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
-    [DeriveSite { name: d.name, generator: t! } for a in item.store.annotations_of(s) if derives(engine, scope, file, a.name) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(item.store, e).text)] if t != null]
+    [DeriveSite { name: d.name, item: d.item, generator: t! } for a in item.store.annotations_of(s) if derives(engine, scope, file, a.name) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(item.store, e).text)] if t != null]
 }
 
 /// Whether an annotation's name names `@std/meta`'s `derive` from `file`.
@@ -116,3 +180,8 @@ const META_PACKAGE: string = "@std/meta"
 
 /// The annotation naming the traits whose generators run over a declaration.
 const DERIVE: string = "derive"
+
+collect listed_generator_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a trait's generator is printed through, for a process to hand its engine.
+export fn generator_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generator_facts) }

@@ -50,7 +50,12 @@ export type AliasTarget = { type_params: List<string>, of: SignedType }
 export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> FnSignature? {
     let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
     let written? = written_fn(item.store, item.stmts, name) else { return null }
-    let signing = Signing { engine: engine, file: file, type_params: written.type_params }
+    let signing = Signing {
+        engine: engine,
+        file: file,
+        type_params: written.type_params,
+        writer: written.writer,
+    }
     FnSignature {
         type_params: written.type_params,
         params: [signing.param(p) for p in written.params],
@@ -87,7 +92,12 @@ export fn fn_signatures(engine: QueryEngine, file: SourceFileAddress, name: stri
 fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> FnSignature? {
     let item = read_item(engine, file, at)
     let written? = written_fn(item.store, item.stmts, name) else { return null }
-    let signing = Signing { engine: engine, file: file, type_params: written.type_params }
+    let signing = Signing {
+        engine: engine,
+        file: file,
+        type_params: written.type_params,
+        writer: written.writer,
+    }
     FnSignature {
         type_params: written.type_params,
         params: [signing.param(p) for p in written.params],
@@ -245,8 +255,9 @@ fn width_of(written: TypeRef?) -> string? {
     if width_named(w.name) != null { w.name } else { null }
 }
 
-/// What a fn writes of its signature: its type parameters, its parameters and its answer.
-type WrittenFn = { type_params: List<string>, params: List<Param>, ret: TypeRef }
+/// What a fn writes of its signature: its type parameters, its parameters and its answer, and the
+/// file whose template wrote it where that isn't its own.
+type WrittenFn = { type_params: List<string>, params: List<Param>, ret: TypeRef, writer: SourceFileAddress? }
 
 /// What the fn `name` among `stmts` writes, a declared fn's or an extern's.
 fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenFn? {
@@ -257,18 +268,26 @@ fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenF
                 type_params: [t.name.of for t in declared!.tparams],
                 params: declared!.params,
                 ret: declared!.ret,
+                writer: written_by(store, s),
             }
         }
         let external = store.extern_parts(s)
-        if external != null && external!.name == name { return WrittenFn { type_params: [], params: external!.params, ret: external!.ret } }
+        if external != null && external!.name == name {
+            return WrittenFn {
+                type_params: [],
+                params: external!.params,
+                ret: external!.ret,
+                writer: written_by(store, s),
+            }
+        }
     }
     null
 }
 
 /// Where a signature's types are resolved: its file's top level, under the fn's own type parameters,
-/// `Self` as the type a trait's method is asked for, and for a generated item, the file its
-/// generator was written in where its own file binds no such name.
-type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null, home: SourceFileAddress? = null }
+/// `Self` as the type a trait's method is asked for, and for a statement a template wrote, the file
+/// that wrote it (`writer`): a type the template wrote is read there, one a hole filled where it lands.
+type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null, writer: SourceFileAddress? = null }
 
 impl Signing {
     fn param(p: Param) -> SignedParam {
@@ -285,6 +304,7 @@ impl Signing {
     /// A written type with every name in it resolved, an alias standing for what it names, and a
     /// union's members in one order whatever order they were written in.
     fn signed(written: TypeRef) -> SignedType {
+        if written.spliced && self.writer != null { return (self with { writer: null }).signed(written with { spliced: false }) }
         if written.name == "Self" && self.self_type != null && written.applied.is_empty() {
             return self.self_type! with { nulls: if written.optional { 1 } else { 0 }, dynamic: written.dynamic }
         }
@@ -325,16 +345,15 @@ impl Signing {
         let at = self.type_params.index_of(name)
         if at >= 0 { return TypeHead.Parameter(at, name) }
         if builtin_type_name(avra().rows.types, name) { return TypeHead.Owned(name) }
-        let d? = resolved(self.engine, self.file, Space.Type, name).named() ?? self
-            .named_at_home(name) else { return TypeHead.Unnamed(name) }
+        let d? = resolved(self.engine, self.writer ?? self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
         TypeHead.Declared(d.file, d.name)
     }
+}
 
-    /// The type `name` names where a generated item's generator was written; absent for a written item.
-    fn named_at_home(name: string) -> DeclaredName? {
-        let home? = self.home else { return null }
-        resolved(self.engine, home, Space.Type, name).named()
-    }
+/// The file whose template wrote the statement `s` of `store`; absent for one its own file wrote.
+fn written_by(store: SyntaxArena, s: StmtId) -> SourceFileAddress? {
+    let origin? = store.stmt_origins.get()[s.index] else { return null }
+    template_file(origin.path)
 }
 
 impl SignedParam {

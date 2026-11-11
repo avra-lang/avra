@@ -64,8 +64,8 @@ export trait AnswerStore {
     fn keep_frontier(print: string, learned: FrontierLearned)
 }
 
-/// A question being answered, and the reads it has made so far.
-type OpenQuestion = { question: ContentHash, reads: HashKeyedTable<RecordedRead> }
+/// A question being answered, its query, and the reads it has made so far.
+type OpenQuestion = { question: ContentHash, query_name: string, reads: HashKeyedTable<RecordedRead> }
 
 /// A question this process knows the answer to, by how it came to be known.
 enum SettledAnswer {
@@ -386,8 +386,16 @@ impl QueryEngine {
     /// The query's answer, with every question it asks recorded in `reads`.
     fn run_recording(asked: Question, reads: HashKeyedTable<RecordedRead>) -> Bytes {
         let outer = self.open_questions.get()
-        if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked)) }
-        self.open_questions.push(OpenQuestion { question: asked.known_as, reads: reads })
+        if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked, [o.query_name for o in outer])) }
+        self
+            .open_questions
+            .push(
+                OpenQuestion {
+                    question: asked.known_as,
+                    query_name: asked.query_name,
+                    reads: reads,
+                },
+            )
         let definition = self.definition_of(asked)
         self.computed.push(definition.query_name)
         let compute = definition.compute
@@ -432,8 +440,8 @@ impl QueryEngine {
     fn definition_of(asked: Question) -> QueryDefinition { self.definitions.get().get(asked.query_name)! }
 }
 
-fn asked_while_being_answered(asked: Question) -> string {
-    "`${asked.query_name}` was asked while it was being answered"
+fn asked_while_being_answered(asked: Question, through: List<string>) -> string {
+    "`${asked.query_name}` was asked while it was being answered, under ${through.join(" -> ")}"
 }
 
 fn two_queries_named(definition: QueryDefinition) -> string {

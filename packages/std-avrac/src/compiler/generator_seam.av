@@ -1,11 +1,14 @@
-//! THE GENERATOR SEAM, the one door the program layer reads a generator through until generators
-//! run on it: what each `@derive` on a written declaration made, read from the expansion engine,
-//! each trait's statements copied whole into a store of their own. The switch deletes this file.
+//! THE GENERATOR SEAM: what a `@derive` on a written declaration made, read from the expansion
+//! engine, its statements copied whole into a store of their own, and the source of each directive
+//! it ran. The program layer reads a generator it doesn't make yet through it, and a receipt holds
+//! the ones it makes to it. The switch deletes this file.
 use core.{
+    CopiedNodes,
     DeclId,
     ExprId,
     FileId,
-    Span,
+    ForeignOrigin,
+    PatId,
     StmtId,
     SyntaxArena,
     copier,
@@ -15,46 +18,66 @@ use core.{
 }
 use features.{DeclareWork, Namespace}
 use @std.program.address.{SourceFileAddress}
+use @std.program.source_facts.{PlacedTape}
+use @std.program.syntax_tape.{SyntaxTape}
 
 /// What one trait's derive made over a declaration: its statements, copied into a store of their
 /// own, and the path of the file its derive was written in.
 export type DerivedCopy = { store: SyntaxArena, stmts: List<StmtId>, home: string }
 
-/// The door the program layer runs generators through, answered by `ws`: `path_of` names the file
-/// at an address on disk, `address_of` the address of a file on disk.
+/// The door the program layer runs a generator it doesn't make through, answered by `ws`: `path_of`
+/// names the file at an address on disk, `address_of` the address of a file on disk.
 export fn expansion_door(
     ws: Workspace,
     path_of: fn(SourceFileAddress) -> string,
     address_of: fn(string) -> SourceFileAddress?,
 ) -> GeneratorDoor {
     GeneratorDoor {
-        made: (file: SourceFileAddress, name: string) -> items_copied(
-            ws.derived_copies(path_of(file), name),
+        made: (file: SourceFileAddress, name: string, trait_name: string) -> copied_items(
+            ws.derived_copy(path_of(file), name, trait_name),
             address_of,
         ),
     }
 }
 
-/// Each copy as an item on a tape, beside the address of the file its derive was written in.
-fn items_copied(copies: List<DerivedCopy>, address_of: fn(string) -> SourceFileAddress?) -> List<
+/// A copy as an item on a tape, every node marked as written in the file its derive was written in.
+fn copied_items(copy: DerivedCopy?, address_of: fn(string) -> SourceFileAddress?) -> List<
     GeneratedItem,
 > {
-    [GeneratedItem { tape: tape_of_item(c.store, c.stmts), home: home! } for c in copies for home in [address_of(c.home)] if home != null]
+    let c? = copy else { return [] }
+    let home? = address_of(c.home) else { return [] }
+    c
+        .store
+        .note_copied(
+            CopiedNodes {
+                exprs: [ExprId { index: at } for at in 0..c.store.exprs.count()],
+                stmts: [StmtId { index: at } for at in 0..c.store.stmts.count()],
+                pats: [PatId { index: at } for at in 0..c.store.pat_count()],
+                params: [],
+            },
+            template_home(home),
+        )
+    [GeneratedItem { tape: tape_of_item(c.store, c.stmts) }]
 }
 
 impl Workspace {
-    /// What each `@derive` on the written declaration `name` of the file at `path` made, one copy
-    /// per trait it names; nothing for a file this workspace doesn't hold. The seam reads the
-    /// workspace and never adds a file to it: a file it mints is a write after its readers.
-    fn derived_copies(path: string, name: string) -> List<DerivedCopy> {
-        let f? = self.decls.known_file_id(path) else { return [] }
+    /// What the `@derive` naming the trait `trait_name` on the written declaration `name` of the file
+    /// at `path` made; absent for a file this workspace doesn't hold, or no such derive. The seam reads
+    /// the workspace and never adds a file to it: a file it mints is a write after its readers.
+    fn derived_copy(path: string, name: string, trait_name: string) -> DerivedCopy? {
+        let f? = self.decls.known_file_id(path) else { return null }
         let p = self.parsed(f)
         let vis = self.visible(f)
         let _ = self.expanded(f)
-        let d? = self.written_decls(f, p).find((w) -> self.decls.decl(w).name == name) else { return [] }
-        flatten(
-            [self.trait_copies(f, w, p, vis) for w in self.declared_work(f, d, p, vis) if self.is_derived(w.ret)],
-        )
+        let d? = self.written_decls(f, p).find((w) -> self.decls.decl(w).name == name) else { return null }
+        for w in self.declared_work(f, d, p, vis) {
+            if !self.is_derived(w.ret) { continue }
+            for e in w.args {
+                let t? = self.named_arg(p, vis, e) else { continue }
+                if self.decls.decl(t).name == trait_name { return self.trait_copy(f, w, vis, t) }
+            }
+        }
+        null
     }
 
     /// The source of each directive the derive naming the trait `trait_name` made over the written
@@ -74,11 +97,6 @@ impl Workspace {
             }
         }
         null
-    }
-
-    /// One copy per trait a derive names whose `derive` made something.
-    fn trait_copies(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DerivedCopy> {
-        [c! for e in w.args for c in [self.trait_copy(f, w, vis, self.named_arg(p, vis, e))] if c != null]
     }
 
     /// What the trait `named`'s `derive` made: the declarations expansion admitted for it, their
@@ -114,17 +132,46 @@ fn made_tops(src: SyntaxArena, own: List<StmtId>) -> List<StmtId> {
     [s for at, s in all if !all.slice(0, at).any((x) -> same_stmt(x, s))]
 }
 
-/// Each lambda of a copy placed where no other stands: a copy's places are its template's, and one
-/// template copied twice would put two lambdas at one place, which a lift names them by.
-fn lambdas_apart(store: SyntaxArena) {
-    for at in 0..store.exprs.count() {
-        let e = ExprId { index: at }
-        if store.lambda_parts(e) != null { store.place_expr(e, Span { lo: at, hi: at }) }
-    }
-}
-
 /// Whether `s` is an impl holding any of `own`.
 fn holds_any(src: SyntaxArena, s: StmtId, own: List<StmtId>) -> bool {
     let parts? = src.impl_parts(s) else { return false }
     parts.fns.any((m) -> own.any((o) -> same_stmt(o, m)))
+}
+
+/// How an item a generator made on the program layer differs from a copy the workspace's derive made,
+/// where their nodes stand and the files that wrote them aside: the first statement and method that
+/// mean something else; absent when alike.
+export fn copy_difference(made: SyntaxTape, copy: DerivedCopy) -> string? {
+    let ours = unhomed(made)
+    let theirs = unhomed(tape_of_item(copy.store, copy.stmts))
+    if ours.tape.meaning_hash.same_as(theirs.tape.meaning_hash) { return null }
+    if ours.stmts.length != theirs.stmts.length { return "${ours.stmts.length} statements, the workspace's ${theirs.stmts.length}" }
+    for j, s in ours.stmts {
+        let t = theirs.stmts[j]
+        if ours.store.stmt_fingerprint(s) == theirs.store.stmt_fingerprint(t) { continue }
+        return "statement ${j}${method_differing(ours.store, s, theirs.store, t)} means something else"
+    }
+    "its meaning, though every statement's fingerprint agrees"
+}
+
+/// An item read back with every node's file dropped, and its tape written again.
+type Unhomed = { store: SyntaxArena, stmts: List<StmtId>, tape: SyntaxTape }
+
+fn unhomed(tape: SyntaxTape) -> Unhomed {
+    let store = new_node_store()
+    let stmts = item_read_back(store, PlacedTape { start: 0, tape: tape })
+    let none: ForeignOrigin? = null
+    store.expr_origins.set([none for _o in store.expr_origins.get()])
+    store.stmt_origins.set([none for _o in store.stmt_origins.get()])
+    store.pat_origins.set([none for _o in store.pat_origins.get()])
+    Unhomed { store: store, stmts: stmts, tape: tape_of_item(store, stmts) }
+}
+
+/// The first method two impls write differently, as `, method <name>`; nothing for any other pair.
+fn method_differing(ours: SyntaxArena, s: StmtId, theirs: SyntaxArena, t: StmtId) -> string {
+    let a? = ours.impl_parts(s) else { return "" }
+    let b? = theirs.impl_parts(t) else { return "" }
+    let at? = [j for j, f in a.fns if j >= b.fns.length || ours.stmt_fingerprint(f) != theirs.stmt_fingerprint(b.fns[j])]
+        .first() else { return "" }
+    ", method ${ours.fn_parts(a.fns[at])?.name ?? "${at}"}"
 }

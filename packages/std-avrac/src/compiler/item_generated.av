@@ -1,69 +1,116 @@
-//! WHAT A FILE'S ANNOTATIONS MAKE: the declarations a generator writes beside an annotated
-//! declaration, each an item of its file after the written ones, read back and signed as one. A
-//! name a generated item's own file doesn't bind is read where its generator was written.
+//! WHAT A FILE'S ANNOTATIONS MAKE: the declarations a trait's generator writes beside a declaration
+//! a `@derive` names it on, each an item of its file after the written ones, read back and signed as
+//! one. Each copied node carries the file whose template wrote it, so a type it names is read there.
 //!
-//! The generator runs behind a door the process sets (`use_generator_door`), so what it makes is an
-//! input: asked again in every process, its readers standing when it comes out the same.
-use core.{SyntaxArena, StmtId, flatten, new_node_store}
-use @std.meta.{derive}
+//! What a generator makes over a declaration is a saved answer keyed by the declaration's tape and
+//! the generator's made program, so it runs once per change of either. A generator the program
+//! layer doesn't make yet runs behind a door the process sets (`use_generator_door`), an input.
+use core.{flatten}
+use features.{budgets_of}
+use @std.meta.{Directive, derive}
 use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{ContentHash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, input, query, query_definition}
-use @std.program.source_facts.{PlacedTape, item_tape}
+use @std.program.source_facts.{item_tape}
 use @std.program.syntax_tape.{SyntaxTape}
 
-/// Declarations one generator made, on one tape, and the file its templates were written in.
+/// Declarations one generator made over one declaration, on one tape.
 @derive(Saved)
-export type GeneratedItem = { tape: SyntaxTape, home: SourceFileAddress }
+export type GeneratedItem = { tape: SyntaxTape }
 
-/// What generators made, in the order their declarations are written.
+/// What generators made, in the order their declarations are written, and what they said instead
+/// wherever they made nothing or the splice couldn't place what they made.
 @derive(Saved)
-export type GeneratedItems = { items: List<GeneratedItem> }
+export type GeneratedItems = { items: List<GeneratedItem>, said: List<string> }
 
-/// What runs a file's generators: the items made over the declaration a file writes under a name.
-export type GeneratorDoor = { made: fn(SourceFileAddress, string) -> List<GeneratedItem> }
+/// What the trait `generator`'s derive makes over the declaration `file` writes as `name`, its item's
+/// tape meaning `_declaration` and the generator's made program printing as `print`.
+@query
+export fn generated(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    _declaration: ContentHash,
+    name: string,
+    generator: TraitAt,
+    print: ContentHash,
+) -> GeneratedItems {
+    let l? = generator_program(engine, generator, print) else { return said_only(generator_moved(generator)) }
+    match generator_run(engine, l, generator, file, name, budgets_of()) {
+        .Ran(made, problems) -> if problems.is_empty() { items_spliced(made) } else { said_only([p.message for p in problems]) },
+        .Stopped(why) -> said_only([why]),
+    }
+}
+
+/// What the generators of every declaration a file writes a `@derive` on make, in the order written.
+@query
+export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
+    let made = [site_generated(engine, file, site) for site in derive_sites(engine, file)]
+    GeneratedItems {
+        items: flatten([m.items for m in made]),
+        said: flatten([m.said for m in made]),
+    }
+}
+
+/// What one `@derive` site's generator makes: on the program layer when its generator is made here,
+/// else behind the door, while one is set.
+export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: DeriveSite) -> GeneratedItems {
+    let item = items_under(engine, file)[site.item]
+    let declaration = item_tape(engine, item.text, item.context).meaning_hash
+    let made = generator_print(engine, site.generator)
+    let print? = made.print else {
+        return generated_elsewhere(
+            engine,
+            file,
+            declaration,
+            site.name,
+            site.generator.name,
+            made.unmade,
+        )
+    }
+    generated(engine, file, declaration, site.name, site.generator, print)
+}
+
+/// What runs a generator the program layer doesn't make yet: the items its derive naming a trait
+/// made over the declaration a file writes under a name.
+export type GeneratorDoor = { made: fn(SourceFileAddress, string, string) -> List<GeneratedItem> }
 
 once fn door_cell() -> Cell<GeneratorDoor?> {
     let no_door: GeneratorDoor? = null
     Cell.new(no_door)
 }
 
-/// Sets what runs this process's generators.
+/// Sets what runs this process's generators the program layer doesn't make.
 export fn use_generator_door(door: GeneratorDoor) { door_cell().set(door) }
 
-/// What the generators of the declaration `file` writes as `name` make, its item written as
-/// `item_text`; nothing when no door is set.
+/// What the derive naming `trait_name` makes over the declaration `file` writes as `name`, its item's
+/// tape meaning `_declaration`, run behind the door; `unmade` said, why the program layer doesn't
+/// make it, when no door is set.
 @input
-fn generated(_engine: QueryEngine, file: SourceFileAddress, item_text: string, name: string) -> GeneratedItems {
-    let door? = door_cell().get() else { return GeneratedItems { items: [] } }
-    GeneratedItems { items: (door.made)(file, name) }
+fn generated_elsewhere(
+    _engine: QueryEngine,
+    file: SourceFileAddress,
+    _declaration: ContentHash,
+    name: string,
+    trait_name: string,
+    unmade: string,
+) -> GeneratedItems {
+    let door? = door_cell().get() else { return said_only([unmade]) }
+    GeneratedItems { items: (door.made)(file, name, trait_name), said: [] }
 }
 
-/// What the generators of every annotated declaration a file writes make, in the order written.
-@query
-export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
+/// The declarations directives' sources make, spliced as one item; a twin or a wrap said instead.
+fn items_spliced(made: List<Directive>) -> GeneratedItems {
+    let spliced = generated_spliced([d.source!.node for d in made if d.source != null && !d.wraps])
+    let unmade = [not_spliced(d) for d in made if d.wraps || !d.twin.is_empty()]
     GeneratedItems {
-        items: flatten(
-            [made_over(engine, file, item) for item in items_under(engine, file) if item.text.contains("@")],
-        ),
+        items: if spliced.stmts.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, spliced.stmts) }] },
+        said: spliced.refused.concat(unmade),
     }
 }
 
-/// What the generators of an item's annotated declarations make.
-fn made_over(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder) -> List<GeneratedItem> {
-    let store = new_node_store()
-    let stmts = item_read_back(
-        store,
-        PlacedTape { start: item.start, tape: item_tape(engine, item.text, item.context) },
-    )
-    flatten(
-        [generated(engine, file, item.text, store.declared_name(s)!).items for s in stmts if annotated(store, s)],
-    )
-}
-
-/// Whether a statement declares a name and wears an annotation.
-fn annotated(store: SyntaxArena, s: StmtId) -> bool { store.declared_name(s) != null && !store.annotations_of(s).is_empty() }
+fn said_only(words: List<string>) -> GeneratedItems { GeneratedItems { items: [], said: words } }
 
 /// The generated item `at` names among a file's items, counting past its written ones; absent for
 /// a written one.
@@ -82,3 +129,7 @@ collect listed_generated_facts: List<ListedQuery> = @query_definition in self as
 
 /// The queries what annotations make reads through, for a process to hand its engine.
 export fn generated_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generated_facts) }
+
+fn generator_moved(t: TraitAt) -> List<string> { ["`${t.name}`'s generator made here doesn't print as the one asked for"] }
+
+fn not_spliced(d: Directive) -> string { "`${d.name}` asks for a twin or a wrap, which isn't made on the program layer yet" }
