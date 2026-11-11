@@ -153,12 +153,7 @@ export type RecordSignature = { type_params: List<string>, fields: List<SignedFi
 /// none.
 @query
 export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordSignature? {
-    let item? = declaring_item(engine, file, name, ItemKind.Record) ?? declaring_item(
-        engine,
-        file,
-        name,
-        ItemKind.Component,
-    ) else { return null }
+    let item? = record_item(engine, file, name) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
         .find(it.name == name) else { return component_signature(engine, file, item, name) }
     let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
@@ -270,7 +265,7 @@ fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem 
 fn read_into(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, at: int) -> List<
     StmtId,
 > {
-    let item = items_under(engine, file)[at]
+    let item = item_under(engine, file, at)
     item_read_back(
         store,
         PlacedTape { start: item.start, tape: SyntaxTape.read_from(meant_tape(engine, file, item)) },
@@ -286,6 +281,17 @@ fn declaring_item(engine: QueryEngine, file: SourceFileAddress, name: string, ki
     let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
     let declared? = made.find(it.kind == kind) else { return null }
     read_item(engine, file, declared.item)
+}
+
+/// The item declaring the record `file` declares as `name`, or the component a record of its fields
+/// stands for.
+fn record_item(engine: QueryEngine, file: SourceFileAddress, name: string) -> ReadItem? {
+    declaring_item(engine, file, name, ItemKind.Record) ?? declaring_item(
+        engine,
+        file,
+        name,
+        ItemKind.Component,
+    )
 }
 
 /// The width a written type names, if it names one.

@@ -136,7 +136,19 @@ fn reached_fn(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> ReachedFn
 fn reached_body(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> LoweredFn? {
     match c.defaulted {
         .Field -> lowered_field_default(engine, c.file, c.owner!, c.name, checks),
-        .Seat -> lowered_seat_default(engine, c.file, c.owner!, c.name, checks),
+        .Seat -> if c.seat_of == null {
+            lowered_seat_default(engine, c.file, c.owner!, c.name, checks)
+        } else {
+            lowered_method_seat_default(
+                engine,
+                c.of!,
+                c.owner!,
+                c.seat_of!,
+                c.name,
+                c.statics,
+                checks,
+            )
+        },
         .Not -> declared_body(engine, c, checks),
     }
 }

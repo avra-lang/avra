@@ -145,7 +145,7 @@ fn signed_lowered(
         body.core,
         body.seats,
         signature.answer,
-    )
+    ) with { written_seats: [p.name for p in signature.params if p.mutable] }
     if signed.receiver != null { cx.seated(RECEIVER, signed.receiver!) }
     for p in signature.params { cx.seated(p.name, p.ty!) }
     cx.scope_enter()
@@ -430,6 +430,7 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
         writes: used.written(),
         unproved: used.unproved(),
         type_params: at.params.length + parts.tparams.length,
+        params: called_seats(parts.params, method_signature(engine, at, name)?.params ?? []),
     }
 }
 
@@ -460,7 +461,7 @@ fn type_symbol(ty: SignedType) -> string? {
 fn default_callee(engine: QueryEngine, ty: SignedType, field: string) -> CalledFn? {
     if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return null }
     let at? = declared_at(ty) else { return null }
-    let item? = declaring_item(engine, at.file, at.name, ItemKind.Record) else { return null }
+    let item? = record_item(engine, at.file, at.name) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
         .find(it.name == at.name) else { return null }
     let written? = parts.fields.find(it.name.of == field) else { return null }
@@ -487,7 +488,7 @@ export fn lowered_field_default(
     field: string,
     checks: TaskChecks = TaskChecks.Tested,
 ) -> LoweredFn? {
-    let item? = declaring_item(engine, file, owner, ItemKind.Record) else { return null }
+    let item? = record_item(engine, file, owner) else { return null }
     let stmt? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == owner) else { return null }
     let written? = item.store.struct_parts(stmt)!.fields.find(it.name.of == field) else { return null }
     let value? = written.default else { return null }
@@ -517,13 +518,26 @@ export fn lowered_seat_default(
     checks: TaskChecks = TaskChecks.Tested,
 ) -> LoweredFn? {
     let signed? = signed_body(engine, file, owner) else { return null }
+    seat_default_lowered(engine, file, signed, owner, seat, checks)
+}
+
+/// The default the fn `signed`, its unit named `unit`, writes for its seat `seat`, lowered as a fn of
+/// nothing answering the seat's type, reading no receiver. Absent where it writes none.
+export fn seat_default_lowered(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    unit: string,
+    seat: string,
+    checks: TaskChecks,
+) -> LoweredFn? {
     let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name.of == seat)?.default else { return null }
     let ty? = signed.signature.params.find(it.name == seat)?.ty else { return null }
     signed_lowered(
         engine,
         file,
-        signed with { signature: FnSignature { type_params: [], params: [], answer: ty, answer_width: null }, body: value },
-        "${owner}.${seat}\$default",
+        signed with { signature: FnSignature { type_params: [], params: [], answer: ty, answer_width: null }, body: value, receiver: null },
+        "${unit}.${seat}\$default",
         null,
         checks,
     )

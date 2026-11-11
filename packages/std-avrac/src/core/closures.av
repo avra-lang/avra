@@ -33,7 +33,7 @@ impl Lowering {
         tasked: bool = false,
     ) -> Lift {
         let lanes: Cell<List<string>> = Cell.new([])
-        mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked }
+        mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked, written_seats: [p.name.of for at, p in lam.params if ty.seats[at].mutable] }
         for scope in self.scopes.get() {
             for name, b in scope { body.bind(name, Bound.Outer(name, b.type(), lanes)) }
         }
@@ -100,11 +100,11 @@ impl Lowering {
 }
 
 /// Why the lambda `lam` of type `ty` isn't lifted yet, absent when it is: each of its seats is one
-/// plain value.
+/// value, plain or written through.
 export fn lift_refusal(lam: Lambda, ty: SignedType) -> string? {
     if ty.nullable() || !(ty.head is .Function) || ty.answer == null { return "an untyped lambda" }
     if ty.seats.length != lam.params.length { return "a lambda taking a record's fields by name" }
-    if ty.seats.any(it.mutable || it.settled) { return "a lambda's seat that promises" }
+    if ty.seats.any(it.settled) { return "a lambda's seat that promises" }
     null
 }
 

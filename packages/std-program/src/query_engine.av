@@ -7,6 +7,7 @@ use answer_parts.{part_hash_seen, part_in_saved_parts}
 use frontier.{Frontier, FrontierLearned, HeldEntry}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use query_times.{QueryTimes, TimedSide, query_times}
 use saved_layout.{SavedBytes}
 use answer_record.{
     AnswerRecord,
@@ -115,6 +116,8 @@ export type QueryEngine = {
     frontier: Cell<FrontierState>,
     /// The questions asked with nobody asking: the roots, which keep what they read in the frontier.
     asked_alone: HashKeyedTable<bool>,
+    /// Where this process's asks spend their time, absent while they aren't timed.
+    times: Cell<QueryTimes?>,
 }
 
 export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition>) -> QueryEngine {
@@ -123,6 +126,7 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
     let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
     let computed: Cell<List<string>> = Cell.new([])
     let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
+    let times: Cell<QueryTimes?> = Cell.new(null)
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
@@ -132,6 +136,7 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         records_checked: Cell.new(0),
         frontier: Cell.new(FrontierState.Unread),
         asked_alone: asked_alone,
+        times: times,
     }
     for definition in definitions {
         if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
@@ -173,6 +178,14 @@ impl QueryEngine {
     fn reused_answer(asked: Question) -> ContentHash? {
         let definition = self.definition_of(asked)
         if definition.is_input || definition.code_hash.is_empty() { return null }
+        self.times.get()?.opened(asked.query_name, TimedSide.Reused)
+        let answer = self.standing_answer(asked)
+        self.times.get()?.closed()
+        answer
+    }
+
+    /// The answer of a kept record of `asked` that stands, absent when none does.
+    fn standing_answer(asked: Question) -> ContentHash? {
         let standing? = self
             .store
             .records_of(asked.known_as)
@@ -350,6 +363,12 @@ impl QueryEngine {
         self.answer_bytes_of(asked, answer)
     }
 
+    /// Times every ask from here on, by its query.
+    fn time_queries() { self.times.set(query_times()) }
+
+    /// Where this process's asks spent their time, absent while they aren't timed.
+    fn kept_times() -> QueryTimes? { self.times.get() }
+
     /// How many questions this process computed.
     fn computed_count() -> int { self.computed.get().length }
 
@@ -362,8 +381,16 @@ impl QueryEngine {
     /// The query of each question this process computed, in the order they ran.
     fn computed_queries() -> List<string> { self.computed.get() }
 
-    /// Runs the query, keeps what came out, and answers its hash.
+    /// Runs the query, keeps what came out, and answers its hash, timed when asks are.
     fn computed_answer(asked: Question) -> ContentHash {
+        self.times.get()?.opened(asked.query_name, TimedSide.Query)
+        let answer = self.worked_out(asked)
+        self.times.get()?.closed()
+        answer
+    }
+
+    /// Runs the query, keeps what came out, and answers its hash.
+    fn worked_out(asked: Question) -> ContentHash {
         let reads: HashKeyedTable<RecordedRead> = hash_keyed_table()
         let bytes = self.run_recording(asked, reads)
         let answer = content_hash(bytes)

@@ -1,6 +1,7 @@
 //! WHAT A METHOD DOES, AS IR: the body an impl gives a type, lowered as a fn's is, its receiver the
 //! first seat; a static fn's has no receiver. Its unit is named for the type, then the method.
 use core.{ParameterLayout, TaskChecks, TypeHead, headed_type}
+use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
 /// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered.
@@ -26,6 +27,24 @@ export fn lowered_method_under(
 ) -> LoweredFn? {
     let method? = signed_method(engine, at, name, statics) else { return null }
     lowered_signed(engine, at.file, method.signed, "${method.owner}.${name}", parameters, checks)
+}
+
+/// The default the method, or when `statics` the static fn, `method` of the type `of` declares as
+/// `owner` writes for its seat `seat`, lowered as a fn of nothing answering the seat's type. Absent
+/// where no one impl gives the method, or it writes none.
+export fn lowered_method_seat_default(
+    engine: QueryEngine,
+    of: SourceFileAddress,
+    owner: string,
+    method: string,
+    seat: string,
+    statics: bool,
+    checks: TaskChecks,
+) -> LoweredFn? {
+    let impls = impls_with(engine, of, owner, method, statics)
+    if impls.length != 1 { return null }
+    let m? = signed_method(engine, impls[0], method, statics) else { return null }
+    seat_default_lowered(engine, impls[0].file, m.signed, "${owner}.${method}", seat, checks)
 }
 
 /// A method's body signed, and the name of the type it's a method of.
