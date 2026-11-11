@@ -10,7 +10,9 @@ use @std.program.address.{SourceFileAddress}
 /// fn a type has by a name.
 export type LoweredProgram = {
     checked: CheckedProgram,
-    named: fn(string) -> NamedValue?,
+    /// What a top-level name is, read where the template that wrote the read stands (its home, as an
+    /// origin spells it) before where the body stands.
+    named: fn(string, string?) -> NamedValue?,
     method: fn(SignedType, string) -> CalledFn?,
     /// The lambdas lifted so far, each body its own unit.
     lifts: Cell<List<LiftedBody>>,
@@ -41,8 +43,9 @@ export type LoweredProgram = {
     /// The name the body's file is known by where a template it writes points home.
     home: string,
     /// Whether a pattern's bare name names a top-level value it compares with, read among written
-    /// names alone: a binder's question never asks what generators make.
-    compared: fn(string) -> bool,
+    /// names alone: a binder's question never asks what generators make, so it's absent for a name
+    /// only a generator gives such a value.
+    compared: fn(string) -> bool?,
     /// What the body tests for its task.
     checks: TaskChecks,
     /// Whether a call of a fn may reach a cancel point.
@@ -78,6 +81,19 @@ export enum NamedValue {
     Fn(callee: CalledFn)
     /// A `const` whose value is written as a literal.
     Literal(value: Literal)
+    /// A `collect`: the unit that builds its list, called with nothing.
+    Collected(callee: CalledFn)
+}
+
+/// What a `collect`'s projection reads off one member, a value per field.
+export type CollectedRow = { values: List<CollectedValue> }
+
+/// What one projected field reads off a member.
+export enum CollectedValue {
+    /// The member itself, a fn, as a value (`it`).
+    Member(callee: CalledFn)
+    /// A text its declaration spells (`it.name`).
+    Spelled(value: Literal)
 }
 
 /// A fn a body calls: where it's declared, the symbol its code is known by, whether C defines it,
@@ -399,8 +415,8 @@ impl Lowering {
         [self.laid_out(s.ty!) for s in seats]
     }
 
-    /// What a top-level name the body reads or calls is.
-    fn named(name: string) -> NamedValue? { (self.program.named)(name) }
+    /// What a top-level name the body reads or calls at `e` is.
+    fn named(e: ExprId, name: string) -> NamedValue? { (self.program.named)(name, self.store.foreign_of(e)?.path) }
 
     /// The declared method `name` a value of `ty` has, absent where the program declares none.
     fn method(ty: SignedType, name: string) -> CalledFn? { (self.program.method)(ty, name) }
@@ -537,6 +553,14 @@ impl Lowering {
     }
 
     // ── Calls ───────────────────────────────────────────────────────
+
+    /// A call of the body the program answers `target`'s code hash with, answering a value of
+    /// layout `l`.
+    mut fn code_hash_called(l: Layout, target: CalledFn) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Call(dst, code_hash_symbol(target.symbol), []))
+        dst
+    }
 
     /// A call of a declared fn by its symbol, answering a value of layout `l`.
     mut fn call_fn(l: Layout, callee: CalledFn, args: List<Reg>) -> Reg {
@@ -833,3 +857,6 @@ fn wider_than_a_word(row: RtSig) -> string { "a value wider than a word crossing
 
 /// An enum's spare tag: the one no variant has, which its nullable spends on absence.
 const ABSENT_TAG: int = -1
+
+/// The symbol of the body that answers `target`'s code hash.
+export fn code_hash_symbol(target: string) -> string { "avra.code_hash.${target}" }

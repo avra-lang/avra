@@ -7,7 +7,19 @@
 //! What a generator makes over a declaration is a saved answer keyed by the declaration's tape and
 //! the generator's made program, so it runs once per change of either. A generator the program
 //! layer doesn't make says why instead.
-use core.{ForeignOrigin, Scoped, Stmt, StmtId, SyntaxArena, flatten, new_node_store, some_list}
+use core.{
+    INFERRED,
+    ForeignOrigin,
+    Scoped,
+    Stmt,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    new_node_store,
+    seat_spelled,
+    some_list,
+    spelled,
+}
 use features.{budgets_of}
 use @std.meta.{Directive, derive}
 use @std.program.address.{SourceFileAddress}
@@ -87,13 +99,13 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Gen
 }
 
 /// The declarations directives' sources make over what `file` writes as `name`, spliced as one
-/// item; a wrap's beside the written fn moved to its body's name, and a twin said instead.
+/// item; a wrap's beside the written fn moved to its body's name, its wrapper signed as the written
+/// fn is, and a twin said instead.
 fn items_spliced(engine: QueryEngine, file: SourceFileAddress, name: string, made: List<Directive>) -> GeneratedItems {
     let spliced = generated_spliced([d.source!.node for d in made if d.source != null])
     let wraps = made.any(it.wraps)
     let moved: StmtId? = if wraps { moved_body(engine, file, name, spliced.store) } else { null }
-    let unwrapped = if wraps &&
-        (moved == null || !spliced.stmts.any((s) -> spliced.store.fn_parts(s)?.name == name)) { [wrap_unmade(name)] } else { [] }
+    let unwrapped = if wraps { wrap_said(spliced.store, spliced.stmts, name, moved) } else { [] }
     let stmts = spliced.stmts.concat(some_list(moved))
     GeneratedItems {
         items: if stmts.is_empty() || !unwrapped.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, stmts), wraps: wraps }] },
@@ -102,6 +114,27 @@ fn items_spliced(engine: QueryEngine, file: SourceFileAddress, name: string, mad
             .concat([not_spliced(d) for d in made if !d.twin.is_empty()])
             .concat(unwrapped),
     }
+}
+
+/// What a wrap of `name` among `stmts` says instead of standing: that it makes no fn of the name
+/// beside the written one `moved`, or one whose signature isn't the written fn's; nothing for one
+/// that stands.
+fn wrap_said(store: SyntaxArena, stmts: List<StmtId>, name: string, moved: StmtId?) -> List<string> {
+    let wrapper = stmts.find((s) -> store.fn_parts(s)?.name == name)
+    if moved == null || wrapper == null { return [wrap_unmade(name)] }
+    if signature_spelled(store, wrapper!) != signature_spelled(store, moved!) { return [wrap_unsigned(name)] }
+    []
+}
+
+/// A fn's signature as written: its type parameters, each seat's promises and type, and its answer.
+fn signature_spelled(store: SyntaxArena, s: StmtId) -> string {
+    let parts = store.fn_parts(s)!
+    let seats = [seat_spelled(
+        p.promises.mutable,
+        p.promises.settled,
+        if p.ty == null { INFERRED } else { spelled(p.ty!) },
+    ) for p in parts.params]
+    "<${[t.name.of for t in parts.tparams].join(", ")}>(${seats.join(", ")}) -> ${spelled(parts.ret)}"
 }
 
 /// The fn `file` writes as `name`, read into `store` under the name a wrap moves its body to, at the
@@ -201,3 +234,5 @@ fn generator_moved(g: GeneratorAt) -> List<string> { ["`${g.name}`'s generator m
 fn not_spliced(d: Directive) -> string { "`${d.name}` asks for a twin, which isn't made on the program layer yet" }
 
 fn wrap_unmade(name: string) -> string { "a wrap of `${name}` makes no fn of its name beside its written one" }
+
+fn wrap_unsigned(name: string) -> string { "a wrap of `${name}` makes a fn of its name whose signature isn't the written one's" }

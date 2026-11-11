@@ -175,9 +175,11 @@ export fn method_signature(engine: QueryEngine, at: ImplAt, name: string) -> FnS
 /// The fn type of the method `name` on a value of `subject`'s type, its receiver the first seat and
 /// every type parameter (the impl's, then the method's own) left for the call to fill: an impl's
 /// method on a type the program declares, a verb (`@std/prelude`'s `verbs/`) on one the language
-/// owns. Absent for an optional or dynamic subject and a method nothing gives.
+/// owns; on a `dyn` value, the method its trait declares. Absent for an optional subject and a
+/// method nothing gives.
 export fn method_type(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
-    if subject.nullable() || subject.dynamic { return null }
+    if subject.nullable() { return null }
+    if subject.dynamic { return contract_method(engine, subject, name) }
     match subject.head {
         .Declared(file, declared) -> impl_method(engine, file, declared, name),
         .Owned(word) -> own_verb(engine, "verbs/${word}.av", name, subject),
@@ -259,6 +261,17 @@ fn impl_method(engine: QueryEngine, file: SourceFileAddress, declared: string, n
     let s? = method_signature(engine, impls[0], name) else { return null }
     let receiver = headed_type(TypeHead.Declared(file, declared)) with { args: [headed_type(TypeHead.Parameter(at, p)) for at, p in impls[0].params] }
     fn_typed([SignedSeat { ty: receiver, mutable: false, settled: false }], s)
+}
+
+/// The method `name` the trait a `dyn` value of `subject`'s type holds declares, its receiver the
+/// value; absent where `subject` names no trait the program declares, or it declares none.
+fn contract_method(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
+    let at? = match subject.head {
+        .Declared(file, declared) -> TraitAt { file: file, name: declared },
+        .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+    } else { return null }
+    let s? = trait_method_signature(engine, at, name, subject) else { return null }
+    fn_typed([SignedSeat { ty: subject, mutable: false, settled: false }], s)
 }
 
 /// The method `name` the one trait the type implements that declares it gives, `Self` the type:

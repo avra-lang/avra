@@ -32,10 +32,11 @@ impl Lowers for Ident {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let b = cx.bound(self.name.of)
         if b != null { return cx.read(e, b!) }
-        let named? = cx.named(self.name.of) else { return cx.unlowered(e) }
+        let named? = cx.named(e, self.name.of) else { return cx.unlowered(e) }
         match named {
             .Fn(callee) -> cx.fn_value(e, callee),
             .Literal(value) -> if cx.type_at(e)?.spelled() != value.type().spelled() { cx.unlowered(e) } else { cx.constant(value) },
+            .Collected(callee) -> cx.call_fn(cx.layout_at(e), callee, []),
         }
     }
 }

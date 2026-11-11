@@ -113,17 +113,27 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
 /// it, under `signing`'s type parameters.
 fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) -> CheckedProgram {
     CheckedProgram {
-        value_named: (n: string) -> value_type(engine, file, n),
+        value_named: (n: string, home: string?) -> read_from(file, home)
+            .find_map((f) -> value_type(engine, f, n)),
         written: (written: TypeRef) -> signing.signed(written),
-        type_named: (n: string) -> signing.named(n),
+        type_named: (n: string, home: string?) -> named_from(signing, home, n),
         record_of: (ty: SignedType) -> record_shape(engine, ty),
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
         method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
         property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
-        type_value: (n: string) -> type_value(engine, file, signing, n),
+        type_value: (n: string, home: string?) -> read_from(file, home)
+            .find_map((f) -> type_value(engine, f, signing with { writer: f }, n)),
         static_of: (described: SignedType, s: string) -> static_type(engine, described, s),
-        meta_type: (n: string) -> meta_declared(engine, n),
+        toolchain_type: (package: string, n: string) -> toolchain_declared(engine, package, n),
     }
+}
+
+/// The type `name` names under `signing`, read where the template `home` names stands first: what that
+/// file names, else what the body's names.
+fn named_from(signing: Signing, home: string?, name: string) -> SignedType {
+    let h? = (if home == null { null } else { template_file(home!) }) else { return signing.named(name) }
+    let homed = (signing with { writer: h }).named(name)
+    if homed.head is .Unnamed { signing.named(name) } else { homed }
 }
 
 /// The type the const `file` declares as `name` written with no type has: its value's, checked as
@@ -166,9 +176,10 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
     }
 }
 
-/// The type `@std/meta`'s root module declares as `name`, absent when it declares none.
-fn meta_declared(engine: QueryEngine, name: string) -> SignedType? {
-    let d? = declarations_of(engine, META, [], false, name).find(space_of(it.kind) == Space.Type) else { return null }
+/// The type the root module of the toolchain package `package` declares as `name`, absent when it
+/// declares none.
+fn toolchain_declared(engine: QueryEngine, package: string, name: string) -> SignedType? {
+    let d? = declarations_of(engine, package, [], false, name).find(space_of(it.kind) == Space.Type) else { return null }
     headed_type(TypeHead.Declared(d.file, d.name))
 }
 

@@ -26,8 +26,9 @@ impl Lowers for Call {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let value = cx.bound(self.callee.of)
         if value != null { return called_value(cx, self, e, value!) }
-        let named? = called(cx, self) else { return cx.unlowered(e) }
+        let named? = called(cx, self, e) else { return cx.unlowered(e) }
         if guards(named) && self.args.length == 1 { return guarded_run(cx, e, self.args[0]) }
+        if hashes(named) && self.args.length == 1 { return code_hash_read(cx, e, self.args[0]) }
         let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
         let args? = cx.call_args(callee, self.args) else { return cx.missed_as(unseated(callee)) }
         let answer = cx.layout_at(e)
@@ -39,6 +40,19 @@ impl Lowers for Call {
 
 /// Whether `callee` is `@std/meta`'s `guarded`, whose body the runtime runs.
 fn guards(callee: CalledFn) -> bool { callee.file.package_name == "@std/meta" && callee.name == "guarded" }
+
+/// Whether `callee` is `@std/meta`'s `code_hash`, whose answer the program gives.
+fn hashes(callee: CalledFn) -> bool { callee.file.package_name == "@std/meta" && callee.name == "code_hash" }
+
+/// `code_hash(f)` over a fn the program declares: the argument lowered as any fn value is, then a
+/// call of the body the program answers `f`'s code hash with. Any other argument isn't lowered yet.
+fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
+    let name? = cx.store.ident_name(target) else { return cx.missed_as(unhashed()) }
+    let named? = cx.named(target, name) else { return cx.missed_as(unhashed()) }
+    let callee? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unhashed()) }
+    let _ = cx.lower(target)
+    cx.code_hash_called(cx.layout_at(e), callee)
+}
 
 /// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on
 /// this task ended it, then answering the trap's words, or the body ran to its end, answering none.
@@ -55,9 +69,9 @@ fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
 
 /// The fn a call names, when the program declares it with seats a call fills, pinning each of its
 /// type parameters or none.
-fn called(cx: Lowering, call: Call) -> CalledFn? {
+fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
     if cx.bound(call.callee.of) != null { return null }
-    let named? = cx.named(call.callee.of) else { return null }
+    let named? = cx.named(e, call.callee.of) else { return null }
     let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
     if !callee.plain && callee.params.is_empty() ||
         !call.pins.is_empty() && call.pins.length != callee.type_params { null } else { callee }
@@ -102,3 +116,6 @@ fn unseated(callee: CalledFn) -> string { "a call of `${callee.name}` handing a 
 
 /// A call of a generic fn whose arguments don't lay out each of its type parameters.
 fn unlaid(callee: CalledFn) -> string { "a call of the generic `${callee.name}` whose arguments don't lay out its type parameters" }
+
+/// A code hash's argument naming no fn the program declares.
+fn unhashed() -> string { "a code hash of what names no declared fn" }
