@@ -1,5 +1,5 @@
 //! The lowering rules of the walks a list, or a range's integers, takes a fn for — `find`, `find_index`, `any`, `all`, `map`,
-//! `filter`, `fold`, `count`, and a map's `filter` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then
+//! `filter`, `fold`, `count`, and a map's `filter` — and of `contains`, `index_of`, `take`, `drop`, `sum`, `min` and `max`: the list first, then
 //! each stage of a walk it runs as one with, then what the answer gathers in, then the fn or the
 //! value sought, then one walk over the list handing each element through the stages to the fn or
 //! comparing it. A lambda capturing nothing, of one expression that leaves nothing
@@ -40,6 +40,8 @@ enum WalkVerb {
     Take
     Drop
     Sum
+    Min
+    Max
 }
 
 /// The walk the verb `name` is, absent for any other verb.
@@ -59,6 +61,8 @@ fn walk_verb(name: string) -> WalkVerb? {
         "take" -> WalkVerb.Take,
         "drop" -> WalkVerb.Drop,
         "sum" -> WalkVerb.Sum,
+        "min" -> WalkVerb.Min,
+        "max" -> WalkVerb.Max,
         rest -> null,
     }
 }
@@ -96,6 +100,8 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
         .Take -> limited(cx, m, e, elem, true),
         .Drop -> limited(cx, m, e, elem, false),
         .Sum -> summed(cx, m, e, elem),
+        .Min -> extreme(cx, m, e, elem, BinOp.Lt),
+        .Max -> extreme(cx, m, e, elem, BinOp.Gt),
     }
 }
 
@@ -385,6 +391,23 @@ fn summed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     let c = chain_of(cx, m.subject)
     turned(cx, c) { cx, v, _at -> cx.stored(cell, cx.bin(Layout.Word, BinOp.Add, cx.loaded(Layout.Word, cell), v)) }
     cx.loaded(Layout.Word, cell)
+}
+
+/// `xs.min()` / `xs.max()`: absent seeded before the list is read, each element kept where none is
+/// yet or it stands `beyond` the one kept. One over elements that aren't `int` isn't lowered yet.
+fn extreme(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, beyond: BinOp) -> Reg {
+    if !m.args.is_empty() || elem.spelled() != "int" { return cx.unlowered(e) }
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(ty)
+    let cell = cx.seeded_cell(l, cx.absent_of(ty, l))
+    let c = chain_of(cx, m.subject)
+    turned(cx, c) { cx, v, _at ->
+        let held = cx.loaded(l, cell)
+        let past = cx
+            .region(cx.present(held, ty), Layout.Truth) { cx -> cx.bin(Layout.Truth, beyond, v, cx.carried(held, ty)) } else { cx -> cx.const_bool(true) }
+        cx.void_region(past) { cx -> cx.stored(cell, cx.lifted(v, elem, ty)) }
+    }
+    cx.loaded(l, cell)
 }
 
 /// `xs.contains(x)`: a truth seeded false, made true and the walk ended at the first element that is

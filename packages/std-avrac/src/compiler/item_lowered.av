@@ -39,6 +39,7 @@ use core.{
     instance_symbol,
     lowering,
     module_path,
+    some_list,
     tests_placed,
     new_node_store,
     rt_sig_of,
@@ -194,15 +195,8 @@ fn lowered_program(
         ) with { parameters: parameters ?? [] },
         named: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> named_value(engine, f, n)),
-        method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false, null),
-        trait_method: (ty: SignedType, tr: SignedType, m: string) -> method_callee(
-            engine,
-            ty,
-            m,
-            false,
-            package_of(tr),
-        ),
-        statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true, null),
+        method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false, file.package_name),
+        statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true, file.package_name),
         lifts: lifts,
         lift_symbol: (lo: int) -> declared_symbol(file, "${unit}.lambda${lo}"),
         data: data,
@@ -598,15 +592,9 @@ fn signed_seats(signed: List<SignedParam>) -> List<CalledSeat> {
     [CalledSeat { name: s.name, ty: s.ty!, mutable: s.mutable, defaulted: s.defaulted, rest: s.rest } for s in signed]
 }
 
-/// The package the type `ty` the program declares stands in, absent for any other type.
-fn package_of(ty: SignedType) -> string? {
-    let at? = declared_at(ty) else { return null }
-    at.file.package_name
-}
-
 /// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
 /// as a call reaches it: the one the one impl that gives it writes — in the type's package, else in
-/// `via`'s — or the body the one trait it implements gives where the type is applied to nothing, on
+/// the first package `reader` reaches that writes one — or the body the one trait it implements gives where the type is applied to nothing, on
 /// a type the program declares, by the symbol its body is known by. Absent for any other, and for a
 /// trait's own static, which no impl gives.
 fn method_callee(
@@ -614,19 +602,28 @@ fn method_callee(
     subject: SignedType,
     name: string,
     statics: bool,
-    via: string?,
+    reader: string,
 ) -> CalledFn? {
     if subject.nullable() || subject.dynamic { return null }
     if !subject.args.is_empty() && statics { return null }
     let declared? = declared_at(subject) else { return null }
     if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return trait_static_callee(engine, declared, name) }
-    let impls = impls_given(engine, declared.file, declared.name, name, statics, via)
+    let impls = impls_given(engine, declared.file, declared.name, name, statics, reader)
     if impls.is_empty() && !statics && subject.args.is_empty() { return given_callee(engine, declared.file, declared.name, name) }
     if impls.is_empty() && statics { return every_variant_callee(engine, subject, declared, name) }
     if impls.length != 1 { return null }
     let at = impls[0]
     let sig? = method_signature(engine, at, name) else { return null }
-    let used = if statics { ReceiverUse.Read } else { receiver_use(engine, declared.file, declared.name, name) }
+    let used = when {
+        statics -> ReceiverUse.Read
+        at.file.package_name != declared.file.package_name -> foreign_use(
+            engine,
+            at,
+            declared,
+            name,
+        )
+        _ -> receiver_use(engine, declared.file, declared.name, name)
+    }
     CalledFn {
         file: at.file,
         name: name,
@@ -641,6 +638,18 @@ fn method_callee(
         type_params: sig.type_params.length,
         params: signed_seats(sig.params),
     }
+}
+
+/// What the method `name` an impl standing in another package than its type gives does to its
+/// receiver: that impl's own evidence, then each method it reaches through its receiver.
+fn foreign_use(engine: QueryEngine, at: ImplAt, declared: DeclaredAt, name: string) -> ReceiverUse {
+    let own? = impl_evidence(engine, at, declared.file, declared.name).find(it.name == name)?.evidence else { return ReceiverUse
+            .Unproved("the method `${name}` of `${declared.name}`, which its impl doesn't read") }
+    if own.written { return ReceiverUse.Written }
+    let reached = [receiver_use(engine, m.file, m.owner, m.name) for m in own.reached]
+    if reached.any(it.written()) { return ReceiverUse.Written }
+    let why = own.unproved ?? [u for r in reached for u in some_list(r.unproved())].first()
+    if why == null { ReceiverUse.Read } else { ReceiverUse.Unproved(why!) }
 }
 
 /// The static fn `name` the trait `declared` writes in its own body, as a callee of its unit; absent

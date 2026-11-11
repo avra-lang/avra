@@ -90,6 +90,19 @@ fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
     ClosureFiles { files: files }
 }
 
+/// The packages a package's code can name: its own, then each one its files' imports reach, each once,
+/// in the order first reached.
+@derive(Saved)
+export type ReachedPackages = { packages: List<string> }
+
+@query
+export fn package_reach(engine: QueryEngine, package: string) -> ReachedPackages {
+    mut out: List<string> = []
+    // LICENSED loops.push_loop: each package once, in the order its first file stands
+    for f in package_closure(engine, package).files { if !out.contains(f.package_name) { out.push(f.package_name) } }
+    ReachedPackages { packages: out }
+}
+
 collect listed_package_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 
 /// The queries a package read whole reads through, for a process to hand its engine.
