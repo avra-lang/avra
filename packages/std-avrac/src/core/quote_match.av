@@ -191,37 +191,32 @@ impl Lowering {
                 let tag? = variants.find_index(it.name == "TypedNode") else { return null }
                 let open_ty? = variants[tag].payloads.last()?.ty?.listed() else { return null }
                 let kid_slots = [self.shape_slot(k, shape_ty, boxes) for k in kids]
-                let open_cells = [self.open_cells(o, open_ty, boxes) for o in opens]
-                if kid_slots.any(it == null) || open_cells.any(it == null) { return null }
+                let open_slots = [self.open_slot(o, open_ty, boxes) for o in opens]
+                if kid_slots.any(it == null) || open_slots.any(it == null) { return null }
                 let kid_box = pushed(boxes, StaticBox.Slots([k! for k in kid_slots]))
-                let open_box = pushed(boxes, StaticBox.Slots(flatten([c! for c in open_cells])))
+                let open_box = pushed(boxes, StaticBox.Slots([o! for o in open_slots]))
                 variant_box(variants, "TypedNode", [Slot.Int(shallow), kid_box, open_box], boxes)
             },
         }
     }
 
-    /// The cells an `Open` of `open_ty` takes in a list's box: a value enum's tag and word, a boxed
-    /// one's box.
-    fn open_cells(o: Open, open_ty: SignedType, boxes: Cell<List<StaticBox>>) -> List<Slot>? {
+    /// The slot an `Open` of `open_ty` takes in a list's box: the box of its variant, which a value
+    /// enum crosses into a list in and a boxed one is.
+    fn open_slot(o: Open, open_ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
         let variants? = self.variants_of(open_ty) else { return null }
-        let named = match o {
-            .Name(i) -> OpenCells { name: "Name", index: i },
-            .Type(i) -> OpenCells { name: "Type", index: i },
-        }
-        let tag? = variants.find_index(it.name == named.name) else { return null }
         let l? = self.program.checked.layout(open_ty) else { return null }
         match l {
-            .Tagged(_) -> [Slot.Int(tag), Slot.Int(named.index)],
-            .Boxed(_) -> [pushed(boxes, StaticBox.Slots([Slot.Int(tag), Slot.Int(named.index)]))],
-            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> null,
+            .Tagged(_) or .Boxed(_) -> {},
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> { return null },
+        }
+        match o {
+            .Name(i) -> variant_box(variants, "Name", [Slot.Int(i)], boxes),
+            .Type(i) -> variant_box(variants, "Type", [Slot.Int(i)], boxes),
         }
     }
 }
 
-/// An `Open`'s variant by name, and the index it carries.
-type OpenCells = { name: string, index: int }
-
-/// The box of the variant `name` of a boxed enum, its tag then `cells`.
+/// The box of the variant `name`, its tag then `cells`: a boxed enum's value, and a value enum's crossing.
 fn variant_box(
     variants: List<VariantSeat>,
     name: string,
