@@ -34,6 +34,7 @@ impl ReceiverUse {
 }
 
 /// A method of a type the program declares: the type's file and name, and the method's.
+@derive(Saved)
 type MethodAt = { file: SourceFileAddress, owner: string, name: string }
 
 fn same_method(a: MethodAt, b: MethodAt) -> bool {
@@ -62,19 +63,36 @@ export fn receiver_use(engine: QueryEngine, file: SourceFileAddress, owner: stri
 
 /// One method's own evidence: whether it writes its receiver itself, the first thing that couldn't be
 /// read to say, and the methods it calls on places rooted in its receiver.
+@derive(Saved)
 type Evidence = { written: bool, unproved: string?, reached: List<MethodAt> }
 
-/// The evidence of the method `m`, read from its body: the one impl's that gives it, else the one
-/// default body of a trait its type implements. One no body gives is unproved.
+/// A method's evidence, under the method's name.
+@derive(Saved)
+type Surveyed = { name: string, evidence: Evidence }
+
+/// The evidence of the method `m`: the one impl's that gives it, else the one default body of a
+/// trait its type implements. One no body gives is unproved.
+@query
 fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
     let impls = impls_with(engine, m.file, m.owner, m.name, false)
     if impls.length > 1 { return unread(not_one_impl(m)) }
     if impls.is_empty() { return defaulted(engine, m) }
-    let at = impls[0]
+    impl_evidence(engine, impls[0], m.file, m.owner).find(it.name == m.name)?.evidence ?? unread(
+        not_one_impl(m),
+    )
+}
+
+/// The evidence of each method the impl at `at` writes, its receiver the type `file` declares as
+/// `owner`, read from the impl read back once.
+@query
+fn impl_evidence(engine: QueryEngine, at: ImplAt, file: SourceFileAddress, owner: string) -> List<
+    Surveyed,
+> {
     let item = read_item(engine, at.file, at.item)
     let fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() ?? []
-    let owner = headed_type(TypeHead.Declared(m.file, m.owner)) with { args: [headed_type(TypeHead.Parameter(i, p)) for i, p in at.params] }
-    body_evidence(engine, at.file, item.store, fns, m, owner)
+    let ty = headed_type(TypeHead.Declared(file, owner)) with { args: [headed_type(TypeHead.Parameter(i, p)) for i, p in at.params] }
+    let methods = [s for s in fns if item.store.fn_parts(s) != null && !item.store.is_static(s)]
+    [Surveyed { name: item.store.fn_parts(methods[i])!.name, evidence: e } for i, e in fns_evidence(engine, at.file, item.store, methods, ty)]
 }
 
 /// The evidence of the method `m` as the one trait its type implements that gives it a body writes it.
@@ -83,14 +101,15 @@ fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
     let giving = [t for t in traits if gives(engine, t, m.name)]
     if giving.length != 1 { return unread(not_one_impl(m)) }
     let item? = trait_item(engine, giving[0]) else { return unread(not_one_impl(m)) }
-    body_evidence(
+    let s? = trait_fns(item)
+        .find((f) -> item.store.fn_parts(f)?.name == m.name && !item.store.is_static(f)) else { return unread(not_one_impl(m)) }
+    fns_evidence(
         engine,
         giving[0].file,
         item.store,
-        trait_fns(item),
-        m,
+        [s],
         headed_type(TypeHead.Declared(m.file, m.owner)),
-    )
+    )[0]
 }
 
 /// The trait `t`'s declaring item, read back.
@@ -105,29 +124,52 @@ fn gives(engine: QueryEngine, t: TraitAt, name: string) -> bool {
 /// The fns a trait's declaring item declares.
 fn trait_fns(item: ReadItem) -> List<StmtId> { [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? [] }
 
-/// The evidence of the method `m` among `fns`, written in `file` with its receiver of type `owner`.
-fn body_evidence(
+/// The evidence of each of the methods `fns` of one read-back item, written in `file` with its
+/// receiver of type `owner`: what their bodies share read once.
+fn fns_evidence(
     engine: QueryEngine,
     file: SourceFileAddress,
     store: SyntaxArena,
     fns: List<StmtId>,
-    m: MethodAt,
+    owner: SignedType,
+) -> List<Evidence> {
+    let kept = [outside_lambdas(store, store.fn_parts(s)!.body) for s in fns]
+    mut holder = filled(store.expr_count(), -1)
+    for i, k in kept { for e in k { holder.set(e.index, i) } }
+    let bodies = ItemBodies {
+        holder: holder,
+        targets: [x! for s in store.stmt_ids() for x in [store.assign_target(s)] if x != null],
+        lets: [n! for s in store.stmt_ids() for n in [store.let_name(s)] if n != null],
+    }
+    [body_evidence(engine, file, store, bodies, i, s, kept[i], owner) for i, s in fns]
+}
+
+/// What the bodies of one read-back item share: which of its surveyed methods holds each expression
+/// outside a lambda, by index, -1 for none; every assignment's target; and the names its `let`s bind.
+type ItemBodies = { holder: List<int>, targets: List<ExprId>, lets: List<string> }
+
+/// The evidence of the method `s`, the item's `at`th surveyed one, its expressions outside lambdas
+/// `kept`, written in `file` with its receiver of type `owner`.
+fn body_evidence(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    bodies: ItemBodies,
+    at: int,
+    s: StmtId,
+    kept: List<ExprId>,
     owner: SignedType,
 ) -> Evidence {
-    let s? = fns.find((f) -> store.fn_parts(f)?.name == m.name && !store.is_static(f)) else { return unread(not_one_impl(m)) }
     if store.is_mutating(s) { return Evidence { written: true, unproved: null, reached: [] } }
     let parts = store.fn_parts(s)!
-    let kept = outside_lambdas(store, parts.body)
-    mut own = filled(store.expr_count(), false)
-    for e in kept { own.set(e.index, true) }
     mut cx = Survey {
         engine: engine,
         file: file,
         store: store,
         owner: owner,
-        own: own,
-        locals: [p.name.of for p in parts.params]
-            .concat([n! for x in store.stmt_ids() for n in [store.let_name(x)] if n != null]),
+        bodies: bodies,
+        at: at,
+        locals: [p.name.of for p in parts.params].concat(bodies.lets),
         written: false,
         unproved: null,
         reached: [],
@@ -145,17 +187,16 @@ fn outside_lambdas(store: SyntaxArena, root: ExprId) -> List<ExprId> {
     flatten([outside_lambdas(store, k) for k in store.reached(root)]).concat([root])
 }
 
-/// One method's survey: where its body is read, the receiver's type, which nodes stand outside its
-/// lambdas, by index, the names its seats and `let`s bind, and the evidence as it accrues.
-type Survey = { engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, owner: SignedType, own: List<bool>, locals: List<string>, written: bool, unproved: string?, reached: List<MethodAt> }
+/// One method's survey: where its body is read, the receiver's type, what its item's bodies share and
+/// which of them it is, the names its seats and `let`s bind, and the evidence as it accrues.
+type Survey = { engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, owner: SignedType, bodies: ItemBodies, at: int, locals: List<string>, written: bool, unproved: string?, reached: List<MethodAt> }
 
 impl Survey {
     /// Every assignment outside a lambda through a place rooted in the receiver writes it, unless the
     /// path crosses a `state` field, whose cell takes the write.
     mut fn assigns() {
-        for s in self.store.stmt_ids() {
-            let t? = self.store.assign_target(s) else { continue }
-            if !self.own[t.index] || !self.rooted(t) { continue }
+        for t in self.bodies.targets {
+            if self.bodies.holder[t.index] != self.at || !self.rooted(t) { continue }
             let crosses? = self.crosses_state(t) else {
                 self.unread(untyped_place(self.path_words(t)))
                 continue
