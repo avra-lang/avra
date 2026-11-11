@@ -4,6 +4,7 @@
 //! `[]` is its own type wherever it stands. A comprehension binds each head's names in a scope of its
 //! own and is the list of its element. A list pattern binds its ends' elements and its middle's list.
 use core.{
+    At,
     Checking,
     Checks,
     CompClause,
@@ -12,6 +13,7 @@ use core.{
     PatChecks,
     PatId,
     SignedType,
+    flatten,
     never_type,
     owned_type,
     types_joined,
@@ -83,16 +85,46 @@ fn clause_checked(mut cx: Checking, c: CompClause) {
 }
 
 impl Checks for Collect {
-    /// A collection's statements check in a scope of their own, each value it gathers under the seat
-    /// the gathering gives it, which isn't known yet; what it collects isn't either.
+    /// A collection's statements check in a scope of their own, each value standing as one against
+    /// the element its seat wants; it is the list its seat wants, else the list of the first value
+    /// they keep that is no list, else of a kept list's elements.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let wanted = match expected {
+            .Exactly(ty) -> (ty with { nulls: 0 }).listed(),
+            rest -> null,
+        }
+        let seat = if wanted == null { Expected.Unknown } else { Expected.Exactly(wanted!) }
         cx.opened()
         for s in self.stmts {
             let value = cx.store.answer_of(s)
-            if value == null { cx.check_stmt(s) } else { let _ = cx.check(value!, Expected.Unknown) }
+            if value == null { cx.check_stmt(s) } else { let _ = cx.check(value!, seat) }
         }
         cx.closed()
-        null
+        let kept = flatten([kept_types(cx, At.Stmt(s)) for s in self.stmts])
+        let held = wanted ?? kept.find(it.listed() == null) ?? kept.first()?.listed()
+        if held == null { null } else { owned_type("List") with { args: [held!] } }
+    }
+}
+
+/// The types of the values the statements at `at` keep: a statement's value that is one, else what
+/// the statements it holds keep, behind no lambda — read in the core where the body is.
+fn kept_types(cx: Checking, at: At) -> List<SignedType> {
+    match at {
+        .Stmt(s) -> {
+            let meant = if cx.meanings { cx.store.stmt_meant(s) } else { null }
+            if meant != null { return flatten([kept_types(cx, At.Stmt(m)) for m in meant!]) }
+            let v = cx.store.answer_of(s)
+            let ty = if v == null { null } else { cx.type_of(v!) }
+            if ty != null && ty!.holds_value() { return [ty!] }
+            flatten([kept_types(cx, k) for k in cx.store.kids_at(at)])
+        },
+        .Expr(e) -> {
+            if cx.store.lambda_parts(e) != null { return [] }
+            let meant = if cx.meanings { cx.store.meant(e) } else { null }
+            let kids = if meant == null { cx.store.kids_at(at) } else { [At.Expr(meant!)] }
+            flatten([kept_types(cx, k) for k in kids])
+        },
+        .Pat(_) or .Field(_, _) or .Param(_, _) -> flatten([kept_types(cx, k) for k in cx.store.kids_at(at)]),
     }
 }
 

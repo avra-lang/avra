@@ -1,5 +1,5 @@
-//! The lowering rules of the walks a list takes a fn for — `find`, `find_index`, `any`, `all`, `map`,
-//! `filter`, `fold` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then
+//! The lowering rules of the walks a list, or a range's integers, takes a fn for — `find`, `find_index`, `any`, `all`, `map`,
+//! `filter`, `fold`, `count` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then
 //! each stage of a walk it runs as one with, then what the answer gathers in, then the fn or the
 //! value sought, then one walk over the list handing each element through the stages to the fn or
 //! comparing it. A lambda capturing nothing, of one expression that leaves nothing
@@ -18,6 +18,7 @@ use core.{
     Span,
     SyntaxArena,
     lift_refusal,
+    owned_type,
     rt_sig_of,
 }
 use core.expr.{Lambda, MethodCall}
@@ -31,6 +32,7 @@ enum WalkVerb {
     Map
     Filter
     Fold
+    Count
     Contains
     IndexOf
     Take
@@ -48,6 +50,7 @@ fn walk_verb(name: string) -> WalkVerb? {
         "map" -> WalkVerb.Map,
         "filter" -> WalkVerb.Filter,
         "fold" -> WalkVerb.Fold,
+        "count" -> WalkVerb.Count,
         "contains" -> WalkVerb.Contains,
         "index_of" -> WalkVerb.IndexOf,
         "take" -> WalkVerb.Take,
@@ -61,7 +64,7 @@ impl Lowering {
     /// `m`, a verb on a value of the type the language names `word`, when it's a walk a list takes a
     /// fn for; absent, with nothing emitted, for any other verb.
     mut fn list_walked(m: MethodCall, e: ExprId, word: string) -> Reg? {
-        if word != "List" { return null }
+        if word != "List" && word != "Range" { return null }
         let verb? = walk_verb(m.name.of) else { return null }
         walk_lowered(self, verb, m, e)
     }
@@ -71,7 +74,7 @@ impl Lowering {
 /// element passing that walk's stages before the verb reads it. One over a walk no stage here is
 /// isn't lowered yet.
 fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> Reg {
-    let elem? = cx.type_at(m.subject)?.listed() else { return cx.unlowered(e) }
+    let elem? = walked_element(cx.type_at(m.subject)) else { return cx.unlowered(e) }
     if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.unlowered(e) }
     if !stages_of(cx, m.subject) { return cx.missed_as("a walk over a walk it runs as one with") }
     match verb {
@@ -82,6 +85,7 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
         .Map -> gathered(cx, m, e, elem, true),
         .Filter -> gathered(cx, m, e, elem, false),
         .Fold -> folded(cx, m, e, elem),
+        .Count -> tallied(cx, m, e),
         .Contains -> contained(cx, m, e, elem),
         .IndexOf -> indexed(cx, m, e, elem),
         .Take -> limited(cx, m, e, elem, true),
@@ -92,9 +96,27 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
 
 // ── A walk over a walk ──────────────────────────────────────────────
 
-/// What a walk turns: the list it starts from and its elements' type, and each stage an element
-/// passes before the verb reads it, in the order written.
-type Chain = { list: Reg, elem: SignedType, stages: List<Stage> }
+/// What a walk turns: what it starts from and its elements' type, and each stage an element passes
+/// before the verb reads it, in the order written.
+type Chain = { from: Source, elem: SignedType, stages: List<Stage> }
+
+/// What a walk starts from: a list, or a range's integers.
+enum Source {
+    Listed(list: Reg)
+    Counted(range: Reg)
+}
+
+/// What a walk over a value of `ty` hands on: a list's elements, a range's integers.
+fn walked_element(ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    t.listed() ?? if t.word() == "Range" && !t.nullable() { owned_type("int") } else { null }
+}
+
+/// What the receiver `e` starts a walk from, read once.
+fn source_of(mut cx: Lowering, e: ExprId) -> Source {
+    let v = cx.lower(e)
+    if cx.type_at(e)!.listed() == null { Source.Counted(v) } else { Source.Listed(v) }
+}
 
 /// A stage an element passes: a fn's answer in its place; a predicate it passes only where it holds;
 /// or a count it passes only below its bound (`take`, the walk ended at the bound) or past it (`drop`).
@@ -146,7 +168,7 @@ fn stages_of(cx: Lowering, e: ExprId) -> bool {
 /// The chain the receiver `e` starts: the list it starts from read first, then each stage's fn or
 /// bound in the order written.
 fn chain_of(mut cx: Lowering, e: ExprId) -> Chain {
-    let m? = handed_on(cx, e) else { return Chain { list: cx.lower(e), elem: cx.type_at(e)!.listed()!, stages: [] } }
+    let m? = handed_on(cx, e) else { return Chain { from: source_of(cx, e), elem: walked_element(cx.type_at(e))!, stages: [] } }
     let before = chain_of(cx, m.subject)
     before with { stages: before.stages.concat([stage_of(cx, m, cx.meaning_of(e))]) }
 }
@@ -165,9 +187,13 @@ fn stage_of(mut cx: Lowering, m: MethodCall, at: ExprId) -> Stage {
 /// them and its place among those that did.
 fn turned(mut cx: Lowering, c: Chain, body: fn(mut Lowering, Reg, Reg) -> void) {
     let arrived = if c.stages.is_empty() { null } else { cx.seeded_cell(Layout.Word, cx.const_int(0)) }
-    let w = cx.walk_list(c.list, c.elem)
+    let w = match c.from {
+        .Listed(list) -> cx.walk_list(list, c.elem),
+        .Counted(range) -> cx.walk_range(range),
+    }
     let here = cx.walk_turn(w)
-    passed(cx, c.stages, 0, cx.element_at(w.elem_layout, c.list, here), here, arrived, body)
+    let v = if w.list == null { here } else { cx.element_at(w.elem_layout, w.list!, here) }
+    passed(cx, c.stages, 0, v, here, arrived, body)
     cx.loop_end()
 }
 
@@ -285,11 +311,27 @@ fn folded(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     let ret? = cx.type_at(e) else { return cx.unlowered(e) }
     let l = cx.laid_out(ret)
     let c = chain_of(cx, m.subject)
-    let cell = cx.seeded_cell(l, cx.lower(m.args[0]))
+    let cell = cx.seeded_cell(l, cx.lowered_into(m.args[0], ret))
     let f = asked(cx, m.args[1], 2)
     turned(cx, c) { cx, v, _at -> cx.stored(cell, answered(cx, f, [cx.loaded(l, cell), v], l)) }
     cx.loaded(l, cell)
 }
+
+/// `xs.count()`, or `xs.count(p)`: a tally seeded zero, one more for each element, or each `p` holds of.
+fn tallied(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length > 1 { return cx.unlowered(e) }
+    let c = chain_of(cx, m.subject)
+    let tally = cx.seeded_cell(Layout.Word, cx.const_int(0))
+    let p = if m.args.is_empty() { null } else { asked(cx, m.args[0], 1) }
+    turned(cx, c) { cx, v, _at ->
+        let held? = p else { return one_more(cx, tally) }
+        cx.void_region(answered(cx, held, [v], Layout.Truth)) { cx -> one_more(cx, tally) }
+    }
+    cx.loaded(Layout.Word, tally)
+}
+
+/// The count in `tally` one more.
+fn one_more(mut cx: Lowering, tally: Reg) { counted_past(cx, tally, cx.loaded(Layout.Word, tally)) }
 
 /// `xs.sum()`: a count seeded zero before the list is read, each element added to it. One over
 /// elements that aren't `int` isn't lowered yet.
@@ -308,7 +350,7 @@ fn contained(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Re
     if !cx.equatable(elem) { return cx.missed_as("a `contains` over elements that don't compare by value") }
     let c = chain_of(cx, m.subject)
     let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(false))
-    let needle = cx.lower(m.args[0])
+    let needle = cx.lowered_into(m.args[0], elem)
     turned(cx, c) { cx, v, _at ->
         cx
             .void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, cx.const_bool(true)) }
@@ -323,7 +365,7 @@ fn indexed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg 
     if !cx.equatable(elem) { return cx.missed_as("an `index_of` over elements that don't compare by value") }
     let c = chain_of(cx, m.subject)
     let cell = cx.seeded_cell(Layout.Word, cx.const_int(-1))
-    let needle = cx.lower(m.args[0])
+    let needle = cx.lowered_into(m.args[0], elem)
     turned(cx, c) { cx, v, at ->
         cx.void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, at) }
     }

@@ -122,8 +122,8 @@ fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTy
     let callee? = cx.instantiated_on(declared, subject, m.name.of) else { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
     if !callee.plain && callee.params.is_empty() { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     if callee.unproved != null { return cx.missed_as(write_unproved(callee.unproved!)) }
-    let seats = if callee.writes { written_seats(cx, m, callee) } else { seated(cx, m, callee) }
-    if seats == null && plain_args(cx, m, callee) { return cx.missed_as(written_unlowered(cx, m.subject, callee.writes)) }
+    let seats = if callee.writes { written_seats(cx, m, callee) } else { read_seats(cx, m, callee) }
+    if seats == null && callee.writes && plain_args(cx, m, callee) { return cx.missed_as(written_unlowered(cx, m.subject)) }
     if seats == null { return cx.missed_as(unseated(subject, m.name.of)) }
     cx.call_fn(cx.layout_at(e), callee, seats!)
 }
@@ -176,24 +176,30 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
     let at? = members.find_index(it.name == m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     if members[at].writes || cx.in_cell(m.subject) { return cx.missed_as("a method that may write its receiver") }
     if !members[at].plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    let seats? = seated(cx, m, null) else { return cx.missed_as("a receiver on a path through a cell") }
+    let seats? = read_seats(cx, m, null) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
     let code = cx.slot_read(Layout.Word, seats[0], 1 + at)
     cx.called_code(cx.layout_at(e), code, value, seats.drop(1))
 }
 
 /// The receiver then each argument, lowered left to right, each argument into its seat of `callee`
-/// where the method is a declared one; a receiver read out of a `mut` binding's cell is read after
-/// the arguments, which may write the cell. Absent for a receiver on a path that starts in a cell.
-fn seated(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
+/// where the method is a declared one; a receiver read out of a `mut` binding's cell, at its root or
+/// along a path from it, is read after the arguments, which may write the cell.
+fn read_seats(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
     if !cx.in_cell(m.subject) {
         let receiver = cx.lower(m.subject)
         let args? = args_lowered(cx, m, callee) else { return null }
         return [receiver].concat(args)
     }
-    if cx.store.place_root(m.subject)?.index != m.subject.index { return null }
     let args? = args_lowered(cx, m, callee) else { return null }
     [cx.lower(m.subject)].concat(args)
+}
+
+/// What `read_seats` hands a method that writes the receiver it's handed as it is: absent for a
+/// receiver on a path that starts in a cell, whose read is a copy the write wouldn't reach.
+fn seated(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
+    if cx.in_cell(m.subject) && cx.store.place_root(m.subject)?.index != m.subject.index { return null }
+    read_seats(cx, m, callee)
 }
 
 /// Each argument lowered, into its seat of `callee` where the method is a declared one: by its name
@@ -220,10 +226,8 @@ fn unseated(subject: SignedType, name: string) -> string { "the method `${name}`
 
 fn write_unproved(why: string) -> string { "a method that may write its receiver: ${why}" }
 
-/// Why a receiver isn't lowered: a written one by where it's held, a read one on a path through a
-/// cell.
-fn written_unlowered(cx: Lowering, subject: ExprId, writes: bool) -> string {
-    if !writes { return "a receiver on a path through a cell" }
+/// Why a written receiver isn't lowered, by where it's held.
+fn written_unlowered(cx: Lowering, subject: ExprId) -> string {
     let name? = cx.root_name(subject) else { return "a written receiver that rides no pointer" }
     let b? = cx.bound(name) else { return "a written receiver the body doesn't bind" }
     match b {

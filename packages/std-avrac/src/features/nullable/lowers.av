@@ -8,10 +8,13 @@ use core.{
     Layout,
     Lowering,
     Lowers,
+    NAMED_FIELD,
     Reg,
+    RtSig,
     SignedType,
     StmtId,
     StmtLowers,
+    own_row_of,
     owned_type,
     rt_sig_of,
 }
@@ -88,13 +91,17 @@ fn failed_on(mut cx: Lowering, e: ExprId, held: SignedType, carried: SignedType,
 
 impl Lowers for Chain {
     /// A region on the subject's presence: the field of what it carries, lifted into the chain's
-    /// answer, else that answer's absence. A chain into a property that isn't a field, or into a
-    /// `state` field, isn't lowered yet.
+    /// answer, else that answer's absence; a name's own field is the value it names, so the chain is
+    /// the subject, and a property a row answers is that row's answer. A chain into any other
+    /// property that isn't a field, or into a `state` field, isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
         let answer? = cx.type_at(e) else { return cx.unlowered(e) }
         if !held.nullable() { return cx.unlowered(e) }
         let inner = held.unwrapped()
+        if self.name.of == NAMED_FIELD && cx.named_over(inner) != null { return cx.lower(self.subject) }
+        let row = answering_row(inner, self.name.of)
+        if row != null { return owned_chain(cx, row!, self.subject, held, answer) }
         let fields? = cx.fields_of(inner) else { return cx.missed_as("a chain into a property that isn't a field") }
         let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
         if fields[n].state { return cx.missed_as("a `state` field's read") }
@@ -105,6 +112,25 @@ impl Lowers for Chain {
         cx
             .region(cx.present(v, held), l) { cx -> cx.lifted(cx.field_read(cx.carried(v, held), inner, laid, n), own, answer) } else { cx -> cx.absent_of(answer, l) }
     }
+}
+
+/// `x?.p` where `p` is a row of the type the language owns that `x` holds: a region on the subject's
+/// presence, the row handed what it carries, lifted into the chain's answer, else that answer's
+/// absence.
+fn owned_chain(mut cx: Lowering, row: RtSig, subject: ExprId, held: SignedType, answer: SignedType) -> Reg {
+    let read = answer.unwrapped()
+    let v = cx.lower(subject)
+    let l = cx.laid_out(answer)
+    cx
+        .region(cx.present(v, held), l) { cx ->
+            cx.lifted(cx.call_words(cx.laid_out(read), row, [cx.carried(v, held)]), read, answer)
+        } else { cx -> cx.absent_of(answer, l) }
+}
+
+/// The row the property `name` of a value of `ty` is, where its answer is the property's.
+fn answering_row(ty: SignedType, name: string) -> RtSig? {
+    let own? = own_row_of(ty, name) else { return null }
+    match own.answer { .Answer -> rt_sig_of(own.row), .Zero or .Folds -> null }
 }
 
 impl Lowers for MatchOpt {

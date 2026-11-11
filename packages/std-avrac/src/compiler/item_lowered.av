@@ -23,7 +23,6 @@ use core.{
     SignedType,
     Static,
     SyntaxArena,
-    OnceGuard,
     TaskTest,
     TestSite,
     TraitMember,
@@ -62,8 +61,6 @@ export type LoweredFn = {
     spins: bool = false,
     /// The task tests it holds, not placed yet.
     tests: List<TaskTest> = [],
-    /// The `once` bodies its tests may stand inside.
-    guards: List<OnceGuard> = [],
 }
 
 impl LoweredFn {
@@ -72,8 +69,8 @@ impl LoweredFn {
 
     /// The body with each test `kept` answers for placed, and its lambdas' too.
     fn placed_by(kept: fn(TestSite) -> bool) -> LoweredFn {
-        let p = tests_placed(self.ins, self.layouts, self.missing, self.tests, self.guards, kept)
-        self with { ins: p.ins, layouts: p.layouts, missing: p.missing, tests: [], guards: [], lifts: [l.placed_by(kept) for l in self.lifts] }
+        let p = tests_placed(self.ins, self.layouts, self.missing, self.tests, kept)
+        self with { ins: p.ins, layouts: p.layouts, missing: p.missing, tests: [], lifts: [l.placed_by(kept) for l in self.lifts] }
     }
 }
 
@@ -246,7 +243,6 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
         reshaped: cx.program.reshaped.get(),
         spins: cx.program.spins.get(),
         tests: cx.tests.get(),
-        guards: cx.guards.get(),
     }
 }
 

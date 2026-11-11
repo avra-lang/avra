@@ -38,8 +38,8 @@ impl StmtLowers for Jump {
 
 impl StmtLowers for ForEach {
     /// A walk its meaning doesn't take: over a list naming its index or leaving by a label, over a
-    /// map's keys beside its values, or over octets; each turn binds its place, then what stands there. It's shaped
-    /// otherwise elsewhere, so it's noted.
+    /// map's keys beside its values, over octets, or over a range leaving by a label; each turn binds
+    /// its place, then what stands there. It's shaped otherwise elsewhere, so it's noted.
     fn stmt_lowered(mut cx: Lowering, s: StmtId) {
         let ty? = cx.type_at(self.subject) else { return cx.stmt_unlowered(s) }
         let elem = ty.listed()
@@ -47,6 +47,7 @@ impl StmtLowers for ForEach {
         let value = ty.mapped()
         if value != null { return mapped_each(cx, self, ty.args[0], value!) }
         if ty.spelled() == "Bytes" { return octets_each(cx, self) }
+        if ty.spelled() == "Range" { return ranged_each(cx, self) }
         cx.stmt_unlowered(s)
     }
 
@@ -96,6 +97,12 @@ fn octets_each(mut cx: Lowering, f: ForEach) {
     let here = cx.walk_turn(w)
     if f.index != null { cx.bind(f.index!.of, Bound.Value(here, octet)) }
     turned_body(cx, f, cx.call_row(Layout.Word, rt_sig_of("avra_bytes_at")!, [b, here]), octet)
+}
+
+/// `for i in lo..hi`: the range read once, each turn binding its count.
+fn ranged_each(mut cx: Lowering, f: ForEach) {
+    cx.reshaped()
+    turned_body(cx, f, cx.walk_turn(cx.walk_range(cx.lower(f.subject))), owned_type("int"))
 }
 
 /// A turn's body, its loop labelled by the names it binds and the element bound to `v`, then the turn

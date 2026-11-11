@@ -1,0 +1,38 @@
+//! WHAT A `collect` GATHERS: the list its statements grow as they run. A statement standing in it,
+//! behind no lambda, whose value is one joins the list; a list joins element by element where what
+//! the list holds is no list itself.
+
+/// The list a `collect` grows, and the type of what it holds.
+export type Gathering = { into: Reg, elem: SignedType }
+
+impl Lowering {
+    /// `stmts` lowered in a scope of their own, each value they leave joining `into`, a list of
+    /// `elem`s.
+    mut fn gathering(into: Reg, elem: SignedType, stmts: List<StmtId>) {
+        // LICENSED compiler.bracket_ritual: this IS the bracket
+        self.gathers.push(Gathering { into: into, elem: elem })
+        self.opened()
+        for s in stmts { self.lower_stmt(s) }
+        self.closed()
+        let held = self.gathers.get()
+        self.gathers.set(held.take(held.length - 1))
+    }
+
+    /// Whether `v`, the value a statement leaves, joined the `collect` open around it: absent one, or
+    /// where `v` is no value, it didn't.
+    mut fn gathered(v: ExprId) -> bool {
+        let g? = self.gathers.get().last() else { return false }
+        let ty? = self.type_at(self.meaning_of(v)) else { return false }
+        if !ty.holds_value() { return false }
+        let elem? = (if g.elem.listed() == null { ty.listed() } else { null }) else {
+            self.push_slot(g.into, self.lowered_into(v, g.elem))
+            return true
+        }
+        let w = self.walk_list(self.lower(v), elem)
+        let here = self.walk_turn(w)
+        self
+            .push_slot(g.into, self.lifted(self.element_at(w.elem_layout, w.list!, here), elem, g.elem))
+        self.loop_end()
+        true
+    }
+}

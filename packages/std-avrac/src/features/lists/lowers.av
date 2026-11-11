@@ -1,8 +1,9 @@
 //! The lowering rule of a list literal: one box sized for every plain element and every spread's
 //! length, then each plain element pushed and each spread's slots appended, in written order. A list
-//! the source alone spells is the binary's own data, read by its address.
-use core.{ExprId, Lowering, Lowers, Reg}
-use core.expr.{ListLit}
+//! the source alone spells is the binary's own data, read by its address. A `collect` is an empty list,
+//! grown by each value its statements leave as they run.
+use core.{ExprId, Lowering, Lowers, Reg, rt_sig_of}
+use core.expr.{Collect, ListLit}
 
 impl Lowers for ListLit {
     /// The elements first, then the size, then the box, then what fills it.
@@ -12,5 +13,15 @@ impl Lowers for ListLit {
         let spread = [cx.store.spread_operand(k) != null for k in self.elems]
         let regs = [cx.lower(cx.store.spread_operand(k) ?? k) for k in self.elems]
         cx.listed(cx.layout_at(e), regs, spread)
+    }
+}
+
+impl Lowers for Collect {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let elem? = ty.listed() else { return cx.unlowered(e) }
+        let built = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+        cx.gathering(built, elem, self.stmts)
+        built
     }
 }
