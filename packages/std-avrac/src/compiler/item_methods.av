@@ -461,9 +461,14 @@ fn shape_method(engine: QueryEngine, subject: SignedType, name: string) -> Signe
     let shape? = named_over(engine, subject) else { return null }
     let m? = method_type(engine, shape, name) else { return null }
     if m.seats.is_empty() { return null }
-    let answer = if m.answer != null && m.answer!.spelled() == shape.spelled() { subject } else { m.answer }
-    m with { seats: [if at == 0 || s.ty.spelled() == shape.spelled() { s with { ty: subject } } else { s } for at, s in m.seats], answer: answer }
+    mut found: Map<string, SignedType> = {}
+    let _ = m.seats[0].ty.unifies(shape, found)
+    let answer = if m.answer != null && wears(m.answer!, found, shape) { subject } else { m.answer }
+    m with { seats: [if at == 0 || wears(s.ty, found, shape) { s with { ty: subject } } else { s } for at, s in m.seats], answer: answer }
 }
+
+/// Whether `ty`, its parameters filled by `found`, is `shape`.
+fn wears(ty: SignedType, found: Map<string, SignedType>, shape: SignedType) -> bool { ty.filled(found).spelled() == shape.spelled() }
 
 fn named_property(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if name != NAMED_FIELD { return null }

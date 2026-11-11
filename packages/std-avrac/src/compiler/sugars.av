@@ -8,6 +8,7 @@ use core.{
     BodyView,
     Expr,
     Inits,
+    LambdaParts,
     Minting,
     minting,
     Param,
@@ -297,15 +298,21 @@ export type SplicedDecls = { store: SyntaxArena, stmts: List<StmtId>, refused: L
 /// value the generator gave it, and each lambda placed apart.
 export fn generated_spliced(sources: List<Node>) -> SplicedDecls {
     let refused: Cell<List<string>> = Cell.new([])
-    let sp = GeneratorSplice { lang: avra(), store: new_node_store(), refused: refused }
+    let sp = GeneratorSplice {
+        lang: avra(),
+        store: new_node_store(),
+        refused: refused,
+        spliced: map_cell(),
+    }
     let stmts = flatten([sp.stmts(n) for n in sources])
     lambdas_apart(sp.store)
+    binders_apart(sp.store, sp.spliced.get())
     SplicedDecls { store: sp.store, stmts: stmts, refused: sp.refused.get() }
 }
 
 /// A generator's output being spliced into `store`, under `lang`, the words for what it couldn't
-/// place gathered in `refused`.
-type GeneratorSplice = { lang: Language, store: SyntaxArena, refused: Cell<List<string>> }
+/// place gathered in `refused`, and each read a hole spliced in by name, by its index.
+type GeneratorSplice = { lang: Language, store: SyntaxArena, refused: Cell<List<string>>, spliced: Cell<Map<string, bool>> }
 
 impl GeneratorSplice {
     /// A value in the seat its hole stands in. A run of templates has no expression position.
@@ -373,7 +380,11 @@ impl GeneratorSplice {
     fn expr(node: Node) -> ExprId {
         match node {
             .Template(file, at, parts, fills) -> self.template_expr(file, at, parts, fills),
-            .Name(text) -> self.store.alloc_expr(Expr.Ident(Scoped(text))),
+            .Name(text) -> {
+                let read = self.store.alloc_expr(Expr.Ident(Scoped(text)))
+                self.spliced.put("${read.index}", true)
+                read
+            },
             .Text(text) -> self.store.alloc_expr(Expr.StrLit(text)),
             .Int(value) -> self.store.alloc_expr(Expr.IntLit(value)),
             .Float(bits) -> self.store.alloc_expr(Expr.FloatLit(bits)),
@@ -466,5 +477,101 @@ fn lambdas_apart(store: SyntaxArena) {
         if store.lambda_parts(e) != null { store.place_expr(e, Span { lo: at, hi: at }) }
     }
 }
+
+/// A template's own binder never captures a name a hole spliced in. Inside each fn, a lambda
+/// parameter or a `let` a template wrote that shares its name with one of the fn's own seats, where a
+/// read of that name a hole spliced in (`spliced`, by index) stands in its reach, means the seat: the
+/// binder and each read of it the template wrote are renamed apart.
+fn binders_apart(store: SyntaxArena, spliced: Map<string, bool>) {
+    for at in 0..store.stmts.count() {
+        let f? = store.fn_parts(StmtId { index: at }) else { continue }
+        let seats = [p.name.of for p in f.params]
+        if seats.is_empty() { continue }
+        for e in store.every_expr(f.body) {
+            let lam = store.lambda_parts(e)
+            if lam != null { lambda_apart(store, spliced, seats, e, lam!) }
+            let stmts = store.block_stmts(e)
+            if stmts != null { lets_apart(store, spliced, seats, stmts!) }
+        }
+    }
+}
+
+/// The lambda `e`'s parameters a template wrote that a seat of its fn's shares a name with, where a
+/// spliced read of the name stands in its body, renamed apart with each read of them it wrote.
+fn lambda_apart(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    seats: List<string>,
+    e: ExprId,
+    lam: LambdaParts,
+) {
+    let home? = store.home_of(e) else { return }
+    let inside = store.every_expr(lam.body)
+    let clashing = [p.name.of for p in lam.params if seats.contains(p.name.of) && spliced_read(store, spliced, inside, p.name.of)]
+    if clashing.is_empty() { return }
+    renamed_reads(store, spliced, inside, clashing, home)
+    store
+        .exprs
+        .replaced(
+            e.index,
+            Expr
+                .Lambda(
+                    [if clashing.contains(p.name.of) { p with { name: Scoped(apart_name(p.name.of)) } } else { p } for p in lam.params],
+                    lam.body,
+                ),
+        )
+}
+
+/// Each `let` a template wrote among `stmts` that a seat of its fn's shares a name with, where a
+/// spliced read of the name stands after it, renamed apart with each later read of it the template
+/// wrote.
+fn lets_apart(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    seats: List<string>,
+    stmts: List<StmtId>,
+) {
+    for j, s in stmts {
+        let n? = store.let_name(s) else { continue }
+        if !seats.contains(n) { continue }
+        let home? = store.stmt_origins.get()[s.index]?.home() else { continue }
+        let renamed? = let_renamed(store.stmt(s), apart_name(n)) else { continue }
+        let reads = flatten([store.every_expr(x) for x in store.stmts_exprs(stmts.drop(j + 1))])
+        if !spliced_read(store, spliced, reads, n) { continue }
+        renamed_reads(store, spliced, reads, [n], home)
+        store.stmts.replaced(s.index, renamed)
+    }
+}
+
+/// Whether a read of `name` among `reads` is one a hole spliced in.
+fn spliced_read(store: SyntaxArena, spliced: Map<string, bool>, reads: List<ExprId>, name: string) -> bool {
+    reads.any((x) -> store.ident_name(x) == name && spliced.has("${x.index}"))
+}
+
+/// Each read among `reads` of one of `names` the template at `home` wrote, renamed apart.
+fn renamed_reads(
+    store: SyntaxArena,
+    spliced: Map<string, bool>,
+    reads: List<ExprId>,
+    names: List<string>,
+    home: string,
+) {
+    for x in reads {
+        let n? = store.ident_name(x) else { continue }
+        if names.contains(n) && !spliced.has("${x.index}") && store.home_of(x) == home { store.exprs.replaced(x.index, Expr.Ident(Scoped(apart_name(n)))) }
+    }
+}
+
+/// The `let` or `mut` statement `s`, binding `name` instead; absent for any other statement.
+fn let_renamed(s: Stmt, name: string) -> Stmt? {
+    match s {
+        .Let(_, ty, value) -> Stmt.Let(Scoped(name), ty, value),
+        .MutLet(_, ty, value) -> Stmt.MutLet(Scoped(name), ty, value),
+        rest -> null,
+    }
+}
+
+/// The name a template's own binder is renamed apart to, which no written name can take.
+fn apart_name(name: string) -> string { "${name}\$template" }
 
 fn unreadable_template(file: string, at: int) -> string { "the template at ${file}:${at} isn't a quote this compiler reads" }
