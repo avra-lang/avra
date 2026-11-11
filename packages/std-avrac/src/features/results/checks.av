@@ -1,5 +1,5 @@
 //! The typing rules of failure: `fail`'s value is checked for what it is; a `catch` is its subject's
-//! ok side.
+//! ok side, and over a task's `.await`, what the task answers, its failure the prelude's `Cancelled`.
 use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId}
 use core.expr.{Catch}
 use core.stmt.{Fail}
@@ -13,8 +13,9 @@ impl Checks for Catch {
     /// catch-all, a variant's payload or a union's member — and checks against the ok side.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
-        let answer = cx.payload_of(subject, "Ok")
-        let err = cx.payload_of(subject, "Err")
+        let awaits = cx.store.awaited_task(self.subject) != null
+        let answer = if awaits { subject } else { cx.payload_of(subject, "Ok") }
+        let err = if awaits { cx.toolchain_type("@std.prelude", "Cancelled") } else { cx.payload_of(subject, "Err") }
         for arm in self.arms {
             cx.opened()
             if !arm.bind.of.is_empty() { cx.bind(arm.bind.of, caught(cx, err, arm.variant.of)) }

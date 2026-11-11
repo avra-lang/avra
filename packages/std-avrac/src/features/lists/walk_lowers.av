@@ -1,5 +1,5 @@
 //! The lowering rules of the walks a list, or a range's integers, takes a fn for — `find`, `find_index`, `any`, `all`, `map`,
-//! `filter`, `fold`, `count` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then
+//! `filter`, `fold`, `count`, and a map's `filter` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then
 //! each stage of a walk it runs as one with, then what the answer gathers in, then the fn or the
 //! value sought, then one walk over the list handing each element through the stages to the fn or
 //! comparing it. A lambda capturing nothing, of one expression that leaves nothing
@@ -7,6 +7,7 @@
 //! its box, its code read once before the walk.
 use core.{
     BinOp,
+    BoxKind,
     Bound,
     ExprId,
     Layout,
@@ -64,6 +65,7 @@ impl Lowering {
     /// `m`, a verb on a value of the type the language names `word`, when it's a walk a list takes a
     /// fn for; absent, with nothing emitted, for any other verb.
     mut fn list_walked(m: MethodCall, e: ExprId, word: string) -> Reg? {
+        if word == "Map" && m.name.of == "filter" { return map_filtered(self, m, e) }
         if word != "List" && word != "Range" { return null }
         let verb? = walk_verb(m.name.of) else { return null }
         walk_lowered(self, verb, m, e)
@@ -92,6 +94,28 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
         .Drop -> limited(cx, m, e, elem, false),
         .Sum -> summed(cx, m, e, elem),
     }
+}
+
+/// `m.filter(p)` over a map: a new map, each entry `p` holds of written into it, in the map's order;
+/// `p` is handed each key beside its value as the entry it asks about.
+fn map_filtered(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length != 1 || cx.store.arg_label(m.args[0]) != null { return cx.unlowered(e) }
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let value? = ty.mapped() else { return cx.unlowered(e) }
+    let entry? = cx.type_at(cx.meaning_of(m.args[0]))?.seats.first()?.ty else { return cx.unlowered(e) }
+    let map = cx.lower(m.subject)
+    let keys = cx.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_keys")!, [map])
+    let values = cx.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_vals")!, [map])
+    let out = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_map_new")!, [])
+    let p = asked(cx, m.args[0], 1)
+    let w = cx.walk_list(keys, owned_type("string"))
+    let here = cx.walk_turn(w)
+    let k = cx.element_at(w.elem_layout, keys, here)
+    let v = cx.element_at(cx.laid_out(value), values, here)
+    let asked_of = cx.record_packed(cx.laid_out(entry), [k, v])
+    cx.void_region(answered(cx, p, [asked_of], Layout.Truth)) { cx -> cx.map_written(out, k, v) }
+    cx.loop_end()
+    out
 }
 
 // ── A walk over a walk ──────────────────────────────────────────────
