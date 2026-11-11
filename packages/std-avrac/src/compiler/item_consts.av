@@ -132,9 +132,14 @@ impl Crossing {
     }
 
     /// A nullable's slot: its absence the null pointer, a word enum's spare tag or a scalar's mark;
-    /// present, what it holds, a flat record's in a one-slot box of its own.
+    /// present, what it holds, a flat record's in a one-slot box of its own. Under a nullable of a
+    /// nullable, only the slot's absent mark is its absence; a null is the present inner one.
     fn nullable_slot(v: MetaVal, ty: SignedType) -> Slot? {
-        let absent = match v { .Absent or .Gone -> true, rest -> false }
+        let absent = match v {
+            .Gone -> true,
+            .Absent -> !ty.unwrapped().nullable(),
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Node(_) or .Map(_) or .Octets(_) -> false,
+        }
         let l? = self.program.layout(ty) else { return null }
         match l {
             .Boxed(_) -> if absent { Slot.Null } else if l.slot_box() { self.held_box(v, ty.unwrapped()) } else { self.slot(v, ty.unwrapped()) },

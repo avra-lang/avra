@@ -10,6 +10,14 @@ export enum OwnVerb {
     Last
     /// A map's value under a key, absent where it holds none.
     Got
+    /// A list's element at a place, absent where the list holds none there.
+    GotAt
+    /// A map's value under a key, taken out of it; absent where it held none.
+    Removed
+    /// A copy of a list without the element at a place.
+    RemovedAt
+    /// A list walked by a paired `for` head, which binds each place beside its element: the list.
+    Enumerated
     /// One more element written onto a list.
     Pushed
     /// An element of a list written.
@@ -41,21 +49,25 @@ export type OwnShape = { receiver: string, verb: string, shape: OwnVerb }
 /// Every verb the language owns that is a shape of rows.
 export once fn own_shapes() -> List<OwnShape> {
     table<OwnShape> {
-        receiver | verb     | shape
-        "List"   | "first"  | OwnVerb.First
-        "List"   | "last"   | OwnVerb.Last
-        "List"   | "push"   | OwnVerb.Pushed
-        "List"   | "set"    | OwnVerb.SetAt
-        "List"   | "pop"    | OwnVerb.Popped
-        "Map"    | "get"    | OwnVerb.Got
-        "Map"    | "set"    | OwnVerb.Put
-        "Cell"   | "new"    | OwnVerb.CellNew
-        "Cell"   | "get"    | OwnVerb.CellGet
-        "Cell"   | "set"    | OwnVerb.CellSet
-        "Cell"   | "push"   | OwnVerb.CellPushed
-        "Cell"   | "set_at" | OwnVerb.CellSetAt
-        "Cell"   | "put"    | OwnVerb.CellPut
-        "Task"   | "await"  | OwnVerb.Awaited
+        receiver | verb         | shape
+        "List"   | "first"      | OwnVerb.First
+        "List"   | "last"       | OwnVerb.Last
+        "List"   | "push"       | OwnVerb.Pushed
+        "List"   | "set"        | OwnVerb.SetAt
+        "List"   | "pop"        | OwnVerb.Popped
+        "List"   | "get"        | OwnVerb.GotAt
+        "List"   | "removed_at" | OwnVerb.RemovedAt
+        "List"   | "enumerate"  | OwnVerb.Enumerated
+        "Map"    | "get"        | OwnVerb.Got
+        "Map"    | "set"        | OwnVerb.Put
+        "Map"    | "remove"     | OwnVerb.Removed
+        "Cell"   | "new"        | OwnVerb.CellNew
+        "Cell"   | "get"        | OwnVerb.CellGet
+        "Cell"   | "set"        | OwnVerb.CellSet
+        "Cell"   | "push"       | OwnVerb.CellPushed
+        "Cell"   | "set_at"     | OwnVerb.CellSetAt
+        "Cell"   | "put"        | OwnVerb.CellPut
+        "Task"   | "await"      | OwnVerb.Awaited
     }
 }
 
@@ -73,7 +85,7 @@ impl OwnVerb {
             .CellSet -> receiver.args.first(),
             .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
             .CellPut -> receiver.args.first()?.mapped(),
-            .First or .Last or .Popped or .Got or .CellNew or .CellGet or .Awaited -> null,
+            .First or .Last or .Popped or .Got or .GotAt or .Removed or .RemovedAt or .Enumerated or .CellNew or .CellGet or .Awaited -> null,
         }
     }
 
@@ -81,7 +93,7 @@ impl OwnVerb {
     fn on_the_type() -> bool {
         match self {
             .CellNew -> true,
-            .First or .Last or .Got or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
+            .First or .Last or .Got or .GotAt or .Removed or .RemovedAt or .Enumerated or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
         }
     }
 }
@@ -94,6 +106,10 @@ impl Lowering {
             .First -> self.edge(e, subject, false),
             .Last -> self.edge(e, subject, true),
             .Got -> self.got(e, subject, args[0]),
+            .GotAt -> self.got_at(e, subject, args[0]),
+            .Removed -> self.removed(e, subject, args[0]),
+            .RemovedAt -> self.removed_at(e, subject, args[0]),
+            .Enumerated -> self.lower(subject),
             .Pushed -> {
                 let list = self.opened_place(subject)
                 self.push_slot(list, self.stored_value(v, subject, args[0]))
@@ -209,6 +225,54 @@ impl Lowering {
                 cx.stored(cell, cx.lifted(cx.map_value(held.l, m, probe), held.ty, held.opt))
             } else { cx -> }
         self.loaded(l, cell)
+    }
+
+    /// The element of the list `subject` at `index`, present where the list holds that place.
+    mut fn got_at(e: ExprId, subject: ExprId, index: ExprId) -> Reg {
+        let held? = self.held_of(e) else { return self.unlowered(e) }
+        let xs = self.lower(subject)
+        let at = self.lower(index)
+        let l = self.layout_at(e)
+        let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [xs])
+        self
+            .void_region(self.bin(Layout.Truth, BinOp.Le, self.const_int(0), at)) { cx ->
+                cx
+                    .void_region(cx.bin(Layout.Truth, BinOp.Lt, at, len)) { cx ->
+                        cx.stored(cell, cx.lifted(cx.element_at(held.l, xs, at), held.ty, held.opt))
+                    }
+            }
+        self.loaded(l, cell)
+    }
+
+    /// The value the map `subject` held under `key`, read where its probe finds it, then the key taken
+    /// out of the map, opened for the write in place.
+    mut fn removed(e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+        let held? = self.held_of(e) else { return self.unlowered(e) }
+        let m = self.opened_place(subject)
+        let k = self.lower(key)
+        let l = self.layout_at(e)
+        let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
+        let probe = self.call_row(Layout.Word, rt_sig_of("avra_map_slot")!, [m, k])
+        self
+            .void_region(self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))) { cx ->
+                cx.stored(cell, cx.lifted(cx.map_value(held.l, m, probe), held.ty, held.opt))
+            }
+        self.run_row(rt_sig_of("avra_map_remove")!, [m, k])
+        self.loaded(l, cell)
+    }
+
+    /// A copy of the list `subject` without its element at `index`: what stands before it, then what
+    /// stands after.
+    mut fn removed_at(e: ExprId, subject: ExprId, index: ExprId) -> Reg {
+        let l = self.layout_at(e)
+        let xs = self.lower(subject)
+        let at = self.lower(index)
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [xs])
+        let head = self.call_row(l, rt_sig_of("avra_array_slice")!, [xs, self.const_int(0), at])
+        let next = self.bin(Layout.Word, BinOp.Add, at, self.const_int(1))
+        let tail = self.call_row(l, rt_sig_of("avra_array_slice")!, [xs, next, len])
+        self.call_row(l, rt_sig_of("avra_array_concat")!, [head, tail])
     }
 
     /// What the nullable `e` answers holds when present, and how it's laid out; absent for a

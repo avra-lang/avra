@@ -6,12 +6,13 @@
 impl Lowering {
     /// The registers a call of `callee` hands its seats, in the seats' order; absent for a call this
     /// layer doesn't seat yet: one whose callee takes a `state` or `const` argument, one spreading a
-    /// record, a generic unit handed anything but plain positional arguments, and a `mut` seat's
-    /// argument standing where no write reaches back.
+    /// record, a generic unit handed arguments by name or leaving a seat to its default, and a `mut`
+    /// seat's argument standing where no write reaches back.
     mut fn call_args(callee: CalledFn, args: List<ExprId>) -> List<Reg>? {
         let named = args.any((a) -> self.store.names_its_seat(a))
         if callee.plain && !named { return self.seated_args(callee, args) }
-        if callee.params.is_empty() || !callee.parameters.is_empty() { return null }
+        if callee.params.is_empty() { return null }
+        if !callee.parameters.is_empty() { return self.unit_args(callee, args, named) }
         let rest = callee.params.find_index(it.rest)
         if rest != null { return if named { null } else { self.rest_args(callee, rest!, args) } }
         let seats = self.store.seat_plan(args, [p.name for p in callee.params])
@@ -20,6 +21,19 @@ impl Lowering {
         let regs = [self.seat_arg(callee.params[filling[at]], self.store.unnamed(a)) for at, a in args]
         if regs.any(it == null) { return null }
         [if i >= 0 { regs[i]! } else { self.defaulted(callee, callee.params[j]) } for j, i in seats]
+    }
+
+    /// Each of `args`, by position, into its seat of the generic unit `callee` as its type arguments
+    /// fill it. Absent where one is handed by name, a seat is left to its default or is a rest, or an
+    /// argument isn't seated.
+    mut fn unit_args(callee: CalledFn, args: List<ExprId>, named: bool) -> List<Reg>? {
+        if named ||
+            args.length != callee.params.length ||
+            callee.seats.length != args.length ||
+            callee.params.any(it.rest || it.defaulted) { return null }
+        let regs = [self.seat_arg(callee.params[at] with { ty: callee.seats[at] }, a) for at, a in args]
+        if regs.any(it == null) { return null }
+        [r! for r in regs]
     }
 
     /// The seats before `callee`'s rest seat at `k` filled in order, then one list of every argument

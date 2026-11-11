@@ -247,11 +247,14 @@ export type Lowering = {
     /// is known.
     tests: Cell<List<TaskTest>>,
     /// The `once` bodies lowered, each with the held tests that stand inside it.
-    guards: Cell<List<OnceGuard>>,
     /// Whether a task test is being lowered: one met inside it stands in it.
     holding: bool = false,
     /// The body's seats past a receiver that a write reaches the caller through: its `mut` ones.
     written_seats: List<string> = [],
+    /// The `collect`s open around what's being lowered, innermost last.
+    gathers: Cell<List<Gathering>>,
+    /// The slot of the `once` fn whose body is being lowered, which every exit that answers keeps.
+    once_kept: OnceKept? = null,
 }
 
 /// A walk over a list's places, or a count's: the list it reads, absent for a count; how far it goes;
@@ -284,7 +287,7 @@ export fn lowering(
     let loop_floors: Cell<List<int>> = Cell.new([])
     let labels: Cell<List<List<string>>> = Cell.new([])
     let tests: Cell<List<TaskTest>> = Cell.new([])
-    let guards: Cell<List<OnceGuard>> = Cell.new([])
+    let gathers: Cell<List<Gathering>> = Cell.new([])
     Lowering {
         store: store,
         program: program,
@@ -305,7 +308,7 @@ export fn lowering(
         loop_floors: loop_floors,
         labels: labels,
         tests: tests,
-        guards: guards,
+        gathers: gathers,
     }
 }
 
@@ -693,7 +696,6 @@ impl Lowering {
             site: site,
             at: ins.get().length,
             ins: self.ins.get(),
-            leaves: self.ins.get().any((i) -> fn_exit(i)),
             first: first,
             count: self.layouts.get().length - first,
             missed_at: missing.get().length,
@@ -886,6 +888,23 @@ impl Lowering {
         }
     }
 
+    /// A count from `lo` up to `hi`, each read already.
+    mut fn walk_count(lo: Reg, hi: Reg) -> ListWalk {
+        ListWalk {
+            list: null,
+            len: hi,
+            at: self.seeded_cell(Layout.Word, lo),
+            elem: owned_type("int"),
+            elem_layout: Layout.Word,
+        }
+    }
+
+    /// A count over the range `r`, a box of two slots: from its start up to its end, each read once.
+    mut fn walk_range(r: Reg) -> ListWalk {
+        let lo = self.element_at(Layout.Word, r, self.const_int(0))
+        self.walk_count(lo, self.element_at(Layout.Word, r, self.const_int(1)))
+    }
+
     /// A turn of the walk opened: the loop, its test that the walk stands short of its length, the
     /// turn's scope, then the step past this place. Answers the place.
     mut fn walk_turn(w: ListWalk) -> Reg {
@@ -922,6 +941,7 @@ impl Lowering {
     mut fn answer_exit(answer: Reg?) {
         let gives = answer ?? self.hollow_of(owned_type("void"))
         self.ended_from(0, if answer == null { Leaving.Plain } else { Leaving.Answering(answer!) })
+        self.kept_once(gives)
         self.emit(Ins.FnExit(gives))
     }
 

@@ -167,15 +167,20 @@ fn operand_of(l: Layout) -> Operand? {
     }
 }
 
-/// The kind of the one type both operands are, when it's one the language owns, or a name over one,
-/// applied to nothing and present.
+/// The kind of the one type both operands are, seen through a name either wears, when it's one the
+/// language owns, applied to nothing and present.
 fn operands(mut cx: Lowering, l: ExprId, r: ExprId) -> Operand? {
-    let written? = cx.type_at(l) else { return null }
-    if cx.type_at(r)?.spelled() != written.spelled() { return null }
-    let left = cx.program.checked.named_shape(written) ?? written
+    let left? = seen_type(cx, l) else { return null }
+    if seen_type(cx, r)?.spelled() != left.spelled() { return null }
     if left.nullable() || left.dynamic || !left.args.is_empty() { return null }
     let plain? = owned_only(left) else { return null }
     operand_of(cx.laid_out(plain))
+}
+
+/// The type `e` has, seen through the name it wears.
+fn seen_type(cx: Lowering, e: ExprId) -> SignedType? {
+    let written? = cx.type_at(e) else { return null }
+    cx.program.checked.named_shape(written) ?? written
 }
 
 /// `t` when the language owns it.

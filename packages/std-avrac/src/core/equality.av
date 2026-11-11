@@ -1,11 +1,13 @@
 //! TWO VALUES THE SAME: a number or a truth by one instruction, text and bytes by the runtime's row,
-//! an enum by its tag, and a record of one field by that field, all the way down.
+//! an enum by its tag, a record of one field by that field, all the way down, and two nullables of
+//! one of those by their presence, then what each carries.
 
 impl Lowering {
     /// Whether two values of `ty` compare by value: a number, a truth, text or bytes, an enum by its
-    /// tag, or a record of one field that does.
+    /// tag, a record of one field that does, or a nullable of one of those.
     fn equatable(ty: SignedType) -> bool {
-        if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return false }
+        if ty.nullable() { return !ty.unwrapped().nullable() && self.equatable(ty.unwrapped()) }
+        if ty.dynamic || !ty.args.is_empty() { return false }
         if ty.owned() != null { return comparing(self.program.checked.layout(ty)) != null }
         if self.variants_of(ty) != null { return true }
         let fields? = self.fields_of(ty) else { return false }
@@ -17,6 +19,7 @@ impl Lowering {
 
     /// Whether `a` and `b`, two values of `ty` that `equatable` passes, are the same value.
     mut fn same_value(a: Reg, b: Reg, ty: SignedType) -> Reg {
+        if ty.nullable() { return self.same_held(a, b, ty) }
         if ty.owned() != null {
             return match comparing(self.program.checked.layout(ty))! {
                 .Instruction -> self.bin(Layout.Truth, BinOp.Eq, a, b),
@@ -28,6 +31,17 @@ impl Lowering {
         let fa = self.only_field(a, ty, field)
         let fb = self.only_field(b, ty, field)
         self.same_value(fa, fb, field)
+    }
+
+    /// Whether `a` and `b`, two values of the nullable `ty`, are the same: both absent, or both present
+    /// and the same value.
+    mut fn same_held(a: Reg, b: Reg, ty: SignedType) -> Reg {
+        let plain = ty.unwrapped()
+        self
+            .region(self.present(a, ty), Layout.Truth) { cx ->
+                cx
+                    .region(cx.present(b, ty), Layout.Truth) { cx -> cx.same_value(cx.carried(a, ty), cx.carried(b, ty), plain) } else { cx -> cx.const_bool(false) }
+            } else { cx -> cx.not(cx.present(b, ty)) }
     }
 
     /// The one field of the record `v` of `ty`, a value of `field`.
