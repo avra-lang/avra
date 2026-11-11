@@ -58,6 +58,15 @@ impl Lowering {
         if l.inline() { self.unboxed_at(l, v, at) } else { self.proven_read(l, v, at) }
     }
 
+    /// Field `n` of the record `v` of `ty`, whose fields lay out as `laid`: a flat record's register at
+    /// its place, a boxed one's slots past the fields before it.
+    mut fn field_read(v: Reg, ty: SignedType, laid: List<Layout>, n: int) -> Reg {
+        match self.laid_out(ty) {
+            .Boxed(_) -> self.boxed_field(v, laid, n, laid[n]),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.extracted(laid[n], v, n),
+        }
+    }
+
     /// The tag of the enum `v`: a word enum's own word, a value enum's first, a box's first slot.
     mut fn tag_of(v: Reg) -> Reg {
         match self.layout_of(v) {

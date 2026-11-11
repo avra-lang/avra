@@ -1,5 +1,6 @@
-//! The typing rule of a method call: the method's first seat takes the subject and each argument its
-//! own seat, as a call's do, and the call is what the method answers.
+//! The typing rule of a method call: a fn the subject's field of that name holds is called with the
+//! arguments; else the method's first seat takes the subject and each argument its own seat, as a
+//! call's do, and the call is what the method answers.
 use core.{Checking, Checks, ExprId, Expected, SignedType}
 use core.expr.{MethodCall}
 
@@ -12,11 +13,11 @@ impl Checks for MethodCall {
             if statics != null { return cx.called(statics!, self.args, expected) }
             return cx.variant_built(described!, self.name.of, self.args, expected)
         }
+        let field = if subject == null { null } else { cx.field_of(subject!, self.name.of) }
+        if field != null && field!.head is .Function { return cx.called(field!, self.args, expected) }
         let method = if subject == null { null } else { cx.method_of(subject!, self.name.of) }
-        if method == null {
-            cx.checked_free(self.args)
-            return null
-        }
-        cx.applied(method!, subject!, self.args, expected)
+        if method != null { return cx.applied(method!, subject!, self.args, expected) }
+        cx.checked_free(self.args)
+        null
     }
 }

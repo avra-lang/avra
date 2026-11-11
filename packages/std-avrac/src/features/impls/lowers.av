@@ -27,6 +27,7 @@ impl Lowers for MethodCall {
         if described != null { return through_type(cx, self, e, described!) }
         if subject.dynamic { return dyn_dispatched(cx, self, e, subject) }
         if subject.nullable() { return cx.unlowered(e) }
+        if fn_field_of(cx, subject, self.name.of) != null { return field_called(cx, self, e, subject) }
         match subject.head {
             .Owned(word) -> owned_verb(cx, self, e, subject, word),
             .Declared(_, _) -> declared_method(cx, self, e, subject),
@@ -127,10 +128,18 @@ fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTy
 }
 
 /// The receiver a method writes, then each argument: a `mut` binding's own cell holding a value that
-/// rides no pointer, or a `mut` seat itself, read as it is; a value, or one a seat holds, that rides
-/// a pointer thawed once, here. Absent for any other receiver.
+/// rides no pointer, or a `mut` seat itself, read as it is; one that rides a pointer opened as where
+/// it stands says, after the arguments when a `mut` binding's cell holds it, since they may write the
+/// cell; a value, or one a seat holds, that rides a pointer thawed once, here. Absent for any other
+/// receiver.
 fn written_seats(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
     if cell_rooted(cx, m.subject) || mut_seat_rooted(cx, m.subject) { return seated(cx, m) }
+    let how = written_opening(cx, m.subject)
+    if how != null && in_cell(cx, m.subject) {
+        let args = [cx.lower(a) for a in m.args]
+        return [opened_receiver(cx, m.subject, how!)].concat(args)
+    }
+    if how != null { return [opened_receiver(cx, m.subject, how!)].concat([cx.lower(a) for a in m.args]) }
     if !thawed_here(cx, m.subject) { return null }
     let ty = cx.type_at(m.subject)!
     let thawed = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])

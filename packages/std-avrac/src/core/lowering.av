@@ -34,6 +34,10 @@ export type LoweredProgram = {
     /// The fn whose body is the default of the field of that name a record declares, absent where
     /// the program declares none.
     defaults: fn(SignedType, string) -> CalledFn?,
+    /// The fn `@std/meta` declares by a name, absent where it declares none.
+    meta_fn: fn(string) -> CalledFn?,
+    /// The name the body's file is known by where a template it writes points home.
+    home: string,
 }
 
 /// What a top-level name a body reads or calls is, as its code reads it.
@@ -129,6 +133,9 @@ export type Lowering = {
     loops: Cell<int>,
     /// The type each register was made as, by its index, where its node's type says more.
     worn: Cell<Map<string, SignedType>>,
+    /// Whether each `mut` binding's cell, by its register's index, was seeded with a value read from
+    /// a place.
+    seeds: Cell<Map<string, bool>>,
 }
 
 /// A body of `store` to lower, typed in the core as `types` with its seats' wants `seats`, its fn
@@ -147,6 +154,7 @@ export fn lowering(
     let callees: Cell<List<CalledFn>> = Cell.new([])
     let loops: Cell<int> = Cell.new(0)
     let worn: Cell<Map<string, SignedType>> = Cell.new({})
+    let seeds: Cell<Map<string, bool>> = Cell.new({})
     Lowering {
         store: store,
         program: program,
@@ -160,6 +168,7 @@ export fn lowering(
         callees: callees,
         loops: loops,
         worn: worn,
+        seeds: seeds,
     }
 }
 

@@ -40,7 +40,11 @@ export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts {
                 let d? = resolved(engine, f, Space.Type, i.target).named() else { continue }
                 let tr = if i.implements == null { null } else { resolved(engine, f, Space.Type, i.implements!).named() }
                 let filed = FiledImpl {
-                    at: ImplAt { file: f, item: at, params: i.params },
+                    at: ImplAt {
+                        file: f,
+                        item: at,
+                        params: if i.params.is_empty() { declared_params(engine, d.file, d.name) } else { i.params },
+                    },
                     of: d.file,
                     methods: i.methods,
                     statics: i.statics,
@@ -53,6 +57,12 @@ export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts {
     answer_parts(
         [NamedValue { name: name, value: Filed { impls: held }.saved_bytes() } for name, held in by_type],
     )
+}
+
+/// The type parameters the type `file` declares as `name` stands over: a record's or a component's,
+/// an enum's; none for any other. An impl that names none stands over these.
+fn declared_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    record_signature(engine, file, name)?.type_params ?? enum_signature(engine, file, name)?.type_params ?? []
 }
 
 /// The impls the type `file` declares as `name` has in its package.

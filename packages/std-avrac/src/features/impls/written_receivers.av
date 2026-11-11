@@ -1,0 +1,51 @@
+//! A WRITTEN RECEIVER IS OPENED BY WHERE IT STANDS. A receiver that rides a pointer, on a path below
+//! `self`, a `mut` seat or a `mut` binding's cell, is the path opened unique, so no other holder of
+//! what the path reaches sees the write. A `mut` binding's own name hands over its cell's box opened
+//! unique when the binding was seeded with a value read from a place, and thawed when it was made
+//! fresh for it, which copies only a box the binary laid out.
+use core.{ExprId, Lowering, Reg, rt_sig_of}
+
+/// How a written receiver's box is opened.
+enum Opening {
+    /// The place opened along its path.
+    Path
+    /// A `mut` binding's cell opened unique.
+    Unique(cell: Reg)
+    /// A `mut` binding's cell thawed.
+    Thawed(cell: Reg)
+}
+
+/// How the written receiver `subject` is opened; absent for one that rides no pointer, or that
+/// stands anywhere else.
+fn written_opening(cx: Lowering, subject: ExprId) -> Opening? {
+    let ty? = cx.type_at(subject) else { return null }
+    let l? = cx.program.checked.layout(ty) else { return null }
+    if !l.pointer() { return null }
+    let root? = cx.store.place_root(subject) else { return null }
+    let name? = root_name(cx, subject) else { return null }
+    let b? = cx.bound(name) else { return null }
+    if root.index != subject.index {
+        let opens = match b {
+            .Slot(_, _) -> true,
+            .Value(_, _) -> cx.seat_named(name) && mut_seat(cx, name),
+            .Outer(_, _, _) -> false,
+        }
+        return if opens { Opening.Path } else { null }
+    }
+    match b {
+        .Slot(cell, _) -> {
+            let lent? = cx.seed_lent(cell) else { return null }
+            if lent { Opening.Unique(cell) } else { Opening.Thawed(cell) }
+        },
+        .Value(_, _) or .Outer(_, _, _) -> null,
+    }
+}
+
+/// The written receiver `subject`'s box, opened as `how` says.
+fn opened_receiver(mut cx: Lowering, subject: ExprId, how: Opening) -> Reg {
+    match how {
+        .Path -> cx.opened_place(subject),
+        .Unique(cell) -> cx.call_row(cx.layout_at(subject), rt_sig_of("avra_cell_unique")!, [cell]),
+        .Thawed(cell) -> cx.call_row(cx.layout_at(subject), rt_sig_of("avra_cell_thawed")!, [cell]),
+    }
+}

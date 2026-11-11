@@ -199,19 +199,6 @@ impl Lowering {
         }
     }
 
-    /// The box the place `s` holds, opened for a write: a `mut` binding's cell opened unique, a seat's
-    /// box thawed. A place on a path, or rooted in a binding that's neither, isn't lowered yet.
-    mut fn opened_place(s: ExprId) -> Reg {
-        let step? = self.store.place_step(s) else { return self.missed_as("a write through a value") }
-        let name? = match step { .Root(n) -> n.of, rest -> null } else { return self.missed_as("a write along a path") }
-        let b? = self.bound(name) else { return self.missed_as("a write through a name the body doesn't bind") }
-        match b {
-            .Slot(cell, ty) -> self.call_row(self.laid_out(ty), rt_sig_of("avra_cell_unique")!, [cell]),
-            .Value(r, ty) -> if self.seat_named(name) { self.call_row(self.laid_out(ty), rt_sig_of("avra_box_thawed")!, [r]) } else { self.missed_as("a write through a binding with no cell") },
-            .Outer(_, _, _) -> self.missed_as("a write through a name a lambda captures"),
-        }
-    }
-
     /// The list or map the cell `subject` holds, opened for a write in place.
     mut fn held_opened(subject: ExprId) -> Reg {
         let cell_ty? = self.type_at(subject) else { return self.unlowered(subject) }

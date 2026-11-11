@@ -266,6 +266,22 @@ impl Checking {
         } for at, p in params], answer: answer }
     }
 
+    /// Arms read as a lambda of one parameter that they match, checked against `expected`: each arm
+    /// binds against the seat's parameter and checks against its answer in a fenced scope; the
+    /// seat's fn type when every part of it is known, absent otherwise.
+    mut fn arms_lambda_checked(arms: List<Arm>, expected: Expected) -> SignedType? {
+        let seat = seat_fn(expected, 1)
+        let held = known(seat?.seats?.get(0)?.ty)
+        let wanted = known(seat?.answer)
+        self.fenced()
+        for a in arms {
+            let _ = self
+                .arm_checked(a, held, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
+        }
+        self.closed()
+        if held == null || wanted == null { null } else { seat }
+    }
+
     /// What `e` was checked as, absent when it wasn't.
     fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
 

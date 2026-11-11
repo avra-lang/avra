@@ -119,6 +119,8 @@ fn lowered_signed(
             tagged: tagged,
             reshaped: reshaped,
             defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
+            meta_fn: (n: string) -> meta_callee(engine, n),
+            home: "${file.package_name}:${file.path_in_package}",
         },
         body.core,
         body.seats,
@@ -177,6 +179,12 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
         },
         .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State -> null,
     }
+}
+
+/// The fn `@std/meta` declares as `name`, as a call reaches it.
+fn meta_callee(engine: QueryEngine, name: string) -> CalledFn? {
+    let d? = declarations_of(engine, META, [], false, name).find(space_of(it.kind) == Space.Value) else { return null }
+    callee_of(engine, d)
 }
 
 /// The fn `d` names, as a call reaches it: an extern by the symbol C knows it by, a declared fn by
