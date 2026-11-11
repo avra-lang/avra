@@ -39,13 +39,24 @@ fn quote_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
     let parts = listed(
         cx,
         cx.laid_out(list_of(owned_type("string"))),
-        [cx.const_str(p) for p in b.parts],
+        [cx.const_str(spread_marked(cx, b, kinds, j, p)) for j, p in b.parts],
     )
     let fills = [filled(cx, classes[k]!, kinds[k], h, node) for k, h in b.holes]
     let nodes = listed(cx, cx.laid_out(list_of(node)), fills)
     let whole = cx.call_fn(cx.laid_out(node), template, [file, at, parts, nodes])
     cx.call_fn(cx.layout_at(e), wrapping, [whole])
 }
+
+/// The run `p` before the hole `j` of `b`, ending in a spread's `..` where that hole is a run
+/// (`${..xs}`) standing in a run's seat, among expressions: `..${xs}` is the spelling the splice
+/// reads it by there, so the mark rides the text.
+fn spread_marked(cx: Lowering, b: Body, kinds: List<HoleKind>, j: int, p: string) -> string {
+    if j >= b.holes.length || !cx.store.is_run_hole(b.holes[j]) { return p }
+    match kinds[j] { .Run -> "${p}${SPREAD}", rest -> p }
+}
+
+/// How a run's spread is written.
+const SPREAD: string = ".."
 
 /// The seat each hole of the quote `e` stands in: where it's written, or for a body of holes alone,
 /// the one the kind its fills make gives each.

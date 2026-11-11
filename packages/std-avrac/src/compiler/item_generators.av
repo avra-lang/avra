@@ -178,9 +178,20 @@ export fn generator_run(
         budgets,
         (n: string) -> named_lifted(engine, file, n),
     ) {
-        .Ok(lifted) -> GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems()),
+        .Ok(lifted) -> if answers_declared(engine, g) {
+            GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems())
+        } else {
+            GeneratorRun.Ran(lifted.directives(), [])
+        },
         .Err(why) -> GeneratorRun.Stopped(unsettled_label(g.name, why)),
     }
+}
+
+/// Whether the generator `g` is declared to answer `@std/meta`'s `Declared`, its directives beside
+/// what it says, rather than its directives alone.
+fn answers_declared(engine: QueryEngine, g: GeneratorAt) -> bool {
+    let answer? = generator_body(engine, g)?.signature?.answer else { return false }
+    meta_named(answer, DECLARED)
 }
 
 /// The declaration `file` writes as `name`, as the meta value a generator of `kind` is handed, laid
@@ -275,7 +286,14 @@ fn annotation_sites(
 export fn declares_over_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     let sig? = fn_signature(engine, file, name) else { return false }
     let first? = sig.params.first()?.ty else { return false }
-    meta_named(first, META_FN) && meta_named(sig.answer, DECLARED)
+    meta_named(first, META_FN) &&
+        (meta_named(sig.answer, DECLARED) || directives_listed(sig.answer))
+}
+
+/// Whether `ty` is a list of `@std/meta`'s `Directive`s.
+fn directives_listed(ty: SignedType) -> bool {
+    let element? = ty.listed() else { return false }
+    meta_named(element, DIRECTIVE)
 }
 
 /// Whether `ty` is `@std/meta`'s `name`, present.
@@ -298,6 +316,9 @@ const META_FN: string = "Fn"
 
 /// What a declaring annotation answers.
 const DECLARED: string = "Declared"
+
+/// What a generator answers a list of, beside a `Declared`.
+const DIRECTIVE: string = "Directive"
 
 collect listed_generator_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 

@@ -258,6 +258,8 @@ impl CheckedProgram {
 
     /// `ty`'s layout while the enums `laying` are being laid out, each read meanwhile as boxed.
     fn laid(ty: SignedType, laying: List<SignedType>) -> Layout? {
+        let shape = self.named_shape(ty)
+        if shape != null { return self.laid(shape!, laying) }
         if ty.nullable() { return self.nullable_laid(ty.unwrapped(), laying) }
         if ty.dynamic { return Layout.Boxed(BoxKind.Dyn) }
         if !ty.alternatives.is_empty() { return Layout.Boxed(BoxKind.Union) }
@@ -319,6 +321,8 @@ impl CheckedProgram {
     /// A `Result` side's one word: 0 a scalar or an enum's tag, 1 a pointer the runtime counts;
     /// absent for anything else.
     fn side_word(t: SignedType, laying: List<SignedType>) -> int? {
+        let shape = self.named_shape(t)
+        if shape != null { return self.side_word(shape!, laying) }
         if t.nullable() { return if self.laid(t, laying)?.pointer() == true { 1 } else { null } }
         if t.dynamic { return 1 }
         if !t.alternatives.is_empty() { return null }
@@ -378,7 +382,8 @@ impl CheckedProgram {
     fn variant_word(owner: SignedType, v: VariantSeat, laying: List<SignedType>) -> int? {
         if v.payloads.length > 1 { return null }
         let p? = v.payloads.first() else { return 0 }
-        let t? = p.ty else { return null }
+        let written? = p.ty else { return null }
+        let t = self.named_shape(written) ?? written
         if t.nullable() {
             if t.unwrapped().names_as(owner) { return 1 }
             return if self.laid(t, laying)?.pointer() == true { 1 } else { null }
@@ -408,12 +413,22 @@ impl CheckedProgram {
     /// A field a flat record may hold: an `int`, a `bool`, an enum whose variants carry nothing, or
     /// that enum's nullable.
     fn scalar_field(t: SignedType) -> bool {
+        let shape = self.named_shape(t)
+        if shape != null { return self.scalar_field(shape!) }
         if t.nulls > 1 || t.dynamic || !t.alternatives.is_empty() { return false }
         match t.head {
             .Owned(name) -> t.nulls == 0 && (name == "int" || name == "bool"),
             .Declared(_, _) -> self.word_enum(t.unwrapped()),
             .Parameter(_, _) or .Inferred or .Unnamed(_) or .Function or .Never or .Meta -> false,
         }
+    }
+
+    /// The shape the named type `ty` stands over, its nulls kept: what a value of it is to the
+    /// machine. Absent for any other type.
+    fn named_shape(ty: SignedType) -> SignedType? {
+        if ty.dynamic { return null }
+        let shape? = (self.named_of)(ty with { nulls: 0 }) else { return null }
+        shape with { nulls: shape.nulls + ty.nulls }
     }
 
     /// Whether `t` names an enum whose variants carry nothing.

@@ -5,6 +5,7 @@
 //! name does.
 use core.{
     Member,
+    NamedParts,
     INFERRED,
     headed_type,
     Param,
@@ -41,9 +42,10 @@ export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settle
 @derive(Saved)
 export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string? }
 
-/// What an alias stands for: its type parameters and the type it names, resolved where it's declared.
+/// What a name declared over a shape stands over: its type parameters and the shape, resolved where
+/// it's declared. An alias is that shape; a named type is a distinct type over it.
 @derive(Saved)
-export type AliasTarget = { type_params: List<string>, of: SignedType }
+export type NameOver = { type_params: List<string>, of: SignedType }
 
 /// The signature of the fn `file` declares as `name`, absent when it declares none.
 @query
@@ -64,16 +66,12 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
     }
 }
 
-/// The type a top-level binding — a `const` or a `collect` — `file` declares as `name` is written
+/// The type a top-level binding — a `const`, a `collect` or a `state` — `file` declares as `name` is written
 /// with, resolved where it's declared; absent when it declares none or writes no type.
 @query
 export fn binding_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
-    let item? = declaring_item(engine, file, name, ItemKind.Const) ?? declaring_item(
-        engine,
-        file,
-        name,
-        ItemKind.Collect,
-    ) else { return null }
+    let item? = [ItemKind.Const, ItemKind.Collect, ItemKind.State]
+        .find_map((k) -> declaring_item(engine, file, name, k)) else { return null }
     let written = [t! for s in item.stmts if item.store.let_name(s) == name for t in [item.store.binding_ty(s)] if t != null]
         .first()
     if written == null { null } else { Signing { engine: engine, file: file, type_params: [] }.signed(written!) }
@@ -108,14 +106,38 @@ fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name
 
 /// What the alias `file` declares as `name` stands for, absent when it declares none.
 @query
-export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: string) -> AliasTarget? {
+export fn alias_target(engine: QueryEngine, file: SourceFileAddress, name: string) -> NameOver? {
     let item? = declaring_item(engine, file, name, ItemKind.Alias) else { return null }
     let parts? = [a! for s in item.stmts for a in [item.store.alias_parts(s)] if a != null]
         .find(it.name == name) else { return null }
-    AliasTarget {
+    name_over(engine, file, parts)
+}
+
+/// The shape the named type `file` declares as `name` stands over, absent when it declares none.
+@query
+export fn named_shape(engine: QueryEngine, file: SourceFileAddress, name: string) -> NameOver? {
+    let item? = declaring_item(engine, file, name, ItemKind.Named) else { return null }
+    let parts? = [n! for s in item.stmts for n in [item.store.named_parts(s)] if n != null]
+        .find(it.name == name) else { return null }
+    name_over(engine, file, parts)
+}
+
+/// What a name `file` declares over a shape stands over.
+fn name_over(engine: QueryEngine, file: SourceFileAddress, parts: NamedParts) -> NameOver {
+    NameOver {
         type_params: parts.tparams,
         of: Signing { engine: engine, file: file, type_params: parts.tparams }.signed(parts.of),
     }
+}
+
+/// The shape the named type `ty` stands over, bound to the arguments it's applied to; absent for any
+/// other type, an optional or dynamic one among them.
+export fn named_over(engine: QueryEngine, ty: SignedType) -> SignedType? {
+    if ty.nullable() || ty.dynamic { return null }
+    let at? = declared_at(ty) else { return null }
+    let over? = named_shape(engine, at.file, at.name) else { return null }
+    if ty.args.length != over.type_params.length { return null }
+    over.of.bound(ty.args)
 }
 
 /// A record's field: its name, its type resolved where the record is declared, and whether it's a
@@ -349,7 +371,7 @@ impl Signing {
     }
 
     /// What a head names when it names an alias.
-    fn aliased(head: TypeHead) -> AliasTarget? {
+    fn aliased(head: TypeHead) -> NameOver? {
         match head {
             .Declared(file, name) -> alias_target(self.engine, file, name),
             .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
