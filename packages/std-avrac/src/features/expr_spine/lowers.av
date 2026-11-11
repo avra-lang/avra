@@ -4,6 +4,8 @@
 use core.{
     BinOp,
     NAMED_FIELD,
+    enum_property_named,
+    state_read,
     witness_only,
     ExprId,
     Layout,
@@ -74,7 +76,7 @@ impl Lowers for Prop {
         if variants != null { return enum_property(cx, e, variants!, self.name.of, cx.lower(self.subject)) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
         let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
-        if fields[n].state { return cx.missed_as("a `state` field's read") }
+        if fields[n].state { return cx.missed_as(state_read()) }
         let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
         let v = cx.lower(self.subject)
         let l = cx.layout_at(e)
@@ -89,8 +91,12 @@ impl Lowers for Prop {
 /// place, and its variant's name the text the tag selects.
 fn enum_property(mut cx: Lowering, e: ExprId, variants: List<VariantSeat>, name: string, v: Reg) -> Reg {
     let tag = cx.tag_of(v)
-    if name == "ordinal" { return tag }
-    if name != "name" { return cx.unlowered(e) }
+    let property? = enum_property_named(name) else { return cx.unlowered(e) }
+    match property { .Ordinal -> tag, .Name -> variant_name(cx, e, variants, tag) }
+}
+
+/// The name of the variant of `variants` the tag `tag` selects.
+fn variant_name(mut cx: Lowering, e: ExprId, variants: List<VariantSeat>, tag: Reg) -> Reg {
     let last = variants.length - 1
     if last == 0 { return cx.const_str(variants[0].name) }
     cx
