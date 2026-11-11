@@ -15,7 +15,9 @@ use core.{
     SignedType,
     TraitMember,
     OwnRow,
+    OwnType,
     own_row_of,
+    witness_only,
     own_shape,
     rt_sig_of,
 }
@@ -34,7 +36,7 @@ impl Lowers for MethodCall {
         match subject.head {
             .Owned(word) -> owned_verb(cx, self, e, subject, word),
             .Declared(_, _) -> declared_method(cx, self, e, subject),
-            .Parameter(_, _) -> cx.missed_as("a method of a type parameter, which only a witness answers"),
+            .Parameter(_, _) -> cx.missed_as(witness_only("a method of a type parameter")),
             .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> cx.unlowered(e),
         }
     }
@@ -59,12 +61,12 @@ fn through_type(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> R
     if tag != null { return cx.tagged_value(cx.laid_out(made), tag!, [cx.lower(a) for a in m.args]) }
     match ty.head {
         .Owned(word) -> {
-            let shape? = own_shape(word, m.name.of) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+            let shape? = own_shape(ty, m.name.of) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
             if !shape.on_the_type() { return cx.missed_as(verb_unlowered(word, m.name.of)) }
             cx.own_verb_lowered(shape, e, m.subject, m.args)
         },
         .Declared(_, _) -> static_called(cx, m, e, ty),
-        .Parameter(_, _) -> cx.missed_as("a static fn or variant of a type parameter, which only a witness answers"),
+        .Parameter(_, _) -> cx.missed_as(witness_only("a static fn or variant of a type parameter")),
         .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> cx.missed_as("a call through a type"),
     }
 }
@@ -81,18 +83,22 @@ fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> 
 /// A verb on a type the language owns: its row, handed the receiver then each argument, or the shape
 /// of rows it is.
 fn owned_verb(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, word: string) -> Reg {
-    let own? = own_row_of(subject, m.name.of) else { return shaped_verb(cx, m, e, word) }
+    let own? = own_row_of(subject, m.name.of) else { return shaped_verb(cx, m, e, subject, word) }
     owned_row(cx, m, e, word, own)
 }
 
 /// A verb on a type the language owns that is a shape of rows.
-fn shaped_verb(mut cx: Lowering, m: MethodCall, e: ExprId, word: string) -> Reg {
-    let shape? = own_shape(word, m.name.of) else {
-        return cx.list_walked(m, e, word) ?? cx.int_wrapped(m, e, word) ?? cx
-            .map_entries(m, e, word) ?? cx.missed_as(verb_unlowered(word, m.name.of))
-    }
+fn shaped_verb(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, word: string) -> Reg {
+    let shape? = own_shape(subject, m.name.of) else { return owned_rule(cx, m, e, subject) ?? cx.missed_as(verb_unlowered(word, m.name.of)) }
     if shape.on_the_type() || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(verb_unlowered(word, m.name.of)) }
     cx.own_verb_lowered(shape, e, m.subject, m.args)
+}
+
+/// A verb on a type the language owns that its own feature's rule lowers: a walk, a wrapping
+/// operator, a map's entries; absent, with nothing emitted, for any other.
+fn owned_rule(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg? {
+    let own? = subject.own() else { return null }
+    cx.list_walked(m, e, own) ?? cx.int_wrapped(m, e, own) ?? cx.map_entries(m, e, own)
 }
 
 /// A verb on a type the language owns that is one row.

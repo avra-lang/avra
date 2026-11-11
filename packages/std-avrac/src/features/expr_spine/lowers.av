@@ -4,6 +4,9 @@
 use core.{
     BinOp,
     NAMED_FIELD,
+    enum_property_named,
+    state_read,
+    witness_only,
     ExprId,
     Layout,
     Lowering,
@@ -13,7 +16,7 @@ use core.{
     RtSig,
     SignedType,
     VariantSeat,
-    own_row,
+    own_row_of,
     own_shape,
     rt_sig_of,
 }
@@ -73,7 +76,7 @@ impl Lowers for Prop {
         if variants != null { return enum_property(cx, e, variants!, self.name.of, cx.lower(self.subject)) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
         let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
-        if fields[n].state { return cx.missed_as("a `state` field's read") }
+        if fields[n].state { return cx.missed_as(state_read()) }
         let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
         let v = cx.lower(self.subject)
         let l = cx.layout_at(e)
@@ -88,8 +91,12 @@ impl Lowers for Prop {
 /// place, and its variant's name the text the tag selects.
 fn enum_property(mut cx: Lowering, e: ExprId, variants: List<VariantSeat>, name: string, v: Reg) -> Reg {
     let tag = cx.tag_of(v)
-    if name == "ordinal" { return tag }
-    if name != "name" { return cx.unlowered(e) }
+    let property? = enum_property_named(name) else { return cx.unlowered(e) }
+    match property { .Ordinal -> tag, .Name -> variant_name(cx, e, variants, tag) }
+}
+
+/// The name of the variant of `variants` the tag `tag` selects.
+fn variant_name(mut cx: Lowering, e: ExprId, variants: List<VariantSeat>, tag: Reg) -> Reg {
     let last = variants.length - 1
     if last == 0 { return cx.const_str(variants[0].name) }
     cx
@@ -132,16 +139,14 @@ fn either(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
 
 /// The row a property of a type the language owns is, absent for any other property.
 fn owned_property(ty: SignedType, name: string) -> RtSig? {
-    let word? = ty.owned() else { return null }
-    let own? = own_row(word, name) else { return null }
+    let own? = own_row_of(ty, name) else { return null }
     rt_sig_of(own.row)
 }
 
 /// The shape of rows the property `name` of a value of `ty`, a type the language owns, is; absent
 /// for one that's no such shape, or one called through the type.
 fn owned_shape(ty: SignedType, name: string) -> OwnVerb? {
-    let word? = ty.owned() else { return null }
-    let shape? = own_shape(word, name) else { return null }
+    let shape? = own_shape(ty, name) else { return null }
     if shape.on_the_type() { null } else { shape }
 }
 
@@ -241,7 +246,7 @@ fn compared_held(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? 
 
 /// `l == r` past every rule: over a type parameter, what only a witness answers.
 fn uncompared(mut cx: Lowering, e: ExprId, l: ExprId, r: ExprId) -> Reg {
-    if cx.type_at(l)?.generic() ?? false || cx.type_at(r)?.generic() ?? false { return cx.missed_as("`==` over a type parameter, which only a witness answers") }
+    if cx.type_at(l)?.generic() ?? false || cx.type_at(r)?.generic() ?? false { return cx.missed_as(witness_only("`==` over a type parameter")) }
     cx.unlowered(e)
 }
 

@@ -14,6 +14,7 @@ use core.{
     StmtId,
     SyntaxArena,
     TypeHead,
+    own_type_named,
     Variant as VariantDecl,
     faceted,
     headed_type,
@@ -380,20 +381,21 @@ export fn signed_kind(ty: SignedType) -> Kind {
 /// The shape of a type the language owns, named `word`; unspelled for one `Kind` has no word for.
 fn owned_kind(word: string, ty: SignedType) -> Kind {
     let args = [signed_kind(a) for a in ty.args]
-    match word {
-        "int" -> Kind.Int,
-        "float" -> Kind.Float,
-        "bool" -> Kind.Bool,
-        "string" -> Kind.Str,
-        "ptr" -> Kind.Ptr,
-        "void" -> Kind.Void,
-        "Bytes" -> Kind.Bytes,
-        "List" -> if args.length == 1 { Kind.List(args[0]) } else { Kind.Unspelled(ty.spelled()) },
-        "Cell" -> if args.length == 1 { Kind.Cell(args[0]) } else { Kind.Unspelled(ty.spelled()) },
-        "Map" -> if args.length == 2 { Kind.Map(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
-        "Result" -> if args.length == 2 { Kind.Result(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
-        "Task" or "Tasks" -> Kind.Named(word, args),
-        _ -> Kind.Unspelled(ty.spelled()),
+    let own? = own_type_named(word) else { return Kind.Unspelled(ty.spelled()) }
+    match own {
+        .Int -> Kind.Int,
+        .Float -> Kind.Float,
+        .Bool -> Kind.Bool,
+        .Str -> Kind.Str,
+        .Ptr -> Kind.Ptr,
+        .Void -> Kind.Void,
+        .Bytes -> Kind.Bytes,
+        .List -> if args.length == 1 { Kind.List(args[0]) } else { Kind.Unspelled(ty.spelled()) },
+        .Cell -> if args.length == 1 { Kind.Cell(args[0]) } else { Kind.Unspelled(ty.spelled()) },
+        .Map -> if args.length == 2 { Kind.Map(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
+        .Result -> if args.length == 2 { Kind.Result(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
+        .Task or .Tasks -> Kind.Named(word, args),
+        .Range -> Kind.Unspelled(ty.spelled()),
     }
 }
 
