@@ -120,10 +120,11 @@ fn folded_code(cx: Lowering, m: MethodCall) -> int? {
 fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
     let declared? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     let callee? = cx.instantiated_on(declared, subject, m.name.of) else { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
-    if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    if !callee.plain && callee.params.is_empty() { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     if callee.unproved != null { return cx.missed_as(write_unproved(callee.unproved!)) }
     let seats = if callee.writes { written_seats(cx, m, callee) } else { seated(cx, m, callee) }
-    if seats == null { return cx.missed_as(written_unlowered(cx, m.subject, callee.writes)) }
+    if seats == null && plain_args(cx, m, callee) { return cx.missed_as(written_unlowered(cx, m.subject, callee.writes)) }
+    if seats == null { return cx.missed_as(unseated(subject, m.name.of)) }
     cx.call_fn(cx.layout_at(e), callee, seats!)
 }
 
@@ -136,14 +137,19 @@ fn written_seats(mut cx: Lowering, m: MethodCall, callee: CalledFn) -> List<Reg>
     if cx.cell_rooted(m.subject) || cx.mut_seat_rooted(m.subject) { return seated(cx, m, callee) }
     let how = cx.written_opening(m.subject)
     if how != null && cx.in_cell(m.subject) {
-        let args = cx.seated_args(callee, m.args)
+        let args? = cx.call_args(callee, m.args) else { return null }
         return [cx.opened_written(m.subject, how!)].concat(args)
     }
-    if how != null { return [cx.opened_written(m.subject, how!)].concat(cx.seated_args(callee, m.args)) }
+    if how != null {
+        let opened = cx.opened_written(m.subject, how!)
+        let args? = cx.call_args(callee, m.args) else { return null }
+        return [opened].concat(args)
+    }
     if !thawed_here(cx, m.subject) { return null }
     let ty = cx.type_at(m.subject)!
     let thawed = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
-    [thawed].concat(cx.seated_args(callee, m.args))
+    let args? = cx.call_args(callee, m.args) else { return null }
+    [thawed].concat(args)
 }
 
 /// Whether a written receiver is thawed at the call: it rides a pointer, and it's a value or a place
@@ -180,17 +186,27 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
 /// where the method is a declared one; a receiver read out of a `mut` binding's cell is read after
 /// the arguments, which may write the cell. Absent for a receiver on a path that starts in a cell.
 fn seated(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
-    if !cx.in_cell(m.subject) { return [cx.lower(m.subject)].concat(args_lowered(cx, m, callee)) }
+    if !cx.in_cell(m.subject) {
+        let receiver = cx.lower(m.subject)
+        let args? = args_lowered(cx, m, callee) else { return null }
+        return [receiver].concat(args)
+    }
     if cx.store.place_root(m.subject)?.index != m.subject.index { return null }
-    let args = args_lowered(cx, m, callee)
+    let args? = args_lowered(cx, m, callee) else { return null }
     [cx.lower(m.subject)].concat(args)
 }
 
-/// Each argument lowered, into its seat of `callee` where the method is a declared one.
-fn args_lowered(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg> {
+/// Each argument lowered, into its seat of `callee` where the method is a declared one: by its name
+/// or its place, a seat none fills its default's value. Absent where a call of `callee` isn't seated
+/// yet.
+fn args_lowered(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
     let c? = callee else { return [cx.lower(a) for a in m.args] }
-    cx.seated_args(c, m.args)
+    cx.call_args(c, m.args)
 }
+
+/// Whether a call of the declared `callee` hands its arguments by position into seats that promise
+/// nothing and have no default.
+fn plain_args(cx: Lowering, m: MethodCall, callee: CalledFn) -> bool { callee.plain && !m.args.any((a) -> cx.store.names_its_seat(a)) }
 
 // ── Voices ──────────────────────────────────────────────────────────
 
@@ -199,6 +215,8 @@ fn verb_unlowered(word: string, name: string) -> string { "`${word}.${name}`" }
 fn method_unlowered(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`" }
 
 fn static_unlowered(ty: SignedType, name: string) -> string { "the static fn `${name}` of `${ty.spelled()}`" }
+
+fn unseated(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`, a seat by name or by default not seated" }
 
 fn write_unproved(why: string) -> string { "a method that may write its receiver: ${why}" }
 

@@ -77,22 +77,25 @@ fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
         !call.pins.is_empty() && call.pins.length != callee.type_params { null } else { callee }
 }
 
-/// A call of a fn value the body binds, by position into seats that promise nothing: its arguments
-/// in order, then the code its box holds, handed the box first.
+/// A call of a fn value the body binds, by position into seats that promise nothing or are written
+/// through: its arguments in order, a `mut` seat's the place it writes through, then the code its box
+/// holds, handed the box first.
 fn called_value(mut cx: Lowering, call: Call, e: ExprId, b: Bound) -> Reg {
     if !plain_value_call(cx, call, b.type()) { return cx.missed_as("a call of a fn value through a seat that promises or by name") }
-    let args = [cx.lower(a) for a in call.args]
+    let seats = b.type().seats
+    let args = [if seats[at].mutable { cx.written_arg(a) } else { cx.lower(a) } for at, a in call.args]
+    if args.any(it == null) { return cx.missed_as("a fn value's `mut` seat handed a place no write reaches back from") }
     let box = cx.held(b)
-    cx.called_code(cx.layout_at(e), cx.code_of(box), box, args)
+    cx.called_code(cx.layout_at(e), cx.code_of(box), box, [a! for a in args])
 }
 
 /// Whether `call` hands the fn value of type `ty` its arguments by position into seats that promise
-/// nothing.
+/// nothing or are written through.
 fn plain_value_call(cx: Lowering, call: Call, ty: SignedType) -> bool {
     ty.head is .Function &&
         !ty.nullable() &&
         ty.seats.length == call.args.length &&
-        !ty.seats.any(it.mutable || it.settled) &&
+        !ty.seats.any(it.settled) &&
         call.pins.is_empty() &&
         !call.args.any((a) -> cx.store.names_its_seat(a))
 }

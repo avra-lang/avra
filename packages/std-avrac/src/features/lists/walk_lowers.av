@@ -1,5 +1,5 @@
 //! The lowering rules of the walks a list takes a fn for — `find`, `any`, `all`, `map`, `filter`,
-//! `fold` — and of `contains`, `take`, `drop` and `sum`: the list first, then what the answer gathers in, then the fn or the
+//! `fold` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then what the answer gathers in, then the fn or the
 //! value sought, then one walk over the list handing each element to the fn or comparing it. A lambda capturing nothing, of one expression that leaves nothing
 //! to the walk's frame, is asked in place, its seats bound to what it's handed; any other fn through
 //! its box, its code read once before the walk.
@@ -29,6 +29,7 @@ enum WalkVerb {
     Filter
     Fold
     Contains
+    IndexOf
     Take
     Drop
     Sum
@@ -44,28 +45,12 @@ fn walk_verb(name: string) -> WalkVerb? {
         "filter" -> WalkVerb.Filter,
         "fold" -> WalkVerb.Fold,
         "contains" -> WalkVerb.Contains,
+        "index_of" -> WalkVerb.IndexOf,
         "take" -> WalkVerb.Take,
         "drop" -> WalkVerb.Drop,
         "sum" -> WalkVerb.Sum,
         rest -> null,
     }
-}
-
-/// Whether the verb `name` hands its walk on to a walk after it, which runs both as one.
-fn adapts(name: string) -> bool {
-    [
-        "map",
-        "filter",
-        "filter_map",
-        "flat_map",
-        "flatten",
-        "chars",
-        "take",
-        "drop",
-        "take_while",
-        "drop_while",
-    ]
-        .contains(name)
 }
 
 impl Lowering {
@@ -78,10 +63,9 @@ impl Lowering {
     }
 }
 
-/// The walk `verb` over `m`'s receiver. One over a walk it runs as one with isn't lowered yet.
+/// The walk `verb` over `m`'s receiver; a receiver that is itself a walk is the list it answers.
 fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> Reg {
     let elem? = cx.type_at(m.subject)?.listed() else { return cx.unlowered(e) }
-    if runs_as_one(cx, m.subject) { return cx.missed_as("a walk over a walk it runs as one with") }
     if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.unlowered(e) }
     match verb {
         .Find -> found(cx, m, e, elem),
@@ -91,17 +75,10 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
         .Filter -> gathered(cx, m, e, elem, false),
         .Fold -> folded(cx, m, e, elem),
         .Contains -> contained(cx, m, e, elem),
+        .IndexOf -> indexed(cx, m, e, elem),
         .Take -> limited(cx, m, e, elem, true),
         .Drop -> limited(cx, m, e, elem, false),
         .Sum -> summed(cx, m, e, elem),
-    }
-}
-
-/// Whether a receiver is itself a walk that runs as one with the walk over it.
-fn runs_as_one(cx: Lowering, subject: ExprId) -> bool {
-    match cx.store.expr(cx.meaning_of(subject)) {
-        .MethodCall(_, name, _) -> adapts(name.of),
-        rest -> false,
     }
 }
 
@@ -203,6 +180,22 @@ fn contained(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Re
     cx.loaded(Layout.Truth, cell)
 }
 
+/// `xs.index_of(x)`: a place seeded -1, made the place of the first element that is the same value
+/// as `x`, which ends the walk. One over elements that don't compare by value isn't lowered yet.
+fn indexed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    if !cx.equatable(elem) { return cx.missed_as("an `index_of` over elements that don't compare by value") }
+    let xs = cx.lower(m.subject)
+    let cell = cx.seeded_cell(Layout.Word, cx.const_int(-1))
+    let needle = cx.lower(m.args[0])
+    let w = cx.walk_list(xs, elem)
+    let here = cx.walk_turn(w)
+    let v = cx.element_at(w.elem_layout, xs, here)
+    cx.void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, here) }
+    cx.loop_end()
+    cx.loaded(Layout.Word, cell)
+}
+
 /// `xs.take(n)` / `xs.drop(n)`: an empty list, and a count of the elements that reach the limit; each
 /// element pushed while the count stands short of `n` and the walk ended once it doesn't, for `take`,
 /// or each once the count reaches `n`, for `drop`.
@@ -259,7 +252,7 @@ fn asked(mut cx: Lowering, f: ExprId, seats: int) -> Asked {
     Asked.Boxed(box, cx.code_of(box))
 }
 
-/// `f` asked in place: a lambda of `seats` plain seats, capturing nothing, whose body is one
+/// `f` asked in place: a lambda of `seats` plain seats, none written through, capturing nothing, whose body is one
 /// expression with no `?`, `catch` or statement acting on the frame it would stand in. Absent for any
 /// other fn.
 fn in_place(mut cx: Lowering, f: ExprId, seats: int) -> Asked? {
@@ -269,7 +262,7 @@ fn in_place(mut cx: Lowering, f: ExprId, seats: int) -> Asked? {
         rest -> null,
     } else { return null }
     let ty? = cx.type_at(at) else { return null }
-    if lam.params.length != seats || lift_refusal(lam, ty) != null { return null }
+    if lam.params.length != seats || lift_refusal(lam, ty) != null || ty.seats.any(it.mutable) { return null }
     let body? = inline_body(cx.store, lam.body) else { return null }
     if !inline_safe(cx.store, body) || !captures_nothing(cx, lam, ty, at) { return null }
     Asked.InPlace(lam.params, [s.ty for s in ty.seats], body)
