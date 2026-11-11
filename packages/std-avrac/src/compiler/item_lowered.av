@@ -39,7 +39,6 @@ use core.{
     instance_symbol,
     lowering,
     module_path,
-    some_list,
     tests_placed,
     new_node_store,
     rt_sig_of,
@@ -614,16 +613,7 @@ fn method_callee(
     if impls.length != 1 { return null }
     let at = impls[0]
     let sig? = method_signature(engine, at, name) else { return null }
-    let used = when {
-        statics -> ReceiverUse.Read
-        at.file.package_name != declared.file.package_name -> foreign_use(
-            engine,
-            at,
-            declared,
-            name,
-        )
-        _ -> receiver_use(engine, declared.file, declared.name, name)
-    }
+    let used = if statics { ReceiverUse.Read } else { receiver_use(engine, declared.file, declared.name, name, reader) }
     CalledFn {
         file: at.file,
         name: name,
@@ -638,18 +628,6 @@ fn method_callee(
         type_params: sig.type_params.length,
         params: signed_seats(sig.params),
     }
-}
-
-/// What the method `name` an impl standing in another package than its type gives does to its
-/// receiver: that impl's own evidence, then each method it reaches through its receiver.
-fn foreign_use(engine: QueryEngine, at: ImplAt, declared: DeclaredAt, name: string) -> ReceiverUse {
-    let own? = impl_evidence(engine, at, declared.file, declared.name).find(it.name == name)?.evidence else { return ReceiverUse
-            .Unproved("the method `${name}` of `${declared.name}`, which its impl doesn't read") }
-    if own.written { return ReceiverUse.Written }
-    let reached = [receiver_use(engine, m.file, m.owner, m.name) for m in own.reached]
-    if reached.any(it.written()) { return ReceiverUse.Written }
-    let why = own.unproved ?? [u for r in reached for u in some_list(r.unproved())].first()
-    if why == null { ReceiverUse.Read } else { ReceiverUse.Unproved(why!) }
 }
 
 /// The static fn `name` the trait `declared` writes in its own body, as a callee of its unit; absent
