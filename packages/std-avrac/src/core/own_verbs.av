@@ -40,6 +40,8 @@ export enum OwnVerb {
     CellPut
     /// What a task answered, once it has: its end joined, then its one cell read.
     Awaited
+    /// An owner of tasks made, holding none.
+    TasksNew
 }
 
 /// A verb on a type the language owns that is a shape of rows: the receiver's type word, the verb's
@@ -68,6 +70,7 @@ export once fn own_shapes() -> List<OwnShape> {
         "Cell"   | "set_at"     | OwnVerb.CellSetAt
         "Cell"   | "put"        | OwnVerb.CellPut
         "Task"   | "await"      | OwnVerb.Awaited
+        "Tasks"  | "new"        | OwnVerb.TasksNew
     }
 }
 
@@ -85,14 +88,14 @@ impl OwnVerb {
             .CellSet -> receiver.args.first(),
             .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
             .CellPut -> receiver.args.first()?.mapped(),
-            .First or .Last or .Popped or .Got or .GotAt or .Removed or .RemovedAt or .Enumerated or .CellNew or .CellGet or .Awaited -> null,
+            .First or .Last or .Popped or .Got or .GotAt or .Removed or .RemovedAt or .Enumerated or .CellNew or .CellGet or .Awaited or .TasksNew -> null,
         }
     }
 
     /// Whether the verb is called through its type rather than on a value of it.
     fn on_the_type() -> bool {
         match self {
-            .CellNew -> true,
+            .CellNew or .TasksNew -> true,
             .First or .Last or .Got or .GotAt or .Removed or .RemovedAt or .Enumerated or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
         }
     }
@@ -152,6 +155,7 @@ impl Lowering {
                 self.nothing()
             },
             .Awaited -> self.awaited(e, subject),
+            .TasksNew -> self.call_row(self.layout_at(e), rt_sig_of("avra_array_sized")!, [self.const_int(4)]),
         }
     }
 

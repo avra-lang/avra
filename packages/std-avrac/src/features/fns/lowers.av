@@ -26,7 +26,7 @@ impl Lowers for Call {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let value = cx.bound(self.callee.of)
         if value != null { return called_value(cx, self, e, value!) }
-        let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.unlowered(e) }
+        let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.missed_as(uncalled(cx, self, e)) }
         if guards(named) && self.args.length == 1 { return guarded_run(cx, e, self.args[0]) }
         if hashes(named) && self.args.length == 1 { return code_hash_read(cx, e, self.args[0]) }
         let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
@@ -120,6 +120,16 @@ impl StmtLowers for Return {
     fn stmt_lowered(mut cx: Lowering, s: StmtId) {
         let value? = self.value else { return cx.answer_exit(null) }
         cx.answer_exit(cx.lower(value))
+    }
+}
+
+/// A call of a name that is no fn a call here reaches, by what the name is.
+fn uncalled(cx: Lowering, call: Call, e: ExprId) -> string {
+    let name = call.callee.of
+    let named? = cx.named(e, name) else { return "a call of `${name}`, which names nothing this body reads" }
+    match named {
+        .Fn(_) -> "a call of `${name}` with type arguments it doesn't declare, or into seats a call doesn't fill",
+        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) -> "a call of `${name}`, which names a value",
     }
 }
 
