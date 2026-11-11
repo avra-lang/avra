@@ -1,0 +1,111 @@
+//! THE GENERATOR SEAM, the one door the program layer reads a generator through until generators
+//! run on it: what each `@derive` on a written declaration made, read from the expansion engine,
+//! each trait's statements copied whole into a store of their own. The switch deletes this file.
+use core.{
+    DeclId,
+    ExprId,
+    FileId,
+    Span,
+    StmtId,
+    SyntaxArena,
+    copier,
+    flatten,
+    new_node_store,
+    same_stmt,
+}
+use features.{DeclareWork, Namespace}
+use @std.program.address.{SourceFileAddress}
+
+/// What one trait's derive made over a declaration: its statements, copied into a store of their
+/// own, and the path of the file its derive was written in.
+export type DerivedCopy = { store: SyntaxArena, stmts: List<StmtId>, home: string }
+
+/// The door the program layer runs generators through, answered by `ws`: `path_of` names the file
+/// at an address on disk, `address_of` the address of a file on disk.
+export fn expansion_door(
+    ws: Workspace,
+    path_of: fn(SourceFileAddress) -> string,
+    address_of: fn(string) -> SourceFileAddress?,
+) -> GeneratorDoor {
+    GeneratorDoor {
+        made: (file: SourceFileAddress, name: string) -> items_copied(
+            ws.derived_copies(path_of(file), name),
+            address_of,
+        ),
+    }
+}
+
+/// Each copy as an item on a tape, beside the address of the file its derive was written in.
+fn items_copied(copies: List<DerivedCopy>, address_of: fn(string) -> SourceFileAddress?) -> List<
+    GeneratedItem,
+> {
+    [GeneratedItem { tape: tape_of_item(c.store, c.stmts), home: home! } for c in copies for home in [address_of(c.home)] if home != null]
+}
+
+impl Workspace {
+    /// What each `@derive` on the written declaration `name` of the file at `path` made, one copy
+    /// per trait it names; nothing for a file this workspace doesn't hold. The seam reads the
+    /// workspace and never adds a file to it: a file it mints is a write after its readers.
+    fn derived_copies(path: string, name: string) -> List<DerivedCopy> {
+        let f? = self.decls.known_file_id(path) else { return [] }
+        let p = self.parsed(f)
+        let vis = self.visible(f)
+        let _ = self.expanded(f)
+        let d? = self.written_decls(f, p).find((w) -> self.decls.decl(w).name == name) else { return [] }
+        flatten(
+            [self.trait_copies(f, w, p, vis) for w in self.declared_work(f, d, p, vis) if self.is_derived(w.ret)],
+        )
+    }
+
+    /// One copy per trait a derive names whose `derive` made something.
+    fn trait_copies(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DerivedCopy> {
+        [c! for e in w.args for c in [self.trait_copy(f, w, vis, self.named_arg(p, vis, e))] if c != null]
+    }
+
+    /// What the trait `named`'s `derive` made: the declarations expansion admitted for it, their
+    /// statements copied whole.
+    fn trait_copy(f: FileId, w: DeclareWork, vis: Namespace, named: DeclId?) -> DerivedCopy? {
+        let t? = named else { return null }
+        let m? = self.decls.trait_derive(t) else { return null }
+        let maker = self.maker_said(f, w)
+        let made = flatten(
+            [self.materialized_directive(f, w, d, vis, maker) for d in self.trait_directives(t, w, f)],
+        )
+        let src = self.decls.store_of(f)
+        let tops = made_tops(src, [self.decls.decl(d).stmt for d in made])
+        if tops.is_empty() { return null }
+        let store = new_node_store()
+        mut rb = copier(src, store, [], [], sugar_door(self.lang))
+        let stmts = rb.stmts(tops)
+        lambdas_apart(store)
+        DerivedCopy {
+            store: store,
+            stmts: stmts,
+            home: self.decls.file(self.decls.decl(m).file).path,
+        }
+    }
+}
+
+/// The statements a derive's declarations stand in, each once, in the order made: an impl holding
+/// a made method, or a made declaration's own.
+fn made_tops(src: SyntaxArena, own: List<StmtId>) -> List<StmtId> {
+    let impls = [s for at in 0..src.stmts.count() for s in [StmtId { index: at }] if holds_any(src, s, own)]
+    let held = flatten([src.impl_parts(s)!.fns for s in impls])
+    let all = impls.concat([o for o in own if !held.any((h) -> same_stmt(h, o))])
+    [s for at, s in all if !all.slice(0, at).any((x) -> same_stmt(x, s))]
+}
+
+/// Each lambda of a copy placed where no other stands: a copy's places are its template's, and one
+/// template copied twice would put two lambdas at one place, which a lift names them by.
+fn lambdas_apart(store: SyntaxArena) {
+    for at in 0..store.exprs.count() {
+        let e = ExprId { index: at }
+        if store.lambda_parts(e) != null { store.place_expr(e, Span { lo: at, hi: at }) }
+    }
+}
+
+/// Whether `s` is an impl holding any of `own`.
+fn holds_any(src: SyntaxArena, s: StmtId, own: List<StmtId>) -> bool {
+    let parts? = src.impl_parts(s) else { return false }
+    parts.fns.any((m) -> own.any((o) -> same_stmt(o, m)))
+}

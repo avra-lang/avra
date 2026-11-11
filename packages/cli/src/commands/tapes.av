@@ -58,6 +58,8 @@ use @std.avrac.compiler.{
     file_declares,
     ItemKind,
     elaborated_fn,
+    expansion_door,
+    generated_at,
     lowered_fn,
     lowered_generic,
     lowered_unit_of,
@@ -75,6 +77,7 @@ use @std.avrac.compiler.{
     refusal_difference,
     seen_names,
     statement_difference,
+    use_generator_door,
 }
 use @std.io.{list_dir, read_text}
 use @std.path.{joined_path}
@@ -108,6 +111,15 @@ impl Runnable for TapesCmd {
         let engine = query_engine(store, avra_fact_definitions())
         if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
         let ws = root_workspace(root)
+        // every file the receipt reads is the workspace's before any generator reads one
+        for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
+        use_generator_door(
+            expansion_door(
+                ws,
+                (f) -> disk.on_disk(f.package_name, f.path_in_package),
+                (path) -> address_of(disk, path),
+            ),
+        )
         if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
         let files = package_sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
@@ -279,9 +291,27 @@ fn written_decl(ws: Workspace, disk: Disk, names: Namespace, file: SourceFileAdd
 fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
     // a block that leaves never answers; the workspace dresses it in the fn's answer
     let p? = typed_pairs(engine, ws, disk, path)
-        .find(it.new != null && !(it.new!.head is .Never) && it.new!.spelled() != it.old) else { return null }
-    "${path}: `${p.name}` types the node at ${p.lo} ${p.new!.spelled()}, the workspace ${p.old}"
+        .find(it.new != null && !(it.new!.head is .Never) && !agrees(it.new!, it.old)) else { return null }
+    "${path}: `${p.name}` types the node at ${p.lo} ${headed(p.new!)}, the workspace ${p.old}"
 }
+
+/// Whether a type here is the workspace's, spelled `old`: spelled alike, and every name in it
+/// naming a type, as each of the workspace's does.
+fn agrees(new: SignedType, old: string) -> bool { new.spelled() == old && !names_no_type(new) }
+
+/// Whether a type has a name anywhere in it that names no type.
+fn names_no_type(t: SignedType) -> bool {
+    match t.head {
+        .Unnamed(_) -> true,
+        .Owned(_) or .Parameter(_, _) or .Declared(_, _) or .Inferred or .Function or .Never or .Meta -> t.args.any((a) -> names_no_type(a)) ||
+            t.seats.any((s) -> names_no_type(s.ty)) ||
+            t.alternatives.any((a) -> names_no_type(a)) ||
+            t.answer != null && names_no_type(t.answer!),
+    }
+}
+
+/// A type as this layer writes it, a name that names no type said so.
+fn headed(t: SignedType) -> string { if names_no_type(t) { "${t.spelled()} (naming no type)" } else { t.spelled() } }
 
 /// A type as the workspace writes it, each union's members in the order the program layer writes
 /// them and a generic type applied by its declaration's name: a union is a set, the workspace orders
@@ -314,7 +344,9 @@ fn signature_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: st
         if mine.answer.inferred() || mine.params.any(it.ty?.inferred() ?? false) { continue }
         let old = "(${[workspace_spelled(ws, p) for p in theirs.params].join(", ")}) -> ${workspace_spelled(ws, theirs.ret)}"
         let new = "(${[p.ty?.spelled() ?? "_" for p in mine.params].join(", ")}) -> ${mine.answer.spelled()}"
-        if old != new { return "${path}: `${own.name}` is signed ${new}, the workspace's ${old}" }
+        let unnamed = names_no_type(mine.answer) ||
+            mine.params.any((p) -> p.ty != null && names_no_type(p.ty!))
+        if old != new || unnamed { return "${path}: `${own.name}` is signed ${new}${if unnamed { " (naming no type)" } else { "" }}, the workspace's ${old}" }
     }
     null
 }
@@ -515,6 +547,8 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
                 )
         }
         for item, held in file_impls(engine, file) {
+            // a generated item's places are its template's, which the workspace's lambdas are paired by
+            if generated_at(engine, file, item) != null { continue }
             for i in held.filter(it.params.is_empty()) {
                 let t? = names.type_decl(i.target) else { continue }
                 let impl_at = ImplAt { file: file, item: item, params: i.params }

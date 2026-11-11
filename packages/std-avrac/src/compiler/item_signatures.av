@@ -209,8 +209,15 @@ export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: str
 
 /// The item at `at` in `file`, read back.
 fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {
-    let item = items_under(engine, file)[at]
     let store = new_node_store()
+    let made = generated_at(engine, file, at)
+    if made != null {
+        return ReadItem {
+            store: store,
+            stmts: item_read_back(store, PlacedTape { start: 0, tape: made!.tape }),
+        }
+    }
+    let item = items_under(engine, file)[at]
     let stmts = item_read_back(
         store,
         PlacedTape { start: item.start, tape: SyntaxTape.read_from(meant_tape(engine, file, item)) },
@@ -253,8 +260,9 @@ fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenF
 }
 
 /// Where a signature's types are resolved: its file's top level, under the fn's own type parameters,
-/// and `Self` as the type a trait's method is asked for.
-type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null }
+/// `Self` as the type a trait's method is asked for, and for a generated item, the file its
+/// generator was written in where its own file binds no such name.
+type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null, home: SourceFileAddress? = null }
 
 impl Signing {
     fn param(p: Param) -> SignedParam {
@@ -311,8 +319,15 @@ impl Signing {
         let at = self.type_params.index_of(name)
         if at >= 0 { return TypeHead.Parameter(at, name) }
         if builtin_type_name(avra().rows.types, name) { return TypeHead.Owned(name) }
-        let d? = resolved(self.engine, self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
+        let d? = resolved(self.engine, self.file, Space.Type, name).named() ?? self
+            .named_at_home(name) else { return TypeHead.Unnamed(name) }
         TypeHead.Declared(d.file, d.name)
+    }
+
+    /// The type `name` names where a generated item's generator was written; absent for a written item.
+    fn named_at_home(name: string) -> DeclaredName? {
+        let home? = self.home else { return null }
+        resolved(self.engine, home, Space.Type, name).named()
     }
 }
 
