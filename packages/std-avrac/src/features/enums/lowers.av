@@ -17,6 +17,8 @@ use core.{
     VariantSeat,
     flatten,
     owned_type,
+    quote_pat_holes,
+    quote_pat_names,
     some_list,
     types_joined,
 }
@@ -140,6 +142,7 @@ enum Taken {
     Whole(name: string?)
     Variant(tag: int, names: List<string?>, subs: List<Taken?>)
     Member(tag: int, name: string, record: SignedType)
+    Quoted(body: ExprId, names: List<string>)
     Equal(lit: ExprId)
     Compared(name: string)
 }
@@ -163,14 +166,15 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
         ty.spelled() != owned_type("bool").spelled() &&
         cx.equatable(ty)
     let found = cx.variants_of(ty)
-    if found == null && !scalar { return cx.unlowered(e) }
+    let quoted = m.arms.any((a) -> a.pats.any((p) -> quotes(cx, p)))
+    if found == null && !scalar && !quoted { return cx.unlowered(e) }
     let variants = found ?? []
     let made = [n for a in m.arms for p in a.pats for n in made_compared(cx, p)]
     if !made.is_empty() { return cx.missed_as(made_value(made[0])) }
     let planned = [arm_planned(cx, variants, a, scalar) for a in m.arms]
     if m.arms.is_empty() || planned.any(it == null) { return cx.missed_as("a match whose patterns aren't each one variant or the rest") }
     let arms = [a! for a in planned]
-    if !if scalar { ends_in_rest(arms) } else { covers(variants, arms) } { return cx.missed_as("a match leaving a variant to an absent tail") }
+    if !if scalar || quoted { ends_in_rest(arms) } else { covers(variants, arms) } { return cx.missed_as("a match leaving a variant to an absent tail") }
     let s = Chosen {
         v: cx.lower(m.subject),
         ty: ty,
@@ -211,7 +215,16 @@ fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bo
         },
         .Lit(lit) -> if scalar && !cx.store.null_literal(lit) { Taken.Equal(lit) } else { null },
         .Member(name, bind) -> member_taken(variants, name.of, bind.of),
-        .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+        .Quote(body) -> Taken.Quoted(body, quote_pat_names(quote_pat_holes(cx.store, body))),
+        .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+    }
+}
+
+/// Whether a pattern is a quote, which matches code.
+fn quotes(cx: Lowering, p: PatId) -> bool {
+    match cx.store.pat(p) {
+        .Quote(_) -> true,
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) or .Member(_, _) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
     }
 }
 
@@ -233,7 +246,7 @@ fn ends_in_rest(arms: List<Planned>) -> bool {
 fn takes_rest(t: Taken) -> bool {
     match t {
         .Whole(_) -> true,
-        .Variant(_, _, _) or .Member(_, _, _) or .Equal(_) or .Compared(_) -> false,
+        .Variant(_, _, _) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) -> false,
     }
 }
 
@@ -284,6 +297,7 @@ fn bound_names(t: Taken) -> List<string> {
         .Variant(_, names, subs) -> [n! for n in names if n != null]
             .concat(flatten([bound_names(t!) for t in subs if t != null])),
         .Member(_, name, _) -> [name],
+        .Quoted(_, names) -> names,
         .Equal(_) or .Compared(_) -> [],
     }
 }
@@ -309,7 +323,7 @@ fn variant_tag(t: Taken) -> int? {
     match t {
         .Variant(tag, _, subs) -> if subs.all(it == null) { tag } else { null },
         .Member(tag, _, _) -> tag,
-        .Whole(_) or .Equal(_) or .Compared(_) -> null,
+        .Whole(_) or .Quoted(_, _) or .Equal(_) or .Compared(_) -> null,
     }
 }
 
@@ -346,6 +360,10 @@ fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
                 .region(is_tag, Layout.Truth) { cx -> subs_accepted(cx, s, tag, subs, 0) } else { cx -> cx.const_bool(false) }
         },
         .Member(tag, _, _) -> cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag)),
+        .Quoted(body, _) -> {
+            let q? = cx.quote_runs(s.v, s.ty, body) else { return cx.const_bool(false) }
+            cx.present(q.runs, q.answer)
+        },
         .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
         .Compared(name) -> compared_const(cx, s, name),
     }
@@ -425,6 +443,10 @@ fn taken_bound(mut cx: Lowering, s: Chosen, t: Taken) {
             }
         },
         .Member(tag, name, record) -> cx.bind(name, Bound.Value(member_read(cx, s, tag, record), record)),
+        .Quoted(body, names) -> {
+            let held? = cx.quote_binds(s.v, s.ty, body) else { return }
+            for j, n in names { cx.bind(n, Bound.Value(held[j].reg, held[j].ty)) }
+        },
         .Equal(_) or .Compared(_) -> subject_bound(cx, s, null),
     }
 }
@@ -457,6 +479,7 @@ fn bound_types(s: Chosen, t: Taken) -> List<SignedType>? {
             if tys.any(it == null) { null } else { [ty! for ty in tys] }
         },
         .Member(_, _, record) -> [record],
+        .Quoted(_, _) -> null,
         .Equal(_) or .Compared(_) -> [],
     }
 }
@@ -492,6 +515,7 @@ fn taken_reads(mut cx: Lowering, s: Chosen, t: Taken) -> List<Reg> {
         .Variant(tag, names, subs) -> payloads_read(cx, s.v, s.variants[tag], names)
             .concat(flatten([sub_reads(cx, s, tag, k, sub) for k, sub in subs])),
         .Member(tag, _, record) -> [member_read(cx, s, tag, record)],
+        .Quoted(body, _) -> [h.reg for h in cx.quote_binds(s.v, s.ty, body) ?? []],
         .Equal(_) or .Compared(_) -> [],
     }
 }

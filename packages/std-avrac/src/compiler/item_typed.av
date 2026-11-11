@@ -3,6 +3,7 @@
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
     meta_type,
+    module_path,
     CheckedProgram,
     Checking,
     EnumShape,
@@ -117,7 +118,7 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
 /// stands, a type named by a node where the template that wrote the node stands.
 fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) -> CheckedProgram {
     CheckedProgram {
-        value_named: (n: string, home: string?) -> read_from(file, home)
+        value_named: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> value_type(engine, f, n)),
         written: (written: TypeRef) -> signing.signed(written),
         type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
@@ -131,7 +132,7 @@ fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) ->
             method,
         ),
         property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
-        type_value: (n: string, home: string?) -> read_from(file, home)
+        type_value: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> type_value(engine, f, signing with { writer: f }, n)),
         static_of: (described: SignedType, s: string) -> static_type(engine, described, s) ?? bound_static(
             engine,
@@ -139,14 +140,14 @@ fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) ->
             described,
             s,
         ),
-        toolchain_type: (package: string, n: string) -> toolchain_declared(engine, package, n),
+        toolchain_type: (module: string, n: string) -> toolchain_declared(engine, module, n),
     }
 }
 
 /// The type `name` names under `signing`, read where the template `home` names stands first: what that
 /// file names, else what the body's names.
 fn named_from(signing: Signing, home: string?, name: string) -> SignedType {
-    let h? = (if home == null { null } else { template_file(home!) }) else { return signing.named(name) }
+    let h? = home_file(signing.engine, home) else { return signing.named(name) }
     let homed = (signing with { writer: h }).named(name)
     if homed.head is .Unnamed { signing.named(name) } else { homed }
 }
@@ -193,10 +194,13 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
     }
 }
 
-/// The type the root module of the toolchain package `package` declares as `name`, absent when it
+/// The type the toolchain's module `module` (`@std.grammar`) declares as `name`, absent when it
 /// declares none.
-fn toolchain_declared(engine: QueryEngine, package: string, name: string) -> SignedType? {
-    let d? = declarations_of(engine, package, [], false, name).find(space_of(it.kind) == Space.Type) else { return null }
+fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> SignedType? {
+    let m = module_path(module.split("."))
+    let package? = m.package() else { return null }
+    let d? = declarations_of(engine, package, m.local(), false, name)
+        .find(space_of(it.kind) == Space.Type) else { return null }
     headed_type(TypeHead.Declared(d.file, d.name))
 }
 

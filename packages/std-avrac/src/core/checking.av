@@ -35,7 +35,7 @@ export type CheckedProgram = {
     /// What a name naming a type and no value reads as, from its home before where the body stands.
     type_value: fn(string, string?) -> SignedType?,
     static_of: fn(SignedType, string) -> SignedType?,
-    /// The type a toolchain package's root module declares under a name.
+    /// The type a module the toolchain carries (`@std.grammar`) declares under a name.
     toolchain_type: fn(string, string) -> SignedType?,
     /// What each type parameter of the body is to the machine, by its place, where the body is
     /// lowered under one instantiation's layouts.
@@ -245,13 +245,13 @@ impl Checking {
     /// What the arms `arms`, of these types, are where they meet: the seat's type when it wants one,
     /// which each lifts into, else their join, which each arm of another type keeps as its seat where
     /// the arms' value is read; nothing under a seat that isn't known, which may widen them. Under a
-    /// seat that wants nothing, an arm whose type isn't known is checked again where the others meet,
+    /// free seat, an arm that is a call whose type isn't known is checked again where the others meet,
     /// which pins a generic call's answer.
     mut fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
         if expected is .Unknown { return null }
         let pinned = match expected {
-            .Free or .Dropped -> self.arms_pinned(arms, types),
-            .Exactly(_) or .Unknown -> types,
+            .Free -> self.arms_pinned(arms, types),
+            .Exactly(_) or .Dropped or .Unknown -> types,
         }
         if pinned.any(it == null) { return null }
         match expected {
@@ -261,13 +261,13 @@ impl Checking {
         }
     }
 
-    /// Each arm's type, an arm whose type isn't known checked again against where the known ones meet.
+    /// Each arm's type, a call whose type isn't known checked again against where the known ones meet.
     mut fn arms_pinned(arms: List<ExprId>, types: List<SignedType?>) -> List<SignedType?> {
         if !types.any(it == null) { return types }
         let known = [t for t in types if t != null]
         if known.is_empty() { return types }
         let meeting? = types_joined(known) else { return types }
-        [if t == null { self.check(arms[at], Expected.Exactly(meeting)) } else { t } for at, t in types]
+        [if t == null && self.store.call_parts(arms[at]) != null { self.check(arms[at], Expected.Exactly(meeting)) } else { t } for at, t in types]
     }
 
     /// `met`, where the arms `arms` of these types meet, kept as the seat of each arm of another type.
@@ -470,9 +470,9 @@ impl Checking {
     /// A type named in the body, resolved from `home`, the template that wrote the name, first.
     fn type_named(name: string, home: string?) -> SignedType { (self.program.type_named)(name, home) }
 
-    /// The home of the template that wrote `e`, as its origin spells it; absent for a node the body's
-    /// own file wrote.
-    fn home_of(e: ExprId) -> string? { self.store.foreign_of(e)?.path }
+    /// Where the names `e` reads are read, as its origin spells it; absent for a node the body's own
+    /// file wrote.
+    fn home_of(e: ExprId) -> string? { self.store.home_of(e) }
 
     /// What the values checked into `seats` fill of the type parameters the seats name, beyond those
     /// `pinned` already fills: each value whose seat isn't a fn first; then what the seat the call
@@ -568,8 +568,8 @@ impl Checking {
     /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
     fn meta_type(name: string) -> SignedType? { self.program.meta(name) }
 
-    /// The type a toolchain package's root module declares as `name` (`@std/grammar`'s `Grammar`).
-    fn toolchain_type(package: string, name: string) -> SignedType? { (self.program.toolchain_type)(package, name) }
+    /// The type a module the toolchain carries declares as `name` (`@std.grammar`'s `Grammar`).
+    fn toolchain_type(module: string, name: string) -> SignedType? { (self.program.toolchain_type)(module, name) }
 
     /// What a name reads as when it names a type and no value: the type, standing as a value.
     fn type_value(name: string, home: string?) -> SignedType? { (self.program.type_value)(name, home) }
@@ -638,7 +638,7 @@ fn open_scope() -> CheckScope {
 export const NAMED_FIELD: string = "of"
 
 /// The package that holds the language's compile-time shapes.
-const META_PACKAGE: string = "@std/meta"
+const META_PACKAGE: string = "@std.meta"
 
 impl CheckedProgram {
     /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.

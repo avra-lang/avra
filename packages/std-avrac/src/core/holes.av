@@ -262,14 +262,19 @@ export fn signed_template_kind(ty: SignedType, meta: fn(string) -> SignedType?) 
         .find((k) -> meta(meta_name(k))?.names_as(ty) ?? false)
 }
 
-/// What a hole's value of type `ty` is, as a row lifts it: a template, a list of templates, a number,
-/// a truth, text, a list of texts, or a meta value naming one declaration, `@std/meta`'s types each
-/// named by `meta`; absent for any other.
-export fn signed_fill_class(ty: SignedType, meta: fn(string) -> SignedType?) -> FillClass? {
+/// What a hole's value of type `ty` is, as a row lifts it: a template, a list of templates, a handle
+/// on the tree being rewritten or a list of them, code a rule bound, an arena id, a number, a truth,
+/// text, a list of texts, or a meta value naming one declaration; each type the toolchain declares
+/// named by `toolchain` (a module, then a name). Absent for any other.
+export fn signed_fill_class(ty: SignedType, toolchain: fn(string, string) -> SignedType?) -> FillClass? {
+    let meta = (n: string) -> toolchain(META_MODULE, n)
     let own = signed_template_kind(ty, meta)
     if own != null { return FillClass.Template(own!) }
+    let compiler = compiler_fill(ty, toolchain)
+    if compiler != null { return compiler }
     let elem = ty.listed()
     if elem != null {
+        if names_own(elem!, toolchain, OWN_FEATURES, "TypedCode") { return FillClass.Nodes }
         let inner = signed_template_kind(elem!, meta)
         if inner != null { return FillClass.Templates(inner!) }
         return if elem!.owned() == "string" { FillClass.Texts } else { null }
@@ -282,6 +287,32 @@ export fn signed_fill_class(ty: SignedType, meta: fn(string) -> SignedType?) -> 
         rest -> null,
     }
 }
+
+/// What a hole holding one of the compiler's own values fills: a meaning's handle the node, a rule's
+/// code its text, an arena id the number; absent for any other type.
+fn compiler_fill(ty: SignedType, toolchain: fn(string, string) -> SignedType?) -> FillClass? {
+    if names_own(ty, toolchain, OWN_FEATURES, "TypedCode") { return FillClass.Node }
+    if names_own(ty, toolchain, OWN_FEATURES, "Code") { return FillClass.Held }
+    if names_own(ty, toolchain, OWN_CORE, "ExprId") { return FillClass.Id }
+    if names_own(ty, toolchain, OWN_CORE, "PatId") { FillClass.PatId } else { null }
+}
+
+/// Whether `ty` is the type `module` declares as `name`.
+fn names_own(
+    ty: SignedType,
+    toolchain: fn(string, string) -> SignedType?,
+    module: string,
+    name: string,
+) -> bool {
+    toolchain(module, name)?.names_as(ty) ?? false
+}
+
+/// The modules declaring the compiler's own values a hole may hold, and `@std/meta`.
+const OWN_FEATURES: string = "@std.avrac.features"
+
+const OWN_CORE: string = "@std.avrac.core"
+
+const META_MODULE: string = "@std.meta"
 
 /// The `@std/meta` values that name one declaration, spliced by its name.
 const NAMED_META: List<string> = ["Fn", "Type", "Named", "Trait", "Field", "Variant", "Param"]

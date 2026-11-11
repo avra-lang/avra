@@ -15,6 +15,7 @@ use core.{
     hole_kinds,
     holes_kind,
     holes_seat,
+    list_of,
     signed_fill_class,
     signed_template_kind,
     owned_type,
@@ -31,8 +32,8 @@ fn quote_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
     let node? = meta(cx, "Node") else { return cx.missed_as(no_meta()) }
     let classes = [fill_class(cx, cx.type_at(h)) for h in b.holes]
     if classes.any(it == null) { return cx.missed_as("a quote hole whose value no `@std/meta` row lifts") }
-    let template? = (cx.program.meta_fn)("template") else { return cx.missed_as(no_meta()) }
-    let wrapping? = (cx.program.meta_fn)(wrap) else { return cx.missed_as(no_meta()) }
+    let template? = (cx.program.toolchain_fn)(META_MODULE, "template") else { return cx.missed_as(no_meta()) }
+    let wrapping? = (cx.program.toolchain_fn)(META_MODULE, wrap) else { return cx.missed_as(no_meta()) }
     let kinds = seat_kinds(cx, e, [c! for c in classes])
     let file = cx.const_str(cx.program.home)
     let at = cx.const_int(cx.store.expr_span(e)?.lo ?? 0)
@@ -85,7 +86,7 @@ fn meta(cx: Lowering, name: string) -> SignedType? { cx.program.checked.meta(nam
 /// What the hole of type `ty` holds, as a row lifts it; absent for an untyped hole or one no row lifts.
 fn fill_class(cx: Lowering, ty: SignedType?) -> FillClass? {
     let t? = ty else { return null }
-    signed_fill_class(t, (n: string) -> cx.program.checked.meta(n))
+    signed_fill_class(t, (m: string, n: string) -> (cx.program.checked.toolchain_type)(m, n))
 }
 
 /// The hole `h`, of class `class` standing in a seat of kind `kind`, as a `Node`.
@@ -103,7 +104,11 @@ fn filled(mut cx: Lowering, class: FillClass, kind: HoleKind, h: ExprId, node: S
         },
         .Int -> lifted(cx, int_row(kind), l, v),
         .Bool -> lifted(cx, "bool_node", l, v),
-        .Id or .PatId or .Held or .Pattern or .Node or .Nodes -> cx.missed_as("a quote hole filled with a node of the tree being rewritten"),
+        .Held -> lifted(cx, "text_node", l, own_call(cx, "spliced_text", owned_type("string"), v)),
+        .Node -> own_lifted(cx, "typed_code_node", l, v),
+        .Nodes -> own_lifted(cx, "typed_codes_node", l, v),
+        .Id or .PatId -> lifted(cx, "int_node", l, field_named(cx, v, cx.type_at(h)!, "index")),
+        .Pattern -> cx.missed_as("a quote hole filled with a `Format` pattern"),
     }
 }
 
@@ -116,14 +121,20 @@ fn int_row(kind: HoleKind) -> string {
     }
 }
 
-/// The list type of `elem`.
-fn list_of(elem: SignedType) -> SignedType { owned_type("List") with { args: [elem] } }
-
 /// The `@std/meta` row `verb` handed `v`, answering a node of layout `l`.
 fn lifted(mut cx: Lowering, verb: string, l: Layout, v: Reg) -> Reg {
-    let callee? = (cx.program.meta_fn)(verb) else { return cx.missed_as(no_meta()) }
+    let callee? = (cx.program.toolchain_fn)(META_MODULE, verb) else { return cx.missed_as(no_meta()) }
     cx.call_fn(l, callee, [v])
 }
+
+/// The compiler's own verb `verb` handed `v`, answering a node of layout `l`.
+fn own_lifted(mut cx: Lowering, verb: string, l: Layout, v: Reg) -> Reg {
+    let callee? = (cx.program.toolchain_fn)(OWN_MODULE, verb) else { return cx.missed_as(no_own(verb)) }
+    cx.call_fn(l, callee, [v])
+}
+
+/// The compiler's own verb `verb` handed `v`, answering a value of `ty`.
+fn own_call(mut cx: Lowering, verb: string, ty: SignedType, v: Reg) -> Reg { own_lifted(cx, verb, cx.laid_out(ty), v) }
 
 /// The row that joins a list of templates of kind `k` into one node.
 fn list_row(k: MetaKind) -> string {
@@ -156,3 +167,11 @@ fn listed(mut cx: Lowering, l: Layout, items: List<Reg>) -> Reg {
 fn no_meta() -> string { "a quote in a program that doesn't load `@std/meta`" }
 
 fn unfielded(ty: SignedType) -> string { "a field of `${ty.spelled()}`" }
+
+/// The module whose rows a quote is built by.
+const META_MODULE: string = "@std.meta"
+
+/// The module whose verbs fill a hole holding one of the compiler's own values.
+const OWN_MODULE: string = "@std.avrac.features"
+
+fn no_own(verb: string) -> string { "a quote hole the compiler's own `${verb}` fills, which this program doesn't carry" }

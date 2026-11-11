@@ -35,6 +35,7 @@ use core.{
     headed_type,
     instance_symbol,
     lowering,
+    module_path,
     tests_placed,
     new_node_store,
 }
@@ -186,7 +187,7 @@ fn lowered_program(
             file,
             Signing { engine: engine, file: file, type_params: type_params, writer: writer },
         ) with { parameters: parameters ?? [] },
-        named: (n: string, home: string?) -> read_from(file, home)
+        named: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> named_value(engine, f, n)),
         method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
         statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
@@ -200,7 +201,7 @@ fn lowered_program(
         wrappers: wrappers,
         reshaped: Cell.new(0),
         defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
-        meta_fn: (n: string) -> meta_callee(engine, n),
+        toolchain_fn: (module: string, n: string) -> toolchain_callee(engine, module, n),
         home: template_home(file),
         spins: Cell.new(false),
         compared: (n: string) -> compared_value(engine, file, n),
@@ -475,9 +476,12 @@ const ROOT_KIND_WORD: string = "root_kind"
 /// The projection word naming every kind a component instance's patterns name.
 const NODE_KINDS_WORD: string = "node_kinds"
 
-/// The fn `@std/meta` declares as `name`, as a call reaches it.
-fn meta_callee(engine: QueryEngine, name: string) -> CalledFn? {
-    let d? = declarations_of(engine, META, [], false, name).find(space_of(it.kind) == Space.Value) else { return null }
+/// The fn the toolchain's module `module` (`@std.meta`) declares as `name`, as a call reaches it.
+fn toolchain_callee(engine: QueryEngine, module: string, name: string) -> CalledFn? {
+    let m = module_path(module.split("."))
+    let package? = m.package() else { return null }
+    let d? = declarations_of(engine, package, m.local(), false, name)
+        .find(space_of(it.kind) == Space.Value) else { return null }
     callee_of(engine, d)
 }
 
@@ -758,11 +762,24 @@ export fn template_file(home: string) -> SourceFileAddress? {
     }
 }
 
-/// Where a name a body in `file` reads is looked up, in order: the file of the template that wrote
-/// the read when one did (`home`), then `file`.
-fn read_from(file: SourceFileAddress, home: string?) -> List<SourceFileAddress> {
-    let h? = (if home == null { null } else { template_file(home!) }) else { return [file] }
-    [h, file]
+/// Where a name a body in `file` reads is looked up, in order: where the read was written when it
+/// was written elsewhere (`home`: a template's file, or a module), then `file`.
+fn read_from(engine: QueryEngine, file: SourceFileAddress, home: string?) -> List<SourceFileAddress> {
+    let written? = home_file(engine, home) else { return [file] }
+    [written, file]
+}
+
+/// The file a node written elsewhere reads its names in: its template's, or one of its module's.
+fn home_file(engine: QueryEngine, home: string?) -> SourceFileAddress? {
+    let h? = home else { return null }
+    template_file(h) ?? module_file(engine, h)
+}
+
+/// A file of the module `dotted` spells (`@std.grammar`), which reads every name the module declares.
+fn module_file(engine: QueryEngine, dotted: string) -> SourceFileAddress? {
+    let m = module_path(dotted.split("."))
+    let package? = m.package() else { return null }
+    module_files(engine, package, m.local(), false).first()
 }
 
 /// The symbol a declared fn's body is known by: its file, then its name.
