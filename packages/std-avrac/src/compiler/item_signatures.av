@@ -210,9 +210,10 @@ fn declared_at(ty: SignedType) -> DeclaredAt? {
     }
 }
 
-/// A variant: its name and its payloads, each typed where the enum is declared.
+/// A variant: its name, its payloads, each typed where the enum is declared, and for a gathered one
+/// the member's record it's made of.
 @derive(Saved)
-export type SignedVariant = { name: string, payloads: List<SignedField> }
+export type SignedVariant = { name: string, payloads: List<SignedField>, member: SignedType? = null }
 
 /// An enum's signature: its type parameters and its variants, in order.
 @derive(Saved)
@@ -247,7 +248,11 @@ fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string
     let members? = gathered(engine, file, parts.kind, parts.scope, parts.order, false) else { return null }
     EnumSignature {
         type_params: [],
-        variants: [SignedVariant { name: m.name, payloads: member_payloads(engine, m) } for m in members],
+        variants: [SignedVariant {
+            name: m.name,
+            payloads: member_payloads(engine, m),
+            member: headed_type(TypeHead.Declared(m.file, m.name)),
+        } for m in members],
     }
 }
 

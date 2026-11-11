@@ -115,6 +115,11 @@ export fn impls_with(
     [i.at for i in impls_in(package_generated_impls_part(engine, file.package_name, name), file) if gives(i, method, statics)]
 }
 
+/// The traits the written impls of the type `file` declares as `name` implement, by name.
+fn written_traits(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    [i.implements!.name for i in impls_in(package_impls_part(engine, file.package_name, name), file) if i.implements != null]
+}
+
 /// Whether the enum `file` declares as `name` has a variant named `variant`.
 fn variant_named(engine: QueryEngine, file: SourceFileAddress, name: string, variant: string) -> bool {
     let variants = enum_signature(engine, file, name)?.variants ?? []
@@ -134,8 +139,11 @@ export fn trait_method_signature(
     receiver: SignedType,
 ) -> FnSignature? {
     let item? = declaring_item(engine, held.file, held.name, ItemKind.Trait) else { return null }
-    let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
-    let written? = written_fn(item.store, [m for m in fns if !item.store.is_static(m)], method) else { return null }
+    let written? = written_fn(
+        item.store,
+        [m for m in trait_fns(item) if !item.store.is_static(m)],
+        method,
+    ) else { return null }
     written_signature(
         Signing {
             engine: engine,
@@ -352,8 +360,11 @@ fn trait_static(
     receiver: SignedType,
 ) -> SignedType? {
     let item? = declaring_item(engine, file, declared, ItemKind.Trait) else { return null }
-    let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
-    let written? = written_fn(item.store, [f for f in fns if item.store.is_static(f)], name) else { return null }
+    let written? = written_fn(
+        item.store,
+        [f for f in trait_fns(item) if item.store.is_static(f)],
+        name,
+    ) else { return null }
     fn_typed(
         [],
         written_signature(

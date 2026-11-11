@@ -97,6 +97,7 @@ use @std.avrac.compiler.{
     annotation_kind,
     GeneratorAt,
     GeneratorKind,
+    GeneratorSite,
     item_difference,
     site_generated,
     generator_run,
@@ -617,7 +618,7 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                         spelled_file(site.generator.file) != spelled_file(file) { continue }
                     sites = sites + 1
                     annotation_sites = annotation_sites + by_annotation(g.kind)
-                    let made_here = directives_made(engine, l, g, at, site.name)
+                    let made_here = directives_made(engine, l, g, at, site)
                     directives = directives + made_here
                     let item = site_generated(engine, at, site)
                     let tape = item.items.first()?.tape
@@ -651,19 +652,19 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
 
 /// One for a generator an annotation names, none for a derive.
 fn by_annotation(k: GeneratorKind) -> int {
-    match k { .Derive -> 0, .Annotation or .TypeAnnotation -> 1 }
+    match k { .Derive -> 0, .Annotation or .TypeAnnotation or .TraitAnnotation -> 1 }
 }
 
-/// How many directives the made generator `l` of `t` makes over the declaration `file` writes as
-/// `name`; none where it doesn't run.
+/// How many directives the made generator `l` of `g` makes over the declaration `site` stands on in
+/// `file`; none where it doesn't run.
 fn directives_made(
     engine: QueryEngine,
     l: Lowered,
     g: GeneratorAt,
     file: SourceFileAddress,
-    name: string,
+    site: GeneratorSite,
 ) -> int {
-    match generator_run(engine, l, g, file, name, budgets_of()) {
+    match generator_run(engine, l, g, file, site.name, site.handed, budgets_of()) {
         .Ran(made, _) -> made.length,
         .Stopped(_) -> 0,
     }

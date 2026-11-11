@@ -6,13 +6,17 @@ use core.{
     Annotation,
     CollectKind,
     CollectScope,
+    distinct,
     Mark,
     Param,
     Plain,
     SignedType,
+    StmtId,
     SyntaxArena,
+    TypeHead,
     Variant as VariantDecl,
     faceted,
+    headed_type,
     sorted_by,
     spelled,
 }
@@ -28,6 +32,7 @@ use @std.meta.{
     Node as MetaNode,
     Param as MetaParam,
     Seat as MetaSeat,
+    Trait as MetaTrait,
     Type as MetaType,
     Variant as MetaVariant,
 }
@@ -52,14 +57,31 @@ export fn meta_of_fn_decl(engine: QueryEngine, file: SourceFileAddress, name: st
     let item = read_item(engine, file, d.item)
     let s? = item.stmts.find((x) -> item.store.fn_parts(x)?.name == name) else { return null }
     let sig? = fn_signature(engine, file, name) else { return null }
-    let parts = item.store.fn_parts(s)!
+    fn_meta(item.store, s, sig)
+}
+
+/// The trait `file` declares as `name`, as `@std/meta`'s `Trait`: each method it declares, as a fn
+/// is read, its `Self` the trait. Absent when it declares none, or a method's signature doesn't sign.
+export fn meta_of_trait_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaTrait? {
+    let item? = declaring_item(engine, file, name, ItemKind.Trait) else { return null }
+    let held = TraitAt { file: file, name: name }
+    let receiver = headed_type(TypeHead.Declared(file, name))
+    let methods = [f for f in trait_fns(item) if !item.store.is_static(f) && item.store.fn_parts(f) != null]
+    let fns = [fn_meta(item.store, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
+    if fns.length != methods.length { return null }
+    MetaTrait { name: name, at: null, fns: fns }
+}
+
+/// The fn `s` writes in `store`, signed as `sig`, as a `Fn`.
+fn fn_meta(store: SyntaxArena, s: StmtId, sig: FnSignature) -> MetaFn {
+    let parts = store.fn_parts(s)!
     MetaFn {
-        name: name,
+        name: parts.name,
         params: [param_meta(p, sig.params[j].ty) for j, p in parts.params],
         answer: spelled(parts.ret),
         at: null,
         answers: signed_kind(sig.answer),
-        annotations: [annotation_meta(item.store, a) for a in item.store.annotations_of(s)],
+        annotations: [annotation_meta(store, a) for a in store.annotations_of(s)],
     }
 }
 
@@ -112,7 +134,8 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         .CollectEnum -> {
             let parts? = item.store.collect_enum_parts(s) else { return null }
             let members? = gathered(engine, d.file, parts.kind, parts.scope, parts.order, false) else { return null }
-            base with { variants: [gathered_variant(engine, m) for m in members] }
+            let derived = [t.name for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
+            base with { variants: [gathered_variant(engine, m, derived) for m in members] }
         },
         .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .Const or .State -> null,
     }
@@ -171,8 +194,9 @@ fn member_before(a: DeclaredName, b: DeclaredName) -> bool {
 const TESTS_DIR: string = "tests"
 
 /// A gathered member as a `Variant`: its name, its record's fields as the payload, each typed where
-/// the member stands, and the marks it wears.
-fn gathered_variant(engine: QueryEngine, m: DeclaredName) -> MetaVariant {
+/// the member stands, the marks it wears, and the traits it implements: its written impls', and each
+/// of `derived`, which its enum derives for a member that writes none.
+fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>) -> MetaVariant {
     let item = read_item(engine, m.file, m.item)
     let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
     let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
@@ -183,6 +207,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName) -> MetaVariant {
         at: null,
         fields: [field_meta(p, field_kind(signed, p.name.of), written_default(engine, m.file, item.store, p)) for p in fields],
         marks: [annotated_mark(item.store, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
+        impls: distinct(written_traits(engine, m.file, m.name).concat(derived)),
     }
 }
 

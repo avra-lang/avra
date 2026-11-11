@@ -133,11 +133,13 @@ fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
 // ── A match on an enum ──────────────────────────────────────────────
 
 /// What a pattern takes of the subject: all of it, under a name or none; one variant, each payload
-/// under a name or none, or where a pattern of its own stands for it, what that one takes; the value
-/// a literal is; or the value a top-level const is.
+/// under a name or none, or where a pattern of its own stands for it, what that one takes; one
+/// gathered variant whole, its member's record under a name; the value a literal is; or the value a
+/// top-level const is.
 enum Taken {
     Whole(name: string?)
     Variant(tag: int, names: List<string?>, subs: List<Taken?>)
+    Member(tag: int, name: string, record: SignedType)
     Equal(lit: ExprId)
     Compared(name: string)
 }
@@ -208,8 +210,17 @@ fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bo
             Taken.Variant(tag, [bind_name(cx.store, a) for a in args], subs)
         },
         .Lit(lit) -> if scalar && !cx.store.null_literal(lit) { Taken.Equal(lit) } else { null },
-        .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+        .Member(name, bind) -> member_taken(variants, name.of, bind.of),
+        .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
     }
+}
+
+/// What `.V as r` takes of a subject with `variants`: the gathered variant `V`, its member's record
+/// under `r`; absent for any other variant.
+fn member_taken(variants: List<VariantSeat>, name: string, bind: string) -> Taken? {
+    let tag? = variants.find_index(it.name == name) else { return null }
+    let record? = variants[tag].member else { return null }
+    Taken.Member(tag, bind, record)
 }
 
 /// Whether the last arm takes whatever the subject is: unguarded, one pattern taking it whole.
@@ -220,7 +231,10 @@ fn ends_in_rest(arms: List<Planned>) -> bool {
 
 /// Whether a pattern takes whatever the subject is.
 fn takes_rest(t: Taken) -> bool {
-    match t { .Whole(_) -> true, .Variant(_, _, _) or .Equal(_) or .Compared(_) -> false }
+    match t {
+        .Whole(_) -> true,
+        .Variant(_, _, _) or .Member(_, _, _) or .Equal(_) or .Compared(_) -> false,
+    }
 }
 
 /// Whether a payload's pattern takes whatever it holds: a hole, or a name that binds.
@@ -269,6 +283,7 @@ fn bound_names(t: Taken) -> List<string> {
         .Whole(name) -> some_list(name),
         .Variant(_, names, subs) -> [n! for n in names if n != null]
             .concat(flatten([bound_names(t!) for t in subs if t != null])),
+        .Member(_, name, _) -> [name],
         .Equal(_) or .Compared(_) -> [],
     }
 }
@@ -293,7 +308,8 @@ fn covers(variants: List<VariantSeat>, arms: List<Planned>) -> bool {
 fn variant_tag(t: Taken) -> int? {
     match t {
         .Variant(tag, _, subs) -> if subs.all(it == null) { tag } else { null },
-        rest -> null,
+        .Member(tag, _, _) -> tag,
+        .Whole(_) or .Equal(_) or .Compared(_) -> null,
     }
 }
 
@@ -329,6 +345,7 @@ fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
             cx
                 .region(is_tag, Layout.Truth) { cx -> subs_accepted(cx, s, tag, subs, 0) } else { cx -> cx.const_bool(false) }
         },
+        .Member(tag, _, _) -> cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag)),
         .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
         .Compared(name) -> compared_const(cx, s, name),
     }
@@ -407,6 +424,7 @@ fn taken_bound(mut cx: Lowering, s: Chosen, t: Taken) {
                 taken_bound(cx, held, sub!)
             }
         },
+        .Member(tag, name, record) -> cx.bind(name, Bound.Value(member_read(cx, s, tag, record), record)),
         .Equal(_) or .Compared(_) -> subject_bound(cx, s, null),
     }
 }
@@ -438,6 +456,7 @@ fn bound_types(s: Chosen, t: Taken) -> List<SignedType>? {
             let tys = [payloads[k].ty for k, n in names if n != null]
             if tys.any(it == null) { null } else { [ty! for ty in tys] }
         },
+        .Member(_, _, record) -> [record],
         .Equal(_) or .Compared(_) -> [],
     }
 }
@@ -472,6 +491,7 @@ fn taken_reads(mut cx: Lowering, s: Chosen, t: Taken) -> List<Reg> {
         .Whole(name) -> if name == null { [] } else { [s.v] },
         .Variant(tag, names, subs) -> payloads_read(cx, s.v, s.variants[tag], names)
             .concat(flatten([sub_reads(cx, s, tag, k, sub) for k, sub in subs])),
+        .Member(tag, _, record) -> [member_read(cx, s, tag, record)],
         .Equal(_) or .Compared(_) -> [],
     }
 }
@@ -492,6 +512,22 @@ fn subject_bound(mut cx: Lowering, s: Chosen, name: string?) {
 fn payloads_bound(mut cx: Lowering, v: Reg, variant: VariantSeat, names: List<string?>) {
     let held = [k for k, n in names if n != null]
     for j, r in payloads_read(cx, v, variant, names) { cx.bind(names[held[j]]!, Bound.Value(r, variant.payloads[held[j]].ty!)) }
+}
+
+/// The member's record the gathered variant `tag` the subject holds is made of: each field its payload
+/// of that name, read, and a field no payload carries its default; one of a record whose fields
+/// aren't known isn't lowered yet.
+fn member_read(mut cx: Lowering, s: Chosen, tag: int, record: SignedType) -> Reg {
+    let variant = s.variants[tag]
+    let fields? = cx.fields_of(record) else { return cx.missed_as("a member's record whose fields aren't known") }
+    let carried: List<string?> = [p.name for p in variant.payloads]
+    let read = payloads_read(cx, s.v, variant, carried)
+    if read.length != carried.length { return cx.missed_as("a payload whose type isn't known") }
+    cx
+        .record_packed(
+            cx.laid_out(record),
+            [if carried.contains(f.name) { read[carried.index_of(f.name)] } else { cx.field_default(record, f) } for f in fields],
+        )
 }
 
 /// Each payload a name stands for, read from the variant `v` holds, in order; none where a payload's

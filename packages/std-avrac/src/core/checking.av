@@ -64,7 +64,7 @@ export type Proof = { names: Map<string, Local>, truth: bool }
 export type EnumShape = { params: int, variants: List<VariantSeat> }
 
 /// An enum's variant: its name and its payloads.
-export type VariantSeat = { name: string, payloads: List<FieldSeat> }
+export type VariantSeat = { name: string, payloads: List<FieldSeat>, member: SignedType? = null }
 
 impl VariantSeat {
     /// Its payloads' types, when it carries `arity` payloads and each one's type is known.
@@ -419,6 +419,14 @@ impl Checking {
 
     /// The enum `ty` is, `Result` among them, absent when it's none.
     fn enum_of(ty: SignedType) -> EnumShape? { self.program.enum_shape(ty) }
+
+    /// The member's record the gathered variant `name` on a value of `subject`'s type is made of;
+    /// absent for any other variant.
+    fn member_of(subject: SignedType?, name: string) -> SignedType? {
+        let s? = subject else { return null }
+        let shape? = self.enum_of(s) else { return null }
+        shape.variants.find(it.name == name)?.member
+    }
 
     /// The payload types of the variant `name` on a value of `subject`'s type, bound to the arguments
     /// the enum is applied to; absent when it has no such variant.

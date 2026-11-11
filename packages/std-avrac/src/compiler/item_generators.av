@@ -1,13 +1,14 @@
 //! A GENERATOR ON THE PROGRAM LAYER: the `static fn derive` a trait's own body writes, or a declaring
 //! annotation's own fn, lowered with every body it reaches into a program the evaluator runs over a
 //! declaration's meta value: a `Type` for a derive, a `Fn` for an annotation.
-use core.{Annotation, SignedType, SyntaxArena, TaskChecks, flatten}
+use core.{Annotation, SignedType, StmtId, SyntaxArena, TaskChecks, flatten}
 use features.{
     Budgets,
     MetaHeap,
     MetaVal,
     arg_lit,
     meta_of_fn,
+    meta_of_trait,
     meta_of_type,
     new_meta_heap,
     unsettled_label,
@@ -40,22 +41,55 @@ export enum GeneratorKind {
     Annotation
     /// A declaring annotation's own fn over a type: handed the `Type` the annotation stands on.
     TypeAnnotation
+    /// A declaring annotation's own fn over a trait: handed the `Trait` the annotation stands on.
+    TraitAnnotation
 }
+
+/// The `@std/meta` record a generator's seat takes a declaration as.
+@derive(Saved)
+export enum DeclSeat {
+    Fn
+    Type
+    Trait
+}
+
+impl DeclSeat {
+    /// Whether a declaration of `kind` crosses into the seat.
+    fn takes(kind: ItemKind) -> bool {
+        match self {
+            .Fn -> kind == ItemKind.Fn,
+            .Type -> match kind {
+                .Record or .Enum or .Named or .CollectEnum -> true,
+                .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .Const or .State -> false,
+            },
+            .Trait -> kind == ItemKind.Trait,
+        }
+    }
+}
+
+/// A declaration a site hands its generator past the one it stands on: where it's written and the
+/// seat it crosses into.
+@derive(Saved)
+export type HandedDecl = { file: SourceFileAddress, name: string, item: int, seat: DeclSeat }
 
 impl GeneratorAt {
     /// The unit the generator's body is lowered as in its file.
     fn unit() -> string {
         match self.kind {
             .Derive -> "${self.name}.${GENERATOR}",
-            .Annotation or .TypeAnnotation -> self.name,
+            .Annotation or .TypeAnnotation or .TraitAnnotation -> self.name,
         }
     }
 }
 
 impl GeneratorKind {
-    /// Whether the generator is handed a fn, rather than a type.
-    fn handed_a_fn() -> bool {
-        match self { .Annotation -> true, .Derive or .TypeAnnotation -> false }
+    /// The seat the declaration the generator stands on crosses into.
+    fn first_seat() -> DeclSeat {
+        match self {
+            .Annotation -> DeclSeat.Fn,
+            .Derive or .TypeAnnotation -> DeclSeat.Type,
+            .TraitAnnotation -> DeclSeat.Trait,
+        }
     }
 }
 
@@ -63,7 +97,7 @@ impl GeneratorKind {
 fn generator_body(engine: QueryEngine, g: GeneratorAt) -> SignedBody? {
     match g.kind {
         .Derive -> trait_generator(engine, TraitAt { file: g.file, name: g.name }),
-        .Annotation or .TypeAnnotation -> signed_body(engine, g.file, g.name),
+        .Annotation or .TypeAnnotation or .TraitAnnotation -> signed_body(engine, g.file, g.name),
     }
 }
 
@@ -75,13 +109,7 @@ fn trait_generator(engine: QueryEngine, t: TraitAt) -> SignedBody? { trait_stati
 /// writes none with a body.
 fn trait_static_body(engine: QueryEngine, t: TraitAt, name: string) -> SignedBody? {
     let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
-    let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
-    let s? = fns
-        .find(
-            (f) -> item.store.fn_parts(f)?.name == name &&
-                item.store.is_static(f) &&
-                written_body(item, f),
-        ) else { return null }
+    let s? = trait_fns(item).find((f) -> static_written(item, f, name)) else { return null }
     let written = written_fn(item.store, [s], name)!
     SignedBody {
         signature: written_signature(
@@ -97,6 +125,17 @@ fn trait_static_body(engine: QueryEngine, t: TraitAt, name: string) -> SignedBod
         body: item.store.fn_parts(s)!.body,
         stmt: s,
     }
+}
+
+/// Whether `f` is a static fn named `name` written with a body.
+fn static_written(item: ReadItem, f: StmtId, name: string) -> bool {
+    item.store.fn_parts(f)?.name == name && item.store.is_static(f) && written_body(item, f)
+}
+
+/// Whether the trait `t` writes its own static `derive` with a body.
+fn derives(engine: QueryEngine, t: TraitAt) -> bool {
+    let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return false }
+    trait_fns(item).any((f) -> static_written(item, f, GENERATOR))
 }
 
 /// The symbol a generator runs as.
@@ -182,21 +221,25 @@ export enum GeneratorRun {
 }
 
 /// The made generator `l` of `g` run under `budgets` over the declaration `file` writes as `name`,
-/// handed that declaration as its kind takes it and answering `type_named` from `file`.
+/// handed that declaration as its kind takes it, then each of `handed`, and answering `type_named`
+/// from `file`.
 export fn generator_run(
     engine: QueryEngine,
     l: Lowered,
     g: GeneratorAt,
     file: SourceFileAddress,
     name: string,
+    handed: List<HandedDecl>,
     budgets: Budgets,
 ) -> GeneratorRun {
     mut heap = new_meta_heap()
-    let arg? = meta_handed(engine, g.kind, file, name, heap) else { return GeneratorRun.Stopped(not_handed(g.kind, name)) }
+    let arg? = meta_handed(engine, g.kind.first_seat(), file, name, heap) else { return GeneratorRun.Stopped(not_handed(g.kind.first_seat(), name)) }
+    let rest = [v! for h in handed for v in [meta_handed(engine, h.seat, h.file, h.name, heap)] if v != null]
+    if rest.length != handed.length { return GeneratorRun.Stopped(not_handed_all(g, name)) }
     match run_lifted(
         l,
         generator_symbol(g),
-        [arg],
+        [arg].concat(rest),
         heap,
         budgets,
         (n: string) -> named_lifted(engine, file, n),
@@ -217,23 +260,27 @@ fn answers_declared(engine: QueryEngine, g: GeneratorAt) -> bool {
     meta_named(answer, DECLARED)
 }
 
-/// The declaration `file` writes as `name`, as the meta value a generator of `kind` is handed, laid
-/// out in `heap`; absent when it declares nothing of that kind.
+/// The declaration `file` writes as `name`, as the meta value `seat` takes, laid out in `heap`;
+/// absent when it declares nothing that crosses there.
 fn meta_handed(
     engine: QueryEngine,
-    kind: GeneratorKind,
+    seat: DeclSeat,
     file: SourceFileAddress,
     name: string,
     mut heap: MetaHeap,
 ) -> MetaVal? {
-    match kind {
-        .Derive or .TypeAnnotation -> {
+    match seat {
+        .Type -> {
             let t? = meta_of_decl(engine, file, name) else { return null }
             meta_of_type(t, heap)
         },
-        .Annotation -> {
+        .Fn -> {
             let f? = meta_of_fn_decl(engine, file, name) else { return null }
             meta_of_fn(f, fn_slots(engine), heap)
+        },
+        .Trait -> {
+            let t? = meta_of_trait_decl(engine, file, name) else { return null }
+            meta_of_trait(t, fn_slots(engine), heap)
         },
     }
 }
@@ -245,9 +292,9 @@ fn fn_slots(engine: QueryEngine) -> int {
     sig.fields.length
 }
 
-/// A declaration a generator runs over: the name its file declares it as, the item declaring it, and
-/// the generator.
-export type GeneratorSite = { name: string, item: int, generator: GeneratorAt }
+/// A declaration a generator runs over: the name its file declares it as, the item declaring it, the
+/// generator, and each declaration the site hands it past this one.
+export type GeneratorSite = { name: string, item: int, generator: GeneratorAt, handed: List<HandedDecl> = [] }
 
 /// Each generator a file's declarations name, in the order written: each trait a `@derive` names,
 /// and each declaring annotation a fn wears.
@@ -269,9 +316,89 @@ fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress
 > {
     let item = read_item(engine, file, d.item)
     let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
-    flatten(
+    let annotated = flatten(
         [annotation_sites(engine, scope, file, d, item.store, a) for a in item.store.annotations_of(s)],
     )
+    annotated.concat(delegated_sites(engine, d)).concat(member_sites(engine, d, annotated))
+}
+
+/// A `collect enum E: T`'s sites: `@std/meta`'s `delegate` over the enum once per trait, handed the
+/// trait, as `@delegate(T)` written on it would be.
+fn delegated_sites(engine: QueryEngine, d: DeclaredName) -> List<GeneratorSite> {
+    if d.kind != ItemKind.CollectEnum { return [] }
+    let made_by? = declarations_of(engine, META, [], false, DELEGATE).find(it.kind == ItemKind.Fn) else { return [] }
+    let g = GeneratorAt {
+        file: made_by.file,
+        name: made_by.name,
+        kind: GeneratorKind.TypeAnnotation,
+    }
+    [GeneratorSite { name: d.name, item: d.item, generator: g, handed: [h!] } for t in gathered_traits(engine, d.file, d.name) for h in [handed_trait(engine, t)] if h != null]
+}
+
+/// The trait `t` as a declaration handed to a generator's `Trait` seat.
+fn handed_trait(engine: QueryEngine, t: TraitAt) -> HandedDecl? {
+    let item? = file_declares(engine, t.file)
+        .names
+        .find(it.name == t.name && it.kind == ItemKind.Trait)?.item else { return null }
+    HandedDecl { file: t.file, name: t.name, item: item, seat: DeclSeat.Trait }
+}
+
+/// A record a `collect enum E: T` gathers, each `T` it writes no impl of and no `@derive` of: `T`'s
+/// own `derive` over it, in its own file, where `T` writes one and stands in another file.
+fn member_sites(engine: QueryEngine, d: DeclaredName, annotated: List<GeneratorSite>) -> List<
+    GeneratorSite,
+> {
+    if d.kind != ItemKind.Record { return [] }
+    let derivable = [t for g in package_gatherings(engine, d.file.package_name).each if g.members.any(it.is(d)) for t in g.derived]
+    if derivable.is_empty() { return [] }
+    let written = written_traits(engine, d.file, d.name)
+    let traits = [t for j, t in derivable if derivable.find_index((x) -> same_trait(x, t)) == j]
+    [GeneratorSite {
+        name: d.name,
+        item: d.item,
+        generator: GeneratorAt { file: t.file, name: t.name, kind: GeneratorKind.Derive },
+    } for t in traits if !written.contains(t.name) &&
+        !annotated.any((a) -> derives_trait(a, t)) &&
+        !same_file(t.file, d.file)]
+}
+
+/// Whether two name one trait.
+fn same_trait(a: TraitAt, b: TraitAt) -> bool { a.name == b.name && same_file(a.file, b.file) }
+
+/// Whether a site is a `@derive` of the trait `t`.
+fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
+    match site.generator.kind {
+        .Derive -> same_trait(TraitAt { file: site.generator.file, name: site.generator.name }, t),
+        .Annotation or .TypeAnnotation or .TraitAnnotation -> false,
+    }
+}
+
+/// A `collect enum` with traits: the members it gathers and each of its traits that writes a
+/// `derive`, which a member writing no impl of it takes.
+@derive(Saved)
+type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt> }
+
+/// Each `collect enum` a package writes with a trait that derives, and what it gathers.
+@derive(Saved)
+type DerivedGatherings = { each: List<DerivedGathering> }
+
+/// The gatherings a package's written `collect enum`s make, each read where it's written.
+@query
+fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
+    let enums = [d for p in package_sources(engine, package, "src") for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
+    DerivedGatherings { each: [g! for d in enums for g in [gathering(engine, d)] if g != null] }
+}
+
+/// The gathering the `collect enum` `d` makes; absent when none of its traits derives, or it gathers
+/// only once built.
+fn gathering(engine: QueryEngine, d: DeclaredName) -> DerivedGathering? {
+    let derived = [t for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
+    if derived.is_empty() { return null }
+    let item = read_item(engine, d.file, d.item)
+    let parts? = [p! for s in item.stmts for p in [item.store.collect_enum_parts(s)] if p != null]
+        .find(it.name == d.name) else { return null }
+    let members? = gathered(engine, d.file, parts.kind, parts.scope, parts.order, false) else { return null }
+    DerivedGathering { members: members, derived: derived }
 }
 
 /// The generators one annotation on `d` names, its name read among written names alone: each trait
@@ -294,14 +421,51 @@ fn annotation_sites(
     }
     if named.kind != ItemKind.Fn { return [] }
     let kind? = annotation_kind(engine, named.file, named.name) else { return [] }
-    if kind.handed_a_fn() != (d.kind == ItemKind.Fn) { return [] }
+    if !kind.first_seat().takes(d.kind) { return [] }
     [
         GeneratorSite {
             name: d.name,
             item: d.item,
             generator: GeneratorAt { file: named.file, name: named.name, kind: kind },
+            handed: handed_args(engine, scope, file, store, a, named),
         },
     ]
+}
+
+/// The declarations an annotation's arguments name, each into the seat of its fn `named` past the
+/// first that takes one, in order, up to the first seat that takes none.
+fn handed_args(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    a: Annotation,
+    named: DeclaredName,
+) -> List<HandedDecl> {
+    let seats = (fn_signature(engine, named.file, named.name)?.params ?? []).drop(1)
+    let args = [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null]
+    let crossed = [handed_arg(engine, scope, file, p.ty, if j < args.length { args[j] } else { null }) for j, p in seats]
+    [h! for h in crossed.take(crossed.find_index(it == null) ?? crossed.length)]
+}
+
+/// The declaration `written` names from `file`, handed to a seat of type `ty`; absent where the seat
+/// takes no declaration, nothing is written there, or what it names doesn't cross into it.
+fn handed_arg(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    ty: SignedType?,
+    written: string?,
+) -> HandedDecl? {
+    let seat? = meta_seat_of(ty) else { return null }
+    let name? = written else { return null }
+    let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return null }
+    if seat.takes(d.kind) { HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat } } else { null }
+}
+
+/// The space a name handed to `seat` is read in.
+fn space_taking(seat: DeclSeat) -> Space {
+    match seat { .Fn -> Space.Value, .Type or .Trait -> Space.Type }
 }
 
 /// What generator the fn `file` declares as `name` is when it's a declaring annotation: one over a
@@ -311,8 +475,20 @@ export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: st
     let sig? = fn_signature(engine, file, name) else { return null }
     let first? = sig.params.first()?.ty else { return null }
     if !meta_named(sig.answer, DECLARED) && !directives_listed(sig.answer) { return null }
-    if meta_named(first, META_FN) { return GeneratorKind.Annotation }
-    if meta_named(first, META_TYPE) { GeneratorKind.TypeAnnotation } else { null }
+    let seat? = meta_seat_of(first) else { return null }
+    match seat {
+        .Fn -> GeneratorKind.Annotation,
+        .Type -> GeneratorKind.TypeAnnotation,
+        .Trait -> GeneratorKind.TraitAnnotation,
+    }
+}
+
+/// The seat a type names, when it's `@std/meta`'s `Fn`, `Type` or `Trait`, present.
+fn meta_seat_of(ty: SignedType?) -> DeclSeat? {
+    let t? = ty else { return null }
+    if meta_named(t, META_FN) { return DeclSeat.Fn }
+    if meta_named(t, META_TYPE) { return DeclSeat.Type }
+    if meta_named(t, META_TRAIT) { DeclSeat.Trait } else { null }
 }
 
 /// Whether `ty` is a list of `@std/meta`'s `Directive`s.
@@ -342,6 +518,12 @@ const META_FN: string = "Fn"
 /// The record a declaring annotation over a type's first seat takes.
 const META_TYPE: string = "Type"
 
+/// The record a declaring annotation over a trait's first seat takes.
+const META_TRAIT: string = "Trait"
+
+/// `@std/meta`'s generator of a `collect enum`'s impl of one of its traits.
+const DELEGATE: string = "delegate"
+
 /// What a declaring annotation answers.
 const DECLARED: string = "Declared"
 
@@ -353,9 +535,12 @@ collect listed_generator_facts: List<ListedQuery> = @query_definition in self as
 /// The queries a trait's generator is printed through, for a process to hand its engine.
 export fn generator_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generator_facts) }
 
-fn not_handed(kind: GeneratorKind, name: string) -> string {
-    match kind {
-        .Derive or .TypeAnnotation -> "`${name}` declares no type with fields, variants or a shape",
-        .Annotation -> "`${name}` declares no fn",
+fn not_handed(seat: DeclSeat, name: string) -> string {
+    match seat {
+        .Type -> "`${name}` declares no type with fields, variants or a shape",
+        .Fn -> "`${name}` declares no fn",
+        .Trait -> "`${name}` declares no trait whose methods each sign",
     }
 }
+
+fn not_handed_all(g: GeneratorAt, name: string) -> string { "a declaration the site on `${name}` hands `${g.name}` doesn't cross into its seat" }

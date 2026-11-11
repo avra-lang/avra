@@ -40,8 +40,13 @@ export type GeneratedItem = { tape: SyntaxTape, wraps: bool = false }
 @derive(Saved)
 export type GeneratedItems = { items: List<GeneratedItem>, said: List<string> }
 
+/// What a site hands its generator past the declaration it stands on: each declaration, and what
+/// the item writing each means, so a site runs again when one changes.
+@derive(Saved)
+export type Handing = { decls: List<HandedDecl>, meanings: List<ContentHash> }
+
 /// What `generator` makes over the declaration `file` writes as `name`, its item's tape meaning
-/// `_declaration` and the generator's made program printing as `print`.
+/// `_declaration`, the generator's made program printing as `print`, handed `handed`.
 @query
 export fn generated(
     engine: QueryEngine,
@@ -50,9 +55,10 @@ export fn generated(
     name: string,
     generator: GeneratorAt,
     print: ContentHash,
+    handed: Handing,
 ) -> GeneratedItems {
     let l? = generator_program(engine, generator, print) else { return said_only(generator_moved(generator)) }
-    match generator_run(engine, l, generator, file, name, budgets_of()) {
+    match generator_run(engine, l, generator, file, name, handed.decls, budgets_of()) {
         .Ran(made, problems) -> if problems.is_empty() { items_spliced(engine, file, name, made) } else { said_only([p.message for p in problems]) },
         .Stopped(why) -> said_only([why]),
     }
@@ -91,11 +97,29 @@ export fn generated_declares(engine: QueryEngine, file: SourceFileAddress) -> De
 
 /// What one site's generator makes, or why its generator isn't made.
 export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: GeneratorSite) -> GeneratedItems {
-    let item = item_under(engine, file, site.item)
-    let declaration = item_tape(engine, item.text, item.context).meaning_hash
     let made = generator_print(engine, site.generator)
     let print? = made.print else { return said_only([made.unmade]) }
-    generated(engine, file, declaration, site.name, site.generator, print)
+    let handed = Handing {
+        decls: site.handed,
+        meanings: [item_meaning(engine, h.file, h.item) for h in site.handed],
+    }
+    generated(
+        engine,
+        file,
+        item_meaning(engine, file, site.item),
+        site.name,
+        site.generator,
+        print,
+        handed,
+    )
+}
+
+/// What the item `at` of `file` means: its tape's meaning hash, a generated item's own.
+fn item_meaning(engine: QueryEngine, file: SourceFileAddress, at: int) -> ContentHash {
+    let made = generated_at(engine, file, at)
+    if made != null { return made!.tape.meaning_hash }
+    let item = item_under(engine, file, at)
+    item_tape(engine, item.text, item.context).meaning_hash
 }
 
 /// The declarations directives' sources make over what `file` writes as `name`, spliced as one
