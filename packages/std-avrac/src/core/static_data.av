@@ -72,6 +72,46 @@ impl Lowering {
         self.fn_static(box, symbol)
     }
 
+    /// The value the const `named` is, read as a value of `ty`: the literal it's written as, or what it
+    /// settles to. A literal read as another type, and a const that doesn't settle yet, aren't lowered
+    /// yet.
+    mut fn const_read(named: NamedValue, ty: SignedType) -> Reg {
+        match named {
+            .Literal(value) -> if ty.spelled() != value.type().spelled() {
+                self
+                    .missed_as("a const read as `${ty.spelled()}`, written as `${value.type().spelled()}`")
+            } else {
+                self.constant(value)
+            },
+            .Settled(kept_words, data) -> self.settled_value(self.laid_out(ty), kept_words, data),
+            .Unsettled(why) -> self.missed_as(why),
+            .Fn(callee) -> self.missed_as("the fn `${callee.name}` read as a const"),
+            .Collected(callee) -> self.call_fn(self.laid_out(ty), callee, []),
+        }
+    }
+
+    /// A value a const settled to, of layout `l`, its boxes `data`: its one word, or its words packed.
+    /// A word pointing at a box short of the data's root isn't lowered yet.
+    mut fn settled_value(l: Layout, words: List<SettledWord>, data: Static) -> Reg {
+        if words.any((w) -> boxed_slot_at(w.slot) ?? data.boxes.length - 1 != data.boxes.length - 1) { return self.missed_as("a const whose words point at more than one box") }
+        let regs = [self.settled_word(w, data) for w in words]
+        if regs.any(it == null) { return self.missed_as("a const that settles to no value") }
+        if words.length == 1 && l.one_word() { regs[0]! } else { self.pack(l, [r! for r in regs]) }
+    }
+
+    /// One word a const settled to: a scalar its constant, a box the address of the data `data`.
+    /// Absent for a slot no register reads as a word.
+    mut fn settled_word(w: SettledWord, data: Static) -> Reg? {
+        match w.slot {
+            .Int(n) -> self.word_at(w.layout, n),
+            .Float(bits) -> self.const_float(bits),
+            .Bool(b) -> self.const_bool(b),
+            .Text(s) -> self.const_str(s),
+            .Box(_) -> self.laid_static(w.layout, data.name, data.boxes),
+            .Null or .Absent or .Code(_) -> null,
+        }
+    }
+
     /// The data `boxes` laid out under `name`, once, and its address in a register of layout `l`.
     mut fn laid_static(l: Layout, name: string, boxes: List<StaticBox>) -> Reg {
         if !self.program.data.get().any(it.name == name) { self.program.data.push(Static { name: name, boxes: boxes }) }

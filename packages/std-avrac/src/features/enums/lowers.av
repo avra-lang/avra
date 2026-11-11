@@ -133,11 +133,12 @@ fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
 // ── A match on an enum ──────────────────────────────────────────────
 
 /// What a pattern takes of the subject: all of it, under a name or none; one variant, each payload
-/// under a name or none; or the value a literal is.
+/// under a name or none; the value a literal is; or the value a top-level const is.
 enum Taken {
     Whole(name: string?)
     Variant(tag: int, names: List<string?>)
     Equal(lit: ExprId)
+    Compared(name: string)
 }
 
 /// An arm as a match on an enum reads it: what each of its patterns takes, its guard, and its value.
@@ -196,7 +197,7 @@ fn arm_planned(cx: Lowering, variants: List<VariantSeat>, a: Arm, scalar: bool) 
 fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bool) -> Taken? {
     match cx.store.pat(p) {
         .Wild or .Rest -> Taken.Whole(null),
-        .Bind(name) -> if compares(cx, name.of) { null } else { Taken.Whole(name.of) },
+        .Bind(name) -> if compares(cx, name.of) { Taken.Compared(name.of) } else { Taken.Whole(name.of) },
         .Variant(name, args) -> {
             let tag? = variants.find_index(it.name == name.of) else { return null }
             if args.length > variants[tag].payloads.length || !args.all((a) -> takes_any(cx, a)) { return null }
@@ -210,9 +211,12 @@ fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bo
 /// Whether the last arm takes whatever the subject is: unguarded, one pattern taking it whole.
 fn ends_in_rest(arms: List<Planned>) -> bool {
     let last = arms.last()!
-    last.guard == null &&
-        last.pats.length == 1 &&
-        match last.pats[0] { .Whole(_) -> true, .Variant(_, _) or .Equal(_) -> false }
+    last.guard == null && last.pats.length == 1 && takes_rest(last.pats[0])
+}
+
+/// Whether a pattern takes whatever the subject is.
+fn takes_rest(t: Taken) -> bool {
+    match t { .Whole(_) -> true, .Variant(_, _) or .Equal(_) or .Compared(_) -> false }
 }
 
 /// Whether a payload's pattern takes whatever it holds: a hole, or a name that binds.
@@ -230,8 +234,10 @@ fn bind_name(store: SyntaxArena, p: PatId) -> string? {
 }
 
 /// Whether a name in a pattern may stand for a top-level value the subject is compared with, rather
-/// than bind: one the program names that isn't a fn.
-fn compares(cx: Lowering, name: string) -> bool { (cx.program.compared)(name) ?? false }
+/// than bind: one the program names that isn't a fn, which no binding in the body hides.
+fn compares(cx: Lowering, name: string) -> bool {
+    cx.bound(name) == null && (cx.program.compared)(name) ?? false
+}
 
 /// The bare names a pattern holds, at its top or as a variant's payload, that only a generator gives a
 /// value a pattern compares with, which no binder's question reads.
@@ -248,7 +254,7 @@ fn bound_names(t: Taken) -> List<string> {
     match t {
         .Whole(name) -> some_list(name),
         .Variant(_, names) -> [n! for n in names if n != null],
-        .Equal(_) -> [],
+        .Equal(_) or .Compared(_) -> [],
     }
 }
 
@@ -264,7 +270,7 @@ fn case_of(a: Planned) -> int? {
 fn covers(variants: List<VariantSeat>, arms: List<Planned>) -> bool {
     let taken = [t for a in arms if a.guard == null for t in a.pats]
     let tags = [tag! for t in taken for tag in [variant_tag(t)] if tag != null]
-    tags.length < taken.length || (0..variants.length).all((tag) -> tags.contains(tag))
+    taken.any(takes_rest) || (0..variants.length).all((tag) -> tags.contains(tag))
 }
 
 /// The tag a pattern tests, absent for one that takes the rest.
@@ -300,7 +306,16 @@ fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
         .Whole(_) -> cx.const_bool(true),
         .Variant(tag, _) -> cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag)),
         .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
+        .Compared(name) -> compared_const(cx, s, name),
     }
+}
+
+/// Whether the subject is the value the top-level const `name` is; one of a subject that doesn't
+/// compare by value isn't lowered yet.
+fn compared_const(mut cx: Lowering, s: Chosen, name: string) -> Reg {
+    if !cx.equatable(s.ty) { return cx.missed_as("a const compared with a subject that doesn't compare by value") }
+    let named? = (cx.program.named)(name, null) else { return cx.missed_as("a pattern's name that names no value") }
+    cx.same_value(s.v, cx.const_read(named, s.ty), s.ty)
 }
 
 /// An arm's guard, under what its pattern binds, in a scope of names of its own.
@@ -329,7 +344,7 @@ fn bound(mut cx: Lowering, s: Chosen, a: Planned) {
     match a.pats[0] {
         .Whole(name) -> subject_bound(cx, s, name),
         .Variant(tag, names) -> payloads_bound(cx, s.v, s.variants[tag], names),
-        .Equal(_) -> subject_bound(cx, s, null),
+        .Equal(_) or .Compared(_) -> subject_bound(cx, s, null),
     }
 }
 
@@ -354,7 +369,7 @@ fn bound_types(s: Chosen, t: Taken) -> List<SignedType>? {
             let tys = [payloads[k].ty for k, n in names if n != null]
             if tys.any(it == null) { null } else { [ty! for ty in tys] }
         },
-        .Equal(_) -> [],
+        .Equal(_) or .Compared(_) -> [],
     }
 }
 
@@ -387,7 +402,7 @@ fn taken_reads(mut cx: Lowering, s: Chosen, t: Taken) -> List<Reg> {
     match t {
         .Whole(name) -> if name == null { [] } else { [s.v] },
         .Variant(tag, names) -> payloads_read(cx, s.v, s.variants[tag], names),
-        .Equal(_) -> [],
+        .Equal(_) or .Compared(_) -> [],
     }
 }
 

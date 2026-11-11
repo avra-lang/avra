@@ -28,14 +28,17 @@ impl Lowers for FloatLit {
 
 impl Lowers for Ident {
     /// A name is what it's bound to here: a parameter's or a `let`'s register, what a `mut`'s cell
-    /// holds now, the literal a `const` is written as, or a declared fn as a value.
+    /// holds now, what a `const` is written as or settles to, or a declared fn as a value.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let b = cx.bound(self.name.of)
         if b != null { return cx.read(e, b!) }
         let named? = cx.named(e, self.name.of) else { return cx.unlowered(e) }
         match named {
             .Fn(callee) -> cx.fn_value(e, callee),
-            .Literal(value) -> if cx.type_at(e)?.spelled() != value.type().spelled() { cx.unlowered(e) } else { cx.constant(value) },
+            .Literal(_) or .Settled(_, _) or .Unsettled(_) -> {
+                let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+                cx.const_read(named, ty)
+            },
             .Collected(callee) -> cx.call_fn(cx.layout_at(e), callee, []),
         }
     }
@@ -208,8 +211,8 @@ fn owned_same(mut cx: Lowering, kind: Operand, a: Reg, b: Reg) -> Reg {
     }
 }
 
-/// `l == r`, or `l != r` when `negated`, where one side is a nullable of a type the language owns and
-/// the other a present value of that type: one value where the nullable holds one equal to it.
+/// `l == r`, or `l != r` when `negated`, where one side is a nullable of a type that compares by value
+/// and the other a present value of that type: one value where the nullable holds one equal to it.
 /// Absent, with nothing emitted, for any other operands.
 fn compared_held(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? {
     let lt? = cx.type_at(l) else { return null }
@@ -220,16 +223,13 @@ fn compared_held(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? 
         !opt.nullable() ||
         opt.absence() ||
         opt.unwrapped().spelled() != plain.spelled() ||
-        plain.dynamic ||
-        !plain.args.is_empty() { return null }
-    let ours? = owned_only(plain) else { return null }
-    let kind? = operand_of(cx.laid_out(ours)) else { return null }
+        !cx.equatable(plain) { return null }
     let a = cx.lower(l)
     let b = cx.lower(r)
     let held = if lt.nullable() { a } else { b }
     let other = if lt.nullable() { b } else { a }
     let same = cx
-        .region(cx.present(held, opt), Layout.Truth) { cx -> owned_same(cx, kind, cx.carried(held, opt), other) } else { cx -> cx.const_bool(false) }
+        .region(cx.present(held, opt), Layout.Truth) { cx -> cx.same_value(cx.carried(held, opt), other, plain) } else { cx -> cx.const_bool(false) }
     if negated { cx.not(same) } else { same }
 }
 
