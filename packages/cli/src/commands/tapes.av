@@ -409,8 +409,15 @@ fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string)
 }
 
 /// Whether a type here is the workspace's, spelled `old`: spelled alike, and every name in it
-/// naming a type, as each of the workspace's does.
-fn agrees(new: SignedType, old: string) -> bool { new.spelled() == old && !names_no_type(new) }
+/// naming a type, as each of the workspace's does. The workspace types a type parameter standing
+/// as a value as the parameter itself.
+fn agrees(new: SignedType, old: string) -> bool { (parameter_standing(new) ?? new).spelled() == old && !names_no_type(new) }
+
+/// The type parameter a type value stands for, absent for any other type.
+fn parameter_standing(t: SignedType) -> SignedType? {
+    let d? = t.described() else { return null }
+    match d.head { .Parameter(_, _) -> d, rest -> null }
+}
 
 /// Whether a type has a name anywhere in it that names no type.
 fn names_no_type(t: SignedType) -> bool {
@@ -563,7 +570,8 @@ export command tapes {
 /// program layer with every body it reaches, one not made counted by why; and each made one run over
 /// every declaration that names it, each site's item spliced and held to the site before it, which
 /// it must differ from.
-/// Answers 1 when a made generator says anything or splices nothing. What its items mean is held by
+/// A site whose generator answers no directive and says nothing made nothing, as it answered.
+/// Answers 1 when a made generator says anything or splices none of what it answered. What its items mean is held by
 /// `--signatures` and `--lowered`.
 fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     let sources = package_sources(engine, disk.name, "src")
@@ -575,6 +583,7 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
     mut sites = 0
     mut directives = 0
     mut spliced = 0
+    mut answered_none = 0
     mut failing: List<string> = []
     mut witnessed = "no two sites to witness the item comparison by"
     mut held_before: SyntaxTape? = null
@@ -608,12 +617,17 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
                         spelled_file(site.generator.file) != spelled_file(file) { continue }
                     sites = sites + 1
                     annotation_sites = annotation_sites + by_annotation(g.kind)
-                    directives = directives + directives_made(engine, l, g, at, site.name)
+                    let made_here = directives_made(engine, l, g, at, site.name)
+                    directives = directives + made_here
                     let item = site_generated(engine, at, site)
                     let tape = item.items.first()?.tape
-                    let fails = if !item.said.is_empty() { "it said ${item.said[0]}" } else if tape == null { "it made nothing" } else if item.items.length > 1 { "${item.items.length} items" } else { null }
+                    let fails = if !item.said.is_empty() { "it said ${item.said[0]}" } else if tape == null && made_here > 0 { "it made nothing of ${made_here} directives" } else if item.items.length > 1 { "${item.items.length} items" } else { null }
                     if fails != null {
                         failing.push("${over} ${site.name}'s ${g.name}: ${fails!}")
+                        continue
+                    }
+                    if tape == null {
+                        answered_none = answered_none + 1
                         continue
                     }
                     spliced = spliced + 1
@@ -630,7 +644,7 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
         "generators: ${written} written (${annotations} by annotations), ${made} made on the program layer, run over ${sites} declarations (${annotation_sites} by annotations) making ${directives} directives; not made yet: ${tallied(unmade)}",
     )
     println(
-        "generated items: ${spliced} of ${sites} spliced, ${failing.length} failing; ${witnessed}",
+        "generated items: ${spliced} of ${sites} spliced, ${answered_none} answering no directive, ${failing.length} failing; ${witnessed}",
     )
     if failing.is_empty() { 0 } else { 1 }
 }

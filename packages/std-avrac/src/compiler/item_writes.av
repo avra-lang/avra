@@ -77,7 +77,7 @@ type Surveyed = { name: string, evidence: Evidence }
 fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
     let impls = impls_with(engine, m.file, m.owner, m.name, false)
     if impls.length > 1 { return unread(not_one_impl(m)) }
-    if impls.is_empty() { return defaulted(engine, m) }
+    if impls.is_empty() { return gathered_evidence(engine, m) ?? defaulted(engine, m) }
     impl_evidence(engine, impls[0], m.file, m.owner).find(it.name == m.name)?.evidence ?? unread(
         not_one_impl(m),
     )
@@ -113,6 +113,23 @@ fn method_typed(engine: QueryEngine, at: ImplAt, name: string) -> TypedBody {
 
 /// No node's type, for a body nothing types here.
 fn untyped_nodes() -> List<SignedType?> { [] }
+
+/// The evidence of the method `m` of a `collect enum` a trait it implements over its members
+/// declares: written where the trait marks it `mut`, the signature each member's impl answers to.
+/// Absent where no trait it gathers declares it.
+fn gathered_evidence(engine: QueryEngine, m: MethodAt) -> Evidence? {
+    let marked = [s! for t in gathered_traits(engine, m.file, m.owner) for s in [trait_marked(engine, t, m.name)] if s != null]
+    let written? = marked.first() else { return null }
+    Evidence { written: written, unproved: null, reached: [] }
+}
+
+/// Whether the method `name` the trait `t` declares is marked `mut`; absent where it declares none.
+fn trait_marked(engine: QueryEngine, t: TraitAt, name: string) -> bool? {
+    let item? = trait_item(engine, t) else { return null }
+    let s? = trait_fns(item)
+        .find((f) -> item.store.fn_parts(f)?.name == name && !item.store.is_static(f)) else { return null }
+    item.store.is_mutating(s)
+}
 
 /// The evidence of the method `m` as the one trait its type implements that gives it a body writes it.
 fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
@@ -241,14 +258,17 @@ impl Survey {
     }
 
     /// A call's evidence: a method's on a place rooted in the receiver, and any call handing such a
-    /// place to a seat.
+    /// place to a seat, a fn value's by the seats its type marks.
     mut fn call_evidence(e: ExprId) {
         let mp = self.store.method_parts(e)
         if mp != null { return self.method_evidence(mp!.subject, mp!.name, mp!.args) }
         let call = self.store.call_parts(e)
         if call != null { return self.named_evidence(call!.callee, call!.args) }
         let applied? = self.store.applied_parts(e) else { return }
-        if self.hands_write(applied.args) { self.unread(handed_to_value()) }
+        if !self.hands_write(applied.args) { return }
+        let f? = self.typed_at(applied.subject) else { return self.unread(handed_to_value()) }
+        if !(f.head is .Function) || f.nullable() { return self.unread(handed_to_value()) }
+        self.fed([s.mutable for s in f.seats], applied.args, self.path_words(applied.subject))
     }
 
     /// A method call: on a place rooted in the receiver, a verb with a `mut` receiver seat writes it,
@@ -258,8 +278,8 @@ impl Survey {
         if !self.rooted(subject) {
             if !self.hands_write(args) { return }
             let ty? = self.typed_at(subject) else { return self.unread(handed_unread(name)) }
-            let seats? = method_type(self.engine, ty, name)?.seats else { return self.unread(handed_unread(name)) }
-            return self.fed([s.mutable for s in seats.drop(1)], args, name)
+            let marks? = self.called_marks(ty, name, args.length) else { return self.unread(handed_unread(name)) }
+            return self.fed(marks, args, name)
         }
         let ty? = self.place_type(subject) else { return self.unread(untyped_place(self.path_words(subject))) }
         if ty.dynamic { return self.contract_evidence(ty, name, args) }
@@ -272,6 +292,27 @@ impl Survey {
             self.written = true
         }
         self.fed([s.mutable for s in seats!.drop(1)], args, name)
+    }
+
+    /// Which seats of what a call of `name` on a value of `ty` reaches are `mut`, the arguments'
+    /// alone: a static of the type a type value stands for, or a variant of it, which writes nothing;
+    /// a fn a field holds; else a method, past its receiver. Absent where none is read.
+    fn called_marks(ty: SignedType, name: string, count: int) -> List<bool>? {
+        let described = ty.described()
+        if described != null { return self.through_type_marks(described!, name, count) }
+        let f = self.field_of(ty, name)?.ty
+        if f != null && f!.head is .Function && !f!.nullable() { return [s.mutable for s in f!.seats] }
+        let seats? = method_type(self.engine, ty, name)?.seats else { return null }
+        [s.mutable for s in seats.drop(1)]
+    }
+
+    /// Which seats of a call of `name` through the type `ty` are `mut`: its static's, or none of a
+    /// variant's.
+    fn through_type_marks(ty: SignedType, name: string, count: int) -> List<bool>? {
+        let statics = static_type(self.engine, ty, name)
+        if statics != null { return [s.mutable for s in statics!.seats] }
+        let d? = declared_at(ty) else { return null }
+        if variant_named(self.engine, d.file, d.name, name) { filled(count, false) } else { null }
     }
 
     /// A method a `dyn` trait value has: written where the trait marks it `mut`; its arguments feed

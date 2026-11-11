@@ -3,6 +3,7 @@
 //! written under an import's other name — and each method signed under the impl's type parameters.
 use core.{
     NAMED_FIELD,
+    filled,
     SignedSeat,
     SignedType,
     StmtId,
@@ -154,6 +155,7 @@ fn written_signature(signing: Signing, written: WrittenFn) -> FnSignature {
         params: [signing.param(p) for p in written.params],
         answer: signing.signed(written.ret),
         answer_width: null,
+        bounds: signing.bounds(written),
     }
 }
 
@@ -192,7 +194,14 @@ fn impl_signed(engine: QueryEngine, at: ImplAt, written: WrittenFn) -> FnSignatu
         params: [signing.param(p) for p in written.params],
         answer: signing.signed(written.ret),
         answer_width: null,
+        bounds: unbound(at.params.length).concat(signing.bounds(written)),
     }
+}
+
+/// `n` type parameters bound by nothing.
+fn unbound(n: int) -> List<SignedType?> {
+    let none: SignedType? = null
+    filled(n, none)
 }
 
 /// The method `name` an impl gives, signed under the impl's type parameters and its own; absent
@@ -224,7 +233,7 @@ export fn static_type(engine: QueryEngine, described: SignedType, name: string) 
     match described.head {
         .Owned(word) -> own_verb(engine, "verbs/statics/${word}.av", name, null),
         .Declared(file, declared) -> {
-            let own = trait_static(engine, file, declared, name)
+            let own = trait_static(engine, file, declared, name, described)
             if own != null { return own }
             let impls = impls_with(engine, file, declared, name, true)
             if impls.is_empty() { return enum_static(engine, described, file, declared, name) }
@@ -234,6 +243,84 @@ export fn static_type(engine: QueryEngine, described: SignedType, name: string) 
         },
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
+}
+
+/// The method `name` a value of the type parameter `subject` has through the trait it's bound by
+/// under `signing`, `Self` the parameter; absent for any other type, or a method the trait doesn't
+/// declare.
+fn bound_method(engine: QueryEngine, signing: Signing, subject: SignedType, name: string) -> SignedType? {
+    let bound? = signing.bound_of(subject) else { return null }
+    let at? = declared_at(bound) else { return null }
+    let s? = bound_signature(
+        engine,
+        TraitAt { file: at.file, name: at.name },
+        name,
+        subject,
+        bound.args,
+    ) else { return null }
+    fn_typed([SignedSeat { ty: subject, mutable: false, settled: false }], s)
+}
+
+/// The method `name` the trait `held` declares, its own type parameters standing for `args` and
+/// `Self` for `receiver`.
+fn bound_signature(
+    engine: QueryEngine,
+    held: TraitAt,
+    name: string,
+    receiver: SignedType,
+    args: List<SignedType>,
+) -> FnSignature? {
+    if args.is_empty() { trait_method_signature(engine, held, name, receiver) } else { applied_trait_fn(engine, held, name, false, receiver, args) }
+}
+
+/// The static `name` the type parameter `described` has through the trait it's bound by under
+/// `signing`, `Self` the parameter; absent for any other type, or a static the trait doesn't declare.
+fn bound_static(engine: QueryEngine, signing: Signing, described: SignedType, name: string) -> SignedType? {
+    let bound? = signing.bound_of(described) else { return null }
+    let at? = declared_at(bound) else { return null }
+    if bound.args.is_empty() { return trait_static(engine, at.file, at.name, name, described) }
+    let s? = applied_trait_fn(
+        engine,
+        TraitAt { file: at.file, name: at.name },
+        name,
+        true,
+        described,
+        bound.args,
+    ) else { return null }
+    fn_typed([], s)
+}
+
+/// The fn `name` the trait `at` declares, a static where `statics`, signed with the trait's own type
+/// parameters standing for `args` and `Self` for `receiver`; absent where it declares none, or the
+/// fn has type parameters of its own.
+fn applied_trait_fn(
+    engine: QueryEngine,
+    at: TraitAt,
+    name: string,
+    statics: bool,
+    receiver: SignedType,
+    args: List<SignedType>,
+) -> FnSignature? {
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return null }
+    let s? = item.stmts.find((x) -> item.store.trait_parts(x)?.name == at.name) else { return null }
+    let fns = item.store.trait_parts(s)!.fns
+    let written? = written_fn(
+        item.store,
+        [f for f in fns if item.store.is_static(f) == statics],
+        name,
+    ) else { return null }
+    if !written.type_params.is_empty() { return null }
+    let signed = written_signature(
+        Signing {
+            engine: engine,
+            file: at.file,
+            type_params: item.store.decl_tparams(s),
+            self_type: receiver,
+            writer: written.writer,
+        },
+        written,
+    )
+    signed with { type_params: [], params: [p with { ty: p.ty?.bound(args) } for p in signed.params], answer: signed.answer.bound(args) }
 }
 
 /// The static every enum whose variants carry nothing has, as a fn of nothing: `all`, its variants in
@@ -255,8 +342,15 @@ fn enum_static(
 const ENUM_ALL: string = "all"
 
 /// The static fn `name` the trait `file` declares as `declared` writes in its own body, as a fn of what
-/// it's called with; absent for a declaration that is no trait, or writes none.
-fn trait_static(engine: QueryEngine, file: SourceFileAddress, declared: string, name: string) -> SignedType? {
+/// it's called with, `Self` the type `receiver`; absent for a declaration that is no trait, or writes
+/// none.
+fn trait_static(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    declared: string,
+    name: string,
+    receiver: SignedType,
+) -> SignedType? {
     let item? = declaring_item(engine, file, declared, ItemKind.Trait) else { return null }
     let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
     let written? = written_fn(item.store, [f for f in fns if item.store.is_static(f)], name) else { return null }
@@ -267,6 +361,7 @@ fn trait_static(engine: QueryEngine, file: SourceFileAddress, declared: string, 
                 engine: engine,
                 file: file,
                 type_params: written.type_params,
+                self_type: receiver,
                 writer: written.writer,
             },
             written,
@@ -339,13 +434,33 @@ fn contract_method(engine: QueryEngine, subject: SignedType, name: string) -> Si
 }
 
 /// The method `name` the one trait the type implements that declares it gives, `Self` the type:
-/// what a trait's own body supplies to every impl that doesn't write it. A generic type's trait
-/// methods aren't claimed yet.
+/// what a trait's own body supplies to every impl that doesn't write it, and what a `collect enum`
+/// implements over its members. A generic type's trait methods aren't claimed yet.
 fn trait_method(engine: QueryEngine, file: SourceFileAddress, declared: string, name: string) -> SignedType? {
     let receiver = headed_type(TypeHead.Declared(file, declared))
-    let found = [s! for i in impls_of(engine, file, declared) if i.at.params.is_empty() && i.implements != null for s in [trait_method_signature(engine, i.implements!, name, receiver)] if s != null]
+    let traits = [i.implements! for i in impls_of(engine, file, declared) if i.at.params.is_empty() && i.implements != null]
+        .concat(gathered_traits(engine, file, declared))
+    let found = [s! for t in traits for s in [trait_method_signature(engine, t, name, receiver)] if s != null]
     if found.length != 1 { return null }
     fn_typed([SignedSeat { ty: receiver, mutable: false, settled: false }], found[0])
+}
+
+/// The traits the `collect enum` `file` declares as `name` implements over its members, each named
+/// where the enum is written; none for any other declaration.
+export fn gathered_traits(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
+    TraitAt,
+> {
+    let item? = declaring_item(engine, file, name, ItemKind.CollectEnum) else { return [] }
+    let parts? = [p! for s in item.stmts for p in [item.store.collect_enum_parts(s)] if p != null]
+        .find(it.name == name) else { return [] }
+    [t! for e in parts.traits for t in [trait_written(engine, file, item.store.ident_name(e))] if t != null]
+}
+
+/// The trait `written` names from `file`, absent for a name naming none.
+fn trait_written(engine: QueryEngine, file: SourceFileAddress, written: string?) -> TraitAt? {
+    let n? = written else { return null }
+    let d? = resolved(engine, file, Space.Type, n).named() else { return null }
+    if d.kind == ItemKind.Trait { TraitAt { file: d.file, name: d.name } } else { null }
 }
 
 /// The verb `name` the file at `path` in `@std/prelude` declares for a receiver of `subject`'s type:

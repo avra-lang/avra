@@ -170,20 +170,39 @@ fn member_before(a: DeclaredName, b: DeclaredName) -> bool {
 /// The directory a module's tests stand in.
 const TESTS_DIR: string = "tests"
 
-/// A gathered member as a `Variant`: its name, and its record's fields as the payload, each typed
-/// where the member stands.
+/// A gathered member as a `Variant`: its name, its record's fields as the payload, each typed where
+/// the member stands, and the marks it wears.
 fn gathered_variant(engine: QueryEngine, m: DeclaredName) -> MetaVariant {
     let item = read_item(engine, m.file, m.item)
-    let fields = [p for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? []]
+    let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
+    let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
     let signed = record_signature(engine, m.file, m.name)?.fields ?? []
     MetaVariant {
         name: m.name,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
         at: null,
         fields: [field_meta(p, field_kind(signed, p.name.of), written_default(engine, m.file, item.store, p)) for p in fields],
-        marks: [],
+        marks: [annotated_mark(item.store, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
     }
 }
+
+/// An annotation a member wears that is a mark, as a `Mark`: its arguments as the literals they
+/// write.
+fn annotated_mark(store: SyntaxArena, a: Annotation) -> MetaMark {
+    let written = annotation_meta(store, a)
+    MetaMark { name: written.name, args: written.args, at: null, named: written.named }
+}
+
+/// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
+/// `@std/meta`'s `Marker`.
+fn marks_a_member(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    let sig? = fn_signature(engine, d.file, d.name) else { return false }
+    meta_named(sig.answer, MARKER)
+}
+
+/// What a mark's fn answers.
+const MARKER: string = "Marker"
 
 /// A gathered member's payload: its record's fields that are no facet, each typed where the member
 /// stands.

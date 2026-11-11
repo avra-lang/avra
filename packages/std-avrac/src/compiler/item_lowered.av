@@ -27,6 +27,8 @@ use core.{
     TaskTest,
     TestSite,
     TraitMember,
+    TypeHead,
+    headed_type,
     instance_symbol,
     lowering,
     tests_placed,
@@ -326,6 +328,39 @@ fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string) -
     unit_lowered(cx, 0, cx.laid_out(ty))
 }
 
+/// The unit of the static `all` the enum `file` declares as `name` has where its variants carry
+/// nothing: no seats, each variant in the order declared, listed and answered. Absent for any other
+/// type, or name.
+export fn lowered_every_variant(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: string,
+) -> LoweredFn? {
+    let of = headed_type(TypeHead.Declared(file, name))
+    let ty? = enum_static(engine, of, file, name, method)?.answer else { return null }
+    let shape? = enum_signature(engine, file, name) else { return null }
+    let store = new_node_store()
+    mut cx = lowering(
+        store,
+        lowered_program(engine, file, store, "${name}.${method}", [], null),
+        [],
+        {},
+        ty,
+    )
+    cx.scope_enter()
+    let l = cx.laid_out(of)
+    let r = cx
+        .listed(
+            cx.laid_out(ty),
+            [cx.tagged_value(l, i, []) for i, _v in shape.variants],
+            [false for _v in shape.variants],
+        )
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(ty))
+}
+
 /// What one projected field reads off the member `m`: the member itself for a bare `it`, a fn as a
 /// value; its name for `it.name`. Absent for any other read.
 fn projected(engine: QueryEngine, f: ProjField, m: DeclaredName) -> CollectedValue? {
@@ -396,9 +431,10 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
     if subject.nullable() || subject.dynamic { return null }
     if !subject.args.is_empty() && statics { return null }
     let declared? = declared_at(subject) else { return null }
-    if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return null }
+    if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return trait_static_callee(engine, declared, name) }
     let impls = impls_with(engine, declared.file, declared.name, name, statics)
     if impls.is_empty() && !statics && subject.args.is_empty() { return given_callee(engine, declared.file, declared.name, name) }
+    if impls.is_empty() && statics { return every_variant_callee(engine, subject, declared, name) }
     if impls.length != 1 { return null }
     let at = impls[0]
     let item = read_item(engine, at.file, at.item)
@@ -420,6 +456,60 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
         unproved: used.unproved(),
         type_params: at.params.length + parts.tparams.length,
         params: called_seats(parts.params, method_signature(engine, at, name)?.params ?? []),
+    }
+}
+
+/// The static fn `name` the trait `declared` writes in its own body, as a callee of its unit; absent
+/// where it writes none with a body.
+fn trait_static_callee(engine: QueryEngine, declared: DeclaredAt, name: string) -> CalledFn? {
+    let signed? = trait_static_body(
+        engine,
+        TraitAt { file: declared.file, name: declared.name },
+        name,
+    ) else { return null }
+    let parts = signed.item.store.fn_parts(signed.stmt)!
+    CalledFn {
+        file: declared.file,
+        name: name,
+        symbol: declared_symbol(declared.file, "${declared.name}.${name}"),
+        external: false,
+        plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
+        owner: declared.name,
+        of: declared.file,
+        statics: true,
+    }
+}
+
+/// The unit of the static fn `name` the trait `file` declares as `owner` writes in its own body;
+/// absent where it writes none with a body.
+export fn lowered_trait_static(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    name: string,
+) -> LoweredFn? {
+    let signed? = trait_static_body(engine, TraitAt { file: file, name: owner }, name) else { return null }
+    lowered_signed(engine, file, signed, "${owner}.${name}", null)
+}
+
+/// The static `all` of the enum `subject` names whose variants carry nothing, as a callee of its
+/// unit; absent for any other type, or name.
+fn every_variant_callee(
+    engine: QueryEngine,
+    subject: SignedType,
+    declared: DeclaredAt,
+    name: string,
+) -> CalledFn? {
+    if enum_static(engine, subject, declared.file, declared.name, name) == null { return null }
+    CalledFn {
+        file: declared.file,
+        name: name,
+        symbol: declared_symbol(declared.file, "${declared.name}.${name}"),
+        external: false,
+        plain: true,
+        owner: declared.name,
+        of: declared.file,
+        statics: true,
     }
 }
 

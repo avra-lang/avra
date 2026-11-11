@@ -76,6 +76,7 @@ fn body_checked(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody
         file: file,
         type_params: signed.signature.type_params,
         self_type: signed.receiver,
+        bounds: signed.signature.bounds,
     }
     mut cx = checking(signed.item.store, program_of(engine, file, signing), signed.signature.answer) with { meanings: meanings }
     if signed.receiver != null { cx.bind(RECEIVER, signed.receiver, true) }
@@ -120,11 +121,21 @@ fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing) ->
         record_of: (ty: SignedType) -> record_shape(engine, ty),
         named_of: (ty: SignedType) -> named_over(engine, ty),
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
-        method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method),
+        method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method) ?? bound_method(
+            engine,
+            signing,
+            subject,
+            method,
+        ),
         property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
         type_value: (n: string, home: string?) -> read_from(file, home)
             .find_map((f) -> type_value(engine, f, signing with { writer: f }, n)),
-        static_of: (described: SignedType, s: string) -> static_type(engine, described, s),
+        static_of: (described: SignedType, s: string) -> static_type(engine, described, s) ?? bound_static(
+            engine,
+            signing,
+            described,
+            s,
+        ),
         toolchain_type: (package: string, n: string) -> toolchain_declared(engine, package, n),
     }
 }
@@ -174,7 +185,8 @@ fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, na
     let named = signing.named(name)
     match named.head {
         .Declared(_, _) or .Owned(_) -> meta_type(named),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
+        .Parameter(_, _) -> if signing.bound_of(named) == null { null } else { meta_type(named) },
+        .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
     }
 }
 

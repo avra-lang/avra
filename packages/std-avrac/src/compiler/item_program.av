@@ -148,12 +148,19 @@ fn reached_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? {
 }
 
 /// The body a call of the declared `c` runs, lowered with its tests held: the fn's, a method's or a
-/// static's, or the body a trait gives a type that never writes the method.
+/// static's, the body a trait gives a type that never writes the method, a trait's own static, or an
+/// enum's `all`.
 fn declared_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? {
     let under = if c.parameters.is_empty() { null } else { c.parameters }
     let of? = c.of else { return lowered_under(engine, c.file, c.name, under) }
     if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name) }
-    let at? = impls_with(engine, of, c.owner!, c.name, c.statics).first() else { return null }
+    if c.statics {
+        let own = lowered_trait_static(engine, of, c.owner!, c.name)
+        if own != null { return own }
+    }
+    let at? = impls_with(engine, of, c.owner!, c.name, c.statics).first() else {
+        return if c.statics { lowered_every_variant(engine, of, c.owner!, c.name) } else { null }
+    }
     lowered_method_under(engine, at, c.name, c.statics, under)
 }
 

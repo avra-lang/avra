@@ -69,16 +69,20 @@ fn generator_body(engine: QueryEngine, g: GeneratorAt) -> SignedBody? {
 
 /// The trait `t`'s own static `derive`, its body signed with no `Self`; absent when it writes none
 /// with a body.
-fn trait_generator(engine: QueryEngine, t: TraitAt) -> SignedBody? {
+fn trait_generator(engine: QueryEngine, t: TraitAt) -> SignedBody? { trait_static_body(engine, t, GENERATOR) }
+
+/// The static fn `name` the trait `t` writes in its own body, signed with no `Self`; absent when it
+/// writes none with a body.
+fn trait_static_body(engine: QueryEngine, t: TraitAt, name: string) -> SignedBody? {
     let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
     let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
     let s? = fns
         .find(
-            (f) -> item.store.fn_parts(f)?.name == GENERATOR &&
+            (f) -> item.store.fn_parts(f)?.name == name &&
                 item.store.is_static(f) &&
                 written_body(item, f),
         ) else { return null }
-    let written = written_fn(item.store, [s], GENERATOR)!
+    let written = written_fn(item.store, [s], name)!
     SignedBody {
         signature: written_signature(
             Signing {

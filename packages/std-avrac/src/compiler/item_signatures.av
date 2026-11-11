@@ -38,9 +38,10 @@ use @std.program.syntax_tape.{SyntaxTape}
 export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settled: bool, width: string?, defaulted: bool = false }
 
 /// A fn's signature: its type parameters, its parameters, its answer and the width its answer
-/// crosses from C at, if it names one.
+/// crosses from C at, if it names one; and the trait each type parameter is bound by, absent for one
+/// bound by none.
 @derive(Saved)
-export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string? }
+export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string?, bounds: List<SignedType?> = [] }
 
 /// What a name declared over a shape stands over: its type parameters and the shape, resolved where
 /// it's declared. An alias is that shape; a named type is a distinct type over it.
@@ -63,6 +64,7 @@ export fn fn_signature(engine: QueryEngine, file: SourceFileAddress, name: strin
         params: [signing.param(p) for p in written.params],
         answer: signing.signed(widthless(written.ret)!),
         answer_width: width_of(written.ret),
+        bounds: signing.bounds(written),
     }
 }
 
@@ -101,6 +103,7 @@ fn item_fn_signature(engine: QueryEngine, file: SourceFileAddress, at: int, name
         params: [signing.param(p) for p in written.params],
         answer: signing.signed(widthless(written.ret)!),
         answer_width: width_of(written.ret),
+        bounds: signing.bounds(written),
     }
 }
 
@@ -300,9 +303,9 @@ fn width_of(written: TypeRef?) -> string? {
     if width_named(w.name) != null { w.name } else { null }
 }
 
-/// What a fn writes of its signature: its type parameters, its parameters and its answer, and the
-/// file whose template wrote it where that isn't its own.
-type WrittenFn = { type_params: List<string>, params: List<Param>, ret: TypeRef, writer: SourceFileAddress? }
+/// What a fn writes of its signature: its type parameters and the bound each is written with, its
+/// parameters and its answer, and the file whose template wrote it where that isn't its own.
+type WrittenFn = { type_params: List<string>, bounds: List<TypeRef?> = [], params: List<Param>, ret: TypeRef, writer: SourceFileAddress? }
 
 /// What the fn `name` among `stmts` writes, a declared fn's or an extern's.
 fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenFn? {
@@ -311,6 +314,7 @@ fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenF
         if declared != null && declared!.name == name {
             return WrittenFn {
                 type_params: [t.name.of for t in declared!.tparams],
+                bounds: [t.ty for t in declared!.tparams],
                 params: declared!.params,
                 ret: declared!.ret,
                 writer: written_by(store, s),
@@ -332,9 +336,20 @@ fn written_fn(store: SyntaxArena, stmts: List<StmtId>, name: string) -> WrittenF
 /// Where a signature's types are resolved: its file's top level, under the fn's own type parameters,
 /// `Self` as the type a trait's method is asked for, and for a statement a template wrote, the file
 /// that wrote it (`writer`): a type the template wrote is read there, one a hole filled where it lands.
-type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null, writer: SourceFileAddress? = null }
+type Signing = { engine: QueryEngine, file: SourceFileAddress, type_params: List<string>, self_type: SignedType? = null, writer: SourceFileAddress? = null, bounds: List<SignedType?> = [] }
 
 impl Signing {
+    /// The trait each of a written fn's type parameters is bound by, absent for one bound by none.
+    fn bounds(written: WrittenFn) -> List<SignedType?> { [if b == null { null } else { self.signed(b!) } for b in written.bounds] }
+
+    /// The trait the type parameter `ty` is bound by, applied as the bound writes it; absent for any
+    /// other type, or one bound by none.
+    fn bound_of(ty: SignedType) -> SignedType? {
+        if ty.nullable() || ty.dynamic { return null }
+        let at? = match ty.head { .Parameter(i, _) -> i, rest -> null } else { return null }
+        if at >= self.bounds.length { null } else { self.bounds[at] }
+    }
+
     fn param(p: Param) -> SignedParam {
         SignedParam {
             name: p.name.of,
