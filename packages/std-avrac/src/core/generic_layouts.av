@@ -34,21 +34,22 @@ impl CheckedProgram {
 }
 
 impl Lowering {
-    /// `callee`, a method of `subject`'s type, as the unit `subject`'s type arguments reach, each laid
-    /// out; of a type applied to nothing, itself. Absent where the method declares type parameters of
-    /// its own or an argument's layout isn't known.
-    fn instantiated_on(callee: CalledFn, subject: SignedType) -> CalledFn? {
+    /// `callee`, the method `name` of `subject`'s type, as the unit `subject`'s type arguments reach,
+    /// each laid out, its seats past the receiver filled by them; of a type applied to nothing,
+    /// itself. Absent where the method declares type parameters of its own or an argument's layout
+    /// isn't known.
+    fn instantiated_on(callee: CalledFn, subject: SignedType, name: string) -> CalledFn? {
         if subject.args.is_empty() { return callee }
         if callee.type_params != subject.args.length { return null }
-        let ps = [self.program.checked.parameter_layout(a) for a in subject.args]
-        if ps.any(it == null) { return null }
-        let laid = [p! for p in ps]
-        callee with { symbol: instance_symbol(callee.symbol, laid), parameters: laid }
+        let signed? = (self.program.checked.method_of)(subject, name) else { return null }
+        mut found: Map<string, SignedType> = {}
+        if signed.seats.is_empty() || !signed.seats[0].ty.unifies(subject, found) { return null }
+        self.laid_unit(callee, subject.args, [s.ty.filled(found) for s in signed.seats.drop(1)])
     }
 
     /// `callee`, a generic fn, as the unit a call of it at `e` pinning `pins` and handing it `args`
     /// reaches: its type parameters filled by the pins, else by unifying its seats with the arguments'
-    /// types and its answer with the call's, each laid out. Absent where a parameter stays unfilled or
+    /// types and its answer with the call's, each laid out, and its seats filled by them. Absent where a parameter stays unfilled or
     /// its layout isn't known.
     fn instantiated(callee: CalledFn, pins: List<TypeRef>, args: List<ExprId>, e: ExprId) -> CalledFn? {
         let signed? = (self.program.checked.value_named)(callee.name) else { return null }
@@ -63,9 +64,22 @@ impl Lowering {
         if signed.answer != null && made != null && !signed.answer!.unifies(made!, found) { return null }
         let fills = [found.get("${i}") for i in 0..callee.type_params]
         if fills.any(it == null) { return null }
-        let ps = [self.program.checked.parameter_layout(f!) for f in fills]
+        self.laid_unit(callee, [f! for f in fills], [s.ty.filled(found) for s in signed.seats])
+    }
+
+    /// `callee`'s unit with its type parameters filled by `fills`, each laid out, and its seats
+    /// `seats`; absent where a fill's layout isn't known.
+    fn laid_unit(callee: CalledFn, fills: List<SignedType>, seats: List<SignedType>) -> CalledFn? {
+        let ps = [self.program.checked.parameter_layout(f) for f in fills]
         if ps.any(it == null) { return null }
         let laid = [p! for p in ps]
-        callee with { symbol: instance_symbol(callee.symbol, laid), parameters: laid }
+        callee with { symbol: instance_symbol(callee.symbol, laid), parameters: laid, seats: seats }
+    }
+
+    /// Each of `args` lowered into its seat of `callee`: a generic unit's as its type arguments fill
+    /// it, any other's as typing kept it.
+    mut fn seated_args(callee: CalledFn, args: List<ExprId>) -> List<Reg> {
+        if callee.parameters.is_empty() { return [self.lower(a) for a in args] }
+        [self.lowered_into(a, callee.seats[at]) for at, a in args]
     }
 }

@@ -54,6 +54,20 @@ export once fn own_shapes() -> List<OwnShape> {
 export fn own_shape(receiver: string, verb: string) -> OwnVerb? { own_shapes().find(it.receiver == receiver && it.verb == verb)?.shape }
 
 impl OwnVerb {
+    /// The type the value the verb writes through a receiver of `receiver`'s type takes: what the list,
+    /// the map or the cell holds, or what the list or map a cell holds holds. Absent for a verb that
+    /// writes no value, and a receiver holding no such seat.
+    fn stored_as(receiver: SignedType) -> SignedType? {
+        match self {
+            .Pushed -> receiver.listed(),
+            .Put -> receiver.mapped(),
+            .CellSet -> receiver.args.first(),
+            .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
+            .CellPut -> receiver.args.first()?.mapped(),
+            .First or .Last or .Got or .CellNew or .CellGet -> null,
+        }
+    }
+
     /// Whether the verb is called through its type rather than on a value of it.
     fn on_the_type() -> bool {
         match self {
@@ -73,7 +87,7 @@ impl Lowering {
             .Got -> self.got(e, subject, args[0]),
             .Pushed -> {
                 let list = self.opened_place(subject)
-                self.push_slot(list, self.lower(args[0]))
+                self.push_slot(list, self.stored_value(v, subject, args[0]))
                 self.nothing()
             },
             .Put -> self.put(subject, args[0], args[1]),
@@ -85,29 +99,37 @@ impl Lowering {
             .CellSet -> {
                 let cell = self.lower(subject)
                 let at = self.const_int(0)
-                self.slot_written(cell, at, self.lower(args[0]), true)
+                self.slot_written(cell, at, self.stored_value(v, subject, args[0]), true)
                 self.nothing()
             },
             .CellPushed -> {
                 let list = self.held_opened(subject)
-                self.push_slot(list, self.lower(args[0]))
+                self.push_slot(list, self.stored_value(v, subject, args[0]))
                 self.nothing()
             },
             .CellSetAt -> {
                 let list = self.held_opened(subject)
                 let at = self.lower(args[0])
-                self.slot_written(list, at, self.lower(args[1]), false)
+                self.slot_written(list, at, self.stored_value(v, subject, args[1]), false)
                 self.nothing()
             },
             .CellPut -> {
                 let map = self.held_opened(subject)
                 let k = self.lower(args[0])
-                let x = self.lower(args[1])
+                let x = self.stored_value(v, subject, args[1])
                 if !self.layout_of(x).one_word() { return self.missed_as("a nullable scalar put into the map a cell holds") }
                 self.run_row(rt_sig_of("avra_map_set")!, [map, k, x])
                 self.nothing()
             },
         }
+    }
+
+    /// The value a write `v` through `subject` stores, lowered into the seat the receiver's type gives
+    /// it.
+    mut fn stored_value(v: OwnVerb, subject: ExprId, value: ExprId) -> Reg {
+        let receiver? = self.type_at(subject) else { return self.unlowered(subject) }
+        let seat? = v.stored_as(receiver) else { return self.missed_as("a write whose receiver holds no seat for it") }
+        self.lowered_into(value, seat)
     }
 
     /// What a verb that answers nothing answers.
@@ -179,7 +201,7 @@ impl Lowering {
         if self.store.every_expr(value).any((x) -> self.reads_a_get(x)) { return self.missed_as("a `set` whose value reads a `get`") }
         let map = self.opened_place(subject)
         let k = self.lower(key)
-        let x = self.lower(value)
+        let x = self.stored_value(OwnVerb.Put, subject, value)
         match self.layout_of(x) {
             .Maybe(carried) -> self
                 .run_row(
@@ -243,7 +265,7 @@ impl Lowering {
     mut fn cell_new(e: ExprId, value: ExprId) -> Reg {
         let cell_ty? = self.type_at(e) else { return self.unlowered(e) }
         let held? = cell_ty.args.first() else { return self.unlowered(e) }
-        let v = self.lower(value)
+        let v = self.lowered_into(value, held)
         let size = self.const_int(1)
         let cell = self.call_row(self.layout_at(e), rt_sig_of("avra_array_sized")!, [size])
         self.push_slot(cell, v)

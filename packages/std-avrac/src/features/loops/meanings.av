@@ -2,8 +2,9 @@
 use core.{At, Stmt, SyntaxArena}
 use features.{TypedCode, meaning}
 
-/// `for x in xs { … }` over a list walks its positions up to its length, read once: each turn binds
-/// the element, counts past it before the body runs, so a `continue` never turns forever.
+/// `for x in xs { … }` over a list walks its positions up to its length, read once; `for i in lo..hi
+/// { … }` counts from `lo` up to `hi`, each read once. Each turn binds the element or the count, and
+/// counts past it before the body runs, so a `continue` never turns forever.
 export meaning for_each {
     quote { for ${x} in ${xs} { ${..body} } } if walks_a_list(xs) && !breaks_by_label(body) -> quote {
         let items = ${xs}
@@ -11,6 +12,15 @@ export meaning for_each {
         mut at = 0
         while at < count {
             let ${x} = items[at]
+            at = at + 1
+            ${body}
+        }
+    },
+    quote { for ${i} in ${lo}..${hi} { ${..body} } } if !breaks_by_label(body) -> quote {
+        mut at = ${lo}
+        let end = ${hi}
+        while at < end {
+            let ${i} = at
             at = at + 1
             ${body}
         }

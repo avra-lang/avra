@@ -5,6 +5,7 @@
 //! other method call isn't lowered yet, and says what it is.
 use core.{
     BinOp,
+    CalledFn,
     ExprId,
     Layout,
     Lowering,
@@ -119,10 +120,10 @@ fn folded_code(cx: Lowering, m: MethodCall) -> int? {
 /// `written_seats` opens it.
 fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
     let declared? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    let callee? = cx.instantiated_on(declared, subject) else { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
+    let callee? = cx.instantiated_on(declared, subject, m.name.of) else { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
     if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     if callee.unproved != null { return cx.missed_as(write_unproved(callee.unproved!)) }
-    let seats = if callee.writes { written_seats(cx, m) } else { seated(cx, m) }
+    let seats = if callee.writes { written_seats(cx, m, callee) } else { seated(cx, m, callee) }
     if seats == null { return cx.missed_as(written_unlowered(cx, m.subject, callee.writes)) }
     cx.call_fn(cx.layout_at(e), callee, seats!)
 }
@@ -132,18 +133,18 @@ fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTy
 /// it stands says, after the arguments when a `mut` binding's cell holds it, since they may write the
 /// cell; a value, or one a seat holds, that rides a pointer thawed once, here. Absent for any other
 /// receiver.
-fn written_seats(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
-    if cell_rooted(cx, m.subject) || mut_seat_rooted(cx, m.subject) { return seated(cx, m) }
+fn written_seats(mut cx: Lowering, m: MethodCall, callee: CalledFn) -> List<Reg>? {
+    if cell_rooted(cx, m.subject) || mut_seat_rooted(cx, m.subject) { return seated(cx, m, callee) }
     let how = written_opening(cx, m.subject)
     if how != null && in_cell(cx, m.subject) {
-        let args = [cx.lower(a) for a in m.args]
+        let args = cx.seated_args(callee, m.args)
         return [opened_receiver(cx, m.subject, how!)].concat(args)
     }
-    if how != null { return [opened_receiver(cx, m.subject, how!)].concat([cx.lower(a) for a in m.args]) }
+    if how != null { return [opened_receiver(cx, m.subject, how!)].concat(cx.seated_args(callee, m.args)) }
     if !thawed_here(cx, m.subject) { return null }
     let ty = cx.type_at(m.subject)!
     let thawed = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
-    [thawed].concat([cx.lower(a) for a in m.args])
+    [thawed].concat(cx.seated_args(callee, m.args))
 }
 
 /// Whether a written receiver is thawed at the call: it rides a pointer, and it's a value or a place
@@ -194,20 +195,26 @@ fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedTyp
     let at? = members.find_index(it.name == m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     if members[at].writes || in_cell(cx, m.subject) { return cx.missed_as("a method that may write its receiver") }
     if !members[at].plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
-    let seats? = seated(cx, m) else { return cx.missed_as("a receiver on a path through a cell") }
+    let seats? = seated(cx, m, null) else { return cx.missed_as("a receiver on a path through a cell") }
     let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
     let code = cx.slot_read(Layout.Word, seats[0], 1 + at)
     cx.called_code(cx.layout_at(e), code, value, seats.drop(1))
 }
 
-/// The receiver then each argument, lowered left to right; a receiver read out of a `mut` binding's
-/// cell is read after the arguments, which may write the cell. Absent for a receiver on a path that
-/// starts in a cell.
-fn seated(mut cx: Lowering, m: MethodCall) -> List<Reg>? {
-    if !in_cell(cx, m.subject) { return [cx.lower(m.subject)].concat([cx.lower(a) for a in m.args]) }
+/// The receiver then each argument, lowered left to right, each argument into its seat of `callee`
+/// where the method is a declared one; a receiver read out of a `mut` binding's cell is read after
+/// the arguments, which may write the cell. Absent for a receiver on a path that starts in a cell.
+fn seated(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
+    if !in_cell(cx, m.subject) { return [cx.lower(m.subject)].concat(args_lowered(cx, m, callee)) }
     if cx.store.place_root(m.subject)?.index != m.subject.index { return null }
-    let args = [cx.lower(a) for a in m.args]
+    let args = args_lowered(cx, m, callee)
     [cx.lower(m.subject)].concat(args)
+}
+
+/// Each argument lowered, into its seat of `callee` where the method is a declared one.
+fn args_lowered(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg> {
+    let c? = callee else { return [cx.lower(a) for a in m.args] }
+    cx.seated_args(c, m.args)
 }
 
 /// Whether a receiver a method writes is read out of its cell as it is: a `mut` binding's own name,

@@ -144,10 +144,20 @@ impl SignedType {
     /// boxed into a `dyn` (whether it holds the trait is the seat law's), widened into a nullable, or
     /// as the `Ok` of a `Result`.
     fn reaches(seat: SignedType) -> bool {
-        if self.spelled() == seat.spelled() || self.bottom() { return true }
+        if self.stands_as(seat) || self.bottom() { return true }
         if seat.dynamic && seat.nulls == 0 && !self.dynamic && !self.nullable() { return true }
         if seat.nullable() && (self.head is .Never || self.reaches(seat.unwrapped())) { return true }
         seat.resulted() && self.reaches(seat.args[0])
+    }
+
+    /// Whether a value of this type is a value of `seat` as it is: the same type, or one holding
+    /// `never` where `seat` holds a type (`[]` as a `List<int>`), under as many nulls.
+    fn stands_as(seat: SignedType) -> bool {
+        if self.spelled() == seat.spelled() { return true }
+        self.partial() &&
+            !(self.head is .Never) &&
+            self.nulls == seat.nulls &&
+            self.joined_with(seat)?.spelled() == seat.spelled()
     }
 
     /// Whether this is a `Result`, present: an ok type and an error type.

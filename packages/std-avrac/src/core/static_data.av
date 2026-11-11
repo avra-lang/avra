@@ -4,6 +4,27 @@
 //! its word, an aggregate the box laid out before it, and inside a box a value enum its tag and word,
 //! a value record its fields, each across slots of their own.
 
+/// The code a fn value naming a declared fn holds: it takes the value's box, then the fn's seats,
+/// and calls `target` with the seats.
+export type FnWrapper = { symbol: string, target: string, box: Layout, seats: List<Layout>, answer: Layout }
+
+impl FnWrapper {
+    /// The wrapper's registers' layouts: the box, each seat, then the answer.
+    fn layouts() -> List<Layout> { [self.box].concat(self.seats).concat([self.answer]) }
+
+    /// The wrapper's instructions: the call of `target` with the seats, in a scope its answer
+    /// escapes.
+    fn ins() -> List<Ins> {
+        let answer = Reg { index: 1 + self.seats.length }
+        [
+            Ins.ScopeEnter(Level.Application),
+            Ins.Call(answer, self.target, [Reg { index: 1 + at } for at in 0..self.seats.length]),
+            Ins.ScopeExit(answer),
+            Ins.RetVal(answer),
+        ]
+    }
+}
+
 impl Lowering {
     // ── Addresses ───────────────────────────────────────────────────
 
@@ -25,8 +46,25 @@ impl Lowering {
     /// The declared fn `callee` named as a value at `e`: the code of its wrapper, which takes what a
     /// call through a fn value hands it and calls `callee`, laid out once.
     mut fn fn_value(e: ExprId, callee: CalledFn) -> Reg {
+        let ty? = self.type_at(e) else { return self.unlowered(e) }
         self.reached(callee)
-        self.fn_static(self.layout_at(e), "${callee.symbol}\$w")
+        let box = self.laid_out(ty)
+        let symbol = "${callee.symbol}\$w"
+        if !self.program.wrappers.get().any(it.symbol == symbol) {
+            self
+                .program
+                .wrappers
+                .push(
+                    FnWrapper {
+                        symbol: symbol,
+                        target: callee.symbol,
+                        box: box,
+                        seats: [self.laid_out(s.ty) for s in ty.seats],
+                        answer: if ty.answer == null { Layout.Void } else { self.laid_out(ty.answer!) },
+                    },
+                )
+        }
+        self.fn_static(box, symbol)
     }
 
     /// The data `boxes` laid out under `name`, once, and its address in a register of layout `l`.

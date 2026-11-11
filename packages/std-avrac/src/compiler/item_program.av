@@ -2,7 +2,25 @@
 //! it reaches, each lowered here, as the bodies the evaluator and the backend consume. Each body is
 //! read by its registers' layouts alone: it carries no registry type, and the program's registry is
 //! empty. A program not made yet says why, by the first thing it met.
-use core.{CalledFn, Ins, Layout, Static, flatten, hosted_symbol, new_type_registry, rt_waits}
+use core.{
+    CalledFn,
+    CheckedProgram,
+    FnWrapper,
+    Ins,
+    Layout,
+    RtKind,
+    RtSig,
+    SignedType,
+    Static,
+    extern_row,
+    flatten,
+    hosted_symbol,
+    new_type_registry,
+    rt_sig_of,
+    rt_waits,
+    some_list,
+    width_named,
+}
 use compiler.lower.{Body, Lowered}
 use compiler.memory.{memory}
 use compiler.backend.{program_closed}
@@ -22,6 +40,8 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
     mut queue = every_callee_of(entry)
     mut fns = lifted_bodies(entry)
     mut statics = entry.statics
+    mut wrappers = entry.wrappers
+    mut externs: List<RtSig> = []
     mut seen: Map<string, bool> = {}
     mut at = 0
     while at < queue.length {
@@ -29,6 +49,10 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
         at = at + 1
         if seen.has(c.symbol) { continue }
         seen.set(c.symbol, true)
+        if c.external {
+            externs = externs.concat(some_list(declared_row(engine, c)))
+            continue
+        }
         let reached = match reached_fn(engine, c) {
             .Lowered(f) -> f,
             .Not(why) -> { return MadeProgram.Unmade(why, c.symbol) },
@@ -47,14 +71,15 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
             )
             .concat(lifted_bodies(reached))
         statics = statics.concat(reached.statics)
+        wrappers = wrappers.concat(reached.wrappers)
         queue = queue.concat(every_callee_of(reached))
     }
     let lowered = Lowered {
-        fns: fns,
+        fns: fns.concat([wrapper_body(w) for w in distinct_wrappers(wrappers)]),
         entry: unit_body(ENTRY, [], entry.answer, entry.ins, entry.layouts),
         types: new_type_registry(),
         diagnostics: [],
-        externs: [],
+        externs: externs,
         statics: distinct_statics(statics),
     }
     unanswered(lowered) ?? MadeProgram.Made(memory(lowered))
@@ -66,15 +91,54 @@ enum ReachedFn {
     Not(why: string)
 }
 
-/// The body a call of `c` runs, lowered whole: the fn's, or a generic fn's unit under its layouts.
-/// A method's body or a field's default isn't made here yet.
+/// The body a call of `c` runs, lowered whole: the fn's, a method's or a static's, the body a trait
+/// gives a type that never writes the method, or a field's default, each a generic one's unit under
+/// its layouts.
 fn reached_fn(engine: QueryEngine, c: CalledFn) -> ReachedFn {
-    if c.defaulted { return ReachedFn.Not("a call of a field's default") }
-    if c.owner != null { return ReachedFn.Not("a call of a method") }
-    let lowered = if c.parameters.is_empty() { lowered_fn(engine, c.file, c.name) } else { lowered_generic(engine, c.file, c.name, c.parameters) }
-    let f? = lowered else { return ReachedFn.Not("a call of a fn with no body here") }
+    let f? = reached_body(engine, c) else { return ReachedFn.Not("a call of a fn with no body here") }
     if !f.whole() { return ReachedFn.Not(f.missing[0]) }
     ReachedFn.Lowered(f)
+}
+
+/// The body a call of `c` runs, lowered; absent where its declaration gives none.
+fn reached_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? {
+    if c.defaulted { return lowered_field_default(engine, c.file, c.owner!, c.name) }
+    let under = if c.parameters.is_empty() { null } else { c.parameters }
+    let of? = c.of else { return lowered_under(engine, c.file, c.name, under) }
+    if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name) }
+    let at? = impls_with(engine, of, c.owner!, c.name, c.statics).first() else { return null }
+    lowered_method_under(engine, at, c.name, c.statics, under)
+}
+
+/// The row C answers the extern `c` by: each seat and the answer at the width it writes, else as its
+/// type is to C. Absent for a runtime row's own name, which the row answers, and an extern with a
+/// seat or answer no one word carries.
+fn declared_row(engine: QueryEngine, c: CalledFn) -> RtSig? {
+    if rt_sig_of(c.symbol) != null { return null }
+    let sig? = fn_signature(engine, c.file, c.name) else { return null }
+    let program = program_of(
+        engine,
+        c.file,
+        Signing { engine: engine, file: c.file, type_params: [] },
+    )
+    let params = [crossing_kind(program, p.ty, p.width) for p in sig.params]
+    let answer? = crossing_kind(program, sig.answer, sig.answer_width) else { return null }
+    if params.any(it == null) { null } else { extern_row(c.symbol, answer, [k! for k in params]) }
+}
+
+/// The kind a value of `ty` crosses to C as: the width its seat writes, else what its layout is to C.
+/// Absent for a value no one word carries.
+fn crossing_kind(program: CheckedProgram, ty: SignedType?, width: string?) -> RtKind? {
+    if width != null { return width_named(width!) }
+    let t? = ty else { return null }
+    let l? = program.layout(t) else { return null }
+    match l {
+        .Void -> RtKind.Void,
+        .Real -> RtKind.F64,
+        .Word or .Truth -> RtKind.I64,
+        .Boxed(_) or .Bare -> RtKind.Ptr,
+        .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
 }
 
 /// The fns a lowered body and the lambdas it lifts call.
@@ -102,6 +166,16 @@ fn unit_body(
         seats: seats,
         answer: answer,
     }
+}
+
+/// A fn value's wrapper as a body: the box and the fn's seats its first registers.
+fn wrapper_body(w: FnWrapper) -> Body { unit_body(w.symbol, [w.box].concat(w.seats), w.answer, w.ins(), w.layouts()) }
+
+/// Each wrapper once, by its symbol.
+fn distinct_wrappers(wrappers: List<FnWrapper>) -> List<FnWrapper> {
+    mut by: Map<string, FnWrapper> = {}
+    for w in wrappers { if !by.has(w.symbol) { by.set(w.symbol, w) } }
+    by.values()
 }
 
 /// Each static once, by its name.

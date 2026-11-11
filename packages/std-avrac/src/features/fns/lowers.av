@@ -13,9 +13,11 @@ impl Lowers for Call {
         if value != null { return called_value(cx, self, e, value!) }
         let named? = called(cx, self) else { return cx.unlowered(e) }
         let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
-        let args = [cx.lower(a) for a in self.args]
+        let args = cx.seated_args(callee, self.args)
         let answer = cx.layout_at(e)
-        if callee.external { cx.call_c(answer, callee.symbol, args) } else { cx.call_fn(answer, callee, args) }
+        if !callee.external { return cx.call_fn(answer, callee, args) }
+        cx.reached(callee)
+        cx.call_c(answer, callee.symbol, args)
     }
 }
 
