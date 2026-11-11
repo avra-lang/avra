@@ -100,6 +100,10 @@ type BodyCancels = { own: CancelFact, callees: List<BodyAt> }
 /// A body a survey met: its evidence, and its lowering until the walk takes it.
 type SurveyedBody = { cancels: BodyCancels, lowered: LoweredFn? }
 
+/// What `cell`'s map holds under `key`, read in a frame of its own, so the map is held by no one but
+/// the cell once the read is done and a write after it lands in place.
+fn held_at<V>(cell: Cell<Map<string, V>>, key: string) -> V? { cell.get().get(key) }
+
 /// What the bodies a program reaches reach, each lowered once with its tests held: a body met, by its
 /// key, and whether a call of each body asked about reaches a cancel point and links a scheduler. It
 /// is one walk's working set, made for that walk and never outliving it; nothing in it is saved.
@@ -118,7 +122,7 @@ impl TaskSurvey {
     /// met; absent where its declaration gives none.
     fn body(c: CalledFn) -> LoweredFn? {
         let at = body_at(c)
-        let met = self.met.get().get(at.key())
+        let met = held_at(self.met, at.key())
         if met?.lowered != null {
             self.met.put(at.key(), met! with { lowered: null })
             return met!.lowered
@@ -147,7 +151,7 @@ impl TaskSurvey {
     /// Whether `at`, or a body it reaches, holds evidence `found` answers for, kept in `known`: each
     /// surveyed once, in one walk that stops at the first.
     fn finds(at: BodyAt, known: Cell<Map<string, bool>>, found: fn(CancelFact) -> bool) -> bool {
-        let asked = known.get().get(at.key())
+        let asked = held_at(known, at.key())
         if asked != null { return asked! }
         let answer = self.walk_finds(at, found)
         known.put(at.key(), answer)
@@ -174,7 +178,7 @@ impl TaskSurvey {
 
     /// The body `at`'s evidence, lowered and held for the walk where it wasn't met.
     fn cancels(at: BodyAt) -> BodyCancels {
-        let met = self.met.get().get(at.key())
+        let met = held_at(self.met, at.key())
         if met != null { return met!.cancels }
         let f = self.lowered_at(at)
         let cancels = self.evidence(at, f)

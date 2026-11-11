@@ -132,8 +132,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
             ) }
         },
         .CollectEnum -> {
-            let parts? = item.store.collect_enum_parts(s) else { return null }
-            let members? = gathered(engine, d.file, parts.kind, parts.scope, parts.order, false) else { return null }
+            let members? = members_of(engine, d.file, d.name, false) else { return null }
             let derived = [t.name for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
             base with { variants: [gathered_variant(engine, m, derived) for m in members] }
         },
@@ -206,10 +205,8 @@ fn wears(engine: QueryEngine, d: DeclaredName, mark: string) -> bool {
 
 /// Whether the `const` `d` is an instance of the component `word` names.
 fn instance_of_word(engine: QueryEngine, d: DeclaredName, word: string) -> bool {
-    if d.kind != ItemKind.Const { return false }
-    let item = read_item(engine, d.file, d.item)
-    let s? = declaring_stmt(item, d) else { return false }
-    item.store.instance_of(s) == word
+    d.kind == ItemKind.Const &&
+        file_instances(engine, d.file).any(it.name == d.name && it.declared == word)
 }
 
 /// Whether a `by` key is one a member's declaration answers.

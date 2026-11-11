@@ -12,6 +12,9 @@ use core.{
     SignedSeat,
     SignedType,
     StmtId,
+    CollectKind,
+    CollectScope,
+    Plain,
     SyntaxArena,
     TypeHead,
     TypeRef,
@@ -35,7 +38,7 @@ use @std.program.syntax_tape.{SyntaxTape}
 /// crosses to C at, if it names one. A width is the seat's, never the value's: the type is the
 /// language's one integer.
 @derive(Saved)
-export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settled: bool, width: string?, defaulted: bool = false }
+export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settled: bool, width: string?, defaulted: bool = false, state: bool = false, spread: bool = false, rest: bool = false }
 
 /// A fn's signature: its type parameters, its parameters, its answer and the width its answer
 /// crosses from C at, if it names one; and the trait each type parameter is bound by, absent for one
@@ -239,13 +242,55 @@ export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: str
     }
 }
 
+/// The members a `collect` or a `collect enum` gathers, in its order, when they're read here.
+@derive(Saved)
+type Members = { known: bool, members: List<DeclaredName> }
+
+/// The members the `collect` or `collect enum` `file` declares as `name` gathers, what generators make
+/// among them when `made`: `gathered` asked once per declaration.
+@query
+fn collect_members(engine: QueryEngine, file: SourceFileAddress, name: string, made: bool) -> Members {
+    let unknown = Members { known: false, members: [] }
+    let item? = declaring_item(engine, file, name, ItemKind.Collect) ?? declaring_item(
+        engine,
+        file,
+        name,
+        ItemKind.CollectEnum,
+    ) else { return unknown }
+    let shape? = [g! for s in item.stmts for g in [gathering_shape(item.store, s)] if g != null]
+        .find(it.name == name) else { return unknown }
+    let found? = gathered(engine, file, shape.kind, shape.scope, shape.order, made) else { return unknown }
+    Members { known: true, members: found }
+}
+
+/// The members a gathering `file` declares as `name` takes; absent where they're read only once built.
+fn members_of(engine: QueryEngine, file: SourceFileAddress, name: string, made: bool) -> List<
+    DeclaredName,
+>? {
+    let m = collect_members(engine, file, name, made)
+    if m.known { m.members } else { null }
+}
+
+/// What a `collect` or a `collect enum` gathers by: its name, its kind, its scope and its order.
+type GatheringShape = { name: string, kind: CollectKind, scope: CollectScope, order: List<Plain> }
+
+fn gathering_shape(store: SyntaxArena, s: StmtId) -> GatheringShape? {
+    let listed = store.collect_parts(s)
+    if listed != null { return GatheringShape {
+            name: listed!.name,
+            kind: listed!.kind,
+            scope: listed!.scope,
+            order: listed!.order,
+        } }
+    let e? = store.collect_enum_parts(s) else { return null }
+    GatheringShape { name: e.name, kind: e.kind, scope: e.scope, order: e.order }
+}
+
 /// The signature of the `collect enum` `file` declares as `name`: a variant per member it gathers,
 /// carrying the member's payload fields. Absent when it declares none, or gathers only once built.
 fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
-    let item? = declaring_item(engine, file, name, ItemKind.CollectEnum) else { return null }
-    let parts? = [p! for s in item.stmts for p in [item.store.collect_enum_parts(s)] if p != null]
-        .find(it.name == name) else { return null }
-    let members? = gathered(engine, file, parts.kind, parts.scope, parts.order, false) else { return null }
+    if declaring_item(engine, file, name, ItemKind.CollectEnum) == null { return null }
+    let members? = members_of(engine, file, name, false) else { return null }
     EnumSignature {
         type_params: [],
         variants: [SignedVariant {
@@ -363,6 +408,9 @@ impl Signing {
             settled: p.promises.settled,
             width: width_of(p.ty),
             defaulted: p.default != null,
+            state: p.state,
+            spread: p.spread != null,
+            rest: p.is_rest(),
         }
     }
 
@@ -426,6 +474,15 @@ fn written_by(store: SyntaxArena, s: StmtId) -> SourceFileAddress? {
 
 impl SignedParam {
     fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty?.spelled() ?? "_") }
+
+    /// Whether a call hands the seat a value by position: it's typed, promises nothing, has no
+    /// default and spreads nothing.
+    fn plain() -> bool { self.ty != null &&
+            !self.mutable &&
+            !self.settled &&
+            !self.state &&
+            !self.defaulted &&
+            !self.spread }
 }
 
 collect listed_signature_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

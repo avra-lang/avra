@@ -174,7 +174,7 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
     let planned = [arm_planned(cx, variants, a, scalar) for a in m.arms]
     if m.arms.is_empty() || planned.any(it == null) { return cx.missed_as("a match whose patterns aren't each one variant or the rest") }
     let arms = [a! for a in planned]
-    if !if scalar || quoted { ends_in_rest(arms) } else { covers(variants, arms) } { return cx.missed_as("a match leaving a variant to an absent tail") }
+    if !if scalar || quoted { ends_in_rest(arms) } else { covers(cx, variants, arms) } { return cx.missed_as("a match leaving a variant to an absent tail") }
     let s = Chosen {
         v: cx.lower(m.subject),
         ty: ty,
@@ -310,11 +310,35 @@ fn case_of(a: Planned) -> int? {
     if a.guard != null || a.pats.length != 1 { null } else { variant_tag(a.pats[0]) }
 }
 
-/// Whether the unguarded arms take every variant: one takes the rest, or each variant has an arm.
-fn covers(variants: List<VariantSeat>, arms: List<Planned>) -> bool {
-    let taken = [t for a in arms if a.guard == null for t in a.pats]
-    let tags = [tag! for t in taken for tag in [variant_tag(t)] if tag != null]
-    taken.any(takes_rest) || (0..variants.length).all((tag) -> tags.contains(tag))
+/// Whether the unguarded arms take every variant: one takes the rest, or each variant is taken.
+fn covers(cx: Lowering, variants: List<VariantSeat>, arms: List<Planned>) -> bool {
+    takes_every(cx, variants, [t for a in arms if a.guard == null for t in a.pats])
+}
+
+/// Whether the patterns `taken` take every value of an enum with `variants`: one takes the rest, or
+/// each variant is taken.
+fn takes_every(cx: Lowering, variants: List<VariantSeat>, taken: List<Taken>) -> bool {
+    taken.any(takes_rest) ||
+        (0..variants.length).all((tag) -> variant_taken(cx, variants[tag], tag, taken))
+}
+
+/// Whether the patterns `taken` take every value of the variant `tag`: one takes it whole, or, where
+/// it carries one payload, the patterns standing for that payload take every value of its enum.
+fn variant_taken(cx: Lowering, variant: VariantSeat, tag: int, taken: List<Taken>) -> bool {
+    if taken.any((t) -> variant_tag(t) == tag) { return true }
+    if variant.payloads.length != 1 { return false }
+    let held? = variant.payloads[0].ty else { return false }
+    let inner? = cx.variants_of(held) else { return false }
+    let subs = [s! for t in taken for s in [payload_taken(t, tag)] if s != null]
+    !subs.is_empty() && takes_every(cx, inner, subs)
+}
+
+/// What a pattern taking the variant `tag` takes of its one payload; absent for any other pattern.
+fn payload_taken(t: Taken, tag: int) -> Taken? {
+    match t {
+        .Variant(at, _, subs) -> if at == tag && subs.length == 1 { subs[0] ?? Taken.Whole(null) } else { null },
+        .Whole(_) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) -> null,
+    }
 }
 
 /// The tag of the variant a pattern takes whole, absent for one that takes the rest or tests a

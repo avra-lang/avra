@@ -280,6 +280,7 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
             NamedValue.Fn(callee)
         },
         .Const -> {
+            if built_instance(engine, d) { return NamedValue.Built(instance_callee(d)) }
             let value = const_literal(engine, d)
             if value == null { settled_const(engine, d) } else { NamedValue.Literal(value!) }
         },
@@ -293,7 +294,7 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
 fn collected_value(engine: QueryEngine, d: DeclaredName) -> NamedValue? {
     if collected(engine, d.file, d.name) == null { return null }
     NamedValue
-        .Collected(
+        .Built(
             CalledFn {
                 file: d.file,
                 name: d.name,
@@ -313,7 +314,7 @@ fn collected(engine: QueryEngine, file: SourceFileAddress, name: string) -> Coll
     let item? = declaring_item(engine, file, name, ItemKind.Collect) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.collect_parts(s)] if p != null]
         .find(it.name == name) else { return null }
-    let members? = gathered(engine, file, parts.kind, parts.scope, parts.order, true) else { return null }
+    let members? = members_of(engine, file, name, true) else { return null }
     let read = [[projected(engine, f, m, parts.kind) for f in parts.proj.fields] for m in members]
     if read.any((r) -> r.any((v) -> v == null)) { return null }
     Collected {
@@ -455,13 +456,16 @@ fn instance_callee(m: DeclaredName) -> CalledFn {
 /// answered. Absent for any other declaration.
 fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
     let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Const) else { return null }
-    let item = read_item(engine, file, d.item)
-    let s? = declaring_stmt(item, d) else { return null }
-    if item.store.instance_of(s) == null { return null }
+    if !built_instance(engine, d) { return null }
     match const_body(engine, d) {
         .Ok(body) -> signed_lowered(engine, file, body, name, null),
         .Err(_) -> null,
     }
+}
+
+/// Whether the `const` `d` is a component's instance, whose value its unit builds where it's read.
+fn built_instance(engine: QueryEngine, d: DeclaredName) -> bool {
+    d.kind == ItemKind.Const && file_instances(engine, d.file).any(it.name == d.name)
 }
 
 /// The projection word naming a member's file.
@@ -509,23 +513,15 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
         external: false,
         plain: declared.params.all(plain_seat),
         type_params: declared.tparams.length,
-        params: called_seats(declared.params, fn_signature(engine, d.file, d.name)?.params ?? []),
+        params: signed_seats(fn_signature(engine, d.file, d.name)?.params ?? []),
     }
 }
 
-/// Each seat of `written`, signed as `signed` says, as a call fills it; none where one takes a
-/// `state` or `const` argument or isn't typed.
-fn called_seats(written: List<Param>, signed: List<SignedParam>) -> List<CalledSeat> {
-    if written.length != signed.length ||
-        written.any(it.state || it.promises.settled) ||
-        signed.any(it.ty == null) { return [] }
-    [CalledSeat {
-        name: s.name,
-        ty: s.ty!,
-        mutable: s.mutable,
-        defaulted: written[at].default != null,
-        rest: written[at].is_rest(),
-    } for at, s in signed]
+/// Each seat `signed` declares, as a call fills it; none where one takes a `state` or `const`
+/// argument or isn't typed.
+fn signed_seats(signed: List<SignedParam>) -> List<CalledSeat> {
+    if signed.any(it.state || it.settled || it.ty == null) { return [] }
+    [CalledSeat { name: s.name, ty: s.ty!, mutable: s.mutable, defaulted: s.defaulted, rest: s.rest } for s in signed]
 }
 
 /// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
@@ -543,25 +539,21 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
     if impls.is_empty() && statics { return every_variant_callee(engine, subject, declared, name) }
     if impls.length != 1 { return null }
     let at = impls[0]
-    let item = read_item(engine, at.file, at.item)
-    let fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() ?? []
-    let m? = fns
-        .find((s) -> item.store.fn_parts(s)?.name == name && item.store.is_static(s) == statics) else { return null }
-    let parts = item.store.fn_parts(m)!
+    let sig? = method_signature(engine, at, name) else { return null }
     let used = if statics { ReceiverUse.Read } else { receiver_use(engine, declared.file, declared.name, name) }
     CalledFn {
         file: at.file,
         name: name,
         symbol: declared_symbol(at.file, "${declared.name}.${name}"),
         external: false,
-        plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
+        plain: sig.type_params.length == at.params.length && sig.params.all(it.plain()),
         owner: declared.name,
         of: declared.file,
         statics: statics,
         writes: used.written(),
         unproved: used.unproved(),
-        type_params: at.params.length + parts.tparams.length,
-        params: called_seats(parts.params, method_signature(engine, at, name)?.params ?? []),
+        type_params: sig.type_params.length,
+        params: signed_seats(sig.params),
     }
 }
 
@@ -632,7 +624,7 @@ fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
         name: p!.name,
         writes: item.store.is_mutating(m),
         plain: p!.tparams.is_empty() && p!.params.all(plain_seat),
-        seats: called_seats(p!.params, trait_method_signature(engine, held, p!.name, ty)?.params ?? []),
+        seats: signed_seats(trait_method_signature(engine, held, p!.name, ty)?.params ?? []),
     } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
 }
 

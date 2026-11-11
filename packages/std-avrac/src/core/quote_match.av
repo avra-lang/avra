@@ -39,7 +39,7 @@ impl Lowering {
         let holes = quote_pat_holes(self.store, body)
         let shape_ty = matcher.params[2].ty
         let shape? = self
-            .shape_data(quote_pat_shape(self.store, root, holes, quote_pat_names(holes)), shape_ty, body) else {
+            .shape_data(quote_pat_shape(self.store, root, holes, quote_pat_names(holes)), shape_ty) else {
             self.missed(unlaid_shape(shape_ty))
             return null
         }
@@ -160,14 +160,20 @@ impl Lowering {
         FieldValue { reg: self.field_read(v, ty, laid, n), ty: field }
     }
 
-    /// The shape `s`, a value of `shape_ty`, laid out as the binary's data under the name of the
-    /// pattern `body`; absent where its enums lay out otherwise than as data reads them.
-    mut fn shape_data(s: Shape, shape_ty: SignedType, body: ExprId) -> Reg? {
+    /// The shape `s`, a value of `shape_ty`, laid out as the binary's data under a name its content
+    /// makes, so two patterns of one shape read one datum; absent where its enums lay out otherwise
+    /// than as data reads them.
+    mut fn shape_data(s: Shape, shape_ty: SignedType) -> Reg? {
         let boxes: Cell<List<StaticBox>> = Cell.new([])
         let root? = self.shape_slot(s, shape_ty, boxes) else { return null }
         if boxed_slot_at(root) == null { return null }
+        let laid = boxes.get()
         self
-            .laid_static(self.laid_out(shape_ty), (self.program.literal_symbol)(body, shape_ty), boxes.get())
+            .laid_static(
+                self.laid_out(shape_ty),
+                "quote\$shape\$${fp_list([b.fingerprint() for b in laid])}",
+                laid,
+            )
     }
 
     /// The slot a shape takes: its variant's box, the tag then its payloads' cells, child first.
