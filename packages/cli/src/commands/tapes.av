@@ -80,6 +80,9 @@ use @std.avrac.compiler.{
     file_impls,
     ImplAt,
     made_program,
+    heard_as_case,
+    quarrel,
+    ProgramCall,
     made_generator,
     derive_sites,
     item_difference,
@@ -781,7 +784,10 @@ impl HeldUnits {
         if tests.calls > 0 { self.tested = self.tested + 1 }
         if tests.edges > 0 { self.ticked = self.ticked + 1 }
         let cut = cuts.get()
-        if cut.any(it.theirs > 0) { self.theirs_alone = self.theirs_alone + 1 }
+        if cut.any(it.theirs > 0) {
+            self.theirs_alone = self.theirs_alone + 1
+            if shown { println("cut by the workspace alone: ${site}") }
+        }
         if cut.any(it.ours > 0) { self.ours_alone = self.ours_alone + 1 }
         if cut.any(it.edges > 0) { self.edges_alone = self.edges_alone + 1 }
     }
@@ -1375,8 +1381,9 @@ fn package_holding(path: string) -> string? {
     if up == path || up == "" { null } else { package_holding(up) }
 }
 
-/// A program test: its source, beside the output it must print.
-type ProgramTest = { path: string, expected: string }
+/// A program test: its source, beside the output it must print, and whether the evaluator runs it:
+/// a `.native-only` marker beside it says the seam is the host's.
+type ProgramTest = { path: string, expected: string, evaluated: bool }
 
 /// Every program test at or under `dir`: a directory holding a source and an `.expected` both named
 /// for it.
@@ -1391,21 +1398,22 @@ fn program_test_at(dir: string, names: List<string>) -> ProgramTest? {
     let own = file_name(dir)
     if !names.contains("${own}.av") { return null }
     let expected? = text_at(joined_path(dir, "${own}.expected")) else { return null }
-    ProgramTest { path: joined_path(dir, "${own}.av"), expected: unended(expected) }
+    ProgramTest {
+        path: joined_path(dir, "${own}.av"),
+        expected: unended(expected),
+        evaluated: !names.contains("${own}.native-only"),
+    }
 }
 
 /// `text` without the one line end that closes it.
 fn unended(text: string) -> string { if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text } }
 
-/// How one engine's run of a program test went: what it printed, or why it printed nothing.
-enum Leg {
-    Printed(out: string)
-    Failed(why: string)
-}
+/// The line at `at`, quoted, or the end where there's none.
+fn line_at(lines: List<string>, at: int) -> string { if at < lines.length { "`${lines[at]}`" } else { "the end" } }
 
-/// Each program test under `dir`, made on the program layer and run in the evaluator and natively,
-/// each run held to the test's `.expected`; one not made yet is counted by why. Answers 1 when a
-/// made test fails.
+/// Each program test under `dir`, made on the program layer and run as the suite's case runner runs
+/// one, in the evaluator and natively: under a case's schedules and clock, each schedule's output held
+/// to the test's `.expected`; one not made yet is counted by why. Answers 1 when a made test fails.
 fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool) -> int {
     let tests = program_tests(dir)
     mut made = 0
@@ -1424,24 +1432,42 @@ fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool) -> int {
             },
         }
         made = made + 1
-        let legs = [
-            Ran {
-                engine: "eval",
-                leg: match run_lowered(lowered) {
-                    .Ok(out) -> Leg.Printed(out),
-                    .Err(why) -> Leg.Failed(why),
+        let heard = if p.evaluated {
+            [
+                Ran {
+                    engine: "eval",
+                    differs: quarrel(
+                        lowered,
+                        ProgramCall {
+                            symbol: ENTRY_SYMBOL,
+                            label: path,
+                            expected: p.expected,
+                            evaluated: true,
+                        },
+                    )
+                        .first(),
                 },
-            },
-            Ran {
-                engine: "native",
-                leg: native_leg(
-                    lowered,
-                    joined_path(disk.root, ".avra-cache/tapes-ran/${file_name(dir_of(path))}"),
-                ),
-            },
-        ]
+            ]
+        } else {
+            []
+        }
+        let legs = heard
+            .concat(
+                [
+                    Ran {
+                        engine: "native",
+                        differs: native_differs(
+                            heard_as_case(lowered, path, p.expected),
+                            joined_path(
+                                disk.root,
+                                ".avra-cache/tapes-ran/${file_name(dir_of(path))}",
+                            ),
+                        ),
+                    },
+                ],
+            )
         for r in legs {
-            let differs? = leg_difference(r.leg, p.expected) else {
+            let differs? = r.differs else {
                 if r.engine == "eval" { evaluated = evaluated + 1 } else { native = native + 1 }
                 continue
             }
@@ -1455,29 +1481,18 @@ fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool) -> int {
     if failing.is_empty() { 0 } else { 1 }
 }
 
-/// One engine's run.
-type Ran = { engine: string, leg: Leg }
+/// One engine's run of a program test: how it differs from what the test expects, absent when it
+/// printed exactly that under every schedule the case runner ran.
+type Ran = { engine: string, differs: string? }
 
-/// How a run differs from what the test expects: the first line that differs, or why it didn't run;
-/// absent when it printed exactly that.
-fn leg_difference(leg: Leg, expected: string) -> string? {
-    let out = match leg { .Printed(o) -> o, .Failed(why) -> { return "didn't run: ${why}" } }
-    if out == expected { return null }
-    let got = out.split("\n")
-    let want = expected.split("\n")
-    mut at = 0
-    while at < got.length && at < want.length && got[at] == want[at] { at = at + 1 }
-    "line ${at + 1} is ${line_at(got, at)}, the expected ${line_at(want, at)}"
-}
+/// The symbol a made program's top level is known by.
+const ENTRY_SYMBOL: string = "main"
 
-/// The line at `at`, quoted, or the end where there's none.
-fn line_at(lines: List<string>, at: int) -> string { if at < lines.length { "`${lines[at]}`" } else { "the end" } }
-
-/// A program built natively at `stem` and run: what it printed, or why it didn't build or ended
-/// otherwise than cleanly.
-fn native_leg(l: Lowered, stem: string) -> Leg {
+/// A program test built natively at `stem` under the case runner and run: absent when it printed
+/// what it must under every schedule, else what the runner said or why it didn't run.
+fn native_differs(l: Lowered, stem: string) -> string? {
     let why? = unbuilt(l, stem) else { return ran_natively(stem) }
-    Leg.Failed(why)
+    "didn't run: ${why}"
 }
 
 /// Why the program didn't build at `stem`, absent when it did: emitted as an object, then linked
@@ -1504,15 +1519,15 @@ fn link_refused(object: string, stem: string) -> string? {
     }
 }
 
-/// The binary at `stem` run: what it printed, or how it ended otherwise than cleanly.
-fn ran_natively(stem: string) -> Leg {
+/// The case runner's binary at `stem` run: absent when it left by a green verdict, else what it said.
+fn ran_natively(stem: string) -> string? {
     match (cmd(tool_at(stem, stem), []) with { timeout: secs(30) }).outcome() {
         .Ok(o) -> match o.exit {
-            .Clean -> Leg.Printed(unended(o.out.stdout)),
-            .Code(n) -> Leg.Failed("exited ${n}: ${o.out.stderr}"),
-            .Signal(sig, _) -> Leg.Failed("killed by signal ${sig}"),
+            .Clean -> null,
+            .Code(n) -> if n == 1 { unended(o.out.stdout) } else { "didn't run: exited ${n}: ${o.out.stderr}" },
+            .Signal(sig, _) -> "didn't run: killed by signal ${sig}",
         },
-        .Err(e) -> Leg.Failed("didn't run: ${e.describe().message}"),
+        .Err(e) -> "didn't run: ${e.describe().message}",
     }
 }
 

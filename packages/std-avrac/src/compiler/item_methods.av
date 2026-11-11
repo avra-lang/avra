@@ -1,7 +1,7 @@
 //! WHAT A TYPE'S METHODS ARE: every impl in the type's package whose target, resolved from the impl's
 //! own file, is that very declaration — never one that only shares its name, and never missing one
 //! written under an import's other name — and each method signed under the impl's type parameters.
-use core.{SignedSeat, SignedType, TypeHead, headed_type}
+use core.{SignedSeat, SignedType, TypeHead, headed_type, owned_type}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -222,13 +222,32 @@ fn trait_static(engine: QueryEngine, file: SourceFileAddress, declared: string, 
 }
 
 /// The property `name` of a value of `subject`'s type, as a fn of the receiver alone: one the
-/// language's own type has (`@std/prelude`'s `verbs/props/`).
+/// language's own type has (`@std/prelude`'s `verbs/props/`), or one every enum has.
 export fn property_type(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if subject.nullable() || subject.dynamic { return null }
     match subject.head {
         .Owned(word) -> own_verb(engine, "verbs/props/${word}.av", name, subject),
-        .Declared(_, _) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
+        .Declared(file, declared) -> enum_property(engine, subject, file, declared, name),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Never or .Meta -> null,
     }
+}
+
+/// The property `name` every enum has, as a fn of the receiver: `ordinal`, its variant's place in
+/// the declaration, and `name`, its variant's name. Absent for a type that isn't an enum.
+fn enum_property(
+    engine: QueryEngine,
+    subject: SignedType,
+    file: SourceFileAddress,
+    declared: string,
+    name: string,
+) -> SignedType? {
+    if enum_signature(engine, file, declared) == null { return null }
+    let answer? = match name {
+        "ordinal" -> owned_type("int"),
+        "name" -> owned_type("string"),
+        _ -> null,
+    } else { return null }
+    headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: subject, mutable: false, settled: false }], answer: answer }
 }
 
 /// The method `name` the one impl of the type `file` declares as `declared` that gives it, its

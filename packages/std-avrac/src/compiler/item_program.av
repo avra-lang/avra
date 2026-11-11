@@ -3,11 +3,14 @@
 //! read by its registers' layouts alone: it carries no registry type, and the program's registry is
 //! empty. A program not made yet says why, by the first thing it met.
 use core.{
+    BinOp,
+    BoxKind,
     CalledFn,
     CheckedProgram,
     FnWrapper,
     Ins,
     Layout,
+    Reg,
     RtKind,
     RtSig,
     SignedType,
@@ -218,4 +221,50 @@ fn distinct_statics(statics: List<Static>) -> List<Static> {
 fn unanswered(l: Lowered) -> MadeProgram? {
     let open? = program_closed(l) else { return null }
     MadeProgram.Unmade("a name no lowered body, row or extern answers", open)
+}
+
+/// A program test as the suite's case runner runs one: its top level the body `CASE_BODY`, run by an
+/// entry under a case's schedules and clock, what it prints held to `expected` under each, and the
+/// process leaving 0 when every schedule printed it, else 1, the runtime saying what printed otherwise.
+export fn heard_as_case(l: Lowered, label: string, expected: string) -> Lowered {
+    let rows = ["avra_program_verdict", "avra_process_exit"]
+    l with { fns: l.fns.concat([l.entry with { name: CASE_BODY }]), entry: unit_body(
+        ENTRY,
+        [],
+        Layout.Word,
+        case_entry(label, expected),
+        [
+            Layout.Word,
+            Layout.Boxed(BoxKind.Text),
+            Layout.Boxed(BoxKind.Text),
+            Layout.Word,
+            Layout.Word,
+            Layout.Word,
+        ],
+    ), externs: l
+        .externs
+        .filter((r) -> !rows.contains(r.name))
+        .concat(program_rows.filter((r) -> rows.contains(r.name))) }
+}
+
+/// The symbol a program test's top level is known by under the case runner.
+const CASE_BODY: string = "avra_case_program"
+
+/// The case runner's entry: the verdict on `CASE_BODY`, and the status `1 - held`.
+fn case_entry(label: string, expected: string) -> List<Ins> {
+    [
+        Ins.FnAddr(Reg { index: 0 }, CASE_BODY),
+        Ins.ConstStr(Reg { index: 1 }, label),
+        Ins.ConstStr(Reg { index: 2 }, expected),
+        Ins
+            .CallRt(
+                Reg { index: 3 },
+                "avra_program_verdict",
+                [Reg { index: 0 }, Reg { index: 1 }, Reg { index: 2 }],
+            ),
+        Ins.ConstInt(Reg { index: 4 }, 1),
+        Ins.Bin(Reg { index: 5 }, BinOp.Sub, Reg { index: 4 }, Reg { index: 3 }),
+        Ins.CallRtVoid("avra_process_exit", [Reg { index: 5 }]),
+        Ins.Ret(0),
+    ]
 }
