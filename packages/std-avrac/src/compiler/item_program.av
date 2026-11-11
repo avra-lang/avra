@@ -40,17 +40,19 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
     let checks = if lowered_links(engine, surveyed) { TaskChecks.Scheduled } else { TaskChecks.Tested }
     let entry = lowered_entry(engine, file, checks)!
     if !entry.whole() { return MadeProgram.Unmade(entry.missing[0], "the entry") }
-    made_reaching(engine, entry, ENTRY, [])
+    made_reaching(engine, entry, ENTRY, [], checks)
 }
 
 /// The program `root` and each body it reaches make, the memory pass applied: `root` the entry,
-/// known as `name` with `seats` its first registers. With `missed`, the walk goes past each body not
+/// known as `name` with `seats` its first registers, each body emitting the task tests `checks`
+/// names. With `missed`, the walk goes past each body not
 /// lowered yet and files it there.
 export fn made_reaching(
     engine: QueryEngine,
     root: LoweredFn,
     name: string,
     seats: List<Layout>,
+    checks: TaskChecks,
     missed: Cell<List<Missed>>? = null,
 ) -> MadeProgram {
     mut queue = every_callee_of(root)

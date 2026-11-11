@@ -1,6 +1,6 @@
 //! A GENERATOR ON THE PROGRAM LAYER: the `static fn derive` a trait's own body writes, lowered with
 //! every body it reaches into a program the evaluator runs over a declaration's meta value.
-use core.{flatten}
+use core.{TaskChecks, flatten}
 use features.{Budgets, arg_lit, meta_of_type, new_meta_heap, unsettled_label}
 use @std.meta.{Diagnostic, Directive, derive}
 use @std.program.address.{SourceFileAddress}
@@ -51,9 +51,16 @@ export fn generator_symbol(t: TraitAt) -> string { declared_symbol(t.file, "${t.
 /// yet filed there. Absent when the trait writes no generator.
 export fn made_generator(engine: QueryEngine, t: TraitAt, missed: Cell<List<Missed>>? = null) -> MadeProgram? {
     let signed? = generator_body(engine, t) else { return null }
-    let root = lowered_signed(engine, t.file, signed, "${t.name}.${GENERATOR}", null)
+    let root = lowered_signed(
+        engine,
+        t.file,
+        signed,
+        "${t.name}.${GENERATOR}",
+        null,
+        TaskChecks.Tested,
+    )
     if !root.whole() { return MadeProgram.Unmade(root.missing[0], "the generator") }
-    made_reaching(engine, root, generator_symbol(t), root.params, missed)
+    made_reaching(engine, root, generator_symbol(t), root.params, TaskChecks.Tested, missed)
 }
 
 /// What a trait's generator is: the hash of the program made of it, printed, or why it isn't made.
