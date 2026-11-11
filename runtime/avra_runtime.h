@@ -115,6 +115,8 @@ int64_t avra_clock_jumped(int64_t at);
 // waited on the world has waited — its count of clock reads begins
 // again.
 void avra_clock_hold(int64_t by);
+// The memory pool's slots this process no longer fills, given back.
+void avra_mem_settle(void);
 // What tasks abandoned while holding the world held, let go: only that
 // share, never the holds a live task stands in.
 void avra_clock_holds_let_go(int64_t n);
