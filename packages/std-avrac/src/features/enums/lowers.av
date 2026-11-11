@@ -3,6 +3,7 @@
 //! subject holds; a match on an enum is a region over the subject's tag, each arm reading what its
 //! pattern binds inside its own region; a match on a number or text tries each arm in turn.
 use core.{
+    payload_unknown,
     Arm,
     BinOp,
     Bound,
@@ -446,7 +447,7 @@ fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
 fn subs_accepted(mut cx: Lowering, s: Chosen, tag: int, subs: List<Taken?>, k: int) -> Reg {
     if k == subs.length { return cx.const_bool(true) }
     let sub? = subs[k] else { return subs_accepted(cx, s, tag, subs, k + 1) }
-    let held? = payload_chosen(cx, s, tag, k) else { return cx.missed_as("a payload whose type isn't known") }
+    let held? = payload_chosen(cx, s, tag, k) else { return cx.missed_as(payload_unknown()) }
     let took = tested(cx, held, sub)
     if k == subs.length - 1 { return took }
     cx
@@ -618,7 +619,7 @@ fn member_read(mut cx: Lowering, s: Chosen, tag: int, record: SignedType) -> Reg
     let fields? = cx.fields_of(record) else { return cx.missed_as("a member's record whose fields aren't known") }
     let carried: List<string?> = [p.name for p in variant.payloads]
     let read = payloads_read(cx, s.v, variant, carried)
-    if read.length != carried.length { return cx.missed_as("a payload whose type isn't known") }
+    if read.length != carried.length { return cx.missed_as(payload_unknown()) }
     cx
         .record_packed(
             cx.laid_out(record),

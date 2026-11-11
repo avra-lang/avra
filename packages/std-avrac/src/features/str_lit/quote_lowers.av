@@ -4,6 +4,7 @@
 //! templates through the row that joins them, a name, a number or a truth through the row that lifts
 //! it.
 use core.{
+    CalledFn,
     ExprId,
     FillClass,
     HoleKind,
@@ -33,8 +34,8 @@ fn quote_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
     let node? = meta(cx, "Node") else { return cx.missed_as(no_meta()) }
     let classes = [fill_class(cx, cx.type_at(h)) for h in b.holes]
     if classes.any(it == null) { return cx.missed_as("a quote hole whose value no `@std/meta` row lifts") }
-    let template? = (cx.program.toolchain_fn)(META_MODULE, "template") else { return cx.missed_as(no_meta()) }
-    let wrapping? = (cx.program.toolchain_fn)(META_MODULE, wrap) else { return cx.missed_as(no_meta()) }
+    let template? = meta_fn(cx, "template") else { return cx.missed_as(no_meta()) }
+    let wrapping? = meta_fn(cx, wrap) else { return cx.missed_as(no_meta()) }
     let kinds = seat_kinds(cx, e, [c! for c in classes])
     let file = cx.const_str(cx.program.home)
     let at = cx.const_int(cx.store.expr_span(e)?.lo ?? 0)
@@ -84,6 +85,9 @@ fn wrap_verb(cx: Lowering, ty: SignedType) -> string? {
 /// The type `@std/meta` declares as `name`, absent where it declares none.
 fn meta(cx: Lowering, name: string) -> SignedType? { cx.program.checked.meta(name) }
 
+/// The fn `@std/meta` declares as `name`, absent in a program that doesn't load it.
+fn meta_fn(cx: Lowering, name: string) -> CalledFn? { (cx.program.toolchain_fn)(META_MODULE, name) }
+
 /// What the hole of type `ty` holds, as a row lifts it; absent for an untyped hole or one no row lifts.
 fn fill_class(cx: Lowering, ty: SignedType?) -> FillClass? {
     let t? = ty else { return null }
@@ -124,7 +128,7 @@ fn int_row(kind: HoleKind) -> string {
 
 /// The `@std/meta` row `verb` handed `v`, answering a node of layout `l`.
 fn lifted(mut cx: Lowering, verb: string, l: Layout, v: Reg) -> Reg {
-    let callee? = (cx.program.toolchain_fn)(META_MODULE, verb) else { return cx.missed_as(no_meta()) }
+    let callee? = meta_fn(cx, verb) else { return cx.missed_as(no_meta()) }
     cx.call_fn(l, callee, [v])
 }
 
