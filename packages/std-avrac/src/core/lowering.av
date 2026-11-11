@@ -33,7 +33,7 @@ export type LoweredProgram = {
     tagged: Cell<List<SignedType>>,
     /// The wrappers of the declared fns named as values so far, each once.
     wrappers: Cell<List<FnWrapper>>,
-    /// How many statements were lowered so far through a meaning other lowerings may shape otherwise.
+    /// How many statements were lowered so far in a shape other lowerings may give them otherwise.
     reshaped: Cell<int>,
     /// The fn whose body is the default of the field of that name a record declares, absent where
     /// the program declares none.
@@ -81,6 +81,11 @@ export enum NamedValue {
     Fn(callee: CalledFn)
     /// A `const` whose value is written as a literal.
     Literal(value: Literal)
+    /// A `const` the compiler settles: the words its value is carried in, and the data the binary
+    /// holds for the one that's a box.
+    Settled(words: List<SettledWord>, data: Static)
+    /// A `const` that doesn't settle yet, and why.
+    Unsettled(why: string)
     /// A `collect`: the unit that builds its list, called with nothing.
     Collected(callee: CalledFn)
 }
@@ -95,6 +100,9 @@ export enum CollectedValue {
     /// A text its declaration spells (`it.name`).
     Spelled(value: Literal)
 }
+
+/// One word a settled value is carried in: its slot, and the register it's read into.
+export type SettledWord = { slot: Slot, layout: Layout }
 
 /// A fn a body calls: where it's declared, the symbol its code is known by, whether C defines it,
 /// whether a call hands it its arguments by position into seats that promise nothing and have no
@@ -223,9 +231,16 @@ export type Lowering = {
     cleanups: Cell<int>,
     /// How many scopes stood open outside each loop open around what's being lowered, innermost last.
     loop_floors: Cell<List<int>>,
+    /// The labels of each loop open around what's being lowered, innermost last: a `for` is labelled by
+    /// the names it binds.
+    labels: Cell<List<List<string>>>,
     /// Whether the body is a task's, which answers its value in a one-cell list.
     tasked: bool = false,
 }
+
+/// A walk over a list's places, or a count's: the list it reads, absent for a count; how far it goes;
+/// the cell holding where it stands; and what each turn binds, with its layout.
+export type ListWalk = { list: Reg?, len: Reg, at: Reg, elem: SignedType, elem_layout: Layout }
 
 /// A task, or a list of them, a scope joins as it ends.
 export type TaskHeld = { reg: Reg, many: bool }
@@ -251,6 +266,7 @@ export fn lowering(
     let endings: Cell<List<List<Ending>>> = Cell.new([no_endings()])
     let cleanups: Cell<int> = Cell.new(0)
     let loop_floors: Cell<List<int>> = Cell.new([])
+    let labels: Cell<List<List<string>>> = Cell.new([])
     Lowering {
         store: store,
         program: program,
@@ -269,6 +285,7 @@ export fn lowering(
         endings: endings,
         cleanups: cleanups,
         loop_floors: loop_floors,
+        labels: labels,
     }
 }
 
@@ -328,7 +345,7 @@ impl Lowering {
         self.born(tail)
     }
 
-    /// A statement lowered through a meaning other lowerings may shape otherwise, counted.
+    /// A statement lowered in a shape other lowerings may give it otherwise, counted.
     mut fn reshaped() { self.program.reshaped.set(self.program.reshaped.get() + 1) }
 
     /// A branch whose value nothing reads: a block's statements in a scope of names of their own, or
@@ -745,6 +762,7 @@ impl Lowering {
 
     mut fn loop_start() {
         self.loops.set(self.loops.get() + 1)
+        self.labels.push([])
         // LICENSED compiler.loop_start_raw: this IS the verb
         self.emit(Ins.LoopStart)
     }
@@ -766,6 +784,8 @@ impl Lowering {
         // LICENSED compiler.loop_end_raw: this IS the verb
         self.emit(Ins.LoopEnd)
         self.loops.set(self.loops.get() - 1)
+        let labels = self.labels.get()
+        self.labels.set(labels.take(labels.length - 1))
     }
 
     /// The innermost loop's turn ends here, what its turn's scopes hold ended: its next begins when
@@ -774,6 +794,45 @@ impl Lowering {
         if self.loops.get() == 0 { return self.missed("a jump outside a loop") }
         self.ended_from(self.loop_floors.get().last() ?? 0, Leaving.Plain)
         self.emit(Ins.LoopJump(0, again))
+    }
+
+    /// A `break` or `continue` of the open loop labelled `label`, the innermost so labelled, every
+    /// scope inside it ended.
+    mut fn jumped_to(label: string, again: bool) {
+        let labels = self.labels.get()
+        let at? = [j for j, names in labels if names.contains(label)].last() else { return self.missed("a jump naming no loop around it") }
+        self.ended_from(self.loop_floors.get()[at], Leaving.Plain)
+        self.emit(Ins.LoopJump(labels.length - 1 - at, again))
+    }
+
+    /// The innermost open loop labelled by `names`: a jump naming one leaves or turns that loop.
+    mut fn labelled(names: List<string>) {
+        let labels = self.labels.get()
+        self.labels.set(labels.take(labels.length - 1).concat([names]))
+    }
+
+    // ── Walks ───────────────────────────────────────────────────────
+
+    /// A walk over the list `list` of `elem`s, from its start to its length.
+    mut fn walk_list(list: Reg, elem: SignedType) -> ListWalk {
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [list])
+        ListWalk {
+            list: list,
+            len: len,
+            at: self.seeded_cell(Layout.Word, self.const_int(0)),
+            elem: elem,
+            elem_layout: self.laid_out(elem),
+        }
+    }
+
+    /// A turn of the walk opened: the loop, its test that the walk stands short of its length, the
+    /// turn's scope, then the step past this place. Answers the place.
+    mut fn walk_turn(w: ListWalk) -> Reg {
+        self.loop_start()
+        let here = self.loaded(Layout.Word, w.at)
+        self.loop_cond(self.bin(Layout.Truth, BinOp.Lt, here, w.len))
+        self.stored(w.at, self.bin(Layout.Word, BinOp.Add, here, self.const_int(1)))
+        here
     }
 
     // ── Cells ───────────────────────────────────────────────────────
@@ -859,7 +918,7 @@ fn tasks_held(ty: SignedType?) -> bool? {
 fn wider_than_a_word(row: RtSig) -> string { "a value wider than a word crossing `${row.name}`" }
 
 /// An enum's spare tag: the one no variant has, which its nullable spends on absence.
-const ABSENT_TAG: int = -1
+export const ABSENT_TAG: int = -1
 
 /// The symbol of the body that answers `target`'s code hash.
 export fn code_hash_symbol(target: string) -> string { "avra.code_hash.${target}" }

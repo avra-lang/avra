@@ -128,13 +128,14 @@ fn result_shape() -> EnumShape {
 }
 
 /// What walking a value of `subject`'s type binds: a list's position and element, a map's key and
-/// value, a range's integers; nothing known for any other type.
+/// value, octets' position and each octet, a range's integers; nothing known for any other type.
 export fn walk_binds(subject: SignedType?) -> WalkBinds {
     let s? = subject else { return WalkBinds {} }
     let element = s.listed()
     if element != null { return WalkBinds { index: owned_type("int"), element: element } }
     let value = s.mapped()
     if value != null { return WalkBinds { index: s.args[0], element: value } }
+    if s.word() == "Bytes" && !s.nullable() { return WalkBinds { index: owned_type("int"), element: owned_type("int") } }
     if s.word() == "Range" && !s.nullable() { return WalkBinds { element: owned_type("int") } }
     WalkBinds {}
 }

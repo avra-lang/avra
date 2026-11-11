@@ -82,6 +82,9 @@ use @std.avrac.compiler.{
     file_impls,
     ImplAt,
     made_program,
+    reach_surveyed,
+    BodyKind,
+    ReachedBody,
     heard_as_case,
     quarrel,
     ProgramCall,
@@ -112,7 +115,7 @@ use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.sorted.{sorted_by}
 use @std.program.source_facts.{use_source_world}
 use @std.program.syntax_tape.{SyntaxTape}
-use @std.text.{text_before}
+use @std.text.{parse_int, text_before}
 
 type TapesCmd = {}
 
@@ -160,6 +163,14 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
     if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
     if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
+    if args.has_flag("built") {
+        return built_held(
+            engine,
+            disk,
+            parse_int(args.option("budget") ?? "") ?? 0,
+            args.has_flag("left"),
+        )
+    }
     let ws = root_workspace(root)
     // every file the receipt reads is the workspace's before any is held to it
     for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
@@ -265,9 +276,11 @@ fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<strin
             by_fn.set(site, (by_fn.get(site) ?? 0) + 1)
         }
         for site in sorted_by([k for k, _n in by_fn], (a, b) -> by_fn.get(a)! > by_fn.get(b)!) { println("untyped: ${by_fn.get(site)!} in ${site}") }
-        for p in pairs.filter(it.new == null) { println(
+        for p in pairs.filter(it.new == null) {
+            println(
                 "left: ${p.kind} ${p.old} at ${p.path}:${p.lo} `${snippet(disk, p.path, p.lo)}`",
-            ) }
+            )
+        }
     }
     "${typed} of the ${pairs.length} nodes the workspace types, ${if pairs.is_empty() { 0 } else { typed * 100 / pairs.length }}%; left most: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}"
 }
@@ -479,11 +492,17 @@ export flag program_runs {
     aliases: ["--ran"]
 }
 
+export flag built {
+    description: "walk every body the package's program reaches, past each not lowered yet, and tally what isn't made by why"
+    aliases: ["--built"]
+}
+
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures, left, core, lowered, program_runs, generators]
+    flags: [program_only, signatures, left, core, lowered, program_runs, generators, built]
     args: [file]
     option only { description: "hold only the package's files whose path starts with this (`src/compiler/`)" }
+    option budget { description: "with --built, stop the walk after this many seconds and tally what it reached" }
     run: TapesCmd {}
 }
 
@@ -1340,12 +1359,23 @@ fn known_symbols(a: Map<string, string>, b: Map<string, string>) -> Map<string, 
 fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: string) -> string {
     if s.starts_with(FN_DATA) { return FN_DATA + workspace_symbol(ws, disk, renames, s.substring(FN_DATA.length, s.length)) }
     let hashing = code_hash_symbol("")
-    if s.starts_with(hashing) { return code_hash_symbol(
+    if s.starts_with(hashing) {
+        return code_hash_symbol(
             workspace_symbol(ws, disk, renames, s.substring(hashing.length, s.length)),
-        ) }
+        )
+    }
     if s.ends_with(WRAPPER) {
         return workspace_symbol(ws, disk, renames, s.substring(0, s.length - WRAPPER.length)) +
             WRAPPER
+    }
+    let held = s.index_of(CONST_DATA)
+    if held >= 0 {
+        return const_symbol_of(
+            ws,
+            disk,
+            s.substring(0, held),
+            s.substring(held + CONST_DATA.length, s.length),
+        ) ?? s
     }
     let lit = s.index_of(LITERAL_DATA)
     if lit >= 0 {
@@ -1362,12 +1392,26 @@ fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: 
 /// The workspace's name for the literal data at `site` of the package's file `spelled`, absent for a
 /// file the workspace doesn't know.
 fn literal_symbol_of(ws: Workspace, disk: Disk, spelled: string, site: string) -> string? {
+    let id? = own_file(ws, disk, spelled) else { return null }
+    ws.decls.file_symbol(id, "lit${site}")
+}
+
+/// The workspace's name for the data the const `name` of the package's file `spelled` settles to,
+/// absent for a file or a const the workspace doesn't know.
+fn const_symbol_of(ws: Workspace, disk: Disk, spelled: string, name: string) -> string? {
+    let id? = own_file(ws, disk, spelled) else { return null }
+    let d? = ws
+        .decls
+        .decls_of_file(id)
+        .find((d) -> ws.decls.decl(d).parent == null && ws.decls.decl(d).name == name) else { return null }
+    ws.decls.symbol(d)
+}
+
+/// The workspace's file for the package's file `spelled`, absent for one it doesn't know.
+fn own_file(ws: Workspace, disk: Disk, spelled: string) -> FileId? {
     let own = "${disk.name}/"
     if !spelled.starts_with(own) { return null }
-    let id? = ws
-        .decls
-        .known_file_id(disk.on_disk(disk.name, spelled.substring(own.length, spelled.length))) else { return null }
-    ws.decls.file_symbol(id, "lit${site}")
+    ws.decls.known_file_id(disk.on_disk(disk.name, spelled.substring(own.length, spelled.length)))
 }
 
 /// What a fn value's data is named for: the code it holds.
@@ -1375,6 +1419,9 @@ const FN_DATA: string = "fn\$"
 
 /// What a declared fn's wrapper as a value is named for: the fn it calls.
 const WRAPPER: string = "\$w"
+
+/// What a const's data is named for beside its file: its name.
+const CONST_DATA: string = "\$const\$"
 
 /// What a literal's data is named for beside its file: its site.
 const LITERAL_DATA: string = "\$lit"
@@ -1665,4 +1712,86 @@ fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
         package_name: STD + rest.substring(0, cut),
         path_in_package: rest.substring(cut + 1, rest.length),
     }
+}
+
+/// Every body the package's program reaches from its `[bin]` entry, walked past each one not lowered
+/// yet, stopped after `seconds` where that's past zero: how many of each kind are made, each
+/// reason one isn't ranked by how many it holds with the three bodies most called among them, and
+/// each package's share. With `shown`, every body not made. Answers 1 where any isn't.
+fn built_held(engine: QueryEngine, disk: Disk, seconds: int, shown: bool) -> int {
+    let bin = read_manifest(
+        new_source_file("avra.toml", text_at(joined_path(disk.root, "avra.toml")) ?? ""),
+    )
+        .bin ?? "src/main.av"
+    // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
+    let t0 = now_ns()
+    // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
+    let survey = reach_surveyed(
+        engine,
+        disk.file_at(bin),
+        () -> seconds > 0 && now_ns() - t0 > seconds * 1000000000,
+    )
+    let bodies = survey.bodies
+    let unmade = bodies.filter(it.why != null)
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let secs_taken = (now_ns() - t0) / 1000000000
+    println(
+        "built: ${bodies.length} bodies ${bin} reaches, ${bodies.length - unmade.length} made, ${unmade.length} not yet; ${if survey.finished { "the walk reached its end" } else { "the walk stopped short" }} in ${secs_taken} s",
+    )
+    println(
+        "by kind: ${[kind_share(bodies, k) for k in BODY_KINDS if bodies.any(it.kind == k)].join(", ")}",
+    )
+    let reasons = tally_of([b.why! for b in unmade])
+    for why in sorted_by(reasons.keys(), (a, b) -> reasons.get(a)! > reasons.get(b)!) {
+        let most = sorted_by(
+            unmade.filter((u) -> u.why ?? "" == why),
+            (a, b) -> a.callers > b.callers,
+        )
+            .take(3)
+        println("  ${reasons.get(why)!} ${why}: ${[body_named(b) for b in most].join("; ")}")
+    }
+    let packages = tally_of([b.file.package_name for b in bodies])
+    println(
+        "by package: ${[package_share(bodies, p) for p in sorted_by(packages.keys(), (a, b) -> packages.get(a)! > packages.get(b)!)].join(", ")}",
+    )
+    if shown { for b in unmade { println("left: ${b.why!} in ${body_named(b)}") } }
+    if unmade.is_empty() { 0 } else { 1 }
+}
+
+/// Every kind of body a program reaches, in the order a receipt names them.
+const BODY_KINDS: List<BodyKind> = [
+    BodyKind.Entry,
+    BodyKind.Fn,
+    BodyKind.Method,
+    BodyKind.Static,
+    BodyKind.GenericUnit,
+    BodyKind.TraitDefault,
+    BodyKind.FieldDefault,
+    BodyKind.SeatDefault,
+    BodyKind.Lambda,
+    BodyKind.Data,
+    BodyKind.Wrapper,
+    BodyKind.Extern,
+]
+
+/// How many of the bodies of kind `k` are made, of how many reached.
+fn kind_share(bodies: List<ReachedBody>, k: BodyKind) -> string {
+    let all = bodies.filter(it.kind == k)
+    "${k.word()} ${all.filter(it.why == null).length} of ${all.length}"
+}
+
+/// How many of the bodies the package `p` declares are made, of how many reached.
+fn package_share(bodies: List<ReachedBody>, p: string) -> string {
+    let all = bodies.filter(it.file.package_name == p)
+    "${p} ${all.filter(it.why == null).length} of ${all.length}"
+}
+
+/// A body as a receipt names it: its symbol, its file, and how many bodies call it.
+fn body_named(b: ReachedBody) -> string { "`${b.symbol}` (${spelled_file(b.file)}, ${b.callers} calls)" }
+
+/// How many times each word stands in `words`.
+fn tally_of(words: List<string>) -> Map<string, int> {
+    mut counts: Map<string, int> = {}
+    for w in words { counts.set(w, (counts.get(w) ?? 0) + 1) }
+    counts
 }

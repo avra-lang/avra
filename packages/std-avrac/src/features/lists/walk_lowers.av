@@ -1,5 +1,5 @@
 //! The lowering rules of the walks a list takes a fn for — `find`, `any`, `all`, `map`, `filter`,
-//! `fold` — and of `contains`, `take` and `drop`: the list first, then what the answer gathers in, then the fn or the
+//! `fold` — and of `contains`, `take`, `drop` and `sum`: the list first, then what the answer gathers in, then the fn or the
 //! value sought, then one walk over the list handing each element to the fn or comparing it. A lambda capturing nothing, of one expression that leaves nothing
 //! to the walk's frame, is asked in place, its seats bound to what it's handed; any other fn through
 //! its box, its code read once before the walk.
@@ -31,6 +31,7 @@ enum WalkVerb {
     Contains
     Take
     Drop
+    Sum
 }
 
 /// The walk the verb `name` is, absent for any other verb.
@@ -45,6 +46,7 @@ fn walk_verb(name: string) -> WalkVerb? {
         "contains" -> WalkVerb.Contains,
         "take" -> WalkVerb.Take,
         "drop" -> WalkVerb.Drop,
+        "sum" -> WalkVerb.Sum,
         rest -> null,
     }
 }
@@ -91,6 +93,7 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
         .Contains -> contained(cx, m, e, elem),
         .Take -> limited(cx, m, e, elem, true),
         .Drop -> limited(cx, m, e, elem, false),
+        .Sum -> summed(cx, m, e, elem),
     }
 }
 
@@ -111,8 +114,8 @@ fn judged(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, all: boo
     let xs = cx.lower(m.subject)
     let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(all))
     let f = asked(cx, m.args[0], 1)
-    let w = list_walk(cx, xs, elem)
-    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     let hit = answered(cx, f, [v], Layout.Truth)
     cx
         .void_region(if all { cx.not(hit) } else { hit }) { cx -> ended(cx, cell, cx.const_bool(!all)) }
@@ -129,8 +132,8 @@ fn found(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     let xs = cx.lower(m.subject)
     let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
     let f = asked(cx, m.args[0], 1)
-    let w = list_walk(cx, xs, elem)
-    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     cx
         .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(v, elem, opt)) }
     cx.loop_end()
@@ -146,8 +149,8 @@ fn gathered(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, mappin
     let xs = cx.lower(m.subject)
     let f = asked(cx, m.args[0], 1)
     let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
-    let w = list_walk(cx, xs, elem)
-    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     if mapping {
         cx.push_slot(dst, answered(cx, f, [v], cx.laid_out(out)))
     } else {
@@ -165,11 +168,24 @@ fn folded(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     let xs = cx.lower(m.subject)
     let cell = cx.seeded_cell(l, cx.lower(m.args[0]))
     let f = asked(cx, m.args[1], 2)
-    let w = list_walk(cx, xs, elem)
-    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     cx.stored(cell, answered(cx, f, [cx.loaded(l, cell), v], l))
     cx.loop_end()
     cx.loaded(l, cell)
+}
+
+/// `xs.sum()`: a count seeded zero before the list is read, each element added to it. One over
+/// elements that aren't `int` isn't lowered yet.
+fn summed(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if !m.args.is_empty() || elem.spelled() != "int" { return cx.unlowered(e) }
+    let cell = cx.seeded_cell(Layout.Word, cx.const_int(0))
+    let xs = cx.lower(m.subject)
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
+    cx.stored(cell, cx.bin(Layout.Word, BinOp.Add, cx.loaded(Layout.Word, cell), v))
+    cx.loop_end()
+    cx.loaded(Layout.Word, cell)
 }
 
 /// `xs.contains(x)`: a truth seeded false, made true and the walk ended at the first element that is
@@ -180,8 +196,8 @@ fn contained(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Re
     let xs = cx.lower(m.subject)
     let cell = cx.seeded_cell(Layout.Truth, cx.const_bool(false))
     let needle = cx.lower(m.args[0])
-    let w = list_walk(cx, xs, elem)
-    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     cx.void_region(cx.same_value(v, needle, elem)) { cx -> ended(cx, cell, cx.const_bool(true)) }
     cx.loop_end()
     cx.loaded(Layout.Truth, cell)
@@ -197,8 +213,8 @@ fn limited(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType, taking:
     let count = cx.seeded_cell(Layout.Word, cx.const_int(0))
     let n = cx.lower(m.args[0])
     let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
-    let w = list_walk(cx, xs, elem)
-    let v = cx.element_at(w.elem_layout, xs, turned(cx, w))
+    let w = cx.walk_list(xs, elem)
+    let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     let seen = cx.loaded(Layout.Word, count)
     if taking {
         let keep = cx.bin(Layout.Truth, BinOp.Lt, seen, n)
