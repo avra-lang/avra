@@ -1021,12 +1021,13 @@ impl Lowering {
 fn tasks_held(ty: SignedType?) -> bool? {
     let t? = ty else { return null }
     if t.nullable() || t.dynamic { return null }
-    let word? = t.owned() else { return null }
-    if word == "Task" { return false }
-    if word == "Tasks" { return true }
-    if word != "List" { return null }
-    let elem? = t.args.first() else { return null }
-    if !elem.nullable() && elem.owned() == "Task" { true } else { null }
+    let own? = t.own() else { return null }
+    match own {
+        .Task -> false,
+        .Tasks -> true,
+        .List -> if t.args.first()?.owns(OwnType.Task) ?? false { true } else { null },
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Bytes or .Map or .Cell or .Range or .Result -> null,
+    }
 }
 
 /// A value wider than a word crossing `row`, which isn't lowered yet.
