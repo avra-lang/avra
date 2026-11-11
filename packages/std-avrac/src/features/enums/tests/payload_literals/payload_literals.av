@@ -1,5 +1,6 @@
-// proves: a variant's payload a literal stands for is compared with it: the arm takes the variant
-// only where each such payload is that value, and binds the rest.
+// proves: a variant's payload a pattern of its own stands for is taken by it: a literal compares
+// with it, a variant tests it and binds what it carries; the arm takes the variant only where each
+// such payload is taken, and binds the rest.
 enum Shape {
     Named(id: int, name: string)
     Sized(w: int, h: int)
@@ -18,6 +19,34 @@ fn said(s: Shape) -> string {
     }
 }
 
+enum Wrap {
+    One(s: Shape)
+    Two(a: Shape, b: Shape)
+    Nothing
+}
+
+fn area(w: Wrap) -> int? {
+    match w { .One(.Sized(x, y)) -> x * y, rest -> null }
+}
+
+fn wrapped(w: Wrap) -> string {
+    match w {
+        .One(.Named(_, "Tasks")) -> "one tasks",
+        .One(.Sized(x, 1)) -> "one row ${x}",
+        .Two(.Empty, .Named(id, n)) -> "two ${n}${id}",
+        .Two(.Sized(a, _), .Sized(_, b)) -> "two ${a}${b}",
+        rest -> "else",
+    }
+}
+
+let wraps = [
+    Wrap.One(Shape.Named(3, "Tasks")),
+    Wrap.One(Shape.Sized(6, 1)),
+    Wrap.One(Shape.Sized(6, 2)),
+    Wrap.Two(Shape.Empty, Shape.Named(4, "q")),
+    Wrap.Two(Shape.Sized(8, 0), Shape.Sized(0, 9)),
+    Wrap.Nothing,
+]
 let shapes = [
     Shape.Named(1, "Tasks"),
     Shape.Named(7, "x"),
@@ -28,4 +57,5 @@ let shapes = [
     Shape.Sized(2, 4),
     Shape.Empty,
 ]
-[said(s) for s in shapes].join(",")
+let areas = [area(w) ?? -1 for w in wraps]
+"${[said(s) for s in shapes].join(",")} ${[wrapped(w) for w in wraps].join(",")} ${areas[1]} ${areas[2]} ${areas[0]}"

@@ -1,4 +1,4 @@
-//! The lowering rules of the walks a list takes a fn for — `find`, `any`, `all`, `map`, `filter`,
+//! The lowering rules of the walks a list takes a fn for — `find`, `find_index`, `any`, `all`, `map`, `filter`,
 //! `fold` — and of `contains`, `index_of`, `take`, `drop` and `sum`: the list first, then what the answer gathers in, then the fn or the
 //! value sought, then one walk over the list handing each element to the fn or comparing it. A lambda capturing nothing, of one expression that leaves nothing
 //! to the walk's frame, is asked in place, its seats bound to what it's handed; any other fn through
@@ -23,6 +23,7 @@ use core.expr.{Lambda, MethodCall}
 /// A walk a list takes a fn for.
 enum WalkVerb {
     Find
+    FindIndex
     Any
     All
     Map
@@ -39,6 +40,7 @@ enum WalkVerb {
 fn walk_verb(name: string) -> WalkVerb? {
     match name {
         "find" -> WalkVerb.Find,
+        "find_index" -> WalkVerb.FindIndex,
         "any" -> WalkVerb.Any,
         "all" -> WalkVerb.All,
         "map" -> WalkVerb.Map,
@@ -69,6 +71,7 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
     if m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.unlowered(e) }
     match verb {
         .Find -> found(cx, m, e, elem),
+        .FindIndex -> found_at(cx, m, e, elem),
         .Any -> judged(cx, m, e, elem, false),
         .All -> judged(cx, m, e, elem, true),
         .Map -> gathered(cx, m, e, elem, true),
@@ -113,6 +116,24 @@ fn found(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     let v = cx.element_at(w.elem_layout, xs, cx.walk_turn(w))
     cx
         .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(v, elem, opt)) }
+    cx.loop_end()
+    cx.loaded(l, cell)
+}
+
+/// `xs.find_index(p)`: absent until the first element `p` holds of, whose place is kept and ends the
+/// walk.
+fn found_at(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let opt? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(opt)
+    let xs = cx.lower(m.subject)
+    let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
+    let f = asked(cx, m.args[0], 1)
+    let w = cx.walk_list(xs, elem)
+    let here = cx.walk_turn(w)
+    let v = cx.element_at(w.elem_layout, xs, here)
+    cx
+        .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(here, opt.unwrapped(), opt)) }
     cx.loop_end()
     cx.loaded(l, cell)
 }

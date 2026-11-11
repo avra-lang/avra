@@ -133,11 +133,11 @@ fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
 // ── A match on an enum ──────────────────────────────────────────────
 
 /// What a pattern takes of the subject: all of it, under a name or none; one variant, each payload
-/// under a name or none, or where a literal stands for it, that value alone; the value a literal is;
-/// or the value a top-level const is.
+/// under a name or none, or where a pattern of its own stands for it, what that one takes; the value
+/// a literal is; or the value a top-level const is.
 enum Taken {
     Whole(name: string?)
-    Variant(tag: int, names: List<string?>, lits: List<ExprId?>)
+    Variant(tag: int, names: List<string?>, subs: List<Taken?>)
     Equal(lit: ExprId)
     Compared(name: string)
 }
@@ -202,11 +202,10 @@ fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bo
         .Variant(name, args) -> {
             let tag? = variants.find_index(it.name == name.of) else { return null }
             let payloads = variants[tag].payloads
-            if args.length > payloads.length ||
-                !args.all((a) -> takes_any(cx, a) || payload_lit(cx, a) != null) { return null }
-            let lits = [payload_lit(cx, a) for a in args]
-            if [k for k, l in lits if l != null].any((k) -> !compares_by_value(cx, payloads[k].ty)) { return null }
-            Taken.Variant(tag, [bind_name(cx.store, a) for a in args], lits)
+            if args.length > payloads.length { return null }
+            let subs = [if takes_any(cx, a) { null } else { sub_taken(cx, payloads[k].ty, a) } for k, a in args]
+            if [k for k, a in args if subs[k] == null && !takes_any(cx, a)].length > 0 { return null }
+            Taken.Variant(tag, [bind_name(cx.store, a) for a in args], subs)
         },
         .Lit(lit) -> if scalar && !cx.store.null_literal(lit) { Taken.Equal(lit) } else { null },
         .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
@@ -233,19 +232,14 @@ fn takes_any(cx: Lowering, p: PatId) -> bool {
     }
 }
 
-/// The literal a payload's pattern compares it with, absent for any other pattern.
-fn payload_lit(cx: Lowering, p: PatId) -> ExprId? {
-    match cx.store.pat(p) {
-        .Lit(lit) -> if cx.store.null_literal(lit) { null } else { lit },
-        rest -> null,
-    }
-}
-
-/// Whether a payload of type `ty` compares with a literal by value: a scalar or text the language
-/// owns, never a nullable.
-fn compares_by_value(cx: Lowering, ty: SignedType?) -> bool {
-    let t? = ty else { return false }
-    !t.nullable() && t.owned() != null && cx.equatable(t)
+/// What the pattern `p` takes of a payload of type `ty`: a variant of the enum it is, or the value a
+/// literal is where it compares by value; absent for any other.
+fn sub_taken(cx: Lowering, ty: SignedType?, p: PatId) -> Taken? {
+    let held? = ty else { return null }
+    let scalar = !held.nullable() && held.owned() != null && cx.equatable(held)
+    let variants = cx.variants_of(held)
+    if variants == null && !scalar { return null }
+    pattern_taken(cx, variants ?? [], p, scalar)
 }
 
 /// The name a pattern binds, absent for a hole.
@@ -273,7 +267,8 @@ fn made_compared(cx: Lowering, p: PatId) -> List<string> {
 fn bound_names(t: Taken) -> List<string> {
     match t {
         .Whole(name) -> some_list(name),
-        .Variant(_, names, _) -> [n! for n in names if n != null],
+        .Variant(_, names, subs) -> [n! for n in names if n != null]
+            .concat(flatten([bound_names(t!) for t in subs if t != null])),
         .Equal(_) or .Compared(_) -> [],
     }
 }
@@ -297,7 +292,7 @@ fn covers(variants: List<VariantSeat>, arms: List<Planned>) -> bool {
 /// payload.
 fn variant_tag(t: Taken) -> int? {
     match t {
-        .Variant(tag, _, lits) -> if lits.all(it == null) { tag } else { null },
+        .Variant(tag, _, subs) -> if subs.all(it == null) { tag } else { null },
         rest -> null,
     }
 }
@@ -328,29 +323,41 @@ fn accepted(mut cx: Lowering, s: Chosen, a: Planned) -> Reg {
 fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
     match t {
         .Whole(_) -> cx.const_bool(true),
-        .Variant(tag, _, lits) -> {
+        .Variant(tag, _, subs) -> {
             let is_tag = cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag))
-            if lits.all(it == null) { return is_tag }
+            if subs.all(it == null) { return is_tag }
             cx
-                .region(is_tag, Layout.Truth) { cx -> payloads_equal(cx, s, tag, lits, 0) } else { cx -> cx.const_bool(false) }
+                .region(is_tag, Layout.Truth) { cx -> subs_accepted(cx, s, tag, subs, 0) } else { cx -> cx.const_bool(false) }
         },
         .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
         .Compared(name) -> compared_const(cx, s, name),
     }
 }
 
-/// Whether each payload from `k` on that a literal stands for, of the variant `tag` the subject holds,
-/// is that literal's value, each read only once those before it were.
-fn payloads_equal(mut cx: Lowering, s: Chosen, tag: int, lits: List<ExprId?>, k: int) -> Reg {
-    if k == lits.length { return cx.const_bool(true) }
-    let lit? = lits[k] else { return payloads_equal(cx, s, tag, lits, k + 1) }
-    let payloads = s.variants[tag].payloads
-    let carried? = cx.seat_layouts(payloads) else { return cx.missed_as("a payload whose type isn't known") }
-    let here = cx.payload_at(s.v, k, carried)
-    let same = cx.same_value(here, cx.lower(lit), payloads[k].ty!)
-    if k == lits.length - 1 { return same }
+/// Whether each payload from `k` on that a pattern of its own stands for, of the variant `tag` the
+/// subject holds, is taken by it, each tested only once those before it were.
+fn subs_accepted(mut cx: Lowering, s: Chosen, tag: int, subs: List<Taken?>, k: int) -> Reg {
+    if k == subs.length { return cx.const_bool(true) }
+    let sub? = subs[k] else { return subs_accepted(cx, s, tag, subs, k + 1) }
+    let held? = payload_chosen(cx, s, tag, k) else { return cx.missed_as("a payload whose type isn't known") }
+    let took = tested(cx, held, sub)
+    if k == subs.length - 1 { return took }
     cx
-        .region(same, Layout.Truth) { cx -> payloads_equal(cx, s, tag, lits, k + 1) } else { cx -> cx.const_bool(false) }
+        .region(took, Layout.Truth) { cx -> subs_accepted(cx, s, tag, subs, k + 1) } else { cx -> cx.const_bool(false) }
+}
+
+/// Payload `k` of the variant `tag` the subject holds, as the subject a pattern of its own chooses on;
+/// absent where a payload's type isn't known.
+fn payload_chosen(mut cx: Lowering, s: Chosen, tag: int, k: int) -> Chosen? {
+    let payloads = s.variants[tag].payloads
+    let ty? = payloads[k].ty else { return null }
+    let carried? = cx.seat_layouts(payloads) else { return null }
+    Chosen {
+        v: cx.payload_at(s.v, k, carried),
+        ty: ty,
+        variants: cx.variants_of(ty) ?? [],
+        region: s.region,
+    }
 }
 
 /// Whether the subject is the value the top-level const `name` is; one of a subject that doesn't
@@ -384,9 +391,22 @@ fn arm_lowered(mut cx: Lowering, s: Chosen, a: Planned) -> Reg {
 /// cell per name, filled by whichever pattern took the subject.
 fn bound(mut cx: Lowering, s: Chosen, a: Planned) {
     if a.pats.length != 1 { return or_bound(cx, s, a.pats) }
-    match a.pats[0] {
+    taken_bound(cx, s, a.pats[0])
+}
+
+/// What one pattern binds, read from the subject and bound: a variant's payloads by name, then what
+/// each payload's own pattern binds of it.
+fn taken_bound(mut cx: Lowering, s: Chosen, t: Taken) {
+    match t {
         .Whole(name) -> subject_bound(cx, s, name),
-        .Variant(tag, names, _) -> payloads_bound(cx, s.v, s.variants[tag], names),
+        .Variant(tag, names, subs) -> {
+            payloads_bound(cx, s.v, s.variants[tag], names)
+            for k, sub in subs {
+                if sub == null { continue }
+                let held? = payload_chosen(cx, s, tag, k) else { return cx.missed("a payload whose type isn't known") }
+                taken_bound(cx, held, sub!)
+            }
+        },
         .Equal(_) or .Compared(_) -> subject_bound(cx, s, null),
     }
 }
@@ -397,7 +417,10 @@ fn bound(mut cx: Lowering, s: Chosen, a: Planned) {
 fn or_bound(mut cx: Lowering, s: Chosen, pats: List<Taken>) {
     let names = bound_names(pats[0])
     if names.is_empty() { return }
-    let types? = bound_types(s, pats[0]) else { return cx.missed("a payload whose type isn't known") }
+    let types? = bound_types(s, pats[0]) else { return cx
+            .missed(
+                "an or-pattern binding a payload a pattern of its own holds, or whose type isn't known",
+            ) }
     let cells = [cx.seeded_cell(cx.laid_out(ty), cx.hollow_of(ty)) for ty in types]
     or_filled(cx, s, pats, 0, names, cells)
     for j, n in names { cx.bind(n, Bound.Value(cx.loaded(cx.laid_out(types[j]), cells[j]), types[j])) }
@@ -407,7 +430,8 @@ fn or_bound(mut cx: Lowering, s: Chosen, pats: List<Taken>) {
 fn bound_types(s: Chosen, t: Taken) -> List<SignedType>? {
     match t {
         .Whole(name) -> if name == null { [] } else { [s.ty] },
-        .Variant(tag, names, _) -> {
+        .Variant(tag, names, subs) -> {
+            if subs.any((t) -> t != null && !bound_names(t!).is_empty()) { return null }
             let payloads = s.variants[tag].payloads
             let tys = [payloads[k].ty for k, n in names if n != null]
             if tys.any(it == null) { null } else { [ty! for ty in tys] }
@@ -444,9 +468,17 @@ fn stored_reads(mut cx: Lowering, s: Chosen, t: Taken, names: List<string>, cell
 fn taken_reads(mut cx: Lowering, s: Chosen, t: Taken) -> List<Reg> {
     match t {
         .Whole(name) -> if name == null { [] } else { [s.v] },
-        .Variant(tag, names, _) -> payloads_read(cx, s.v, s.variants[tag], names),
+        .Variant(tag, names, subs) -> payloads_read(cx, s.v, s.variants[tag], names)
+            .concat(flatten([sub_reads(cx, s, tag, k, sub) for k, sub in subs])),
         .Equal(_) or .Compared(_) -> [],
     }
+}
+
+/// What payload `k`'s own pattern `sub` reads of it for the names it binds; none where it has none.
+fn sub_reads(mut cx: Lowering, s: Chosen, tag: int, k: int, sub: Taken?) -> List<Reg> {
+    let t? = sub else { return [] }
+    let held? = payload_chosen(cx, s, tag, k) else { return [] }
+    taken_reads(cx, held, t)
 }
 
 /// The subject bound to `name`, where a pattern names it.
