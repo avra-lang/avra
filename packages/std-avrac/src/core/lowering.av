@@ -40,6 +40,34 @@ export type LoweredProgram = {
     meta_fn: fn(string) -> CalledFn?,
     /// The name the body's file is known by where a template it writes points home.
     home: string,
+    /// What the body tests for its task.
+    checks: TaskChecks,
+    /// Whether a call of a fn may reach a cancel point.
+    reaches: fn(CalledFn) -> bool,
+    /// Whether a `while` the body or a lambda it lifts writes was lowered: its back edge is a cancel
+    /// point.
+    spins: Cell<bool>,
+}
+
+/// What a body tests for its task: nothing, where what it calls is being surveyed; the unwinding
+/// flag after each call that may reach a cancel point; or that and the tick at each `while`'s back
+/// edge, where the program links a scheduler.
+export enum TaskChecks {
+    Surveyed
+    Tested
+    Scheduled
+}
+
+impl TaskChecks {
+    /// Whether a call that may reach a cancel point is followed by the unwinding test.
+    fn tests() -> bool {
+        match self { .Surveyed -> false, .Tested or .Scheduled -> true }
+    }
+
+    /// Whether a `while`'s back edge reads the tick.
+    fn ticks() -> bool {
+        match self { .Surveyed or .Tested -> false, .Scheduled -> true }
+    }
 }
 
 /// What a top-level name a body reads or calls is, as its code reads it.
@@ -71,6 +99,8 @@ export type CalledFn = {
     type_params: int = 0,
     /// For a generic fn's unit, what each type parameter is to the machine under it.
     parameters: List<ParameterLayout> = [],
+    /// For a generic fn's unit, the type filling each type parameter.
+    fills: List<SignedType> = [],
     /// For a generic fn's unit, each seat past a receiver as its type arguments fill it.
     seats: List<SignedType> = [],
     unproved: string? = null,
@@ -144,7 +174,18 @@ export type Lowering = {
     /// Whether each `mut` binding's cell, by its register's index, was seeded with a value read from
     /// a place.
     seeds: Cell<Map<string, bool>>,
+    /// The `while`s a `for` means, by index: a walk's back edge is no cancel point.
+    walks: Cell<List<int>>,
+    /// The tasks each scope in view holds, innermost last: each is joined where its scope ends.
+    held_tasks: Cell<List<List<TaskHeld>>>,
+    /// How many scopes stood open outside each loop open around what's being lowered, innermost last.
+    loop_floors: Cell<List<int>>,
+    /// Whether the body is a task's, which answers its value in a one-cell list.
+    tasked: bool = false,
 }
+
+/// A task, or a list of them, a scope joins as it ends.
+export type TaskHeld = { reg: Reg, many: bool }
 
 /// A body of `store` to lower, typed in the core as `types` with its seats' wants `seats`, its fn
 /// answering `answer`.
@@ -163,6 +204,9 @@ export fn lowering(
     let loops: Cell<int> = Cell.new(0)
     let worn: Cell<Map<string, SignedType>> = Cell.new({})
     let seeds: Cell<Map<string, bool>> = Cell.new({})
+    let walks: Cell<List<int>> = Cell.new([])
+    let held_tasks: Cell<List<List<TaskHeld>>> = Cell.new([no_tasks()])
+    let loop_floors: Cell<List<int>> = Cell.new([])
     Lowering {
         store: store,
         program: program,
@@ -177,7 +221,16 @@ export fn lowering(
         loops: loops,
         worn: worn,
         seeds: seeds,
+        walks: walks,
+        held_tasks: held_tasks,
+        loop_floors: loop_floors,
     }
+}
+
+/// A scope holding no task yet.
+fn no_tasks() -> List<TaskHeld> {
+    let held: List<TaskHeld> = []
+    held
 }
 
 /// A scope with nothing bound in it yet.
@@ -224,6 +277,16 @@ impl Lowering {
     mut fn lower_stmt(s: StmtId) {
         let meant? = self.store.stmt_meant(s) else { return self.store.stmt(s).stmt_lowered(self, s) }
         self.store.stmt(s).meant_lowered(self, s, meant)
+    }
+
+    /// A block's statements, then its tail's value, lowered in the scope open now, which joins what they
+    /// hold where it ends; any other node lowered.
+    mut fn lowered_open(e: ExprId) -> Reg {
+        let core = self.meaning_of(e)
+        if self.store.block_stmts(core) == null { return self.lower(e) }
+        for s in self.store.lead_of(core) { self.lower_stmt(s) }
+        let tail? = self.store.tail_of(core) else { return self.hollow_of(owned_type("void")) }
+        self.born(tail)
     }
 
     /// A statement lowered through a meaning other lowerings may shape otherwise, counted.
@@ -331,12 +394,51 @@ impl Lowering {
     // ── Names ───────────────────────────────────────────────────────
 
     /// A scope opened inside the current one.
-    mut fn opened() { self.scopes.push(no_names()) }
+    mut fn opened() {
+        self.scopes.push(no_names())
+        self.held_tasks.push(no_tasks())
+    }
 
-    /// The innermost scope closed.
+    /// The innermost scope closed, the tasks it holds joined.
     mut fn closed() {
+        self.joined()
         let scopes = self.scopes.get()
         self.scopes.set(scopes.take(scopes.length - 1))
+        let held = self.held_tasks.get()
+        self.held_tasks.set(held.take(held.length - 1))
+    }
+
+    // ── Tasks a scope holds ─────────────────────────────────────────
+    // A task is joined where the last scope holding it ends, and wherever the fn leaves before then.
+    // A join a scope's end runs runs whole: no test follows it.
+
+    /// The tasks `r`, a value of `ty`, holds, joined where the innermost scope ends: a task, or each
+    /// in a list of them.
+    mut fn owns(r: Reg, ty: SignedType?) {
+        let many? = tasks_held(ty) else { return }
+        let held = self.held_tasks.get()
+        self
+            .held_tasks
+            .set_at(held.length - 1, held.last()!.concat([TaskHeld { reg: r, many: many }]))
+    }
+
+    /// Whether a value of `ty` holds tasks a scope joins.
+    fn holds_tasks(ty: SignedType) -> bool { tasks_held(ty) != null }
+
+    /// The tasks the innermost scope holds, joined, the last held first.
+    mut fn joined() { for h in reversed(self.held_tasks.get().last() ?? []) { self.settled(h) } }
+
+    /// The tasks every scope from the `floor`th outward-in holds, joined, innermost first.
+    mut fn joined_from(floor: int) {
+        for frame in reversed(self.held_tasks.get().drop(floor)) {
+            for h in reversed(frame) { self.settled(h) }
+        }
+    }
+
+    /// The task `h` names joined, or each in its list.
+    mut fn settled(h: TaskHeld) {
+        let row = rt_sig_of(if h.many { "avra_task_settle_all" } else { "avra_task_settle" })!
+        self.emit(Ins.CallRtVoid(row.name, [h.reg]))
     }
 
     /// `name` bound in the innermost scope.
@@ -466,6 +568,7 @@ impl Lowering {
         self.reached(callee)
         let dst = self.mint(l)
         self.emit(Ins.Call(dst, callee.symbol, args))
+        self.unwound_after((self.program.reaches)(callee))
         dst
     }
 
@@ -475,15 +578,16 @@ impl Lowering {
     /// A call of a fn C defines, answering a value of layout `l`; one answering nothing answers a
     /// void's register.
     mut fn call_c(l: Layout, symbol: string, args: List<Reg>) -> Reg {
-        if rt_waits(symbol) { return self.missed_as("a call of `${symbol}`, which waits") }
         match l {
             .Void -> {
                 self.emit(Ins.CallRtVoid(symbol, args))
+                self.unwound_after(rt_waits(symbol))
                 self.word_at(Layout.Void, 0)
             },
             .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> {
                 let dst = self.mint(l)
                 self.emit(Ins.CallRt(dst, symbol, args))
+                self.unwound_after(rt_waits(symbol))
                 dst
             },
         }
@@ -493,12 +597,16 @@ impl Lowering {
     mut fn call_row(l: Layout, row: RtSig, args: List<Reg>) -> Reg { self.call_c(l, row.name, args) }
 
     /// A call of the runtime's row `row`, which answers nothing.
-    mut fn run_row(row: RtSig, args: List<Reg>) { self.emit(Ins.CallRtVoid(row.name, args)) }
+    mut fn run_row(row: RtSig, args: List<Reg>) {
+        self.emit(Ins.CallRtVoid(row.name, args))
+        self.unwound_after(row.waits)
+    }
 
-    /// A call of the runtime's row `row` answering a value of layout `l`, where the answer and each
-    /// argument cross as the one word each is; a wider value crosses boxed, which isn't lowered yet.
+    /// A call of the runtime's row `row` answering a value of layout `l`, or nothing, where the answer
+    /// and each argument cross as the one word each is; a wider value crosses boxed, which isn't
+    /// lowered yet.
     mut fn call_words(l: Layout, row: RtSig, args: List<Reg>) -> Reg {
-        if !(l.one_word() || l.inline()) || !self.crossable(args) { return self.missed_as(wider_than_a_word(row)) }
+        if !(l.one_word() || l.inline() || l.empty()) || !self.crossable(args) { return self.missed_as(wider_than_a_word(row)) }
         self.call_crossed(l, row, args)
     }
 
@@ -508,6 +616,45 @@ impl Lowering {
         if !self.crossable(args) { return self.missed(wider_than_a_word(row)) }
         self.run_crossed(row, args)
     }
+
+    // ── The test after a call ───────────────────────────────────────
+    // A call that may reach a cancel point is followed by one read of the running task's unwinding
+    // flag; set, the fn leaves at once, answering a hollow its caller never reads, since the caller
+    // tests in turn.
+
+    /// The unwinding test, after a call that `may` reach a cancel point.
+    mut fn unwound_after(may: bool) {
+        if !may || !self.program.checks.tests() { return }
+        self
+            .void_region(self.flag_read(RtFlag.Unwinding)) { cx -> cx.answer_exit(cx.exit_answer()) }
+    }
+
+    /// What the fn answers leaving unwinding: a task an empty cell, which no joiner reads as a value;
+    /// any other fn a hollow no caller reads.
+    mut fn exit_answer() -> Reg {
+        if self.tasked { return self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_new")!, []) }
+        self.hollow_of(self.answer)
+    }
+
+    /// The flag `flag` read in place: one load, no call.
+    mut fn flag_read(flag: RtFlag) -> Reg {
+        let r = self.mint(Layout.Truth)
+        self.emit(Ins.FlagRead(r, flag))
+        r
+    }
+
+    /// A loop's back edge: a `while` the source writes spins, and where the program links a scheduler
+    /// reads the tick, whose taken side lets others run; a walk's back edge is neither.
+    mut fn back_edge(s: StmtId) {
+        if self.walks.get().contains(s.index) { return }
+        self.program.spins.set(true)
+        if !self.program.checks.ticks() { return }
+        self
+            .void_region(self.flag_read(RtFlag.Tick)) { cx -> cx.run_row(rt_sig_of("avra_tick_cold")!, []) }
+    }
+
+    /// The `while`s among `stmts` a walk means: their back edges are no cancel point.
+    mut fn walking(stmts: List<StmtId>) { self.walks.set(self.walks.get().concat([s.index for s in stmts])) }
 
     // ── Regions ─────────────────────────────────────────────────────
     // A region is ONE expression whose arms are blocks handed the context, so no rule opens a bracket
@@ -606,20 +753,25 @@ impl Lowering {
         // LICENSED compiler.loop_cond_raw: this IS the verb
         self.emit(Ins.LoopCond(more))
         self.scope_enter()
+        self.loop_floors.push(self.held_tasks.get().length)
         self.opened()
     }
 
     mut fn loop_end() {
         self.closed()
+        let floors = self.loop_floors.get()
+        self.loop_floors.set(floors.take(floors.length - 1))
         self.scope_exit(null)
         // LICENSED compiler.loop_end_raw: this IS the verb
         self.emit(Ins.LoopEnd)
         self.loops.set(self.loops.get() - 1)
     }
 
-    /// The innermost loop's turn ends here: its next begins when `again`, else the loop ends.
+    /// The innermost loop's turn ends here, the tasks its turn's scopes hold joined: its next begins
+    /// when `again`, else the loop ends.
     mut fn jumped(again: bool) {
         if self.loops.get() == 0 { return self.missed("a jump outside a loop") }
+        self.joined_from(self.loop_floors.get().last() ?? 0)
         self.emit(Ins.LoopJump(0, again))
     }
 
@@ -645,9 +797,10 @@ impl Lowering {
 
     // ── Exits ───────────────────────────────────────────────────────
 
-    /// The fn leaves here, answering `answer`, or nothing.
+    /// The fn leaves here, answering `answer`, or nothing, the tasks every scope holds joined first.
     mut fn answer_exit(answer: Reg?) {
         let gives = answer ?? self.hollow_of(owned_type("void"))
+        self.joined_from(0)
         self.emit(Ins.FnExit(gives))
     }
 
@@ -686,6 +839,19 @@ impl Lowering {
             .Void or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) -> self.word_at(l, 0),
         }
     }
+}
+
+/// How a value of `ty` holds tasks its scope joins: false for one task, true for a list of them or
+/// the language's group of them; absent for any other value.
+fn tasks_held(ty: SignedType?) -> bool? {
+    let t? = ty else { return null }
+    if t.nullable() || t.dynamic { return null }
+    let word? = t.owned() else { return null }
+    if word == "Task" { return false }
+    if word == "Tasks" { return true }
+    if word != "List" { return null }
+    let elem? = t.args.first() else { return null }
+    if !elem.nullable() && elem.owned() == "Task" { true } else { null }
 }
 
 /// A value wider than a word crossing `row`, which isn't lowered yet.

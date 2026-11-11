@@ -1,7 +1,20 @@
 //! The lowering rules of the literals, names and operators this feature reads: a literal is its
 //! constant, a name what it's bound to, and an operator over the language's own numbers, truths and
 //! text one instruction or one runtime row; `&&` and `||` take their right side inside a region.
-use core.{BinOp, ExprId, Layout, Lowering, Lowers, Reg, RtSig, SignedType, own_row, rt_sig_of}
+use core.{
+    BinOp,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    OwnVerb,
+    Reg,
+    RtSig,
+    SignedType,
+    own_row,
+    own_shape,
+    rt_sig_of,
+}
 use core.expr.{Binary, FloatLit, Ident, Index, IntLit, Not, Prop}
 
 impl Lowers for IntLit {
@@ -38,7 +51,7 @@ impl Lowers for Index {
 
 impl Lowers for Prop {
     /// A property of a type is its variant of that name, which carries nothing. A property of a type
-    /// the language owns is its row, handed the receiver. A record's field is
+    /// the language owns is its row, handed the receiver, or the shape of rows it is. A record's field is
     /// what a flat record's registers hold at its place, or a boxed one's slots past the fields
     /// before it. A `state` field, and any other property, aren't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
@@ -47,6 +60,8 @@ impl Lowers for Prop {
         if described != null { return variant_named(cx, e, described!, self.name.of) }
         let own = owned_property(ty, self.name.of)
         if own != null { return cx.call_words(cx.layout_at(e), own!, [cx.lower(self.subject)]) }
+        let shape = owned_shape(ty, self.name.of)
+        if shape != null { return cx.own_verb_lowered(shape!, e, self.subject, []) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
         let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
         if fields[n].state { return cx.missed_as("a `state` field's read") }
@@ -99,6 +114,14 @@ fn owned_property(ty: SignedType, name: string) -> RtSig? {
     let word? = ty.owned() else { return null }
     let own? = own_row(word, name) else { return null }
     rt_sig_of(own.row)
+}
+
+/// The shape of rows the property `name` of a value of `ty`, a type the language owns, is; absent
+/// for one that's no such shape, or one called through the type.
+fn owned_shape(ty: SignedType, name: string) -> OwnVerb? {
+    let word? = ty.owned() else { return null }
+    let shape? = own_shape(word, name) else { return null }
+    if shape.on_the_type() { null } else { shape }
 }
 
 /// What an operator's operands are, by their layout.

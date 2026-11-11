@@ -1,6 +1,7 @@
 //! The lowering rules of a loop and of leaving one: `while` tests its condition each turn and runs
-//! its body in a scope of its own; `break` ends the innermost loop, `continue` starts its next turn.
-//! A `for` over a list lowers as what it means.
+//! its body in a scope of its own, its back edge a cancel point; `break` ends the innermost loop,
+//! `continue` starts its next turn. A `for` over a list lowers as what it means, a walk whose back
+//! edge is none.
 use core.{Lowering, StmtId, StmtLowers}
 use core.stmt.{ForEach, Jump, While}
 
@@ -9,6 +10,7 @@ impl StmtLowers for While {
         cx.loop_start()
         cx.loop_cond(cx.lower(self.cond))
         for b in self.stmts { cx.lower_stmt(b) }
+        cx.back_edge(s)
         cx.loop_end()
     }
 }
@@ -26,6 +28,7 @@ impl StmtLowers for ForEach {
     /// it's noted.
     fn meant_lowered(mut cx: Lowering, s: StmtId, meant: List<StmtId>) {
         cx.reshaped()
+        cx.walking(meant)
         for m in meant { cx.lower_stmt(m) }
     }
 }

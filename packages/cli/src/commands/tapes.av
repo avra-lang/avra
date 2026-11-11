@@ -621,11 +621,10 @@ fn snippet(disk: Disk, path: string, lo: int) -> string {
 
 /// Every fn of the package the program layer lowers whole, its IR held to the workspace's lowering
 /// of the same fn: seat for seat, instruction for instruction with registers numbered as they're
-/// defined, and each register's layout to the one the workspace's type for it has. The workspace
-/// tests the unwinding flag after a call that may reach a cancel point, which the program layer
-/// can't tell yet, and the tick at a loop's back edge where the program links a scheduler, which it
-/// can't tell yet either; those tests are cut and counted. Each lambda a whole fn lifts is held to the
-/// workspace's lift of the lambda written at the same place, and counted. Says what isn't lowered yet, by the first thing
+/// defined, and each register's layout to the one the workspace's type for it has, the unwinding
+/// test after a call that may reach a cancel point and the tick at a loop's back edge among them,
+/// each unit holding one counted. Each lambda a whole fn lifts is held to the workspace's lift of the
+/// lambda written at the same place, and counted. Says what isn't lowered yet, by the first thing
 /// each fn met. Answers 1 when any differs.
 fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
     mut fns = HeldUnits {}
@@ -693,13 +692,13 @@ fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> 
         .concat(defaults.differing)
     if shown { for d in differing { println("differs: ${d}") } }
     println(
-        "lowered: ${fns.whole} of ${fns.units} fns whole, ${fns.alike} held alike to the workspace's (${fns.tested} past a cancel test cut after a call, ${fns.ticked} past a tick test cut at a loop's back edge, ${fns.lambdas} lambdas lifted alike, ${fns.statics} statics laid out alike), ${fns.reshaped} lowered through a meaning the workspace shapes otherwise; ${methods.whole} of ${methods.units} methods whole, ${methods.alike} held alike (${methods.reshaped} through such a meaning); ${defaults.alike} trait defaults held alike of ${defaults.whole} whole of ${defaults.units} wanted (${defaults.reshaped} through such a meaning); ${generic.alike} generic units held alike of ${generic.whole} whole of ${generic.units} wanted (${generic.reshaped} through such a meaning), ${differing.length} differing; not lowered yet: ${tallied(fns.missing)}; methods not lowered yet: ${tallied(methods.missing)}; trait defaults not lowered yet: ${tallied(defaults.missing)}; generic units not lowered yet: ${tallied(generic.missing)}",
+        "lowered: ${fns.whole} of ${fns.units} fns whole, ${fns.alike} held alike to the workspace's (${fns.tested} with the cancel test after a call and ${fns.ticked} with the tick at a loop's back edge held alike, ${fns.theirs_alone} past a cancel test only the workspace's has cut, ${fns.ours_alone} past one only this layer's has cut, ${fns.edges_alone} past a tick only one side reads cut, ${fns.lambdas} lambdas lifted alike, ${fns.statics} statics laid out alike), ${fns.reshaped} lowered through a meaning the workspace shapes otherwise; ${methods.whole} of ${methods.units} methods whole, ${methods.alike} held alike (${methods.reshaped} through such a meaning); ${defaults.alike} trait defaults held alike of ${defaults.whole} whole of ${defaults.units} wanted (${defaults.reshaped} through such a meaning); ${generic.alike} generic units held alike of ${generic.whole} whole of ${generic.units} wanted (${generic.reshaped} through such a meaning), ${differing.length} differing; not lowered yet: ${tallied(fns.missing)}; methods not lowered yet: ${tallied(methods.missing)}; trait defaults not lowered yet: ${tallied(defaults.missing)}; generic units not lowered yet: ${tallied(generic.missing)}",
     )
     if differing.is_empty() { 0 } else { 1 }
 }
 
 /// What holding units lowered here to the workspace's found: how many were met, lowered whole, held
-/// alike, past a cancel test or a tick test cut, the lambdas and statics held alike with them, those
+/// alike, holding a cancel test or a tick test, the lambdas and statics held alike with them, those
 /// lowered through a meaning the workspace shapes otherwise, how each that differs does, and what
 /// isn't lowered yet, by the first thing each met.
 type HeldUnits = {
@@ -708,6 +707,9 @@ type HeldUnits = {
     alike: int = 0,
     tested: int = 0,
     ticked: int = 0,
+    theirs_alone: int = 0,
+    ours_alone: int = 0,
+    edges_alone: int = 0,
     lambdas: int = 0,
     statics: int = 0,
     reshaped: int = 0,
@@ -753,15 +755,21 @@ impl HeldUnits {
             ),
         )
         lifted.set(symbol, w.name)
-        let cut = flag_tests_cut(theirs.ins)
-        let how = lowered_difference(ws, disk, mine, theirs with { ins: cut.ins }, lifted) ?? lifts_difference(
+        let agreed = tests_agreed(mine.ins, theirs.ins)
+        let cuts: Cell<List<FlagCuts>> = Cell.new([agreed.cut])
+        let how = lowered_difference(
             ws,
             disk,
-            mine.lifts,
-            unit.bodies,
+            mine with { ins: agreed.ours },
+            theirs with { ins: agreed.theirs },
             lifted,
-            mine.tagged,
-        ) ?? statics_difference(ws, disk, mine, unit.statics, lifted)
+        ) ?? lifts_difference(ws, disk, mine.lifts, unit.bodies, lifted, mine.tagged, cuts) ?? statics_difference(
+            ws,
+            disk,
+            mine,
+            unit.statics,
+            lifted,
+        )
         if how != null {
             self.differing.push("${site}: ${how!}")
             return
@@ -769,8 +777,13 @@ impl HeldUnits {
         self.alike = self.alike + 1
         self.lambdas = self.lambdas + mine.lifts.length
         self.statics = self.statics + mine.statics.length
-        if cut.calls > 0 { self.tested = self.tested + 1 }
-        if cut.edges > 0 { self.ticked = self.ticked + 1 }
+        let tests = flag_tests(agreed.theirs)
+        if tests.calls > 0 { self.tested = self.tested + 1 }
+        if tests.edges > 0 { self.ticked = self.ticked + 1 }
+        let cut = cuts.get()
+        if cut.any(it.theirs > 0) { self.theirs_alone = self.theirs_alone + 1 }
+        if cut.any(it.ours > 0) { self.ours_alone = self.ours_alone + 1 }
+        if cut.any(it.edges > 0) { self.edges_alone = self.edges_alone + 1 }
     }
 }
 
@@ -1012,34 +1025,71 @@ fn workspace_settled(ws: Workspace) {
     let _ = ws.references()
 }
 
-/// The workspace's instructions with each test of the running task's flags cut out, and how many
-/// were: the unwinding test after a call that may reach a cancel point, and the tick test at a loop's
-/// back edge.
-type CutTests = { ins: List<Ins>, calls: int, edges: int }
+/// How many tests of the running task's flags a body holds: the unwinding test after a call that
+/// may reach a cancel point, and the tick test at a loop's back edge.
+type FlagTests = { calls: int, edges: int }
 
-/// `ins` without its flag tests: each a read of a flag and the region it decides.
-fn flag_tests_cut(ins: List<Ins>) -> CutTests {
-    mut kept: List<Ins> = []
-    mut calls = 0
-    mut edges = 0
-    mut at = 0
-    while at < ins.length {
-        let tested? = flag_tested(ins, at) else {
-            kept.push(ins[at])
-            at = at + 1
-            continue
-        }
-        at = region_end(ins, at + 1) + 1
-        match tested {
-            .Unwinding -> {
-                calls = calls + 1
-            },
-            .Tick -> {
-                edges = edges + 1
-            },
+fn flag_tests(ins: List<Ins>) -> FlagTests {
+    mut counted = FlagTests { calls: 0, edges: 0 }
+    for at in 0..ins.length {
+        let tested? = flag_tested(ins, at) else { continue }
+        counted = match tested {
+            .Unwinding -> counted with { calls: counted.calls + 1 },
+            .Tick -> counted with { edges: counted.edges + 1 },
         }
     }
-    CutTests { ins: kept, calls: calls, edges: edges }
+    counted
+}
+
+/// Two bodies' instructions with each test of the running task's flags that one holds where the other
+/// holds none cut out of it, and how many were: the unwinding tests only this layer's or only the
+/// workspace's held, and the ticks only one held.
+type AgreedTests = { ours: List<Ins>, theirs: List<Ins>, cut: FlagCuts }
+
+/// How many flag tests one side held alone.
+type FlagCuts = { ours: int, theirs: int, edges: int }
+
+impl FlagCuts {
+    /// One more test of the flag `tested` cut, from this layer's side when `ours`.
+    fn counted(tested: RtFlag, ours: bool) -> FlagCuts {
+        match tested {
+            .Unwinding -> if ours { self with { ours: self.ours + 1 } } else { self with { theirs: self.theirs + 1 } },
+            .Tick -> self with { edges: self.edges + 1 },
+        }
+    }
+}
+
+/// `ours` and `theirs` walked side by side, a flag test either holds where the other holds none cut
+/// from it, region and all.
+fn tests_agreed(ours: List<Ins>, theirs: List<Ins>) -> AgreedTests {
+    mut kept_ours: List<Ins> = []
+    mut kept_theirs: List<Ins> = []
+    mut cut = FlagCuts { ours: 0, theirs: 0, edges: 0 }
+    mut i = 0
+    mut j = 0
+    while i < ours.length && j < theirs.length {
+        let mine = flag_tested(ours, i)
+        let them = flag_tested(theirs, j)
+        if mine != null && them == null {
+            cut = cut.counted(mine!, true)
+            i = region_end(ours, i + 1) + 1
+            continue
+        }
+        if them != null && mine == null {
+            cut = cut.counted(them!, false)
+            j = region_end(theirs, j + 1) + 1
+            continue
+        }
+        kept_ours.push(ours[i])
+        kept_theirs.push(theirs[j])
+        i = i + 1
+        j = j + 1
+    }
+    AgreedTests {
+        ours: kept_ours.concat(ours.drop(i)),
+        theirs: kept_theirs.concat(theirs.drop(j)),
+        cut: cut,
+    }
 }
 
 /// The flag the instruction at `at` reads for the region that follows it, absent where it reads none.
@@ -1087,6 +1137,7 @@ fn lifts_difference(
     bodies: List<Body>,
     lifted: Map<string, string>,
     tagged: List<SignedType>,
+    cuts: Cell<List<FlagCuts>>,
 ) -> string? {
     for l in lifts {
         let name? = lifted.get(l.symbol) else { return "the workspace lifts no lambda at ${l.lo}" }
@@ -1102,11 +1153,13 @@ fn lifts_difference(
             statics: [],
             tagged: tagged,
         }
+        let agreed = tests_agreed(mine.ins, theirs.ins)
+        cuts.push(agreed.cut)
         let how = lowered_difference(
             ws,
             disk,
-            mine,
-            theirs with { ins: flag_tests_cut(theirs.ins).ins },
+            mine with { ins: agreed.ours },
+            theirs with { ins: agreed.theirs },
             lifted,
         )
         if how != null { return "the lambda at ${l.lo}: ${how!}" }

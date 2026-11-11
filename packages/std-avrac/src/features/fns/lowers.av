@@ -1,6 +1,21 @@
 //! The lowering rules of a call and `return`: a call of a declared fn hands it each argument, its
-//! answer minted last; `return` leaves the fn with its value.
-use core.{Bound, CalledFn, ExprId, Lowering, Lowers, Reg, SignedType, StmtId, StmtLowers}
+//! answer minted last; `@std/meta`'s `guarded` is the runtime's guarded run; `return` leaves the fn
+//! with its value.
+use core.{
+    BinOp,
+    BoxKind,
+    Bound,
+    CalledFn,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    rt_sig_of,
+}
 use core.expr.{Call}
 use core.stmt.{Return}
 
@@ -12,6 +27,7 @@ impl Lowers for Call {
         let value = cx.bound(self.callee.of)
         if value != null { return called_value(cx, self, e, value!) }
         let named? = called(cx, self) else { return cx.unlowered(e) }
+        if guards(named) && self.args.length == 1 { return guarded_run(cx, e, self.args[0]) }
         let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
         let args = cx.seated_args(callee, self.args)
         let answer = cx.layout_at(e)
@@ -19,6 +35,22 @@ impl Lowers for Call {
         cx.reached(callee)
         cx.call_c(answer, callee.symbol, args)
     }
+}
+
+/// Whether `callee` is `@std/meta`'s `guarded`, whose body the runtime runs.
+fn guards(callee: CalledFn) -> bool { callee.file.package_name == "@std/meta" && callee.name == "guarded" }
+
+/// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on
+/// this task ended it, then answering the trap's words, or the body ran to its end, answering none.
+fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let status = cx.call_row(Layout.Word, rt_sig_of("avra_guard_run")!, [cx.lower(body)])
+    cx
+        .region(cx.bin(Layout.Truth, BinOp.Ne, status, cx.const_int(0)), cx.laid_out(ty)) { cx ->
+            cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_guard_words")!, [])
+        } else { cx ->
+            cx.hollow_of(ty)
+        }
 }
 
 /// The fn a call names, when the program declares it and the call hands it plain arguments, pinning

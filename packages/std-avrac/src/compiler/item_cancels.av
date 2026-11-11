@@ -1,0 +1,169 @@
+//! WHETHER A CALL MAY REACH A CANCEL POINT, AND WHETHER IT LINKS A SCHEDULER. A body may reach one
+//! when it, or a lambda it lifts, calls a runtime row that may switch the task out, calls through a
+//! value, which may be any fn, lowers a `while`, whose back edge is a cancel point, or calls a fn that
+//! may; a fn no body here gives, and a body not lowered whole, may reach both ways. A body LINKS A
+//! SCHEDULER when it calls such a row or a fn that links; a call through a value says nothing of the
+//! program's rows. Each body's own evidence is read once from its lowering with no tests, and a
+//! call's answer walks every body it reaches in one visiting list, so a recursion asks nothing twice.
+use core.{CalledFn, Ins, ParameterLayout, SignedType, TaskChecks, flatten, hosted_symbol, rt_waits}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A body a call runs: the fn, method, static, trait's body or field default `CalledFn` names, and
+/// for a generic one's unit, the type filling each type parameter.
+@derive(Saved)
+export type BodyAt = {
+    file: SourceFileAddress,
+    name: string,
+    external: bool,
+    owner: string?,
+    of: SourceFileAddress?,
+    statics: bool,
+    defaulted: bool,
+    given_by: string?,
+    fills: List<SignedType>,
+}
+
+impl BodyAt {
+    /// The body as a walk tells it from another.
+    fn key() -> string {
+        let of = if self.of == null { "" } else { spelled_file(self.of!) }
+        "${spelled_file(self.file)} ${self.name} ${self.owner ?? ""} ${of} ${self.statics} ${self.defaulted} ${self.given_by ?? ""} ${[f.spelled() for f in self.fills].join(",")}"
+    }
+
+    /// The call of this body, as the program layer reaches it, a generic one's unit under `parameters`.
+    fn called(parameters: List<ParameterLayout>) -> CalledFn {
+        CalledFn {
+            file: self.file,
+            name: self.name,
+            symbol: self.name,
+            external: self.external,
+            plain: true,
+            owner: self.owner,
+            of: self.of,
+            statics: self.statics,
+            defaulted: self.defaulted,
+            parameters: parameters,
+            fills: self.fills,
+            given_by: self.given_by,
+        }
+    }
+}
+
+/// The body a call of `c` runs.
+export fn body_at(c: CalledFn) -> BodyAt {
+    BodyAt {
+        file: c.file,
+        name: c.name,
+        external: c.external,
+        owner: c.owner,
+        of: c.of,
+        statics: c.statics,
+        defaulted: c.defaulted,
+        given_by: c.given_by,
+        fills: c.fills,
+    }
+}
+
+/// What a call may reach: a cancel point it waits at, a back edge that is one, and a row that links
+/// a scheduler.
+@derive(Saved)
+export type CancelFact = { parks: bool, spins: bool, links: bool }
+
+impl CancelFact {
+    /// Whether a call may reach a cancel point.
+    fn may() -> bool { self.parks || self.spins }
+
+    fn linked() -> bool { self.links }
+}
+
+/// One body's own evidence, and the bodies it calls.
+@derive(Saved)
+type BodyCancels = { own: CancelFact, callees: List<BodyAt> }
+
+/// Whether a call of the body `at` may reach a cancel point.
+@query
+export fn call_reaches(engine: QueryEngine, at: BodyAt) -> bool { walk_finds(engine, at, (f: CancelFact) -> f.may()) }
+
+/// Whether a call of the body `at` links a scheduler.
+@query
+export fn call_links(engine: QueryEngine, at: BodyAt) -> bool { walk_finds(engine, at, (f: CancelFact) -> f.linked()) }
+
+/// Whether `at`, or a body it reaches, holds evidence `found` answers for: each surveyed once, in one
+/// walk that stops at the first.
+fn walk_finds(engine: QueryEngine, at: BodyAt, found: fn(CancelFact) -> bool) -> bool {
+    mut reached = [at]
+    mut seen: Map<string, bool> = {}
+    seen.set(at.key(), true)
+    mut i = 0
+    while i < reached.length {
+        let own = body_cancels(engine, reached[i])
+        if found(own.own) { return true }
+        for c in own.callees {
+            if seen.has(c.key()) { continue }
+            seen.set(c.key(), true)
+            reached.push(c)
+        }
+        i = i + 1
+    }
+    false
+}
+
+/// The body `at`'s own evidence: a row's by its column, any other extern's none, and a declared
+/// body's read from its lowering with no tests.
+@query
+fn body_cancels(engine: QueryEngine, at: BodyAt) -> BodyCancels {
+    if at.external { return BodyCancels { own: row_fact(at.name), callees: [] } }
+    let program = program_of(
+        engine,
+        at.file,
+        Signing { engine: engine, file: at.file, type_params: [] },
+    )
+    let laid = [program.parameter_layout(t) for t in at.fills]
+    if laid.any(it == null) { return unseen() }
+    let f? = reached_body(engine, at.called([p! for p in laid]), TaskChecks.Surveyed) else { return unseen() }
+    if !f.whole() { return unseen() }
+    lowered_cancels(f)
+}
+
+/// What a body lowered with no tests reaches itself, and the bodies it and its lambdas call.
+fn lowered_cancels(f: LoweredFn) -> BodyCancels {
+    let ins = f.ins.concat(flatten([l.ins for l in f.lifts]))
+    let rows = ins.any(waits_at)
+    let valued = ins.any(through_value)
+    BodyCancels {
+        own: CancelFact { parks: rows || valued, spins: f.spins || valued, links: rows },
+        callees: [body_at(c) for c in every_callee_of(f)],
+    }
+}
+
+/// Whether a lowered body with no tests links a scheduler, or a body it calls does.
+fn lowered_links(engine: QueryEngine, f: LoweredFn) -> bool {
+    let own = lowered_cancels(f)
+    own.own.links || own.callees.any((c) -> call_links(engine, c))
+}
+
+/// Whether an instruction calls a runtime row that may switch the task out.
+fn waits_at(i: Ins) -> bool {
+    let row? = hosted_symbol(i) else { return false }
+    rt_waits(row)
+}
+
+/// Whether an instruction calls through a value.
+fn through_value(i: Ins) -> bool { match i { .CallPtr(_, _, _) -> true, rest -> false } }
+
+/// A row's evidence: one that may switch the task out parks and links.
+fn row_fact(name: string) -> CancelFact { CancelFact { parks: rt_waits(name), spins: false, links: rt_waits(name) } }
+
+/// The evidence of a body this layer can't read: it may reach either way, and is known to link
+/// nothing.
+fn unseen() -> BodyCancels { BodyCancels { own: CancelFact { parks: true, spins: true, links: false }, callees: [] } }
+
+collect listed_cancel_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries whether a call may reach a cancel point reads through, for a process to hand its
+/// engine.
+export fn cancel_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_cancel_facts) }

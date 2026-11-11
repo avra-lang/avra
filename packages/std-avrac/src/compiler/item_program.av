@@ -12,12 +12,11 @@ use core.{
     RtSig,
     SignedType,
     Static,
+    TaskChecks,
     extern_row,
     flatten,
-    hosted_symbol,
     new_type_registry,
     rt_sig_of,
-    rt_waits,
     some_list,
     width_named,
 }
@@ -34,8 +33,12 @@ export enum MadeProgram {
 }
 
 /// The program `file` runs: its entry and each body it reaches, lowered, the memory pass applied.
+/// Where the entry or a body it reaches links a scheduler, every `while` reads the tick.
 export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProgram {
-    let entry? = lowered_entry(engine, file) else { return MadeProgram.Unmade("a file that runs no statement", spelled_file(file)) }
+    let surveyed? = lowered_entry(engine, file, TaskChecks.Surveyed) else { return MadeProgram.Unmade("a file that runs no statement", spelled_file(file)) }
+    if !surveyed.whole() { return MadeProgram.Unmade(surveyed.missing[0], "the entry") }
+    let checks = if lowered_links(engine, surveyed) { TaskChecks.Scheduled } else { TaskChecks.Tested }
+    let entry = lowered_entry(engine, file, checks)!
     if !entry.whole() { return MadeProgram.Unmade(entry.missing[0], "the entry") }
     made_reaching(engine, entry, ENTRY, [])
 }
@@ -66,7 +69,7 @@ export fn made_reaching(
             externs = externs.concat(some_list(declared_row(engine, c)))
             continue
         }
-        let reached = match reached_fn(engine, c) {
+        let reached = match reached_fn(engine, c, checks) {
             .Lowered(f) -> f,
             .Not(why) -> {
                 let filed? = missed else { return MadeProgram.Unmade(why, c.symbol) }
@@ -113,23 +116,24 @@ enum ReachedFn {
     Not(why: string)
 }
 
-/// The body a call of `c` runs, lowered whole: the fn's, a method's or a static's, the body a trait
-/// gives a type that never writes the method, or a field's default, each a generic one's unit under
-/// its layouts.
-fn reached_fn(engine: QueryEngine, c: CalledFn) -> ReachedFn {
-    let f? = reached_body(engine, c) else { return ReachedFn.Not("a call of a fn with no body here") }
+/// The body a call of `c` runs, lowered whole testing what `checks` says: the fn's, a method's or a
+/// static's, the body a trait gives a type that never writes the method, or a field's default, each
+/// a generic one's unit under its layouts.
+fn reached_fn(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> ReachedFn {
+    let f? = reached_body(engine, c, checks) else { return ReachedFn.Not("a call of a fn with no body here") }
     if !f.whole() { return ReachedFn.Not(f.missing[0]) }
     ReachedFn.Lowered(f)
 }
 
-/// The body a call of `c` runs, lowered; absent where its declaration gives none.
-fn reached_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? {
-    if c.defaulted { return lowered_field_default(engine, c.file, c.owner!, c.name) }
+/// The body a call of `c` runs, lowered testing what `checks` says; absent where its declaration
+/// gives none.
+fn reached_body(engine: QueryEngine, c: CalledFn, checks: TaskChecks) -> LoweredFn? {
+    if c.defaulted { return lowered_field_default(engine, c.file, c.owner!, c.name, checks) }
     let under = if c.parameters.is_empty() { null } else { c.parameters }
-    let of? = c.of else { return lowered_under(engine, c.file, c.name, under) }
-    if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name) }
+    let of? = c.of else { return lowered_under(engine, c.file, c.name, under, checks) }
+    if c.given_by != null { return lowered_default(engine, of, c.owner!, c.name, checks) }
     let at? = impls_with(engine, of, c.owner!, c.name, c.statics).first() else { return null }
-    lowered_method_under(engine, at, c.name, c.statics, under)
+    lowered_method_under(engine, at, c.name, c.statics, under, checks)
 }
 
 /// The row C answers the extern `c` by: each seat and the answer at the width it writes, else as its
@@ -208,12 +212,8 @@ fn distinct_statics(statics: List<Static>) -> List<Static> {
 }
 
 /// Why the program isn't run yet though every body lowered whole, absent when it is: a name no body,
-/// runtime row or extern answers, or a row that waits, which links a scheduler whose tests aren't
-/// lowered yet.
+/// runtime row or extern answers.
 fn unanswered(l: Lowered) -> MadeProgram? {
-    let open = program_closed(l)
-    if open != null { return MadeProgram.Unmade("a name no lowered body, row or extern answers", open!) }
-    let waiting? = [h! for b in l.fns.concat([l.entry]) for i in b.ins for h in [hosted_symbol(i)] if h != null && rt_waits(h!)]
-        .first() else { return null }
-    MadeProgram.Unmade("a call of a row that waits, which links a scheduler", waiting)
+    let open? = program_closed(l) else { return null }
+    MadeProgram.Unmade("a name no lowered body, row or extern answers", open)
 }

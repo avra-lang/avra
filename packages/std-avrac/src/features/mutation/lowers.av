@@ -9,6 +9,7 @@ impl StmtLowers for MutLet {
         if cx.store.is_state_stmt(s) { return cx.stmt_unlowered(s) }
         let v = cx.lower(self.value)
         let ty? = cx.binding_type(self.ty, self.value) else { return cx.missed("an untyped `mut`") }
+        if cx.holds_tasks(ty) { return cx.missed("a task a `mut` binding holds") }
         let cell = cx.seeded_cell(cx.laid_out(ty), v)
         cx.seed_kept(cell, cx.read_from_place(self.value))
         cx.bind(self.name.of, Bound.Slot(cell, ty))

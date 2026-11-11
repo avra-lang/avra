@@ -26,6 +26,8 @@ export enum OwnVerb {
     CellSetAt
     /// A value written under a key of the map a cell holds.
     CellPut
+    /// What a task answered, once it has: its end joined, then its one cell read.
+    Awaited
 }
 
 /// A verb on a type the language owns that is a shape of rows: the receiver's type word, the verb's
@@ -47,6 +49,7 @@ export once fn own_shapes() -> List<OwnShape> {
         "Cell"   | "push"   | OwnVerb.CellPushed
         "Cell"   | "set_at" | OwnVerb.CellSetAt
         "Cell"   | "put"    | OwnVerb.CellPut
+        "Task"   | "await"  | OwnVerb.Awaited
     }
 }
 
@@ -64,7 +67,7 @@ impl OwnVerb {
             .CellSet -> receiver.args.first(),
             .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
             .CellPut -> receiver.args.first()?.mapped(),
-            .First or .Last or .Got or .CellNew or .CellGet -> null,
+            .First or .Last or .Got or .CellNew or .CellGet or .Awaited -> null,
         }
     }
 
@@ -72,7 +75,7 @@ impl OwnVerb {
     fn on_the_type() -> bool {
         match self {
             .CellNew -> true,
-            .First or .Last or .Got or .Pushed or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut -> false,
+            .First or .Last or .Got or .Pushed or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
         }
     }
 }
@@ -121,6 +124,18 @@ impl Lowering {
                 self.run_row(rt_sig_of("avra_map_set")!, [map, k, x])
                 self.nothing()
             },
+            .Awaited -> self.awaited(e, subject),
+        }
+    }
+
+    /// What the task `subject` answered: its end joined, its one cell then read; a task answering
+    /// nothing answers nothing.
+    mut fn awaited(e: ExprId, subject: ExprId) -> Reg {
+        let cell = self
+            .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_task_join")!, [self.lower(subject)])
+        match self.layout_at(e) {
+            .Void -> self.nothing(),
+            .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.slot_read(self.layout_at(e), cell, 0),
         }
     }
 

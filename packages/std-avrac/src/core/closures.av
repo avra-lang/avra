@@ -23,26 +23,35 @@ export type Lift = { body: LiftedBody, lanes: List<string>, missing: List<string
 
 impl Lowering {
     /// The lambda `lam` written at `span`, of the fn type `ty` that `lift_refusal` passes, its body
-    /// lowered as its own unit against `program`.
-    mut fn lift(lam: Lambda, ty: SignedType, span: Span, program: LoweredProgram) -> Lift {
+    /// lowered as its own unit against `program`; a task's, when `tasked`, answers its value in a
+    /// one-cell list.
+    mut fn lift(
+        lam: Lambda,
+        ty: SignedType,
+        span: Span,
+        program: LoweredProgram,
+        tasked: bool = false,
+    ) -> Lift {
         let lanes: Cell<List<string>> = Cell.new([])
-        mut body = lowering(self.store, program, self.types, self.seats, ty.answer!)
+        mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked }
         for scope in self.scopes.get() {
             for name, b in scope { body.bind(name, Bound.Outer(name, b.type(), lanes)) }
         }
         let _ = body.mint(body.laid_out(ty))
         for at, p in lam.params { body.seated(p.name.of, ty.seats[at].ty) }
         body.scope_enter()
-        let r = body.lower(lam.body)
+        let value = body.lower(lam.body)
+        let r = if tasked { body.answer_cell(value) } else { value }
         body.scope_exit(r)
         body.emit(Ins.RetVal(r))
+        let symbol = (program.lift_symbol)(span.lo)
         Lift {
             body: LiftedBody {
                 lo: span.lo,
                 hi: span.hi,
-                symbol: (program.lift_symbol)(span.lo),
+                symbol: if tasked { "${symbol}\$task" } else { symbol },
                 params: body.layouts.get().take(1 + lam.params.length),
-                answer: body.laid_out(ty.answer!),
+                answer: if tasked { Layout.Boxed(BoxKind.List) } else { body.laid_out(ty.answer!) },
                 ins: body.ins.get(),
                 layouts: body.layouts.get(),
                 callees: body.callees.get(),
@@ -69,6 +78,14 @@ impl Lowering {
         dst
     }
 
+    /// A task's answer `value` in the one cell its joiner reads.
+    mut fn answer_cell(value: Reg) -> Reg {
+        let cell = self
+            .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_sized")!, [self.const_int(1)])
+        self.push_slot(cell, value)
+        cell
+    }
+
     /// The code the fn box `box` holds.
     mut fn code_of(box: Reg) -> Reg { self.slot_read(Layout.Word, box, 0) }
 
@@ -77,6 +94,7 @@ impl Lowering {
     mut fn called_code(l: Layout, code: Reg, box: Reg, args: List<Reg>) -> Reg {
         let dst = self.mint(l)
         self.emit(Ins.CallPtr(dst, code, [box].concat(args)))
+        self.unwound_after(true)
         dst
     }
 }
