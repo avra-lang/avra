@@ -1,29 +1,43 @@
 //! The lowering rule of a list comprehension: an empty list, then each head a walk inside the one
 //! before, each filter a region around what follows it, and past the last clause the element pushed.
-use core.{Bound, CompClause, ExprId, Layout, ListWalk, Lowering, Lowers, Reg, owned_type, rt_sig_of}
+//! A head over a map walks its keys and its values side by side.
+use core.{
+    BoxKind,
+    Bound,
+    CompClause,
+    ExprId,
+    Layout,
+    ListWalk,
+    Lowering,
+    Lowers,
+    Reg,
+    SignedType,
+    owned_type,
+    rt_sig_of,
+}
 use core.expr.{Comp}
 
 impl Lowers for Comp {
-    /// A comprehension whose heads each walk a list or count up to a bound. One over any other source
-    /// isn't lowered yet.
+    /// A comprehension whose heads each walk a list or a map, or count up to a bound. One over any other
+    /// source isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
         if ty.listed() == null { return cx.unlowered(e) }
-        if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as("a comprehension over a source that isn't a list or a count") }
+        if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as("a comprehension over a source that isn't a list, a map or a count") }
         let built = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
         walked(cx, self, 0, built)
         built
     }
 }
 
-/// Whether a clause is one this rule walks: a filter, or a head over a list, or counting from its
-/// source to its bound.
+/// Whether a clause is one this rule walks: a filter, or a head over a list or a map, or counting
+/// from its source to its bound.
 fn walkable(cx: Lowering, c: CompClause) -> bool {
     match c {
         .Head(_, _, source, hi) -> {
             let from? = cx.type_at(source) else { return false }
             if hi != null { return from.spelled() == owned_type("int").spelled() }
-            let elem? = from.listed() else { return false }
+            let elem? = from.listed() ?? from.mapped() else { return false }
             cx.program.checked.layout(elem) != null
         },
         .Filter(_) -> true,
@@ -35,6 +49,8 @@ fn walked(mut cx: Lowering, c: Comp, at: int, built: Reg) {
     if at == c.clauses.length { return cx.push_slot(built, cx.lower(c.elem)) }
     match c.clauses[at] {
         .Head(index, name, source, hi) -> {
+            let value = cx.type_at(source)?.mapped()
+            if value != null && hi == null { return mapped_head(cx, c, at, built, index?.of, name.of, source, value!) }
             let w = if hi == null { listed_walk(cx, source) } else { counted_walk(cx, source, hi!) }
             let here = cx.walk_turn(w)
             let v = if w.list == null { here } else { cx.element_at(w.elem_layout, w.list!, here) }
@@ -45,6 +61,29 @@ fn walked(mut cx: Lowering, c: Comp, at: int, built: Reg) {
         },
         .Filter(cond) -> cx.void_region(cx.lower(cond)) { cx -> walked(cx, c, at + 1, built) },
     }
+}
+
+/// A head over the map `source` of `value`s: its keys and its values read once, side by side, each
+/// turn binding a key to `key` and its value to `name`, then clause `at + 1` onward.
+fn mapped_head(
+    mut cx: Lowering,
+    c: Comp,
+    at: int,
+    built: Reg,
+    key: string?,
+    name: string,
+    source: ExprId,
+    value: SignedType,
+) {
+    let m = cx.lower(source)
+    let keys = cx.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_keys")!, [m])
+    let values = cx.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_vals")!, [m])
+    let w = cx.walk_list(keys, owned_type("string"))
+    let here = cx.walk_turn(w)
+    if key != null { cx.bind(key!, Bound.Value(cx.element_at(w.elem_layout, keys, here), w.elem)) }
+    cx.bind(name, Bound.Value(cx.element_at(cx.laid_out(value), values, here), value))
+    walked(cx, c, at + 1, built)
+    cx.loop_end()
 }
 
 /// A walk over the list `source` is, from its start to its length.

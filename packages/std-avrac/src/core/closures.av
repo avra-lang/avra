@@ -1,7 +1,8 @@
 //! A FN AS A VALUE: a lambda's body lowered as its own unit, register 0 the box it's handed and its
 //! seats after; every name the body reads from further out is a lane of that box, in the order the
-//! body first reads it. Where the lambda stands, its captures are read in lane order and boxed behind
-//! the body's code address; a call through such a box hands it the box first.
+//! body first reads it, a value record's fields and a value enum's tag and word across slots of their
+//! own. Where the lambda stands, its captures are read in lane order and boxed behind the body's code
+//! address; a call through such a box hands it the box first.
 use core.expr.{Lambda}
 
 /// A lambda's body lowered as its own unit: where it's written, the symbol its code is known by, its
@@ -23,6 +24,9 @@ export type LiftedBody = {
 /// A lambda lifted: its body, the names it captures in lane order, and what of it wasn't lowered.
 export type Lift = { body: LiftedBody, lanes: List<string>, missing: List<string> }
 
+/// A name a lambda's body reads from further out, and the slots its value takes in the box.
+export type Lane = { name: string, slots: int }
+
 impl Lowering {
     /// The lambda `lam` written at `span`, of the fn type `ty` that `lift_refusal` passes, its body
     /// lowered as its own unit against `program`; a task's, when `tasked`, answers its value in a
@@ -34,7 +38,7 @@ impl Lowering {
         program: LoweredProgram,
         tasked: bool = false,
     ) -> Lift {
-        let lanes: Cell<List<string>> = Cell.new([])
+        let lanes: Cell<List<Lane>> = Cell.new([])
         mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked, written_seats: [p.name.of for at, p in lam.params if ty.seats[at].mutable] }
         for scope in self.scopes.get() {
             for name, b in scope { body.bind(name, Bound.Outer(name, b.type(), lanes)) }
@@ -59,7 +63,7 @@ impl Lowering {
                 callees: body.callees.get(),
                 tests: body.tests.get(),
             },
-            lanes: lanes.get(),
+            lanes: [l.name for l in lanes.get()],
             missing: body.missing.get(),
         }
     }
@@ -70,14 +74,19 @@ impl Lowering {
         for m in l.missing { self.missed(m) }
     }
 
-    /// The box of layout `l` holding the code at `symbol`, then `captures`, sized for them.
+    /// The box of layout `l` holding the code at `symbol`, then `captures`' words, sized for them.
     mut fn fn_box(l: Layout, symbol: string, captures: List<Reg>) -> Reg {
+        let words = flatten([self.leaves(c) for c in captures])
         let dst = self
-            .call_row(l, rt_sig_of("avra_array_sized")!, [self.const_int(1 + captures.length)])
+            .call_row(
+                l,
+                rt_sig_of("avra_array_sized")!,
+                [self.const_int(1 + [self.layout_of(w).slots() for w in words].sum())],
+            )
         let code = self.mint(Layout.Word)
         self.emit(Ins.FnAddr(code, symbol))
         self.run_row(rt_sig_of("avra_array_push")!, [dst, code])
-        for c in captures { self.push_leaf(dst, c) }
+        for w in words { self.push_leaf(dst, w) }
         dst
     }
 
@@ -111,11 +120,10 @@ export fn lift_refusal(lam: Lambda, ty: SignedType) -> string? {
     null
 }
 
-/// The lane of a lambda's box the name `name` it reads from further out rides in: past the code, in
-/// the order the body first reads each.
-fn capture_lane(lanes: Cell<List<string>>, name: string) -> int {
-    let at = lanes.get().find_index(it == name)
-    if at != null { return 1 + at! }
-    lanes.push(name)
-    lanes.get().length
+/// The first slot of a lambda's box the name `name` it reads from further out rides in, its value
+/// taking `slots`: past the code and the lanes the body read first.
+fn capture_slot(lanes: Cell<List<Lane>>, name: string, slots: int) -> int {
+    let at = lanes.get().find_index(it.name == name)
+    if at == null { lanes.push(Lane { name: name, slots: slots }) }
+    1 + [l.slots for l in lanes.get().take(at ?? lanes.get().length - 1)].sum()
 }

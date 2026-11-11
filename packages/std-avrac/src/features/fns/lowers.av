@@ -26,7 +26,7 @@ impl Lowers for Call {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let value = cx.bound(self.callee.of)
         if value != null { return called_value(cx, self, e, value!) }
-        let named? = called(cx, self, e) else { return cx.unlowered(e) }
+        let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.unlowered(e) }
         if guards(named) && self.args.length == 1 { return guarded_run(cx, e, self.args[0]) }
         if hashes(named) && self.args.length == 1 { return code_hash_read(cx, e, self.args[0]) }
         let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
@@ -65,6 +65,15 @@ fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
         } else { cx ->
             cx.hollow_of(ty)
         }
+}
+
+/// `Name(value)`: the value as it is, a named type being its shape to the machine. Absent for a call
+/// of any other name.
+fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
+    if call.args.length != 1 || cx.bound(call.callee.of) != null { return null }
+    let named? = (cx.program.checked.type_value)(call.callee.of, cx.store.foreign_of(e)?.path)?.described() else { return null }
+    if cx.program.checked.named_shape(named) == null { return null }
+    cx.lower(call.args[0])
 }
 
 /// The fn a call names, when the program declares it with seats a call fills, pinning each of its
