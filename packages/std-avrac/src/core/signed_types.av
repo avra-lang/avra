@@ -21,6 +21,8 @@ export enum TypeHead {
     Inferred
     /// A fn type: its seats and its answer.
     Function
+    /// A union (`A or B`): its members are the type's alternatives.
+    Union
     /// No value: code that doesn't finish (`return`, `fail`), which joins with any type.
     Never
     /// A type standing as a value (`Json` in `Json.Obj(x)`): the type is its one argument.
@@ -57,7 +59,7 @@ impl SignedType {
     /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`;
     /// the absent value's own type `null`, and the empty literals' `[]` and `{}`.
     fn spelled() -> string {
-        if !self.alternatives.is_empty() { return [a.spelled() for a in self.alternatives].join(" or ") }
+        if !self.alternatives.is_empty() { return self.word() }
         if self.head is .Never && self.nulls > 0 { return "null${["?" for _i in 1..self.nulls].join("")}" }
         "${self.word()}${["?" for _i in 0..self.nulls].join("")}"
     }
@@ -72,6 +74,7 @@ impl SignedType {
             .Owned(name) or .Unnamed(name) or .Parameter(_, name) or .Declared(_, name) -> name,
             .Inferred -> INFERRED,
             .Function -> "fn(${[s.spelled() for s in self.seats].join(", ")})${answered(self.answer)}",
+            .Union -> [a.spelled() for a in self.alternatives].join(" or "),
             .Never -> "never",
             .Meta -> "type",
         }
@@ -222,6 +225,7 @@ impl SignedType {
             return true
         }
         if actual.nulls > self.nulls { return false }
+        if actual.head is .Never { return true }
         if self.dynamic != actual.dynamic ||
             self.args.length != actual.args.length ||
             self.seats.length != actual.seats.length { return false }
@@ -289,6 +293,7 @@ fn head_word(h: TypeHead) -> string {
         .Unnamed(name) -> "unnamed ${name}",
         .Inferred -> "inferred",
         .Function -> "function",
+        .Union -> "union",
         .Never -> "never",
         .Meta -> "meta",
     }

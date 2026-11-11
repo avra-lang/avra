@@ -386,11 +386,13 @@ fn called_seats(written: List<Param>, signed: List<SignedParam>) -> List<CalledS
 /// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
 /// as a call reaches it: the one the one impl that gives it writes, or the body the one trait it
 /// implements gives where the type is applied to nothing, on a type the program declares, by the
-/// symbol its body is known by. Absent for any other.
+/// symbol its body is known by. Absent for any other, and for a trait's own static, which no impl
+/// gives.
 fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics: bool) -> CalledFn? {
     if subject.nullable() || subject.dynamic { return null }
     if !subject.args.is_empty() && statics { return null }
     let declared? = declared_at(subject) else { return null }
+    if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return null }
     let impls = impls_with(engine, declared.file, declared.name, name, statics)
     if impls.is_empty() && !statics && subject.args.is_empty() { return given_callee(engine, declared.file, declared.name, name) }
     if impls.length != 1 { return null }

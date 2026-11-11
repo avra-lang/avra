@@ -262,11 +262,11 @@ impl CheckedProgram {
         if shape != null { return self.laid(shape!, laying) }
         if ty.nullable() { return self.nullable_laid(ty.unwrapped(), laying) }
         if ty.dynamic { return Layout.Boxed(BoxKind.Dyn) }
-        if !ty.alternatives.is_empty() { return Layout.Boxed(BoxKind.Union) }
         match ty.head {
             .Owned(name) -> self.owned_layout(name, ty.args, laying),
             .Declared(_, _) -> declared_layout(self.declared(ty, laying)),
             .Function -> Layout.Boxed(BoxKind.Closure),
+            .Union -> Layout.Boxed(BoxKind.Union),
             .Parameter(_, _) -> self.parameter_of(ty)?.layout,
             .Inferred or .Unnamed(_) or .Never or .Meta -> null,
         }
@@ -325,7 +325,6 @@ impl CheckedProgram {
         if shape != null { return self.side_word(shape!, laying) }
         if t.nullable() { return if self.laid(t, laying)?.pointer() == true { 1 } else { null } }
         if t.dynamic { return 1 }
-        if !t.alternatives.is_empty() { return null }
         match t.head {
             .Owned(name) -> {
                 let side? = self.owned_layout(name, t.args, laying) else { return null }
@@ -345,7 +344,7 @@ impl CheckedProgram {
             },
             .Function -> 1,
             .Parameter(_, _) -> self.parameter_of(t)?.side,
-            .Inferred or .Unnamed(_) or .Never or .Meta -> null,
+            .Union or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
         }
     }
 
@@ -388,7 +387,7 @@ impl CheckedProgram {
             if t.unwrapped().names_as(owner) { return 1 }
             return if self.laid(t, laying)?.pointer() == true { 1 } else { null }
         }
-        if t.dynamic || !t.alternatives.is_empty() { return 1 }
+        if t.dynamic { return 1 }
         match t.head {
             .Owned(name) -> match name {
                 "int" -> 0,
@@ -405,7 +404,7 @@ impl CheckedProgram {
                     .Void or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
                 }
             },
-            .Function -> 1,
+            .Function or .Union -> 1,
             .Parameter(_, _) or .Inferred or .Unnamed(_) or .Never or .Meta -> null,
         }
     }
@@ -415,11 +414,11 @@ impl CheckedProgram {
     fn scalar_field(t: SignedType) -> bool {
         let shape = self.named_shape(t)
         if shape != null { return self.scalar_field(shape!) }
-        if t.nulls > 1 || t.dynamic || !t.alternatives.is_empty() { return false }
+        if t.nulls > 1 || t.dynamic { return false }
         match t.head {
             .Owned(name) -> t.nulls == 0 && (name == "int" || name == "bool"),
             .Declared(_, _) -> self.word_enum(t.unwrapped()),
-            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Function or .Never or .Meta -> false,
+            .Parameter(_, _) or .Inferred or .Unnamed(_) or .Function or .Union or .Never or .Meta -> false,
         }
     }
 

@@ -394,6 +394,19 @@ impl Checking {
     /// Every expression `s` holds checked against what isn't known.
     mut fn stmt_children_checked(s: StmtId) { for e in self.store.stmt_children(s) { let _ = self.check(e, Expected.Unknown) } }
 
+    /// A member read on a present value of `subject`'s type: its field, else its property.
+    fn member_read(subject: SignedType, name: string) -> SignedType? { self.field_of(subject, name) ?? self.property_read(subject, name) }
+
+    /// What the property `name` of a value of `subject`'s type answers: its one seat takes the
+    /// receiver, filling what it names. Absent when the type has no such property.
+    fn property_read(subject: SignedType, name: string) -> SignedType? {
+        let property? = self.property_of(subject, name) else { return null }
+        mut found: Map<string, SignedType> = {}
+        if property.seats.length != 1 || !property.seats[0].ty.unifies(subject, found) { return null }
+        let answer? = property.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
     /// The type of the field `name` on a value of `subject`'s type, bound to the arguments the record
     /// is applied to: absent for an optional or dynamic subject, a type that's no record, a field it
     /// doesn't have, and a subject that doesn't give the record every argument.
@@ -454,9 +467,10 @@ impl Checking {
         for at, v in values {
             let seat = seats[at]
             if seat.head is .Function { continue }
+            let open = seat.generic() && !seat.fills_all(found)
             let read = self
-                .check(v, if seat.generic() { Expected.Free } else { Expected.Exactly(seat) })
-            if seat.generic() && (read == null || !seat.unifies(read!, found)) { agreed = false }
+                .check(v, if open { Expected.Free } else { Expected.Exactly(seat.filled(found)) })
+            if open && (read == null || !seat.unifies(read!, found)) { agreed = false }
         }
         let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
         if answer != null && wanted != null {
