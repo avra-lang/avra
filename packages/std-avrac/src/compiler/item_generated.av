@@ -112,7 +112,10 @@ fn items_spliced(engine: QueryEngine, file: SourceFileAddress, name: string, mad
         said: spliced
             .refused
             .concat([not_spliced(d) for d in made if !d.twin.is_empty()])
-            .concat(unwrapped),
+            .concat(unwrapped)
+            .concat(
+                if stmts.is_empty() && !made.is_empty() && made.all(it.twin.is_empty()) { [unplaced(made)] } else { [] },
+            ),
     }
 }
 
@@ -230,6 +233,17 @@ collect listed_generated_facts: List<ListedQuery> = @query_definition in self as
 export fn generated_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generated_facts) }
 
 fn generator_moved(g: GeneratorAt) -> List<string> { ["`${g.name}`'s generator made here doesn't print as the one asked for"] }
+
+/// What a generator says whose directives placed no statement: that they carry no declarations, or
+/// what the first declares.
+fn unplaced(made: List<Directive>) -> string {
+    let source? = made.find(it.source != null)?.source else { return "its ${made.length} directives carry no declarations" }
+    let text = source.node.text()
+    "its declarations place no statement: ${text.substring(0, if text.length > SHOWN { SHOWN } else { text.length })}"
+}
+
+/// The most of a generator's text a word about it shows.
+const SHOWN: int = 80
 
 fn not_spliced(d: Directive) -> string { "`${d.name}` asks for a twin, which isn't made on the program layer yet" }
 
