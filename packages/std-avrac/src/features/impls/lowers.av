@@ -57,13 +57,13 @@ fn through_type(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> R
     }
 }
 
-/// A static fn of a type the program declares applied to nothing: a call of its symbol, handed each
-/// argument.
+/// A static fn of a type the program declares applied to nothing: a call of its symbol, each
+/// argument into the seat it fills, a `mut` one handed the place it writes through.
 fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> Reg {
     if cx.generic_declared(ty) { return cx.missed_as("a static fn of the generic `${ty.spelled()}`") }
     let callee? = cx.static_fn(ty, m.name.of) else { return cx.missed_as(static_unlowered(ty, m.name.of)) }
-    if !callee.plain { return cx.missed_as(static_unlowered(ty, m.name.of)) }
-    cx.call_fn(cx.layout_at(e), callee, [cx.lower(a) for a in m.args])
+    let args? = cx.call_args(callee, m.args) else { return cx.missed_as(static_unlowered(ty, m.name.of)) }
+    cx.call_fn(cx.layout_at(e), callee, args)
 }
 
 /// A verb on a type the language owns: its row, handed the receiver then each argument, or the shape
@@ -97,7 +97,9 @@ fn owned_row(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, own: OwnR
             ),
         .Folds -> {
             let code = folded_code(cx, m)
-            if code == null { row_called(cx, m, e, row) } else { cx.const_int(code!) }
+            if code != null { return cx.const_int(code!) }
+            if m.args.length + 1 < row.params.length { return cx.missed_as("`${word}.${m.name.of}` leaving a seat to its default") }
+            row_called(cx, m, e, row)
         },
     }
 }

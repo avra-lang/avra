@@ -162,6 +162,7 @@ type Chosen = { v: Reg, ty: SignedType, variants: List<VariantSeat>, region: Sig
 /// absent tail, isn't lowered yet.
 fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
     let ty? = cx.type_at(m.subject) else { return cx.unlowered(e) }
+    if ty.nullable() { return presence_matched(cx, e, m, ty) }
     let scalar = ty.owned() != null &&
         ty.spelled() != owned_type("bool").spelled() &&
         cx.equatable(ty)
@@ -187,6 +188,47 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
     cx
         .switched(cx.tag_of(s.v), cases, cx.laid_out(s.region)) { cx, j -> arm_lowered(cx, s, arms[j]) }
 }
+
+/// A match on a nullable whose arms are `null`, then one taking the rest: a region on the subject's
+/// presence, the rest's arm binding its name to the subject. Any other match on a nullable isn't
+/// lowered yet.
+fn presence_matched(mut cx: Lowering, e: ExprId, m: Match, ty: SignedType) -> Reg {
+    if m.arms.length != 2 || !absence_arm(cx, m.arms[0]) { return cx.missed_as(unpresenced()) }
+    let present = m.arms[1]
+    if present.guard != null || present.pats.length != 1 { return cx.missed_as(unpresenced()) }
+    let name? = rest_name(cx, present.pats[0]) else { return cx.missed_as(unpresenced()) }
+    let region = region_type(cx, e)
+    let v = cx.lower(m.subject)
+    cx
+        .region(cx.present(v, ty), cx.laid_out(region)) { cx ->
+            cx.opened()
+            if !name.is_empty() { cx.bind(name, Bound.Value(v, ty)) }
+            let r = yielded(cx, present.value, region)
+            cx.closed()
+            r
+        } else { cx -> yielded(cx, m.arms[0].value, region) }
+}
+
+/// Whether an arm takes only the absence: one `null` pattern, unguarded.
+fn absence_arm(cx: Lowering, a: Arm) -> bool {
+    if a.guard != null || a.pats.length != 1 { return false }
+    match cx.store.pat(a.pats[0]) {
+        .Lit(lit) -> cx.store.null_literal(lit),
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
+
+/// The name a pattern taking whatever the subject is binds it to, empty for a hole; absent for any
+/// other pattern.
+fn rest_name(cx: Lowering, p: PatId) -> string? {
+    match cx.store.pat(p) {
+        .Wild or .Rest -> "",
+        .Bind(name) -> if compares(cx, name.of) { null } else { name.of },
+        .Lit(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+    }
+}
+
+fn unpresenced() -> string { "a match on a nullable whose arms aren't `null` and the rest" }
 
 /// An arm as a match on a subject with `variants`, or compared by value where `scalar`, reads it;
 /// absent where a pattern tests more than one variant, or an arm's patterns bind different names.
