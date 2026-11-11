@@ -904,7 +904,7 @@ impl Machine {
 
     /// A body's register frame, its parameters filled.
     fn frame_for(b: Body, args: List<Val>) -> List<Val?> {
-        mut regs = filled<Val?>(b.reg_types.length, null)
+        mut regs = filled<Val?>(b.layouts.length, null)
         for j, a in args { regs.set(j, a) }
         regs
     }
@@ -1072,7 +1072,7 @@ impl Machine {
             .Un(d, op, src) -> self.put_at(d, self.un_val(op, src), pc),
             .CallRt(d, callee, args) -> self.put_at(d, self.rt_val(b, d, callee, args), pc),
             .Pack(d, elems) -> self.put_at(d, self.pack_val(b, d, elems), pc),
-            .Extract(d, src, at) -> self.put_at(d, self.extract_val(b, src, at), pc),
+            .Extract(d, src, at) -> self.put_at(d, self.extract_val(b, d, src, at), pc),
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
             .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
@@ -1113,7 +1113,7 @@ impl Machine {
     /// constant the null pointer — the absence value. The two engines
     /// must read one instruction alike.
     fn const_int_val(b: Body, d: Reg, v: int) -> Val {
-        if self.l.types.rides_pointer(b.reg_types[d.index]) { return Val.N }
+        if b.layouts[d.index].pointer() { return Val.N }
         Val.I(v)
     }
 
@@ -1121,30 +1121,19 @@ impl Machine {
     /// itself; every other pack is its words held whole, owning
     /// nothing. The backend renders the same instruction the same way.
     fn pack_val(b: Body, d: Reg, elems: List<Reg>) -> Val {
-        if self.bare_reg(b, d) { return self.value(elems[0]) }
+        let lone = elems.first()
+        if lone != null && b.layouts[d.index].one_with(b.layouts[lone!.index]) { return self.value(lone!) }
         Val.P([self.value(r) for r in elems])
     }
 
-    /// Whether a register holds a value with no aggregate behind it: a
-    /// FLAT record of one field, which IS its field, or a nullable
-    /// WORD ENUM, whose own tag doubles as the absent sentinel.
     /// A pack's words: its own, or a box's when the value crossed in
     /// as a node.
     fn packed(v: Val) -> List<Val>? {
         match v { .P(parts) -> parts, .A(id) -> self.arrays[id], rest -> null }
     }
 
-    fn bare_reg(b: Body, r: Reg) -> bool {
-        let ty = b.reg_types[r.index]
-        if self.l.types.is_flat(ty) && !self.l.types.is_wide(ty) { return true }
-        match self.l.types.shape_of(ty) {
-            .Opt(inner) -> self.l.types.is_word_enum(inner),
-            rest -> false,
-        }
-    }
-
-    fn extract_val(b: Body, src: Reg, at: int) -> Val {
-        if self.bare_reg(b, src) { return self.value(src) }
+    fn extract_val(b: Body, d: Reg, src: Reg, at: int) -> Val {
+        if b.layouts[src.index].one_with(b.layouts[d.index]) { return self.value(src) }
         let parts? = self.packed(self.value(src)) else { return self.defect_val("an extract from a non-pack") }
         if at < 0 || at >= parts.length { return self.defect_val("an extract past a pack's end") }
         parts[at]
@@ -1652,8 +1641,8 @@ impl Machine {
     /// the runtime's i64 answer, exactly as the backend does.
     fn rt_val(b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
         let raw = self.rt_dispatch(callee, [self.value(r) for r in args])
-        let shape = self.l.types.machine_shape(b.reg_types[d.index])
-        if shape is .Bool {
+        let laid = b.layouts[d.index]
+        if laid is .Truth {
             return match raw { .I(n) -> Val.B(n != 0), _ -> raw }
         }
         // A POINTER ANSWER IN A TEXT SEAT IS THE TEXT IT POINTS AT.
@@ -1661,7 +1650,7 @@ impl Machine {
         // kind cannot say whether the declaration meant text; the
         // DESTINATION can, and it is the same place the bool answer
         // narrows. The read is a cast and never a second call.
-        if shape is .Str {
+        if laid.text() {
             return match raw {
                 .I(a) -> if a == 0 { Val.S("") } else { Val.S(avra_ffi_text_at(a)) },
                 _ -> raw,

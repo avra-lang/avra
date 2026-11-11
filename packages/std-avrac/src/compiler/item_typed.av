@@ -39,8 +39,16 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
 }
 
 /// A fn's body beside the signature it is typed under, the item that holds it, the statement that
-/// declares it, and for a method, its receiver's type.
-type SignedBody = { signature: FnSignature, item: ReadItem, body: ExprId, stmt: StmtId, receiver: SignedType? = null }
+/// declares it (an entry's: the last it runs), for a method its receiver's type, and the want its
+/// body is checked under where that isn't its signature's answer.
+type SignedBody = {
+    signature: FnSignature,
+    item: ReadItem,
+    body: ExprId,
+    stmt: StmtId,
+    receiver: SignedType? = null,
+    want: Expected? = null,
+}
 
 /// The fn `file` declares as `name`, its body signed; absent when it declares none with a body.
 fn signed_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedBody? {
@@ -67,7 +75,7 @@ fn body_checked(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody
     mut cx = checking(signed.item.store, program_of(engine, file, signing), signed.signature.answer) with { meanings: meanings }
     if signed.receiver != null { cx.bind(RECEIVER, signed.receiver, true) }
     for p in signed.signature.params { cx.bind(p.name, p.ty, true) }
-    let _ = cx.check(signed.body, Expected.Exactly(signed.signature.answer))
+    let _ = cx.check(signed.body, signed.want ?? Expected.Exactly(signed.signature.answer))
     cx
 }
 

@@ -1,0 +1,153 @@
+//! WHAT A PROGRAM FILE RUNS, AS IR: its top-level statements that run, in written order, one scope
+//! lowered as the program's entry, and the value of the last when it's an expression shown as text.
+use core.{
+    BoxKind,
+    Expected,
+    ExprId,
+    Ins,
+    Layout,
+    Lowering,
+    Reg,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    lowering,
+    new_node_store,
+    owned_type,
+    rt_sig_of,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The unit a program file's entry is known by.
+const ENTRY: string = "main"
+
+/// The statements of `file` that run, lowered as its entry: a scope holding them, the value of the
+/// last shown as text, then the entry's exit. Absent when it runs none.
+export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
+    let read = entry_read(engine, file)
+    let shown? = read.stmts.last() else { return null }
+    let body = elaborated(
+        engine,
+        file,
+        SignedBody {
+            signature: FnSignature {
+                type_params: [],
+                params: [],
+                answer: owned_type("void"),
+                answer_width: null,
+            },
+            item: ReadItem { store: read.store, stmts: read.stmts },
+            body: read.store.block_over(read.stmts, null),
+            stmt: shown,
+            want: Expected.Free,
+        },
+    )
+    mut cx = lowering(
+        body.store,
+        lowered_program(engine, file, body.store, ENTRY, [], null) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, e, ty) },
+        body.core,
+        body.seats,
+        owned_type("void"),
+    )
+    cx.scope_enter()
+    let value = cx.lower(body.body)
+    shown_as_text(cx, body.core[body.body.index], value)
+    cx.scope_exit(null)
+    cx.emit(Ins.Ret(0))
+    unit_lowered(cx, 0, Layout.Word)
+}
+
+/// A file's running statements read back into one store, and where each item's nodes begin in it.
+type EntryRead = { store: SyntaxArena, stmts: List<StmtId>, items: List<ItemBase> }
+
+/// An item of the file, by its place, and the index its first node has in the entry's store.
+type ItemBase = { at: int, base: int }
+
+impl EntryRead {
+    /// The name the literal at `e` is laid out under: the item's own, read where it stands alone.
+    fn literal_symbol(engine: QueryEngine, file: SourceFileAddress, e: ExprId, ty: SignedType) -> string? {
+        let item? = self.items.filter(it.base <= e.index).last() else { return null }
+        literal_symbol(
+            engine,
+            file,
+            read_item(engine, file, item.at).store,
+            ExprId { index: e.index - item.base },
+            ty,
+        )
+    }
+}
+
+/// Every item of `file` that declares nothing, read back into one store, and the statements among
+/// them that run.
+fn entry_read(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
+    let declaring = [d.item for d in file_declares(engine, file).names]
+    let store = new_node_store()
+    mut items: List<ItemBase> = []
+    mut stmts: List<StmtId> = []
+    for at in 0..items_under(engine, file).length {
+        if declaring.contains(at) { continue }
+        items.push(ItemBase { at: at, base: store.exprs.count() })
+        stmts = stmts.concat(read_into(engine, file, store, at).filter((s) -> runs(store, s)))
+    }
+    EntryRead { store: store, stmts: stmts, items: items }
+}
+
+/// Whether a top-level statement runs: one that declares nothing.
+fn runs(store: SyntaxArena, s: StmtId) -> bool { !store.is_declaration(s) }
+
+/// The entry's shown value printed as text, as the type it's typed with spells it: text as itself, a
+/// number or a truth by its row, a list of them by the row that joins it. A value of any other type
+/// isn't shown yet; one of no type shows nothing.
+fn shown_as_text(mut cx: Lowering, ty: SignedType?, value: Reg) {
+    let shown? = ty else { return }
+    let spelled? = spelling_of(cx, shown) else {
+        if !(cx.laid_out(shown) is .Void) { cx.missed("a shown `${shown.spelled()}`, which no text spells yet") }
+        return
+    }
+    let text = match spelled {
+        .Itself -> value,
+        .Row(name) -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(name)!, [value]),
+    }
+    cx.run_row(rt_sig_of("avra_puts")!, [text])
+}
+
+/// How a shown value is spelled as text: itself, or by the runtime row that spells it.
+enum Spelling {
+    Itself
+    Row(name: string)
+}
+
+/// How a value of `ty` is spelled; absent for a type no row spells.
+fn spelling_of(cx: Lowering, ty: SignedType) -> Spelling? {
+    if ty.nullable() || ty.dynamic || !(ty.head is .Owned) { return null }
+    let l? = cx.program.checked.layout(ty) else { return null }
+    match l {
+        .Word -> Spelling.Row("avra_int_text"),
+        .Real -> Spelling.Row("avra_float_text"),
+        .Truth -> Spelling.Row("avra_bool_text"),
+        .Boxed(box) -> match box {
+            .Text -> Spelling.Itself,
+            .List -> list_spelling(cx, ty.args.first()),
+            .Bytes or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}
+
+/// How a list of `elem` is spelled: by the row that joins its elements as text; absent for an
+/// element no row joins.
+fn list_spelling(cx: Lowering, elem: SignedType?) -> Spelling? {
+    let e? = elem else { return null }
+    if e.nullable() || e.dynamic || !(e.head is .Owned) { return null }
+    let l? = cx.program.checked.layout(e) else { return null }
+    match l {
+        .Word -> Spelling.Row("avra_ints_text"),
+        .Truth -> Spelling.Row("avra_bools_text"),
+        .Boxed(box) -> match box {
+            .Text -> Spelling.Row("avra_strs_text"),
+            .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}

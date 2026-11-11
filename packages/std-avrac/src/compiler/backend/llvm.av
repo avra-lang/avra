@@ -525,14 +525,17 @@ export fn runs_tasks(l: Lowered) -> bool {
 /// Whether the runtime row `name` may switch the task that calls it out.
 fn row_waits(rt: Map<string, RtSig>, name: string) -> bool { rt.get(name)?.waits ?? false }
 
-/// THE CLOSURE LAW: every name a program's steps call is one the
-/// module will declare — a body the program lowered, a runtime row,
-/// or one of its own externs. The first that is not, named, instead
-/// of a null function at emission.
+/// THE CLOSURE LAW: every name a program's steps call, and every code
+/// address its data holds, is one the module will declare — a body the
+/// program lowered, a runtime row, or one of its own externs. The first
+/// that is not, named, instead of a null function at emission.
 export fn program_closed(l: Lowered) -> string? {
     mut declared: Map<string, bool> = {}
     for bd in l.fns.concat([l.entry]) { declared.set(bd.name, true) }
     for row in rt_sigs().concat(l.externs) { declared.set(row.name, true) }
+    let coded = flatten([static_code_syms(st.boxes) for st in l.statics])
+        .find((s) -> declared.get(s) == null)
+    if coded != null { return coded }
     for bd in l.fns.concat([l.entry]) {
         for i in bd.ins {
             let body: string? = body_symbol(i)
@@ -658,7 +661,7 @@ fn emit_body(
 ) -> string? {
     mut vals: List<ptr> = []
     // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
-    for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
+    for j in 0..bd.seats.length { vals.push(avra_llvm_get_param(f, j)) }
     mut em = Emit {
         lc: lc,
         m: m,
@@ -815,14 +818,14 @@ fn host_symbol_defined(
     if wasm { avra_llvm_set_export(f, bd.name) }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let body = avra_llvm_get_named_function(m, mangled(bd.name))
-    let seats = avra_llvm_value_array_new(bd.params.length)
-    for j in 0..bd.params.length { avra_llvm_value_array_set(seats, j, avra_llvm_get_param(f, j)) }
+    let seats = avra_llvm_value_array_new(bd.seats.length)
+    for j in 0..bd.seats.length { avra_llvm_value_array_set(seats, j, avra_llvm_get_param(f, j)) }
     let answer = avra_llvm_build_call(
         b,
         avra_llvm_fn_type_of(body),
         body,
         seats,
-        bd.params.length,
+        bd.seats.length,
         if answers_nothing(row.ret) { "" } else { "answer" },
     )
     avra_llvm_value_array_free(seats)

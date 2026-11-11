@@ -1,0 +1,123 @@
+//! A PROGRAM MADE ON THE PROGRAM LAYER, AS THE ENGINES RUN ONE: a program file's entry and every body
+//! it reaches, each lowered here, as the bodies the evaluator and the backend consume. Each body is
+//! read by its registers' layouts alone: it carries no registry type, and the program's registry is
+//! empty. A program not made yet says why, by the first thing it met.
+use core.{CalledFn, Ins, Layout, Static, flatten, hosted_symbol, new_type_registry, rt_waits}
+use compiler.lower.{Body, Lowered}
+use compiler.memory.{memory}
+use compiler.backend.{program_closed}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// A program made on the program layer, or why it isn't yet: the reason, and where it stood.
+export enum MadeProgram {
+    Made(lowered: Lowered)
+    Unmade(reason: string, at: string)
+}
+
+/// The program `file` runs: its entry and each body it reaches, lowered, the memory pass applied.
+export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProgram {
+    let entry? = lowered_entry(engine, file) else { return MadeProgram.Unmade("a file that runs no statement", spelled_file(file)) }
+    if !entry.whole() { return MadeProgram.Unmade(entry.missing[0], "the entry") }
+    mut queue = every_callee_of(entry)
+    mut fns = lifted_bodies(entry)
+    mut statics = entry.statics
+    mut seen: Map<string, bool> = {}
+    mut at = 0
+    while at < queue.length {
+        let c = queue[at]
+        at = at + 1
+        if seen.has(c.symbol) { continue }
+        seen.set(c.symbol, true)
+        let reached = match reached_fn(engine, c) {
+            .Lowered(f) -> f,
+            .Not(why) -> { return MadeProgram.Unmade(why, c.symbol) },
+        }
+        fns = fns
+            .concat(
+                [
+                    unit_body(
+                        c.symbol,
+                        reached.params,
+                        reached.answer,
+                        reached.ins,
+                        reached.layouts,
+                    ),
+                ],
+            )
+            .concat(lifted_bodies(reached))
+        statics = statics.concat(reached.statics)
+        queue = queue.concat(every_callee_of(reached))
+    }
+    let lowered = Lowered {
+        fns: fns,
+        entry: unit_body(ENTRY, [], entry.answer, entry.ins, entry.layouts),
+        types: new_type_registry(),
+        diagnostics: [],
+        externs: [],
+        statics: distinct_statics(statics),
+    }
+    unanswered(lowered) ?? MadeProgram.Made(memory(lowered))
+}
+
+/// A body a program reaches, lowered, or why it isn't.
+enum ReachedFn {
+    Lowered(f: LoweredFn)
+    Not(why: string)
+}
+
+/// The body a call of `c` runs, lowered whole: the fn's, or a generic fn's unit under its layouts.
+/// A method's body or a field's default isn't made here yet.
+fn reached_fn(engine: QueryEngine, c: CalledFn) -> ReachedFn {
+    if c.defaulted { return ReachedFn.Not("a call of a field's default") }
+    if c.owner != null { return ReachedFn.Not("a call of a method") }
+    let lowered = if c.parameters.is_empty() { lowered_fn(engine, c.file, c.name) } else { lowered_generic(engine, c.file, c.name, c.parameters) }
+    let f? = lowered else { return ReachedFn.Not("a call of a fn with no body here") }
+    if !f.whole() { return ReachedFn.Not(f.missing[0]) }
+    ReachedFn.Lowered(f)
+}
+
+/// The fns a lowered body and the lambdas it lifts call.
+fn every_callee_of(f: LoweredFn) -> List<CalledFn> { f.callees.concat(flatten([l.callees for l in f.lifts])) }
+
+/// The lambdas a lowered body lifts, each a body of its own.
+fn lifted_bodies(f: LoweredFn) -> List<Body> { [unit_body(l.symbol, l.params, l.answer, l.ins, l.layouts) for l in f.lifts] }
+
+/// A unit as a body: its seats the first registers, read by their layouts.
+fn unit_body(
+    name: string,
+    seats: List<Layout>,
+    answer: Layout,
+    ins: List<Ins>,
+    layouts: List<Layout>,
+) -> Body {
+    Body {
+        name: name,
+        params: [],
+        ret: new_type_registry().type(void),
+        gives: null,
+        ins: ins,
+        reg_types: [],
+        layouts: layouts,
+        seats: seats,
+        answer: answer,
+    }
+}
+
+/// Each static once, by its name.
+fn distinct_statics(statics: List<Static>) -> List<Static> {
+    mut by: Map<string, Static> = {}
+    for s in statics { if !by.has(s.name) { by.set(s.name, s) } }
+    by.values()
+}
+
+/// Why the program isn't run yet though every body lowered whole, absent when it is: a name no body,
+/// runtime row or extern answers, or a row that waits, which links a scheduler whose tests aren't
+/// lowered yet.
+fn unanswered(l: Lowered) -> MadeProgram? {
+    let open = program_closed(l)
+    if open != null { return MadeProgram.Unmade("a name no lowered body, row or extern answers", open!) }
+    let waiting? = [h! for b in l.fns.concat([l.entry]) for i in b.ins for h in [hosted_symbol(i)] if h != null && rt_waits(h!)]
+        .first() else { return null }
+    MadeProgram.Unmade("a call of a row that waits, which links a scheduler", waiting)
+}

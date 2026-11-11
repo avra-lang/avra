@@ -27,6 +27,7 @@ use @std.avrac.core.{
     dst_of,
     flatten,
     fp_str,
+    some_list,
     instance_symbol,
     parameters_spelled,
     region_end,
@@ -34,9 +35,18 @@ use @std.avrac.core.{
     same_ins,
     same_reg,
 }
-use @std.avrac.compiler.lower.{Body}
+use @std.avrac.compiler.lower.{Body, Lowered}
 use @std.avrac.features.{DeclSig, Namespace, Wanted}
-use @std.avrac.compiler.backend.{body_lines, static_block}
+use @std.avrac.compiler.backend.{
+    Owned,
+    body_lines,
+    emit_index,
+    emit_object,
+    objects_made,
+    run_lowered,
+    static_block,
+    unreached_dropped,
+}
 use @std.avrac.compiler.{
     avra_fact_definitions,
     avra_source_world,
@@ -69,6 +79,8 @@ use @std.avrac.compiler.{
     default_unit,
     file_impls,
     ImplAt,
+    made_program,
+    MadeProgram,
     LoweredFn,
     resolved_in,
     respelled_origins,
@@ -77,9 +89,10 @@ use @std.avrac.compiler.{
     statement_difference,
     use_generator_door,
 }
-use @std.io.{list_dir, read_text}
-use @std.path.{joined_path}
-use @std.time.{now_ns}
+use @std.io.{list_dir, make_dirs, read_text}
+use @std.path.{dir_of, file_name, joined_path}
+use @std.process.{Exit, cmd, inherited, tool as process_tool, tool_at}
+use @std.time.{now_ns, secs}
 use @std.program.address.{SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
@@ -91,7 +104,8 @@ type TapesCmd = {}
 
 impl Runnable for TapesCmd {
     fn run(args: CliResult) -> int {
-        let root? = argued_path(args) else { return 1 }
+        let argued? = argued_path(args) else { return 1 }
+        let root = if args.has_flag("program_runs") { package_holding(argued) ?? argued } else { argued }
         let named = read_manifest(
             new_source_file("avra.toml", text_at(joined_path(root, "avra.toml")) ?? ""),
         )
@@ -108,6 +122,7 @@ impl Runnable for TapesCmd {
         let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
         if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
+        if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
         let ws = root_workspace(root)
         // every file the receipt reads is the workspace's before any generator reads one
         for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
@@ -406,7 +421,7 @@ export flag signatures {
 }
 
 export flag left {
-    description: "with --signatures, --core or --lowered, show where what doesn't agree stands"
+    description: "with --signatures, --core, --lowered or --ran, show where what doesn't agree stands"
     aliases: ["--left"]
 }
 
@@ -420,9 +435,14 @@ export flag lowered {
     aliases: ["--lowered"]
 }
 
+export flag program_runs {
+    description: "run each program test under the directory through the program layer's lowering, in the evaluator and natively, and hold its output to its `.expected`"
+    aliases: ["--ran"]
+}
+
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures, left, core, lowered]
+    flags: [program_only, signatures, left, core, lowered, program_runs]
     args: [file]
     run: TapesCmd {}
 }
@@ -1218,3 +1238,153 @@ fn method_decl(ws: Workspace, id: FileId, owner: string, name: string) -> DeclId
     ws.decls.method(t, name)
 }
 
+/// The package `path` stands in: the nearest directory at or above it holding a manifest.
+fn package_holding(path: string) -> string? {
+    if text_at(joined_path(path, "avra.toml")) != null { return path }
+    let up = dir_of(path)
+    if up == path || up == "" { null } else { package_holding(up) }
+}
+
+/// A program test: its source, beside the output it must print.
+type ProgramTest = { path: string, expected: string }
+
+/// Every program test at or under `dir`: a directory holding a source and an `.expected` both named
+/// for it.
+fn program_tests(dir: string) -> List<ProgramTest> {
+    let names = names_at(dir) ?? []
+    some_list(program_test_at(dir, names))
+        .concat(flatten([program_tests(joined_path(dir, n)) for n in names if !n.contains(".")]))
+}
+
+/// The program test the directory `dir`, holding `names`, is, absent when it's none.
+fn program_test_at(dir: string, names: List<string>) -> ProgramTest? {
+    let own = file_name(dir)
+    if !names.contains("${own}.av") { return null }
+    let expected? = text_at(joined_path(dir, "${own}.expected")) else { return null }
+    ProgramTest { path: joined_path(dir, "${own}.av"), expected: unended(expected) }
+}
+
+/// `text` without the one line end that closes it.
+fn unended(text: string) -> string { if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text } }
+
+/// How one engine's run of a program test went: what it printed, or why it printed nothing.
+enum Leg {
+    Printed(out: string)
+    Failed(why: string)
+}
+
+/// Each program test under `dir`, made on the program layer and run in the evaluator and natively,
+/// each run held to the test's `.expected`; one not made yet is counted by why. Answers 1 when a
+/// made test fails.
+fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool) -> int {
+    let tests = program_tests(dir)
+    mut made = 0
+    mut evaluated = 0
+    mut native = 0
+    mut failing: List<string> = []
+    mut unmade: Map<string, int> = {}
+    for p in tests {
+        let path = p.path.substring(disk.root.length + 1, p.path.length)
+        let lowered = match made_program(engine, disk.file_at(path)) {
+            .Made(l) -> l,
+            .Unmade(why, at) -> {
+                unmade.set(why, (unmade.get(why) ?? 0) + 1)
+                if shown { println("left: ${why} in ${path}, at ${at}") }
+                continue
+            },
+        }
+        made = made + 1
+        let legs = [
+            Ran {
+                engine: "eval",
+                leg: match run_lowered(lowered) {
+                    .Ok(out) -> Leg.Printed(out),
+                    .Err(why) -> Leg.Failed(why),
+                },
+            },
+            Ran {
+                engine: "native",
+                leg: native_leg(
+                    lowered,
+                    joined_path(disk.root, ".avra-cache/tapes-ran/${file_name(dir_of(path))}"),
+                ),
+            },
+        ]
+        for r in legs {
+            let differs? = leg_difference(r.leg, p.expected) else {
+                if r.engine == "eval" { evaluated = evaluated + 1 } else { native = native + 1 }
+                continue
+            }
+            failing.push("${path} (${r.engine}): ${differs}")
+        }
+    }
+    for f in failing { println("fails: ${f}") }
+    println(
+        "ran: ${tests.length} program tests, ${made} made on the program layer, ${evaluated} printing their `.expected` in the evaluator, ${native} natively, ${failing.length} runs failing; not made yet: ${tallied(unmade)}",
+    )
+    if failing.is_empty() { 0 } else { 1 }
+}
+
+/// One engine's run.
+type Ran = { engine: string, leg: Leg }
+
+/// How a run differs from what the test expects: the first line that differs, or why it didn't run;
+/// absent when it printed exactly that.
+fn leg_difference(leg: Leg, expected: string) -> string? {
+    let out = match leg { .Printed(o) -> o, .Failed(why) -> { return "didn't run: ${why}" } }
+    if out == expected { return null }
+    let got = out.split("\n")
+    let want = expected.split("\n")
+    mut at = 0
+    while at < got.length && at < want.length && got[at] == want[at] { at = at + 1 }
+    "line ${at + 1} is ${line_at(got, at)}, the expected ${line_at(want, at)}"
+}
+
+/// The line at `at`, quoted, or the end where there's none.
+fn line_at(lines: List<string>, at: int) -> string { if at < lines.length { "`${lines[at]}`" } else { "the end" } }
+
+/// A program built natively at `stem` and run: what it printed, or why it didn't build or ended
+/// otherwise than cleanly.
+fn native_leg(l: Lowered, stem: string) -> Leg {
+    let why? = unbuilt(l, stem) else { return ran_natively(stem) }
+    Leg.Failed(why)
+}
+
+/// Why the program didn't build at `stem`, absent when it did: emitted as an object, then linked
+/// with the runtime.
+fn unbuilt(l: Lowered, stem: string) -> string? {
+    let _ = make_dirs(dir_of(stem))
+    let object = "${stem}.o"
+    emit_object(l, emit_index(l), object, Owned.Whole, 0, "") ?? objects_made() ?? link_refused(
+        object,
+        stem,
+    )
+}
+
+/// Why `object` didn't link into the binary `stem`, absent when it did.
+fn link_refused(object: string, stem: string) -> string? {
+    let cc = match process_tool("clang") {
+        .Ok(t) -> t,
+        .Err(_) -> { return "no `clang` on the PATH" },
+    }
+    match (cmd(cc, ["-w", unreached_dropped(), object, runtime_library(), "-lm", "-o", stem]) with { env: inherited() })
+        .outcome() {
+        .Ok(o) -> if clean(o.exit) { null } else { "the link failed: ${o.out.stderr}" },
+        .Err(e) -> "the link didn't run: ${e.describe().message}",
+    }
+}
+
+/// The binary at `stem` run: what it printed, or how it ended otherwise than cleanly.
+fn ran_natively(stem: string) -> Leg {
+    match (cmd(tool_at(stem, stem), []) with { timeout: secs(30) }).outcome() {
+        .Ok(o) -> match o.exit {
+            .Clean -> Leg.Printed(unended(o.out.stdout)),
+            .Code(n) -> Leg.Failed("exited ${n}: ${o.out.stderr}"),
+            .Signal(sig, _) -> Leg.Failed("killed by signal ${sig}"),
+        },
+        .Err(e) -> Leg.Failed("didn't run: ${e.describe().message}"),
+    }
+}
+
+/// Whether a child ended cleanly.
+fn clean(e: Exit) -> bool { match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false } }

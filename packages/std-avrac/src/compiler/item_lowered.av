@@ -9,12 +9,14 @@ use core.{
     LiftedBody,
     Literal,
     LoweredProgram,
+    Lowering,
     NamedValue,
     Param,
     ParameterLayout,
     RECEIVER,
     SignedType,
     Static,
+    SyntaxArena,
     TraitMember,
     instance_symbol,
     lowering,
@@ -95,33 +97,16 @@ fn lowered_signed(
     }
     let body = elaborated(engine, file, signed)
     let signature = signed.signature
-    let lifts: Cell<List<LiftedBody>> = Cell.new([])
-    let data: Cell<List<Static>> = Cell.new([])
-    let tagged: Cell<List<SignedType>> = Cell.new([])
-    let reshaped: Cell<int> = Cell.new(0)
     mut cx = lowering(
         body.store,
-        LoweredProgram {
-            checked: program_of(
-                engine,
-                file,
-                Signing { engine: engine, file: file, type_params: signature.type_params },
-            ) with { parameters: parameters ?? [] },
-            named: (n: string) -> named_value(engine, file, n),
-            method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
-            statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
-            lifts: lifts,
-            lift_symbol: (lo: int) -> declared_symbol(file, "${unit_name(name, parameters)}.lambda${lo}"),
-            data: data,
-            literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, body.store, e, ty),
-            traits: (ty: SignedType) -> trait_members(engine, ty),
-            type_symbol: (ty: SignedType) -> type_symbol(ty),
-            tagged: tagged,
-            reshaped: reshaped,
-            defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
-            meta_fn: (n: string) -> meta_callee(engine, n),
-            home: "${file.package_name}:${file.path_in_package}",
-        },
+        lowered_program(
+            engine,
+            file,
+            body.store,
+            unit_name(name, parameters),
+            signature.type_params,
+            parameters,
+        ),
         body.core,
         body.seats,
         signature.answer,
@@ -132,17 +117,56 @@ fn lowered_signed(
     let r = if signed.item.store.is_once(signed.stmt) { cx.once_answered(declared_symbol(file, name), body.body, signature.answer) } else { cx.lower(body.body) }
     cx.scope_exit(r)
     cx.emit(Ins.RetVal(r))
+    let answer = cx.laid_out(signature.answer)
+    unit_lowered(cx, signature.params.length + if signed.receiver == null { 0 } else { 1 }, answer)
+}
+
+/// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
+/// of the program as it lowers, the lambdas it lifts, the data it lays out and the types it tags
+/// gathered as they're met.
+fn lowered_program(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    unit: string,
+    type_params: List<string>,
+    parameters: List<ParameterLayout>?,
+) -> LoweredProgram {
+    let lifts: Cell<List<LiftedBody>> = Cell.new([])
+    let data: Cell<List<Static>> = Cell.new([])
+    let tagged: Cell<List<SignedType>> = Cell.new([])
+    LoweredProgram {
+        checked: program_of(engine, file, Signing { engine: engine, file: file, type_params: type_params }) with { parameters: parameters ?? [] },
+        named: (n: string) -> named_value(engine, file, n),
+        method: (ty: SignedType, m: string) -> method_callee(engine, ty, m, false),
+        statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true),
+        lifts: lifts,
+        lift_symbol: (lo: int) -> declared_symbol(file, "${unit}.lambda${lo}"),
+        data: data,
+        literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, e, ty),
+        traits: (ty: SignedType) -> trait_members(engine, ty),
+        type_symbol: (ty: SignedType) -> type_symbol(ty),
+        tagged: tagged,
+        reshaped: Cell.new(0),
+        defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
+        meta_fn: (n: string) -> meta_callee(engine, n),
+        home: "${file.package_name}:${file.path_in_package}",
+    }
+}
+
+/// The body `cx` lowered: its first `seats` registers its seats, answering `answer`.
+fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
     LoweredFn {
-        params: cx.layouts.get().take(signature.params.length + if signed.receiver == null { 0 } else { 1 }),
-        answer: cx.laid_out(signature.answer),
+        params: cx.layouts.get().take(seats),
+        answer: answer,
         ins: cx.ins.get(),
         layouts: cx.layouts.get(),
         callees: cx.callees.get(),
         missing: cx.missing.get(),
-        lifts: lifts.get(),
-        statics: data.get(),
-        tagged: tagged.get(),
-        reshaped: reshaped.get(),
+        lifts: cx.program.lifts.get(),
+        statics: cx.program.data.get(),
+        tagged: cx.program.tagged.get(),
+        reshaped: cx.program.reshaped.get(),
     }
 }
 

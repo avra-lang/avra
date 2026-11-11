@@ -118,6 +118,22 @@ impl Layout {
     /// Whether two layouts are one: a layout is what its spelling says.
     fn same(other: Layout) -> bool { self.spelled() == other.spelled() }
 
+    /// Whether a value of this layout and a part of it laid out as `part` are one value: it rides no
+    /// aggregate, or the part is laid out as it is — a record of one field IS its field, so packing or
+    /// reading that field moves nothing.
+    fn one_with(part: Layout) -> bool { !self.aggregate() || self.same(part) }
+
+    /// Whether the value is a pointer to text.
+    fn text() -> bool {
+        match self {
+            .Boxed(box) -> match box {
+                .Text -> true,
+                .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> false,
+            },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+    }
+
     /// A value enum's counted variants, bit `t` for tag `t`; absent for any other value.
     fn tag_mask() -> int? {
         match self {
