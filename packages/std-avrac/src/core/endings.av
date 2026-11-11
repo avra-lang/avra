@@ -171,12 +171,24 @@ impl Lowering {
     /// ended, shielded the same way, and its loop is left.
     mut fn unwound_exit() {
         let mark? = self.withins.get().last() else {
+            self.frame_pushed()
             let gives = self.exit_answer()
             self.shielded(0) { cx -> cx.ended_from(0, Leaving.Failing) }
             return self.emit(Ins.FnExit(gives))
         }
         self.shielded(mark.floor) { cx -> cx.ended_from(mark.floor, Leaving.Plain) }
         self.emit(Ins.LoopJump(self.loops.get() - 1 - mark.loop, false))
+    }
+
+    /// The body's own frame joined to the unwind's list as the unwind leaves it; a `within` catching
+    /// the unwind in the same body pushes none, since the body hasn't left.
+    mut fn frame_pushed() {
+        let f? = self.frame else { return }
+        self
+            .run_row(
+                rt_sig_of("avra_unwind_push")!,
+                [self.laid_static(Layout.Boxed(BoxKind.Record), f.name, f.boxes)],
+            )
     }
 
     /// `run` under the shield where a scope from the `floor`th holds a deferred call, so a call inside
