@@ -1,0 +1,51 @@
+//! WHAT A METHOD DOES, AS IR: the body an impl gives a type, lowered as a fn's is, its receiver the
+//! first seat; a static fn's has no receiver. Its unit is named for the type, then the method.
+use core.{ParameterLayout, TypeHead, headed_type}
+use @std.program.query_engine.{QueryEngine}
+
+/// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered.
+/// Absent when it gives none with a body.
+export fn lowered_method(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> LoweredFn? {
+    lowered_method_under(engine, at, name, statics, null)
+}
+
+/// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered
+/// under `parameters`, one per type parameter its type declares then one per its own. Absent when it
+/// gives none with a body.
+export fn lowered_method_under(
+    engine: QueryEngine,
+    at: ImplAt,
+    name: string,
+    statics: bool,
+    parameters: List<ParameterLayout>?,
+) -> LoweredFn? {
+    let method? = signed_method(engine, at, name, statics) else { return null }
+    lowered_signed(engine, at.file, method.signed, "${method.owner}.${name}", parameters)
+}
+
+/// A method's body signed, and the name of the type it's a method of.
+type SignedMethod = { signed: SignedBody, owner: string }
+
+/// The method, or when `statics` the static fn, `name` the impl at `at` gives, its body signed under
+/// the impl's type parameters and its receiver the impl's target over them; absent when it gives
+/// none with a body.
+fn signed_method(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> SignedMethod? {
+    let item = read_item(engine, at.file, at.item)
+    let parts? = [p! for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() else { return null }
+    let stmt? = parts
+        .fns
+        .find((s) -> item.store.fn_parts(s)?.name == name && item.store.is_static(s) == statics) else { return null }
+    let owner? = resolved(engine, at.file, Space.Type, parts.target).named() else { return null }
+    let signature? = method_signature(engine, at, name) else { return null }
+    let receiver = headed_type(TypeHead.Declared(owner.file, owner.name)) with { args: [headed_type(TypeHead.Parameter(i, p)) for i, p in at.params] }
+    SignedMethod {
+        signed: SignedBody {
+            signature: signature,
+            item: item,
+            body: item.store.fn_parts(stmt)!.body,
+            stmt: stmt,
+            receiver: if statics { null } else { receiver },
+        },
+        owner: owner.name,
+    }
+}

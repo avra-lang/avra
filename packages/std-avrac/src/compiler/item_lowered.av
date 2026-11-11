@@ -12,6 +12,7 @@ use core.{
     NamedValue,
     Param,
     ParameterLayout,
+    RECEIVER,
     SignedType,
     Static,
     TraitMember,
@@ -67,6 +68,18 @@ fn lowered_under(
     parameters: List<ParameterLayout>?,
 ) -> LoweredFn? {
     let signed? = signed_body(engine, file, name) else { return null }
+    lowered_signed(engine, file, signed, name, parameters)
+}
+
+/// A signed body `file` writes, lowered as the unit `name` under `parameters` where it's generic: a
+/// method's receiver its first seat.
+fn lowered_signed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    name: string,
+    parameters: List<ParameterLayout>?,
+) -> LoweredFn {
     let refused = lowering_refused(signed, parameters)
     if refused != null {
         return LoweredFn {
@@ -111,13 +124,14 @@ fn lowered_under(
         body.seats,
         signature.answer,
     )
+    if signed.receiver != null { cx.seated(RECEIVER, signed.receiver!) }
     for p in signature.params { cx.seated(p.name, p.ty!) }
     cx.scope_enter()
     let r = if signed.item.store.is_once(signed.stmt) { cx.once_answered(declared_symbol(file, name), body.body, signature.answer) } else { cx.lower(body.body) }
     cx.scope_exit(r)
     cx.emit(Ins.RetVal(r))
     LoweredFn {
-        params: cx.layouts.get().take(signature.params.length),
+        params: cx.layouts.get().take(signature.params.length + if signed.receiver == null { 0 } else { 1 }),
         answer: cx.laid_out(signature.answer),
         ins: cx.ins.get(),
         layouts: cx.layouts.get(),
@@ -193,12 +207,15 @@ fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
 }
 
 /// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
-/// as a call reaches it: the one the one impl that gives it writes, on a type the program declares
-/// applied to nothing, by the symbol its body is known by. Absent for any other.
+/// as a call reaches it: the one the one impl that gives it writes, or the body the one trait it
+/// implements gives where the type is applied to nothing, on a type the program declares, by the
+/// symbol its body is known by. Absent for any other.
 fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics: bool) -> CalledFn? {
-    if subject.nullable() || subject.dynamic || !subject.args.is_empty() { return null }
+    if subject.nullable() || subject.dynamic { return null }
+    if !subject.args.is_empty() && statics { return null }
     let declared? = declared_at(subject) else { return null }
     let impls = impls_with(engine, declared.file, declared.name, name, statics)
+    if impls.is_empty() && !statics && subject.args.is_empty() { return given_callee(engine, declared.file, declared.name, name) }
     if impls.length != 1 { return null }
     let at = impls[0]
     let item = read_item(engine, at.file, at.item)
@@ -216,6 +233,7 @@ fn method_callee(engine: QueryEngine, subject: SignedType, name: string, statics
         owner: declared.name,
         writes: used.written(),
         unproved: used.unproved(),
+        type_params: at.params.length + parts.tparams.length,
     }
 }
 

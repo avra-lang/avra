@@ -117,12 +117,14 @@ fn field_read(mut cx: Lowering, v: Reg, ty: SignedType, laid: List<Layout>, n: i
 }
 
 impl Lowers for MatchOpt {
-    /// A region on the subject's presence, answering the arm taken.
+    /// A region on the subject's presence, answering the arm taken; one answering nothing is run for
+    /// what its arms do.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if answers_nothing(cx, e) { return self.lowered_dropped(cx, e) }
         let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
         let v = cx.lower(self.subject)
         cx
-            .region(cx.present(v, held), cx.layout_at(e)) { cx -> present_arm(cx, self, v) } else { cx -> cx.lower(self.absent) }
+            .region(cx.present(v, held), cx.layout_at(e)) { cx -> present_arm(cx, self, e, v) } else { cx -> cx.lower(self.absent) }
     }
 
     /// A region on the subject's presence whose arms are run for what they do.
@@ -130,14 +132,22 @@ impl Lowers for MatchOpt {
         let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
         let v = cx.lower(self.subject)
         cx
-            .void_branches(cx.present(v, held)) { cx -> let _ = present_arm(cx, self, v) } else { cx -> let _ = cx.lower(self.absent) }
+            .void_branches(cx.present(v, held)) { cx -> let _ = present_arm(cx, self, e, v) } else { cx -> let _ = cx.lower(self.absent) }
         cx.hollow_of(owned_type("void"))
     }
 }
 
-/// The present arm: its name bound to what the subject carries, in a scope of its own.
-fn present_arm(mut cx: Lowering, m: MatchOpt, v: Reg) -> Reg {
+/// Whether `e` answers `void`.
+fn answers_nothing(cx: Lowering, e: ExprId) -> bool {
+    let ty? = cx.type_at(e) else { return false }
+    !ty.nullable() && ty.word() == "void"
+}
+
+/// The present arm: its name bound to what the subject carries, in a scope of its own; an arm that
+/// answers what it binds where the match answers the subject's own type is the subject itself.
+fn present_arm(mut cx: Lowering, m: MatchOpt, e: ExprId, v: Reg) -> Reg {
     let held = cx.type_at(m.subject)!
+    if cx.store.ident_name(m.present) == m.bind.of && cx.type_at(e)?.spelled() == held.spelled() { return v }
     cx.opened()
     cx.bind(m.bind.of, Bound.Value(cx.carried(v, held), held.unwrapped()))
     let r = cx.lower(m.present)

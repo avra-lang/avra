@@ -13,6 +13,7 @@ use core.{
     RtSig,
     SignedType,
     OwnRow,
+    RECEIVER,
     own_row_of,
     own_shape,
     rt_sig_of,
@@ -112,11 +113,12 @@ fn folded_code(cx: Lowering, m: MethodCall) -> int? {
     if at < 0 || at >= s.length { null } else { s.char_code(at) }
 }
 
-/// A method a type the program declares has: a call of its symbol, the receiver its first seat. One
-/// that writes its receiver is handed it as `written_seats` opens it.
+/// A method a type the program declares has: a call of its symbol, the receiver its first seat; of a
+/// generic type, of the unit its arguments lay out. One that writes its receiver is handed it as
+/// `written_seats` opens it.
 fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
-    if !subject.args.is_empty() { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
-    let callee? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let declared? = cx.method(subject, m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let callee? = cx.instantiated_on(declared, subject) else { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
     if !callee.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
     if callee.unproved != null { return cx.missed_as(write_unproved(callee.unproved!)) }
     let seats = if callee.writes { written_seats(cx, m) } else { seated(cx, m) }
@@ -161,15 +163,17 @@ fn mut_seat_rooted(cx: Lowering, subject: ExprId) -> bool {
     seat && cx.store.place_root(subject)?.index == subject.index && mut_seat(cx, name)
 }
 
-/// Whether a fn the body's item declares has a `mut` seat named `name`.
+/// Whether the seat `name` is one a write reaches through: a method's receiver, or a `mut` seat a fn
+/// the body's item declares.
 fn mut_seat(cx: Lowering, name: string) -> bool {
-    cx
-        .store
-        .stmt_ids()
-        .any(
-            (s) -> (cx.store.fn_parts(s)?.params ?? [])
-                .any(it.name.of == name && it.promises.mutable),
-        )
+    name == RECEIVER ||
+        cx
+            .store
+            .stmt_ids()
+            .any(
+                (s) -> (cx.store.fn_parts(s)?.params ?? [])
+                    .any(it.name.of == name && it.promises.mutable),
+            )
 }
 
 /// A call through the `dyn` box `subject` is of: the receiver then each argument lowered, the value

@@ -1,0 +1,16 @@
+//! The rules of `self`: the receiver is what its body binds it to, typed and lowered as a name is.
+use core.{Checking, Checks, ExprId, Expected, Lowering, Lowers, RECEIVER, Reg, SignedType}
+use core.expr.{Receiver}
+
+impl Checks for Receiver {
+    /// `self` is the receiver's type, absent outside a method.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.read(RECEIVER) }
+}
+
+impl Lowers for Receiver {
+    /// `self` is the receiver's seat, or its lane where a lambda reads it.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let b? = cx.bound(RECEIVER) else { return cx.unlowered(e) }
+        cx.read(e, b)
+    }
+}
