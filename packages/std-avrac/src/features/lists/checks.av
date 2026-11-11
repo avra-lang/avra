@@ -85,8 +85,8 @@ fn clause_checked(mut cx: Checking, c: CompClause) {
 }
 
 impl Checks for Collect {
-    /// A collection's statements check in a scope of their own, each value standing as one against
-    /// the element its seat wants; it is the list its seat wants, else the list of the first value
+    /// A collection's statements check in a scope of their own, each value it keeps standing as one
+    /// against the element its seat wants; it is the list its seat wants, else the list of the first value
     /// they keep that is no list, else of a kept list's elements.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let wanted = match expected {
@@ -97,13 +97,21 @@ impl Checks for Collect {
         cx.opened()
         for s in self.stmts {
             let value = cx.store.answer_of(s)
-            if value == null { cx.check_stmt(s) } else { let _ = cx.check(value!, seat) }
+            if value == null { cx.check_stmt(s) } else { kept_checked(cx, value!, seat) }
         }
         cx.closed()
         let kept = flatten([kept_types(cx, At.Stmt(s)) for s in self.stmts])
         let held = wanted ?? kept.find(it.listed() == null) ?? kept.first()?.listed()
         if held == null { null } else { owned_type("List") with { args: [held!] } }
     }
+}
+
+/// A statement's value `v` in a collection: checked as a statement, then, where it's a value it keeps
+/// rather than one holding the values it keeps, against the element `seat` wants.
+fn kept_checked(mut cx: Checking, v: ExprId, seat: Expected) {
+    let ty = cx.check(v, Expected.Dropped)
+    if seat is .Unknown || !(ty?.holds_value() ?? false) { return }
+    let _ = cx.check(v, seat)
 }
 
 /// The types of the values the statements at `at` keep: a statement's value that is one, else what
