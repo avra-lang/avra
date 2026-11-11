@@ -26,7 +26,10 @@ use core.{
     ParameterLayout,
     RECEIVER,
     SignedType,
+    Slot,
+    Span,
     Static,
+    StaticBox,
     SyntaxArena,
     TaskTest,
     TestSite,
@@ -156,7 +159,7 @@ fn signed_lowered(
         body.core,
         body.seats,
         signature.answer,
-    ) with { written_seats: [p.name for p in signature.params if p.mutable] }
+    ) with { written_seats: [p.name for p in signature.params if p.mutable], frame: unwind_frame(file, name, unit_name(name, parameters), signed.item.store.expr_span(signed.body)) }
     if signed.receiver != null { cx.seated(RECEIVER, signed.receiver!) }
     for p in signature.params { cx.seated(p.name, p.ty!) }
     cx.scope_enter()
@@ -251,6 +254,19 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
         reshaped: cx.program.reshaped.get(),
         spins: cx.program.spins.get(),
         tests: cx.tests.get(),
+    }
+}
+
+/// The `Frame` an unwind out of the unit `unit` pushes: its label the name its body is declared by,
+/// its place the body's span in `file`, laid out as the binary's data, the place first. Absent for a
+/// body no source spans.
+fn unwind_frame(file: SourceFileAddress, label: string, unit: string, at: Span?) -> Static? {
+    let span? = at else { return null }
+    let site = StaticBox
+        .Slots([Slot.Text(spelled_file(file)), Slot.Int(span.lo), Slot.Int(span.hi)])
+    Static {
+        name: "frame\$${declared_symbol(file, unit)}",
+        boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])],
     }
 }
 

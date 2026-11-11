@@ -13,12 +13,19 @@ export enum Ending {
     /// A deferred body's box called, its answer laid out as `answer`; where `on_error`, only where the
     /// fn fails. `cleanup` names the region a trap unwinding past it lands in.
     Deferred(box: Reg, answer: Layout, on_error: bool, cleanup: int)
+    /// A `within`'s deadline scope `scope` ended, whether an unwind it asked for ended there kept in
+    /// the cell `cell`.
+    Landed(scope: Reg, cell: Reg)
 }
+
+/// A `within` open around what's being lowered: the loop an unwind it catches leaves, by its place
+/// among the open loops, and the first scope its turn opened.
+export type WithinMark = { loop: int, floor: int }
 
 impl Ending {
     /// Whether ending it calls a deferred body.
     fn calls() -> bool {
-        match self { .Joined(_) -> false, .Deferred(_, _, _, _) -> true }
+        match self { .Joined(_) or .Landed(_, _) -> false, .Deferred(_, _, _, _) -> true }
     }
 }
 
@@ -108,6 +115,8 @@ impl Lowering {
         match x {
             .Joined(h) -> self.settled(h),
             .Deferred(box, answer, on_error, cleanup) -> if on_error { self.failed_ran(leaving, box, answer, cleanup) } else { self.deferred_ran(box, answer, cleanup) },
+            .Landed(scope, cell) -> self
+                .stored(cell, self.call_row(Layout.Word, rt_sig_of("avra_fiber_within_end")!, [scope])),
         }
     }
 
@@ -157,13 +166,56 @@ impl Lowering {
     }
 
     /// The fn leaves unwinding: what every scope holds ended as a failure ends it, its deferred calls
-    /// shielded from the cancel being unwound, then the exit, answering what no caller reads.
+    /// shielded from the cancel being unwound, then the exit, answering what no caller reads. With a
+    /// `within` open, its landing catches the unwind instead: what the scopes from its turn's hold is
+    /// ended, shielded the same way, and its loop is left.
     mut fn unwound_exit() {
-        let gives = self.exit_answer()
-        let shielded = self.endings.get().any((f) -> f.any(it.calls()))
+        let mark? = self.withins.get().last() else {
+            self.frame_pushed()
+            let gives = self.exit_answer()
+            self.shielded(0) { cx -> cx.ended_from(0, Leaving.Failing) }
+            return self.emit(Ins.FnExit(gives))
+        }
+        self.shielded(mark.floor) { cx -> cx.ended_from(mark.floor, Leaving.Plain) }
+        self.emit(Ins.LoopJump(self.loops.get() - 1 - mark.loop, false))
+    }
+
+    /// The body's own frame joined to the unwind's list as the unwind leaves it; a `within` catching
+    /// the unwind in the same body pushes none, since the body hasn't left.
+    mut fn frame_pushed() {
+        let f? = self.frame else { return }
+        self
+            .run_row(
+                rt_sig_of("avra_unwind_push")!,
+                [self.laid_static(Layout.Boxed(BoxKind.Record), f.name, f.boxes)],
+            )
+    }
+
+    /// `run` under the shield where a scope from the `floor`th holds a deferred call, so a call inside
+    /// isn't cut by the cancel being unwound.
+    mut fn shielded(floor: int, run: fn(mut Lowering) -> void) {
+        let shielded = self.endings.get().drop(floor).any((f) -> f.any(it.calls()))
         if shielded { self.run_row(rt_sig_of("avra_fiber_shield_enter")!, []) }
-        self.ended_from(0, Leaving.Failing)
+        run(self)
         if shielded { self.run_row(rt_sig_of("avra_fiber_shield_leave")!, []) }
-        self.emit(Ins.FnExit(gives))
+    }
+
+    /// A `within`'s turn opened: the deadline scope armed for `millis` milliseconds, its end held by the
+    /// turn's scope and whether an unwind landed there kept in `landing`; an unwind inside now leaves
+    /// the innermost loop.
+    mut fn within_opened(millis: Reg, landing: Reg) {
+        let scope = self.call_row(Layout.Word, rt_sig_of("avra_fiber_within")!, [millis])
+        self
+            .withins
+            .push(WithinMark { loop: self.loops.get() - 1, floor: self.endings.get().length })
+        self.opened()
+        self.ends_with(Ending.Landed(scope, landing))
+    }
+
+    /// The innermost `within`'s turn closed: its scope ended, and an unwind no longer lands there.
+    mut fn within_closed() {
+        self.closed()
+        let held = self.withins.get()
+        self.withins.set(held.take(held.length - 1))
     }
 }

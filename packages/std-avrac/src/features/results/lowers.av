@@ -1,7 +1,9 @@
 //! The lowering rules of the failure channel: `fail` leaves the fn with its `Err`, and a `catch` is
 //! one region on the subject's tag, its `Ok` side what it carries and its failure side the arm that
 //! recovers — the catch-all over the whole error, or a region over the error's tag whose arms each
-//! take a variant, a catch naming only some of them leaving with the rest.
+//! take a variant, a catch naming only some of them leaving with the rest. A catch over a task's
+//! `.await` is one region on whether the join found it cancelled: the arm over the `Cancelled` the join
+//! carried, else what the task answered.
 use core.{
     BinOp,
     Bound,
@@ -15,6 +17,8 @@ use core.{
     StmtId,
     StmtLowers,
     VariantSeat,
+    owned_type,
+    rt_sig_of,
 }
 use core.expr.{Catch}
 use core.stmt.{Fail}
@@ -34,6 +38,8 @@ impl Lowers for Catch {
     /// yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let held? = cx.type_at(cx.meaning_of(self.subject)) else { return cx.unlowered(e) }
+        let task = cx.store.awaited_task(cx.meaning_of(self.subject))
+        if task != null { return caught_await(cx, e, self.arms, task!) }
         if !held.resulted() { return cx.missed_as("a catch over a read whose failure is its row's own") }
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
         let v = cx.lower(self.subject)
@@ -41,6 +47,26 @@ impl Lowers for Catch {
         cx
             .region(ok, cx.laid_out(ty)) { cx -> cx.payload_at(v, 0, [cx.laid_out(held.args[0])]) } else { cx -> recovered(cx, self.arms, v, held, ty) }
     }
+}
+
+/// `t.await catch c -> …`: the task joined passing no cancel on, its `Cancelled` cells present where it
+/// ended cancelled, the catch-all arm then bound to the record they make; else the task's answer.
+fn caught_await(mut cx: Lowering, e: ExprId, arms: List<CatchArm>, task: ExprId) -> Reg {
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    if arms.length != 1 || arms[0].variant.of != "" { return cx.missed_as("a caught `.await` whose arms name variants") }
+    let cancelled? = (cx.program.checked.toolchain_type)("@std.prelude", "Cancelled") else { return cx.missed_as("a caught `.await` without the prelude's `Cancelled`") }
+    let fields? = cx.fields_of(cancelled) else { return cx.missed_as("a `Cancelled` that is no record") }
+    let laid? = cx.seat_layouts(fields) else { return cx.missed_as("a `Cancelled` whose fields aren't laid out") }
+    let ended = owned_type("List") with { args: [owned_type("int")], nulls: 1 }
+    let t = cx.lower(task)
+    let cells = cx.call_row(cx.laid_out(ended), rt_sig_of("avra_task_join_caught")!, [t])
+    cx
+        .region(cx.present(cells, ended), cx.laid_out(ty)) { cx ->
+            let held = cx.carried(cells, ended)
+            let c = cx
+                .record_packed(cx.laid_out(cancelled), [cx.slot_read(l, held, at) for at, l in laid])
+            if arms[0].bind.of == "" { cx.lower(arms[0].value) } else { bound_arm(cx, arms[0], cancelled, c) }
+        } else { cx -> cx.awaited_reg(cx.layout_at(e), t) }
 }
 
 /// The failure of `v`, a `Result` of `held`, recovered by `arms` into a value of `ty`.

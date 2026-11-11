@@ -157,12 +157,14 @@ impl Lowering {
 
     /// What the task `subject` answered: its end joined, its one cell then read; a task answering
     /// nothing answers nothing.
-    mut fn awaited(e: ExprId, subject: ExprId) -> Reg {
-        let cell = self
-            .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_task_join")!, [self.lower(subject)])
-        match self.layout_at(e) {
+    mut fn awaited(e: ExprId, subject: ExprId) -> Reg { self.awaited_reg(self.layout_at(e), self.lower(subject)) }
+
+    /// What the task `task` answered, a value of layout `l`: its end joined, its one cell then read.
+    mut fn awaited_reg(l: Layout, task: Reg) -> Reg {
+        let cell = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_task_join")!, [task])
+        match l {
             .Void -> self.nothing(),
-            .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.slot_read(self.layout_at(e), cell, 0),
+            .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.slot_read(l, cell, 0),
         }
     }
 

@@ -1,4 +1,6 @@
-//! The typing rule of `spawn`: its body is a thunk, and the task carries what the thunk answers.
+//! The typing rules of `spawn` and `within`. `spawn`: its body is a thunk, and the task carries what
+//! the thunk answers. `within limit { body }`: the limit is `@std/time`'s span, and the whole is the
+//! `Result` of what the body answers or the deadline it ran past.
 use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
 
 impl Checks for Spawn {
@@ -6,5 +8,17 @@ impl Checks for Spawn {
         let body? = cx.check(self.body, Expected.Free) else { return null }
         let answer? = (if body.head is .Function && body.seats.is_empty() { body.answer } else { null }) else { return null }
         owned_type("Task") with { args: [answer] }
+    }
+}
+
+impl Checks for Within {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let span = cx.toolchain_type("@std.time", "Duration")
+        let late = cx.toolchain_type("@std.time", "TimedOut")
+        let _ = cx
+            .check(self.limit, if span == null { Expected.Free } else { Expected.Exactly(span!) })
+        let body? = cx.check(self.body, Expected.Free) else { return null }
+        if body.owned() == "void" || span == null || late == null { return null }
+        owned_type("Result") with { args: [body, late!] }
     }
 }
