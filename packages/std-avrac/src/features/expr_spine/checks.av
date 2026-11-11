@@ -16,8 +16,8 @@ impl Checks for Ident {
     /// A name is what it's bound to here: a local, a parameter, or what the program names by it; a
     /// name that names a type and no value is that type, standing as a value.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        let read = cx.read(self.name.of)
-        if read != null || cx.local(self.name.of) != null { read } else { cx.type_value(self.name.of) }
+        let read = cx.read(e, self.name.of)
+        if read != null || cx.local(self.name.of) != null { read } else { cx.type_value(self.name.of, cx.home_of(e)) }
     }
 }
 
@@ -60,11 +60,13 @@ impl Checks for Binary {
     }
 }
 
-/// `==` or `!=`: a `bool`. A name of optional type beside `null` is a presence test, recorded so the
-/// `if` it decides can narrow the name.
+/// `==` or `!=`: a `bool`, a variant literal taking its enum from the other side. A name of optional
+/// type beside `null` is a presence test, recorded so the `if` it decides can narrow the name.
 fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right: ExprId) -> SignedType? {
-    let l = cx.check(left, Expected.Free)
-    let r = cx.check(right, Expected.Free)
+    let leads = cx.store.variant_literal(left) && !cx.store.variant_literal(right)
+    let seen = if leads { cx.check(right, Expected.Free) } else { null }
+    let l = cx.check(left, beside(cx, left, seen))
+    let r = if leads { seen } else { cx.check(right, beside(cx, right, l)) }
     let asked = if cx.store.null_literal(right) { left } else if cx.store.null_literal(left) { right } else { null }
     if asked == null { return if l != null && r != null { owned_type("bool") } else { null } }
     let subject = if asked! == left { l } else { r }
@@ -72,6 +74,11 @@ fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right
     let name = cx.store.ident_name(asked!)
     if name != null { cx.presence_asked(e, name!, asks_present) }
     owned_type("bool")
+}
+
+/// What an operand of `==` wants: a variant literal, the other side's type; anything else, nothing.
+fn beside(cx: Checking, operand: ExprId, other: SignedType?) -> Expected {
+    if other != null && cx.store.variant_literal(operand) { Expected.Exactly(other!) } else { Expected.Free }
 }
 
 /// The one plain type of the language's own both operands are, checked against nothing; absent

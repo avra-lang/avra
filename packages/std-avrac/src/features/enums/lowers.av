@@ -15,6 +15,7 @@ use core.{
     SignedType,
     SyntaxArena,
     VariantSeat,
+    flatten,
     owned_type,
     some_list,
     types_joined,
@@ -161,6 +162,8 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
     let found = cx.variants_of(ty)
     if found == null && !scalar { return cx.unlowered(e) }
     let variants = found ?? []
+    let made = [n for a in m.arms for p in a.pats for n in made_compared(cx, p)]
+    if !made.is_empty() { return cx.missed_as(made_value(made[0])) }
     let planned = [arm_planned(cx, variants, a, scalar) for a in m.arms]
     if m.arms.is_empty() || planned.any(it == null) { return cx.missed_as("a match whose patterns aren't each one variant or the rest") }
     let arms = [a! for a in planned]
@@ -230,9 +233,21 @@ fn bind_name(store: SyntaxArena, p: PatId) -> string? {
     match store.pat(p) { .Bind(name) -> name.of, rest -> null }
 }
 
-/// Whether a name in a pattern stands for a top-level value the subject is compared with, rather than
-/// bind: one the program names that isn't a fn, which no binding in the body hides.
-fn compares(cx: Lowering, name: string) -> bool { cx.bound(name) == null && (cx.program.compared)(name) }
+/// Whether a name in a pattern may stand for a top-level value the subject is compared with, rather
+/// than bind: one the program names that isn't a fn, which no binding in the body hides.
+fn compares(cx: Lowering, name: string) -> bool {
+    cx.bound(name) == null && (cx.program.compared)(name) ?? false
+}
+
+/// The bare names a pattern holds, at its top or as a variant's payload, that only a generator gives a
+/// value a pattern compares with, which no binder's question reads.
+fn made_compared(cx: Lowering, p: PatId) -> List<string> {
+    match cx.store.pat(p) {
+        .Bind(name) -> if (cx.program.compared)(name.of) == null { [name.of] } else { [] },
+        .Variant(_, args) -> flatten([made_compared(cx, a) for a in args]),
+        .Wild or .Rest or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> [],
+    }
+}
 
 /// The names what a pattern takes binds, in its order.
 fn bound_names(t: Taken) -> List<string> {
@@ -299,7 +314,7 @@ fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
 /// compare by value isn't lowered yet.
 fn compared_const(mut cx: Lowering, s: Chosen, name: string) -> Reg {
     if !cx.equatable(s.ty) { return cx.missed_as("a const compared with a subject that doesn't compare by value") }
-    let named? = cx.named(name) else { return cx.missed_as("a pattern's name that names no value") }
+    let named? = (cx.program.named)(name, null) else { return cx.missed_as("a pattern's name that names no value") }
     cx.same_value(s.v, cx.const_read(named, s.ty), s.ty)
 }
 
@@ -411,3 +426,6 @@ fn payloads_read(mut cx: Lowering, v: Reg, variant: VariantSeat, names: List<str
     }
     [cx.payload_at(v, k, carried) for k, n in names if n != null]
 }
+
+/// A pattern's bare name a generator gives a value of, which no binder's question reads.
+fn made_value(name: string) -> string { "a pattern's bare name `${name}`, which only a generator makes a const or a collection of: whether it compares or binds isn't read" }

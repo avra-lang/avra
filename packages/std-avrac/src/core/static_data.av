@@ -47,6 +47,11 @@ impl Lowering {
     /// call through a fn value hands it and calls `callee`, laid out once.
     mut fn fn_value(e: ExprId, callee: CalledFn) -> Reg {
         let ty? = self.type_at(e) else { return self.unlowered(e) }
+        self.fn_value_as(ty, callee)
+    }
+
+    /// `callee` as a value of the fn type `ty`: its wrapper's static box.
+    mut fn fn_value_as(ty: SignedType, callee: CalledFn) -> Reg {
         self.reached(callee)
         let box = self.laid_out(ty)
         let symbol = "${callee.symbol}\$w"
@@ -81,6 +86,7 @@ impl Lowering {
             .Settled(kept_words, data) -> self.settled_value(self.laid_out(ty), kept_words, data),
             .Unsettled(why) -> self.missed_as(why),
             .Fn(callee) -> self.missed_as("the fn `${callee.name}` read as a const"),
+            .Collected(callee) -> self.call_fn(self.laid_out(ty), callee, []),
         }
     }
 

@@ -198,10 +198,11 @@ export type SignedVariant = { name: string, payloads: List<SignedField> }
 @derive(Saved)
 export type EnumSignature = { type_params: List<string>, variants: List<SignedVariant> }
 
-/// The signature of the enum `file` declares as `name`, absent when it declares none.
+/// The signature of the enum `file` declares as `name`, written or gathered; absent when it declares
+/// none.
 @query
 export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
-    let item? = declaring_item(engine, file, name, ItemKind.Enum) else { return null }
+    let item? = declaring_item(engine, file, name, ItemKind.Enum) else { return gathered_signature(engine, file, name) }
     let parts? = [p! for s in item.stmts for p in [item.store.enum_parts(s)] if p != null]
         .find(it.name == name) else { return null }
     let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
@@ -214,6 +215,19 @@ export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: str
                 ty: if p.ty == null { null } else { signing.signed(p.ty!) },
             } for p in v.payloads],
         } for v in parts.variants],
+    }
+}
+
+/// The signature of the `collect enum` `file` declares as `name`: a variant per member it gathers,
+/// carrying the member's payload fields. Absent when it declares none, or gathers only once built.
+fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
+    let item? = declaring_item(engine, file, name, ItemKind.CollectEnum) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.collect_enum_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let members? = gathered(engine, file, parts.kind, parts.scope, parts.order, false) else { return null }
+    EnumSignature {
+        type_params: [],
+        variants: [SignedVariant { name: m.name, payloads: member_payloads(engine, m) } for m in members],
     }
 }
 
@@ -347,11 +361,14 @@ impl Signing {
         if name == INFERRED { return TypeHead.Inferred }
         let at = self.type_params.index_of(name)
         if at >= 0 { return TypeHead.Parameter(at, name) }
-        if builtin_type_name(avra().rows.types, name) { return TypeHead.Owned(name) }
+        if builtin_type_name(avra().rows.types, name) || name == RANGE { return TypeHead.Owned(name) }
         let d? = resolved(self.engine, self.writer ?? self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
         TypeHead.Declared(d.file, d.name)
     }
 }
+
+/// The type of a range (`(lo..hi)`): the language's own, as the prelude's verbs name it.
+const RANGE: string = "Range"
 
 /// The file whose template wrote the statement `s` of `store`; absent for one its own file wrote.
 fn written_by(store: SyntaxArena, s: StmtId) -> SourceFileAddress? {
