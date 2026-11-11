@@ -37,10 +37,23 @@ export enum MadeProgram {
 export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProgram {
     let entry? = lowered_entry(engine, file) else { return MadeProgram.Unmade("a file that runs no statement", spelled_file(file)) }
     if !entry.whole() { return MadeProgram.Unmade(entry.missing[0], "the entry") }
-    mut queue = every_callee_of(entry)
-    mut fns = lifted_bodies(entry)
-    mut statics = entry.statics
-    mut wrappers = entry.wrappers
+    made_reaching(engine, entry, ENTRY, [])
+}
+
+/// The program `root` and each body it reaches make, the memory pass applied: `root` the entry,
+/// known as `name` with `seats` its first registers. With `missed`, the walk goes past each body not
+/// lowered yet and files it there.
+export fn made_reaching(
+    engine: QueryEngine,
+    root: LoweredFn,
+    name: string,
+    seats: List<Layout>,
+    missed: Cell<List<Missed>>? = null,
+) -> MadeProgram {
+    mut queue = every_callee_of(root)
+    mut fns = lifted_bodies(root)
+    mut statics = root.statics
+    mut wrappers = root.wrappers
     mut externs: List<RtSig> = []
     mut seen: Map<string, bool> = {}
     mut at = 0
@@ -55,7 +68,11 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
         }
         let reached = match reached_fn(engine, c) {
             .Lowered(f) -> f,
-            .Not(why) -> { return MadeProgram.Unmade(why, c.symbol) },
+            .Not(why) -> {
+                let filed? = missed else { return MadeProgram.Unmade(why, c.symbol) }
+                filed.push(Missed { symbol: c.symbol, why: why })
+                continue
+            },
         }
         fns = fns
             .concat(
@@ -74,9 +91,11 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
         wrappers = wrappers.concat(reached.wrappers)
         queue = queue.concat(every_callee_of(reached))
     }
+    let filed = missed?.get() ?? []
+    if !filed.is_empty() { return MadeProgram.Unmade(filed[0].why, filed[0].symbol) }
     let lowered = Lowered {
         fns: fns.concat([wrapper_body(w) for w in distinct_wrappers(wrappers)]),
-        entry: unit_body(ENTRY, [], entry.answer, entry.ins, entry.layouts),
+        entry: unit_body(name, seats, root.answer, root.ins, root.layouts),
         types: new_type_registry(),
         diagnostics: [],
         externs: externs,
@@ -84,6 +103,9 @@ export fn made_program(engine: QueryEngine, file: SourceFileAddress) -> MadeProg
     }
     unanswered(lowered) ?? MadeProgram.Made(memory(lowered))
 }
+
+/// A body a program reaches that isn't lowered yet: its symbol, and why.
+export type Missed = { symbol: string, why: string }
 
 /// A body a program reaches, lowered, or why it isn't.
 enum ReachedFn {

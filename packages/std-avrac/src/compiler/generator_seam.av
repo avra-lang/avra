@@ -57,6 +57,25 @@ impl Workspace {
         )
     }
 
+    /// The source of each directive the derive naming the trait `trait_name` made over the written
+    /// declaration `name` of the file at `path`, in the order made; absent where no derive on it
+    /// names that trait.
+    fn derived_texts(path: string, name: string, trait_name: string) -> List<string>? {
+        let f? = self.decls.known_file_id(path) else { return null }
+        let p = self.parsed(f)
+        let vis = self.visible(f)
+        let _ = self.expanded(f)
+        let d? = self.written_decls(f, p).find((w) -> self.decls.decl(w).name == name) else { return null }
+        for w in self.declared_work(f, d, p, vis) {
+            if !self.is_derived(w.ret) { continue }
+            for e in w.args {
+                let t? = self.named_arg(p, vis, e) else { continue }
+                if self.decls.decl(t).name == trait_name { return [x.source?.text() ?? "" for x in self.trait_directives(t, w, f)] }
+            }
+        }
+        null
+    }
+
     /// One copy per trait a derive names whose `derive` made something.
     fn trait_copies(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DerivedCopy> {
         [c! for e in w.args for c in [self.trait_copy(f, w, vis, self.named_arg(p, vis, e))] if c != null]

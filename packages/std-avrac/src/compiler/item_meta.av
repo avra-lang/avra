@@ -1,0 +1,172 @@
+//! A DECLARATION AS `@std/meta` SEES IT, made of the program layer's facts alone: a record's fields
+//! and an enum's variants, each typed where the declaration stands and that type's shape a `Kind`; a
+//! named type's shape; and the annotations its item writes. The crossing's own writer
+//! (`meta_of_type`) lays the value out, so the rows it's held to are the one contract.
+use core.{Annotation, Mark, Param, SignedType, SyntaxArena, Variant as VariantDecl, spelled}
+use features.{Lifted, arg_lit, meta_of_type, new_meta_heap}
+use @std.meta.{
+    Annotation as MetaAnnotation,
+    Field as MetaField,
+    Kind,
+    Mark as MetaMark,
+    MarkArg as MetaMarkArg,
+    Seat as MetaSeat,
+    Type as MetaType,
+    Variant as MetaVariant,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The record, enum or named type `file` declares as `name`, as `@std/meta`'s `Type`; absent when it
+/// declares none of that name.
+export fn meta_of_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaType? {
+    [t! for d in file_declares(engine, file).names if d.name == name for t in [declared_meta(engine, d)] if t != null]
+        .first()
+}
+
+/// A declaration as a `Type`, absent for one that declares no type with fields, variants or a shape.
+fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return null }
+    let base = MetaType {
+        name: d.name,
+        fields: [],
+        variants: [],
+        at: null,
+        annotations: [annotation_meta(item.store, a) for a in item.store.annotations_of(s)],
+        module: dotted_module(d.file),
+    }
+    match d.kind {
+        .Record -> {
+            let parts? = item.store.struct_parts(s) else { return null }
+            let signed = record_signature(engine, d.file, d.name)?.fields ?? []
+            base with { fields: [field_meta(p, field_kind(signed, p.name.of)) for p in parts.fields] }
+        },
+        .Enum -> {
+            let parts? = item.store.enum_parts(s) else { return null }
+            let signed = enum_signature(engine, d.file, d.name)?.variants ?? []
+            base with { variants: [variant_meta(v, signed.find(it.name == v.name.of)?.payloads ?? []) for v in parts.variants] }
+        },
+        .Named -> {
+            let parts? = item.store.named_parts(s) else { return null }
+            base with { over: signed_kind(
+                Signing { engine: engine, file: d.file, type_params: parts.tparams }
+                    .signed(parts.of),
+            ) }
+        },
+        .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .Const or .State -> null,
+    }
+}
+
+/// A record's field or a variant's payload as a `Field`: its name, its type as written and that
+/// type's shape, its marks.
+fn field_meta(p: Param, kind: Kind) -> MetaField {
+    MetaField {
+        name: p.name.of,
+        ty: if p.ty == null { "" } else { spelled(p.ty!) },
+        at: null,
+        kind: kind,
+        marks: [mark_meta(m) for m in p.marks],
+        annotations: [mark_as_annotation(m) for m in p.marks],
+        defaulted: p.default != null,
+        state: p.state,
+        prop: p.prop,
+    }
+}
+
+/// A variant as a `Variant`: its name, its payloads' spellings, and its payloads as fields.
+fn variant_meta(v: VariantDecl, signed: List<SignedField>) -> MetaVariant {
+    MetaVariant {
+        name: v.name.of,
+        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
+        at: null,
+        fields: [field_meta(p, field_kind(signed, p.name.of)) for p in v.payloads],
+        marks: [mark_meta(m) for m in v.marks],
+    }
+}
+
+/// The shape of the field named `name` among `signed`; unspelled where it has no type.
+fn field_kind(signed: List<SignedField>, name: string) -> Kind {
+    let ty? = signed.find(it.name == name)?.ty else { return Kind.Unspelled("") }
+    signed_kind(ty)
+}
+
+/// A mark as a `Mark`.
+fn mark_meta(m: Mark) -> MetaMark {
+    MetaMark {
+        name: m.name,
+        args: m.args,
+        at: null,
+        named: [MetaMarkArg { label: n.label, value: n.value } for n in m.named],
+    }
+}
+
+/// A member's mark as its own `Annotation`.
+fn mark_as_annotation(m: Mark) -> MetaAnnotation {
+    MetaAnnotation {
+        name: m.name,
+        args: m.args,
+        at: null,
+        named: [MetaMarkArg { label: n.label, value: n.value } for n in m.named],
+    }
+}
+
+/// An annotation a statement wears as an `Annotation`: each argument as the literal it writes.
+fn annotation_meta(store: SyntaxArena, a: Annotation) -> MetaAnnotation {
+    MetaAnnotation {
+        name: a.name,
+        args: [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null],
+        at: null,
+        named: [MetaMarkArg { label: store.arg_label(e)!, value: arg_lit(store, store.unnamed(e)).text } for e in a.args if store.arg_label(e) != null],
+    }
+}
+
+/// The module a file stands in, dotted from its package.
+fn dotted_module(file: SourceFileAddress) -> string { [file.package_name.replace("/", ".")].concat(module_segments(file)).join(".") }
+
+/// A type's shape as `@std/meta` spells it.
+export fn signed_kind(ty: SignedType) -> Kind {
+    if !ty.alternatives.is_empty() { return Kind.Unspelled(ty.spelled()) }
+    if ty.nulls > 0 { return Kind.Opt(signed_kind(ty with { nulls: ty.nulls - 1 })) }
+    match ty.head {
+        .Owned(word) -> owned_kind(word, ty),
+        .Declared(_, name) -> if ty.dynamic { Kind.Dyn(name) } else { Kind.Named(name, [signed_kind(a) for a in ty.args]) },
+        .Parameter(_, name) -> Kind.Var(name),
+        .Function -> Kind
+            .Fn(
+                [MetaSeat { kind: signed_kind(s.ty), mutable: s.mutable, settled: s.settled } for s in ty.seats],
+                if ty.answer == null { Kind.Void } else { signed_kind(ty.answer!) },
+            ),
+        .Unnamed(_) or .Inferred or .Never or .Meta -> Kind.Unspelled(ty.spelled()),
+    }
+}
+
+/// The shape of a type the language owns, named `word`; unspelled for one `Kind` has no word for.
+fn owned_kind(word: string, ty: SignedType) -> Kind {
+    let args = [signed_kind(a) for a in ty.args]
+    match word {
+        "int" -> Kind.Int,
+        "float" -> Kind.Float,
+        "bool" -> Kind.Bool,
+        "string" -> Kind.Str,
+        "ptr" -> Kind.Ptr,
+        "void" -> Kind.Void,
+        "Bytes" -> Kind.Bytes,
+        "List" -> if args.length == 1 { Kind.List(args[0]) } else { Kind.Unspelled(ty.spelled()) },
+        "Cell" -> if args.length == 1 { Kind.Cell(args[0]) } else { Kind.Unspelled(ty.spelled()) },
+        "Map" -> if args.length == 2 { Kind.Map(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
+        "Result" -> if args.length == 2 { Kind.Result(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
+        "Task" or "Tasks" -> Kind.Named(word, args),
+        _ -> Kind.Unspelled(ty.spelled()),
+    }
+}
+
+/// What `type_named(name)` answers a generator run over a declaration of `file`: the type the name
+/// names from `file`'s top level, crossed into a heap of its own; absent for one naming none.
+export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: string) -> Lifted {
+    let scope? = file_scope(engine, file) else { return absent_lifted() }
+    let d? = resolved_in(engine, scope, file, Space.Type, name).named() else { return absent_lifted() }
+    let t? = meta_of_decl(engine, d.file, d.name) else { return absent_lifted() }
+    mut heap = new_meta_heap()
+    Lifted { answer: meta_of_type(t, heap), heap: heap }
+}

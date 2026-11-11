@@ -96,12 +96,19 @@ export fn trait_method_signature(
     let item? = declaring_item(engine, held.file, held.name, ItemKind.Trait) else { return null }
     let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
     let written? = written_fn(item.store, [m for m in fns if !item.store.is_static(m)], method) else { return null }
-    let signing = Signing {
-        engine: engine,
-        file: held.file,
-        type_params: written.type_params,
-        self_type: receiver,
-    }
+    written_signature(
+        Signing {
+            engine: engine,
+            file: held.file,
+            type_params: written.type_params,
+            self_type: receiver,
+        },
+        written,
+    )
+}
+
+/// What a written fn's signature is under `signing`.
+fn written_signature(signing: Signing, written: WrittenFn) -> FnSignature {
     FnSignature {
         type_params: written.type_params,
         params: [signing.param(p) for p in written.params],

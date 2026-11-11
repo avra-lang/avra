@@ -36,7 +36,7 @@ use @std.avrac.core.{
     same_reg,
 }
 use @std.avrac.compiler.lower.{Body, Lowered}
-use @std.avrac.features.{DeclSig, Namespace, Wanted}
+use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of}
 use @std.avrac.compiler.backend.{
     Owned,
     body_lines,
@@ -80,7 +80,13 @@ use @std.avrac.compiler.{
     file_impls,
     ImplAt,
     made_program,
+    made_generator,
+    derive_sites,
+    generator_run,
+    GeneratorRun,
     MadeProgram,
+    Missed,
+    TraitAt,
     LoweredFn,
     resolved_in,
     respelled_origins,
@@ -133,6 +139,7 @@ impl Runnable for TapesCmd {
                 (path) -> address_of(disk, path),
             ),
         )
+        if args.has_flag("generators") { return generators_held(engine, ws, disk, args.has_flag("left")) }
         if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
         let files = package_sources(engine, disk.name, "src")
         let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
@@ -430,6 +437,11 @@ export flag core {
     aliases: ["--core"]
 }
 
+export flag generators {
+    description: "make each generator the package's traits write on the program layer, with every body it reaches"
+    aliases: ["--generators"]
+}
+
 export flag lowered {
     description: "lower every fn the program layer can lower whole, and hold its IR to the workspace's"
     aliases: ["--lowered"]
@@ -442,9 +454,107 @@ export flag program_runs {
 
 export command tapes {
     description: "Read every file of a package off its item tapes and hold each to the parse"
-    flags: [program_only, signatures, left, core, lowered, program_runs]
+    flags: [program_only, signatures, left, core, lowered, program_runs, generators]
     args: [file]
     run: TapesCmd {}
+}
+
+/// Each generator the package's traits write, made on the program layer with every body it reaches,
+/// one not made counted by why; and each made one run over every declaration a `@derive` names its
+/// trait on, what it makes held to what the workspace's derive made. Answers 1 when any differs.
+fn generators_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
+    let sources = package_sources(engine, disk.name, "src")
+    mut written = 0
+    mut made = 0
+    mut unmade: Map<string, int> = {}
+    mut sites = 0
+    mut alike = 0
+    mut directives = 0
+    mut differing: List<string> = []
+    for path in sources {
+        let file = disk.file_at(path)
+        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Trait) {
+            let t = TraitAt { file: file, name: own.name }
+            let missed: Cell<List<Missed>> = Cell.new([])
+            let m? = made_generator(engine, t, missed) else { continue }
+            written = written + 1
+            let l = match m {
+                .Made(l) -> l,
+                .Unmade(why, at) -> {
+                    let each = missed.get()
+                    if each.is_empty() { unmade.set(why, (unmade.get(why) ?? 0) + 1) }
+                    if each.is_empty() && shown { println("left: ${why} in ${path} ${own.name}'s generator, at ${at}") }
+                    for x in each {
+                        unmade.set(x.why, (unmade.get(x.why) ?? 0) + 1)
+                        if shown { println("left: ${x.why} in ${own.name}'s generator, at ${x.symbol}") }
+                    }
+                    continue
+                },
+            }
+            made = made + 1
+            println("made: ${path} ${own.name}'s generator, ${l.fns.length} bodies")
+            for over in sources {
+                let at = disk.file_at(over)
+                for site in derive_sites(engine, at) {
+                    if site.generator.name != own.name ||
+                        spelled_file(site.generator.file) != spelled_file(file) { continue }
+                    sites = sites + 1
+                    let held = run_held(engine, ws, disk, l, t, at, site.name)
+                    directives = directives + held.directives
+                    let differs? = held.differs else {
+                        alike = alike + 1
+                        continue
+                    }
+                    differing.push("${over} ${site.name}'s ${own.name}: ${differs}")
+                }
+            }
+        }
+    }
+    for d in differing { println("differs: ${d}") }
+    println(
+        "generators: ${written} written, ${made} made on the program layer, run over ${sites} declarations making ${directives} directives, ${alike} making what the workspace's derive made, ${differing.length} differing; not made yet: ${tallied(unmade)}",
+    )
+    if differing.is_empty() { 0 } else { 1 }
+}
+
+/// What a generator's run over one declaration made, held to the workspace's derive: how many
+/// directives it made, and how it differs, absent when alike.
+type RunHeld = { directives: int, differs: string? }
+
+/// What the made generator `l` of `t` makes over the declaration `file` writes as `name`, held to what
+/// the workspace's derive made: the first directive whose source differs, or why it didn't run.
+fn run_held(
+    engine: QueryEngine,
+    ws: Workspace,
+    disk: Disk,
+    l: Lowered,
+    t: TraitAt,
+    file: SourceFileAddress,
+    name: string,
+) -> RunHeld {
+    let made = match generator_run(engine, l, t, file, name, budgets_of()) {
+        .Ran(made, problems) -> if problems.is_empty() { [x.source?.text() ?? "" for x in made] } else { [p.message for p in problems] },
+        .Stopped(why) -> { return RunHeld { directives: 0, differs: "didn't run: ${why}" } },
+    }
+    RunHeld {
+        directives: made.length,
+        differs: texts_difference(
+            made,
+            ws.derived_texts(disk.on_disk(file.package_name, file.path_in_package), name, t.name),
+        ),
+    }
+}
+
+/// How the sources `made` differ from the workspace's `seam`: the first directive and line that
+/// differ, absent when alike.
+fn texts_difference(made: List<string>, seam: List<string>?) -> string? {
+    let theirs_all? = seam else { return "the workspace's derive made nothing" }
+    if made.length != theirs_all.length { return "${made.length} directives, the workspace's ${theirs_all.length}" }
+    let at? = [j for j, m in made if m != theirs_all[j]].first() else { return null }
+    let ours = made[at].split("\n")
+    let theirs = theirs_all[at].split("\n")
+    let line = [j for j, o in ours if j >= theirs.length || o != theirs[j]].first() ?? ours.length
+    "directive ${at} line ${line + 1} is ${line_at(ours, line)}, the workspace's ${line_at(theirs, line)}"
 }
 
 /// Every fn of the package elaborated: each sugar a meaning rewrote, and whether the core it means

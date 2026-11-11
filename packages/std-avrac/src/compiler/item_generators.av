@@ -1,0 +1,118 @@
+//! A GENERATOR ON THE PROGRAM LAYER: the `static fn derive` a trait's own body writes, lowered with
+//! every body it reaches into a program the evaluator runs over a declaration's meta value.
+use core.{flatten}
+use features.{Budgets, arg_lit, meta_of_type, new_meta_heap, unsettled_label}
+use @std.meta.{Diagnostic, Directive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use compiler.lower.{Lowered}
+use compiler.backend.{run_lifted}
+
+/// What a trait's generator is named in its own body.
+const GENERATOR: string = "derive"
+
+/// The trait `t`'s own static `derive`, its body signed with no `Self`; absent when it writes none
+/// with a body.
+fn generator_body(engine: QueryEngine, t: TraitAt) -> SignedBody? {
+    let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
+    let fns = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? []
+    let s? = fns
+        .find(
+            (f) -> item.store.fn_parts(f)?.name == GENERATOR &&
+                item.store.is_static(f) &&
+                written_body(item, f),
+        ) else { return null }
+    let written = written_fn(item.store, [s], GENERATOR)!
+    SignedBody {
+        signature: written_signature(
+            Signing { engine: engine, file: t.file, type_params: written.type_params },
+            written,
+        ),
+        item: item,
+        body: item.store.fn_parts(s)!.body,
+        stmt: s,
+    }
+}
+
+/// The symbol a trait's generator runs as.
+export fn generator_symbol(t: TraitAt) -> string { declared_symbol(t.file, "${t.name}.${GENERATOR}") }
+
+/// The trait `t`'s generator and every body it reaches, made into a program whose entry is the
+/// generator itself, its seat the meta value; with `missed`, each body it reaches that isn't lowered
+/// yet filed there. Absent when the trait writes no generator.
+export fn made_generator(engine: QueryEngine, t: TraitAt, missed: Cell<List<Missed>>? = null) -> MadeProgram? {
+    let signed? = generator_body(engine, t) else { return null }
+    let root = lowered_signed(engine, t.file, signed, "${t.name}.${GENERATOR}", null)
+    if !root.whole() { return MadeProgram.Unmade(root.missing[0], "the generator") }
+    made_reaching(engine, root, generator_symbol(t), root.params, missed)
+}
+
+/// What a generator made over one declaration: the directives it answered and what it said about
+/// the declaration, or why it didn't run.
+export enum GeneratorRun {
+    Ran(made: List<Directive>, problems: List<Diagnostic>)
+    Stopped(why: string)
+}
+
+/// The made generator `l` of the trait `t` run under `budgets` over the declaration `file` writes as
+/// `name`, handed that declaration as `@std/meta`'s `Type` and answering `type_named` from `file`.
+export fn generator_run(
+    engine: QueryEngine,
+    l: Lowered,
+    t: TraitAt,
+    file: SourceFileAddress,
+    name: string,
+    budgets: Budgets,
+) -> GeneratorRun {
+    let meta? = meta_of_decl(engine, file, name) else { return GeneratorRun.Stopped("`${name}` declares no type with fields, variants or a shape") }
+    mut heap = new_meta_heap()
+    let arg = meta_of_type(meta, heap)
+    match run_lifted(
+        l,
+        generator_symbol(t),
+        [arg],
+        heap,
+        budgets,
+        (n: string) -> named_lifted(engine, file, n),
+    ) {
+        .Ok(lifted) -> GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems()),
+        .Err(why) -> GeneratorRun.Stopped(unsettled_label(t.name, why)),
+    }
+}
+
+/// A declaration a generator runs over: the name its file declares it as, and the trait a `@derive`
+/// on it names.
+export type DeriveSite = { name: string, generator: TraitAt }
+
+/// Each trait a `@derive` on a declaration `file` writes names, in the order written.
+export fn derive_sites(engine: QueryEngine, file: SourceFileAddress) -> List<DeriveSite> {
+    let scope? = file_scope(engine, file) else { return [] }
+    flatten([declared_sites(engine, scope, file, d) for d in file_declares(engine, file).names])
+}
+
+/// Each trait a `@derive` on the declaration `d` names.
+fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, d: DeclaredName) -> List<
+    DeriveSite,
+> {
+    let item = read_item(engine, file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
+    [DeriveSite { name: d.name, generator: t! } for a in item.store.annotations_of(s) if derives(engine, scope, file, a.name) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(item.store, e).text)] if t != null]
+}
+
+/// Whether an annotation's name names `@std/meta`'s `derive` from `file`.
+fn derives(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return false }
+    d.file.package_name == META_PACKAGE && d.name == DERIVE
+}
+
+/// The trait `name` names from `file`, absent for a name naming none.
+fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {
+    let d? = resolved_in(engine, scope, file, Space.Type, name).named() else { return null }
+    if d.kind == ItemKind.Trait { TraitAt { file: d.file, name: d.name } } else { null }
+}
+
+/// The package declaring the annotations generators answer.
+const META_PACKAGE: string = "@std/meta"
+
+/// The annotation naming the traits whose generators run over a declaration.
+const DERIVE: string = "derive"
