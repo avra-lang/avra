@@ -1,6 +1,7 @@
 //! The lowering rules of absence: `null` is a null constant its seat gives a layout, and a match on
 //! presence is one region, its present arm holding what the subject carries. `v?` is one region too:
-//! what `v` carries on, else the fn leaves with its absence or its failure.
+//! what `v` carries on, else the fn leaves with its absence or its failure. `a ?? b` over an `a` that
+//! is never absent is `a`.
 use core.{
     BinOp,
     Bound,
@@ -18,7 +19,7 @@ use core.{
     owned_type,
     rt_sig_of,
 }
-use core.expr.{Chain, Force, MatchOpt, NullLit, Propagate}
+use core.expr.{Chain, Coalesce, Force, MatchOpt, NullLit, Propagate}
 use core.stmt.{LetElse}
 
 impl Lowers for NullLit {
@@ -188,4 +189,10 @@ impl StmtLowers for LetElse {
             }
         cx.bind(self.name.of, Bound.Value(r, carried))
     }
+}
+
+impl Lowers for Coalesce {
+    /// Over a left side that is never absent — where no meaning rewrites it — the left side's value;
+    /// the right side never runs.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.lower(self.left) }
 }

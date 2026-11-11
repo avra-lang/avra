@@ -28,6 +28,7 @@ use core.expr.{Lambda, MethodCall}
 enum WalkVerb {
     Find
     FindIndex
+    FindMap
     Any
     All
     Map
@@ -46,6 +47,7 @@ fn walk_verb(name: string) -> WalkVerb? {
     match name {
         "find" -> WalkVerb.Find,
         "find_index" -> WalkVerb.FindIndex,
+        "find_map" -> WalkVerb.FindMap,
         "any" -> WalkVerb.Any,
         "all" -> WalkVerb.All,
         "map" -> WalkVerb.Map,
@@ -82,6 +84,7 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
     match verb {
         .Find -> found(cx, m, e, elem),
         .FindIndex -> found_at(cx, m, e, elem),
+        .FindMap -> found_mapped(cx, m, e),
         .Any -> judged(cx, m, e, elem, false),
         .All -> judged(cx, m, e, elem, true),
         .Map -> gathered(cx, m, e, elem, true),
@@ -291,6 +294,22 @@ fn found(mut cx: Lowering, m: MethodCall, e: ExprId, elem: SignedType) -> Reg {
     turned(cx, c) { cx, v, _at ->
         cx
             .void_region(answered(cx, f, [v], Layout.Truth)) { cx -> ended(cx, cell, cx.adopted(v, elem, opt)) }
+    }
+    cx.loaded(l, cell)
+}
+
+/// `xs.find_map(f)`: absent until the first element `f` answers present for, whose answer is kept
+/// and ends the walk.
+fn found_mapped(mut cx: Lowering, m: MethodCall, e: ExprId) -> Reg {
+    if m.args.length != 1 { return cx.unlowered(e) }
+    let opt? = cx.type_at(e) else { return cx.unlowered(e) }
+    let l = cx.laid_out(opt)
+    let c = chain_of(cx, m.subject)
+    let cell = cx.seeded_cell(l, cx.absent_of(opt, l))
+    let f = asked(cx, m.args[0], 1)
+    turned(cx, c) { cx, v, _at ->
+        let got = answered(cx, f, [v], l)
+        cx.void_region(cx.present(got, opt)) { cx -> ended(cx, cell, got) }
     }
     cx.loaded(l, cell)
 }

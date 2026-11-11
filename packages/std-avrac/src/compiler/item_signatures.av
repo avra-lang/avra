@@ -276,12 +276,14 @@ type GatheringShape = { name: string, kind: CollectKind, scope: CollectScope, or
 
 fn gathering_shape(store: SyntaxArena, s: StmtId) -> GatheringShape? {
     let listed = store.collect_parts(s)
-    if listed != null { return GatheringShape {
+    if listed != null {
+        return GatheringShape {
             name: listed!.name,
             kind: listed!.kind,
             scope: listed!.scope,
             order: listed!.order,
-        } }
+        }
+    }
     let e? = store.collect_enum_parts(s) else { return null }
     GatheringShape { name: e.name, kind: e.kind, scope: e.scope, order: e.order }
 }
@@ -452,13 +454,15 @@ impl Signing {
         }
     }
 
-    /// What a type name names: a type parameter, a type the language owns, or a declaration.
+    /// What a type name names: a type parameter, a type the language owns, or a declaration, read
+    /// where the template that wrote it stands first, then where the body stands.
     fn head_of(name: string) -> TypeHead {
         if name == INFERRED { return TypeHead.Inferred }
         let at = self.type_params.index_of(name)
         if at >= 0 { return TypeHead.Parameter(at, name) }
         if builtin_type_name(avra().rows.types, name) || name == RANGE { return TypeHead.Owned(name) }
-        let d? = resolved(self.engine, self.writer ?? self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
+        let homed = if self.writer == null { null } else { resolved(self.engine, self.writer!, Space.Type, name).named() }
+        let d? = homed ?? resolved(self.engine, self.file, Space.Type, name).named() else { return TypeHead.Unnamed(name) }
         TypeHead.Declared(d.file, d.name)
     }
 }
@@ -477,12 +481,14 @@ impl SignedParam {
 
     /// Whether a call hands the seat a value by position: it's typed, promises nothing, has no
     /// default and spreads nothing.
-    fn plain() -> bool { self.ty != null &&
+    fn plain() -> bool {
+        self.ty != null &&
             !self.mutable &&
             !self.settled &&
             !self.state &&
             !self.defaulted &&
-            !self.spread }
+            !self.spread
+    }
 }
 
 collect listed_signature_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

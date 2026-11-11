@@ -4,6 +4,16 @@
 //! taking the rest, one list of what's left.
 
 impl Lowering {
+    /// The registers a call through a value of the fn type `f` hands its seats, by position: a `mut`
+    /// seat the place it writes through, any other its value. Absent where a seat is `const` or
+    /// defaulted, the arguments don't fill every seat, or a `mut` seat's argument stands where no
+    /// write reaches back.
+    mut fn value_seated(f: SignedType, args: List<ExprId>) -> List<Reg>? {
+        if f.seats.length != args.length || f.seats.any(it.settled || it.defaulted) { return null }
+        let regs = [if f.seats[at].mutable { self.written_arg(a) } else { self.lower(a) } for at, a in args]
+        if regs.any(it == null) { null } else { [r! for r in regs] }
+    }
+
     /// The registers a call of `callee` hands its seats, in the seats' order; absent for a call this
     /// layer doesn't seat yet: one whose callee takes a `state` or `const` argument, one spreading a
     /// record, a generic unit handed arguments by name or leaving a seat to its default, and a `mut`
