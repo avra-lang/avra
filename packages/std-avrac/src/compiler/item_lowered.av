@@ -191,11 +191,14 @@ fn lowered_program(
     }
 }
 
-/// Whether `name` names a const or a collection from `file`'s top level among written names: what a
-/// pattern's bare name compares with rather than binds.
+/// Whether `name` names a const or a collection from `file`'s top level among written names, the
+/// file's own or its module's exports: what a pattern's bare name compares with rather than binds. A
+/// sibling's private const never turns a binder.
 fn compared_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     let scope? = file_scope(engine, file) else { return false }
-    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return false }
+    let own = scope.own.held(Space.Value, name)
+    let d? = own ?? winner(engine, file, Space.Value, name) else { return false }
+    if own == null && !d.exported { return false }
     match d.kind {
         .Const or .Collect -> true,
         .Fn or .State or .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> false,
@@ -246,7 +249,7 @@ fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> s
 }
 
 /// What a top-level value's name is from `file`, as code reads it: a fn the program declares, or a
-/// `const` written as a literal. Absent for any other name.
+/// `const` as written or as it settles. Absent for any other name.
 fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamedValue? {
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
     match d.kind {
@@ -255,8 +258,8 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
             NamedValue.Fn(callee)
         },
         .Const -> {
-            let value? = const_literal(engine, d) else { return null }
-            NamedValue.Literal(value)
+            let value = const_literal(engine, d)
+            if value == null { settled_const(engine, d) } else { NamedValue.Literal(value!) }
         },
         .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State -> null,
     }

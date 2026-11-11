@@ -1307,6 +1307,15 @@ fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: 
         return workspace_symbol(ws, disk, renames, s.substring(0, s.length - WRAPPER.length)) +
             WRAPPER
     }
+    let held = s.index_of(CONST_DATA)
+    if held >= 0 {
+        return const_symbol_of(
+            ws,
+            disk,
+            s.substring(0, held),
+            s.substring(held + CONST_DATA.length, s.length),
+        ) ?? s
+    }
     let lit = s.index_of(LITERAL_DATA)
     if lit >= 0 {
         return literal_symbol_of(
@@ -1322,12 +1331,26 @@ fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: 
 /// The workspace's name for the literal data at `site` of the package's file `spelled`, absent for a
 /// file the workspace doesn't know.
 fn literal_symbol_of(ws: Workspace, disk: Disk, spelled: string, site: string) -> string? {
+    let id? = own_file(ws, disk, spelled) else { return null }
+    ws.decls.file_symbol(id, "lit${site}")
+}
+
+/// The workspace's name for the data the const `name` of the package's file `spelled` settles to,
+/// absent for a file or a const the workspace doesn't know.
+fn const_symbol_of(ws: Workspace, disk: Disk, spelled: string, name: string) -> string? {
+    let id? = own_file(ws, disk, spelled) else { return null }
+    let d? = ws
+        .decls
+        .decls_of_file(id)
+        .find((d) -> ws.decls.decl(d).parent == null && ws.decls.decl(d).name == name) else { return null }
+    ws.decls.symbol(d)
+}
+
+/// The workspace's file for the package's file `spelled`, absent for one it doesn't know.
+fn own_file(ws: Workspace, disk: Disk, spelled: string) -> FileId? {
     let own = "${disk.name}/"
     if !spelled.starts_with(own) { return null }
-    let id? = ws
-        .decls
-        .known_file_id(disk.on_disk(disk.name, spelled.substring(own.length, spelled.length))) else { return null }
-    ws.decls.file_symbol(id, "lit${site}")
+    ws.decls.known_file_id(disk.on_disk(disk.name, spelled.substring(own.length, spelled.length)))
 }
 
 /// What a fn value's data is named for: the code it holds.
@@ -1335,6 +1358,9 @@ const FN_DATA: string = "fn\$"
 
 /// What a declared fn's wrapper as a value is named for: the fn it calls.
 const WRAPPER: string = "\$w"
+
+/// What a const's data is named for beside its file: its name.
+const CONST_DATA: string = "\$const\$"
 
 /// What a literal's data is named for beside its file: its site.
 const LITERAL_DATA: string = "\$lit"
