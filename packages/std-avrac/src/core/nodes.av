@@ -636,13 +636,22 @@ impl ArenaMarks {
 /// actions, a component's template — or the module whose names it reads (`module`, with no
 /// `path`). `spanned_home` says its span is in the ORIGIN's offsets (a copied template's, so its
 /// errors point home) rather than this file's (a sublanguage's, shifted into the block).
+/// `landed` names the node's seats a hole filled, whose names read where the node lands.
 @derive(Taped)
-export type ForeignOrigin = { path: string, spanned_home: bool, module: string = "" }
+export type ForeignOrigin = { path: string, spanned_home: bool, module: string = "", landed: List<LandedSeat> = [] }
 
 impl ForeignOrigin {
     /// Where the names a node it wrote reads are read: the file, else the module.
     fn home() -> string { if self.path.is_empty() { self.module } else { self.path } }
+
+    /// Where the name in `seat` reads: where the node lands when a hole filled it, else its home.
+    fn home_at(seat: LandedSeat) -> string? { if self.landed.contains(seat) { null } else { self.home() } }
 }
+
+/// A node's name seat that is no written type, which a hole may fill: the node's own names, as a
+/// fill's or a node a hole named has; an impl's target; and the trait it implements.
+@derive(Taped)
+export enum LandedSeat { Names, Target, Trait }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather

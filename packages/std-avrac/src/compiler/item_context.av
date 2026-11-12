@@ -4,7 +4,17 @@
 //! and whether a named instance of it binds its name; a sublanguage's word, with its grammar's
 //! notation. Every declaration this reads is read with no words of its own, so working out one
 //! file's words never needs another file's words.
-use core.{ComponentWord, ExprId, Instancing, StmtId, SyntaxArena, distinct, flatten, module_path}
+use core.{
+    ComponentWord,
+    ExprId,
+    Instancing,
+    LandedSeat,
+    StmtId,
+    SyntaxArena,
+    distinct,
+    flatten,
+    module_path,
+}
 use compiler.host.{read_manifest}
 use diagnostics.{new_source_file}
 use features.{BlockGrammar, BlockWords}
@@ -144,10 +154,10 @@ type ItemAbout = {
 }
 
 /// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
-/// them, the methods and statics it writes, the trait it implements, as written, and the template
-/// that wrote it, for one a generator made.
+/// them, the methods and statics it writes, the trait it implements, as written, and where each of
+/// the target's and the trait's names reads, for one a generator made.
 @derive(Saved)
-export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string?, written_in: string? = null }
+export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string?, target_in: string? = null, trait_in: string? = null }
 
 /// A component an item declares: its name, whether its instance binds a name, whether it's exported.
 @derive(Saved)
@@ -187,7 +197,8 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
             methods: [f!.name for m in p!.fns if !store.is_static(m) for f in [store.fn_parts(m)] if f != null],
             statics: [f!.name for m in p!.fns if store.is_static(m) for f in [store.fn_parts(m)] if f != null],
             implements: p!.of,
-            written_in: store.stmt_origins.get()[s.index]?.home(),
+            target_in: store.seat_home(s, LandedSeat.Target),
+            trait_in: store.seat_home(s, LandedSeat.Trait),
         } for s in stmts for p in [store.impl_parts(s)] if p != null]
             .concat(
                 [ItemImpl {

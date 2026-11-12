@@ -393,7 +393,14 @@ export type ForeignNodes = { origin: ForeignOrigin, exprs: List<ExprId>, stmts: 
 
 fn same_origin(held: ForeignOrigin?, o: ForeignOrigin) -> bool {
     let h? = held else { return false }
-    h.path == o.path && h.module == o.module && h.spanned_home == o.spanned_home
+    origin_key(h) == origin_key(o)
+}
+
+/// What tells origins apart: every field.
+fn origin_key(o: ForeignOrigin) -> string { "${o.path}\t${o.module}\t${o.spanned_home}\t${[seat_word(s) for s in o.landed].join(",")}" }
+
+fn seat_word(s: LandedSeat) -> string {
+    match s { .Names -> "names", .Target -> "target", .Trait -> "trait" }
 }
 
 /// Each origin once, in the order first met: one pass, keyed by what tells origins apart.
@@ -401,7 +408,7 @@ fn distinct_origins(all: List<ForeignOrigin>) -> List<ForeignOrigin> {
     mut seen: Map<string, bool> = {}
     mut kept: List<ForeignOrigin> = []
     for o in all {
-        let key = "${o.path}\t${o.module}\t${o.spanned_home}"
+        let key = origin_key(o)
         if !seen.has(key) {
             seen.set(key, true)
             kept.push(o)
@@ -940,7 +947,17 @@ impl SyntaxArena {
 
     /// Where the names an expression minted elsewhere reads are read: the file whose template wrote
     /// it, or the module it was written in; null for one written here.
-    fn home_of(e: ExprId) -> string? { self.foreign_of(e)?.home() }
+    fn home_of(e: ExprId) -> string? {
+        let o? = self.foreign_of(e) else { return null }
+        o.home_at(LandedSeat.Names)
+    }
+
+    /// Where the name in `seat` of the statement `s` reads: its template's home, or where it lands
+    /// when it was written here or a hole filled it.
+    fn seat_home(s: StmtId, seat: LandedSeat) -> string? {
+        let o? = self.stmt_origins.get()[s.index] else { return null }
+        o.home_at(seat)
+    }
 
     /// Whether an expression's span is another file's — a node a
     /// template was copied from.
@@ -960,7 +977,19 @@ impl SyntaxArena {
     fn note_copied(copied: CopiedNodes, path: string) {
         let origin = ForeignOrigin { path: path, spanned_home: true }
         for e in copied.exprs { if self.expr_origins.get()[e.index] == null { self.expr_origins.set_at(e.index, origin) } }
-        for s in copied.stmts { if self.stmt_origins.get()[s.index] == null { self.stmt_origins.set_at(s.index, origin) } }
+        for e in copied.holed_exprs {
+            if self.expr_origins.get()[e.index] == null { self.expr_origins.set_at(e.index, origin with { landed: [LandedSeat.Names] }) }
+        }
+        for s in copied.stmts {
+            if self.stmt_origins.get()[s.index] == null {
+                self
+                    .stmt_origins
+                    .set_at(
+                        s.index,
+                        origin with { landed: copied.landed.find((l) -> l.stmt.index == s.index)?.seats ?? [] },
+                    )
+            }
+        }
         for p in copied.pats { if self.pat_origins.get()[p.index] == null { self.pat_origins.set_at(p.index, origin) } }
         for p in copied.params { self.param_elsewhere.set_at(p.index, true) }
     }

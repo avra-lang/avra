@@ -85,6 +85,8 @@ export type Rebuilder = {
     holed_params: List<ParamId>,
     // every seat the copy made, each keeping the template's span
     made_params: List<ParamId>,
+    // each statement whose name seats a hole filled, with those seats
+    landed: List<LandedAt>,
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
@@ -110,16 +112,23 @@ export type Rebuilder = {
 /// of each hole by index (`store.is_run_hole` over its fill
 /// expression).
 /// The nodes a copy made from its template, each keeping the template's span: those whose names
-/// read there and those whose names came through a hole, never what a fill built at its own.
-export type CopiedNodes = { exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, params: List<ParamId> }
+/// read there and those whose names came through a hole, never what a fill built at its own; the
+/// expressions a hole named or filled apart, since their names read where the copy lands; and each
+/// statement's seats whose names a hole filled.
+export type CopiedNodes = { exprs: List<ExprId>, holed_exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, params: List<ParamId>, landed: List<LandedAt> }
+
+/// A copied statement's name seats a hole filled.
+export type LandedAt = { stmt: StmtId, seats: List<LandedSeat> }
 
 impl Rebuilder {
     fn made_nodes() -> CopiedNodes {
         CopiedNodes {
-            exprs: self.made_exprs.concat(self.holed_exprs),
+            exprs: self.made_exprs,
+            holed_exprs: self.holed_exprs,
             stmts: self.made_stmts.concat(self.holed_stmts),
             pats: self.made_pats.concat(self.holed_pats),
             params: self.made_params,
+            landed: self.landed,
         }
     }
 }
@@ -142,6 +151,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         holed_pats: [],
         holed_params: [],
         made_params: [],
+        landed: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -177,6 +187,7 @@ export fn copier(
         holed_pats: [],
         holed_params: [],
         made_params: [],
+        landed: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -646,7 +657,16 @@ impl Rebuilder {
         if group != null { self.dst.document(id, group!.lines, group!.at) }
         for a in annotations { self.dst.annotate(id, a) }
         if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
+        let seats = self.landed_seats(s)
+        if !seats.is_empty() { self.landed.push(LandedAt { stmt: id, seats: seats }) }
         id
+    }
+
+    /// The name seats of the source statement `s` a lone hole stands as: an impl's target and trait.
+    fn landed_seats(s: StmtId) -> List<LandedSeat> {
+        let p? = self.src.impl_parts(s) else { return [] }
+        let target = if self.lone_hole(p.target) == null { [] } else { [LandedSeat.Target] }
+        target.concat(if self.lone_hole(p.of) == null { [] } else { [LandedSeat.Trait] })
     }
 
     // ── holes and fills ──

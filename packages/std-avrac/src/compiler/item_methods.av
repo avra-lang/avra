@@ -59,9 +59,8 @@ fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerP
         let by_item = if generated { generated_impls(engine, f) } else { written_impls(engine, f) }
         for at, held in by_item {
             for i in held {
-                let homes = read_from(engine, f, i.written_in)
-                let d? = homes.find_map((h) -> resolved(engine, h, Space.Type, i.target).named()) else { continue }
-                let tr = if i.implements == null { null } else { homes.find_map((h) -> resolved(engine, h, Space.Type, i.implements!).named()) }
+                let d? = impl_named(engine, f, i.target_in, i.target) else { continue }
+                let tr = if i.implements == null { null } else { impl_named(engine, f, i.trait_in, i.implements!) }
                 let filed = FiledImpl {
                     at: ImplAt {
                         file: f,
@@ -80,6 +79,12 @@ fn impls_filed(engine: QueryEngine, package: string, generated: bool) -> AnswerP
     answer_parts(
         [NamedValue { name: name, value: Filed { impls: held }.saved_bytes() } for name, held in by_type],
     )
+}
+
+/// The type an impl in `file` names `name` in one of its seats: read where `home` says that seat's
+/// name was written, then where the impl stands.
+fn impl_named(engine: QueryEngine, file: SourceFileAddress, home: string?, name: string) -> DeclaredName? {
+    read_from(engine, file, home).find_map((h) -> resolved(engine, h, Space.Type, name).named())
 }
 
 /// The type parameters the type `file` declares as `name` stands over: a record's or a component's,
