@@ -1,0 +1,514 @@
+//! WHAT AN AVRA ITEM IS READ UNDER: the shapes of the block words its file stands under, worked out
+//! through the program layer's own reads. A word's shape is what a parse needs of it and nothing
+//! more: the component it names, where that was declared, whether it's the file's own module's,
+//! and whether a named instance of it binds its name; a sublanguage's word, with its grammar's
+//! notation. Every declaration this reads is read with no words of its own, so working out one
+//! file's words never needs another file's words.
+use core.{
+    template_home,
+    ComponentWord,
+    ExprId,
+    Instancing,
+    LandedSeat,
+    StmtId,
+    SyntaxArena,
+    distinct,
+    flatten,
+    module_path,
+}
+use compiler.host.{read_manifest}
+use diagnostics.{new_source_file}
+use features.{BlockGrammar, BlockWords}
+use features.components.{binds_name, instanced, word_of}
+use grammar.{avra_known_terminals, parse_grammar}
+use @std.grammar.{ready}
+use @std.meta.{derive}
+use @std.path.{dir_of, under_dir}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.saved_derive.{Saved}
+use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
+use @std.program.syntax_tape.{SyntaxTape}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A component word as a parse needs it.
+@derive(Saved)
+export type WordShape = { word: string, declared: string, home: SourceFileAddress, own: bool, binds_name: bool }
+
+/// A named instance a body may list by its name alone, and the component it instances.
+@derive(Saved)
+export type NamedInstance = { name: string, declared: string }
+
+/// A sublanguage's word, and the notation of the grammar it reads its blocks by.
+@derive(Saved)
+export type GrammarWord = { word: string, origin: string, notation: string }
+
+/// A sublanguage's word as a parse needs it: where it's declared, and whether its notation reads —
+/// a word whose grammar doesn't is no block word.
+@derive(Saved)
+export type GrammarShape = { word: string, origin: string, reads: bool }
+
+/// The words a file's items read under.
+@derive(Saved)
+export type WordShapes = { components: List<WordShape>, grammars: List<GrammarShape> }
+
+/// What reading a file's items depends on besides their text: its words' shapes.
+export fn avra_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes { word_shapes(engine, file).saved_bytes() }
+
+/// What reading an item depends on when it depends on nothing but its text.
+export fn no_context() -> Bytes { WordShapes { components: [], grammars: [] }.saved_bytes() }
+
+impl WordShapes {
+    /// What reading `text` depends on of these words: only those it could name. A word it never
+    /// spells can't change how it reads, so an item that spells none reads as one with no words.
+    fn named_in(text: string) -> Bytes {
+        WordShapes {
+            components: [c for c in self.components if text.contains(c.word)],
+            grammars: [g for g in self.grammars if text.contains(g.word)],
+        }
+            .saved_bytes()
+    }
+}
+
+/// One item of a file, and the context it reads under: its file's words it could name.
+@derive(Saved)
+export type ItemUnder = { start: int, text: string, context: Bytes }
+
+/// A file's items, each with the context it reads under.
+export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<ItemUnder> {
+    [item_under(engine, file, at) for at in 0..item_count(engine, file)]
+}
+
+/// How many items a file has.
+@query
+export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { file_items(engine, file).length }
+
+/// A file's item `at`, with the context it reads under; past the file's items, no text. A saved
+/// answer is asked again with the place it was asked at, which an edit may have taken away.
+@query
+export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnder {
+    let items = file_items(engine, file)
+    let item = if at < items.length { items[at] } else { ItemText { start: 0, text: "" } }
+    ItemUnder {
+        start: item.start,
+        text: item.text,
+        context: WordShapes.from_saved_bytes(file_context(engine, file)).named_in(item.text),
+    }
+}
+
+/// The words a parse under `context` reads by, each known by its shape alone.
+export fn context_words(context: Bytes) -> BlockWords {
+    let shapes = WordShapes.from_saved_bytes(context)
+    BlockWords {
+        components: [shaped_word(w) for w in shapes.components],
+        grammars: [BlockGrammar { word: g.word, ready: null, origin: g.origin } for g in shapes.grammars if g.reads],
+    }
+}
+
+fn shaped_word(w: WordShape) -> ComponentWord {
+    ComponentWord {
+        word: w.word,
+        declared: w.declared,
+        form: Instancing.Shaped(w.binds_name),
+        origin: template_home(w.home),
+        own: w.own,
+    }
+}
+
+/// A grammar readied from its notation; absent for one that doesn't parse, whose library speaks.
+export fn readied(w: GrammarWord) -> BlockGrammar? {
+    let built? = parse_grammar(w.notation).built else { return null }
+    BlockGrammar { word: w.word, ready: ready(built, avra_known_terminals()), origin: w.origin }
+}
+
+/// A file's words: every component its own module declares, then what each `use` line imports.
+fn word_shapes(engine: QueryEngine, file: SourceFileAddress) -> WordShapes {
+    let own = [w.shape with { own: true } for w in own_module_words(engine, file)]
+    let lines = [line_shapes(engine, file, u) for u in file_words(engine, file).uses]
+    WordShapes {
+        components: own.concat(flatten([l.components for l in lines])),
+        grammars: [GrammarShape {
+            word: g.word,
+            origin: g.origin,
+            reads: parse_grammar(g.notation).built != null,
+        } for g in file_grammars(engine, file)],
+    }
+}
+
+/// The sublanguages a file's `use` lines import, each by the word it's imported as.
+@query
+export fn file_grammars(engine: QueryEngine, file: SourceFileAddress) -> List<GrammarWord> {
+    flatten([line_shapes(engine, file, u).grammars for u in file_words(engine, file).uses])
+}
+
+/// What a parse keeps of an item for its file's words and its meaning, read without its nodes: the
+/// components it declares, the sublanguages it exports, its top-level named instances, its `use`
+/// lines, and what it means by besides its text — the word of each instance it holds and each word
+/// its blocks wait to be read by, each once in the order met.
+@derive(Saved)
+type ItemAbout = {
+    components: List<ItemComponent>,
+    grammars: List<ItemGrammar>,
+    instances: List<ItemInstance>,
+    uses: List<UseLine>,
+    instance_words: List<string>,
+    block_words: List<string>,
+    impls: List<ItemImpl>,
+}
+
+/// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
+/// them, the methods and statics it writes, the trait it implements, as written, and where each of
+/// the target's and the trait's names reads, for one a generator made.
+@derive(Saved)
+export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string?, target_in: string? = null, trait_in: string? = null }
+
+/// A component an item declares: its name, whether its instance binds a name, whether it's exported.
+@derive(Saved)
+type ItemComponent = { declared: string, binds_name: bool, exported: bool }
+
+/// A sublanguage an item exports: its word and its grammar's notation.
+@derive(Saved)
+type ItemGrammar = { word: string, notation: string }
+
+/// A named instance an item makes, and whether it's exported.
+@derive(Saved)
+type ItemInstance = { name: string, declared: string, exported: bool }
+
+impl ItemInstance {
+    /// The instance as a body lists it by name.
+    fn listed() -> NamedInstance { NamedInstance { name: self.name, declared: self.declared } }
+}
+
+/// What an item's statements say of its file's words, as its tape keeps it.
+export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
+    ItemAbout {
+        components: [ItemComponent {
+            declared: w!.declared,
+            binds_name: binds_name(w!),
+            exported: store.is_exported(s),
+        } for s in stmts for w in [word_of(store, s, "")] if w != null],
+        grammars: [ItemGrammar { word: g!.name, notation: g!.text } for s in stmts if store.is_exported(s) for g in [store.syntax_parts(s)] if g != null],
+        instances: [ItemInstance { name: i!.name, declared: i!.declared, exported: store.is_exported(s) } for s in stmts for i in [instanced(store, s)] if i != null],
+        uses: [UseLine {
+            path: u!.path,
+            items: u!.items,
+            aliases: u!.aliases,
+            exported: store.is_exported(s),
+        } for s in stmts for u in [store.use_parts(s)] if u != null],
+        instance_words: distinct([w! for e in every_expr(store) for w in [store.instance_word(e)] if w != null]),
+        block_words: distinct(
+            [w! for e in every_expr(store) if store.deferred_block(e) != null for w in [store.expr(e).body_of()?.word] if w != null],
+        ),
+        impls: [ItemImpl {
+            target: p!.target,
+            params: [x.of for x in store.impl_tparams_of(s)?.target ?? []],
+            methods: [f!.name for m in p!.fns if !store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+            statics: [f!.name for m in p!.fns if store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+            implements: p!.of,
+            target_in: store.seat_home(s, LandedSeat.Target),
+            trait_in: store.seat_home(s, LandedSeat.Trait),
+        } for s in stmts for p in [store.impl_parts(s)] if p != null]
+            .concat(
+                [ItemImpl {
+                    target: c!.name,
+                    params: c!.tparams,
+                    methods: [f!.name for m in c!.fns if !store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+                    statics: [f!.name for m in c!.fns if store.is_static(m) for f in [store.fn_parts(m)] if f != null],
+                    implements: null,
+                } for s in stmts for c in [store.component_parts(s)] if c != null],
+            ),
+    }
+        .saved_bytes()
+}
+
+fn every_expr(store: SyntaxArena) -> List<ExprId> { [ExprId { index: at } for at in 0..store.exprs.count()] }
+
+/// One item of a file: where its text starts, and the text.
+@derive(Saved)
+export type ItemText = { start: int, text: string }
+
+/// A file's items (`item_spans`), each as its text; a file with no text has none. Its text is
+/// lexed here alone.
+@query
+export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemText> {
+    let text? = source_text(engine, file) else { return [] }
+    [ItemText { start: span.start, text: text.substring(span.start, span.end) } for span in item_spans(avra_columns(text), text.length)]
+}
+
+/// What each item of a file keeps for its words, read with no words of its own.
+fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
+    [about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, no_context()))) for item in file_items(engine, file)]
+}
+
+fn about_of(octets: Bytes?) -> ItemAbout {
+    let held? = octets else {
+        return ItemAbout {
+            components: [],
+            grammars: [],
+            instances: [],
+            uses: [],
+            instance_words: [],
+            block_words: [],
+            impls: [],
+        }
+    }
+    ItemAbout.from_saved_bytes(held)
+}
+
+/// The impls each item of a file holds, by the item's place, read off their headers: its written
+/// items', then its generated items'.
+export fn file_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<ItemImpl>> {
+    written_impls(engine, file).concat(generated_impls(engine, file))
+}
+
+/// The impls the written item `at` of `file` holds, read off its own header alone.
+fn item_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
+    about_of(
+        SyntaxTape
+            .about_in(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
+    )
+        .impls
+}
+
+/// The impls each written item of a file holds, by the item's place.
+fn written_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<ItemImpl>> { [a.impls for a in file_abouts(engine, file)] }
+
+/// The impls each generated item of a file holds, in the order made.
+fn generated_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<ItemImpl>> { [a.impls for a in generated_abouts(engine, file)] }
+
+/// What a file declares of block words and imports: every component it declares, each saying
+/// whether it's exported, the sublanguages and named instances it exports, and its `use` lines.
+@derive(Saved)
+type FileWords = { components: List<DeclaredWord>, grammars: List<GrammarWord>, instances: List<NamedInstance>, uses: List<UseLine> }
+
+/// A component a file declares, whether it exports it, and which of the file's items declares it.
+@derive(Saved)
+export type DeclaredWord = { shape: WordShape, exported: bool, item: int }
+
+/// A `use` line: the module path, the names it imports, each one's alias ("" for none), and whether
+/// it re-exports them.
+@derive(Saved)
+type UseLine = { path: List<string>, items: List<string>, aliases: List<string>, exported: bool = false }
+
+impl UseLine {
+    /// The name item `j` is imported under.
+    fn bound_as(j: int) -> string { if self.aliases[j].is_empty() { self.items[j] } else { self.aliases[j] } }
+}
+
+/// What a file declares of block words and imports, read once, off its items' tapes.
+@query
+fn file_words(engine: QueryEngine, file: SourceFileAddress) -> FileWords {
+    let abouts = file_abouts(engine, file)
+    FileWords {
+        components: [DeclaredWord {
+            shape: WordShape {
+                word: c.declared,
+                declared: c.declared,
+                home: file,
+                own: false,
+                binds_name: c.binds_name,
+            },
+            exported: c.exported,
+            item: at,
+        } for at, a in abouts for c in a.components],
+        grammars: [GrammarWord { word: g.word, origin: template_home(file), notation: g.notation } for a in abouts for g in a.grammars],
+        instances: [i.listed() for a in abouts for i in a.instances if i.exported],
+        uses: [u for a in abouts for u in a.uses],
+    }
+}
+
+/// A file as a component word's origin names it: its package, then its path.
+export fn spelled_file(file: SourceFileAddress) -> string { "${file.package_name}/${file.path_in_package}" }
+
+/// What one `use` line imports of block words.
+type LineShapes = { components: List<WordShape>, grammars: List<GrammarWord>, instances: List<NamedInstance> }
+
+/// The module a `use` line names, as a file reads it: its package, its path there, and whether it's
+/// read as its package's own. Absent for a malformed path, the file's own module, a package the
+/// file's doesn't reach, or a module that is both a directory and a file.
+type ModuleAt = { package: string, local: List<string>, as_root: bool }
+
+fn imported_module(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> ModuleAt? {
+    let m = module_path(u.path)
+    if m.malformed() { return null }
+    let provider = m.package() ?? file.package_name
+    if provider == file.package_name && m.local().join(".") == module_segments(file).join(".") { return null }
+    if !reaches(engine, file.package_name, provider) || two_modules(engine, provider, m.local()) { return null }
+    ModuleAt { package: provider, local: m.local(), as_root: provider == file.package_name }
+}
+
+/// Whether a module's name is both a directory and a file: a `use` of it names neither.
+fn two_modules(engine: QueryEngine, package: string, local: List<string>) -> bool {
+    let dir = module_dir(local)
+    dir_listed(engine, package, dir) != null && source_text(engine, dir_file(package, dir)) != null
+}
+
+fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> LineShapes {
+    let none = LineShapes { components: [], grammars: [], instances: [] }
+    let at? = imported_module(engine, file, u) else { return none }
+    let exports = module_exports(engine, at.package, at.local, at.as_root)
+    LineShapes {
+        components: [c with { word: u.bound_as(j) } for j, item in u.items for c in exports.components.get(item) ?? []],
+        grammars: [g with { word: u.bound_as(j) } for j, item in u.items for g in exports.grammars.get(item) ?? []],
+        instances: [i with { name: u.bound_as(j) } for j, item in u.items for i in exports.instances.get(item) ?? []],
+    }
+}
+
+/// The named instances a file's bodies may list by name alone: its own top-level ones, read off its
+/// tokens against its words, then those each `use` line imports.
+@query
+export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
+    let own = [i.listed() for item in items_under(engine, file) for i in about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, item.context))).instances]
+    own
+        .concat([i for u in file_words(engine, file).uses for i in line_shapes(engine, file, u).instances])
+}
+
+/// The module a file stands in: its directory's path under its package's `src`.
+fn module_segments(file: SourceFileAddress) -> List<string> {
+    let dir = dir_of(file.path_in_package)
+    if dir == SOURCE_ROOT { return [] }
+    if !dir.starts_with("${SOURCE_ROOT}/") { return [dir] }
+    dir.substring(SOURCE_ROOT.length + 1, dir.length).split("/")
+}
+
+/// Where a package's modules stand.
+const SOURCE_ROOT: string = "src"
+
+/// Every component a file's own module declares: its own, then each other file's in its
+/// directory, a program's among them.
+fn own_module_words(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredWord> {
+    let module = module_declared(engine, file.package_name, module_segments(file))
+    file_words(engine, file)
+        .components
+        .concat([w for w in module.components if w.shape.home.path_in_package != file.path_in_package])
+}
+
+/// What a module's files declare of block words, read once, in listing order: every component,
+/// and the files that declare them.
+@derive(Saved)
+type ModuleWords = { files: List<string>, components: List<DeclaredWord> }
+
+@query
+fn module_declared(engine: QueryEngine, package: string, local: List<string>) -> ModuleWords {
+    let files = module_files(engine, package, local, true)
+    ModuleWords {
+        files: [f.path_in_package for f in files],
+        components: [w for f in files for w in file_words(engine, f).components],
+    }
+}
+
+/// What a module exports of block words, each kept by the name a `use` line imports it by.
+@derive(Saved)
+type ModuleExports = {
+    components: Map<string, List<WordShape>>,
+    grammars: Map<string, List<GrammarWord>>,
+    instances: Map<string, List<NamedInstance>>,
+}
+
+@query
+fn module_exports(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> ModuleExports {
+    let files = module_files(engine, package, local, as_root)
+    mut components: Map<string, List<WordShape>> = {}
+    mut grammars: Map<string, List<GrammarWord>> = {}
+    mut instances: Map<string, List<NamedInstance>> = {}
+    for f in files {
+        let words = file_words(engine, f)
+        for w in words.components {
+            if w.exported {
+                components
+                    .set(w.shape.declared, (components.get(w.shape.declared) ?? []).concat([w.shape]))
+            }
+        }
+        for g in words.grammars { grammars.set(g.word, (grammars.get(g.word) ?? []).concat([g])) }
+        for i in words.instances { instances.set(i.name, (instances.get(i.name) ?? []).concat([i])) }
+    }
+    ModuleExports { components: components, grammars: grammars, instances: instances }
+}
+
+/// A module's files: its directory's sources, or the one file named for it, never through a
+/// package nested inside, never a file its manifest excludes, and a dependency's own program
+/// left out.
+fn module_files(engine: QueryEngine, package: string, local: List<string>, as_root: bool) -> List<
+    SourceFileAddress,
+> {
+    if crosses_package(engine, package, local) { return [] }
+    let dir = module_dir(local)
+    let manifest = package_facts(engine, package)
+    let entries = dir_listed(engine, package, dir)
+    if entries != null {
+        return [SourceFileAddress { package_name: package, path_in_package: "${dir}/${name}" } for name in entries! if name.ends_with(".av") && listed_in(manifest, as_root, "${dir}/${name}")]
+    }
+    let file = dir_file(package, dir)
+    if source_text(engine, file) == null { [] } else { [file] }
+}
+
+/// What the directory `dir` of `package` lists; absent where it isn't one.
+fn dir_listed(engine: QueryEngine, package: string, dir: string) -> List<string>? {
+    listed(engine, DirectoryAddress { package_name: package, path_in_package: dir })
+}
+
+/// The file a module named for the directory `dir` of `package` would be.
+fn dir_file(package: string, dir: string) -> SourceFileAddress { source_at(package, "${dir}.av") }
+
+fn module_dir(local: List<string>) -> string { if local.is_empty() { SOURCE_ROOT } else { "${SOURCE_ROOT}/${local.join("/")}" } }
+
+/// Whether any directory along a module's path is a package of its own.
+fn crosses_package(engine: QueryEngine, package: string, local: List<string>) -> bool {
+    (1..local.length + 1)
+        .any(
+            (j) -> (listed(
+                engine,
+                DirectoryAddress {
+                    package_name: package,
+                    path_in_package: module_dir(local.take(j)),
+                },
+            ) ?? [])
+                .contains(MANIFEST),
+        )
+}
+
+const MANIFEST: string = "avra.toml"
+
+/// Whether a source belongs to its module's listing: not excluded, and not a dependency's own
+/// program.
+fn listed_in(manifest: PackageFacts, as_root: bool, path: string) -> bool {
+    if manifest.excludes.any(under_dir(path, it) || path == it) { return false }
+    let bin? = manifest.bin else { return true }
+    as_root || path != bin || manifest.lib == bin
+}
+
+/// What a package's manifest says of where its modules stand and whom it reads: what it excludes,
+/// its program, its library, and the packages it depends on. A package with no manifest says none.
+@derive(Saved)
+type PackageFacts = { excludes: List<string>, bin: string?, lib: string?, depends_on: List<string> }
+
+@query
+fn package_facts(engine: QueryEngine, package: string) -> PackageFacts {
+    let text? = source_text(
+        engine,
+        SourceFileAddress { package_name: package, path_in_package: MANIFEST },
+    ) else {
+        return PackageFacts { excludes: [], bin: null, lib: null, depends_on: [] }
+    }
+    let m = read_manifest(new_source_file(MANIFEST, text))
+    PackageFacts {
+        excludes: m.excludes,
+        bin: m.bin,
+        lib: m.lib,
+        depends_on: [d.key for d in m.deps],
+    }
+}
+
+/// Whether a package may read another's modules: itself, the toolchain's own, or one its manifest
+/// depends on.
+fn reaches(engine: QueryEngine, from: string, to: string) -> bool {
+    if to == from { return true }
+    if to.starts_with("@std/") { return listed(engine, DirectoryAddress { package_name: to, path_in_package: "" }) != null }
+    package_facts(engine, from).depends_on.contains(to)
+}
+
+collect listed_context_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries Avra's context reads through, for a process to hand its engine beside the source
+/// facts.
+export fn context_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_context_facts) }

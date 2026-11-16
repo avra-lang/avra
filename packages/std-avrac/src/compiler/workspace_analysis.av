@@ -25,6 +25,7 @@ use core.{
 }
 use @std.path.{dir_of}
 use features.{
+    ConstType,
     Unsettled,
     Settled,
     Settlement,
@@ -51,7 +52,7 @@ use features.{
     new_type_facts,
     TypeFacts,
 }
-use core.{StmtId}
+use core.{StmtId, same_file, digest_of}
 use diagnostics.{Diag, no_voices, has_errors}
 use compiler.families.{Family}
 use compiler.backend.{
@@ -63,19 +64,16 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{
-    Lowered,
-    Body,
-    Unit,
-    Instance,
-    CodeFacts,
-    KeptInstance,
-    HeldWants,
-    lower_unit,
-    code_facts_from_wire,
-}
+use compiler.lower.{Lowered, Body, Unit, CodeFacts, lower_unit, unit_wants}
 use compiler.memory.{memory}
-use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
+use @std.relation.{query, scoped_by, recursive, lasting}
+use @std.relation.stable.{Scope}
+use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
+
+/// How the bodies compile-time runs lowered are filed.
+const BODY_RUN: string = "body run"
+
+/// How the bodies compile-time runs lowered are filed.
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -93,10 +91,56 @@ fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned 
     Interned.Found(known)
 }
 
-/// A file's clash diagnostics by what each says — the value a `Family.MethodDiags`
-/// cell settles on, and the hash a witness edge holds.
-fn diags_fingerprint(out: List<Diag>) -> int {
-    fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
+/// One declaration's body typed: its facts, a table over its own window. A declaration still
+/// expanding has a range that will grow, so a window typed now answers its asker alone.
+@query
+@recursive
+@scoped_by(body_scope)
+fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
+    let x = ws.decls.decl(d)
+    mut t = ws.type_cx_for(x)
+    let out = t.type_decl(x)
+    if ws.db.active(key(Family.Expanded, x.file.index)) { ws.query_db().unkept() }
+    out
+}
+
+/// A const's type as the program answers it: read off its literal, else its declaration's typing found it. Its value asking for its own type is the typing still open.
+@query
+@recursive
+fn const_typed(ws: Workspace, d: DeclId) -> ConstType {
+    let x = ws.decls.decl(d)
+    touch(ws.items(x.file))
+    touch(syntax_in(ws, d))
+    let literal = ws.decls.literal_const_type(x.file, x.stmt)
+    if literal != null { return ConstType.Known(literal!) }
+    if ws.typing_of(d) { return ConstType.Cyclic }
+    let ty? = ws.typed(d).const_type(x.stmt) else { return ConstType.Refused }
+    ConstType.Known(ty)
+}
+
+/// The scope a body's ids cross under: offsets from its own window as it stands now.
+fn body_scope(ws: Workspace, d: DeclId) -> dyn Scope {
+    touch(ws.decls.store(d))
+    let x = ws.decls.decl(d)
+    ws.facts_scope(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo })
+}
+
+/// A file's method-table clashes, as its analysis speaks them.
+@query
+fn method_clashes(ws: Workspace, f: FileId) -> List<Diag> { ws.file_method_clashes(f) }
+
+/// Which declarations read `state` through the calls their bodies make: the read-set fixpoint
+/// over the call graph, asked after typing, so every file is resolved and a declaration a
+/// `@derive` generated stands. The answer is every member's reach.
+@query
+fn reach_solved(ws: Workspace) -> int {
+    let fns = [x.id for x in ws.decls.unheld_decls() if ws.read_member(x.kind, x.external, x.root)]
+    let solved = ws
+        .read_fixpoint
+        .solve([d.index for d in fns], (arg: int) -> ws.read_contribution(DeclId { index: arg }))
+    let refusal? = refusal_of(solved) else { return reach_fp([ws.read_fixpoint.value_at(d.index) for d in fns]) }
+    ws.defect("defect: ${fixpoint_spoken(refusal)}")
+    reach_fp([ws.read_fixpoint.value_at(d.index) for d in fns])
 }
 
 /// One expression of file `f` wanted as a program's entry.
@@ -104,39 +148,41 @@ fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -
     Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }
 }
 
-/// A kept instantiation's reference: its store key and its symbol.
-type KeptRef = { key: string, symbol: string }
+/// One file's analysis.
+@query
+@recursive
+fn analysis_in(ws: Workspace, f: FileId) -> Analysis { ws.analyzed(f) }
 
-/// The roaming callees a callee row lists: a count, then each callee's symbol and key.
-fn callee_refs(row: string) -> List<KeptRef> {
-    let parts = row.split("\n")
-    let n = parts.length / 2
-    [KeptRef { symbol: parts[2 * j + 1], key: parts[2 * j + 2] } for j in 0..n]
-}
+/// One unit lowered, remembered by its want. Its reads stand in `unit_laws`' record.
+@query
+@recursive
+export fn lowered_unit_of(ws: Workspace, w: Wanted) -> Unit { ws.lowered_saved(w) }
 
-/// An instantiation's key: its home's object key, its type arguments' shapes, and its
-/// symbol. The object key covers every module the generic's body sees.
-export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> string {
-    node_key(Stored.Unit, ["codes", "inst", home_key, shapes, symbol])
+/// What an instantiation wants instantiated: a unit's law is an answer, so what it reads names
+/// the units to lower again, and what it wants the walk that finds them.
+@query
+@recursive
+@lasting
+fn unit_laws(ws: Workspace, w: Wanted) -> List<Wanted> { ws.instantiated_by(ws.lowered(ws.spec_id(w))) }
+
+/// What a file's own units want instantiated. A plain fn's unit is its own file's.
+@query
+@lasting
+fn file_laws(ws: Workspace, f: FileId) -> List<Wanted> {
+    flatten([ws.instantiated_by(ws.lowered(ws.spec_id(w))) for w in unit_wants(ws.analysis(f))])
 }
 
 impl Workspace {
-    /// The method-table clashes spoken in a file, asked as `Family.MethodDiags`
-    /// so the file's `Analysis` depends on the method tables its own methods
-    /// belong to — never the whole table.
+    /// The method-table clashes spoken in a file, asked as `method_clashes`, so the file's
+    /// `Analysis` depends on the method tables its own methods belong to — never the whole
+    /// table.
     fn method_diagnostics(f: FileId) -> List<Diag> {
         // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
         // analysis must not force ANOTHER file's resolve (a re-entrant
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(Family.Resolved.ordinal) { return [] }
-        let k = key(Family.MethodDiags, f.index)
-        if !(self.db.ask(k) is .Compute) { return self.method_diag_rows.at(f.index) ?? [] }
-        self.db.begin(k)
-        let out = self.file_method_clashes(f)
-        self.method_diag_rows.keep(f.index, out)
-        self.db.settle(k, diags_fingerprint(out))
-        out
+        method_clashes(self, f)
     }
 
     /// The clashes spoken in file `f`. A clash is recorded at the LATER
@@ -177,43 +223,7 @@ impl Workspace {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
         if self.closed.get() { return self.analyzed(f) }
-        match self.relation(Family.Analysis).start_recursive(f.index) {
-            .Reuse(value) -> { return analysis_of(value) },
-            .Compute -> nothing(),
-        }
-        let out = self.analyzed(f)
-        // DERIVED, LAZY, never re-walked: `analyzed` just asked
-        // `resolved` and `folded` above (their own fingerprints
-        // fresh once asked), so this adds only what an `Analysis`
-        // carries beyond them — every diagnostic in pipeline order,
-        // `sig_diagnostics` and `method_diagnostics` included. `view`
-        // and `program` are left out: `view` is shared/derived state
-        // (the workspace's own Decls/TypeRegistry, `p.store` already
-        // covered by `Parsed`/`Resolved`/`Folded`), and `program` is
-        // a CLOSURE — structurally unfoldable — whose behavior is a
-        // pure fn of `f`'s own stable path, never independent
-        // content. LAZY because reading Resolved's/Folded's hash
-        // back would otherwise force THEIR folds (and, through
-        // Folded's own derivation, every body's Typed) on every cold
-        // compile; this closure runs only when Analysis itself has a
-        // prior settle to compare against.
-        let ws = self
-        analysis_of(
-            self
-                .relation(Family.Analysis)
-                .finish_lazy(
-                    f.index,
-                    DbRow.Analysis(out),
-                    (r: DbRow) -> fp(
-                        1,
-                        [
-                            dep_hash_fp(ws.db.value_hash_of(key(Family.Resolved, f.index))),
-                            dep_hash_fp(ws.db.value_hash_of(key(Family.Folded, f.index))),
-                            fp_list([diag_fp(d) for d in analysis_of(r).diagnostics]),
-                        ],
-                    ),
-                ),
-        )
+        analysis_in(self, f)
     }
 
     /// THE INTERPROCEDURAL READ SET, as ONE whole-program growing-set
@@ -223,28 +233,15 @@ impl Workspace {
     /// contribution; a callee's settled answer is read through
     /// `value_at`, which records the edge the worklist propagates on.
     /// The lattice is monotone — `bottom` is pure, `join` is `||`, so a
-    /// declaration that reads state never stops. Settled once per
-    /// program state, keyed by `Family.ReadReach`.
-    fn read_reach() -> int {
-        // A pass that ran inside a resolve would read a half-built
-        // namespace: the caller's own real answer comes from the
-        // normal analysis, exactly as `failures()` guards.
-        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        let k = key(Family.ReadReach, 0)
-        if !(self.db.ask(k) is .Compute) { return 0 }
-        self.db.begin(k)
-        // The plan is asked after typing, so every file is already
-        // resolved and a declaration a `@derive` generated stands —
-        // the same completeness `failures()` leans on. A pass that ran
-        // earlier is refused above.
-        let fns = [x.id for x in self.decls.unheld_decls() if self.read_member(x.kind, x.external, x.file, x.root)]
-        let solved = self
-            .read_fixpoint
-            .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
-        self.db.settle(k, reach_fp([self.read_fixpoint.value_at(d.index) for d in fns]))
-        let refusal? = refusal_of(solved) else { return fns.length }
-        self.defect("defect: ${fixpoint_spoken(refusal)}")
-        fns.length
+    /// declaration that reads state never stops. Solved once per program
+    /// state (`reach_solved`); whether it could run is the answer — a
+    /// pass inside a resolve would read a half-built namespace, so the
+    /// caller's real answer comes from the normal analysis, exactly as
+    /// `failures()` guards.
+    fn read_reach() -> bool {
+        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        let _ = reach_solved(self)
+        true
     }
 
     /// Whether a declaration's evaluation reads `state` — directly, or
@@ -258,16 +255,13 @@ impl Workspace {
     /// `Unknown`, which a site never hoists nor writes directly.
     fn decl_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(d))],
             .Fn or .Method or .Default or .Main or .Case -> {
-                if x.root == null { return [unknown_key()] }
-                let _ = self.read_reach()
-                // A pass that could not run (asked mid-resolve) has no
-                // settled cell, and an unsettled member reads as
+                // A pass that could not run (asked mid-resolve) leaves every member at
                 // `bottom` — pure. Answer conservatively instead.
-                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return [unknown_key()] }
+                if x.root == null || !self.read_reach() { return [unknown_key()] }
                 plain_places(self.read_fixpoint.value_at(d.index))
             },
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> [],
@@ -275,8 +269,8 @@ impl Workspace {
     }
 
     /// A declaration the read-reach fixpoint holds: a body it can walk.
-    fn read_member(kind: DeclKind, external: bool, file: FileId, root: ExprId?) -> bool {
-        if external || self.is_held(file) || root == null { return false }
+    fn read_member(kind: DeclKind, external: bool, root: ExprId?) -> bool {
+        if external || root == null { return false }
         match kind { .Fn or .Method or .Default or .Main or .Case -> true, rest -> false }
     }
 
@@ -307,7 +301,7 @@ impl Workspace {
     /// fixpoint.
     fn callee_places(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
             rest -> plain_places(self.read_fixpoint.value_at(g.index)),
@@ -323,7 +317,7 @@ impl Workspace {
     fn structural_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
         let root? = x.root else { return [unknown_key()] }
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         let _ = self.read_reach()
         let names = self.names_of(d)
         let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
@@ -345,7 +339,7 @@ impl Workspace {
     /// structural half.
     fn callee_structural(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        if x.external { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
             rest -> structural_places_of_keys(self.read_fixpoint.value_at(g.index)),
@@ -368,7 +362,7 @@ impl Workspace {
                 [
                     p.voices.list,
                     names.voices.list,
-                    self.sig_diagnostics(f),
+                    sig_said(self, f),
                     self.method_diagnostics(f),
                     facts.voices.list,
                 ],
@@ -385,7 +379,7 @@ impl Workspace {
         if !self.decls.owns_a_range(d) { return self.analysis(f) }
         let own = self.typed(d)
         let hole = self.decls.types.intern(Type.Error)
-        let store = self.parsed(f).store
+        let store = self.parse_unrecorded(f).store
         mut out = new_type_facts(0, store.exprs.count(), 0 - 1, 0, store.stmts.count(), hole)
         out.absorb(own)
         self.analysis_over(f, out with { voices: own.voices })
@@ -397,7 +391,7 @@ impl Workspace {
 
     /// An analysis of `f` whose body facts are `facts`.
     fn analysis_over(f: FileId, facts: TypeFacts) -> Analysis {
-        let p = self.parsed(f)
+        let p = self.parse_unrecorded(f)
         let names = self.resolved(f)
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
@@ -438,35 +432,94 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id, true) }
+    fn lowered(id: int) -> Unit {
+        let w = self.asks.get()[id]
+        let out = lowered_unit_of(self, w)
+        self.owned(w, out)
+        out
+    }
 
     /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
-    /// never `Lowered`'s. The two share `id`'s space (interned by
+    /// never `lowered`'s. The two share `id`'s space (interned by
     /// symbol name, `spec_id`), so a symbol a lift also reaches would
     /// collide on one cache row and let whichever context asked
     /// first decide the other's answer. Separating the family keeps
     /// a comptime run's units — every seat borrowed, see
     /// `comptime_active` — from ever standing in for the real
     /// program's.
-    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id, false) }
-
-    /// The shared memo shape `lowered` and `lift_lowered` differ only
-    /// by family: start recursive, reuse a settled answer, or lower
-    /// the ask and settle it.
-    fn lowered_in(fam: Family, id: int, rows: bool) -> Unit {
-        match self.relation(fam).start_recursive(id) {
+    fn lift_lowered(id: int) -> Unit {
+        match self.relation(Family.LiftLowered).start_recursive(id) {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
+        let w = self.asks.get()[id]
+        let out = self.lowering(w)
+        self.owned(w, out)
+        let lowered = lowered_of(
+            self
+                .relation(Family.LiftLowered)
+                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> lowered_of(r).fingerprint()),
+        )
+        self.family_settled(Family.LiftLowered, id)
+        self.run_filed(id)
+        lowered
+    }
+
+    /// A unit lowered, the units being lowered noted while it runs.
+    fn lowering(w: Wanted) -> Unit {
+        let id = self.spec_id(w)
         self.hold.lowering.push(id)
-        let out = self.lowered_unit(self.asks.get()[id], rows)
+        let out = self.lowered_unit(w)
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
-        lowered_of(
-            self
-                .relation(fam)
-                .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
-        )
+        out
+    }
+
+    fn instantiated_by(u: Unit) -> List<Wanted> { [w for w in u.wants if self.decls.instantiated(w)] }
+
+    /// One unit of a whole program, an instantiation's law answered as it lowers.
+    fn program_unit(w: Wanted) -> Unit {
+        let u = self.lowered(self.spec_id(w))
+        if self.decls.instantiated(w) { let _ = unit_laws(self, w) }
+        u
+    }
+
+    /// Whether an instantiation's law stands on its record.
+    fn law_stands(w: Wanted) -> bool {
+        unit_laws_kept(self, w) != null && self.query_db().read_stands(unit_laws_key(self, w))
+    }
+
+    /// The instantiations the program still wants whose law no longer stands, walked from what
+    /// each file's record wants: a kept row's unit is lowered only when one of these names it.
+    fn laws_moved() -> List<Wanted> {
+        mut seen: Map<string, bool> = {}
+        mut todo = flatten([file_laws_kept(self, fi.id) ?? [] for fi in self.decls.all_files()])
+        mut moved: List<Wanted> = []
+        while !todo.is_empty() {
+            let w = todo.pop()
+            if seen.get(w.name) ?? false { continue }
+            seen.set(w.name, true)
+            let next = if self.law_stands(w) { unit_laws_kept(self, w) } else { null }
+            if next == null { moved.push(w) } else { todo = todo.concat(next!) }
+        }
+        moved
+    }
+
+    /// A unit lowered for the durable answer: one that spoke is never kept, so it speaks again.
+    fn lowered_saved(w: Wanted) -> Unit {
+        let out = self.lowering(w)
+        if !out.voices.list.is_empty() || self.gathers_closure(w) { self.query_db().unkept() }
+        out
+    }
+
+    /// Whether a unit is a closure-scoped collect's own. Its members are the closure of the program
+    /// being built, which its want doesn't name, so its answer is this program's alone and is never
+    /// kept for another that shares the store.
+    fn gathers_closure(w: Wanted) -> bool {
+        let d? = w.decl else { return false }
+        let x = self.decls.decl(d)
+        let parts? = self.decls.store_of(x.file).collect_parts(x.stmt) else { return false }
+        match parts.scope { .Closure -> true, .Self or .Package or .UnknownScope(_) -> false }
     }
 
     /// Every body a unit lowered belongs to the unit's declaration: a specialization
@@ -477,25 +530,19 @@ impl Workspace {
         for b in out.bodies { self.hold.owners.put(b.name, d) }
     }
 
-    /// One unit: served from its kept row when `rows` allows, else lowered and,
-    /// when it spoke nothing, kept.
-    fn lowered_unit(w: Wanted, rows: bool) -> Unit {
+    /// One unit lowered.
+    fn lowered_unit(w: Wanted) -> Unit {
         // A unit's OWN body is a read whatever its shape: a declaration's
         // range, or — for a program's entry, a body no declaration owns —
         // the whole file's parse, which is where that body lives. Without
         // it an entry's row stands while the values it reaches move.
-        if w.decl != null {
-            let _ = self.syntax(w.decl!)
-        } else if w.root == null {
-            let _ = self.parsed(w.file)
+        let owner = w.decl ?? self.root_owner(w.file, w.root ?? ExprId { index: 0 - 1 })
+        if owner != null {
+            touch(self.syntax(owner!))
+        } else {
+            touch(self.parsed(w.file))
         }
-        let served = if rows { self.unit_served(w) } else { null }
-        if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
-        if served != null { return served! }
-        let out = self.lower_requested(w)
-        self.owned(w, out)
-        if rows { self.unit_kept(w, out) }
-        out
+        self.lower_requested(w)
     }
 
     /// Whether a compile-time run — a lift, an argument crossing, a
@@ -508,138 +555,25 @@ impl Workspace {
     /// The store, attached by a build; null outside one.
     fn attach_store(s: Store) { self.store.set(s) }
 
-    /// Where a file's asks live: beside its object, under the object's key.
-    fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }
-
-    /// FILE-SAID: a file's asks, keyed by PATH under the program's root — written beside the object-keyed row.
+    /// A file's asks row key — read only by the said-row chain filesaid.av still holds.
     fn asks_row(path: string) -> string { node_key(Stored.Unit, ["asks-row", self.root, path]) }
 
-    /// EVERY ASK THE HELD FILES' BODIES MAKE, read by name where the bodies are not —
-    /// kept for the lowering, nothing resolved — and the held files whose row could NOT be read.
-    /// An unread row is a file that must parse: holding it would link a program
-    /// missing whatever its bodies ask for.
-    /// A link resolves every ask up front, as it lowers their instantiations from the store.
-    fn read_held_asks(s: Store, links: bool) -> List<ReadFile> {
-        mut unread: List<ReadFile> = []
-        mut asks: List<HeldAsk> = []
-        for path in held_paths(self) {
-            let held = self
-                .held_asks_from_wire(path, s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
-            if held == null || !held!.all((h) -> self.ask_stands(h, links)) { unread.push(ReadFile { path: path, why: Reads.AsksUnread }) } else { asks = asks.concat(held!) }
-        }
-        self.hold.held_asks.set(asks)
-        unread
+    /// WHAT A FILE'S OBJECT IS MADE OF, as the key it is kept under: the bodies and statics its
+    /// lowering produced, each digested with its ids spelled by durable name — an edit that moves
+    /// no body of the file moves no object.
+    fn file_code_key(lo: Lowered, f: FileId) -> string {
+        let ids = self.decls.ids()
+        let bodies = ["${b.fingerprint_in(ids)}" for b in lo.fns if b.file != null && same_file(b.file!, f)]
+        let home = self.decls.file(f).path
+        let statics = ["${s.fingerprint_in(ids)}" for s in lo.statics if s.home == home]
+        self.object_key_of(digest_of(joined(bodies.concat(["|"]).concat(statics), "\n")))
     }
 
-    /// Whether a held ask names a file here — and, for a link, a declaration that resolves.
-    fn ask_stands(h: HeldAsk, links: bool) -> bool {
-        self.ask_home(h) != null && (!links || self.held_ask_wanted(h) != null)
+    /// An object's key: what it is made of under this compiler and build mode — a host object
+    /// never answers a wasm link.
+    fn object_key_of(code: string) -> string {
+        node_key(Stored.Obj, [self.compiler_id(), self.keys.build_mode.get(), "file", code])
     }
-
-    /// A held ask's home, as this attempt knows it.
-    fn ask_home(h: HeldAsk) -> FileId? { self.decls.known_file_id(h.home) }
-
-    /// Whether a held ask's home is held: its body is the store's.
-    fn home_held(h: HeldAsk) -> bool {
-        let f? = self.ask_home(h) else { return false }
-        self.is_held(f)
-    }
-
-    /// A held ask resolved; one whose declaration no longer resolves sends its asking file to be read.
-    fn asked_want(h: HeldAsk) -> Wanted? {
-        let w = self.held_ask_wanted(h)
-        if w == null { self.hold.asks_lost.push(h.by) }
-        w
-    }
-
-    /// WHAT HELD BODIES ASK, for the lowering: an ask homed in a read file resolved — it lowers
-    /// here — and the rest by name, resolved only where it roams and a link owes code hashes.
-    fn held_wants(hashed: bool) -> HeldWants {
-        let asks = self.hold.held_asks.get()
-        let stored = [h for h in asks if self.home_held(h)]
-        HeldWants {
-            read: flatten([some_list(self.asked_want(h)) for h in asks if !self.home_held(h)]),
-            names: [h.name for h in stored],
-            homes: [self.ask_home(h)! for h in stored if h.roams],
-            roaming: if hashed { flatten([some_list(self.asked_want(h)) for h in stored if h.roams]) } else { [] },
-        }
-    }
-
-    /// Where a file's code lives: beside its object, under the object's key.
-    fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
-
-    /// FILE-SAID: a file's code, keyed by PATH under the program's root — written beside the object-keyed row.
-    fn codes_row(path: string) -> string { node_key(Stored.Unit, ["codes-row", self.root, path]) }
-
-    /// Where an instantiation's code is kept: its symbol, its type arguments'
-    /// shapes, and the object key of the file its generic lowers from, so an
-    /// edit to any of the three reads no old record.
-    fn inst_key(s: Store, i: Instance) -> string {
-        inst_key_of(self.held_okey(s, self.decls.file(i.home).path), i.shapes, i.symbol)
-    }
-
-    /// Where an instantiation's roaming callees are listed, beside its facts.
-    fn callees_key(key: string) -> string { node_key(Stored.Unit, [key, "callees"]) }
-
-    /// An instantiation's kept code and that of every roaming instantiation it reaches,
-    /// read to the bottom. A symbol whose facts or callee list is missing is HELD, so a
-    /// hash that reaches it is absent and never named by its symbol.
-    fn kept_instance(i: Instance) -> KeptInstance {
-        let s? = self.store.get() else { return KeptInstance { facts: [], held: [i.symbol] } }
-        mut facts: List<CodeFacts> = []
-        mut held: List<string> = []
-        mut seen: Map<string, bool> = {}
-        mut todo: List<KeptRef> = [KeptRef { key: self.inst_key(s, i), symbol: i.symbol }]
-        while !todo.is_empty() {
-            let r = todo.pop()
-            if seen.get(r.key) != null { continue }
-            seen.set(r.key, true)
-            let f? = code_facts_from_wire(s.get(Stored.Unit, r.key) ?? "") else {
-                held.push(r.symbol)
-                continue
-            }
-            let callees? = s.get(Stored.Unit, self.callees_key(r.key)) else {
-                held.push(r.symbol)
-                continue
-            }
-            facts.push(f)
-            todo = todo.concat(callee_refs(callees))
-        }
-        KeptInstance { facts: facts, held: held }
-    }
-
-    /// WHAT EVERY HELD FILE'S CODE IS, read where its bodies are not — so a
-    /// code hash reaching one is computed through it — and the held files
-    /// whose row could NOT be read, which must parse.
-    fn read_held_codes(s: Store) -> List<ReadFile> {
-        mut unread: List<ReadFile> = []
-        for path in held_paths(self) {
-            let codes = code_facts_from_wire(
-                s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "",
-            )
-            if codes == null { unread.push(ReadFile { path: path, why: Reads.CodesUnread }) } else { self.hold.held_codes.push(codes!) }
-        }
-        unread
-    }
-
-    fn held_okey(s: Store, path: string) -> string {
-        let at = "${self.module_path_of(path).text()}\t${path}"
-        let known: string? = self.keys.object_keys.get().get(at)
-        if known != null { return known! }
-        let kept: string? = if self.hold.standing.get().has(path) &&
-            self.file_judged(s, path, Stored.Unit, self.okey_row(path)) {
-            s.get(Stored.Unit, self.okey_row(path))
-        } else {
-            null
-        }
-        let found? = kept else { return obj_key_cached(self, s, self.module_path_of(path), path) }
-        self.keys.object_keys.put(at, found)
-        found
-    }
-
-    /// FILE-SAID: a file's object key, keyed by PATH under the program's root — kept beside its other rows, and read back for a
-    /// file whose rows stand, so a held file's key needs none of its parts.
-    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), self.root, path]) }
 
     /// Whether this build is for wasm: no fiber, no thread, so no `while`
     /// check — the row it would call has no body on that target.
@@ -649,13 +583,6 @@ impl Workspace {
     /// compile-time run reads the body it calls — it answers nothing and NOTES the
     /// file, and the build starts again with that file parsed.
     fn lower_requested(w: Wanted) -> Unit {
-        if self.is_held(w.file) {
-            self
-                .hold
-                .body_asks
-                .set(self.hold.body_asks.get().concat([self.decls.file(w.file).path]))
-            return Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
-        }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (
             f: FileId,
@@ -670,8 +597,10 @@ impl Workspace {
         // runtime carries no fiber and no thread, so the tick has no body
         // there — a program that really parks fails on the row it parks at.
         let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
+        let owner = w.decl ?? self.root_owner(w.file, w.root ?? ExprId { index: 0 - 1 })
         let analysis = when {
-            w.decl == null -> self.analysis(w.file)
+            owner == null -> self.analysis(w.file)
+            w.decl == null -> if self.comptime_active() { self.analyzed_decl(w.file, owner!) } else { self.analysis(w.file) }
             self.lowers_from_own_range(w.decl!) -> self.ranged_analysis(w.file, w.decl!)
             self.comptime_active() -> self.analyzed_decl(w.file, w.decl!)
             _ -> self.analysis(w.file)
@@ -697,7 +626,7 @@ impl Workspace {
     /// is the RUN's own, remembered under `lift_lowered`, never `lowered`.
     fn lowered_for_eval(id: int) -> Unit {
         let w = self.asks.get()[id]
-        if w.decl == null || !self.is_held(w.file) { return self.lift_lowered(id) }
+        if w.decl == null || true { return self.lift_lowered(id) }
         self.lower_requested(w)
     }
 
@@ -723,7 +652,6 @@ impl Workspace {
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
         if reader != null { self.read_by(reader!, self.hold.settle_reads.get().get("${id}") ?? []) }
-        self.logged_const_read(f, root, seats, r)
         r
     }
 
@@ -834,14 +762,21 @@ impl Workspace {
     /// write rides beside it: the module interface a reader follows even when the
     /// declaration it read stands unmoved.
     fn decl_read(f: FileId, d: DeclId?) -> RunRead {
+        let out = Cell.new(self.plain_read(self.decls.file(f).path))
+        if d == null { return out.get() }
+        // what a run read is named here, and read by the unit lowered from it
+        self.db.kernel.unheard(() -> out.set(self.read_of_decl(f, d!)))
+        out.get()
+    }
+
+    fn read_of_decl(f: FileId, d: DeclId) -> RunRead {
         let path = self.decls.file(f).path
-        if d == null { return self.plain_read(path) }
         RunRead {
             path: path,
             digest: self.text_digest(path),
             ref: self.decl_ref(d),
-            print: if self.is_held(f) { "" } else { "${self.syntax(d!)}" },
-            outline: if self.is_held(f) { "" } else { self.outline(path) },
+            print: "${self.syntax(d)}",
+            outline: "",
         }
     }
 
@@ -918,7 +853,7 @@ impl Workspace {
         let ws = self
         let reader = self.decls.file(f).path
         self.hold.settling.set(self.hold.settling.get().concat([reader]))
-        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.logged_unit(w), refuses_hash))
+        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.unit_for_run(w), refuses_hash))
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
         l
@@ -948,59 +883,45 @@ impl Workspace {
         settled_symbol(own, seats)
     }
 
-    /// A const's inferred type is a program fact, like a signature:
-    /// type its declaration on demand and publish the answer through
-    /// Decls so every other body reads the same identity. Answers
-    /// whether THIS ask closed a cycle — a const's value asking for
-    /// the const's own type.
-    fn const_type_at(id: int) -> bool {
-        let error = self.decls.types.intern(Type.Error)
-        match self.relation(Family.ConstTyped).ask(id) {
-            .Cycle -> { return true },
-            .Reuse(_) -> { return false },
-            .Compute -> self.relation(Family.ConstTyped).begin(id),
-        }
-        let ask = self.settle_asks.get()[id]
-        // only a const's statement has a type to publish
-        let held: StmtId? = const_stmt(ask.root)
-        if held == null {
-            let _ = self
-                .relation(Family.ConstTyped)
-                .finish(id, DbRow.ConstTyped(error), self.type_digest(error))
-            return false
-        }
-        let s = held!
-        touch(self.items(ask.file))
-        // a top-level const is a declaration: typing it records the
-        // value's type; a nested one is recorded by the body it is in.
-        // Its typing already OPEN is the same cycle seen from the
-        // other side — the value is asking for the const's own type.
-        let d: DeclId? = self.decls.decl_of(ask.file, s)
-        let cyclic = d != null && self.relation(Family.Typed).open(d!.index)
-        // A HELD CONST'S TYPE IS ALREADY THE RECORD'S: its declaration's
-        // `lo`/`hi` are blank (a held Decl carries a signature, never an
-        // expression range), so typing its body here would read past an
-        // empty window. Fill its row instead — `fill_const` reads the
-        // record's own type.
-        if d != null && !cyclic {
-            let dv = d!
-            if self.is_held(ask.file) { self.fill_ensured(dv) } else { touch(self.typed(dv)) }
-        }
-        let ty = self.decls.held_const_type(ask.file, s) ?? error
-        let _ = self
-            .relation(Family.ConstTyped)
-            .finish(id, DbRow.ConstTyped(ty), self.type_digest(ty))
-        cyclic
+    /// THE NAMES AN ANSWER'S RUN READ stand as one read: the declarations a run's code
+    /// reaches are looked up by name, thousands of them, and each bucket read alone would
+    /// make the answer's read list the size of the program. The buckets are held under the
+    /// owner's family and its own id for the answer, and the one cell it reads is their
+    /// digest, live: it moves exactly when a bucket does.
+    fn grouped(owner: Family, id: int, buckets: List<int>) {
+        if buckets.is_empty() { return }
+        let at = self.group_at(owner, id)
+        self.hold.groups.set_at(at, self.hold.groups.get()[at] with { buckets: buckets })
+        let k = Key { family: self.hold.closure.get(), arg: at }
+        let _ = self.db.kernel.verified(k.family, k.arg)
+        self.db.record_dep(k)
     }
+
+    /// The group of an owner's answer, minted on first sight.
+    fn group_at(owner: Family, id: int) -> int {
+        let name = "${owner.ordinal}:${id}"
+        let known? = self.hold.group_index.get().get(name) else {
+            let at = self.hold.groups.get().length
+            self.hold.groups.push(Group { owner: owner.ordinal, id: id, buckets: [] })
+            self.hold.group_index.put(name, at)
+            return at
+        }
+        known
+    }
+
+    /// The digest of a group's buckets, as they stand.
+    fn group_print(at: int) -> int { self.decls.buckets_print(self.hold.groups.get()[at].buckets) }
 
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
         match self.relation(Family.Settled).ask(id) {
             .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
-            .Reuse(held) -> { return reused_settlement(settled_of(held)) },
+            .Reuse(held) -> { return self.reused_settlement(id, settled_of(held)) },
             .Compute -> self.relation(Family.Settled).begin(id),
         }
         let ask = self.settle_asks.get()[id]
+        self.decls.gather_open()
         let r = self.settle_result(ask)
+        self.grouped(Family.Settled, id, self.decls.gather_close())
         // every file `embed` read is this query's input, a held answer's too
         match r {
             .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path, EmbedKind.Octets) } },
@@ -1008,8 +929,31 @@ impl Workspace {
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
         let _ = self.relation(Family.Settled).finish(id, DbRow.Settled(held), settlement_hash(held))
-        r
+        self.family_settled(Family.Settled, id)
+        match r {
+            .Err(_) -> {
+                self.spoke(id)
+                r
+            },
+            .Ok(_) -> r,
+        }
     }
+
+    /// A reused settlement: a refusal re-speaks once in each lowering pass, then
+    /// collapses to `.Spoken`, so one pass never says the same thing twice.
+    fn reused_settlement(id: int, held: Settlement) -> Result<Settled, Unsettled> {
+        match held {
+            .Held(value) -> .Ok(value),
+            .Refused(why) -> if self.spoken_settles.get().contains(id) {
+                .Err(Unsettled.Spoken)
+            } else {
+                self.spoke(id)
+                .Err(why)
+            },
+        }
+    }
+
+    fn spoke(id: int) { self.spoken_settles.set(self.spoken_settles.get().concat([id])) }
 
     /// A HELD CONST'S VALUE IS THE RECORD'S, NEVER RE-EVALUATED: `analysis`
     /// would fold and type its whole file to read its own initializer, and
@@ -1018,18 +962,33 @@ impl Workspace {
     /// record; ask for that row, never the file's analysis.
     fn settle_result(ask: SettleAsk) -> Result<Settled, Unsettled> {
         match ask.root {
-            .Const(s) -> {
-                if !self.is_held(ask.file) { return self.const_settlement(ask, s) }
-                let d? = self.decls.decl_of(ask.file, s) else { return .Err(Unsettled.Trap("a held const names no declaration")) }
-                self.fill_ensured(d)
-                let v? = self.decls.held_value(d) else {
-                    let words? = self.decls.held_reach(d) else { return .Err(Unsettled.Trap("a held const's value did not decode")) }
-                    return .Err(Unsettled.Reach(words))
-                }
-                .Ok(v)
-            },
+            .Const(s) -> self
+                .settlement_of(
+                    ask.file,
+                    self.parse_unrecorded(ask.file).store.const_value(s)!,
+                    ask.name,
+                    ask.seats,
+                ),
             .Expr(e) -> self.settlement_of(ask.file, e, ask.name, ask.seats),
         }
+    }
+
+    /// A compile-time unit filed as a reader of the body it was lowered from, by that body's
+    /// own name: a settlement stands on the bodies its run lowered, and on no signature's readers.
+    fn run_filed(id: int) {
+        let w = self.asks.get()[id]
+        let d? = w.decl ?? self.root_owner(w.file, w.root ?? ExprId { index: 0 - 1 }) else { return }
+        let spelled? = self.spelled_spec(id) else { return }
+        let rdb = self.query_db()
+        rdb.reader_filed(rdb.kin_of(BODY_RUN, self.decl_ref(d)), rdb.kin_of("LiftLowered", spelled))
+    }
+
+    /// A unit for a run, and every settlement its lowering asks, asked again.
+    fn unit_for_run(w: Wanted) -> Unit {
+        let id = self.spec_id(w)
+        let u = self.lowered_for_eval(id)
+        for ask in self.asks_of(id) { let _ = self.settled_replay(ask.file, ask.root, ask.seats) }
+        u
     }
 
     /// One settlement run: the initializer lowered as a program, its
@@ -1055,7 +1014,7 @@ impl Workspace {
         let l = self.standalone(f, root, "settling\$${name}", seats, true)
         if has_errors(l.diagnostics) {
             self.recorded_reads(f, l, null)
-            return .Err(Unsettled.Trap(l.diagnostics.first()!.message))
+            return .Err(trapped(l.diagnostics.first()!))
         }
         let ws = self
         let r = run_settle(
@@ -1079,7 +1038,7 @@ impl Workspace {
             .decls
             .settlement_until(
                 entry_wanted(f, root, name, seats),
-                (w: Wanted) -> ws.logged_unit(w),
+                (w: Wanted) -> ws.unit_for_run(w),
                 (b: Body) -> reaches_world(b, true),
             )
         let open = self.hold.settling.get()
@@ -1098,7 +1057,7 @@ impl Workspace {
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.standalone(f, e, self.decls.expr_symbol(f, e), [], false)
         self.recorded_reads(f, l, null)
-        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        if has_errors(l.diagnostics) { return .Err(trapped(l.diagnostics.first()!)) }
         let ws = self
         match run_crossed(
             l,
@@ -1162,6 +1121,7 @@ impl Workspace {
             .Err(why) -> LiftResult.Refused(why),
         }
         let _ = self.relation(Family.Lifted).finish(id, DbRow.Lifted(held), lift_hash(held))
+        self.family_settled(Family.Lifted, id)
         r
     }
 
@@ -1184,7 +1144,7 @@ impl Workspace {
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decl_read(x.file, d)])
         self.recorded_reads(f, l, null)
-        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        if has_errors(l.diagnostics) { return .Err(trapped(l.diagnostics.first()!)) }
         let sig = self.decls.sig(d)?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
@@ -1244,7 +1204,7 @@ impl Workspace {
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
         let at? = self.spelled_at(f, e, 0) else { return self.crossed_expr(f, e, heap) }
         let store = self.decls.store_of(at.file)
-        let raw = store.expr(at.e)
+        let raw = store.valued(at.e)
         let n: int? = raw.int_of()
         if n != null { return .Ok(MetaVal.Int(n!)) }
         let t: string? = raw.text_of()
@@ -1256,7 +1216,7 @@ impl Workspace {
         let code: MetaVal? = quote_meta(
             store,
             self.decls,
-            self.decls.file(at.file).path,
+            self.decls.file(at.file).name,
             at.e,
             heap,
         )
@@ -1278,7 +1238,10 @@ fn unknown_key() -> int { place_key(StatePlace.Unknown) }
 /// A place as a caller sees it through a callee: a global `state` is the
 /// place itself, anything the callee's body owns is `Unknown`.
 fn shared_key(p: StatePlace) -> int {
-    match p { .Global(_) -> place_key(p), .Local(_, _) or .Unknown -> unknown_key() }
+    match p {
+        .Global(_) -> place_key(p),
+        .Local(_, _) or .Kept(_, _) or .Own(_) or .Unknown -> unknown_key(),
+    }
 }
 
 /// The keys a set holds that are plain places.
@@ -1309,3 +1272,9 @@ fn places_fp(v: List<int>) -> int { fp_list(v) }
 /// hashed — `[1, 2] | [3]` and `[1] | [2, 3]` hold the same ints and are two
 /// answers.
 export fn reach_fp(sets: List<List<int>>) -> int { fp(3, [fp_list([fp_list(s) for s in sets])]) }
+
+/// A refusal that cut a settlement short, in the words it spoke and where it pointed.
+export fn trapped(d: Diag) -> Unsettled {
+    let at? = d.primary.label else { return Unsettled.Trap(d.message) }
+    Unsettled.Trap("${d.message}: ${at}")
+}

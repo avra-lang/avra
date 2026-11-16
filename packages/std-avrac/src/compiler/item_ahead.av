@@ -1,0 +1,283 @@
+//! A PROGRAM WORKED AHEAD across processes before the walk asks for anything, so the walk finds most
+//! answers kept; a program whose last build stands but for a few moved inputs forks nothing: every file the program reads parsed, one wave of imports at a time, then the rest of
+//! each package it reaches, whose impls are filed from every file; every such file's generators run;
+//! the program's impls filed once; then every body its files declare typed and lowered, a file's
+//! bodies in one process, which then finds what every law finds in the file, reached or not, so a
+//! build fails on any error. A body the walk never reaches is lowered for nothing,
+//! and a generic one waits for the walk, which alone knows its layouts.
+use core.{some_list}
+use @std.program.address.{SourceFileAddress}
+use @std.program.disk_store.{DiskStore}
+use @std.program.query_engine.{QueryDefinition, QueryEngine, query_engine}
+use @std.program.query_times.{QueryTimes, TimedSide, query_times}
+use @std.program.sorted.{sorted_by}
+use @std.program.worked_ahead.{WorkAhead, Worked, engine_worked_ahead}
+use @std.io.{env}
+
+/// Where work ahead is kept and how it's done: the store's directory, the queries every process
+/// answers, how many processes, and whether each says where its time went.
+type AheadAt = { directory: string, definitions: List<QueryDefinition>, process_count: int, timed: bool }
+
+/// A body as the walk asks for it: a fn by its file and name, or a method by its impl.
+enum DeclaredBody {
+    Free(file: SourceFileAddress, name: string)
+    Method(at: ImplAt, name: string, statics: bool)
+}
+
+/// The store at `directory` a program rooted at `package` is made from, and the engine over
+/// `definitions` to make it with, worked ahead across `process_count` processes, or by none with
+/// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
+/// `timed`, each process and each phase says where its time went.
+export fn program_worked(
+    directory: string,
+    package: string,
+    definitions: List<QueryDefinition>,
+    process_count: int,
+    timed: bool,
+) -> Worked {
+    let at = AheadAt {
+        directory: directory,
+        definitions: definitions,
+        process_count: process_count,
+        timed: timed,
+    }
+    let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
+    if process_count < 2 || few_moved(alone.engine) { return alone }
+    let _ = alone.store.saved()
+    let clock = query_times()
+    clock.opened("files parsed", TimedSide.Outside)
+    let parsed = files_parsed(at, package)
+    clock.closed()
+    clock.opened("generators run", TimedSide.Outside)
+    let _ = parsed.store.saved()
+    let generated = ahead(
+        at,
+        (engine: QueryEngine) -> reached_files(engine, package),
+        file_generated_is_known,
+        generators_run,
+    )
+    clock.closed()
+    clock.opened("impls filed", TimedSide.Outside)
+    let filed = impls_filed_for(generated.engine, package)
+    let _ = generated.store.saved()
+    clock.closed()
+    clock.opened("bodies lowered", TimedSide.Outside)
+    let lowered = ahead(
+        at,
+        (engine: QueryEngine) -> widest_first(engine, program_files(engine, package)),
+        file_worked_is_known,
+        file_worked,
+    )
+    clock.closed()
+    if at.timed { eprintln(phases_said(clock, filed)) }
+    lowered
+}
+
+/// At most this many moved inputs are walked in this process alone: an edit re-asks a handful of
+/// bodies, which a fork costs more than.
+const FEW_MOVED: int = 8
+
+/// Whether the last build's frontier stands but for at most `FEW_MOVED` moved inputs.
+fn few_moved(engine: QueryEngine) -> bool {
+    let moved? = engine.inputs_moved() else { return false }
+    if timed_ahead() != null { eprintln("ahead: ${moved} inputs moved") }
+    moved <= FEW_MOVED
+}
+
+/// Whether work ahead says what it decided, under `AVRA_QUERY_TIMES`.
+once fn timed_ahead() -> string? {
+    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+    env("AVRA_QUERY_TIMES")
+}
+
+/// The store `at` names and an engine over it, every item `items` answers that it knows nothing of
+/// asked across its processes.
+fn ahead<T>(
+    at: AheadAt,
+    items: fn(QueryEngine) -> List<T>,
+    is_known: fn(QueryEngine, T) -> bool,
+    ask: fn(QueryEngine, T) -> int,
+) -> Worked {
+    engine_worked_ahead<T, int>(
+        at.directory,
+        at.definitions,
+        WorkAhead {
+            items: items,
+            is_known: is_known,
+            ask: ask,
+            process_count: at.process_count,
+            timed: at.timed,
+        },
+    )
+}
+
+/// The store `at` names with every file a program rooted at `package` reads parsed: the
+/// package's own sources first, then each wave of files the last one's imports reach.
+fn files_parsed(at: AheadAt, package: string) -> Worked {
+    mut worked = ahead(
+        at,
+        (engine: QueryEngine) -> own_sources(engine, package),
+        file_words_is_known,
+        file_parsed,
+    )
+    mut wave = own_sources(worked.engine, package)
+    mut seen: Map<string, bool> = {}
+    for f in wave { seen.set(spelled_file(f), true) }
+    while true {
+        let reached = worked.engine
+        mut fresh: List<SourceFileAddress> = []
+        for f in wave {
+            for g in imports_of(reached, f) {
+                if !seen.has(spelled_file(g)) {
+                    seen.set(spelled_file(g), true)
+                    fresh.push(g)
+                }
+            }
+        }
+        if fresh.is_empty() { return every_file_parsed(at, package, worked, seen) }
+        let _ = worked.store.saved()
+        let next = fresh
+        worked = ahead(at, (_engine: QueryEngine) -> next, file_words_is_known, file_parsed)
+        wave = next
+    }
+    worked
+}
+
+/// The store `at` names with every file of each package a program rooted at `package` reaches
+/// parsed, beyond the `seen` files its imports reach: a package's impls are filed from all of them.
+fn every_file_parsed(at: AheadAt, package: string, worked: Worked, seen: Map<string, bool>) -> Worked {
+    let rest = reached_files(worked.engine, package).filter((f) -> !seen.has(spelled_file(f)))
+    let _ = worked.store.saved()
+    ahead(at, (_engine: QueryEngine) -> rest, file_words_is_known, file_parsed)
+}
+
+/// Every source file of each package a program rooted at `package` reaches.
+fn reached_files(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
+    [SourceFileAddress { package_name: p, path_in_package: f } for p in package_reach(engine, package).packages for f in package_sources(engine, p, "src")]
+}
+
+/// The package's own source files.
+fn own_sources(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
+    [SourceFileAddress { package_name: package, path_in_package: p } for p in package_sources(engine, package, "src")]
+}
+
+/// Each file of every module `file`'s imports name.
+fn imports_of(engine: QueryEngine, file: SourceFileAddress) -> List<SourceFileAddress> {
+    [g for u in file_words(engine, file).uses for m in some_list(imported_module(engine, file, u)) for g in module_files(engine, m.package, m.local, m.as_root)]
+}
+
+/// `file` parsed: how many imports it reads.
+fn file_parsed(engine: QueryEngine, file: SourceFileAddress) -> int { file_words(engine, file).uses.length }
+
+/// `file`'s generators run: how many items they made.
+fn generators_run(engine: QueryEngine, file: SourceFileAddress) -> int { file_generated(engine, file).items.length }
+
+/// Every impl, written and generated, of each package a program rooted at `package` reaches, filed
+/// once: how many packages.
+fn impls_filed_for(engine: QueryEngine, package: string) -> int { package_reach(engine, package).packages.filter((p) -> impls_filed_in(engine, p)).length }
+
+/// Every impl, written and generated, the package `package` holds, filed: whether it holds any.
+fn impls_filed_in(engine: QueryEngine, package: string) -> bool {
+    let written = package_impls(engine, package)
+    let generated = package_generated_impls(engine, package)
+    !written.parts.is_empty() || !generated.parts.is_empty()
+}
+
+/// `files`, the one declaring the most bodies first, so processes taking turns share them evenly.
+fn widest_first(engine: QueryEngine, files: List<SourceFileAddress>) -> List<SourceFileAddress> {
+    let widths = [declared_bodies(engine, f).length for f in files]
+    [files[at] for at in sorted_by([at for at in 0..files.length], (a, b) -> widths[a] > widths[b])]
+}
+
+/// Where the asking process's time went, phase by phase, and how many packages hold impls.
+fn phases_said(clock: QueryTimes, filed: int) -> string { "ahead phases: ${clock.spoken(10)}; impls filed in ${filed} packages" }
+
+/// Whether anything is kept about the lowering of every body `file` declares, asking only what its
+/// declarations are.
+fn bodies_known(engine: QueryEngine, file: SourceFileAddress) -> bool { declared_bodies(engine, file).all((b) -> body_is_known(engine, b)) }
+
+/// Every body `file` declares lowered: how many lowered.
+fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declared_bodies(engine, file).filter((b) -> body_lowered(engine, b)).length }
+
+/// Whether anything is kept about the lowering of every body `file` declares and about what its laws
+/// find, asking only what its declarations are.
+fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress) -> bool { bodies_known(engine, file) && file_erring_is_known(engine, file) }
+
+/// Every body `file` declares lowered, then what every law finds in its written items, in one process
+/// so the laws read the typing the lowering held: how many lowered.
+fn file_worked(engine: QueryEngine, file: SourceFileAddress) -> int {
+    let lowered = bodies_lowered(engine, file)
+    let _ = file_erring(engine, file)
+    lowered
+}
+
+/// Every body `file` declares, written or generated, that the walk asks for with no layouts.
+fn declared_bodies(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredBody> { free_bodies(engine, file).concat(method_bodies(engine, file)) }
+
+/// The fns `file` declares, written then generated.
+fn free_bodies(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredBody> {
+    [DeclaredBody.Free(file, d.name) for d in file_declares(engine, file).names.concat(generated_declares(engine, file).names) if d.kind == ItemKind.Fn]
+}
+
+/// The methods and statics of every impl in `file` whose target takes no type parameters, written
+/// then generated, each impl where the walk finds it.
+fn method_bodies(engine: QueryEngine, file: SourceFileAddress) -> List<DeclaredBody> {
+    let first = item_count(engine, file)
+    impl_declared_bodies(engine, file, written_impls(engine, file), 0)
+        .concat(impl_declared_bodies(engine, file, generated_impls(engine, file), first))
+}
+
+/// The methods and statics of `by_item`'s impls, item `at` standing at `first + at`.
+fn impl_declared_bodies(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    by_item: List<List<ItemImpl>>,
+    first: int,
+) -> List<DeclaredBody> {
+    [b for at, held in by_item for nth, i in held for d in [impl_target(engine, file, i)] if d != null for b in plain_impl_bodies(
+        ImplAt { file: file, item: first + at, params: impl_params(engine, i, d!), nth: nth },
+        i,
+    )]
+}
+
+/// An impl's methods then its statics, none where its target takes type parameters.
+fn plain_impl_bodies(at: ImplAt, i: ItemImpl) -> List<DeclaredBody> {
+    if !at.params.is_empty() { return [] }
+    [DeclaredBody.Method(at, m, false) for m in i.methods]
+        .concat([DeclaredBody.Method(at, m, true) for m in i.statics])
+}
+
+/// Whether anything is kept about `b`'s lowering, asking nothing; a generic fn, left to the walk,
+/// counts as known.
+fn body_is_known(engine: QueryEngine, b: DeclaredBody) -> bool {
+    match b {
+        .Free(file, name) -> is_generic_fn(engine, file, name) || lowered_under_is_known(engine, file, name, null),
+        .Method(at, name, statics) -> lowered_method_under_is_known(engine, at, name, statics, null),
+    }
+}
+
+/// Whether `b` lowered, asked as the walk asks it; a generic fn is left to the walk.
+fn body_lowered(engine: QueryEngine, b: DeclaredBody) -> bool {
+    match b {
+        .Free(file, name) -> !is_generic_fn(engine, file, name) && lowered_under(engine, file, name, null) != null,
+        .Method(at, name, statics) -> lowered_method_under(engine, at, name, statics, null) != null,
+    }
+}
+
+/// Whether the fn `file` declares as `name` takes type parameters.
+fn is_generic_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let signature? = fn_signature(engine, file, name) else { return false }
+    !signature.type_params.is_empty()
+}
+
+/// What process `core` of `of` lowers when a program rooted at `package` is worked ahead, lowered in
+/// this one process instead, in the order that process asks: the files `asking` finds with a body
+/// it knows nothing of, widest first, each whose turn is `core`'s, then a fresh engine over `store`
+/// asking each of their bodies. Answers how many lowered.
+export fn share_replayed(store: DiskStore, asking: QueryEngine, package: string, core: int, of: int) -> int {
+    let unknown = widest_first(asking, program_files(asking, package))
+        .filter((f) -> !bodies_known(asking, f))
+    let _ = store.saved()
+    let engine = query_engine(store, avra_fact_definitions())
+    [bodies_lowered(engine, f) for at, f in unknown if at % of == core].sum()
+}

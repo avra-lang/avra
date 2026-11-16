@@ -1,13 +1,12 @@
 // Golden renderings: the human text is a contract. Every code's
 // shape is asserted EXACTLY — a drifted gutter or caret fails here.
 use @std.errors.{Loc, Frame, Error, ErrorInfo, info, Suggestion, Edit, Confidence}
+use @std.relation.stable.{indexed_scope}
 use @std.avrac.diagnostics.{
     Diag,
     error_at,
     render,
     render_among,
-    render_facts_among,
-    diag_facts_of,
     SourceFile,
     new_source_file,
     refusal,
@@ -51,6 +50,14 @@ impl Error for SelfCause {
 
 fn two_lines() -> SourceFile {
     new_source_file("<source>", "let a = 1\nlet = 3")
+}
+
+/// A diagnostic written by its codec and read back.
+fn crossed(d: Diag) -> Diag {
+    match Diag.decoded_in(indexed_scope(), d.encoded_in(indexed_scope())) {
+        .Ok(back) -> back,
+        .Err(_) -> error_at("t.lost", null, "did not cross"),
+    }
 }
 
 spec "diagnostics/render" {
@@ -128,20 +135,21 @@ help: merge same-name rules first"""
             render(d, two_lines()) == expected
         }
         then "one hop: the cause's own message, on its own line" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: Underlying.Bad }
+            let d = error_at("language.defect", null, "the build failed").caused_by(Underlying.Bad)
             let expected = """error[language.defect]: the build failed
 caused by: the underlying thing failed"""
             render(d, two_lines()) == expected
         }
         then "two hops: each cause on its own line, deepest last" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: Wrapping { inner: Underlying.Bad } }
+            let d = error_at("language.defect", null, "the build failed")
+                .caused_by(Wrapping { inner: Underlying.Bad })
             let expected = """error[language.defect]: the build failed
 caused by: wrapped
 caused by: the underlying thing failed"""
             render(d, two_lines()) == expected
         }
         then "a chain of exactly sixteen hops renders every one" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: deep_chain(15) }
+            let d = error_at("language.defect", null, "the build failed").caused_by(deep_chain(15))
             let expected = """error[language.defect]: the build failed
 caused by: cause 15
 caused by: cause 14
@@ -162,7 +170,7 @@ caused by: cause 0"""
             render(d, two_lines()) == expected
         }
         then "a chain of seventeen hops stops at the cap, and its last line says so" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: deep_chain(16) }
+            let d = error_at("language.defect", null, "the build failed").caused_by(deep_chain(16))
             let expected = """error[language.defect]: the build failed
 caused by: cause 16
 caused by: cause 15
@@ -183,7 +191,7 @@ caused by: cause 1 — the chain continues past 16; an error answering itself as
             render(d, two_lines()) == expected
         }
         then "a cause that answers itself renders fifteen identical hops, then a line that says the chain continues" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: SelfCause.S }
+            let d = error_at("language.defect", null, "the build failed").caused_by(SelfCause.S)
             let expected = """error[language.defect]: the build failed
 caused by: loop
 caused by: loop
@@ -259,8 +267,8 @@ fix (low): second fix
             render(d, two_lines()) == "error[language.defect]: m"
         }
     }
-    given "a Diag's wire-safe DiagFacts twin" {
-        then "a located diagnostic with suggestions renders identically through facts" {
+    given "a Diag through its codec" {
+        then "a located diagnostic with suggestions renders identically once crossed" {
             let at = Loc { file: "<source>", lo: 14, hi: 15 }
             let m = Frame { label: "expected NAME", loc: at }
             let edit = Edit { loc: at, replacement: "x" }
@@ -270,19 +278,20 @@ fix (low): second fix
                 edits: [edit],
             }
             let d = error_at("parse.expected", at, "expected NAME while parsing `stmt`") with { primary: m, help: "a `let` names its value", suggestions: [sg] }
-            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+            render_among(crossed(d), [two_lines()]) == render(d, two_lines())
         }
-        then "a multi-hop cause chain flattens to the same lines through facts" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: Wrapping { inner: Underlying.Bad } }
-            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+        then "a multi-hop cause chain renders the same lines once crossed" {
+            let d = error_at("language.defect", null, "the build failed")
+                .caused_by(Wrapping { inner: Underlying.Bad })
+            render_among(crossed(d), [two_lines()]) == render(d, two_lines())
         }
-        then "a chain past the cap renders the same stop line through facts" {
-            let d = error_at("language.defect", null, "the build failed") with { cause: deep_chain(16) }
-            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+        then "a chain past the cap renders the same stop line once crossed" {
+            let d = error_at("language.defect", null, "the build failed").caused_by(deep_chain(16))
+            render_among(crossed(d), [two_lines()]) == render(d, two_lines())
         }
         then "an unlocated label survives the round trip" {
             let d = error_at("language.defect", null, "the package moved") with { primary: Frame { label: "declares nothing", loc: null }, help: "build against the one this compiler ships" }
-            render_facts_among(diag_facts_of(d), [two_lines()]) == render(d, two_lines())
+            render_among(crossed(d), [two_lines()]) == render(d, two_lines())
         }
         then "a secondary frame in ANOTHER file picks that file's own source, same as render_among" {
             let other = new_source_file("other.av", "fn f() {}\n")
@@ -290,7 +299,7 @@ fix (low): second fix
             let secondary_at = Loc { file: "other.av", lo: 0, hi: 2 }
             let d = error_at("type.extern_value", primary_at, "an extern fn is not a value") with { primary: Frame { label: "read as a value here", loc: primary_at }, secondary: [Frame { label: "declared here", loc: secondary_at }] }
             let sources = [two_lines(), other]
-            render_facts_among(diag_facts_of(d), sources) == render_among(d, sources)
+            render_among(crossed(d), sources) == render_among(d, sources)
         }
         then "a frame of a file no source answers to renders its label alone, the file named — never a window over the wrong text" {
             let primary_at = Loc { file: "<source>", lo: 14, hi: 15 }

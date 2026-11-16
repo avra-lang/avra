@@ -1,0 +1,51 @@
+//! A FAILURE LEAVING: a `Result`'s `Err` made, and one carried into the fn's own `Result`. The `Err`
+//! is tag 1 beside its word or in a box behind its tag, so a failure whose error the fn's `Result`
+//! holds the same way leaves as it is, and any other is made again in the fn's layout. A UNION's
+//! value is a box holding its member behind the member type's tag, the same in every unit and in
+//! any order of members, so a union carried into one that names its member too leaves as it is.
+
+impl Lowering {
+    /// The `Err` of the `Result` `into`, carrying `r`.
+    mut fn failure_of(into: SignedType, r: Reg) -> Reg { self.tagged_value(self.laid_out(into), 1, [r]) }
+
+    /// The fn leaves here failing with `failure`.
+    mut fn fail_exit(failure: Reg) {
+        self.ended_from(0, Leaving.Failing)
+        self.kept_once(failure)
+        self.emit(Ins.FnExit(failure))
+    }
+
+    /// The failure `v`, a `Result` of `from`, as the fn's own `Result` holds it: itself where the error
+    /// sides are one type or both unions and both lay out alike; its error made again in the fn's
+    /// layout where they're laid out apart; a union's member read out where only `from`'s is a union;
+    /// an error boxed into the fn's union where only its is.
+    mut fn propagated(v: Reg, from: SignedType) -> Reg {
+        let into = self.answer
+        if !into.resulted() || !from.resulted() { return self.missed_as("a failure carried into what isn't a `Result`") }
+        let fe = from.args[1]
+        let ie = into.args[1]
+        let was_union = !fe.alternatives.is_empty()
+        let agrees = fe.spelled() == ie.spelled() || was_union && !ie.alternatives.is_empty()
+        if agrees && self.laid_out(from).inline() == self.laid_out(into).inline() { return v }
+        let error = self.payload_at(v, 0, [self.laid_out(fe)])
+        if agrees { return self.failure_of(into, error) }
+        if was_union { return self.failure_of(into, self.payload_at(error, 0, [self.laid_out(ie)])) }
+        let boxed? = self.as_error(ie, fe, error) else { return self.missed_as(unjoined(fe, ie)) }
+        self.failure_of(into, boxed)
+    }
+
+    /// `r`, a value of `ty`, as the error `err` holds it: itself where it is that error or both are
+    /// unions; boxed behind its type's tag where it's a member of the union `err`; absent otherwise.
+    mut fn as_error(err: SignedType, ty: SignedType, r: Reg) -> Reg? {
+        if ty.spelled() == err.spelled() ||
+            !ty.alternatives.is_empty() && !err.alternatives.is_empty() { return r }
+        if !err.alternatives.any(it.spelled() == ty.spelled()) { return null }
+        let tag? = self.type_tag(ty) else { return null }
+        self.tagged_value(self.laid_out(err), tag, [r])
+    }
+}
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+/// An error carried where it is neither the error nor a member of the union that stands there.
+fn unjoined(from: SignedType, into: SignedType) -> string { "a failure of `${from.spelled()}` carried into `${into.spelled()}`, which doesn't hold it" }

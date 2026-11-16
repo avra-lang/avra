@@ -1,0 +1,71 @@
+//! WHERE A QUOTE PATTERN IS NO PATTERN THIS MATCHER HOLDS: its syntax judged by the matcher's own
+//! fault ladder (`quote_pat_fault`), and, where it holds, a program that loads no `@std/avrac`,
+//! whose code handle the pattern reads. Read off the item's patterns and the packages its package
+//! reaches.
+use core.{ExprId, PatId, Span, StmtId, SyntaxArena}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.quote.{avracless_pattern, fault_kind, fault_voice, quote_pat_fault}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The package whose code handle a quote pattern reads.
+const AVRAC: string = "@std/avrac"
+
+/// Every quote pattern the written item `at` of `file` writes, where it stands, and its body.
+type QuotePat = { at: Span?, body: ExprId }
+
+fn quote_pats(store: SyntaxArena) -> List<QuotePat> {
+    [QuotePat { at: store.pat_span(PatId { index: i }), body: b } for i in 0..store.pats.get().length for b in pattern_body(store, PatId { index: i })]
+}
+
+/// The quote the pattern `p` of `store` is; none for any other pattern.
+fn pattern_body(store: SyntaxArena, p: PatId) -> List<ExprId> {
+    match store.pat(p) { .Quote(body) -> [body], rest -> [] }
+}
+
+/// Every quote pattern of the written item `at` of `file` that is no pattern this matcher holds,
+/// each in its fault's kind and words; else, where the file's package reaches no `@std/avrac`, each
+/// pattern that cannot read the code it matches.
+fn quote_pats_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    if !store.refusals().is_empty() { return [] }
+    let pats = quote_pats(store)
+    if pats.is_empty() { return [] }
+    let item = read_item(engine, file, at)
+    let loaded = package_reach(engine, file.package_name).packages.contains(AVRAC) ||
+        instanced(item)
+    [f! for q in pats for f in [refused_pat(store, q, loaded)] if f != null]
+}
+
+/// Whether the item is a component's instance — a `rule`'s among them — whose quote patterns match the
+/// subject its template hands them, a `dyn Subject` that needs no `@std/avrac`, and whose patterns
+/// that template's own typing judges.
+fn instanced(item: ReadItem) -> bool { item.stmts.any((s: StmtId) -> item.store.is_component_inst(s)) }
+
+/// The quote pattern `q`'s refusal: its fault, else its unloaded handle where `loaded` is false.
+fn refused_pat(store: SyntaxArena, q: QuotePat, loaded: bool) -> Found? {
+    let fault = quote_pat_fault(store, q.body)
+    if fault != null { return worded(q.at, fault_kind(fault!), fault_voice(fault!)) }
+    if loaded { null } else { worded(q.at, "type.quote_pat_subj", avracless_pattern()) }
+}
+
+/// A refusal at `at` in `kind`, its voice's words carried whole.
+fn worded(at: Span?, kind: string, v: Voice) -> Found { Found { at: at, args: [v.message, v.label ?? "", v.help ?? ""], kind: kind } }
+
+/// a quote pattern is one this matcher holds, over the code it reads
+export law quote_pattern_held {
+    kind: "type.quote_pat_shape"
+    reads: quote_pats_refused
+    voice: carried_words
+    witness: "fn f(n: int) -> int {\n    match n {\n        quote {\n            1\n            2\n        } -> 1\n        _ -> 0\n    }\n}\n"
+}
+
+fn carried_words(a: List<string>) -> Voice {
+    Voice {
+        message: a[0],
+        label: if a[1].is_empty() { null } else { a[1] },
+        help: if a[2].is_empty() { null } else { a[2] },
+    }
+}

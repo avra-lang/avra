@@ -1,0 +1,121 @@
+//! THE PLANNER, as a comprehension lowers: a head over the static its type marks `@plans_all` — a
+//! whole set — whose region's filters compare its row's field to a value the walk never changes
+//! (`r.f == v`, `v == r.f`, `r.f.contains(v)`) reads the static marked `@plans(f)` with that value
+//! instead. Every filter still runs, so the narrowed walk keeps the scan's meaning; the index is the
+//! type's own declaration, read off its marks, never a guess.
+//!
+//! THE LAW THE SWAP RESTS ON: the lookup is asked ONCE, before the walk, so the value it is asked
+//! of must be the same on every turn — a literal, a name bound outside the walk or by an EARLIER
+//! head, or a field of one. A value that reads the scanned row, a binder of this head or a later
+//! one, or makes a call (whose effects a scan runs once per row) is never planned, and neither is
+//! one that may be absent, which no bucket holds. The first filter that qualifies plans the head.
+use core.{CompClause, ExprId, Lowering, MarkedStatic, META_MODULE, Reg, some_list}
+use core.expr.{Comp}
+
+/// A row field a filter compares to a value fixed for the walk.
+type FieldAsk = { field: string, value: ExprId }
+
+/// The lookup a head reads instead of its source: the static's name, and the value it's asked of.
+type Narrowing = { lookup: string, value: ExprId }
+
+/// The lookup the head at `at` reads in place of its `source`, called; absent where the head scans
+/// its source whole.
+export fn narrowed_source(mut cx: Lowering, c: Comp, at: int, source: ExprId) -> Reg? {
+    let call? = cx.store.method_parts(source) else { return null }
+    if call.args.length != 1 { return null }
+    let relation? = cx.type_at(call.subject)?.described() else { return null }
+    let marks = (cx.program.marked)(relation)
+    if !marks.any((m) -> m.name == call.name && meta_mark(cx, m, PLANS_ALL)) { return null }
+    let row? = row_of(c.clauses[at]) else { return null }
+    let walked = binders_of_heads(c.clauses.drop(at))
+    let asked = [a for cond in region_conds(c.clauses, at) for k in cx.store.conjuncts(cond) for a in field_asks(cx, k, row, walked)]
+    let plan? = asked.find_map((a) -> narrowing_of(cx, marks, a)) else { return null }
+    let callee? = cx.static_fn(relation, plan.lookup) else { return null }
+    let args? = cx.call_args(callee, [call.args[0], plan.value]) else { return null }
+    cx.call_fn(cx.layout_at(source), callee, args)
+}
+
+/// The lookup that answers `a`: a static marked `@plans` with its field; absent where none is, or
+/// the value may be absent, which no bucket holds.
+fn narrowing_of(cx: Lowering, marks: List<MarkedStatic>, a: FieldAsk) -> Narrowing? {
+    if cx.type_at(a.value)?.nullable() ?? true { return null }
+    let lookup? = marks.find((m) -> m.arg == a.field && meta_mark(cx, m, PLANS)) else { return null }
+    Narrowing { lookup: lookup.name, value: a.value }
+}
+
+/// What the conjunct `k` asks of the row `row`: the field an `==` compares to a fixed value, on
+/// either side, or the list field a `contains` asks of one.
+fn field_asks(cx: Lowering, k: ExprId, row: string, walked: List<string>) -> List<FieldAsk> {
+    let sides? = cx.store.equated(k) else { return contains_ask(cx, k, row, walked) }
+    asked_of(cx, sides[0], sides[1], row, walked)
+        .concat(asked_of(cx, sides[1], sides[0], row, walked))
+}
+
+/// The list field a `r.f.contains(v)` asks of the row `row`.
+fn contains_ask(cx: Lowering, k: ExprId, row: string, walked: List<string>) -> List<FieldAsk> {
+    let m? = cx.store.method_parts(k) else { return [] }
+    if m.name != "contains" || m.args.length != 1 { return [] }
+    asked_of(cx, m.subject, m.args[0], row, walked)
+}
+
+/// `side` as a field of the row `row`, and `value` as one fixed for the walk.
+fn asked_of(cx: Lowering, side: ExprId, value: ExprId, row: string, walked: List<string>) -> List<
+    FieldAsk,
+> {
+    let p? = cx.store.prop_parts(side) else { return [] }
+    if cx.store.ident_name(p.subject) != row || !walk_fixed(cx, value, walked) { return [] }
+    [FieldAsk { field: p.name, value: value }]
+}
+
+/// Whether a value is the same on every turn of the walk: a literal, a name no head from the scanned
+/// one on binds, or a field of such a value — never a call, which a scan runs once per row.
+fn walk_fixed(cx: Lowering, e: ExprId, walked: List<string>) -> bool {
+    let v = cx.store.valued(e)
+    if v.int_of() != null || v.text_of() != null || v.bool_of() != null { return true }
+    let name = cx.store.ident_name(e)
+    if name != null { return !walked.contains(name!) }
+    let p? = cx.store.prop_parts(e) else { return false }
+    walk_fixed(cx, p.subject, walked)
+}
+
+/// The filters between the head at `at` and the next head: every one reads that head's row.
+fn region_conds(clauses: List<CompClause>, at: int) -> List<ExprId> {
+    conds_of(clauses.drop(at + 1).take_while(filters))
+}
+
+/// Each filter's condition, in order.
+fn conds_of(clauses: List<CompClause>) -> List<ExprId> { [c! for x in clauses for c in [cond_of(x)] if c != null] }
+
+/// Every name the heads among `clauses` bind: each one's row, and its index where it counts one.
+fn binders_of_heads(clauses: List<CompClause>) -> List<string> { [n for x in clauses for n in head_binders(x)] }
+
+fn filters(c: CompClause) -> bool { cond_of(c) != null }
+
+fn cond_of(c: CompClause) -> ExprId? {
+    match c { .Filter(cond) -> cond, .Head(_, _, _, _) -> null }
+}
+
+fn row_of(c: CompClause) -> string? {
+    match c { .Head(_, name, _, _) -> name.of, .Filter(_) -> null }
+}
+
+fn head_binders(c: CompClause) -> List<string> {
+    match c { .Head(index, name, _, _) -> some_list(index?.of).concat([name.of]), .Filter(_) -> [] }
+}
+
+/// Whether `m` is the mark `@std/meta` declares as `word`: known by the declaration its name names
+/// where it is written, never by its spelling, so any library's type is planned alike and a mark
+/// of that name declared anywhere else is no plan.
+fn meta_mark(cx: Lowering, m: MarkedStatic, word: string) -> bool {
+    let at? = m.mark_in else { return false }
+    let declared? = (cx.program.toolchain_fn)(META_MODULE, word) else { return false }
+    m.mark == word &&
+        at.package_name == declared.file.package_name &&
+        at.path_in_package == declared.file.path_in_package
+}
+
+/// The mark a relation's whole-set static wears.
+const PLANS_ALL: string = "plans_all"
+
+/// The mark a relation's lookup by a field wears, the field its argument.
+const PLANS: string = "plans"

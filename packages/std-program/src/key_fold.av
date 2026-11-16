@@ -1,0 +1,35 @@
+//! A KEY FOLDED FROM VALUES, for a table inside one process: the content key's two lanes
+//! (`interned.KeyLane`), each value folded after a tag of its kind, so values of other kinds, or
+//! texts split otherwise, fold apart. Folding makes no box, so finding what a key holds costs its
+//! values' words and nothing else. A key never leaves its process: a boundary carries a content hash.
+use interned.{KeyLane}
+
+/// The tag a number folds after.
+export const FOLD_NUMBER: int = 1
+
+/// The tag a text folds after.
+export const FOLD_TEXT: int = 2
+
+/// The tag a truth folds after.
+export const FOLD_TRUTH: int = 3
+
+/// The tag octets fold after.
+export const FOLD_OCTETS: int = 4
+
+impl KeyLane {
+    /// A number folded into `h` after its tag.
+    fn number(h: int, n: int) -> int { self.word(self.word(h, FOLD_NUMBER), n) }
+
+    /// A truth folded into `h` after its tag.
+    fn truth(h: int, b: bool) -> int { self.word(self.word(h, FOLD_TRUTH), if b { 1 } else { 0 }) }
+
+    /// A text folded into `h` after its tag: its bytes, then its length.
+    fn tagged_text(h: int, text: string) -> int { self.text(self.word(h, FOLD_TEXT), text) }
+
+    /// Octets folded into `h` after their tag, a byte to a word, then their length.
+    fn octets(h: int, octets: Bytes) -> int {
+        mut out = self.word(h, FOLD_OCTETS)
+        for i in 0..octets.length { out = self.word(out, octets.at(i)) }
+        self.word(out, octets.length)
+    }
+}

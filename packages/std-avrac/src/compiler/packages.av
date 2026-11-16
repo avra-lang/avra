@@ -1,15 +1,18 @@
 //! The manifest closure: the root package, its path dependencies, and
 //! the module path each names. Moved out of the workspace god-object.
-use core.{ModulePath, key_spelled, flatten}
+use core.{ModulePath, Span, key_spelled, flatten}
 use @std.path.{under_dir, joined_path, normalized, relative_path}
 use features.{nothing, Budgets, budgets_of}
-use diagnostics.{SourceFile, new_source_file, Diag, refusal}
+use diagnostics.{SourceFile, new_source_file, Diag, Voice, said_as}
 use compiler.families.{Family}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
-use @std.relation.engine.{Loaded}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
 use compiler.host.{
     Dependency,
     Manifest,
+    ToolRow,
+    Provenance,
     bad_dependency_path,
     dependency_cycle,
     deps_offset,
@@ -17,6 +20,7 @@ use compiler.host.{
     name_mismatch,
     prelude_depends,
     read_manifest,
+    manifest_read,
     row_at,
     unset_link_variable,
 }
@@ -39,7 +43,6 @@ fn empty_manifest() -> Manifest {
         libs: [],
         raw: [],
         tools: [],
-        voices: [],
     }
 }
 
@@ -58,34 +61,32 @@ fn link_rows(m: Manifest, own: bool) -> List<LinkRow> {
         .concat(if own { [LinkRow { section: "link.raw", key: "flags", words: m.raw }] } else { [] })
 }
 
+/// A manifest's value over its staged text.
+@query
+fn manifest_in(db: RelDb, path: string) -> Manifest { read_manifest(new_source_file(path, file_text(db, path))) }
+
 impl Workspace {
-    /// A package's manifest, read from its `avra.toml` — an INPUT: the
-    /// revision moves only when the text did. A root without a manifest
-    /// reads as an empty one, quietly.
-    fn manifest(i: int) -> Manifest {
-        let pkg = self.packages()[i]
-        let path = joined_path(pkg.root, "avra.toml")
-        if !self.has_manifest(pkg) {
-            return manifest_of(
-                self
-                    .relation(Family.Manifest)
-                    .input(i, () -> DbRow.Manifest(empty_manifest()), (s: DbRow) -> 0),
-            )
-        }
-        manifest_of(
-            self.relation(Family.Manifest).input_loaded(i, () -> self.loaded_manifest(path)),
-        )
+    /// A package's manifest, read from its `avra.toml` — a query over that text, staged
+    /// through the input door, so a reader moves only when the value did. A root without a
+    /// manifest reads as an empty one, quietly. A manifest's text is the one text the package
+    /// graph is shaped by, so its cell is marked the first time it is asked.
+    fn manifest(i: int) -> Manifest { self.manifest_at(self.packages()[i].root) }
+
+    /// The manifest of the package rooted at `root`: a pure function of that directory's
+    /// `avra.toml`, the one place a package's manifest is read.
+    fn manifest_at(root: string) -> Manifest {
+        let path = joined_path(root, "avra.toml")
+        if !self.there(path) { return empty_manifest() }
+        let at = self.text_key(path)
+        if !self.manifest_texts.get().contains(at) { self.manifest_texts.push(at) }
+        manifest_in(self.text_staged(path), path)
     }
 
-    /// A manifest's row over its Text input, cut by the word that cell
-    /// is. Loaded once a package, so its text's cell is marked once: a
-    /// manifest's text is the one text the package graph is shaped by.
-    fn loaded_manifest(path: string) -> Loaded<DbRow> {
-        self.manifest_texts.push(self.text_key(path))
-        Loaded {
-            value: DbRow.Manifest(read_manifest(new_source_file(path, self.listed_text(path)))),
-            fingerprint: self.text_word(path),
-        }
+    /// What reading a package's manifest said — nothing for a package with none.
+    fn manifest_voices(pkg: Package) -> List<Diag> {
+        if !self.has_manifest(pkg) { return [] }
+        let path = joined_path(pkg.root, "avra.toml")
+        manifest_read(new_source_file(path, self.listed_text(path))).voices
     }
 
     /// What a settlement may spend: the ROOT package's `[lifted]` rows,
@@ -141,14 +142,13 @@ impl Workspace {
     }
 
     fn admitted(key: string, dir: string, at: Loc?, chain: List<string>) {
-        if chain.contains(key) { return self.speak_package(dependency_cycle(at, chain.concat([key]))) }
         let known: Package? = self.packages().find(it.key == key)
-        if known != null {
-            if self.host.absolute(known!.root) != self.host.absolute(dir) { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
-            return
+        let held = Admitting { key: key, dir: dir, at: at, chain: chain, known: known?.root }
+        match admission(held, (p) -> self.host.absolute(p), (p) -> self.there(p)) {
+            .Refused(d) -> self.speak_package(d),
+            .Held -> { return },
+            .Entered -> self.entered(key, dir, at, Origin.Declared, chain),
         }
-        if !self.there(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
-        self.entered(key, dir, at, Origin.Declared, chain)
     }
 
     /// A std package the toolchain carries, admitted the first time a
@@ -180,9 +180,9 @@ impl Workspace {
         }
         self.package_rows.push(pkg)
         let m = self.manifest(i)
-        if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
-        if key == prelude_key && !m.deps.is_empty() { return self.speak_package(prelude_depends(m.deps[0].at)) }
-        self.admit_dependencies(i, m, false, chain.concat([key]))
+        let said = entering(key, dir, at, m)
+        for d in said.voices { self.speak_package(d) }
+        if said.admits { self.admit_dependencies(i, m, false, chain.concat([key])) }
     }
 
     fn speak_package(d: Diag) {
@@ -195,7 +195,7 @@ impl Workspace {
     /// Everything the packages said: each manifest's own voices, then
     /// the graph's.
     fn packages_voiced() -> List<Diag> {
-        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()])
+        flatten([self.manifest_voices(pkg) for pkg in self.packages()])
             .concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)])
             .concat(flatten([self.unset_link_holes(pkg) for pkg in self.packages()]))
             .concat(self.package_voices.get())
@@ -300,13 +300,7 @@ impl Workspace {
     fn not_a_dependency(at: Loc?, from: Package, k: string) -> Diag {
         let fixes = self.dependency_fix(from, k)
         let at_file = joined_path(from.root, "avra.toml")
-        refusal(
-            "resolve.not_a_dependency",
-            at,
-            "`${k}` is not a dependency of this package",
-            "in this use",
-            "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`",
-        ) with { suggestions: fixes }
+        said_as("resolve.not_a_dependency", at, undeclared_dependency(k, at_file)) with { suggestions: fixes }
     }
 }
 
@@ -316,12 +310,52 @@ const prelude_key = "@std/prelude"
 /// The prelude's module — every file's import, written by none.
 fn prelude_module() -> ModulePath { ModulePath { segments: key_spelled(prelude_key).split(".") } }
 
+/// A dependency row a package graph admits: the key it names, the directory it names it at, where
+/// the row stands, the packages that depend on it, and the directory the graph already holds that
+/// key at, where it holds it.
+export type Admitting = { key: string, dir: string, at: Loc?, chain: List<string>, known: string? }
+
+/// What a package graph does with a dependency row.
+export enum Admission {
+    /// The key is held already, at this directory.
+    Held
+    /// The key is new, and its directory keeps a manifest: the package enters.
+    Entered
+    /// The row is refused: a cycle, one key at two directories, or a directory with no manifest.
+    Refused(Diag)
+}
+
+/// THE ONE ADMISSION LAW every reading of a package graph keeps: a key its own dependents name is a
+/// cycle; a key the graph holds is held, or refused where the row names another directory — the two
+/// compared as `absolute` places them; a new key enters where `there` finds a manifest in its directory.
+export fn admission(row: Admitting, absolute: fn(string) -> string, there: fn(string) -> bool) -> Admission {
+    if row.chain.contains(row.key) { return .Refused(dependency_cycle(row.at, row.chain.concat([row.key]))) }
+    let known? = row.known else {
+        if !there(joined_path(row.dir, "avra.toml")) { return .Refused(bad_dependency_path(row.at, row.key, row.dir)) }
+        return .Entered
+    }
+    if absolute(known) != absolute(row.dir) { return .Refused(duplicate_package(row.at, row.key, known, row.dir)) }
+    .Held
+}
+
+/// What entering the package `key` at `dir`, its manifest `m`, the row naming it at `at`, says —
+/// its manifest calls itself another name, or the prelude depends on something — and whether its
+/// rows are admitted: THE FLOOR, the prelude's never are, so the layering has a bottom.
+export type Entering = { voices: List<Diag>, admits: bool }
+
+/// THE ONE ENTRY LAW every reading of a package graph keeps, past its admission.
+export fn entering(key: string, dir: string, at: Loc?, m: Manifest) -> Entering {
+    let named = if m.name != key { [name_mismatch(at, key, m.name, dir)] } else { [] }
+    if key == prelude_key && !m.deps.is_empty() { return Entering { voices: named.concat([prelude_depends(m.deps[0].at)]), admits: false } }
+    Entering { voices: named, admits: true }
+}
+
 /// The chain a dependency's admission extends. A DEV EDGE STARTS ITS
 /// OWN: the tests are the consumer and nothing depends on them, so a
 /// package's test reaching a library that depends BACK on it closes no
 /// cycle — `@std/text`'s program prints through `@std/io`, which reads
 /// `@std/text`. A library edge carries the chain it came by.
-fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
+export fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
     if d.dev { return [] }
     chain
 }
@@ -332,4 +366,13 @@ fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
 fn qualified(m: ModulePath, from: Package) -> ModulePath {
     if m.packaged() || from.ordinal == 0 { return m }
     ModulePath { segments: key_spelled(from.key).split(".").concat(m.segments) }
+}
+
+/// A `use` of the package `key`, which the manifest at `manifest` doesn't declare.
+export fn undeclared_dependency(key: string, manifest: string) -> Voice {
+    Voice {
+        message: "`${key}` is not a dependency of this package",
+        label: "in this use",
+        help: "declare it under `[dependencies]` in `${manifest}` — `\"${key}\" = { path = \"…\" }`",
+    }
 }

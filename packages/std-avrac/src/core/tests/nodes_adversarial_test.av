@@ -6,6 +6,8 @@
 use @std.avrac.core.{
     Scoped,
     Plain,
+    FnSeat,
+    CatchArm,
     new_node_store,
     SyntaxArena,
     Expr,
@@ -89,16 +91,9 @@ spec "core/nodes adversarial" {
             let c = s.alloc_expr(Expr.BoolLit(true))
             let a = s.alloc_stmt(Stmt.ExprStmt(v))
             let b = s.alloc_stmt(Stmt.ExprStmt(v))
-            let fell = s.alloc_expr(Expr.If(c, s.alloc_expr(Expr.Block([a, b], null)), null))
+            let fell = s.alloc_expr(Expr.If(c, s.alloc_expr(Expr.Block([a, b])), null))
             let split = s
-                .alloc_expr(
-                    Expr
-                        .If(
-                            c,
-                            s.alloc_expr(Expr.Block([a], null)),
-                            s.alloc_expr(Expr.Block([b], null)),
-                        ),
-                )
+                .alloc_expr(Expr.If(c, s.alloc_expr(Expr.Block([a])), s.alloc_expr(Expr.Block([b]))))
             s.expr_fingerprint(fell) != s.expr_fingerprint(split)
         }
         then "a map's pair is not two spreads" {
@@ -133,16 +128,24 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let subject = s.alloc_expr(Expr.IntLit(1))
             let v = s.alloc_expr(Expr.IntLit(2))
-            let l = s.alloc_expr(Expr.Catch(subject, [Plain("A"), Plain("B")], [Scoped("b")], [v]))
-            let r = s.alloc_expr(Expr.Catch(subject, [Plain("A")], [Scoped("B"), Scoped("b")], [v]))
+            let l = s
+                .alloc_expr(
+                    Expr
+                        .Catch(subject, [CatchArm { variant: Plain("A"), bind: Scoped("b"), value: v }]),
+                )
+            let r = s
+                .alloc_expr(
+                    Expr
+                        .Catch(subject, [CatchArm { variant: Plain("b"), bind: Scoped("A"), value: v }]),
+                )
             s.expr_fingerprint(l) != s.expr_fingerprint(r)
         }
-        then "a block's statements are not its tail" {
+        then "a block's statements fold in one by one" {
             mut s = new_node_store()
             let v = s.alloc_expr(Expr.IntLit(1))
             let a = s.alloc_stmt(Stmt.ExprStmt(v))
-            let held = s.alloc_expr(Expr.Block([a], v))
-            let left = s.alloc_expr(Expr.Block([a], null))
+            let held = s.alloc_expr(Expr.Block([a, a]))
+            let left = s.alloc_expr(Expr.Block([a]))
             s.expr_fingerprint(held) != s.expr_fingerprint(left)
         }
         then "an interpolation's text is not its holes" {
@@ -258,8 +261,8 @@ spec "core/nodes adversarial" {
                 promises: plain_mark,
                 id: s.alloc_param_id(null),
             }
-            let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat(s, "b", t)]))
-            let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t), b_def]))
+            let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat(s, "b", t)], []))
+            let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t), b_def], []))
             s.stmt_fingerprint(first) != s.stmt_fingerprint(second)
         }
         then "`dyn Show` is not `Show`" {
@@ -284,11 +287,11 @@ spec "core/nodes adversarial" {
         then "a marked field is not a plain one" {
             mut s = new_node_store()
             let t = written("int", false)
-            let plain = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t)]))
+            let plain = s.alloc_stmt(Stmt.StructDecl("S", [], [seat(s, "a", t)], []))
             let held = s
                 .alloc_stmt(
                     Stmt
-                        .StructDecl("S", [], [seat(s, "a", t) with { marks: [marked("excluded", [])] }]),
+                        .StructDecl("S", [], [seat(s, "a", t) with { marks: [marked("excluded", [])] }], []),
                 )
             s.stmt_fingerprint(plain) != s.stmt_fingerprint(held)
         }
@@ -349,8 +352,8 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let v = s.alloc_expr(Expr.IntLit(1))
             let t = written("int", false)
-            let unmarked = named_ref("fn") with { args: [t, t], arrow: true, marks: [plain_mark, plain_mark] }
-            let writes = unmarked with { marks: [mut_mark, plain_mark] }
+            let unmarked = named_ref("fn") with { arrow: true, seats: [FnSeat { ty: t }], answer: t }
+            let writes = unmarked with { seats: [FnSeat { ty: t, mutable: true }] }
             let a = s.alloc_stmt(Stmt.Let("f", unmarked, v))
             let b = s.alloc_stmt(Stmt.Let("f", writes, v))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)

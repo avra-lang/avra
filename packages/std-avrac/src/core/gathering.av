@@ -1,0 +1,43 @@
+//! WHAT A `collect` GATHERS: the list its statements grow as they run. A statement standing in it,
+//! behind no lambda, whose value is one joins the list; a list joins element by element where what
+//! the list holds is no list itself.
+
+/// The list a `collect` grows, and the type of what it holds.
+export type Gathering = { into: Reg, elem: SignedType }
+
+/// A value joining a `collect`: the gathering, and the type the value has.
+export type Joining = { into: Gathering, ty: SignedType }
+
+impl Lowering {
+    /// `stmts` lowered in a scope of their own, each value they leave joining `into`, a list of
+    /// `elem`s.
+    mut fn gathering(into: Reg, elem: SignedType, stmts: List<StmtId>) {
+        // LICENSED compiler.bracket_ritual: this IS the bracket
+        self.gathers.push(Gathering { into: into, elem: elem })
+        self.opened()
+        for s in stmts { self.lower_stmt(s) }
+        self.closed()
+        let held = self.gathers.get()
+        self.gathers.set(held.take(held.length - 1))
+    }
+
+    /// The `collect` open around `v`, the value a statement leaves, and the type `v` joins it as: its
+    /// own node's, else its meaning's. Absent where none is open, or where `v` is no value.
+    fn joining(v: ExprId) -> Joining? {
+        let g? = self.gathers.get().last() else { return null }
+        let ty? = self.type_at(v) ?? self.type_at(self.meaning_of(v)) else { return null }
+        if ty.holds_value() { Joining { into: g, ty: ty } } else { null }
+    }
+
+    /// `r`, the value of `v`, joining `j`'s list: whole, lifted into what the list holds, or element by
+    /// element where it is a list and what the list holds is none.
+    mut fn gathered_into(j: Joining, v: ExprId, r: Reg) {
+        let g = j.into
+        let elem? = (if g.elem.listed() == null { j.ty.listed() } else { null }) else { return self.push_slot(g.into, self.lifted_as(v, r, g.elem)) }
+        let w = self.walk_list(r, elem)
+        let here = self.walk_turn(w)
+        self
+            .push_slot(g.into, self.lifted(self.element_at(w.elem_layout, w.list!, here), elem, g.elem))
+        self.loop_end()
+    }
+}

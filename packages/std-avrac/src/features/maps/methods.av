@@ -3,7 +3,7 @@
 //! nullable protocol's own adoption; `set` is the place law on a
 //! method, like `push`.
 use core.{BinOp, ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal}
 use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs, same_binding, state_slot}
 
 /// The empty literal takes the rows too — it is refused in the
@@ -327,12 +327,17 @@ export fn map_shape(args: TypeArgs) -> Type {
 export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
     let key = args.parts[0]
     if types.shape_of(key) is .Str { return [] }
-    [
-        Refusal {
-            message: "a map's keys are strings, not `${types.name_of(key)}`",
-            help: "key by text — `Map<string, …>`",
-        },
-    ]
+    let said = map_unkeyed(types.name_of(key))
+    [Refusal { message: said.message, help: said.help ?? "" }]
+}
+
+/// A map type keyed by `found`, which is no text.
+export fn map_unkeyed(found: string) -> Voice {
+    Voice {
+        message: "a map's keys are strings, not `${found}`",
+        label: "this type",
+        help: "key by text — `Map<string, …>`",
+    }
 }
 
 export fn check_map_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {

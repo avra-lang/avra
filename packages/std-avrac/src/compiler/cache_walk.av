@@ -79,32 +79,32 @@ enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
 /// What each family keys by.
 fn keyed_by(f: Family) -> KeyedBy {
     match f {
-        .Source or .Parsed or .Items or .Admitted or .FileRefs or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> KeyedBy.File,
-        .Namespace or .HeldSig -> KeyedBy.Module,
-        .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Placed or .Marks or .DeclReads or .Writes or .WriteSummary or .CancelSummary or .CancelBits or .ReadFound or .Consumed -> KeyedBy.Decl,
-        .Manifest -> KeyedBy.Package,
-        .References or .Failures or .ReadReach -> KeyedBy.Program,
-        .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
+        .Items or .Resolved or .Folded or .Expanded -> KeyedBy.File,
+        .Methods or .Raised or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
+        .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
         .Named -> KeyedBy.Name,
-        .Input or .BlockScan or .ComponentScan or .ComponentNames -> KeyedBy.Input,
+        .Input -> KeyedBy.Input,
     }
 }
 
-/// What a family's keys name — a row's place for a family no declaration
-/// names, a relation's minted one.
-fn keyed(family: int) -> KeyedBy {
-    let f? = Family.all().get(family) else { return KeyedBy.Row }
-    keyed_by(f)
-}
-
 /// A family by its word — a relation's minted family by its place.
-export fn family_word(family: int) -> string { Family.all().get(family)?.name ?? "${RELATION}${family}" }
 
 /// Whether a family keys by a declaration.
 fn keyed_by_decl(f: Family) -> bool {
     match keyed_by(f) {
         .Decl -> true,
         .File or .Module or .Package or .Program or .Unit or .Name or .Input or .Row -> false,
+    }
+}
+
+/// What a query's keys name, by its seat's id kind.
+fn seat_keyed(seat: string) -> KeyedBy {
+    let k? = id_kind(seat) else { return KeyedBy.Row }
+    match k {
+        .File -> KeyedBy.File,
+        .Decl -> KeyedBy.Decl,
+        .Module -> KeyedBy.Module,
+        .Type or .Expr or .Stmt -> KeyedBy.Row,
     }
 }
 
@@ -137,7 +137,7 @@ impl Workspace {
             attempts: d.turned + 1,
             discarded: d.turned,
             turns: [left_line(l) for l in d.left],
-            phases: grouped_phases(d.program.phases.concat(d.spans)),
+            phases: grouped_phases(d.program.ws.phases.get().concat(d.spans)),
         }
         d.program.ws.discarded()
         walk
@@ -149,7 +149,7 @@ impl Workspace {
     fn walk_graph() -> Graphed {
         self.inspecting()
         let g = self.anew()
-        Graphed { ws: g, phases: grouped_phases(g.program(null).phases) }
+        Graphed { ws: g, phases: grouped_phases(g.program(null).ws.phases.get()) }
     }
 
     /// THE GRAPH OF `--stats`: the derivation's own workspace, which is the one
@@ -158,7 +158,10 @@ impl Workspace {
         self.inspecting()
         let g = self.anew()
         match g.derived(self.entry_of(), Want.Diagnostics) {
-            .Ok(d) -> Graphed { ws: d.program.ws, phases: grouped_phases(d.program.phases.concat(d.spans)) },
+            .Ok(d) -> Graphed {
+                ws: d.program.ws,
+                phases: grouped_phases(d.program.ws.phases.get().concat(d.spans)),
+            },
             .Err(_) -> self.walk_graph(),
         }
     }
@@ -169,7 +172,7 @@ impl Workspace {
     /// A file's analysis: the query a check asks of it, the root of its trails.
     fn analysis_key(path: string) -> Key? {
         let f? = self.walked_file(path) else { return null }
-        key(Family.Analysis, f.index)
+        analysis_in_key(self, f)
     }
 
     /// A file's text: the input its source and its scans read, and the one
@@ -190,7 +193,7 @@ impl Workspace {
         let family? = self.family_worded(word) else { return Meant.NoFamily(word) }
         let subject = label.substring(open + 1, label.length - 1)
         if subject == "" { return Meant.NoAnswer(label) }
-        let keys = [Key { family: family, arg: arg } for arg in self.subject_args(keyed(family), subject)]
+        let keys = [Key { family: family, arg: arg } for id in self.subject_args(self.keyed(family), subject) for arg in some_list(self.call_of(family, id))]
         let settled = [k for k in keys if self.db.cell(k) != null]
         if settled.is_empty() { Meant.NoAnswer(label) } else { Meant.Answers(settled) }
     }
@@ -224,7 +227,7 @@ impl Workspace {
     /// The family a word names: a declared one by its name, a relation's
     /// minted one by its place among the families holding an answer.
     fn family_worded(word: string) -> int? {
-        let declared? = Family.all().find(it.name == word) else { return self.relation_worded(word) }
+        let declared? = Family.all().find(it.name == word) else { return self.db.kernel.named_family(word) ?? self.relation_worded(word) }
         declared.ordinal
     }
 
@@ -258,9 +261,12 @@ impl Workspace {
     }
 
     /// Every settled answer keyed by this declaration: its key in each family
-    /// that keys by one.
+    /// that keys by one, and in every query a declaration's id keys.
     fn decl_answers(d: DeclId) -> List<Key> {
-        [key(f, d.index) for f in Family.all() if keyed_by_decl(f) && self.db.cell(key(f, d.index)) != null]
+        let declared = [key(f, d.index) for f in Family.all() if keyed_by_decl(f) && self.db.cell(key(f, d.index)) != null]
+        let queried = [Key { family: fam, arg: arg } for name in queries_keyed_by(IdKind.Decl) for fam in some_list(self.db.kernel.named_family(name)) for arg in some_list(self.call_of(fam, d.index))]
+            .filter((k) -> self.db.cell(k) != null)
+        declared.concat(queried)
     }
 
     /// An answer with its digest.
@@ -308,7 +314,7 @@ impl Workspace {
     fn family_count(family: int, reads: List<int>) -> FamilyCount {
         let ranked = sorted_by(reads, (a: int, b: int) -> a < b)
         FamilyCount {
-            family: family_word(family),
+            family: self.family_word(family),
             cells: ranked.length,
             edges: total(ranked),
             served: self.db.kernel.served_computed(family)[0],
@@ -359,27 +365,71 @@ impl Workspace {
     }
 
     /// A query as a person reads it: its family's word and what it keys by.
-    fn key_label(k: Key) -> string { "${family_word(k.family)}(${self.key_subject(k)})" }
+    fn key_label(k: Key) -> string { "${self.family_word(k.family)}(${self.key_subject(k)})" }
+
+    /// Every settled cell of the family named `word` — a query's by its fn.
+    fn cells_named(word: string) -> List<Key> {
+        let family? = self.family_worded(word) else { return [] }
+        [c.key for c in self.db.cells_by_family().get(family) ?? []]
+    }
+
+    /// A family by its word: a declared one by its name, a query or a relation by the name the
+    /// kernel holds for it, an unnamed one by its place.
+    fn family_word(family: int) -> string {
+        let declared? = Family.all().get(family) else { return self.db.kernel.named_word(family) ?? "${RELATION}${family}" }
+        declared.name
+    }
 
     /// The file a query analyses, for a file's analysis alone.
     fn analysed_path(k: Key) -> string? {
-        if k.family != Family.Analysis.ordinal { return null }
-        self.shown_path(self.decls.file(FileId { index: k.arg }).path)
+        let f? = analysis_in_seat_of(self, k) else { return null }
+        self.shown_path(self.decls.file(f).path)
     }
 
     /// What an answer is keyed by, named: a file, a module, a declaration, a
     /// package, the whole program, a name, or a unit known only by its number.
+    /// What a family's keys name: a declared family's by its declaration, a query's by the kind
+    /// of id its seat is, a row's place for any other.
+    fn keyed(family: int) -> KeyedBy {
+        let f? = Family.all().get(family) else { return seat_keyed(query_seat(self.db.kernel.named_word(family) ?? "")) }
+        keyed_by(f)
+    }
+
     fn key_subject(k: Key) -> string {
-        match keyed(k.family) {
-            .File -> self.shown_path(self.decls.file(FileId { index: k.arg }).path),
-            .Module -> module_shown(self.decls.module_name(ModuleId { index: k.arg })),
-            .Decl -> self.decl_shown(DeclId { index: k.arg }),
-            .Package -> self.package_shown(self.packages()[k.arg].root),
+        let n? = self.subject_of(k) else { return "${k.arg}" }
+        match self.keyed(k.family) {
+            .File -> self.shown_path(self.decls.file(FileId { index: n }).path),
+            .Module -> module_shown(self.decls.module_name(ModuleId { index: n })),
+            .Decl -> self.decl_shown(DeclId { index: n }),
+            .Package -> self.package_shown(self.packages()[n].root),
             .Program -> THE_PROGRAM,
-            .Unit -> "${UNIT}${k.arg}",
-            .Name -> self.bucket_shown(k.arg),
-            .Input -> self.input_shown(self.input_names.get()[k.arg]),
-            .Row -> "${k.arg}",
+            .Unit -> "${UNIT}${n}",
+            .Name -> self.bucket_shown(n),
+            .Input -> self.input_shown(self.input_names.get()[n]),
+            .Row -> "${n}",
+        }
+    }
+
+    /// The id a key stands for: a query keyed by an id was asked with it; any other key's arg is
+    /// its own subject.
+    fn subject_of(k: Key) -> int? {
+        if !self.keyed_by_number(k.family) { return k.arg }
+        self.query_db().number_of(k)
+    }
+
+    /// The key arg a family answers id `n` under: the call asked with it for a query keyed by an
+    /// id, the id itself for any other.
+    fn call_of(family: int, n: int) -> int? {
+        if !self.keyed_by_number(family) { return n }
+        self.query_db().call_numbered(family, n)
+    }
+
+    /// Whether a family is a query whose calls are asked by an id's number.
+    fn keyed_by_number(family: int) -> bool {
+        if Family.all().get(family) != null { return false }
+        match self.keyed(family) {
+            .File or .Module or .Decl or .Package or .Program or .Unit or .Name or .Input -> true,
+            .Row -> false,
         }
     }
 

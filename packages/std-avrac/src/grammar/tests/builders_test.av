@@ -116,22 +116,36 @@ spec "grammar/builders" {
         then "-> e is a Var" {
             let g = parsed("a = e:NAME -> e")
             let b = first_branch(g, 0).build!
-            match b { .Var(n) -> n == "e", .Call(_, _) or .Node(_, _, _, _) -> false }
+            match b {
+                .Var(n) -> n == "e",
+                .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
+            }
         }
         then "-> f(x, y) is a Call with its args" {
             let g = parsed("a = x:NAME y:STRING -> f(x, y)")
             let b = first_branch(g, 0).build!
             match b {
                 .Call(n, args) -> n == "f" && args.length == 2 && args[1] == "y",
-                .Var(_) or .Node(_, _, _, _) -> false,
+                .Var(_) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
             }
+        }
+        then "-> Owner.Variant by f is a Computed build naming its node and its fn" {
+            let g = parsed("a = x:NAME -> Expr.Block by block_written")
+            let b = first_branch(g, 0).build!
+            match b {
+                .Computed(owner, variant, by, _) -> owner == "Expr" && variant == "Block" && by == "block_written",
+                .Var(_) or .Call(_, _) or .Node(_, _, _, _) -> false,
+            }
+        }
+        then "`by` without a node is refused" {
+            parse("a = x:NAME -> f by g").result == null
         }
         then "-> f() is a zero-arg Call, not a Var" {
             let g = parsed("a = NAME -> f()")
             let b = first_branch(g, 0).build!
             match b {
                 .Call(n, args) -> n == "f" && args.is_empty(),
-                .Var(_) or .Node(_, _, _, _) -> false,
+                .Var(_) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> false,
             }
         }
         then "no arrow means pass-through" {

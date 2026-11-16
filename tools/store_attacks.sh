@@ -18,8 +18,8 @@
 #   Q store foreign          a segment written under another pack format
 #   Q store hit|miss <family>  a lookup of one row, by the family it asked
 #   Q db hit|miss <kind>       a durable DbRow recalled, by its kind
-# and two hooks: AVRA_STORE_KILL=commit kills the writer after a segment's
-# frame octets and before its commit marker; AVRA_STORE_HOLD_MS=n holds the
+# and two hooks: AVRA_STORE_KILL=<n> kills the writer after its nth frame's
+# octets and before its commit marker; AVRA_STORE_HOLD_MS=n holds the
 # compaction lock n ms before appending.
 #
 # §6.8 maps its eight attacks here; a check that changes names the row it still
@@ -28,13 +28,15 @@
 #   one store · one open · kill mid-append · two writers · compaction contended ·
 #   a flipped byte · another compiler · a claim conflict
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 # THE HARNESS HOLDS THE SLOT: two writers and a contended compaction need two
 # processes AT ONCE, and the `avra` shim serialises package-scale runs on the
 # machine lock. `AVRA_WATCH_HELD` tells the shim this harness is the slot —
 # the same door `tools/store_baseline.sh` and `tools/cache_attacks.sh` use.
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
+# The machine's cache is this tree's own, so a cleared .avra-cache is a cold store.
+export AVRA_CACHE_DIR="$PWD/.avra-cache"
 
 R=build/store-attacks
 rm -rf "$R" .avra-cache && mkdir -p $R/p/src
@@ -72,7 +74,8 @@ agrees() { cmp -s $R/oracle.out $R/$1.out || { fail "$2: the answer differs from
 # THE STORE, under `.avra-cache/` — one directory, not one per compiler.
 the_store() { echo .avra-cache/store; }
 segment() { ls "$(the_store)"/seg-*.log 2>/dev/null | head -1; }
-body() { ls "$(the_store)"/body-*.pack 2>/dev/null | head -1; }
+# the newest body: the head of the chain an open reads
+body() { ls "$(the_store)"/body-*.pack 2>/dev/null | awk -F'body-' '{ print $2 + 0, $0 }' | sort -n | tail -1 | cut -d' ' -f2; }
 
 # THE ORACLE: a cold check, then the store set aside so nothing else reads it.
 checked oracle
@@ -107,7 +110,7 @@ say "§6.8 kill mid-append: a writer killed between a frame and its marker leave
 rm -rf .avra-cache
 checked cold2
 sed -i.bak 's/{ 4 }/{ 6 }/' $R/p/src/more.av
-AVRA_STORE_KILL=commit ./avra check $R/p > /dev/null 2>&1
+AVRA_STORE_KILL=1 ./avra check $R/p > /dev/null 2>&1
 st=$?
 [ "$st" = 137 ] || fail "the kill hook did not kill the writer (status $st)"
 mv $R/p/src/more.av.bak $R/p/src/more.av
@@ -117,6 +120,21 @@ agrees after_kill "after a kill"
 checked after_kill2
 agrees after_kill2 "two runs after a kill"
 [ "$(heard after_kill2 torn)" = 0 ] || fail "the torn frame is still there a run later"
+
+# ── kill mid-run: a COLD run killed at its nth frame, then a warm one ──
+# Whatever a killed run kept, the next run answers the oracle: a kept answer
+# standing on another process's arena or parse order would not.
+say "kill mid-run: a cold check killed at frame n leaves a store the next check answers the oracle from"
+for n in 2 5 9; do
+    rm -rf .avra-cache
+    AVRA_STORE_KILL=$n ./avra check $R/p > /dev/null 2>&1
+    st=$?
+    [ "$st" = 137 ] || fail "frame $n: the kill hook did not kill the cold run (status $st)"
+    checked mid_kill_$n
+    agrees mid_kill_$n "after a kill at frame $n"
+    checked mid_kill2_$n
+    agrees mid_kill2_$n "two runs after a kill at frame $n"
+done
 
 # ── §6.8 two writers ──
 # The design (S7) gives each writer its OWN segment and no lock; the flock is
@@ -136,6 +154,42 @@ agrees w1 "the first writer"
 agrees w2 "the second writer"
 segs=$(ls "$(the_store)"/seg-*.log 2>/dev/null | wc -l | tr -d ' ')
 [ "$segs" = 2 ] || fail "two writers left $segs segment(s), not two"
+
+# ── the machine store, sealed at once ──
+# Two checkouts of the package, outside any tree, check cold at the same moment
+# into ONE machine store; both seal it. A third checkout's first check reads only
+# that store: it answers the oracle, derives nothing and sees nothing torn.
+say "machine store: two checkouts sealing one machine store at once leave it whole for a third"
+T=$(cd "$(mktemp -d)" && pwd -P)
+for d in one/p two/deeper/p three/p; do mkdir -p "$T/$d" && cp -R $R/p/. "$T/$d/"; done
+# a run's words with its checkout spelled P, so two checkouts' answers compare
+as_p() { sed -e "s|$2|P|g" "$1"; }
+machined() { AVRA_CACHE_DIR=$T/machine AVRA_QTRACE=1 ./avra check "$T/$1" > $R/$2.out 2> $R/$2.err; echo "status $?" >> $R/$2.out; words $R/$2.err >> $R/$2.out; grep '^Q	' $R/$2.err > $R/$2.trace; }
+machined one/p m1 & p1=$!
+machined two/deeper/p m2 & p2=$!
+wait $p1
+wait $p2
+machined three/p m3
+as_p $R/oracle.out "$PWD/$R/p" | sed -e "s|$R/p|P|g" > $R/oracle.p
+for m in m1:one/p m2:two/deeper/p m3:three/p; do
+    as_p $R/${m%%:*}.out "$T/${m#*:}" > $R/${m%%:*}.p
+    cmp -s $R/oracle.p $R/${m%%:*}.p || { fail "${m%%:*}: the answer differs from the oracle"; diff $R/oracle.p $R/${m%%:*}.p | head -6; }
+done
+[ "$(grep -c '^Q	attempt' $R/m3.trace)" = 0 ] || fail "the third checkout derived again from a machine store two others sealed"
+[ "$(heard m3 torn)" = 0 ] || fail "the third checkout read a torn machine store"
+
+# ── another tree's answer for other source ──
+# A fourth checkout differs from the third by one edit in a file the entry imports.
+# Checked after the third, on the same machine store, it says only what its own
+# source says: its own warning, at its own path, never the third's answer.
+say "machine store: a tree never reads another tree's answer for different source"
+mkdir -p "$T/four/p" && cp -R $R/p/. "$T/four/p/"
+sed -i.bak 's/{ 4 }/{ 7 }/' "$T/four/p/src/more.av" && rm -f "$T/four/p/src/more.av.bak"
+machined four/p m4
+AVRA_CACHE_DIR=$T/alone ./avra check "$T/four/p" > $R/m4o.out 2> $R/m4o.err; echo "status $?" >> $R/m4o.out; words $R/m4o.err >> $R/m4o.out
+cmp -s $R/m4o.out $R/m4.out || { fail "the fourth checkout answered other than its own source"; diff $R/m4o.out $R/m4.out | head -6; }
+grep -q "$T/three" $R/m4.out && fail "the fourth checkout's answer names the third's files"
+find "$T" -delete
 
 # ── §6.8 compaction contended ──
 say "§6.8 compaction contended: the process without the lock says it did not compact, and both answer the oracle"
@@ -181,7 +235,10 @@ else
 import sys
 p = sys.argv[1]
 b = bytearray(open(p, "rb").read())
-b[len(b) // 2] ^= 0x01
+# rows are read lazily and each held to its own check, so damage is seen where a row is
+# read: every third octet from an eighth in (the index and the rows) is flipped
+for i in range(len(b) // 8, len(b), 3):
+    b[i] ^= 0x01
 open(p, "wb").write(bytes(b))
 PY
     checked flip_mid
@@ -190,20 +247,18 @@ PY
 fi
 
 # ── §6.8 another compiler ──
-# Two cases. A compiler whose print differs while its module-record producer, its codec and
-# the toolchain do not (AVRA_INLINE_RUNTIME=0 moves the print alone) READS the first one's
-# module records and answers as a cold compute does. A segment written under another pack
-# FORMAT is never read, and the check recomputes. A producer, codec or toolchain part that
-# moved is pinned where the stamp is folded (compiler/tests/store_test.av).
-say "§6.8 another compiler, same producer: its module records are read, and the answer is the cold one"
+# A compiler whose print differs (AVRA_INLINE_RUNTIME=0 moves the print alone) reads none
+# of the first one's rows, in any family: it hits only what it wrote itself, as a cold
+# check does, and answers as a cold compute does. A segment
+# written under another pack FORMAT is never read, and the check recomputes.
+say "§6.8 another compiler: none of the first one's rows are read, and the answer is the cold one"
 rm -rf .avra-cache
 checked share_seed
 export AVRA_INLINE_RUNTIME=0
 checked share
 unset AVRA_INLINE_RUNTIME
-agrees share "a second print with the same producer"
-[ "$(grep -c '^Q	store	hit	sig' $R/share.trace)" -ge 1 ] || fail "the second compiler read none of the first one's module records"
-[ "$(grep -c '^Q	store	hit	unit' $R/share.trace)" -le "$(grep -c '^Q	store	hit	unit' $R/share_seed.trace)" ] || fail "a compiler-keyed row crossed prints"
+agrees share "a second print"
+[ "$(grep -ac '^Q	store	kind	get	hit' $R/share.trace)" = "$(grep -ac '^Q	store	kind	get	hit' $R/share_seed.trace)" ] || fail "a row crossed prints: the second print hit more than a cold check hits"
 
 say "§6.8 another compiler, another format: a segment written under another pack format is never read, and the check recomputes"
 rm -rf .avra-cache
@@ -238,13 +293,12 @@ agrees foreign "a foreign format"
 [ "$(grep -c '^Q	attempt' $R/foreign.trace)" -gt 0 ] || fail "a store of another format was read as a hit"
 
 say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
-# `stamp_of` gives each family ONE stamp: sig stands under its producer's code hashes, every
-# other family under the compiler's own print (`own ${print}`). So a rebuild that moved one
-# leaf re-keys every row of every other family at once — measured by tools/db06_step6_rebuild.sh:
+# Every family stands under the compiler's own print (`own ${print}`). So a rebuild that
+# moved one leaf re-keys every row at once — measured by tools/db06_step6_rebuild.sh:
 # 0 store rows written by a warm check of an unchanged tree, 30,320 after one leaf of one query
 # moved and the compiler was rebuilt. The row asks for a row keyed by the code hash of the
 # query that ANSWERS it: S2 (§6.4), DB 05b's receipt — not DB 09, which is the settlement.
-fail "the families are keyed per FAMILY (sig by its producer's code hashes, every other by the compiler's print), so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
+fail "every family is keyed by the compiler's print, so a rebuild that changed one query rewrites the whole store — the per-query recompute is S2's, DB 05b's receipt"
 
 say "§6.8 another compiler, another C: a compiler whose runtime C differs reads none of the first one's module records"
 if sh tools/db06_step5_witness.sh > "$R/step5.log" 2>&1; then
@@ -288,5 +342,90 @@ wait $lock_pid
 checked cc_read
 agrees cc_read "after a claim conflict"
 [ "$(heard cc_read claim-conflict)" -ge 1 ] || fail "a claim conflict was not reported when two segments held different values for one key"
+
+# THE SHARED CONTENT STORE NEVER OUTGROWS ITS CEILING: a process that puts a blob trims the
+# store as it settles, the least recently read first. Three 1 MB blobs stand unread for years
+# and a fourth was read last; a check that puts far more than a 7 MB ceiling ends under it,
+# with the three unread gone first and the one read last still standing.
+C=$R/cas-cap
+mkdir -p $C/cache/cas/00
+for n in 1 2 3 4; do head -c 1048576 /dev/zero > $C/cache/cas/00/stand$n; done
+touch -t 202001010000 $C/cache/cas/00/stand1 $C/cache/cas/00/stand2 $C/cache/cas/00/stand3
+touch -t 209901010000 $C/cache/cas/00/stand4
+AVRA_CACHE_DIR=$C/cache AVRA_CAS_MAX_MB=7 ./avra check packages/std-relation > $R/cas-cap.out 2>&1
+cas_bytes=$(find $C/cache/cas -mindepth 2 -maxdepth 2 -type f -exec stat -f %z {} + 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+cas_put=$(find $C/cache/cas -mindepth 2 -maxdepth 2 -type f ! -name 'stand*' | wc -l | tr -d ' ')
+[ "$cas_put" -gt 0 ] || fail "cas cap: the check put no blob, so the ceiling was never tested"
+[ "$cas_bytes" -le 7340032 ] && say "cas cap: $cas_put blob(s) put, the store holds $cas_bytes bytes under its 7 MB ceiling" || fail "cas cap: the store holds $cas_bytes bytes past its 7 MB ceiling"
+[ ! -e $C/cache/cas/00/stand1 ] && [ ! -e $C/cache/cas/00/stand2 ] && [ ! -e $C/cache/cas/00/stand3 ] && say "cas cap: the least recently read went first" || fail "cas cap: a least recently read blob still stands"
+[ -e $C/cache/cas/00/stand4 ] && say "cas cap: the blob read last stays" || fail "cas cap: the blob read last was let go"
+
+# TWO CHECKOUTS, ONE MACHINE STORE, ONE FILE NAME: each `src/main.av` says something else. A
+# checkout's history is its own, so checks that alternate between them each answer as a cold
+# check of their own tree does, and each warm turn parses nothing.
+two=$R/two-main
+mkdir -p $two/one/src $two/two/src $two/cache
+: > $two/one/.git; : > $two/two/.git
+printf '[package]\nname = "app"\nversion = "0.1.0"\n' > $two/one/avra.toml
+printf '[package]\nname = "app"\nversion = "0.1.0"\n' > $two/two/avra.toml
+printf 'fn bump_one(mut n: int) -> int { n + 1 }\nfn main() { println("one") }\n' > $two/one/src/main.av
+printf 'fn bump_two(mut n: int) -> int { n + 1 }\nfn main() { println("two") }\n' > $two/two/src/main.av
+two_said() { AVRA_CACHE_DIR=$PWD/$two/cache AVRA_QTRACE=1 ./avra check $two/$1 2> $R/two.err > $R/two.out; grep -o 'bump_[a-z]*' $R/two.err $R/two.out | sed 's/.*://' | sort -u | tr '\n' ' '; }
+two_parsed() { grep -c "^Q	parse	.*$two/$1/" $R/two.err; }
+for turn in cold warm again; do
+    for side in one two; do
+        got=$(two_said $side); parsed=$(two_parsed $side)
+        [ "$got" = "bump_$side " ] || fail "two mains: $side, $turn: said '$got', wanted 'bump_$side '"
+        if [ "$turn" != cold ] && [ "$parsed" != 0 ]; then fail "two mains: $side, $turn: parsed its main again ($parsed), its history read the other checkout's"; fi
+    done
+done
+printf 'fn bump_one(mut n: int, by: int = 1) -> int { n + by }\nfn main() { println("one") }\n' > $two/one/src/main.av
+two_said two > /dev/null
+moved=$(cd $two/one && AVRA_CACHE_DIR=$OLDPWD/$two/cache AVRA_CWD=$PWD $OLDPWD/avra explain --why --json 2>/dev/null)
+case "$moved" in *'"moved":["src/main.av"]'*) ;; *) fail "two mains: one's edit, the other checked between: explain's moved is not its main: $(printf '%s' "$moved" | cut -c1-120)" ;; esac
+say "two mains: two checkouts of one name each kept their own history"
+
+# TWO TREES, ONE MACHINE STORE, PACKAGES ADMITTED IN OTHER ORDERS: each tree holds `deps/a` and
+# `deps/b`, and what one names `@o/p` the other names `@o/q`. A file's module and a module's files
+# are the HOLDING package's, never a count of what was admitted before them, so every check
+# answers as a cold check of its own tree does.
+ord=$R/orders
+for side in one two; do
+    mkdir -p $ord/$side/src $ord/$side/deps/a/src $ord/$side/deps/b/src; : > $ord/$side/.git
+    if [ $side = one ]; then first=p; second=q; else first=q; second=p; fi
+    printf '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\n"@o/%s" = { path = "deps/a" }\n"@o/%s" = { path = "deps/b" }\n' $first $second > $ord/$side/avra.toml
+    printf '[package]\nname = "@o/%s"\nversion = "0.1.0"\n' $first > $ord/$side/deps/a/avra.toml
+    printf '[package]\nname = "@o/%s"\nversion = "0.1.0"\n' $second > $ord/$side/deps/b/avra.toml
+    printf 'export fn %s_says() -> int { 1 }\n' $first > $ord/$side/deps/a/src/lib.av
+    printf 'export fn %s_says() -> int { 2 }\n' $second > $ord/$side/deps/b/src/lib.av
+    printf 'use @o.%s.{%s_says}\nuse @o.%s.{%s_says}\nprintln("${p_says()} ${q_says()}")\n' $first $first $second $second > $ord/$side/src/main.av
+done
+for turn in cold warm; do
+    for side in one two; do
+        AVRA_CACHE_DIR=$PWD/$ord/cache ./avra check $ord/$side > $R/ord.out 2>&1 && say "orders: $side, $turn: checks clean" ||
+            fail "orders: $side, $turn: $(grep -m1 -E 'error|avra:' $R/ord.out)"
+    done
+done
+
+# A PROGRAM ADMITS WHAT ITS OWN TEXT IMPORTS: a server built first, in one machine store, then a
+# hello at the same path in another tree, and the server's own tree edited down to that hello.
+# A file's kept use lines and its record's imports speak for the text they were read from, so
+# neither hello carries the scheduler the server's packages bring.
+adm=$(cd "$(mktemp -d)" && pwd -P)/admits # outside any checkout, as a fixture copied to a temp dir is
+for side in srv hello edited; do
+    mkdir -p $adm/$side/src
+    printf '[package]\nname = "app-%s"\nversion = "0.1.0"\n' $side > $adm/$side/avra.toml
+done
+server='use @std.http.route.{get}\nuse @std.http.server.{server}\n\nserver api {\n    get "/hello" { _req -> "hi" }\n}\nlet ran = api.run()\nif ran is .Err(e) { eprintln(e.describe().message) }\n'
+printf "$server" > $adm/srv/src/main.av; printf "$server" > $adm/edited/src/main.av
+printf 'println("hi")\n' > $adm/hello/src/main.av
+admits() { AVRA_CACHE_DIR=$adm/cache ./avra build $adm/$1 > $R/admits.out 2>&1 || fail "admits: $1 did not build: $(tail -2 $R/admits.out)"; }
+scheduled() { nm $adm/$1/src/main 2>/dev/null | grep -cE 'avra_(task_spawn|fiber_|cores_)'; }
+admits srv; admits edited
+[ "$(scheduled srv)" -gt 0 ] || fail "admits: the server carries no scheduler, so nothing was attacked"
+admits hello
+[ "$(scheduled hello)" = 0 ] && say "admits: a hello after a server, one store, carries no scheduler" || fail "admits: a hello after a server carries $(scheduled hello) scheduler symbol(s)"
+printf 'println("hi")\n' > $adm/edited/src/main.av; admits edited
+[ "$(scheduled edited)" = 0 ] && say "admits: a server edited down to a hello carries no scheduler" || fail "admits: a server edited down to a hello carries $(scheduled edited) scheduler symbol(s)"
 
 verdict

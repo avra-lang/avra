@@ -1,0 +1,238 @@
+//! VALUES INTERNED AS DENSE IDS. Inside one process a value's identity is a small int, minted the
+//! first time an equal value arrives: equality is one compare, and a memo over the value is a dense
+//! list indexed by it. Finding a value's id costs one cheap hash and one exact comparison, so asking
+//! for it is cheaper than most answers it keys. An id means nothing outside the table that minted it,
+//! so `InternId` has no `Saved` impl and can never cross; a boundary carries the value's CONTENT KEY.
+//!
+//! A content key is folded by the value's own type over two LANES (`HIGH_LANE`, `LOW_LANE`), each a
+//! multiply-xor-rotate fold of 64-bit words with its own seed and prime: no box is made, and the two
+//! lanes together are the 128-bit key, equal for equal values in every process.
+use answer_record.{ContentHash}
+use @std.meta.{identity}
+
+/// A value's place in the table that interned it. Meaningless in any other table or process, so
+/// never saved: a boundary carries the value's content key.
+export type InternId = { index: int }
+
+/// The slots a table starts with when its first value arrives.
+const FIRST_SLOTS: int = 64
+
+/// Values each minted a dense id the first time an equal one arrives: open addressing over a
+/// power-of-two list of slots, never more than half full. An identity: every holder sees one table.
+@identity
+export type Interned<T> = {
+    /// Each id's value.
+    values: Cell<List<T>>,
+    /// Each id's hash.
+    hashes: Cell<List<int>>,
+    /// Each slot holds one more than an id, or zero when it's free.
+    slots: Cell<List<int>>,
+    /// A value's hash: equal values hash alike; unequal ones may too, and are told apart by `same`.
+    hashed: Cell<fn(T) -> int>,
+    /// Whether two values are one.
+    same: Cell<fn(T, T) -> bool>,
+}
+
+/// A table interning values by `hashed` and `same`.
+export fn interned<T>(hashed: fn(T) -> int, same: fn(T, T) -> bool) -> Interned<T> {
+    let values: Cell<List<T>> = Cell.new([])
+    let hashes: Cell<List<int>> = Cell.new([])
+    let slots: Cell<List<int>> = Cell.new([])
+    Interned {
+        values: values,
+        hashes: hashes,
+        slots: slots,
+        hashed: Cell.new(hashed),
+        same: Cell.new(same),
+    }
+}
+
+impl Interned<T> {
+    /// The id `value` is known by, minted the first time an equal value arrives.
+    fn id_of(value: T) -> InternId {
+        let h = (self.hashed.get())(value)
+        let standing? = self.standing(value, h) else { return self.minted(value, h) }
+        InternId { index: standing }
+    }
+
+    /// The id an equal value already has, absent while none has arrived.
+    fn found(value: T) -> InternId? {
+        let standing? = self.standing(value, (self.hashed.get())(value)) else { return null }
+        InternId { index: standing }
+    }
+
+    /// The value `id` names.
+    fn value_of(id: InternId) -> T { self.values.get()[id.index] }
+
+    /// How many values it holds.
+    fn count() -> int { self.values.get().length }
+
+    /// The id of the value equal to `value`, hashed `h`; a free slot ends the search.
+    fn standing(value: T, h: int) -> int? {
+        let slots = self.slots.get()
+        if slots.is_empty() { return null }
+        let hashes = self.hashes.get()
+        let values = self.values.get()
+        let same = self.same.get()
+        mut slot = spread(h) & slots.length - 1
+        while slots[slot] != 0 {
+            let id = slots[slot] - 1
+            if hashes[id] == h && same(values[id], value) { return id }
+            slot = slot + 1 & slots.length - 1
+        }
+        null
+    }
+
+    /// `value`, hashed `h` and met for the first time, given the next id.
+    fn minted(value: T, h: int) -> InternId {
+        let id = self.values.get().length
+        if (id + 1) * 2 > self.slots.get().length {
+            self
+                .slots
+                .set(
+                    slots_holding(
+                        self.hashes.get(),
+                        if self.slots.get().is_empty() { FIRST_SLOTS } else { self.slots.get().length * 2 },
+                    ),
+                )
+        }
+        self.slots.set_at(free_slot(self.slots.get(), h), id + 1)
+        self.hashes.push(h)
+        self.values.push(value)
+        InternId { index: id }
+    }
+}
+
+/// A hash's bits spread so its low ones pick a slot.
+fn spread(h: int) -> int {
+    let x = (h ^ shifted_right(h, 32)).wrapping_mul(0 - 4658895280553007687)
+    x ^ shifted_right(x, 29)
+}
+
+/// The first free slot from where `h` lands.
+fn free_slot(slots: List<int>, h: int) -> int {
+    mut slot = spread(h) & slots.length - 1
+    while slots[slot] != 0 { slot = slot + 1 & slots.length - 1 }
+    slot
+}
+
+/// `count` slots holding every id so far.
+fn slots_holding(hashes: List<int>, count: int) -> List<int> {
+    mut slots = [0 for _slot in 0..count]
+    for id, h in hashes { slots[free_slot(slots, h)] = id + 1 }
+    slots
+}
+
+/// `word` folded into a running in-process hash `h`: cheap, and never a content key.
+export fn hash_word(h: int, word: int) -> int { (h ^ word).wrapping_mul(0 - 7046029254386353131) }
+
+/// A text's in-process hash folded into `h`: its length and its first and last eight bytes. Texts
+/// sharing those collide, and the table's comparison tells them apart.
+export fn hash_text(h: int, text: string) -> int {
+    let n = text.length
+    if n < 8 { return hash_word(h, short_word(text)) }
+    hash_word(hash_word(hash_word(h, n), avra_str_word_at(text, 0)), avra_str_word_at(text, n - 8))
+}
+
+/// A text shorter than a word, as one word: its bytes, then its length.
+fn short_word(text: string) -> int {
+    mut w = text.length
+    for i in 0..text.length { w = w * 256 + text.char_code(i) }
+    w
+}
+
+/// An answer remembered per id: unknown until kept, then the answer kept, absence included. An
+/// identity: every holder sees one memo.
+@identity
+export type IdMemo<V> = {
+    /// Each id's state: zero while its answer is unknown, one once it's kept.
+    states: Cell<List<int>>,
+    /// Each id's kept answer, absent where the answer is.
+    answers: Cell<List<V?>>,
+}
+
+export fn id_memo<V>() -> IdMemo<V> {
+    let states: Cell<List<int>> = Cell.new([])
+    let answers: Cell<List<V?>> = Cell.new([])
+    IdMemo { states: states, answers: answers }
+}
+
+impl IdMemo<V> {
+    /// Whether `id`'s answer is kept.
+    fn known(id: InternId) -> bool {
+        let states = self.states.get()
+        id.index < states.length && states[id.index] == 1
+    }
+
+    /// The answer kept for `id`; absent when that answer is absent, or none is kept.
+    fn held(id: InternId) -> V? {
+        let answers = self.answers.get()
+        if id.index < answers.length { answers[id.index] } else { null }
+    }
+
+    /// `answer` kept for `id`.
+    fn keep(id: InternId, answer: V?) {
+        while self.states.get().length <= id.index {
+            self.states.push(0)
+            self.answers.push(null)
+        }
+        self.states.set_at(id.index, 1)
+        self.answers.set_at(id.index, answer)
+    }
+}
+
+/// One lane of a content key: where its fold starts and the odd constant it multiplies by.
+export type KeyLane = { seed: int, prime: int }
+
+/// The content key's high word's lane.
+export const HIGH_LANE: KeyLane = KeyLane {
+    seed: 0 - 7046029254386353131,
+    prime: 0 - 4658895280553007687,
+}
+
+/// The content key's low word's lane.
+export const LOW_LANE: KeyLane = KeyLane {
+    seed: 1609587929392839161,
+    prime: 0 - 7723592293110705685,
+}
+
+extern fn avra_str_word_at(s: string, at: int) -> int
+
+impl KeyLane {
+    /// `word` folded into the lane's running `h`.
+    fn word(h: int, word: int) -> int { rotated(h ^ word.wrapping_mul(self.prime), 29).wrapping_mul(self.prime) }
+
+    /// `text`'s bytes folded in eight to a word, the tail byte by byte, then its length: `"ab"` then
+    /// `"c"` never folds as `"a"` then `"bc"`.
+    fn text(h: int, text: string) -> int {
+        mut out = h
+        let n = text.length
+        mut i = 0
+        while i + 8 <= n {
+            out = self.word(out, avra_str_word_at(text, i))
+            i = i + 8
+        }
+        while i < n {
+            out = self.word(out, text.char_code(i))
+            i = i + 1
+        }
+        self.word(out, n)
+    }
+
+    /// A finished lane, its bits spread so its low ones pick a table's slot.
+    fn finished(h: int) -> int {
+        let x = (h ^ shifted_right(h, 33)).wrapping_mul(self.prime)
+        x ^ shifted_right(x, 29)
+    }
+}
+
+/// The content key of two lanes folded over one value: each finished.
+export fn key_of_lanes(high: int, low: int) -> ContentHash {
+    ContentHash { high_word: HIGH_LANE.finished(high), low_word: LOW_LANE.finished(low) }
+}
+
+/// `x` shifted right by `s` with zeros in from the top; the language's `>>` keeps the sign.
+fn shifted_right(x: int, s: int) -> int { (x >> s) & (9223372036854775807 >> s - 1) }
+
+/// `x` rotated left by `r`, which is between one and sixty-three.
+fn rotated(x: int, r: int) -> int { x.wrapping_shl(r) | shifted_right(x, 64 - r) }

@@ -9,8 +9,7 @@ use @std.avrac.compiler.{build_cache_root}
 use @std.avrac.compiler.store.{
     Store,
     Keeping,
-    store_stamped,
-    unshared,
+    store_with,
     store_print,
     store_dir_of,
     store_file_bytes,
@@ -19,6 +18,7 @@ use @std.avrac.compiler.store.{
     cas_live,
     cas_collect,
     cas_readers,
+    prints_collected,
 }
 use @std.avrac.core.{sorted_by}
 use @std.text.{parse_int}
@@ -54,7 +54,7 @@ export command cache {
 /// the store's own compiler rather than renaming it.
 fn cache_store() -> Store {
     let root = build_cache_root(root_workspace(here()))
-    store_stamped(root, store_print(store_dir_of(root)) ?? "", unshared(), Keeping.Disk)
+    store_with(root, store_print(store_dir_of(root)) ?? "", Keeping.Disk)
 }
 
 /// The store directory under the cache root.
@@ -72,6 +72,9 @@ fn cache_clean(store: Store) -> int {
         "avra cache clean: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
     )
     println("avra cache clean: bytes ${rep.bytes_before} → ${rep.bytes_after}")
+    println(
+        "avra cache clean: let go ${prints_collected()} compiler(s) nobody ran lately from the machine store",
+    )
     let shared = cas_collect(cas_live())
     println(
         "avra cache clean: shared store kept ${shared.kept} blob(s) (${shared.kept_bytes} bytes) · freed ${shared.freed} blob(s) (${shared.freed_bytes} bytes) · ${cas_readers().length} live store(s)",

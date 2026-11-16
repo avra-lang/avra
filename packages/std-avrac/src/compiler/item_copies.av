@@ -1,0 +1,387 @@
+//! A `mut` LOCAL THAT IS A COPY: a bare `mut` local seeded from a place, or from what a place holds,
+//! holds what it read the moment it was bound, so a write through it never reaches the place; and a
+//! write through a path of a `mut` local stays in the local. Each declaring statement is warned once,
+//! at the first write through it, in node order. A write is a writing method's receiver or what a
+//! `mut` seat is handed. Read over a written item's bodies as the program layer types them.
+use core.{ExprId, PlaceStep, SignedType, StmtId, SyntaxArena, Type, TypeId, flatten}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{holding_copied, path_kept_local, place_copied, row_lends}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.sorted.{sorted_by}
+
+/// How a write through a `mut` local reaches no further than the local.
+@derive(Saved)
+enum CopyKind {
+    /// The local is a copy of a place.
+    Place
+    /// The local is a copy of what a place holds.
+    Held
+    /// The write goes through a path of the local, and stays in it.
+    Path
+}
+
+/// A write through a `mut` local that stays in it: where it stands, how, the local's name and the
+/// place's words.
+@derive(Saved)
+type CopyWrite = { at: FindingAt?, kind: CopyKind, local: string, place: string }
+
+/// Every write one written item's bodies make through a `mut` local that stays in it.
+@derive(Saved)
+type ItemCopies = { writes: List<CopyWrite> }
+
+/// Where a seed is read from: the place's root, and the holder it's lent out of, if any.
+type SeedFrom = { root: ExprId, holder: ExprId? }
+
+/// A write and the place it goes through; `paths` where a write through a path of a local is
+/// judged as staying in it, which a verb the language gives a list or a map never is; `method` the
+/// declared method whose receiver it is, if it is one.
+type Write = { at: ExprId, place: ExprId, paths: bool, method: string? = null }
+
+/// What a body's writes read: the item's store, the type a node has, whether a method writes its
+/// receiver, and which seats of a call are `mut`.
+type Copies = {
+    store: SyntaxArena,
+    type_at: fn(int) -> SignedType?,
+    writes_receiver: fn(SignedType, string) -> WrittenBy,
+    method_marks: fn(SignedType, string) -> List<bool>,
+    call_marks: fn(string) -> List<bool>,
+}
+
+fn copied_places(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Place) }
+
+fn copied_holdings(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Held) }
+
+fn local_paths(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Path) }
+
+/// Each write of the kind `kind` in the item `at` of `file`.
+fn found_of(engine: QueryEngine, file: SourceFileAddress, at: int, kind: CopyKind) -> List<Found> {
+    [Found { at: span_of(w.at), args: [w.local, w.place] } for w in item_copies(engine, file, at).writes if same_kind(w.kind, kind)]
+}
+
+fn same_kind(a: CopyKind, b: CopyKind) -> bool {
+    match a { .Place -> b is .Place, .Held -> b is .Held, .Path -> b is .Path }
+}
+
+/// Every write the written item `at` of `file` makes through a `mut` local that stays in it, the
+/// first through each local, in node order; an item that declares no `mut` local typing nothing.
+@query
+fn item_copies(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCopies {
+    if at >= item_count(engine, file) { return ItemCopies { writes: [] } }
+    let item = read_item(engine, file, at)
+    let locals = [s for s in item.store.stmt_ids() if item.store.stmt(s) is .MutLet]
+    if locals.is_empty() { return ItemCopies { writes: [] } }
+    let cx = copies_in(engine, file, at, item)
+    let writes = sorted_by(cx.writes(), (a: Write, b: Write) -> cx.lo(a.at) < cx.lo(b.at))
+    mut warned: List<int> = []
+    mut out: List<CopyWrite> = []
+    for w in writes {
+        let s? = cx.declaring(w.place, w.at, locals) else { continue }
+        if warned.contains(s.index) { continue }
+        let found? = cx.copy_write(w, s) else { continue }
+        warned.push(s.index)
+        out.push(found)
+    }
+    ItemCopies { writes: out }
+}
+
+/// What the writes of the written item `at` of `file`, read back as `item`, read.
+fn copies_in(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> Copies {
+    let package = file.package_name
+    Copies {
+        store: item.store,
+        type_at: item_node_types(engine, file, at, item),
+        writes_receiver: (ty: SignedType, name: string) -> receiver_written(engine, ty, name, package),
+        method_marks: (ty: SignedType, name: string) -> [s.mutable for s in (method_type(engine, ty, name, package)?.seats ?? []).drop(1)],
+        call_marks: (callee: string) -> named_marks(engine, file, callee),
+    }
+}
+
+/// What writes the receiver of a call of `name` on a value of `ty`.
+enum WrittenBy {
+    /// A declared type's method, by what its body does.
+    Method
+    /// A verb the language gives a list or a map, by its receiver seat.
+    Verb
+    /// Nothing.
+    Nothing
+}
+
+/// What writes the receiver of the method `name` of `ty`, called from `package`.
+fn receiver_written(engine: QueryEngine, ty: SignedType, name: string, package: string) -> WrittenBy {
+    let d? = declared_at(ty) else { return verb_written(engine, ty, name, package) }
+    if receiver_use(engine, d.file, d.name, name, package).written() { WrittenBy.Method } else { WrittenBy.Nothing }
+}
+
+/// Whether the verb `name` the language gives a list or a map `ty` writes its receiver, called from
+/// `package`.
+fn verb_written(engine: QueryEngine, ty: SignedType, name: string, package: string) -> WrittenBy {
+    if !MUTATED_OWNERS.contains(ty.owned() ?? "") { return WrittenBy.Nothing }
+    let verb? = method_type(engine, ty, name, package) else { return WrittenBy.Nothing }
+    let receiver? = verb.seats.first() else { return WrittenBy.Nothing }
+    if receiver.mutable { WrittenBy.Verb } else { WrittenBy.Nothing }
+}
+
+/// The types the language owns whose verbs judge a write through a copy.
+const MUTATED_OWNERS: List<string> = ["List", "Map"]
+
+/// Which seats of the fn `callee` names from `file` are `mut`; none for a name that's no declared fn.
+fn named_marks(engine: QueryEngine, file: SourceFileAddress, callee: string) -> List<bool> {
+    let d? = resolved(engine, file, Space.Value, callee).named() else { return [] }
+    written_seats(engine, d) ?? []
+}
+
+impl Copies {
+    /// Every write a call in the item makes: a writing method's receiver, and each argument a `mut`
+    /// seat is handed.
+    fn writes() -> List<Write> {
+        flatten([self.writes_at(ExprId { index: i }) for i in 0..self.store.expr_count()])
+    }
+
+    /// The writes the call at `e` makes, none for any other node.
+    fn writes_at(e: ExprId) -> List<Write> {
+        let mp? = self.store.method_parts(e) else { return self.called_writes(e) }
+        let ty? = (self.type_at)(mp.subject.index) else { return [] }
+        let own = match (self.writes_receiver)(ty, mp.name) {
+            .Method -> [Write { at: e, place: mp.subject, paths: true, method: mp.name }],
+            .Verb -> [Write { at: e, place: mp.subject, paths: false }],
+            .Nothing -> [],
+        }
+        own.concat(self.handed((self.method_marks)(ty, mp.name), mp.args))
+    }
+
+    /// The writes the call by name at `e` makes, none for any other node.
+    fn called_writes(e: ExprId) -> List<Write> {
+        let call? = self.store.call_parts(e) else { return [] }
+        self.handed((self.call_marks)(call.callee), call.args)
+    }
+
+    /// Each argument among `args` a `mut` seat of `marks` is handed, a write at itself.
+    fn handed(marks: List<bool>, args: List<ExprId>) -> List<Write> {
+        [Write { at: a, place: a, paths: true } for j, a in args if j < marks.length && marks[j]]
+    }
+
+    /// Where the node `e` starts.
+    fn lo(e: ExprId) -> int { self.store.expr_span(e)?.lo ?? 0 }
+
+    /// The bare `mut` local's declaring statement among `locals` the place `place` written at `at`
+    /// is rooted in: the last before the write in the fn that holds it that names its root, outside
+    /// every lambda the write is in; absent for any other root.
+    fn declaring(place: ExprId, at: ExprId, locals: List<StmtId>) -> StmtId? {
+        let root? = self.store.place_root(place) else { return null }
+        let name? = self.root_name(root) else { return null }
+        let from = self.fn_lo(at)
+        let before = [s for s in locals if self.store.let_name(s) == name && self.stmt_lo(s) < self.lo(at) && self.stmt_lo(s) > from]
+        let s? = before.last() else { return null }
+        if self.lambda_between(s, at) { null } else { s }
+    }
+
+    /// The name a place's root reads, absent for a root naming a type.
+    fn root_name(root: ExprId) -> string? {
+        if (self.type_at)(root.index)?.described() != null { return null }
+        let step? = self.store.place_step(root) else { return null }
+        match step { .Root(n) -> n.of, .Field(_, _) or .At(_, _) or .Unwrap(_) -> null }
+    }
+
+    /// Where the innermost fn statement that holds the node `at` starts, -1 for none.
+    fn fn_lo(at: ExprId) -> int {
+        let here = self.lo(at)
+        let starts = [self.stmt_lo(s) for s in self.store.stmt_ids() if self.store.fn_parts(s) != null && self.stmt_holds(s, here)]
+        starts.fold(-1, (most: int, lo: int) -> if lo > most { lo } else { most })
+    }
+
+    /// Whether the statement `s` spans the offset `lo`.
+    fn stmt_holds(s: StmtId, lo: int) -> bool {
+        let span? = self.store.stmt_span(s) else { return false }
+        span.lo <= lo && lo < span.hi
+    }
+
+    /// Where the statement `s` starts.
+    fn stmt_lo(s: StmtId) -> int { self.store.stmt_span(s)?.lo ?? 0 }
+
+    /// Whether a lambda holds the node `at` and not the statement `s`.
+    fn lambda_between(s: StmtId, at: ExprId) -> bool {
+        let here? = self.store.expr_span(at) else { return false }
+        let there = self.stmt_lo(s)
+        (0..self.store.expr_count())
+            .any(
+                (i) -> self.store.lambda_parts(ExprId { index: i }) != null &&
+                    self.holds(ExprId { index: i }, here.lo) &&
+                    !self.holds(ExprId { index: i }, there),
+            )
+    }
+
+    /// Whether the node `e` spans the offset `lo`.
+    fn holds(e: ExprId, lo: int) -> bool {
+        let span? = self.store.expr_span(e) else { return false }
+        span.lo <= lo && lo < span.hi
+    }
+
+    /// The write `w` through the local `s` declares, as it stays in the local; absent where it
+    /// reaches the place it was seeded from.
+    fn copy_write(w: Write, s: StmtId) -> CopyWrite? {
+        let local = self.store.let_name(s) ?? ""
+        let at = kept_at(self.store.expr_span(w.at))
+        let seed? = self.store.stmt_value(s) else { return null }
+        let from? = self.copied_from(seed) else {
+            if !w.paths || !self.through_path(w.place) || !self.rides_pointer(w.place) { return null }
+            return CopyWrite {
+                at: at,
+                kind: CopyKind.Path,
+                local: local,
+                place: self.place_words(w.place) ?? "…",
+            }
+        }
+        let held? = from.holder else {
+            return CopyWrite {
+                at: at,
+                kind: CopyKind.Place,
+                local: local,
+                place: self.root_word(from.root),
+            }
+        }
+        CopyWrite {
+            at: at,
+            kind: CopyKind.Held,
+            local: local,
+            place: self.place_words(held) ?? self.root_word(from.root),
+        }
+    }
+
+    /// Where a seed is read from when it is not fresh: a place's own root; through a side whose value
+    /// is the seed's, that side's; read out of a holder, the holder's, lent. A construction and a
+    /// fn's answer are fresh.
+    fn copied_from(v: ExprId) -> SeedFrom? {
+        let root = self.store.place_root(v)
+        if root != null && self.root_name(root!) != null { return SeedFrom { root: root!, holder: null } }
+        let side = self.value_sides(v).find((x) -> self.copied_from(x) != null)
+        if side != null { return self.copied_from(side!) }
+        let holder? = self.lender(v) else { return null }
+        let held? = self.copied_from(holder) else { return null }
+        SeedFrom { root: held.root, holder: held.holder ?? holder }
+    }
+
+    /// The nodes whose value is `v`'s: an unwrap's subject, a `??`'s sides, and every branch heir
+    /// of `v`'s own type.
+    fn value_sides(v: ExprId) -> List<ExprId> {
+        let heirs = [h for h in self.store.heired(v) if !self.types_disagree(h, v)]
+        some_expr(self.store.forced(v)).concat(self.store.coalesced(v)).concat(heirs)
+    }
+
+    /// Whether the nodes `a` and `b` are typed, and otherwise.
+    fn types_disagree(a: ExprId, b: ExprId) -> bool {
+        let x? = (self.type_at)(a.index) else { return false }
+        let y? = (self.type_at)(b.index) else { return false }
+        !x.same_type(y)
+    }
+
+    /// What a value is read out of: a field's or an index's subject, a `?.` read's, a lending verb's
+    /// receiver.
+    fn lender(v: ExprId) -> ExprId? {
+        let step = self.store.place_step(v)
+        if step != null { return step_subject(step!) }
+        let chained = self.store.chained(v)
+        if chained != null { return chained }
+        let mp? = self.store.method_parts(v) else { return null }
+        let ty? = (self.type_at)(mp.subject.index) else { return null }
+        let shape? = owned_shape(ty) else { return null }
+        if row_lends(avra().rows.methods, mp.name, shape) { mp.subject } else { null }
+    }
+
+    /// Whether a place is reached through a field or an index.
+    fn through_path(e: ExprId) -> bool {
+        let step? = self.store.place_step(e) else { return false }
+        match step {
+            .Root(_) -> false,
+            .Field(_, _) or .At(_, _) -> true,
+            .Unwrap(subject) -> self.through_path(subject),
+        }
+    }
+
+    /// Whether a value of the type the node `e` has rides a pointer.
+    fn rides_pointer(e: ExprId) -> bool {
+        let ty? = (self.type_at)(e.index) else { return false }
+        !UNBOXED.contains(ty.owned() ?? "")
+    }
+
+    /// A place's path as a reader names it, an index shown as `[…]`; absent for a value.
+    fn place_words(e: ExprId) -> string? {
+        let step? = self.store.place_step(e) else { return null }
+        match step {
+            .Root(_) -> self.root_word(e),
+            .Field(subject, name) -> "${self.place_words(subject) ?? "…"}.${name.of}",
+            .At(subject, _) -> "${self.place_words(subject) ?? "…"}[…]",
+            .Unwrap(subject) -> "${self.place_words(subject) ?? "…"}!",
+        }
+    }
+
+    /// A root's word: its name, or `self` for the receiver.
+    fn root_word(root: ExprId) -> string { self.store.ident_name(root) ?? "self" }
+}
+
+/// The subject a place's step reads from, absent for a root.
+fn step_subject(step: PlaceStep) -> ExprId? {
+    match step {
+        .Root(_) -> null,
+        .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> subject,
+    }
+}
+
+fn some_expr(e: ExprId?) -> List<ExprId> { if e == null { [] } else { [e!] } }
+
+/// The shape the language's verb rows test a value of the owned type `ty` by, absent for one no
+/// lending verb takes.
+fn owned_shape(ty: SignedType) -> Type? {
+    let any = TypeId { index: 0 }
+    match ty.owned() ?? "" {
+        "List" -> Type.List(any),
+        "Map" -> Type.Map(any, any),
+        "Cell" -> Type.Cell(any),
+        rest -> null,
+    }
+}
+
+/// The types the language owns whose values ride no pointer.
+const UNBOXED: List<string> = ["int", "float", "bool", "ptr"]
+
+/// a write through a `mut` local seeded from a place
+export law alias_copy_place {
+    kind: "type.alias_copy"
+    reads: copied_places
+    voice: place_words_voice
+    warns: true
+    witness: "fn f(xs: List<int>) -> int {\n    mut ys = xs\n    ys.push(1)\n    xs.length\n}\n"
+}
+
+/// a write through a `mut` local seeded from what a place holds
+export law alias_copy_held {
+    kind: "type.alias_copy"
+    reads: copied_holdings
+    voice: held_words_voice
+    warns: true
+    witness: "fn f(c: Cell<List<int>>) -> int {\n    mut ys = c.get()\n    ys.push(1)\n    c.get().length\n}\n"
+}
+
+/// a write through a path of a `mut` local, which stays in it
+export law alias_copy_path {
+    kind: "type.alias_copy"
+    reads: local_paths
+    voice: path_words_voice
+    warns: true
+    witness: "type Bag = { items: List<int> }\n\nfn f() -> int {\n    mut b = Bag { items: [] }\n    b.items.push(1)\n    b.items.length\n}\n"
+}
+
+fn place_words_voice(a: List<string>) -> Voice { place_copied(a[0], a[1]) }
+
+fn held_words_voice(a: List<string>) -> Voice { holding_copied(a[0], a[1]) }
+
+fn path_words_voice(a: List<string>) -> Voice { path_kept_local(a[0], a[1]) }
+
+collect listed_copy_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the copy laws are read through, for a process to hand its engine.
+export fn copy_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_copy_facts) }

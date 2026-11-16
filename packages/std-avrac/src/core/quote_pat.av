@@ -136,6 +136,21 @@ export fn is_run_kid(store: SyntaxArena, at: At, holes: List<QuoteHole>) -> bool
     holes[w].run
 }
 
+/// Whether the pattern is ONE code binder standing for the whole subject — `quote { ${x} }`:
+/// it takes every subject and binds the subject itself, so no match runs.
+export fn quote_pat_whole(store: SyntaxArena, body: ExprId) -> bool {
+    let root? = quote_pat_root(store, body) else { return false }
+    let holes = quote_pat_holes(store, body)
+    let names = quote_pat_names(holes)
+    if names.length != 1 { return false }
+    let n = names[0]
+    if quote_pat_is_text(holes, n) || quote_pat_is_run(holes, n) || quote_pat_is_type(holes, n) { return false }
+    match quote_pat_shape(store, root, holes, names) {
+        .Hole(_) -> true,
+        .Run(_) or .TypedNode(_, _, _) -> false,
+    }
+}
+
 /// The single node a quote pattern's body names — the root its Shape
 /// is built from — or absence when the body is not exactly one
 /// statement with no arms.
@@ -165,8 +180,7 @@ export fn root_kind_of(store: SyntaxArena, arms: List<Arm>) -> List<int>? {
 /// a running compiler checks a rule another compiler baked against.
 export fn pattern_kinds(store: SyntaxArena, arms: List<Arm>) -> List<int> {
     let roots = flatten([some_list(quote_root(store, p)) for a in arms for p in a.pats])
-    let kinds = [store.kind_at(at) for root in roots for at in nodes_under(store, root)]
-    [k for i, k in kinds if kinds.index_of(k) == i]
+    distinct_ints([store.kind_at(at) for root in roots for at in nodes_under(store, root)])
 }
 
 fn quote_root(store: SyntaxArena, p: PatId) -> At? {
@@ -206,15 +220,11 @@ fn pat_root_kind(store: SyntaxArena, p: PatId) -> int? {
 /// A statement's own root: an expression statement stands as ITS
 /// expression, every other statement stands as itself — reading
 /// whatever shape `s` already carries, never reshaping it here. A
-/// both-branches-answering `if`/`else` arrives already promoted to
-/// `Stmt.ExprStmt(Expr.If(...))` when it is a quote body's own tail
-/// (`build_quote`) or a program's (`program_stmts`) — the SAME tail
-/// law, applied at the SAME parse time, in both trees — so a written
-/// pattern and the subject it is matched against agree by construction
-/// (avra-8sb5.25.21); `compiler/rule_examples.av`'s `example_roots`
+/// written pattern and the subject it is matched against agree by
+/// construction, and `compiler/rule_examples.av`'s `example_roots`
 /// shares this door for exactly that reason.
 export fn root_of(store: SyntaxArena, s: StmtId) -> At {
-    match store.stmt(s) { .ExprStmt(v) -> At.Expr(v), rest -> At.Stmt(s) }
+    standing(store, At.Stmt(s))
 }
 
 /// The quote pattern's own Shape: like `shape_at`, but a hole is
@@ -307,7 +317,7 @@ fn type_hole_at(store: SyntaxArena, at: At) -> int? {
 /// Whether a written type carries nothing but its own name — no `?`,
 /// no `<...>`, no `dyn`, no `or` union.
 fn bare_type(t: TypeRef) -> bool {
-    t.args.is_empty() && !t.optional && !t.dynamic && !t.arrow && t.alternatives.is_empty()
+    t.applied.is_empty() && !t.optional && !t.dynamic && !t.arrow && t.alternatives.is_empty()
 }
 
 /// `at`'s own open-field hole indices, raw (into the quote's OWN

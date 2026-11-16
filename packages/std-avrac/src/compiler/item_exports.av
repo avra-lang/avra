@@ -1,0 +1,28 @@
+//! WHERE `export` MARKS WHAT A MODULE'S SURFACE CANNOT HOLD: a statement that declares no fn, type,
+//! enum, trait or const and is no `use` line. Read off a written item's syntax alone.
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.modules.{impl_unexported, statement_unexported, wrongly_exported}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every statement of the written item `at` of `file` that `export` marks where it may not, an
+/// impl's told apart.
+fn wrong_exports(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found {
+        at: item.store.stmt_span(s),
+        args: [if item.store.impl_parts(s) != null { "impl" } else { "statement" }],
+    } for s in item.stmts if wrongly_exported(item.store, s)]
+}
+
+/// `export` marks a declaration or a `use` line
+export law export_marks_a_declaration {
+    kind: "resolve.export_kind"
+    reads: wrong_exports
+    voice: wrong_export_words
+    witness: "export let a = 1\n1\n"
+}
+
+fn wrong_export_words(a: List<string>) -> Voice { if a[0] == "impl" { impl_unexported() } else { statement_unexported() } }

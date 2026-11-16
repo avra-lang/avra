@@ -1,0 +1,592 @@
+//! A TYPE AS A VALUE: what a written type names, resolved, and every type made of it. A value is
+//! its own identity, the same in every process, so it's saved and compared as content: two spellings
+//! of one type are one value (a union's members stand in one order, an alias stands for what it
+//! names).
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{ContentHash}
+use @std.program.interned.{HIGH_LANE, LOW_LANE, KeyLane, hash_text, hash_word, key_of_lanes}
+use @std.program.saved_derive.{Saved}
+
+/// What a written type's name names.
+@derive(Saved)
+export enum TypeHead {
+    /// A type the language owns: a scalar or a constructor (`int`, `List`, `Map`).
+    Owned(name: string)
+    /// One of the fn's own type parameters, by its place among them.
+    Parameter(index: int, name: string)
+    /// A type a file declares, known by its file and its name.
+    Declared(file: SourceFileAddress, name: string)
+    /// A name that names no type here.
+    Unnamed(name: string)
+    /// A type the fn's body decides (`_`), which only typing it answers.
+    Inferred
+    /// A fn type: its seats and its answer.
+    Function
+    /// A union (`A or B`): its members are the type's alternatives.
+    Union
+    /// No value: code that doesn't finish (`return`, `fail`), which joins with any type.
+    Never
+    /// A type standing as a value (`Json` in `Json.Obj(x)`): the type is its one argument.
+    Meta
+}
+
+/// A written type, resolved: what it names, its type arguments, how many nulls wrap it (`T?` one, a
+/// `T?` whose `T` is optional two), whether it's dynamic, a fn type's seats and answer, and the
+/// members of a union.
+@derive(Saved)
+export type SignedType = {
+    head: TypeHead,
+    args: List<SignedType>,
+    nulls: int,
+    dynamic: bool,
+    seats: List<SignedSeat>,
+    answer: SignedType?,
+    alternatives: List<SignedType>,
+}
+
+/// A type the language owns.
+export enum OwnType {
+    Int
+    Float
+    Bool
+    Str
+    Ptr
+    Void
+    Bytes
+    List
+    Map
+    Cell
+    Range
+    Result
+    Task
+    Tasks
+}
+
+impl OwnType {
+    /// The word the language spells the type with.
+    fn word() -> string {
+        match self {
+            .Int -> "int",
+            .Float -> "float",
+            .Bool -> "bool",
+            .Str -> "string",
+            .Ptr -> "ptr",
+            .Void -> "void",
+            .Bytes -> "Bytes",
+            .List -> "List",
+            .Map -> "Map",
+            .Cell -> "Cell",
+            .Range -> "Range",
+            .Result -> "Result",
+            .Task -> "Task",
+            .Tasks -> "Tasks",
+        }
+    }
+}
+
+/// The type the language owns spelled `word`; absent for a word that spells none.
+export fn own_type_named(word: string) -> OwnType? {
+    match word {
+        "int" -> OwnType.Int,
+        "float" -> OwnType.Float,
+        "bool" -> OwnType.Bool,
+        "string" -> OwnType.Str,
+        "ptr" -> OwnType.Ptr,
+        "void" -> OwnType.Void,
+        "Bytes" -> OwnType.Bytes,
+        "List" -> OwnType.List,
+        "Map" -> OwnType.Map,
+        "Cell" -> OwnType.Cell,
+        "Range" -> OwnType.Range,
+        "Result" -> OwnType.Result,
+        "Task" -> OwnType.Task,
+        "Tasks" -> OwnType.Tasks,
+        rest -> null,
+    }
+}
+
+/// A fn type's seat: its type, the promises it makes, and whether a call may leave it to its default.
+@derive(Saved)
+export type SignedSeat = {
+    ty: SignedType,
+    mutable: bool,
+    settled: bool,
+    defaulted: bool = false,
+    /// The name its declaration gives it, which an argument names to fill it; absent on a fn value's.
+    name: string? = null,
+    /// Whether it takes the arguments a call leaves past the seats before it, as one list.
+    rest: bool = false,
+    /// Whether it is a `state` seat: its argument's place, which a write through it reaches.
+    state: bool = false,
+    /// Whether it is an `isolated` seat: its fn may run where nothing of its caller's is.
+    unshared: bool = false,
+}
+
+impl SignedType {
+    /// Whether a value of this type is a fn that is there to call: a fn type, never a nullable one.
+    fn callable() -> bool { self.head is .Function && !self.nullable() }
+
+    /// This type with each of its declaration's type parameters bound to `args`, in order.
+    fn bound(args: List<SignedType>) -> SignedType {
+        if args.is_empty() || !self.mentions_parameter() { return self }
+        let inner = self with { args: [a.bound(args) for a in self.args], seats: [s with { ty: s.ty.bound(args) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.bound(args) }, alternatives: [a.bound(args) for a in self.alternatives] }
+        let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
+        if at >= args.length { return inner }
+        args[at] with { nulls: args[at].nulls + self.nulls, dynamic: args[at].dynamic || self.dynamic }
+    }
+
+    /// The type as the compiler writes it: `List<int>`, `T?`, `dyn Shape`, `fn(mut int) -> bool`;
+    /// the absent value's own type `null`, and the empty literals' `[]` and `{}`.
+    fn spelled() -> string {
+        if !self.alternatives.is_empty() { return self.word() }
+        if self.head is .Never && self.nulls > 0 { return "null${["?" for _i in 1..self.nulls].join("")}" }
+        "${self.word()}${["?" for _i in 0..self.nulls].join("")}"
+    }
+
+    /// The type as it's written when present.
+    fn word() -> string {
+        let described = self.described()
+        if described != null { return "type ${described!.spelled()}" }
+        if self.listed()?.bottom() ?? false { return "[]" }
+        if self.mapped()?.bottom() ?? false { return "{}" }
+        let named = match self.head {
+            .Owned(name) or .Unnamed(name) or .Parameter(_, name) or .Declared(_, name) -> name,
+            .Inferred -> INFERRED,
+            .Function -> "fn(${[s.spelled() for s in self.seats].join(", ")})${answered(self.answer)}",
+            .Union -> [a.spelled() for a in self.alternatives].join(" or "),
+            .Never -> "never",
+            .Meta -> "type",
+        }
+        let applied = if self.args.is_empty() { named } else { "${named}<${[a.spelled() for a in self.args].join(", ")}>" }
+        if self.dynamic { "dyn ${applied}" } else { applied }
+    }
+
+    /// The type this value stands for, when it's a type standing as a value.
+    fn described() -> SignedType? {
+        match self.head {
+            .Meta -> if self.args.length == 1 && self.nulls == 0 { self.args[0] } else { null },
+            rest -> null,
+        }
+    }
+
+    /// Whether `other` names the same type as this, whatever either is applied to.
+    fn names_as(other: SignedType) -> bool { head_word(self.head) == head_word(other.head) }
+
+    /// The element of a list type, held directly: absent for any other type, and for a list that may
+    /// be null or is dynamic.
+    fn listed() -> SignedType? { if self.args.length == 1 && self.owns(OwnType.List) { self.args[0] } else { null } }
+
+    /// The value type of a map type, held directly: absent for any other type, and for a map that may
+    /// be null or is dynamic.
+    fn mapped() -> SignedType? { if self.args.length == 2 && self.owns(OwnType.Map) { self.args[1] } else { null } }
+
+    /// The name of the type the language owns this is, held directly: absent for a type the language
+    /// doesn't own, and for one that may be null or is dynamic.
+    fn owned() -> string? {
+        if self.nullable() || self.dynamic { return null }
+        match self.head { .Owned(name) -> name, rest -> null }
+    }
+
+    /// The type the language owns this is, held directly: absent as `owned` is.
+    fn own() -> OwnType? {
+        let word? = self.owned() else { return null }
+        own_type_named(word)
+    }
+
+    /// Whether this is the type the language owns `o`, held directly.
+    fn owns(o: OwnType) -> bool { self.owned() == o.word() }
+
+    /// The one type this and `other` both are, absent when they're different types: `never` gives
+    /// way to the other, either one's nulls are kept, and their arguments join alike.
+    fn joined_with(other: SignedType) -> SignedType? {
+        let nulls = if self.nulls > other.nulls { self.nulls } else { other.nulls }
+        if self.head is .Never { return other with { nulls: nulls } }
+        if other.head is .Never { return self with { nulls: nulls } }
+        if !self.names_as(other) ||
+            self.dynamic != other.dynamic ||
+            self.args.length != other.args.length { return null }
+        if !self.seats.is_empty() ||
+            !other.seats.is_empty() ||
+            !self.alternatives.is_empty() ||
+            !other.alternatives.is_empty() {
+            return if self.word() == other.word() { self with { nulls: nulls } } else { null }
+        }
+        let args = [x.joined_with(other.args[i]) for i, x in self.args]
+        if args.any(it == null) { null } else { self with { nulls: nulls, args: [x! for x in args] } }
+    }
+
+    /// Whether this type holds `never` anywhere: the type of `null`, `[]` or `{}`, which says less than
+    /// the type it stands for.
+    fn partial() -> bool { self.head is .Never || self.args.any(it.partial()) }
+
+    /// Whether this is `never`, the type no value has.
+    fn bottom() -> bool { self.head is .Never && self.nulls == 0 }
+
+    /// Whether a value of this type is one a statement leaves: neither `void` nor `never`.
+    fn holds_value() -> bool { !self.bottom() && !self.owns(OwnType.Void) }
+
+    /// Whether this is the type of `null` itself: absence, of no type yet.
+    fn absence() -> bool { self.head is .Never && self.nulls > 0 }
+
+    /// Whether the value may be null.
+    fn nullable() -> bool { self.nulls > 0 }
+
+    /// The type with its outermost null taken off: what a present value of it holds.
+    fn unwrapped() -> SignedType { if self.nulls > 0 { self with { nulls: self.nulls - 1 } } else { self } }
+
+    /// Whether a value of this type stands in a seat of `seat`'s: as it is, as nothing (`never`),
+    /// boxed into a `dyn` (whether it holds the trait is the seat law's), widened into a nullable, or
+    /// as the `Ok` of a `Result`.
+    fn reaches(seat: SignedType) -> bool {
+        if self.stands_as(seat) || self.bottom() { return true }
+        if seat.dynamic && seat.nulls == 0 && !self.dynamic && !self.nullable() { return true }
+        if seat.nullable() && (self.head is .Never || self.reaches(seat.unwrapped())) { return true }
+        seat.resulted() && self.reaches(seat.args[0])
+    }
+
+    /// Whether this fn type fits the fn seat `seat` but for its seats' marks: a seat that permits
+    /// writing takes a fn that doesn't write through it, and never the reverse.
+    fn fits_written(seat: SignedType) -> bool {
+        if !(self.head is .Function) ||
+            !(seat.head is .Function) ||
+            self.seats.length != seat.seats.length { return false }
+        unmarked(self).reaches(unmarked(seat)) &&
+            [j for j, s in self.seats if s.mutable && !seat.seats[j].mutable].is_empty()
+    }
+
+    /// Whether a value of this type is a value of `seat` as it is: the same type, or one holding
+    /// `never` where `seat` holds a type (`[]` as a `List<int>`), under as many nulls.
+    fn stands_as(seat: SignedType) -> bool {
+        if self.spelled() == seat.spelled() { return true }
+        self.partial() &&
+            !(self.head is .Never) &&
+            self.nulls == seat.nulls &&
+            self.joined_with(seat)?.spelled() == seat.spelled()
+    }
+
+    /// Whether this is a `Result`, present: an ok type and an error type.
+    fn resulted() -> bool {
+        match self.head {
+            .Owned(name) -> name == OwnType.Result.word() && self.args.length == 2 && self.nulls == 0,
+            rest -> false,
+        }
+    }
+}
+
+impl SignedSeat {
+    fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty.spelled()) }
+}
+
+/// A fn type's answer as it follows its seats: nothing for `void`.
+fn answered(answer: SignedType?) -> string {
+    let a? = answer else { return "" }
+    if a.owns(OwnType.Void) { "" } else { " -> ${a.spelled()}" }
+}
+
+/// A seat's type behind the promises it makes.
+export fn seat_spelled(mutable: bool, settled: bool, word: string) -> string {
+    if settled { return if mutable { "const mut ${word}" } else { "const ${word}" } }
+    if mutable { "mut ${word}" } else { word }
+}
+
+/// How a type the body decides is written.
+export const INFERRED: string = "_"
+
+impl SignedType {
+    /// This type with each type parameter `found` names filled, the rest left as they are.
+    fn filled(found: Map<string, SignedType>) -> SignedType {
+        if found.is_empty() || !self.mentions_parameter() { return self }
+        let inner = self with { args: [a.filled(found) for a in self.args], seats: [s with { ty: s.ty.filled(found) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.filled(found) }, alternatives: [a.filled(found) for a in self.alternatives] }
+        let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
+        let fill? = found.get("${at}") else { return inner }
+        fill with { nulls: fill.nulls + self.nulls, dynamic: fill.dynamic || self.dynamic }
+    }
+
+    /// This type with each type parameter `found` names filled, and every other one left for the
+    /// body to decide (`_`).
+    fn filled_or_inferred(found: Map<string, SignedType>) -> SignedType {
+        mut all = found
+        for at in self.parameters() { if !all.has("${at}") { all.set("${at}", headed_type(TypeHead.Inferred)) } }
+        self.filled(all)
+    }
+
+    /// Whether `actual` is this type with its type parameters filled, each fill recorded in `found`
+    /// and fills of one parameter joining. A parameter seat under nulls takes as many
+    /// off what fills it, and no more than it has; a fill holding `never` (`null`, `[]`) fits and pins
+    /// nothing, joining what pins it.
+    fn unifies(actual: SignedType, mut found: Map<string, SignedType>) -> bool {
+        let at = match self.head { .Parameter(index, _) -> index, rest -> -1 }
+        if at >= 0 {
+            let fill = actual with { nulls: if actual.nulls > self.nulls { actual.nulls - self.nulls } else { 0 } }
+            let known = found.get("${at}")
+            if known == null && fill.partial() { return true }
+            let joined = if known == null { fill } else { known!.joined_with(fill) }
+            if joined == null { return false }
+            found.set("${at}", joined!)
+            return true
+        }
+        if actual.nulls > self.nulls { return false }
+        if actual.head is .Never { return true }
+        if self.dynamic != actual.dynamic ||
+            self.args.length != actual.args.length ||
+            self.seats.length != actual.seats.length { return false }
+        if !self.names_as(actual) { return false }
+        for i, a in self.args { if !a.unifies(actual.args[i], found) { return false } }
+        for i, s in self.seats { if !s.ty.unifies(actual.seats[i].ty, found) { return false } }
+        if self.answer != null &&
+            actual.answer != null &&
+            !self.answer!.unifies(actual.answer!, found) { return false }
+        true
+    }
+
+    /// Whether `found` fills every type parameter this type names.
+    fn fills_all(found: Map<string, SignedType>) -> bool { self.parameters().all((at) -> found.has("${at}")) }
+
+    /// The places of the type parameters this type names, each once per naming.
+    /// Whether a type parameter stands anywhere in this type: its head, its arguments, its seats,
+    /// its answer or its alternatives. Binding or filling a type that names none answers it as it is.
+    fn mentions_parameter() -> bool {
+        let own = match self.head { .Parameter(_, _) -> true, rest -> false }
+        own ||
+            self.args.any(it.mentions_parameter()) ||
+            self.seats.any(it.ty.mentions_parameter()) ||
+            self.answer?.mentions_parameter() ?? false ||
+            self.alternatives.any(it.mentions_parameter())
+    }
+
+    fn parameters() -> List<int> {
+        let own = match self.head { .Parameter(index, _) -> [index], rest -> [] }
+        let parts = self
+            .args
+            .concat([s.ty for s in self.seats])
+            .concat(if self.answer == null { [] } else { [self.answer!] })
+        own.concat(flatten([p.parameters() for p in parts]))
+    }
+
+    /// One past the highest type parameter place this type names.
+    fn parameters_named() -> int {
+        let own = match self.head { .Parameter(index, _) -> index + 1, rest -> 0 }
+        let parts = self
+            .args
+            .concat([s.ty for s in self.seats])
+            .concat(if self.answer == null { [] } else { [self.answer!] })
+        parts
+            .fold(
+                own,
+                (most, p) -> if p.parameters_named() > most { p.parameters_named() } else { most },
+            )
+    }
+
+    /// Whether any part of this type is one of its declaration's type parameters.
+    /// Whether any part of this type names a type nothing declares: its own refusal says so once.
+    fn unknown() -> bool {
+        self.head is .Unnamed ||
+            self.args.any(it.unknown()) ||
+            self.seats.any(it.ty.unknown()) ||
+            self.answer?.unknown() ?? false ||
+            self.alternatives.any(it.unknown())
+    }
+
+    fn generic() -> bool {
+        self.head is .Parameter ||
+            self.args.any(it.generic()) ||
+            self.seats.any(it.ty.generic()) ||
+            self.answer?.generic() ?? false ||
+            self.alternatives.any(it.generic())
+    }
+
+    /// Each type parameter any part of this type names, as the type it is.
+    fn parameter_types() -> List<SignedType> {
+        let own = match self.head { .Parameter(_, _) -> [self with { nulls: 0 }], rest -> [] }
+        let parts = self
+            .args
+            .concat([s.ty for s in self.seats])
+            .concat(some_list(self.answer))
+            .concat(self.alternatives)
+        own.concat(flatten([p.parameter_types() for p in parts]))
+    }
+
+    /// Whether any part of this type is one the body decides.
+    fn inferred() -> bool {
+        self.head is .Inferred ||
+            self.args.any(it.inferred()) ||
+            self.seats.any(it.ty.inferred()) ||
+            self.answer?.inferred() ?? false ||
+            self.alternatives.any(it.inferred())
+    }
+}
+
+/// A head as one word: what it names, with its kind.
+fn head_word(h: TypeHead) -> string {
+    match h {
+        .Owned(name) -> "owned ${name}",
+        .Parameter(index, _) -> "parameter ${index}",
+        .Declared(file, name) -> "declared ${file.package_name}/${file.path_in_package} ${name}",
+        .Unnamed(name) -> "unnamed ${name}",
+        .Inferred -> "inferred",
+        .Function -> "function",
+        .Union -> "union",
+        .Never -> "never",
+        .Meta -> "meta",
+    }
+}
+
+/// The list type of `elem`.
+/// A fn type with no promise on any seat.
+fn unmarked(f: SignedType) -> SignedType { f with { seats: [s with { mutable: false, settled: false } for s in f.seats] } }
+
+export fn list_of(elem: SignedType) -> SignedType { owned_type("List") with { args: [elem] } }
+
+/// The join of every type, `never` for none, absent when one isn't known or two don't join.
+export fn types_joined(types: List<SignedType?>) -> SignedType? {
+    let none: SignedType? = headed_type(TypeHead.Never)
+    types.fold(none, (all, t) -> if all == null || t == null { null } else { all!.joined_with(t!) })
+}
+
+impl SignedType {
+    /// The type's content key: equal for equal types in every process, folded with no box made. What
+    /// a type is interned by, and what it is known by across a boundary.
+    fn content_key() -> ContentHash {
+        key_of_lanes(
+            self.lane_folded(HIGH_LANE, HIGH_LANE.seed),
+            self.lane_folded(LOW_LANE, LOW_LANE.seed),
+        )
+    }
+
+    /// The content key of the type's head alone: what an answer that reads only the head is keyed by.
+    fn head_key() -> ContentHash {
+        key_of_lanes(
+            head_folded(self.head, HIGH_LANE, HIGH_LANE.seed),
+            head_folded(self.head, LOW_LANE, LOW_LANE.seed),
+        )
+    }
+
+    /// Every part of the type folded into `lane` after `h`, each sequence folded to one word.
+    fn lane_folded(lane: KeyLane, h: int) -> int {
+        let headed = head_folded(self.head, lane, h)
+        let marked = lane.word(lane.word(headed, self.nulls), if self.dynamic { 1 } else { 0 })
+        let answered = lane.word(marked, answer_folded(self.answer, lane))
+        let seated = lane
+            .word(lane.word(answered, types_folded(self.args, lane)), seats_folded(self.seats, lane))
+        lane.word(seated, types_folded(self.alternatives, lane))
+    }
+}
+
+/// A fn type's answer folded into one word of `lane`; none folds apart from every answer.
+fn answer_folded(answer: SignedType?, lane: KeyLane) -> int {
+    let a? = answer else { return lane.word(lane.seed, 0) }
+    a.lane_folded(lane, lane.word(lane.seed, 1))
+}
+
+/// `types` folded into one word of `lane`: their count, then each.
+fn types_folded(types: List<SignedType>, lane: KeyLane) -> int {
+    mut h = lane.word(lane.seed, types.length)
+    for t in types { h = t.lane_folded(lane, h) }
+    h
+}
+
+/// `seats` folded into one word of `lane`: their count, then each type with its marks.
+fn seats_folded(seats: List<SignedSeat>, lane: KeyLane) -> int {
+    mut h = lane.word(lane.seed, seats.length)
+    for s in seats { h = lane.word(s.ty.lane_folded(lane, h), seat_marks(s)) }
+    h
+}
+
+/// A seat's marks as one word.
+fn seat_marks(s: SignedSeat) -> int {
+    if s.mutable { 1 } else { 0 } + if s.settled { 2 } else { 0 } + if s.defaulted { 4 } else { 0 }
+}
+
+/// `head` folded into `lane` after `h`: its kind, then what it names.
+fn head_folded(head: TypeHead, lane: KeyLane, h: int) -> int {
+    let kind = lane.word(h, head_tag(head))
+    match head {
+        .Owned(name) or .Unnamed(name) -> lane.text(kind, name),
+        .Parameter(index, name) -> lane.text(lane.word(kind, index), name),
+        .Declared(file, name) -> lane.text(lane.text(lane.text(kind, file.package_name), file.path_in_package), name),
+        .Inferred or .Function or .Union or .Never or .Meta -> kind,
+    }
+}
+
+impl SignedType {
+    /// The type's in-process hash: cheap, equal for equal types, never a content key.
+    fn quick_hash() -> int {
+        mut h = hash_word(
+            hash_word(head_hash(self.head), self.nulls),
+            if self.dynamic { 1 } else { 0 },
+        )
+        h = hash_word(h, self.args.length)
+        for a in self.args { h = hash_word(h, a.quick_hash()) }
+        h = hash_word(h, self.seats.length)
+        for seat in self.seats { h = hash_word(h, seat.ty.quick_hash()) }
+        h = hash_word(h, self.alternatives.length)
+        if self.answer == null { h } else { hash_word(h, self.answer!.quick_hash()) }
+    }
+
+    /// Whether `other` is this very type, part for part.
+    fn same_type(other: SignedType) -> bool {
+        if self.nulls != other.nulls ||
+            self.dynamic != other.dynamic ||
+            self.args.length != other.args.length ||
+            self.seats.length != other.seats.length ||
+            self.alternatives.length != other.alternatives.length ||
+            !same_head(self.head, other.head) ||
+            !same_answer(self.answer, other.answer) { return false }
+        for i, a in self.args { if !a.same_type(other.args[i]) { return false } }
+        for i, seat in self.seats {
+            if seat_marks(seat) != seat_marks(other.seats[i]) ||
+                !seat.ty.same_type(other.seats[i].ty) { return false }
+        }
+        for i, a in self.alternatives { if !a.same_type(other.alternatives[i]) { return false } }
+        true
+    }
+}
+
+/// Whether two fn answers are one: both absent, or the same type.
+fn same_answer(a: SignedType?, b: SignedType?) -> bool {
+    let x? = a else { return b == null }
+    let y? = b else { return false }
+    x.same_type(y)
+}
+
+/// Whether two heads name one thing.
+fn same_head(a: TypeHead, b: TypeHead) -> bool {
+    match a {
+        .Owned(name) -> match b { .Owned(n) -> n == name, rest -> false },
+        .Parameter(index, name) -> match b { .Parameter(i, n) -> i == index && n == name, rest -> false },
+        .Declared(file, name) -> match b {
+            .Declared(f, n) -> n == name &&
+                f.path_in_package == file.path_in_package &&
+                f.package_name == file.package_name,
+            rest -> false,
+        },
+        .Unnamed(name) -> match b { .Unnamed(n) -> n == name, rest -> false },
+        .Inferred or .Function or .Union or .Never or .Meta -> head_tag(a) == head_tag(b),
+    }
+}
+
+/// A head's kind as a number.
+fn head_tag(h: TypeHead) -> int {
+    match h {
+        .Owned(_) -> 1,
+        .Parameter(_, _) -> 2,
+        .Declared(_, _) -> 3,
+        .Unnamed(_) -> 4,
+        .Inferred -> 5,
+        .Function -> 6,
+        .Union -> 7,
+        .Never -> 8,
+        .Meta -> 9,
+    }
+}
+
+/// A head's in-process hash: its kind and what it names.
+fn head_hash(h: TypeHead) -> int {
+    match h {
+        .Owned(name) or .Unnamed(name) -> hash_text(head_tag(h), name),
+        .Parameter(index, name) -> hash_text(hash_word(2, index), name),
+        .Declared(file, name) -> hash_text(hash_text(3, name), file.path_in_package),
+        .Inferred or .Function or .Union or .Never or .Meta -> head_tag(h),
+    }
+}

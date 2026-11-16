@@ -1,0 +1,232 @@
+//! The lowering rules of absence: `null` is a null constant its seat gives a layout, and a match on
+//! presence is one region, its present arm holding what the subject carries. `v?` is one region too:
+//! what `v` carries on, else the fn leaves with its absence or its failure. `a ?? b` over an `a` that
+//! is never absent is `a`.
+use core.{
+    BinOp,
+    VariantSeat,
+    enum_property_named,
+    Bound,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    NAMED_FIELD,
+    OwnType,
+    Reg,
+    RtSig,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    own_row_of,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{Chain, Coalesce, Force, MatchOpt, NullLit, Propagate}
+use core.stmt.{LetElse}
+
+impl Lowers for NullLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.word_at(cx.layout_at(e), 0) }
+}
+
+impl Lowers for Force {
+    /// What the subject carries, the runtime insisting it's present; a subject that isn't nullable is
+    /// itself.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        if held.nullable() { insisted(cx, v, held) } else { v }
+    }
+}
+
+/// What `v`, a nullable of `opt`, carries, the runtime refusing its absence: a counted pointer handed
+/// back by the runtime, a flat record's box's one slot, a pair's second, and a foreign pointer or a
+/// spare-tagged value its own registers, once tested.
+fn insisted(mut cx: Lowering, v: Reg, opt: SignedType) -> Reg {
+    let carried = cx.laid_out(opt.unwrapped())
+    let l = cx.laid_out(opt)
+    match l {
+        .Maybe(value) -> cx
+            .call_row(
+                value,
+                rt_sig_of("avra_insist_scalar")!,
+                [cx.extracted(Layout.Truth, v, 0), cx.extracted(value, v, 1)],
+            ),
+        .Boxed(_) -> if l.slot_box() { cx.slot_read(carried, cx.call_row(l, rt_sig_of("avra_unwrap")!, [v]), 0) } else { cx.call_row(carried, rt_sig_of("avra_unwrap")!, [v]) },
+        .Bare -> tested(cx, v, cx.present(v, opt), cx.const_int(0)),
+        .Word or .Tagged(_) -> tested(cx, v, cx.present(v, opt), cx.extracted(Layout.Word, v, 0)),
+        .Void or .Truth or .Real or .Fields(_) -> cx.missed_as("an insisted `${opt.spelled()}`"),
+    }
+}
+
+/// `v` once the runtime has refused it where `present` doesn't hold, `word` the word it's tested by.
+fn tested(mut cx: Lowering, v: Reg, present: Reg, word: Reg) -> Reg {
+    let _ = cx.call_row(Layout.Word, rt_sig_of("avra_insist_scalar")!, [present, word])
+    v
+}
+
+impl Lowers for Propagate {
+    /// A region answering what the subject carries on: a nullable's value where it's present, a
+    /// `Result`'s ok side where its tag is `Ok`; the other arm leaves the fn.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let carried? = cx.type_at(e) else { return cx.unlowered(e) }
+        if held.resulted() { return failed_on(cx, held, carried, cx.lower(self.subject)) }
+        if !held.nullable() || !cx.answer.nullable() { return cx.missed_as("a `?` the fn's answer can't carry the absence of") }
+        let v = cx.lower(self.subject)
+        cx
+            .region(cx.present(v, held), cx.laid_out(carried)) { cx -> cx.carried(v, held) } else { cx ->
+                cx.answer_exit(cx.absent_of(cx.answer, cx.laid_out(cx.answer)))
+                cx.hollow_of(carried)
+            }
+    }
+}
+
+/// `v?` on the `Result` `v` of `held`: its ok side where its tag is `Ok`, else the fn leaves failing
+/// with `v` as the fn's own `Result` holds it.
+fn failed_on(mut cx: Lowering, held: SignedType, carried: SignedType, v: Reg) -> Reg {
+    let ok = cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(v), cx.const_int(0))
+    cx
+        .region(ok, cx.laid_out(carried)) { cx -> cx.payload_at(v, 0, [cx.laid_out(carried)]) } else { cx ->
+            cx.fail_exit(cx.propagated(v, held))
+            cx.hollow_of(carried)
+        }
+}
+
+impl Lowers for Chain {
+    /// A region on the subject's presence: the field of what it carries, lifted into the chain's
+    /// answer, else that answer's absence; a name's own field is the value it names, so the chain is
+    /// the subject, a property a row answers is that row's answer, and an enum's `ordinal` or `name`
+    /// is the property of the variant it carries. A chain into any other property that isn't a
+    /// field, or into a `state` field, isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let answer? = cx.type_at(e) else { return cx.unlowered(e) }
+        if !held.nullable() { return cx.unlowered(e) }
+        let inner = held.unwrapped()
+        if self.name.of == NAMED_FIELD && cx.named_over(inner) != null { return cx.lower(self.subject) }
+        let row = answering_row(inner, self.name.of)
+        if row != null { return owned_chain(cx, row!, self.subject, held, answer) }
+        let variants = cx.variants_of(inner)
+        if variants != null {
+            return enum_chain(cx, variants!, self.name.of, self.subject, held, answer) ?? cx
+                .unlowered(e)
+        }
+        let fields? = cx.fields_of(inner) else { return cx.missed_as("a chain into a property that isn't a field") }
+        let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
+        let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
+        let own = fields[n].ty!
+        let v = cx.lower(self.subject)
+        let l = cx.laid_out(answer)
+        cx
+            .region(cx.present(v, held), l) { cx -> cx.lifted(cx.field_value(cx.carried(v, held), inner, fields, laid, n), own, answer) } else { cx -> cx.absent_of(answer, l) }
+    }
+}
+
+/// `x?.p` where `x` holds an enum and `p` is a property every enum has: a region on the subject's
+/// presence, the property of what it carries, lifted into the chain's answer, else that answer's
+/// absence; absent for a name that is no such property.
+fn enum_chain(
+    mut cx: Lowering,
+    variants: List<VariantSeat>,
+    name: string,
+    subject: ExprId,
+    held: SignedType,
+    answer: SignedType,
+) -> Reg? {
+    let property? = enum_property_named(name) else { return null }
+    let read = answer.unwrapped()
+    let v = cx.lower(subject)
+    let l = cx.laid_out(answer)
+    cx
+        .region(cx.present(v, held), l) { cx ->
+            cx
+                .lifted(
+                    cx.enum_property(cx.carried(v, held), variants, property, cx.laid_out(read)),
+                    read,
+                    answer,
+                )
+        } else { cx -> cx.absent_of(answer, l) }
+}
+
+/// `x?.p` where `p` is a row of the type the language owns that `x` holds: a region on the subject's
+/// presence, the row handed what it carries, lifted into the chain's answer, else that answer's
+/// absence.
+fn owned_chain(mut cx: Lowering, row: RtSig, subject: ExprId, held: SignedType, answer: SignedType) -> Reg {
+    let read = answer.unwrapped()
+    let v = cx.lower(subject)
+    let l = cx.laid_out(answer)
+    cx
+        .region(cx.present(v, held), l) { cx ->
+            cx.lifted(cx.call_words(cx.laid_out(read), row, [cx.carried(v, held)]), read, answer)
+        } else { cx -> cx.absent_of(answer, l) }
+}
+
+/// The row the property `name` of a value of `ty` is, where its answer is the property's.
+fn answering_row(ty: SignedType, name: string) -> RtSig? {
+    let own? = own_row_of(ty, name) else { return null }
+    match own.answer { .Answer -> rt_sig_of(own.row), .Folds -> null }
+}
+
+impl Lowers for MatchOpt {
+    /// A region on the subject's presence, answering the arm taken; one answering nothing is run for
+    /// what its arms do.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if answers_nothing(cx, e) { return self.lowered_dropped(cx, e) }
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        cx
+            .region(cx.present(v, held), cx.layout_at(e)) { cx -> present_arm(cx, self, e, v) } else { cx -> cx.lower(self.absent) }
+    }
+
+    /// A region on the subject's presence whose arms are run for what they do.
+    fn lowered_dropped(mut cx: Lowering, e: ExprId) -> Reg {
+        let held? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        cx
+            .void_branches(cx.present(v, held)) { cx -> let _ = present_arm(cx, self, e, v) } else { cx -> let _ = cx.lower(self.absent) }
+        cx.hollow_of(owned_type("void"))
+    }
+}
+
+/// Whether `e` answers `void`.
+fn answers_nothing(cx: Lowering, e: ExprId) -> bool {
+    let ty? = cx.type_at(e) else { return false }
+    ty.owns(OwnType.Void)
+}
+
+/// The present arm: its name bound to what the subject carries, in a scope of its own; an arm that
+/// answers what it binds where the match answers the subject's own type is the subject itself.
+fn present_arm(mut cx: Lowering, m: MatchOpt, e: ExprId, v: Reg) -> Reg {
+    let held = cx.type_at(m.subject)!
+    if cx.store.ident_name(m.present) == m.bind.of && cx.type_at(e)?.spelled() == held.spelled() { return v }
+    cx.opened()
+    cx.bind(m.bind.of, Bound.Value(cx.carried(v, held), held.unwrapped()))
+    let r = cx.lower(m.present)
+    cx.closed()
+    r
+}
+
+impl StmtLowers for LetElse {
+    /// A region on the subject's presence whose answer is the binding: what the subject carries, or
+    /// where it's absent, the `else`, which leaves.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let held? = cx.type_at(self.subject) else { return cx.stmt_unlowered(s) }
+        let v = cx.lower(self.subject)
+        let carried = held.unwrapped()
+        let r = cx
+            .region(cx.present(v, held), cx.laid_out(carried)) { cx -> cx.carried(v, held) } else { cx ->
+                cx.opened()
+                for st in self.stmts { cx.lower_stmt(st) }
+                cx.closed()
+                cx.hollow_of(carried)
+            }
+        cx.bind(self.name.of, Bound.Value(r, carried))
+    }
+}
+
+impl Lowers for Coalesce {
+    /// Over a left side that is never absent — where no meaning rewrites it — the left side's value;
+    /// the right side never runs.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.lower(self.left) }
+}

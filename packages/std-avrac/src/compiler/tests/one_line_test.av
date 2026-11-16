@@ -15,6 +15,19 @@ fn kept(source: string) -> bool {
     render_source_of(p.store, p.stmts, source) == source
 }
 
+/// The source formatted once, or absent when it doesn't parse.
+fn formatted(source: string) -> string? {
+    let p = parse_source(source)
+    if !p.voices.list.is_empty() { return null }
+    render_source_of(p.store, p.stmts, source)
+}
+
+/// Whether formatting once leaves what a second format keeps, and `body` still on one line.
+fn settled_with(source: string, body: string) -> bool {
+    let first? = formatted(source) else { return false }
+    formatted(first) == first && first.contains(body)
+}
+
 spec "one-line bodies" {
     given "a body written on one line" {
         then "a fn body keeps its braces on the line" { kept("fn f() -> int { 1 }") }
@@ -29,6 +42,32 @@ spec "one-line bodies" {
         then "an explicit block value keeps its braces" { kept("let x = { 7 }") }
         then "a nested explicit block value keeps both pairs of braces" { kept("let x = { { 7 } }") }
         then "an explicit block value in a struct field keeps its braces" { kept("type P = { a: int }\nlet p = P { a: { 5 } }") }
+    }
+    given "a head too wide for its line, before a body written on one line" {
+        then "an if's wrapped condition leaves its body on one line, and a second format changes nothing" {
+            settled_with(
+                "fn f(u: U, c: int) -> int {\n    if some_condition_value_some_condition_value_some_condition_value_some_condition_value_xx > 0 && u.at(c) == 4 { br12 = c }\n    0\n}\n",
+                "{ br12 = c }",
+            )
+        }
+        then "an if-else value's wrapped condition leaves both branches on one line" {
+            settled_with(
+                "fn f(u: U, c: int) -> int {\n    let v = if some_condition_value_some_condition_value_some_condition_value_some_condition_value_xx > 0 && u.at(c) == 4 { 1 } else { 2 }\n    v\n}\n",
+                "{ 1 } else { 2 }",
+            )
+        }
+        then "a fn's wrapped parameters leave its body on one line" {
+            settled_with(
+                "fn long_function_name_here(first_argument: int, second_argument: int, third_argument: int, fourth: int) -> int { first_argument + 1 }\n",
+                "{ first_argument + 1 }",
+            )
+        }
+        then "a for's wrapped subject leaves its body on one line" {
+            settled_with(
+                "fn f(xs: List<int>) -> int {\n    for some_long_binding_name in xs.filter(it > 0).map(it * 2).filter(it < 100000).take(10000).drop(3) { println(\"x\") }\n    0\n}\n",
+                "{ println(\"x\") }",
+            )
+        }
     }
     given "a body written across lines" {
 

@@ -1,0 +1,583 @@
+//! WHERE A GATHERING'S OWN WORDS BREAK A LAW: a `collect` or a `collect enum` whose kind names no
+//! annotation nor component, whose scope is no scope, whose order isn't written or names what its
+//! kind doesn't answer or can't compare; a `collect` declared as no list, projecting into another
+//! type than its element or into one with no fields, filling the fields other than once each, or
+//! reading a path its kind doesn't answer; a `by` column mixing ints and text, or a `dense` one not
+//! gap-free from 0; and a `collect enum` gathering two members of one name, a member whose record
+//! takes type parameters or spreads another's, `in closure`, or two members its order ties. Read
+//! off the declaration's syntax and, for its columns, the members the program layer gathers.
+use core.{
+    CollectKind,
+    ExprId,
+    some_list,
+    CollectScope,
+    Literal,
+    Plain,
+    Projection,
+    SignedType,
+    StmtId,
+    StructParts,
+    SyntaxArena,
+    sorted_by,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{declared_more_than_once}
+use features.consts.{reads_own_collection}
+use features.collects.{
+    closure_enum_said,
+    dense_gap_said,
+    dense_int_said,
+    dense_shape_said,
+    field_mismatch_said,
+    generic_member_said,
+    generic_words,
+    known_path,
+    known_scope,
+    mixed_order_said,
+    not_a_list_said,
+    not_a_record_said,
+    order_comparable,
+    order_known,
+    order_required_said,
+    proj_mismatch_said,
+    spread_member_said,
+    tied_order_said,
+    uncomparable_order_said,
+    unknown_kind_said,
+    unknown_order_said,
+    unknown_path_said,
+    unknown_scope_said,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.text.{parse_int}
+
+/// What a gathering declares, a `collect`'s or a `collect enum`'s: where it stands, its name, kind,
+/// scope, order and whether that order is dense; a `collect`'s projection beside.
+type CollectShape = { stmt: StmtId, name: string, kind: CollectKind, scope: CollectScope, order: List<Plain>, dense: bool, proj: Projection? }
+
+/// Every gathering the written item `at` of `file` declares, in the store it's read from.
+type CollectShapes = { store: SyntaxArena, all: List<CollectShape> }
+
+fn collect_shapes(engine: QueryEngine, file: SourceFileAddress, at: int) -> CollectShapes {
+    if at >= item_count(engine, file) { return CollectShapes { store: read_item(engine, file, 0).store, all: [] } }
+    let item = read_item(engine, file, at)
+    CollectShapes {
+        store: item.store,
+        all: [g! for s in item.stmts for g in [collect_shape_at(item.store, s)] if g != null],
+    }
+}
+
+/// The gathering `s` declares, if it declares one.
+fn collect_shape_at(store: SyntaxArena, s: StmtId) -> CollectShape? {
+    let c? = store.collect_parts(s) else { return collect_enum_shape_at(store, s) }
+    CollectShape {
+        stmt: s,
+        name: c.name,
+        kind: c.kind,
+        scope: c.scope,
+        order: c.order,
+        dense: c.dense,
+        proj: c.proj,
+    }
+}
+
+/// The gathering of variants `s` declares, if it declares one.
+fn collect_enum_shape_at(store: SyntaxArena, s: StmtId) -> CollectShape? {
+    let e? = store.collect_enum_parts(s) else { return null }
+    CollectShape {
+        stmt: s,
+        name: e.name,
+        kind: e.kind,
+        scope: e.scope,
+        order: e.order,
+        dense: e.dense,
+        proj: null,
+    }
+}
+
+/// Every gathering of the written item `at` of `file` `pick` finds words for, found where it stands.
+fn shape_found(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    pick: fn(QueryEngine, SourceFileAddress, CollectShape) -> List<List<string>>,
+) -> List<Found> {
+    let g = collect_shapes(engine, file, at)
+    [Found { at: g.store.stmt_span(x.stmt), args: a } for x in g.all for a in pick(engine, file, x)]
+}
+
+/// The kind `g` gathers, as its file can gather it: an annotation always, a word only where it names
+/// a component the file sees.
+fn kind_known(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> CollectKind? {
+    match g.kind {
+        .Annotated(_) -> g.kind,
+        .Component(w) -> if resolved(engine, file, Space.Type, w).named()?.kind == ItemKind.Component { g.kind } else { null },
+    }
+}
+
+fn kinds_unknown(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    match g.kind {
+        .Component(w) -> if kind_known(engine, file, g) == null { [[w]] } else { [] },
+        .Annotated(_) -> [],
+    }
+}
+
+fn scopes_unknown(_engine: QueryEngine, _file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    match g.scope { .UnknownScope(w) -> [[w]], .Self or .Package or .Closure -> [] }
+}
+
+fn orders_missing(_engine: QueryEngine, _file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> { if g.order.is_empty() { [[g.name]] } else { [] } }
+
+fn keys_unknown(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<List<string>> {
+    let kind = kind_known(engine, file, g)
+    [[k.of] for k in g.order if !order_known(kind, k)]
+}
+
+/// The element the `collect` `g` declares its list of, spelled with its declaration where it's one;
+/// absent where its declared type is no list, or not known.
+type ListElement = { spelled: string, fields: List<string>? }
+
+/// What `g`, a `collect`, declares: `List<T>`'s element, or absent where it's no list; nothing where
+/// its type isn't known.
+fn element_of(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<ListElement?> {
+    let declared? = binding_type(engine, file, g.name) else { return [] }
+    if declared.owned() != "List" || declared.args.length != 1 { return [null] }
+    let e = declared.args[0]
+    [ListElement { spelled: e.spelled(), fields: record_fields_of(engine, e) }]
+}
+
+/// The fields of the record `t` names, absent where it names none.
+fn record_fields_of(engine: QueryEngine, t: SignedType) -> List<string>? {
+    let at? = declared_at(t) else { return null }
+    let sig? = record_signature(engine, at.file, at.name) else { return null }
+    [f.name for f in sig.fields]
+}
+
+fn not_lists(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<List<string>> {
+    if g.proj == null { return [] }
+    [[g.name] for e in element_of(engine, file, g) if e == null]
+}
+
+fn projections_mistyped(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    let proj? = g.proj else { return [] }
+    [[proj.ty.name, e!.spelled] for e in element_of(engine, file, g) if e != null && proj.ty.name != e!.spelled]
+}
+
+fn projections_fieldless(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    let proj? = g.proj else { return [] }
+    [[proj.ty.name] for e in element_of(engine, file, g) if e != null && e!.fields == null]
+}
+
+/// A `collect`'s projection filling its element's fields other than once each: the type, then how
+/// many fields are missing, those, and those it fills that the type doesn't declare.
+fn projections_misfilled(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    let proj? = g.proj else { return [] }
+    let written = [f.field.of for f in proj.fields]
+    [[proj.ty.name, "${missing.length}"].concat(missing).concat(unknown) for e in element_of(engine, file, g) if e != null && e!.fields != null for missing in [[n for n in e!.fields! if !written.contains(n)]] for unknown in [[n for n in written if !e!.fields!.contains(n)]] if !missing.is_empty() || !unknown.is_empty()]
+}
+
+fn paths_unknown(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    let proj? = g.proj else { return [] }
+    if element_of(engine, file, g).any(it == null) { return [] }
+    let kind = kind_known(engine, file, g)
+    [[p.of for p in f.path] for f in proj.fields if !known_path(kind, f.path)]
+}
+
+/// One member's value under one `by` key: a number, text, or one no comparison reads.
+enum Column {
+    Number(n: int)
+    Text
+    Other
+}
+
+/// The members `g` gathers, as the program layer gathers them, in no order of its own; none where
+/// its kind or scope is unknown, or the members aren't known.
+fn members_of_gathering(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    DeclaredName,
+> {
+    let kind? = kind_known(engine, file, g) else { return [] }
+    if !known_scope(g.scope) { return [] }
+    gathered(engine, file, kind, g.scope, [], false, "") ?? []
+}
+
+/// What the member `d` answers for the key `key` of a gathering of `kind`.
+fn member_column(engine: QueryEngine, kind: CollectKind, key: Plain, d: DeclaredName) -> Column {
+    if generic_words.contains(key.of) { return Column.Text }
+    let l? = member_key(engine, kind, d, key.of) else { return Column.Other }
+    match l {
+        .Int(n) -> Column.Number(n),
+        .Text(_) -> Column.Text,
+        .Float(_) or .Bool(_) -> Column.Other,
+    }
+}
+
+/// The comparable keys of `g`'s order, each beside the column its members answer for it.
+type KeyColumn = { key: Plain, comparable: bool, column: List<Column> }
+
+fn key_columns(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<KeyColumn> {
+    let kind? = kind_known(engine, file, g) else { return [] }
+    let members = members_of_gathering(engine, file, g)
+    [KeyColumn {
+        key: k,
+        comparable: order_comparable(kind, k),
+        column: [member_column(engine, kind, k, d) for d in members],
+    } for k in g.order if order_known(kind, k)]
+}
+
+fn keys_uncomparable(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    [[c.key.of] for c in key_columns(engine, file, g) if !c.comparable || c.column.any(it is .Other)]
+}
+
+fn keys_mixed(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<List<string>> {
+    [[c.key.of] for c in key_columns(engine, file, g) if c.comparable &&
+        !c.column.any(it is .Other) &&
+        c.column.any(it is .Number) &&
+        c.column.any(it is .Text)]
+}
+
+/// A `dense` order's fault: not one key, a key whose members don't answer ints, or ints that aren't
+/// each of 0 up to their count once. Handed which, and the key.
+fn dense_faults(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<List<string>> {
+    if !g.dense || g.order.is_empty() || kind_known(engine, file, g) == null { return [] }
+    if g.order.length != 1 { return [[DENSE_SHAPE]] }
+    let c? = key_columns(engine, file, g).first() else { return [] }
+    if !c.comparable { return [] }
+    if !c.column.all(it is .Number) { return [[DENSE_INT, c.key.of]] }
+    let ns = sorted_by([column_number(v) for v in c.column], (x: int, y: int) -> x < y)
+    if [j for j, n in ns if n != j].is_empty() { [] } else { [[DENSE_GAP, c.key.of]] }
+}
+
+/// The number a column value is; 0 for any other.
+fn column_number(v: Column) -> int {
+    match v { .Number(n) -> n, .Text or .Other -> 0 }
+}
+
+const DENSE_SHAPE: string = "shape"
+
+const DENSE_INT: string = "int"
+
+const DENSE_GAP: string = "gap"
+
+/// A `collect enum`'s member names taken twice: the enum, then the name.
+fn variants_twice(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    if g.proj != null { return [] }
+    let names = [m.name for m in members_of_gathering(engine, file, g)]
+    [[g.name, n] for j, n in names if names.index_of(n) < j]
+}
+
+/// A `collect enum`'s members whose record takes type parameters, then those that spread another's
+/// fields: the fault, the enum, the member.
+fn members_unfit(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    if g.proj != null { return [] }
+    let parts = [p! for m in members_of_gathering(engine, file, g) for p in [member_record(engine, m)] if p != null]
+    [["generic", g.name, p.name] for p in parts if !p.tparams.is_empty()]
+        .concat([["spread", g.name, p.name] for p in parts if !p.spreads.is_empty()])
+}
+
+/// The record a gathered member declares, where it's one.
+fn member_record(engine: QueryEngine, m: DeclaredName) -> StructParts? {
+    let item = read_item(engine, m.file, m.item)
+    [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null && p!.name == m.name]
+        .first()
+}
+
+fn enums_in_closure(_engine: QueryEngine, _file: SourceFileAddress, g: CollectShape) -> List<
+    List<string>,
+> {
+    if g.proj == null && g.scope is .Closure { [[g.name]] } else { [] }
+}
+
+/// A `collect enum` two of whose members its order can't hold apart, its members named apart and
+/// its order not dense.
+fn enums_tied(engine: QueryEngine, file: SourceFileAddress, g: CollectShape) -> List<List<string>> {
+    if g.proj != null ||
+        g.dense ||
+        g.order.is_empty() ||
+        !variants_twice(engine, file, g).is_empty() { return [] }
+    let kind? = kind_known(engine, file, g) else { return [] }
+    let members = members_of_gathering(engine, file, g)
+    let keys = [[member_key(engine, kind, d, k.of) for k in g.order] for d in members]
+    if keys.any((key) -> key.any(it == null)) { return [] }
+    let spelled = [[literal_key(l!) for l in key].join(KEY_SEPARATOR) for key in keys]
+    if [j for j, k in spelled if spelled.index_of(k) < j].is_empty() { [] } else { [[g.name]] }
+}
+
+/// What stands between the values of one member's keys, spelled.
+const KEY_SEPARATOR: string = "|"
+
+/// A key's value spelled with its kind, so two values are one only where both are.
+fn literal_key(l: Literal) -> string {
+    match l { .Int(n) -> "i${n}", .Float(b) -> "f${b}", .Bool(b) -> "b${b}", .Text(t) -> "t${t}" }
+}
+
+fn kinds_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, kinds_unknown) }
+
+fn scopes_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, scopes_unknown) }
+
+fn orders_missing_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, orders_missing) }
+
+fn keys_unknown_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_unknown) }
+
+fn not_lists_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, not_lists) }
+
+fn mistyped_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_mistyped) }
+
+fn fieldless_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_fieldless) }
+
+fn misfilled_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, projections_misfilled) }
+
+fn paths_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, paths_unknown) }
+
+fn uncomparable_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_uncomparable) }
+
+fn mixed_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, keys_mixed) }
+
+fn dense_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, dense_faults) }
+
+fn variants_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, variants_twice) }
+
+fn members_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, members_unfit) }
+
+fn closure_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_in_closure) }
+
+fn ties_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { shape_found(engine, file, at, enums_tied) }
+
+/// Every value the written item `at` of `file` declares that a collection it reads gathers, by the
+/// component it instantiates or a mark it wears; handed the value and the collection.
+fn own_collections_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.expr_span(v!), args: [n!, c!] } for s in item.stmts for v in [item.store.stmt_value(s)] if v != null for n in [item.store.let_name(s)] if n != null for words in [some_list(item.store.instance_of(s)).concat([a.name for a in item.store.annotations_of(s)])] if !words.is_empty() for c in [gathering_read(engine, file, item.store, v!, words)] if c != null]
+}
+
+/// The first collection the value `v` of `store` reads that gathers by one of `words`.
+fn gathering_read(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    v: ExprId,
+    words: List<string>,
+) -> string? {
+    [n! for e in store.every_expr(v) for n in [store.ident_name(e)] if n != null && gathers_by(engine, file, n!, words)]
+        .first()
+}
+
+/// Whether `name`, read from `file`, is a collection gathering by one of `words`.
+fn gathers_by(engine: QueryEngine, file: SourceFileAddress, name: string, words: List<string>) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    if d.kind != ItemKind.Collect { return false }
+    let item = read_item(engine, d.file, d.item)
+    item.stmts.any((s) -> collect_word(item.store, s, d.name)?.matches(words) ?? false)
+}
+
+/// The word the collection `name` that `s` declares gathers by.
+fn collect_word(store: SyntaxArena, s: StmtId, name: string) -> GatherWord? {
+    let p? = store.collect_parts(s) else { return null }
+    if p.name != name { return null }
+    match p.kind { .Component(w) or .Annotated(w) -> GatherWord { word: w } }
+}
+
+/// The word a collection gathers by.
+type GatherWord = { word: string }
+
+impl GatherWord {
+    fn matches(words: List<string>) -> bool { words.contains(self.word) }
+}
+
+/// a member reads its own collection only once compiled
+export law collect_self_read {
+    kind: "collect.self_read"
+    reads: own_collections_read
+    voice: self_read_words
+    witness: "export component widget {\n    run: fn(int) -> int?\n}\n\ntype Entry = { name: string }\n\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n"
+}
+
+/// a gathering's kind is an annotation or a component the file sees
+export law collect_kind_unknown {
+    kind: "collect.kind"
+    reads: kinds_unknown_found
+    voice: kind_words
+    witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n"
+}
+
+/// a gathering's scope is self, package or closure
+export law collect_scope_unknown {
+    kind: "collect.scope"
+    reads: scopes_unknown_found
+    voice: scope_words
+    witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.name\n"
+}
+
+/// a gathering declares its order
+export law collect_order_missing {
+    kind: "collect.order"
+    reads: orders_missing_found
+    voice: order_words
+    witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name }\n"
+}
+
+/// a `by` key names what the kind's declarations answer
+export law collect_order_key_unknown {
+    kind: "collect.order_key"
+    reads: keys_unknown_found
+    voice: order_key_words
+    witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope\n"
+}
+
+/// a `collect` declares a list
+export law collect_not_a_list {
+    kind: "collect.not_a_list"
+    reads: not_lists_found
+    voice: not_a_list_words
+    witness: "type Entry = { name: string }\n\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n"
+}
+
+/// a `collect` projects into its list's element
+export law collect_projection_mistyped {
+    kind: "collect.proj_type"
+    reads: mistyped_found
+    voice: proj_type_words
+    witness: "type Entry = { name: string }\n\ntype Other = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n"
+}
+
+/// a `collect` projects into a record
+export law collect_projection_fieldless {
+    kind: "collect.not_a_record"
+    reads: fieldless_found
+    voice: not_a_record_words
+    witness: "collect xs: List<int> = @tag in self as int { name: it.name } by it.name\n"
+}
+
+/// a projection fills every field once
+export law collect_projection_misfilled {
+    kind: "collect.fields"
+    reads: misfilled_found
+    voice: fields_words
+    witness: "type Entry = { name: string, module: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n"
+}
+
+/// a projection reads what its kind answers
+export law collect_path_unknown {
+    kind: "collect.path"
+    reads: paths_found
+    voice: path_words
+    witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n"
+}
+
+/// a `by` key yields a value a comparison reads
+export law collect_order_uncomparable {
+    kind: "collect.order_uncomparable"
+    reads: uncomparable_found
+    voice: uncomparable_words
+    witness: "type Entry = { name: string }\n\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n"
+}
+
+/// a `by` column is one kind
+export law collect_order_mixed {
+    kind: "collect.order_mixed"
+    reads: mixed_found
+    voice: mixed_words
+    witness: "use @std.meta.{Named}\n\ntrait Mark {\n    fn label() -> string\n}\n\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\n\nimpl Mark for string {\n    fn label() -> string { self }\n}\n\nfn mark(what: Named, label: dyn Mark) -> void {}\n\n@mark(\"a\")\nfn alpha() {}\n\n@mark(1)\nfn beta() {}\n\ntype Entry = { name: string }\n\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n"
+}
+
+/// a `dense` order is one int key, gap-free from 0
+export law collect_dense {
+    kind: "collect.dense"
+    reads: dense_found
+    voice: dense_words
+    witness: "use @std.meta.{Named}\n\nfn numbered(what: Named, ordinal: int) -> void {}\n\n@numbered(0)\nfn a() {}\n\n@numbered(2)\nfn b() {}\n\ntype Entry = { name: string }\n\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name } by it.mark.args[0] dense\n"
+}
+
+/// a `collect enum` gathers each variant name once
+export law collect_enum_variant_twice {
+    kind: "collect_enum.variant"
+    reads: variants_found
+    voice: variant_words
+    witness: "use @std.meta.{Named}\n\nfn tag(what: Named) -> void {}\n\n@tag\nfn run() {}\n\ncollect enum Command = @tag in self by it.name\n"
+}
+
+/// a gathered variant carries fixed types, the fields its record writes
+export law collect_enum_member_unfit {
+    kind: "collect_enum.member"
+    reads: members_found
+    voice: member_words
+    witness: "use @std.meta.{Named}\n\nfn numbered(what: Named, ordinal: int) -> void {}\n\n@numbered(0)\ntype Wrap<T> = { held: T }\n\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// an enum's variants are one set for every reader
+export law collect_enum_in_closure {
+    kind: "collect_enum.scope"
+    reads: closure_found
+    voice: closure_words
+    witness: "use @std.meta.{Named}\n\nfn tag(what: Named) -> void {}\n\n@tag\nfn a() {}\n\ncollect enum S = @tag in closure by it.name\n"
+}
+
+/// an enum's order holds its variants apart
+export law collect_enum_tied {
+    kind: "collect_enum.tie"
+    reads: ties_found
+    voice: tie_words
+    witness: "use @std.meta.{Named}\n\nfn numbered(what: Named, ordinal: int) -> void {}\n\n@numbered(0)\ntype Dot = {}\n\n@numbered(0)\ntype Line = { to: int }\n\ncollect enum Shape = @numbered in self by it.mark.args[0]\n"
+}
+
+fn kind_words(a: List<string>) -> Voice { unknown_kind_said(a[0]) }
+
+fn scope_words(a: List<string>) -> Voice { unknown_scope_said(a[0]) }
+
+fn order_words(a: List<string>) -> Voice { order_required_said(a[0]) }
+
+fn order_key_words(a: List<string>) -> Voice { unknown_order_said(Plain(a[0])) }
+
+fn not_a_list_words(a: List<string>) -> Voice { not_a_list_said(a[0]) }
+
+fn proj_type_words(a: List<string>) -> Voice { proj_mismatch_said(a[0], a[1]) }
+
+fn not_a_record_words(a: List<string>) -> Voice { not_a_record_said(a[0]) }
+
+fn fields_words(a: List<string>) -> Voice {
+    let k = parse_int(a[1]) ?? 0
+    field_mismatch_said(a[0], a.slice(2, 2 + k), a.drop(2 + k))
+}
+
+fn path_words(a: List<string>) -> Voice { unknown_path_said([Plain(w) for w in a]) }
+
+fn uncomparable_words(a: List<string>) -> Voice { uncomparable_order_said(Plain(a[0])) }
+
+fn mixed_words(a: List<string>) -> Voice { mixed_order_said(Plain(a[0])) }
+
+fn dense_words(a: List<string>) -> Voice {
+    if a[0] == DENSE_SHAPE { return dense_shape_said() }
+    if a[0] == DENSE_INT { dense_int_said(Plain(a[1])) } else { dense_gap_said(Plain(a[1])) }
+}
+
+fn variant_words(a: List<string>) -> Voice { declared_more_than_once(a[0], a[1]) }
+
+fn member_words(a: List<string>) -> Voice { if a[0] == "generic" { generic_member_said(a[1], a[2]) } else { spread_member_said(a[1], a[2]) } }
+
+fn closure_words(a: List<string>) -> Voice { closure_enum_said(a[0]) }
+
+fn tie_words(_a: List<string>) -> Voice { tied_order_said() }
+
+fn self_read_words(a: List<string>) -> Voice { reads_own_collection(a[0], a[1]) }

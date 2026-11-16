@@ -5,12 +5,12 @@
 //! exercised directly, so the refuse and accept surfaces are both
 //! proven without a package.
 use compiler.{analyze_source, nearest_fix, checks_keeps}
-use compiler.{rules, RuleEntry}
+use compiler.{rule_entries, RuleEntry}
 use features.{Code, Fix}
 
 /// The rule's own `run`, as `check` reaches it — the table entry, never
 /// the declaration's field.
-fn applied() -> fn(Code) -> Fix? { rules.find(it.name == "cell_get_copy")!.run }
+fn applied() -> fn(Code) -> Fix? { (c: Code) -> rule_entries().find(it.name == "cell_get_copy")!.run.applied(c) }
 
 /// Whether the rule fires anywhere in `text`'s first statement.
 fn fires(text: string) -> bool {
@@ -25,7 +25,7 @@ fn fires(text: string) -> bool {
 fn keeps(text: string) -> bool { checks_keeps(applied(), text) }
 
 spec "compiler/idioms (cell_get_copy)" {
-    then "the rule stands in the compiler's own table" { rules.any(it.name == "cell_get_copy") }
+    then "the rule stands in the compiler's own table" { rule_entries().any(it.name == "cell_get_copy") }
     given "a value read out of a cell, written through, and stored back" {
         then "a list `push` round trip fires" { fires("{\n    mut t = c.get()\n    t.push(1)\n    c.set(t)\n}") }
         then "a map `set` round trip fires" {

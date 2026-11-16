@@ -1,0 +1,55 @@
+//! The lowering rule of a record literal: each value in the order written, then the record of them in
+//! its fields' order, packed when the record is flat and boxed when it isn't. A field takes the last
+//! entry that gives it — written by its name, or spread from a record that has it — else what its
+//! role fills, else its default.
+use core.{ExprId, Lowering, Lowers, Reg, spread_entry}
+use core.expr.{StructLit}
+
+/// What the literal `lit`, its entries lowered to `values`, writes for the field `name`: the last of
+/// its entries that gives it, written by that name or spread from a record that has it; absent where
+/// none does and its default stands.
+fn given_by(mut cx: Lowering, lit: StructLit, values: List<Reg>, name: string) -> Reg? {
+    let at? = [j for j, entry in lit.fields if entry.of == name || entry.of == spread_entry && spreads(cx, lit.values[j], name)]
+        .last() else { return null }
+    if lit.fields[at].of == name { return values[at] }
+    let spread = cx.type_at(lit.values[at])!
+    let fields = cx.fields_of(spread)!
+    cx.field_read(values[at], spread, cx.seat_layouts(fields)!, fields.find_index(it.name == name)!)
+}
+
+/// Whether the spread `v` is a record with a field `name`, laid out.
+fn spreads(cx: Lowering, v: ExprId, name: string) -> bool {
+    let ty? = cx.type_at(v) else { return false }
+    let fields? = cx.fields_of(ty) else { return false }
+    fields.any(it.name == name) && !fields.any(it.ty == null)
+}
+
+/// Whether the entry `at` of `lit` spreads a value whose fields aren't known or laid out.
+fn spread_unknown(cx: Lowering, lit: StructLit, at: int) -> bool {
+    if lit.fields[at].of != spread_entry { return false }
+    let ty? = cx.type_at(lit.values[at]) else { return true }
+    let fields? = cx.fields_of(ty) else { return true }
+    fields.any(it.ty == null)
+}
+
+impl Lowers for StructLit {
+    /// A literal of entries and spreads, or one the source alone spells and that holds no `state` field,
+    /// which is the binary's own data. A field no entry gives is what its role fills, else its
+    /// default's; a `state` field's value is held in a cell of its own, minted at this literal. One that
+    /// spreads what isn't a record whose fields are known isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.missed_as("an untyped record literal `${self.name.of}`") }
+        let fields? = cx.fields_of(ty) else { return cx.missed_as("a record literal of `${ty.spelled()}`, whose fields aren't known") }
+        if !fields.any(it.state) {
+            let data = cx.static_literal(e)
+            if data != null { return data! }
+        }
+        if (0..self.fields.length).any(spread_unknown(cx, self, it)) { return cx.missed_as("a record literal spreading what isn't a record") }
+        let values = [cx.lower(v) for v in self.values]
+        cx
+            .record_packed(
+                cx.laid_out(ty),
+                [cx.seat_filled(f, given_by(cx, self, values, f.name) ?? cx.field_left(e, ty, f)) for f in fields],
+            )
+    }
+}

@@ -1,0 +1,66 @@
+//! A TYPING TABLE CROSSES BY ITS CODEC, held by machine: a table read back is the table
+//! written, field by field (the registry's `same_facts`), and a read the scope cannot place is
+//! refused.
+use compiler.{facts_exemplars, same_facts}
+use core.{TypeId, side_table_of, expr_window}
+use features.{TypeFacts}
+use diagnostics.{Voices, Diag, error_at}
+use @std.relation.stable.{Scope, CodecFault, indexed_scope}
+
+/// The table with every column holding something.
+fn sample() -> TypeFacts { facts_exemplars()[1] }
+
+fn back(facts: TypeFacts) -> Result<TypeFacts, CodecFault> {
+    TypeFacts.decoded_in(indexed_scope(), facts.encoded_in(indexed_scope()))
+}
+
+/// A scope whose inverse holds nothing: the wire it wrote names ids it can no longer resolve.
+type Forgetful = {}
+
+impl Scope for Forgetful {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { null }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
+}
+
+fn no_captures() -> List<List<TypeId>?> { [null] }
+
+fn empty_captures() -> List<List<TypeId>?> { [[]] }
+
+spec "compiler/facts — a typing table crosses by its codec" {
+    given "every exemplar" {
+        then "each reads back as written, field by field" {
+            facts_exemplars()
+                .all((t) -> match back(t) { .Ok(r) -> same_facts(t, r), .Err(_) -> false })
+        }
+    }
+    given "a table with every column populated" {
+        then "an absent optional and an empty list are different wires" {
+            let absent = sample() with { captures: side_table_of("captures", expr_window(4), no_captures(), null) }
+            let empty = sample() with { captures: side_table_of("captures", expr_window(4), empty_captures(), null) }
+            absent.encoded_in(indexed_scope()) != empty.encoded_in(indexed_scope())
+        }
+    }
+    given "a table that spoke" {
+        then "its voices cross with it" {
+            let said: Diag = error_at("facts.spoken", null, "a table that spoke")
+            match back(sample() with { voices: Voices { list: [said] } }) {
+                .Ok(r) -> r.voices.list.length == 1 && r.voices.list[0].message == "a table that spoke",
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a spelling the reading scope does not hold" {
+        then "the read is refused, never guessed" {
+            let deaf: dyn Scope = Forgetful {}
+            match TypeFacts.decoded_in(deaf, sample().encoded_in(indexed_scope())) {
+                .Ok(_) -> false,
+                .Err(_) -> true,
+            }
+        }
+    }
+}

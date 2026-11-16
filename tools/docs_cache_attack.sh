@@ -40,8 +40,8 @@ who=docs-cache-attack
 . tools/lib/steps.sh
 ask() { (cd "$1" && AVRA_QTRACE=1 AVRA_CWD="$1" "$BIN" docs "${2:-target}" 2>"$R/trace" | tr '\n' ' '); }
 parsed() { grep -c 'Q	parse' "$R/trace"; }
-# the oracle: a copy in a repo of its own, so no store answers
-oracle() { rm -rf "$R/o" && mkdir -p "$R/o" && git init -q "$R/o" && cp -R "$R/p" "$R/o/p" && cp -R "$R/dep" "$R/o/dep"; ask "$R/o/p" "${1:-target}"; }
+# the oracle: a copy in a repo and a store of its own, so no store answers
+oracle() { rm -rf "$R/o" && mkdir -p "$R/o" && git init -q "$R/o" && cp -R "$R/p" "$R/o/p" && cp -R "$R/dep" "$R/o/dep"; AVRA_CACHE_DIR="$R/o/.avra-cache" ask "$R/o/p" "${1:-target}"; }
 # expect NAME WANT-HIT: the answer equals the oracle's, and the program was parsed or not
 expect() {
     got=$(ask "$R/p" "${3:-target}"); n=$(parsed); want=$(oracle "${3:-target}")

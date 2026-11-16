@@ -1,0 +1,190 @@
+//! WHAT A FORMAT GIVES ITS RECORD: a record a grammar reads — a `grammar R = "…"`, a route's
+//! pattern — gets `pattern`, `parse` of text, `parse_octets` and, where every hole binds, `print`,
+//! written as an `impl` of the record and made an item of its file as a generator's are. The scan is
+//! the prelude's `format_spans`; each hole's value is its span cut from the text, an `int` hole's
+//! read by `format_int`.
+use core.{FormatPart, GrammarSpec, binds, flatten, template_home}
+use features.formats.{Reads as HoleReads, pattern_text, reads_of as hole_reads}
+use @std.meta.{Decls as MetaDecls, Directive, Node as MetaNode}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// What the records `file` declares with a grammar are given, each one's `impl` an item of the file.
+fn format_generated(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratedItems> {
+    [items_spliced(engine, file, f.name, [format_directive(file, f)]) for f in format_records(engine, file)]
+}
+
+/// A record a grammar reads: its name, the format, and where it's declared.
+type FormatRecord = { name: string, format: GrammarSpec, at: int }
+
+/// Each record `file` declares with a grammar, in the order declared.
+fn format_records(engine: QueryEngine, file: SourceFileAddress) -> List<FormatRecord> {
+    [r! for d in file_declares(engine, file).names if d.kind == ItemKind.Record for r in [format_record(engine, d)] if r != null]
+}
+
+/// The record `d` declares where a grammar reads it; absent for any other.
+fn format_record(engine: QueryEngine, d: DeclaredName) -> FormatRecord? {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return null }
+    let format? = item.store.grammar_of(s) else { return null }
+    FormatRecord { name: d.name, format: format, at: item.store.stmt_span(s)?.lo ?? 0 }
+}
+
+/// The `impl` a format gives its record, as a template of `file` at the record.
+fn format_directive(file: SourceFileAddress, f: FormatRecord) -> Directive {
+    let written = woven_code(format_impl(f))
+    Directive {
+        twin: "",
+        name: f.name,
+        at: null,
+        source: MetaDecls {
+            node: MetaNode.Template(template_home(file), f.at, written.parts, written.fills),
+        },
+    }
+}
+
+/// A run of generated code: its text, or a hole a node fills.
+enum Piece {
+    Code(text: string)
+    Hole(node: MetaNode)
+}
+
+/// A template's text runs and the nodes between them.
+type Woven = { parts: List<string>, fills: List<MetaNode> }
+
+/// `pieces` as a template: each hole between the code around it.
+fn woven_code(pieces: List<Piece>) -> Woven {
+    mut parts: List<string> = [""]
+    mut fills: List<MetaNode> = []
+    // LICENSED loops.push_loop: a hole closes the run before it, so the runs are known only in order
+    for p in pieces {
+        match p {
+            .Code(text) -> parts.set(parts.length - 1, parts.last()! + text),
+            .Hole(node) -> {
+                fills.push(node)
+                parts.push("")
+            },
+        }
+    }
+    Woven { parts: parts, fills: fills }
+}
+
+fn code(text: string) -> Piece { Piece.Code(text) }
+
+fn text_hole(text: string) -> Piece { Piece.Hole(MetaNode.Text(text)) }
+
+fn name_hole(name: string) -> Piece { Piece.Hole(MetaNode.Name(name)) }
+
+/// The `impl`: `pattern`, `parse` of text and of octets, and `print` where every hole binds.
+fn format_impl(f: FormatRecord) -> List<Piece> {
+    let printed = if f.format.parts.all((p) -> binds(p.hole)) { print_fn(f) } else { [] }
+    [
+        code("impl "),
+        name_hole(f.name),
+        code(" {\n    static fn pattern() -> string { "),
+        text_hole(pattern_text(f.format.head, f.format.parts)),
+        code(" }\n"),
+    ]
+        .concat(parse_fn(f, "parse(text: string)", "text.bytes()", []))
+        .concat(
+            parse_fn(
+                f,
+                "parse_octets(octets: Bytes)",
+                "octets",
+                [code("        let text? = octets.text() else { return null }\n")],
+            ),
+        )
+        .concat(printed)
+        .concat([code("}\n")])
+}
+
+/// A `parse` reading `scanned`, its seat `seat`, each hole's value cut from `text` once `before` has run.
+fn parse_fn(f: FormatRecord, seat: string, scanned: string, before: List<Piece>) -> List<Piece> {
+    [
+        code("    static fn ${seat} -> "),
+        name_hole(f.name),
+        code("? {\n        let spans? = format_spans(${scanned}, "),
+    ]
+        .concat(scan_args(f.format))
+        .concat([code(") else { return null }\n")])
+        .concat(before)
+        .concat([code("        "), name_hole(f.name), code(" { ")])
+        .concat(
+            flatten(
+                [[code("${p.hole.name}: ${hole_value(p, j)}, ")] for j, p in f.format.parts if binds(p.hole)],
+            ),
+        )
+        .concat([code("}\n    }\n")])
+}
+
+/// What `format_spans` is handed past the subject: the head, each piece, and which holes are greedy.
+fn scan_args(format: GrammarSpec) -> List<Piece> {
+    [text_hole(format.head), code(".bytes(), [")]
+        .concat(flatten([[text_hole(p.piece), code(".bytes(), ")] for p in format.parts]))
+        .concat(
+            [
+                code(
+                    "], [${[if p.hole.greedy { "true" } else { "false" } for p in format.parts].join(", ")}]",
+                ),
+            ],
+        )
+}
+
+/// What the hole of part `j` holds: its span of the text, read as an `int` where it's one.
+fn hole_value(p: FormatPart, j: int) -> string {
+    let span = "text.substring(spans[${2 * j}], spans[${2 * j + 1}])"
+    match hole_reads(p.hole) ?? HoleReads.Text { .Text -> span, .Int -> "format_int(${span})?" }
+}
+
+/// `print`: each field woven between the format's literals, absent where a value would move the split
+/// a parse of the woven text makes.
+fn print_fn(f: FormatRecord) -> List<Piece> {
+    let parts = f.format.parts
+    let kept = [survives(parts, j) for j in 0..parts.length - 1]
+    let guard = if kept.is_empty() {
+        []
+    } else {
+        [code("        if !(")]
+            .concat(flatten(joined_with(kept, code(" && "))))
+            .concat([code(") { return null }\n")])
+    }
+    [code("    static fn print(r: "), name_hole(f.name), code(") -> string? {\n")]
+        .concat(guard)
+        .concat([code("        "), text_hole(f.format.head)])
+        .concat(flatten([[code(" + ${printed_field(p)} + "), text_hole(p.piece)] for p in parts]))
+        .concat([code("\n    }\n")])
+}
+
+/// Each run, `between` between them.
+fn joined_with(runs: List<List<Piece>>, between: Piece) -> List<List<Piece>> {
+    [if j == 0 { r } else { [between].concat(r) } for j, r in runs]
+}
+
+/// A field as the text its hole prints: itself, or an `int`'s digits.
+fn printed_field(p: FormatPart) -> string {
+    match hole_reads(p.hole) ?? HoleReads.Text {
+        .Text -> "r.${p.hole.name}",
+        .Int -> "\"\${r.${p.hole.name}}\"",
+    }
+}
+
+/// Whether hole `j`'s value survives a parse of the woven text: a lazy hole's literal first stands
+/// where the value ends; a greedy one's appears nowhere in what is printed after its own.
+fn survives(parts: List<FormatPart>, j: int) -> List<Piece> {
+    let piece = parts[j].piece
+    if !parts[j].hole.greedy {
+        return [
+            code("(${printed_field(parts[j])} + "),
+            text_hole(piece),
+            code(").bytes().index_of("),
+            text_hole(piece),
+            code(".bytes(), 0) == (${printed_field(parts[j])}).length"),
+        ]
+    }
+    let after = flatten(
+        [[code(" + ${printed_field(p)} + "), text_hole(p.piece)] for k, p in parts if k > j],
+    )
+    [code("("), text_hole(piece)]
+        .concat(after)
+        .concat([code(").bytes().index_of("), text_hole(piece), code(".bytes(), 1) < 0")])
+}

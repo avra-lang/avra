@@ -1,0 +1,108 @@
+//! AN ARM NO VALUE REACHES: an unguarded arm that takes every value — a hole, or a bare name with no
+//! const of its name to compare against — leaves the arm after it nothing to match. Read over a
+//! written item's `match`es; the arm after each such catch-all is warned of where its first pattern
+//! stands.
+use core.{ExprId, PatId, SignedType, flatten, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.enums.{last_arm_compares_said, unreached_after_binder_said, unreached_after_hole_said}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// An arm no value reaches: where its first pattern stands, and the name the catch-all above it
+/// binds, empty for a hole that binds none.
+@derive(Saved)
+type Unreached = { at: FindingAt?, binder: string }
+
+/// Every unreached arm one written item's `match`es hold.
+@derive(Saved)
+type ItemUnreached = { arms: List<Unreached> }
+
+fn after_binders(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(u.at), args: [u.binder] } for u in item_unreached(engine, file, at).arms if !u.binder.is_empty()]
+}
+
+fn after_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(u.at), args: [] } for u in item_unreached(engine, file, at).arms if u.binder.is_empty()]
+}
+
+/// Every arm of the written item `at` of `file`'s `match`es that comes right after an unguarded
+/// arm taking every value, in node order.
+@query
+fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnreached {
+    if at >= item_count(engine, file) { return ItemUnreached { arms: [] } }
+    let item = read_item(engine, file, at)
+    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
+    if matches.is_empty() { return ItemUnreached { arms: [] } }
+    let cover = Cover {
+        store: item.store,
+        type_at: (_k: int) -> no_type(),
+        enum_of: (ty: SignedType) -> enum_shape(engine, ty),
+        compares: (n: string) -> compared_value(engine, file, n) ?? true,
+    }
+    ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
+}
+
+/// No type: what the arms' reach reads of none.
+fn no_type() -> SignedType? { null }
+
+/// The arms of the `match` at `e` each right after an unguarded arm taking every value.
+fn unreached_in(cover: Cover, e: ExprId) -> List<Unreached> {
+    let m? = match_at(cover.store, e) else { return [] }
+    [Unreached {
+        at: kept_at(cover.store.pat_span(m.arms[k + 1].pats[0])),
+        binder: binder_of(cover, hole!),
+    } for k, a in m.arms if k + 1 < m.arms.length && a.guard == null && !m.arms[k + 1].pats.is_empty() for hole in [cover.hole_of(a.pats)] if hole != null]
+}
+
+/// The name the catch-all `hole` binds, empty for one that binds none.
+fn binder_of(cover: Cover, hole: PatId) -> string { cover.store.bind_name(hole) ?? "" }
+
+/// The last arm of each `match` the written item `at` of `file` holds that is one unguarded bare name
+/// naming a const, which compares rather than binds: the name.
+fn last_arms_comparing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && compared_value(engine, file, n!) ?? false]
+}
+
+/// the last arm of a `match` whose bare name is a const
+export law last_arm_compares {
+    kind: "type.const_pattern"
+    reads: last_arms_comparing
+    voice: comparing_words
+    warns: true
+    witness: "enum M {\n    A\n    B\n}\n\nconst a = M.A\n\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\n"
+}
+
+fn comparing_words(a: List<string>) -> Voice { last_arm_compares_said(a[0]) }
+
+/// an arm after a binder that takes every value
+export law arm_after_binder {
+    kind: "type.unreachable_arm"
+    reads: after_binders
+    voice: binder_words
+    warns: true
+    witness: "fn f(n: int) -> int {\n    match n {\n        other -> 1,\n        2 -> 2,\n    }\n}\n"
+}
+
+/// an arm after a hole that takes every value
+export law arm_after_hole {
+    kind: "type.unreachable_arm"
+    reads: after_holes
+    voice: hole_words
+    warns: true
+    witness: "fn f(n: int) -> int {\n    match n {\n        _ -> 1,\n        2 -> 2,\n    }\n}\n"
+}
+
+fn binder_words(a: List<string>) -> Voice { unreached_after_binder_said(a[0]) }
+
+fn hole_words(_a: List<string>) -> Voice { unreached_after_hole_said() }
+
+collect listed_unreached_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unreached-arm laws are read through, for a process to hand its engine.
+export fn unreached_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unreached_facts) }

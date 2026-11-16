@@ -11,6 +11,8 @@
 #
 # The store is warmed first: a cold first round is the whole program's
 # price, not the phase's, and a budget must read the phase.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"

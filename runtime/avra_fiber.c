@@ -416,6 +416,9 @@ static int64_t g_timer_until = 0;
 
 static int g_flow_trace = 0;
 static int g_trace_fd = 2;
+
+// The flow trace's own file, kept across a core's close; -1 while it writes to stderr.
+int avra_fiber_trace_fd(void) { return g_trace_fd > 2 ? g_trace_fd : -1; }
 static int64_t g_trace_left = 0;
 
 static int64_t now_ns(void);
@@ -1171,6 +1174,7 @@ static void sig_disarm(int sig) {
     if (g_poller >= 0) {
         struct kevent ev;
         EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+        // the clock: a change list with no events asked returns at once
         kevent(g_poller, &ev, 1, NULL, 0, NULL);
     }
     sigaction(sig, &g_sig_prior[sig], NULL);
@@ -1209,6 +1213,7 @@ static int sig_arm(int sig) {
     signal(sig, SIG_IGN);
     struct kevent ev;
     EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    // the clock: a change list with no events asked returns at once
     if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) {
         sigaction(sig, &prior, NULL);
         return 0;
@@ -1257,6 +1262,7 @@ static int sig_arm(int sig) {
 // its signal and claims that signal's waiters.
 static void sigfd_drain(void) {
     struct signalfd_siginfo si;
+    // the clock: the signalfd is SFD_NONBLOCK, so an empty one answers EAGAIN
     while (read(g_signalfd, &si, sizeof si) == (ssize_t)sizeof si) sig_ready((int)si.ssi_signo);
 }
 #endif
@@ -3678,9 +3684,15 @@ static int64_t case_refused(void) {
     return 0;
 }
 
+void avra_once_set(void* key, void* value);
+
 int64_t avra_case_run(int64_t (*body)(void)) {
     if (g_case_waited || g_timers_len > 0 || g_parked_fds > 0) return case_refused();
-    if (!g_case_alarm) g_case_alarm = avra_gate_new();
+    // the alarm is the runner's for the process's life: held as a cache is
+    if (!g_case_alarm) {
+        g_case_alarm = avra_gate_new();
+        avra_once_set((void*)"avra.case_alarm", g_case_alarm);
+    }
     g_case_first = g_fiber_seq;
     g_case_spoiled = 0;
     g_case_spun = 0;
@@ -3927,6 +3939,7 @@ static void path_wire_put(int fd, const PathWire* w) {
 static int path_wire_get(int fd, PathWire* w) {
     char* at = (char*)w;
     for (size_t n = sizeof *w; n > 0;) {
+        // the clock: the suite reads its schedule's child, outside every clock run
         ssize_t got = read(fd, at, n);
         if (got <= 0) return 0;
         at += got;
@@ -3951,6 +3964,7 @@ static int64_t program_under(int64_t schedule, int64_t* choices) {
     pid_t pid = fork();
     if (pid < 0) avra_trap("a program test cannot fork its schedule");
     if (pid == 0) {
+        avra_pool_forked();
         close(told[0]);
         int64_t made = 0;
         scheduled(schedule, &made, program_body_called);

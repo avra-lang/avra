@@ -53,7 +53,7 @@ export fn literal_meta(
     e: ExprId,
     mut heap: MetaHeap,
 ) -> MetaVal? {
-    let raw: Expr = store.expr(e)
+    let raw: Expr = store.valued(e)
     let n: int? = raw.int_of()
     if n != null { return MetaVal.Int(n!) }
     let bits: int? = raw.bits_of()
@@ -196,16 +196,16 @@ fn literal_variant(
 }
 
 /// A hole-less quote as the crossing tree — a `Template` naming this
-/// file and the quote's offset, with nothing to fill. Null for
+/// file (`home`, its name) and the quote's offset, with nothing to fill. Null for
 /// anything else, a quote with holes included: a hole is a body the
 /// evaluator runs, and null for a program that loads no `@std/meta`,
 /// where a template has no type to be.
-export fn quote_meta(store: SyntaxArena, decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+export fn quote_meta(store: SyntaxArena, decls: Decls, home: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
     let held: BodyParts? = store.expr(e).body_of()
     if held == null || !held!.holes.is_empty() { return null }
     if decls.meta_named("Node") == null { return null }
     let at: int = store.expr_span(e)?.lo ?? 0
-    meta_of_template(Node.Template(path, at, held!.parts, []), heap)
+    meta_of_template(Node.Template(home, at, held!.parts, []), heap)
 }
 
 // ── The slot array, behind its verbs ────────────────────────────
@@ -1111,22 +1111,22 @@ impl LowerCx {
     }
 
     /// A BOXED nullable insisted on: the BOX is what must be present,
-    /// so its register wears the NULLABLE — the memory pass owns and
-    /// releases what `avra_insist` hands back — and the one slot is read
-    /// after. A register that wore the CARRIED type would be unmanaged,
+    /// so its register wears the NULLABLE — a counted box, riding its
+    /// subject through `avra_unwrap` or owned through its twin — and the
+    /// one slot is read after. A register that wore the CARRIED type would be unmanaged,
     /// and the box would never be released.
     mut fn insisted_boxed(v: Reg, opt: TypeId) -> Reg {
-        let box = self.insist(self.view.types.shape_of(opt), v)
+        let box = self.unwrap(self.view.types.shape_of(opt), v)
         self.boxed_carried(box, self.carried_type(opt))
     }
 
-    /// A NICHE nullable insisted on: a counted box comes back OWNED
-    /// through `avra_insist`, and a foreign pointer — no header, so
+    /// A NICHE nullable insisted on: a counted box rides its subject
+    /// through `avra_unwrap`, and a foreign pointer — no header, so
     /// nothing to count — is its own register past a null test, never
     /// retained.
     mut fn insisted_niche(v: Reg, opt: TypeId) -> Reg {
         let carried = self.carried_type(opt)
-        if is_managed(self.view.types, carried) { return self.insist(self.view.types.shape_of(carried), v) }
+        if is_managed(self.view.types, carried) { return self.unwrap(self.view.types.shape_of(carried), v) }
         let _ = self.insist_scalar(Type.Int, self.presence_of(v, opt), self.const_int(0))
         v
     }

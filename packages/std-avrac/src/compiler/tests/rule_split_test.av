@@ -1,0 +1,41 @@
+// A file's rule findings are the same whether the rules run over the whole statement list or
+// over one statement at a time: a rule's subject is one node, so the statement is the grain a
+// per-declaration answer may take. Rendered findings are compared, order and licences included.
+use @std.avrac.testing.{provided}
+use @std.avrac.compiler.{rule_findings}
+use @std.avrac.features.{Analysed}
+use @std.avrac.core.{flatten}
+
+fn analysed_entry(source: string) -> Analysed {
+    let a = provided(source, "").entry_file()!
+    Analysed { view: a.view, names: a.names, facts: a.facts }
+}
+
+fn whole_rendered(source: string) -> string {
+    let a = provided(source, "").entry_file()!
+    a.rendered(rule_findings(analysed_entry(source), a.view.stmts))
+}
+
+fn split_rendered(source: string) -> string {
+    let a = provided(source, "").entry_file()!
+    let an = analysed_entry(source)
+    a.rendered(flatten([rule_findings(an, [s]) for s in a.view.stmts]))
+}
+
+spec "compiler/rule_pass (split by statement)" {
+    given "findings in several statements" {
+        then "three dead parameters render alike whole and split" {
+            let src = "fn a(x: int) -> int { 1 }\nfn b(y: int) -> int { 2 }\nfn c(z: int) -> int { 3 }\na(0) + b(0) + c(0)"
+            whole_rendered(src) == split_rendered(src) &&
+                whole_rendered(src).contains("dead_parameter")
+        }
+        then "a licence on the line above a finding stands in both" {
+            let src = "// LICENSED fns.dead_parameter: kept for the seat\nfn a(x: int) -> int { 1 }\nfn b(y: int) -> int { 2 }\na(0) + b(0)"
+            whole_rendered(src) == split_rendered(src)
+        }
+        then "a clean file has no findings either way" {
+            let src = "fn a(x: int) -> int { x }\na(1)"
+            whole_rendered(src) == split_rendered(src)
+        }
+    }
+}

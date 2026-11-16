@@ -1,6 +1,6 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use features.{Code, Fix, rule, said}
+use features.{Syntax, Fix, rule, said}
 use @std.meta.{name}
 
 /// A `for` loop whose WHOLE body is one `push` is a MAP — a
@@ -23,8 +23,20 @@ use @std.meta.{name}
 @law("pushing a sequence's values one at a time and concatenating that same sequence at the end build the same list")
 export rule push_loop {
     // LICENSED loops.push_loop: the pattern's own text names the shape it detects
-    quote { for ${x} in ${xs} { ${out}.push(${v}) } } if !v.text().contains(out.text()) -> name("${out.text()} = ${out.text()}.concat([${v.text()} for ${x} in ${xs.text()}])"),
+    quote { for ${x} in ${xs} { ${out}.push(${v}) } } if !v.text().contains(out.text()) && !names_word(out.text(), x) -> name("${out.text()} = ${out.text()}.concat([${v.text()} for ${x} in ${xs.text()}])"),
 }
+
+/// Whether `text` holds `word` as a whole identifier — an accumulator that names the loop's own
+/// variable is a different place every turn, so no single list collects the pushes.
+fn names_word(text: string, word: string) -> bool {
+    !word.is_empty() &&
+        ![i for i in 0..text.length - word.length + 1 if text.substring(i, i + word.length) == word &&
+            word_edge(text, i - 1) &&
+            word_edge(text, i + word.length)]
+            .is_empty()
+}
+
+fn word_edge(text: string, at: int) -> bool { at < 0 || at >= text.length || !is_subscript_ident_char(text.char_code(at)) }
 
 /// `push_loop`'s BRANCHED twin: each arm of a per-element `if`/`else`
 /// pushes to the SAME accumulator, one shape or the other depending
@@ -50,7 +62,7 @@ export rule branched_push_loop {
         !b.text().contains(out.text()) -> branched_push_loop_found(out, cond, x),
 }
 
-fn branched_push_loop_found(out: Code, cond: Code, x: string) -> Fix {
+fn branched_push_loop_found(out: Syntax, cond: Syntax, x: string) -> Fix {
     Fix
         .Say(
             said(
@@ -83,7 +95,7 @@ fn branched_push_loop_found(out: Code, cond: Code, x: string) -> Fix {
 export rule index_walk { quote { ${lit} } if index_walked(lit) -> index_walk_fix(lit) }
 
 /// Whether `lit` is `for NAME in 0..E.length { …E[NAME]… }`.
-fn index_walked(lit: Code) -> bool {
+fn index_walked(lit: Syntax) -> bool {
     let r? = lit.for_range() else { return false }
     if r.from.text() != "0" || r.to.prop_name() != "length" { return false }
     let xs? = r.to.kids().first() else { return false }
@@ -91,11 +103,11 @@ fn index_walked(lit: Code) -> bool {
 }
 
 /// Whether `body` reads `${xs}[j]` anywhere, `j` the loop's own name.
-fn indexes(body: List<Code>, xs: Code, j: string) -> bool {
+fn indexes(body: List<Syntax>, xs: Syntax, j: string) -> bool {
     body.any(it.text().contains(xs.text() + "[" + j + "]"))
 }
 
-fn index_walk_fix(lit: Code) -> Fix {
+fn index_walk_fix(lit: Syntax) -> Fix {
     let r = lit.for_range()!
     let xs = r.to.kids().first()!
     let needle = xs.text() + "[" + r.name + "]"
@@ -146,7 +158,7 @@ export rule flag_loop {
     } if cond.text() == f && body.any(it.text().contains(f + " = false")) -> flag_loop_found(cond),
 }
 
-fn flag_loop_found(flag: Code) -> Fix {
+fn flag_loop_found(flag: Syntax) -> Fix {
     Fix
         .Say(
             said(

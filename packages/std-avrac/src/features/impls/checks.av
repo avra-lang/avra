@@ -1,0 +1,109 @@
+//! The typing rule of a method call: a fn the subject's field of that name holds is called with the
+//! arguments; else the method's first seat takes the subject and each argument its own seat, as a
+//! call's do, and the call is what the method answers; else a static fn of the subject's type is
+//! called through it.
+use core.{Checking, Checks, ExprId, Expected, Seating, SignedType}
+use core.expr.{MethodCall}
+
+impl Checks for MethodCall {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject? = cx.check(self.subject, Expected.Free) else {
+            cx.checked_free(self.args)
+            return null
+        }
+        let described? = subject.described() else { return value_called(cx, self, e, subject, expected) }
+        let statics? = cx.static_of(described, self.name.of) ?? cx
+            .chosen_among(cx.statics_among(described, self.name.of), self.args, 0) else {
+            return cx.variant_built(e, described, self.name.of, self.args, true, expected)
+        }
+        if cx.seats_named(e, statics, self.args, 0, "${described.spelled()}.${self.name.of}") { return null }
+        cx
+            .called(
+                statics,
+                self.args,
+                expected,
+                (at: int) -> Seating.Method(described.spelled(), self.name.of, at),
+                self_pinned(described),
+            )
+    }
+}
+
+/// A static called through the body's own type parameter `described` answers that parameter where
+/// it answers `Self`: the parameter is pinned to itself, never filled by the call.
+fn self_pinned(described: SignedType) -> Map<string, SignedType> {
+    match described.head { .Parameter(at, _) -> {"${at}": described}, rest -> {} }
+}
+
+/// A declared method's call: its receiver written where the method writes, its arguments held to its
+/// seats. A verb the language owns that writes its receiver is handed a place a write lands in, and a
+/// list's walk names its fn's seat as the walk's.
+fn method_called(
+    mut cx: Checking,
+    m: MethodCall,
+    e: ExprId,
+    subject: SignedType,
+    method: SignedType,
+    expected: Expected,
+) -> SignedType? {
+    if subject.head is .Declared &&
+        cx.seats_named(e, method, m.args, 1, "${subject.spelled()}.${m.name.of}") { return null }
+    if subject.head is .Owned && method.seats.first()?.mutable ?? false { cx.place_written(e, m.subject, subject, m.name.of) }
+    let walks = walk_verb(subject, method)
+    cx
+        .applied(
+            method,
+            subject,
+            m.args,
+            expected,
+            (at: int) -> if walks { Seating.Walk(subject.spelled(), m.name.of, at, e.index) } else { Seating.Method(subject.spelled(), m.name.of, at) },
+        )
+}
+
+/// The method call `m` at `e` on a value of `subject`: a fn its field holds, else its method, else a
+/// static of its type called through it.
+fn value_called(mut cx: Checking, m: MethodCall, e: ExprId, subject: SignedType, expected: Expected) -> SignedType? {
+    if cx.cell_unmapped(e, subject, m.name.of, m.args) { return null }
+    let field = fn_field(cx.field_of(subject, m.name.of))
+    if field != null { return held_fn_called(cx, m, field!, expected) }
+    let method = cx.method_of(subject, m.name.of) ?? cx
+        .chosen_among(cx.methods_among(subject, m.name.of), m.args, 1)
+    if method != null { return method_called(cx, m, e, subject, method!, expected) }
+    let run = cx.run_chosen_among(cx.methods_among(subject, m.name.of), m.args, 1)
+    if run != null { return run }
+    let through? = cx.static_of(subject, m.name.of) else {
+        cx.checked_free(m.args)
+        return null
+    }
+    cx
+        .called(through, m.args, expected, (at: int) -> Seating.Method(subject.spelled(), m.name.of, at))
+}
+
+/// `ty` where it is a fn a field holds; absent for any other.
+fn fn_field(ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    if t.head is .Function { t } else { null }
+}
+
+/// The call of the fn of type `f` a field of the receiver holds. A fn value's type is no generic of
+/// its own: each parameter it names is the body's, pinned to itself.
+fn held_fn_called(mut cx: Checking, m: MethodCall, f: SignedType, expected: Expected) -> SignedType? {
+    cx
+        .called(f, m.args, expected, (at: int) -> Seating.Argument(m.name.of, at), pinned_to_themselves(f))
+}
+
+/// Each type parameter `ty` names, pinned to itself: the body's own, which a call never fills.
+fn pinned_to_themselves(ty: SignedType) -> Map<string, SignedType> {
+    mut out: Map<string, SignedType> = {}
+    for p in ty.parameter_types() { out.set("${parameter_place(p)}", p) }
+    out
+}
+
+/// The place among the body's parameters the parameter `p` stands at.
+fn parameter_place(p: SignedType) -> int { match p.head { .Parameter(at, _) -> at, rest -> 0 - 1 } }
+
+/// Whether `method` on a value of `subject` is a walk: a list's own verb handed one fn of the element.
+fn walk_verb(subject: SignedType, method: SignedType) -> bool {
+    if subject.owned() != "List" || method.seats.length != 2 { return false }
+    let f = method.seats[1].ty
+    f.head is .Function && f.seats.length == 1
+}

@@ -1,0 +1,16 @@
+//! The typing rule of a call of a value (`(w.opened)(x)`): the value is a fn type, or a named type
+//! over one, whose type parameters, if any, are the body's own, so each argument checks against its
+//! seat as written.
+use core.{Checking, Checks, ExprId, Expected, Seating, SignedType}
+use core.expr.{CallValue}
+
+impl Checks for CallValue {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let f = cx.check(self.subject, Expected.Free)
+        let called? = (if f == null { null } else { cx.program.called_as(f!) }) else {
+            cx.checked_free(self.args)
+            return null
+        }
+        cx.rigidly_called(called, self.args, (_at: int) -> Seating.Unnamed)
+    }
+}

@@ -23,6 +23,8 @@
 # MEMCAP names the memory-cap wrapper each run goes under (cap 4000 MB).
 # PUBLISH_PACKAGE (default packages/std-text) and PUBLISH_ROUNDS (default 6,
 # 0 skips claims 2 and 3) name the small package they run.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -u
 
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"

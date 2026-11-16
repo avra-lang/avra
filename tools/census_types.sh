@@ -9,6 +9,8 @@
 # A FLAGGED BUILD NEVER FILLS THE SHIPPING STORE. The tree's stores
 # stand aside for the build and come back on every exit, with the
 # shipping runtime library rebuilt.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -eu
 cd "$(dirname "$0")/.."
 src=${1:?usage: sh tools/census_types.sh <program.av> [args...]}

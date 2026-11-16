@@ -1,0 +1,94 @@
+// Each family's time inside its asks, with and without the asks it makes in turn.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use answer_record.{question}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use query_times.{FamilyTime}
+
+// LICENSED input.clock: a test burns a known stretch of CPU to see it charged
+extern fn avra_cpu_ns() -> int
+
+/// Burns `ms` milliseconds of CPU, then answers `word`.
+fn burned(ms: int, word: string) -> Bytes {
+    let until = avra_cpu_ns() + ms * 1000000
+    mut turns = 0
+    while avra_cpu_ns() < until { turns = turns + 1 }
+    word.bytes()
+}
+
+/// `outer` asks `slow`, which burns 60 ms; `outer` burns none of its own.
+fn burning() -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "slow",
+            code_hash: "code",
+            is_input: false,
+            compute: (_e, _a) -> burned(60, "s"),
+        },
+        QueryDefinition {
+            query_name: "outer",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> e.answer_to(question("slow", "code", "x".bytes())).copied(),
+        },
+    ]
+}
+
+/// A process over `store` that times its asks and asks `outer` once.
+fn timed_process(store: StoreInMemory) -> QueryEngine {
+    let engine = query_engine(store, burning())
+    engine.time_queries()
+    let _ = engine.answer_to(question("outer", "code", "x".bytes()))
+    engine
+}
+
+fn family(engine: QueryEngine, name: string) -> FamilyTime? {
+    let times? = engine.kept_times() else { return null }
+    times.by_own_time().find(it.family == name)
+}
+
+const MS: int = 1000000
+
+spec "query_times — where a process's asks spend their time" {
+    given "a query that burns 60 ms under one that burns none" {
+        then "the burning family's own time holds the 60 ms, and its asker's own time does not" {
+            let engine = timed_process(store_in_memory())
+            let slow = family(engine, "slow")
+            let outer = family(engine, "outer")
+            slow != null &&
+                outer != null &&
+                slow!.own >= 60 * MS &&
+                outer!.own < 30 * MS &&
+                outer!.whole >= slow!.whole &&
+                slow!.asks == 1
+        }
+    }
+    given "a later process over the same store" {
+        then "nothing is worked out again, so neither family is charged" {
+            let store = store_in_memory()
+            let first = timed_process(store)
+            first.frontier_kept()
+            let later = query_engine(store, burning())
+            later.time_queries()
+            let _ = later.answer_to(question("outer", "code", "x".bytes()))
+            family(later, "slow") == null && family(later, "outer") == null
+        }
+    }
+    given "a process that times its asks" {
+        then "what it spent before the clock was made is a family of its own" {
+            let start = family(timed_process(store_in_memory()), "the start-up (outside)")
+            start != null && start!.own > 0 && start!.asks == 1
+        }
+        then "a second ask to time keeps the clock that is timing" {
+            let engine = timed_process(store_in_memory())
+            engine.time_queries()
+            family(engine, "slow") != null
+        }
+    }
+    given "an engine that was never asked to time" {
+        then "it keeps no times" {
+            let engine = query_engine(store_in_memory(), burning())
+            let _ = engine.answer_to(question("outer", "code", "x".bytes()))
+            engine.kept_times() == null
+        }
+    }
+}

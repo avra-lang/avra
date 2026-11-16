@@ -18,13 +18,14 @@ use core.{
     some_list,
     user_kind,
 }
-use features.{ResolveCx, TypeCx, default_mark, type_named}
+use features.{ResolveCx, TypeCx, type_named, nested_types}
+use core.{default_mark, expand_of}
 use @std.meta.{Diagnostic}
-use diagnostics.{Diag, refusal, warning, note}
+use diagnostics.{Diag, Voice, refusal, said_as, warning, note}
 use @std.errors.{Loc, Frame}
 
 fn resolve_component(mut cx: ResolveCx, s: StmtId) {
-    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
+    if cx.refuses_nested(s, "resolve.nested_type", nested_types()) { return }
     let c? = cx.view.store.component_parts(s) else { return }
     cx.check_params(c.head.concat(c.holders), s)
     for f in c.holders {
@@ -280,14 +281,15 @@ fn event_law(mut cx: TypeCx, e: ExprId) {
 
 // ── voices ──
 
-fn no_fate(at: Loc?, word: string) -> Diag {
-    refusal(
-        "flow.no_fate",
-        at,
-        "a handler that can fail must name a fate for its failure, and `${word}` names none",
-        "this handler can fail",
-        "name the letter a failed item is buried in — `dead: <sink>`",
-    )
+fn no_fate(at: Loc?, word: string) -> Diag { said_as("flow.no_fate", at, fate_unnamed(word)) }
+
+/// A handler of the component `word` that can fail, where `word` names no fate.
+export fn fate_unnamed(word: string) -> Voice {
+    Voice {
+        message: "a handler that can fail must name a fate for its failure, and `${word}` names none",
+        label: "this handler can fail",
+        help: "name the letter a failed item is buried in — `dead: <sink>`",
+    }
 }
 
 fn no_diagnostics(at: Loc?, found: string) -> Diag {
@@ -451,28 +453,28 @@ fn body_refused(mut cx: TypeCx, d: DeclId, s: StmtId, x: Diagnostic, by: string)
 
 const body_kind = "type.component_body"
 
+/// A component `name` whose body holds statements, where no trait says what a body is.
+export fn composerless(name: string) -> Voice {
+    Voice {
+        message: "a component is made of what its body holds, and nothing here says what `${name}`'s is",
+        label: "holds statements",
+        help: "write a component of a library in the body, or `use` the library",
+    }
+}
+
+/// A component `name` whose body holds statements, where the traits `by` each say what a body is.
+export fn composed_twice(name: string, by: List<string>) -> Voice {
+    Voice {
+        message: "one trait says what a component's body is, and here ${["`${t}`" for t in by].join(" and ")} both do",
+        label: "`${name}` holds statements",
+        help: "make this file name one library's components alone — move what uses the other into a file of its own",
+    }
+}
+
 fn no_composer(mut cx: TypeCx, s: StmtId, name: string) {
-    let _ = cx
-        .spoken(
-            refusal(
-                body_kind,
-                cx.view.stmt_loc(s),
-                "a component is made of what its body holds, and nothing here says what `${name}`'s is",
-                "holds statements",
-                "write a component of a library in the body, or `use` the library",
-            ),
-        )
+    let _ = cx.spoken(said_as(body_kind, cx.view.stmt_loc(s), composerless(name)))
 }
 
 fn two_composers(mut cx: TypeCx, s: StmtId, name: string, by: List<string>) {
-    let _ = cx
-        .spoken(
-            refusal(
-                body_kind,
-                cx.view.stmt_loc(s),
-                "one trait says what a component's body is, and here ${["`${t}`" for t in by].join(" and ")} both do",
-                "`${name}` holds statements",
-                "make this file name one library's components alone — move what uses the other into a file of its own",
-            ),
-        )
+    let _ = cx.spoken(said_as(body_kind, cx.view.stmt_loc(s), composed_twice(name, by)))
 }

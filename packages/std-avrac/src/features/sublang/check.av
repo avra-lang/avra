@@ -5,8 +5,7 @@ use core.{ExprId, StmtId, TypeId, DeclId, flatten}
 use features.{TypeCx, FnSig}
 use @std.grammar.{ready, Grammar, Build, Diagnostic}
 use grammar.{parse_grammar, avra_known_terminals}
-use diagnostics.{refusal, Diag}
-use @std.errors.{Loc}
+use diagnostics.{Voice, said_as}
 
 export fn block_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     let x? = cx.view.store.expansion_of(e) else { return cx.error_type }
@@ -15,46 +14,58 @@ export fn block_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 
 fn check_syntax(mut cx: TypeCx, s: StmtId) {
     let parts? = cx.view.store.syntax_parts(s) else { return }
-    let gp = parse_grammar(parts.text)
     let at = cx.stmt_loc(s)
-    if gp.built == null { return cx.emit(unparsed(at, parts.name, first_defect(gp.diagnostics))) }
-    let g = gp.built!
-    for d in ready(g, avra_known_terminals()).defects {
-        cx
-            .emit(
-                refusal(
-                    "type.syntax_action",
-                    at,
-                    d.message,
-                    "in this grammar",
-                    "write the shape the grammar names — the block is parsed by the grammar its word declares",
-                ),
-            )
-    }
-    for a in actions_of(g) {
+    let read = grammar_read(parts.text)
+    if read.unparsed != null { return cx
+            .emit(said_as("type.syntax_action", at, grammar_unparsed(parts.name, read.unparsed!))) }
+    for d in read.defects { cx.emit(said_as("type.syntax_action", at, grammar_defect(d))) }
+    for a in read.actions {
         let found: DeclId? = cx.names.names.fn_decl(a.name)
         if found == null {
-            cx.emit(no_action(at, parts.name, a.name))
+            cx.emit(said_as("type.syntax_action", at, action_undeclared(parts.name, a.name)))
         } else {
             let sig: FnSig? = cx.view.decls.sig(found!)?.fn_sig()
-            if sig != null && sig!.params.length != a.arity { cx.emit(wrong_arity(at, a.name, sig!.params.length, a.arity)) }
+            if sig != null && sig!.params.length != a.arity { cx
+                    .emit(
+                        said_as(
+                            "type.syntax_action",
+                            at,
+                            action_miscounted(a.name, sig!.params.length, a.arity),
+                        ),
+                    ) }
         }
+    }
+}
+
+/// A grammar's notation as its law reads it: the first defect where it doesn't parse, else what
+/// readying it finds, and every action it names.
+export type GrammarRead = { unparsed: string?, defects: List<string>, actions: List<GrammarAction> }
+
+/// The notation `text` read: parsed, readied against the language's terminals, its actions listed.
+export fn grammar_read(text: string) -> GrammarRead {
+    let gp = parse_grammar(text)
+    let g? = gp.built else { return GrammarRead { unparsed: first_defect(gp.diagnostics), defects: [], actions: [] } }
+    GrammarRead {
+        unparsed: null,
+        defects: [d.message for d in ready(g, avra_known_terminals()).defects],
+        actions: actions_of(g),
     }
 }
 
 /// Every action of a grammar — the fn each names and the arguments
 /// it hands — in rule order. A `Var` action hands one capture on.
-fn actions_of(g: Grammar) -> List<Action> {
+fn actions_of(g: Grammar) -> List<GrammarAction> {
     flatten([flatten([action_of(s.build) for s in r.body.branches]) for r in g.rules])
 }
 
-type Action = { name: string, arity: int }
+/// An action a grammar names: the fn, and how many captures it hands it.
+export type GrammarAction = { name: string, arity: int }
 
-fn action_of(b: Build?) -> List<Action> {
+fn action_of(b: Build?) -> List<GrammarAction> {
     if b == null { return [] }
     match b! {
-        .Call(name, args) -> [Action { name: name, arity: args.length }],
-        .Node(_, _, _, _) or .Var(_) -> [],
+        .Call(name, args) -> [GrammarAction { name: name, arity: args.length }],
+        .Node(_, _, _, _) or .Computed(_, _, _, _) or .Var(_) -> [],
     }
 }
 
@@ -65,32 +76,38 @@ fn first_defect(ds: List<Diagnostic>) -> string {
 
 // ── voices ──
 
-fn unparsed(at: Loc?, word: string, defect: string) -> Diag {
-    refusal(
-        "type.syntax_action",
-        at,
-        "`grammar ${word}` does not parse: ${defect}",
-        "this grammar",
-        "the notation is the grammar DSL's — rules, `|` alternatives, `x:ITEM` captures, `-> action(x)`",
-    )
+/// `grammar word`, whose notation doesn't parse, its first defect `defect`.
+export fn grammar_unparsed(word: string, defect: string) -> Voice {
+    Voice {
+        message: "`grammar ${word}` does not parse: ${defect}",
+        label: "this grammar",
+        help: "the notation is the grammar DSL's — rules, `|` alternatives, `x:ITEM` captures, `-> action(x)`",
+    }
 }
 
-fn no_action(at: Loc?, word: string, name: string) -> Diag {
-    refusal(
-        "type.syntax_action",
-        at,
-        "`grammar ${word}` names an action `${name}`, and this module declares no fn `${name}`",
-        "this grammar",
-        "declare `fn ${name}(…)` in this module — an action is one of its own fns",
-    )
+/// A grammar readying finds wanting, as `message` says.
+export fn grammar_defect(message: string) -> Voice {
+    Voice {
+        message: message,
+        label: "in this grammar",
+        help: "write the shape the grammar names — the block is parsed by the grammar its word declares",
+    }
 }
 
-fn wrong_arity(at: Loc?, name: string, takes: int, handed: int) -> Diag {
-    refusal(
-        "type.syntax_action",
-        at,
-        "action `${name}` hands ${handed} captures, and `fn ${name}` takes ${takes}",
-        "this grammar",
-        "capture as many as the fn takes",
-    )
+/// `grammar word` naming the action `name`, which its module declares no fn of.
+export fn action_undeclared(word: string, name: string) -> Voice {
+    Voice {
+        message: "`grammar ${word}` names an action `${name}`, and this module declares no fn `${name}`",
+        label: "this grammar",
+        help: "declare `fn ${name}(…)` in this module — an action is one of its own fns",
+    }
+}
+
+/// The action `name` handing `handed` captures to a fn taking `takes`.
+export fn action_miscounted(name: string, takes: int, handed: int) -> Voice {
+    Voice {
+        message: "action `${name}` hands ${handed} captures, and `fn ${name}` takes ${takes}",
+        label: "this grammar",
+        help: "capture as many as the fn takes",
+    }
 }

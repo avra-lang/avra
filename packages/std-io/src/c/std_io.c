@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "avra_door.h"
 
@@ -32,15 +33,17 @@ int64_t avra_io_kind(const char* path) {
     return 3;
 }
 
-/* A file's STAMP: its size, its two times and its inode folded to one
-   positive number — what says "these are the bytes you read before"
-   without reading them. 0 when there is no telling: the path is no
-   file, or it moved within the last two seconds, where two writes can
-   wear one time. */
+/* A file's or a directory's STAMP: its kind, its size, its two times and
+   its inode folded to one positive number — what says "these are the
+   bytes, or the names, you read before" without reading them. A write to
+   a file, and an entry added to, removed from or renamed in a directory,
+   moves its change time, which no caller can set back. 0 when there is
+   no telling: the path is neither, or it changed within the last two
+   seconds, where two changes can wear one time. */
 int64_t avra_io_stamp(const char* path) {
     struct stat st;
     struct timespec now;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+    if (stat(path, &st) != 0 || !(S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))) return 0;
 #ifdef __APPLE__
     struct timespec m = st.st_mtimespec, c = st.st_ctimespec;
 #else
@@ -49,9 +52,10 @@ int64_t avra_io_stamp(const char* path) {
     clock_gettime(CLOCK_REALTIME, &now);
     if (now.tv_sec - m.tv_sec < 2 || now.tv_sec - c.tv_sec < 2) return 0;
     uint64_t h = 0x9E3779B97F4A7C15ull;
-    uint64_t parts[6] = { (uint64_t)st.st_size, (uint64_t)m.tv_sec, (uint64_t)m.tv_nsec,
-                          (uint64_t)c.tv_sec, (uint64_t)c.tv_nsec, (uint64_t)st.st_ino };
-    for (int i = 0; i < 6; i++) { h ^= parts[i]; h *= 0x100000001B3ull; h ^= h >> 29; }
+    uint64_t parts[7] = { (uint64_t)st.st_size, (uint64_t)m.tv_sec, (uint64_t)m.tv_nsec,
+                          (uint64_t)c.tv_sec, (uint64_t)c.tv_nsec, (uint64_t)st.st_ino,
+                          (uint64_t)(st.st_mode & S_IFMT) };
+    for (int i = 0; i < 7; i++) { h ^= parts[i]; h *= 0x100000001B3ull; h ^= h >> 29; }
     h &= 0x7FFFFFFFFFFFFFFFull;
     return h == 0 ? 1 : (int64_t)h;
 }
@@ -60,13 +64,25 @@ int64_t avra_io_stamp(const char* path) {
    here rather than at the first read: `open` on one succeeds and
    `read` answers EISDIR only on some hosts, so the door says it. */
 int64_t avra_io_open(const char* path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return -errno;
-    if (S_ISDIR(st.st_mode)) return -EISDIR;
     int fd;
     while ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0 && errno == EINTR) {}
-    return fd < 0 ? -errno : fd;
+    if (fd < 0) return -errno;
+    // One path walk: the descriptor says what it opened.
+    struct stat st;
+    if (fstat(fd, &st) != 0) { int err = errno; close(fd); return -err; }
+    if (S_ISDIR(st.st_mode)) { close(fd); return -EISDIR; }
+    return fd;
 }
+
+/* A regular file's size as its descriptor sees it, or -1 for anything else. */
+int64_t avra_io_regular_size(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+    return (int64_t)st.st_size;
+}
+
+/* Where the descriptor's next read starts, or -1 where it has no offset. */
+int64_t avra_io_offset(int64_t fd) { return (int64_t)lseek((int)fd, 0, SEEK_CUR); }
 
 /* A descriptor closed. EINTR does NOT mean try again: on every host
    Avra targets the descriptor is already gone, and a retry would
@@ -176,9 +192,20 @@ typedef struct {
 static IoTemp g_io_temps[IO_TEMPS];
 static int g_io_temps_armed = 0;
 
+/* A forked child's temps are its parent's to publish or drop: each is
+   forgotten while its number is still that temp's, so a child that closes
+   what it was not given never writes a reused number through one. */
+static void temps_forgotten(void) {
+    for (int i = 0; i < IO_TEMPS; i++) {
+        if (g_io_temps[i].fd >= 0) close(g_io_temps[i].fd);
+        g_io_temps[i].fd = -1;
+    }
+}
+
 static void temps_armed(void) {
     if (g_io_temps_armed) return;
     for (int i = 0; i < IO_TEMPS; i++) g_io_temps[i].fd = -1;
+    pthread_atfork(NULL, NULL, temps_forgotten);
     g_io_temps_armed = 1;
 }
 
@@ -186,20 +213,19 @@ static IoTemp* temp_at(int64_t h) {
     return h >= 0 && h < IO_TEMPS && g_io_temps[h].fd >= 0 ? &g_io_temps[h] : NULL;
 }
 
-/* A temp open beside the target, or -errno. The name carries the
-   PROCESS's id, so two processes writing the same path do not share a
-   temp and clobber each other's half-written bytes. O_EXCL then means
-   a leftover from a crashed run of THIS pid is refused rather than
-   silently reused. */
-int64_t avra_io_temp(const char* path) {
+/* A free slot claimed for a temp at `temp`, to be published as
+   `target`, or -errno. O_EXCL means a leftover from a crashed run of
+   THIS pid is refused rather than silently reused, so it is removed and
+   the open tried once more. */
+static int64_t temp_claimed(const char* temp, const char* target) {
     temps_armed();
     int64_t h = -1;
     for (int i = 0; i < IO_TEMPS && h < 0; i++) if (g_io_temps[i].fd < 0) h = i;
     if (h < 0) return -EMFILE;
     IoTemp* t = &g_io_temps[h];
-    if (strlen(path) + 32 >= IO_PATH) return -ENAMETOOLONG;
-    snprintf(t->temp, IO_PATH, "%s.avra-%ld.tmp", path, (long)getpid());
-    snprintf(t->target, IO_PATH, "%s", path);
+    if (strlen(temp) >= IO_PATH || strlen(target) >= IO_PATH) return -ENAMETOOLONG;
+    snprintf(t->temp, IO_PATH, "%s", temp);
+    snprintf(t->target, IO_PATH, "%s", target);
     int fd;
     while ((fd = open(t->temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)) < 0 && errno == EINTR) {}
     if (fd < 0 && errno == EEXIST) {
@@ -212,11 +238,37 @@ int64_t avra_io_temp(const char* path) {
     return h;
 }
 
+/* A temp open beside the target, or -errno. The name carries the
+   PROCESS's id, so two processes writing the same path do not share a
+   temp and clobber each other's half-written bytes. */
+int64_t avra_io_temp(const char* path) {
+    if (strlen(path) + 32 >= IO_PATH) return -ENAMETOOLONG;
+    char temp[IO_PATH];
+    snprintf(temp, IO_PATH, "%s.avra-%ld.tmp", path, (long)getpid());
+    return temp_claimed(temp, path);
+}
+
+/* A DRAFT: a temp at the caller's own name, its target named only when
+   it is published (`avra_io_commit_to`). The caller makes the name
+   this process's alone from `avra_io_pid` and `avra_io_serial`. */
+int64_t avra_io_draft(const char* temp) { return temp_claimed(temp, temp); }
+
+/* This process's id. */
+int64_t avra_io_pid(void) { return (int64_t)getpid(); }
+
+/* A number no earlier call in this process answered. */
+int64_t avra_io_serial(void) {
+    static int64_t next = 0;
+    return next++;
+}
+
 /* The temp's descriptor, for the runtime's write row. */
 int64_t avra_io_temp_fd(int64_t h) {
     IoTemp* t = temp_at(h);
     return t ? t->fd : -EBADF;
 }
+
+int64_t avra_io_commit_to(int64_t h, const char* target);
 
 /* THE CLOSE'S ERROR REACHES THE STATUS, and it must: a write can be
    held in the kernel until close, so a full disk or a failing device
@@ -225,6 +277,16 @@ int64_t avra_io_temp_fd(int64_t h) {
 int64_t avra_io_commit(int64_t h) {
     IoTemp* t = temp_at(h);
     if (!t) return -EBADF;
+    return avra_io_commit_to(h, t->target);
+}
+
+/* The temp published under `target`, chosen now, by the same close
+   then rename as `avra_io_commit`. */
+int64_t avra_io_commit_to(int64_t h, const char* target) {
+    IoTemp* t = temp_at(h);
+    if (!t) return -EBADF;
+    if (strlen(target) >= IO_PATH) return -ENAMETOOLONG;
+    if (target != t->target) snprintf(t->target, IO_PATH, "%s", target);
     int64_t shut = close(t->fd) == 0 || errno == EINTR ? 0 : -errno;
     t->fd = -1;
     if (shut < 0) { unlink(t->temp); return shut; }

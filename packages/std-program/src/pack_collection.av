@@ -1,0 +1,65 @@
+//! WHAT A STORE KEEPS WHEN IT COMPACTS: everything the newest frontiers name and what they reach, and
+//! nothing else. From each question a frontier holds, every record kept is followed through its reads
+//! to the questions it read and the answers it found. A question keeps its newest few records, so
+//! going back an edit or two still finds its answer, and the store keeps the frontiers of its newest
+//! few binaries, so binaries sharing a store each keep theirs. What's dropped
+//! is only ever work: a record whose read can't be asked doesn't stand, and runs again. Records are
+//! read where they lie, so the walk holds only which questions and answers live.
+use @std.meta.{derive}
+use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, content_hash, kept_in_place}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use saved_derive.{Saved}
+use saved_layout.{SavedRecord, SavedSlots}
+use sorted.{sorted_by}
+
+/// The most records a question keeps, newest first.
+const KEPT_RECORDS: int = 3
+
+/// One question, once, every way it was answered, oldest first, and the generation of the pack its
+/// newest record was first written in.
+@derive(Saved)
+export type QuestionRecords = { question: ContentHash, asked: Question, records: List<AnswerRecord>, written_in: int = 0 }
+
+/// The records of the question saved at `entry`, oldest first, read where they lie.
+export fn records_in(entry: SavedRecord) -> List<KeptRecord> {
+    let records = QuestionRecords.records_in_place(entry)
+    [kept_in_place(records.record_at(i)!) for i in 0..records.length]
+}
+
+/// How many records the question saved at `entry` holds, none of them read.
+export fn record_count(entry: SavedRecord) -> int { QuestionRecords.records_in_place(entry).length }
+
+/// Whether a question of `count` records keeps every one through a compaction.
+export fn keeps_every_record(count: int) -> bool { count <= KEPT_RECORDS }
+
+/// What a compaction keeps: each live question, and every answer its kept records found.
+export type Live = { questions: HashKeyedTable<bool>, answers: HashKeyedTable<bool> }
+
+/// What the questions `seeds` keep alive, each question's records asked of `records_of`: a walk from
+/// the seeds, each question queued once.
+export fn live_in(seeds: List<ContentHash>, records_of: fn(ContentHash) -> List<KeptRecord>) -> Live {
+    let questions: HashKeyedTable<bool> = hash_keyed_table()
+    let answers: HashKeyedTable<bool> = hash_keyed_table()
+    mut pending = seeds
+    for root in pending { questions.put(root, true) }
+    // LICENSED loops.index_walk: a queue read by position while it grows
+    mut next = 0
+    while next < pending.length {
+        let records = newest_records(records_of(pending[next]))
+        next = next + 1
+        for record in records {
+            answers.put(record.answer, true)
+            for read in record.read_questions() {
+                if questions.get(read) != null { continue }
+                questions.put(read, true)
+                pending.push(read)
+            }
+        }
+    }
+    Live { questions: questions, answers: answers }
+}
+
+/// A question's newest records, oldest first.
+export fn newest_records(records: List<KeptRecord>) -> List<KeptRecord> {
+    if records.length <= KEPT_RECORDS { records } else { records.drop(records.length - KEPT_RECORDS) }
+}

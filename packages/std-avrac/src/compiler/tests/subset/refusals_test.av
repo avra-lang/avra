@@ -31,6 +31,13 @@ spec "compiler/subset — syntax the grammar lacks" {
                 1,
             )
         }
+        then "`if let` with no `else` is refused at the `let`" {
+            refused(
+                "fn f(x: int?) -> int {\n    if let v? = x { return v }\n    0\n}\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
         then "`or` as a boolean is refused" {
             refused(
                 "fn f() -> bool { true or false }\n",
@@ -71,6 +78,23 @@ spec "compiler/subset — syntax the grammar lacks" {
             accepted(
                 "type Row = { id: int, name: string }\nlet rows = table<Row> {\n    id | name\n    1  | \"a\"\n    2  | \"b\"\n}\n",
             )
+        }
+        then "a field's mark on its own line inside a type literal is refused at the mark" {
+            refused(
+                "type P = {\n    @local\n    at: int,\n}\n",
+                "error[parse.expected]: expected `}` while parsing `stmt`",
+                1,
+            )
+        }
+        then "an empty body after a head ending in a bare name is refused: `n {}` reads as a record literal" {
+            refused(
+                "fn f(n: int) -> int {\n    for k in 0..n {}\n    n\n}\n",
+                "error[parse.expected]: expected `{` while parsing `stmt`",
+                1,
+            )
+        }
+        then "the same head in parentheses before an empty body is accepted" {
+            accepted("fn f(n: int) -> int {\n    for k in (0..n) {}\n    n\n}\n")
         }
         then "a semicolon between statements is refused at the `;`" {
             refused(
@@ -486,6 +510,13 @@ spec "compiler/subset — wants the typer does not carry yet" {
                 "type Rows = List<int>\nfn f(r: Rows) -> int { r.length }\nfn g() -> int { f([1, 2]) }\nfn h(xs: List<int>) -> int { f(xs) }\n",
                 "error[type.mismatch]: argument 1 of `f` wants `Rows`, found `List<int>`",
                 1,
+            )
+        }
+        then "`catch null` answers the ok side, so a `Result` read as absence is refused" {
+            refused(
+                "type D = { n: int }\nfn d() -> Result<D, string> { .Ok(D { n: 1 }) }\nfn f() -> int {\n    let x? = d() catch null else { return 0 }\n    x.n\n}\n",
+                "error[type.catch]: a `catch` arm answers the ok side: `D`, this is `null`",
+                2,
             )
         }
     }

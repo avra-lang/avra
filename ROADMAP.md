@@ -3212,7 +3212,204 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## The eras (the long path, each with its gate)
 
-## Sugar Backlog — Feature Requests and Language Asks
+### A query's code hash reaches more than its code (measured 2026-11-12)
+
+A program-layer code hash keys a call through a fn value by the type the lowering notes for its box
+(`BoxedValue`, core/closures.av); a box with no noted type reaches every fn value, and a fn taken under
+a type naming a type parameter joins every value node of its seat count. Both are sound and both
+over-reach. An edit to `tape_declared` (compiler/item_names.av) truly reaches 39 of the compiler's 120
+queries and moves 118: 482 call sites go through a box the lowering notes no type for, and about 1,970
+lambdas are taken into boxes typed by the generic seat rather than the instantiated type. Noting the
+instantiated type at those sites brings an editor's rebuild down to the true dependents.
+
+### A program-layer object is keyed by its answers, and two conditions hold the key up
+
+`keyed_objects` (compiler/item_program.av) keys each bucket's object by its bodies' answer hashes, what
+they see of the bodies they name, their kept tests and the build's own code hash, so an object is kept
+across builds without emitting a module to find its key. The key stands for the module's bytes on two
+conditions nothing checks: a static a body reads is in that body's own answer, with one content per
+name across answers (true today: a literal's and a frame's are their definer's, `fn$` statics are fixed
+by their name, a const's is embedded in each reader's answer); and the LLVM the compiler links is no
+part of a key, so a compiler rebuilt against another LLVM with the same Avra source reuses objects the
+old LLVM made. The day a static is shared by name with differing contents, or a build means to compare
+LLVM versions, the key owes that input.
+
+### The naming law skips two kinds of name, on both paths
+
+A keyword, `Self` or a reserved word is refused as a name everywhere but two places: an `extern fn`'s
+parameters (`ExternFn`'s `resolve_stmt` in features/fns/stmt.av matches `.FnDecl`, so `check_params`
+never runs for one) and a method's own name inside an `impl` (`name_laws` in compiler/resolve/walk.av
+reads the file's top-level statements only). The program layer's naming laws (compiler/item_misnamed.av)
+follow the old path exactly; close both on both paths after the switch, and the witnesses are
+`extern fn f(select: int)` and `impl P { fn match() -> int { 1 } }`.
+
+### A `self` field stands for a call that cannot reach `self`
+
+`packages/std-program/src/syntax_tape.av`'s `TapeReader.count` and `flag` hand `self.structure` and
+the `self.at` cell to `number_from` once per number read. A field handed to a call is a view into
+`self`'s box, so the memory pass holds it across the call: two retains and two releases per number,
+~184M per cold build of the cli. The callee is handed neither `self` nor any path to it, so it
+can't empty the box the views point into. The want: a field of a borrowed `self`, handed to a
+callee that receives no path to `self`, stands for that call as the parameter itself does, with no
+hold.
+
+### An empty body after a head that ends in a bare name
+
+`for k in 0..n {}`, `for x in xs {}`, `while i < n {}` and `if i < n {}` don't parse ("expected `{`
+while parsing `stmt`"), because `n {}` reads as an empty record literal of the type `n`. A
+non-empty body parses, and so does the head in parentheses (`for k in (0..n) {}`). Pinned in
+compiler/tests/subset/refusals_test.av. The wanting site is
+features/loops/tests/jump_shapes, which writes `0..4 {}` to get an empty loop. The want: a
+record literal never opens in a statement head, as a block can only follow there.
+
+### A meaning that reads program facts
+
+`packages/std-avrac/src/features/lists/narrows.av` (the `@plans` planner) runs inside comprehension
+lowering, not as a `meaning`. A meaning's subject, `TypedCode`, sees only its own item's syntax and
+types, and the planner's trigger is a fact about the program: which statics of the head's type wear
+`@std/meta`'s `@plans_all` and `@plans(f)`. The want: a door from a meaning to the facts the program
+holds about the types its nodes name, such as the marks their statics wear.
+
+### A quote pattern rooted at a comprehension
+
+The same planner matches a head and the filters of its region. No quote pattern is rooted at a
+comprehension (`[${e} for ${r} in ${src} ${..clauses}]`), so neither a `meaning` nor a `rule` can
+match one. The want: comprehension patterns, with run holes over its clauses.
+
+### A node's place among its siblings
+
+A meaning rooted at the head's source (`Item.all(db)`) can't see the filters beside it, since a
+node in a quote match has no parent or siblings. The want: a matched node's enclosing node, or a
+pattern that binds a node together with what surrounds it. With the two asks above, this would let
+the planner be a declared meaning rather than a lowering rule.
+
+### A line ending in a bitwise operator continues
+
+`a |` at a line's end does not continue onto the next line: `(x << 6) | (y << 4) |` then
+`(z << 2) | w` is "expected BREAK while parsing `stmt`". Probed on 93c5c9a8's old-path product:
+`|`, `&`, `^` and `<<` trailing a line all refuse so, while `+` continues. The want: the bitwise
+operators trail like the others (they close nothing, so the closer law does not apply). The wanting site is `size_codes_from` (packages/std-program/src/
+saved_layout.av), which names a `high` half instead.
+
+### A bulk write on `Cell<List<T>>`
+
+`packages/std-avrac/src/compiler/sugars.av` (`Splicer.copied`) moves a copy's `refused` and
+`binders` into the splicer's own cells one `push` at a time, under a `loops.push_loop` licence: a
+`Cell` takes one element per write, and `c.set(c.get().concat(xs))` copies the whole list each
+time. The want: a cell verb that appends a list in place, such as `c.push_all(xs)`.
+
+### A record built from another, carrying only the fields it names
+
+`packages/std-avrac/src/core/calls.av` (`CalledFn.seat_default`) builds a seat default's `CalledFn`
+as a literal under a `compiler.modified_copy_literal` licence. `self with { … }` would carry every
+field it does not name (the fn's `parameters`, `fills`, `seats`, `params`, `bounded`), and a default
+is a fn of its own, so each would have to be reset by hand, and a field added later would be
+carried silently. The want: a copy that takes the named fields from the source and leaves every
+other field at its default.
+
+### `true` and `false` cover a `bool`
+
+`packages/std-avrac/src/features/if_expr/meanings.av` means `if c { a } else { b }` as a `match` on
+the condition, and `match c { true -> a, false -> b }` is refused: "a `match` over `bool` needs a
+catch-all arm". The two literals are every `bool`, so the match is exhaustive. The meaning writes
+`_ ->` for the second arm. The want: `true` and `false` together count as covering `bool`, as an
+enum's variants do.
+
+### `catch null` reads a `Result` as absence
+
+`packages/std-program/src/disk_store.av` opens a draft twice as `match drafted(path) { .Ok(d) -> d,
+.Err(_) -> null }`, because `drafted(path) catch null` is refused: "a `catch` arm answers the ok
+side: `Draft`, this is `null`". The want: a `catch` whose arm is `null` answers the ok side's
+nullable, so `let d? = drafted(path) catch null else { return }` reads straight.
+
+### A block a `break` can leave
+
+`packages/std-avrac/src/compiler/untold_parser.av`, generated by `packages/std-grammar/src/generate.av`,
+leaves a branch the moment an item fails by wrapping it in a loop that runs once (`for b12 in 0..1 {
+… break b12 … }`): a labelled `break` is the only way out of a block that is not the fn's own. The
+generated parser writes thousands of them. The want: a named block, `block b12 { … break b12 }`, that
+says it runs once.
+
+### A fn answering two things without a record
+
+Every rule of the generated parser (`packages/std-grammar/src/generate.av`) answers the cursor it ended
+at and leaves its value in `u.out`, a field of the run, because a second answer would be a record
+allocated on every rule call. The want: a fn answering two values in registers (`-> (int, T)`, read
+`let end, v = rule(u, at)`), which no allocation pays for.
+
+### Text repeated
+
+`packages/std-grammar/src/generate.av`'s `indent` builds four spaces a level as
+`["    " for _d in 0..depth].join("")`; `string` has no `repeat`. The want: `"    ".repeat(depth)`.
+
+### A field's mark on a line of its own
+
+A type literal takes a mark only on its field's line: `{ @offset at: int }` parses and
+`{\n    @offset\n    at: int,\n}` is "expected `}` while parsing `stmt`". `SyntaxArena`'s tables in
+`packages/std-avrac/src/core/store.av` wear two or three marks each, so every one is a line past the
+width the rest of the file keeps. The site wants a mark on its own line before its field, as a
+statement's annotation stands before its statement.
+
+### A run of statements in the middle of a block
+
+`packages/std-program/src/tape_derive.av` gathers every run of generated statements into one list
+(`[..choice, ..fields]`) because a hole holding statements stands only last in its block, and any
+other place answers the defect "a hole typing accepted lowers no fill" from the derive that used it.
+The site wants `${statements}` anywhere a statement stands, or a refusal at the quote saying where
+it may go.
+
+### A delegate that doesn't need its signature's types named
+
+`collect enum E: T` generates `impl T for E` in the enum's own file, spelling the trait's signature, so
+that file must import every type the signature names, though it never reads them:
+`packages/std-program/src/tests/support/tiny_tree.av` imports `TapeWriter` for this alone. A delegate
+wants to wear the trait's signature as already resolved.
+
+### A derived view of a record read in place
+
+`SectionsView` (`packages/std-program/src/syntax_tape.av`) and `MappedPack`
+(`packages/std-program/src/disk_store.av`) each spell a record of views and fill it field by field
+from `<field>_in_place` doors, so a table's label is read once. Two copies wait here; the third
+wants `@derive(Saved)` to generate the view beside the doors.
+
+### Appending a run to a list in place
+
+`packages/std-program/src/syntax_tape.av`'s writer grows one octet buffer for a whole tape, and adding
+a float's eight octets or a text's run is a `push` loop, licensed, because `xs.concat(ys)` answers a
+new list and copies the buffer every time. The want: `xs.push_all(ys)` (or `xs.push(..ys)`), which
+writes in place and reads as one statement. `packages/std-avrac/src/compiler/item_program.av`'s
+`made_reaching` wants it four times a turn: the walk's bodies, statics, wrappers and queue, where a
+concat each turn made a no-op build's walk quadratic.
+
+### A shift that brings in zeros
+
+`packages/std-program/src/syntax_tape.av` writes a number seven bits at a time and reads its sign back
+from the lowest bit, and both need the high bits to come in as zeros. `>>` keeps the sign, so the file
+spells `shifted_down` with a mask. The want: a logical shift (`>>>`, or `x.shifted_down(n)` on `int`).
+
+### A set of named bits
+
+`packages/std-program/src/token_columns.av` spells each token role as a numbered const and tests it
+with `(x & role) != 0`, because an enum can't say "several of these at once". The want: a declared
+set whose members are bits, stored in an octet column, with a membership test, so a role can't be
+given a number twice.
+
+### A bound on a type's own parameter
+
+`type SideTable<K: Dense, V>` is "expected `=`": a bound lands on a free fn's parameters only. So a
+side table cannot say what its window is over in its type — its methods could not read a generic
+`K`'s index — and says it in a value instead (`window: Window`, an enum of the dense ids it may run
+over; core/side_table.av). The want: a bound on a type's (and an impl's) own parameter, so the
+window's id kind is the type's, and a fifth window kind is a type argument rather than a variant.
+
+### An optional chain reaches through a following method
+
+`t?.xs.any(it == 1)` stops the chain at the `?.`: the method is asked of `List<int>?` and refused
+("`.any(…)` calls a method, and `List<int>?` has none"). Inside a derive's compile-time run the same
+shape typed past that law and failed only when lowered, as a defect naming fingerprint.av's own
+expression — every `@derive(Fingerprint)` in the module went with it. The want: a chain after `?.`
+answers absent whole, so `type_named(n)?.annotations.any(it.name == "codec") ?? false` is one line
+(core/fingerprint.av's `wears_codec`, written as a `let t? = … else` today).
 
 ### Interim record — an event is fired in two statements
 
@@ -3444,6 +3641,16 @@ to `fetched` whose body assigns a `state`: the call site and the body are two de
 hold it. The wanting site is the board's `loaded` (tools/ui-board/src/board.av), a parse that set
 `tasks = rows` and was run again by every refresh. A lambda-only rule was refused: it would read as
 coverage of a shape it does not see.
+
+`group_by` on a List (COLLECTIONS spec: `(key: fn(T) -> K) -> Map<K, List<T>>`, first-seen key order) is
+absent, so a per-key accumulation is either `m.set(k, (m.get(k) ?? []).concat([x]))` — a copy of the
+whole bucket per element, 76M elements copied in one cold `check packages/cli` — or a hand-built map of
+cells. The wanting site is `lines_by_file` (compiler/record.av); `core.grouped_by` is the stand-in until
+the verb lands. The same accumulation, still hand-rolled, at `filed` (derive.av), `wire_indexed`
+(interface.av, which also files `names`/`wires`), `reached_modules` (record.av), `producers.av`'s
+`filed_map`, `llvm.av`'s `at`/`homed`/`static_at`, `code.av`'s write roots, `store/body.av` and
+`store/pack.av`'s read sets, `std-grammar`'s `keyed_by_first` (a package below core, so it cannot
+import the verb), `std-ui`'s `exact.av` index and `cli`'s `fmt.av` grouping.
 
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 

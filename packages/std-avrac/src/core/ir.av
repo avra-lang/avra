@@ -5,21 +5,28 @@
 //! the memory pass inserts them at the boundaries recorded here.
 //! The language binds every name once, so a definition's register IS
 //! its value everywhere it is read — the IR is born SSA.
+use @std.program.saved_derive.{Saved}
 
 use @std.meta.{derive}
 use @std.relation.engine.{Table}
+use @std.relation.{codec}
 
 /// A virtual register. Minted in instruction order: the Nth
 /// value-producing instruction defines register N.
 @derive(Fingerprint)
+@codec
+@derive(Saved)
 export type Reg = { index: int }
 
 /// A scope's abstraction level — which memory strategy owns it.
 @derive(Fingerprint)
+@codec
+@derive(Saved)
 export enum Level { Application, Systems, Bare, Hardware }
 
 /// How a float takes its int. `Nearest` ties away from zero.
 @derive(Fingerprint)
+@derive(Saved)
 export enum Rounding { Floor, Ceil, Nearest, Trunc }
 
 /// Whether two unary ops are the same op: a payload op compares its
@@ -42,12 +49,16 @@ export fn rounding_code(r: Rounding) -> int {
 /// lowering checks the range before it runs, so the conversion is defined.
 /// `ToFloat` is an int's nearest float, ties to even — total, exact to 2^53.
 @derive(Fingerprint)
+@codec
+@derive(Saved)
 export enum UnOp { Not, ToInt(Rounding), ToFloat }
 
 /// A byte the runtime keeps about the running task, which compiled code
 /// reads in place: its unwind bit, and the tick the source sets so a
 /// checked back-edge can hear time passed.
 @derive(Fingerprint)
+@codec
+@derive(Saved)
 export enum RtFlag { Unwinding, Tick }
 
 /// The runtime's own name for the byte.
@@ -99,6 +110,9 @@ export fn un_symbol(op: UnOp) -> string {
 /// parallel one. That is what keeps this vocabulary small while it
 /// grows.
 @derive(Roles)
+@derive(Fingerprint)
+@codec
+@derive(Saved)
 export enum Ins {
     // Values.
     ConstInt(@dst dst: Reg, v: int)
@@ -238,100 +252,6 @@ export enum Ins {
 
     // Effects.
     Ret(code: int)
-}
-
-/// `Ins`'s content identity, written HERE because the IR vocabulary
-/// carries its own identity — the trait's exit for a type whose fold
-/// the derive cannot serve. The arms mirror `@derive(Fingerprint)`'s
-/// convention exactly: tag 1, the type's name, the variant's index,
-/// then each payload folded by its SHAPE (`fp_list` for a list,
-/// arity for an optional, the value's own `fingerprint()` for a
-/// declared name). A new variant lands an arm here or the fold is
-/// incomplete, which `make fingerprints` reads.
-impl Ins {
-    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
-
-    fn fingerprint() -> int {
-        match self {
-            .ConstInt(dst, v) -> derived([fp_str("Ins"), 0, dst.fingerprint(), v]),
-            .ConstFloat(dst, bits) -> derived([fp_str("Ins"), 1, dst.fingerprint(), bits]),
-            .ConstStr(dst, s) -> derived([fp_str("Ins"), 2, dst.fingerprint(), fp_str(s)]),
-            .ConstBool(dst, v) -> derived([fp_str("Ins"), 3, dst.fingerprint(), if v { 1 } else { 0 }]),
-            .Bin(dst, op, a, b) -> derived(
-                [
-                    fp_str("Ins"),
-                    4,
-                    dst.fingerprint(),
-                    op.fingerprint(),
-                    a.fingerprint(),
-                    b.fingerprint(),
-                ],
-            ),
-            .Un(dst, op, src) -> derived([fp_str("Ins"), 5, dst.fingerprint(), op.fingerprint(), src.fingerprint()]),
-            .CallRtVoid(callee, args) -> derived([fp_str("Ins"), 6, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
-            .CallRt(dst, callee, args) -> derived(
-                [
-                    fp_str("Ins"),
-                    7,
-                    dst.fingerprint(),
-                    fp_str(callee),
-                    fp_list([x.fingerprint() for x in args]),
-                ],
-            ),
-            .Pack(dst, elems) -> derived(
-                [fp_str("Ins"), 8, dst.fingerprint(), fp_list([x.fingerprint() for x in elems])],
-            ),
-            .Extract(dst, src, at) -> derived([fp_str("Ins"), 9, dst.fingerprint(), src.fingerprint(), at]),
-            .FnAddr(dst, sym) -> derived([fp_str("Ins"), 10, dst.fingerprint(), fp_str(sym)]),
-            .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
-            .OnceRead(dst, sym) -> derived([fp_str("Ins"), 31, dst.fingerprint(), fp_str(sym)]),
-            .OnceCommit(sym, value) -> derived([fp_str("Ins"), 32, fp_str(sym), value.fingerprint()]),
-            .FlagRead(dst, flag) -> derived([fp_str("Ins"), 34, dst.fingerprint(), flag.fingerprint()]),
-            .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
-            .Cleanup(id) -> derived([fp_str("Ins"), 35, id]),
-            .ScopeExit(gives) -> derived(
-                [
-                    fp_str("Ins"),
-                    13,
-                    if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) },
-                ],
-            ),
-            .IfStart(cond) -> derived([fp_str("Ins"), 14, cond.fingerprint()]),
-            .SwitchStart(selector, cases) -> derived([fp_str("Ins"), 15, selector.fingerprint(), fp_list(cases)]),
-            .ArmEnd(gives) -> derived([fp_str("Ins"), 16, gives.fingerprint()]),
-            .RegionEnd(dst, gives) -> derived([fp_str("Ins"), 17, dst.fingerprint(), gives.fingerprint()]),
-            .Call(dst, callee, args) -> derived(
-                [
-                    fp_str("Ins"),
-                    18,
-                    dst.fingerprint(),
-                    fp_str(callee),
-                    fp_list([x.fingerprint() for x in args]),
-                ],
-            ),
-            .CallPtr(dst, f, args) -> derived(
-                [
-                    fp_str("Ins"),
-                    19,
-                    dst.fingerprint(),
-                    f.fingerprint(),
-                    fp_list([x.fingerprint() for x in args]),
-                ],
-            ),
-            .RetVal(r) -> derived([fp_str("Ins"), 20, r.fingerprint()]),
-            .FnExit(gives) -> derived([fp_str("Ins"), 21, gives.fingerprint()]),
-            .Alloca(dst) -> derived([fp_str("Ins"), 22, dst.fingerprint()]),
-            .Load(dst, slot) -> derived([fp_str("Ins"), 23, dst.fingerprint(), slot.fingerprint()]),
-            .Store(slot, src) -> derived([fp_str("Ins"), 24, slot.fingerprint(), src.fingerprint()]),
-            .LoopStart -> derived([fp_str("Ins"), 25]),
-            .LoopCond(c) -> derived([fp_str("Ins"), 26, c.fingerprint()]),
-            .LoopEnd -> derived([fp_str("Ins"), 27]),
-            .LoopJump(outward, again) -> derived([fp_str("Ins"), 33, outward, if again { 1 } else { 0 }]),
-            .Retain(r) -> derived([fp_str("Ins"), 28, r.fingerprint()]),
-            .Release(r) -> derived([fp_str("Ins"), 29, r.fingerprint()]),
-            .Ret(code) -> derived([fp_str("Ins"), 30, code]),
-        }
-    }
 }
 
 /// `i` absorbed into `d` WHOLE — its variant, every number and every
@@ -601,7 +521,7 @@ fn arm1_end(ins: List<Ins>, if_at: int) -> int {
 
 /// The index of the WHOLE region's own `RegionEnd`, bracket-matched
 /// from `if_at`'s own `IfStart`.
-fn region_end(ins: List<Ins>, if_at: int) -> int {
+export fn region_end(ins: List<Ins>, if_at: int) -> int {
     mut depth = 1
     mut i = if_at + 1
     mut found = 0 - 1
@@ -673,6 +593,8 @@ export fn same_fps(a: List<int>, b: List<int>) -> bool {
 /// One slot of a static box — the word a cell holds before the
 /// program runs.
 @derive(Fingerprint)
+@codec
+@derive(Saved)
 export enum Slot {
     Int(v: int)
     Float(bits: int)
@@ -692,12 +614,30 @@ export enum Slot {
 }
 
 /// One box: a slot array, or a map's keys beside its values.
+@codec
+@derive(Saved)
 export enum StaticBox {
     Slots(cells: List<Slot>)
     Table(keys: List<string>, values: List<Slot>)
     /// Octets laid out as the binary's own immortal box — the layout
     /// text shares.
     Octets(b: Bytes)
+}
+
+/// A box's content identity, written by hand: its octets are `Bytes`, which no derive folds.
+impl StaticBox {
+    fn fingerprint() -> int {
+        match self {
+            .Slots(cells) -> fp(172, [fp_list([c.fingerprint() for c in cells])]),
+            .Table(keys, values) -> fp(
+                173,
+                [fp_list([fp_str(k) for k in keys]), fp_list([v.fingerprint() for v in values])],
+            ),
+            .Octets(o) -> fp(174, [fp_list([o.at(i) for i in 0..o.length])]),
+        }
+    }
+
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
 }
 
 /// The code addresses these boxes name — a `Slot.Code` is a body
@@ -723,13 +663,15 @@ fn slot_code_sym(c: Slot) -> List<string> {
 /// A settled aggregate as its boxes, the ROOT last — the address a
 /// `StaticAddr` of this name answers.
 /// One settled aggregate's layout: every box, child-first, under the static's
-/// own name. `file` names the unit that first read it, so a per-file module
-/// knows which of them it owns — a GROWTH, defaulted, so the existing
-/// construction site is untouched. `debug` marks data a program READS but
+/// own name. `home` is the path of the file whose unit first read it, so a
+/// per-file module knows which of them it owns. `debug` marks data a program READS but
 /// that is no part of what its code DOES — a body's frame, whose label and
 /// declaration span move when a line above the body is written — so the code
 /// graph resolves a reference to it without hashing it.
-export type Static = { name: string, boxes: List<StaticBox>, file: FileId? = null, debug: bool = false }
+@derive(Fingerprint)
+@codec
+@derive(Saved)
+export type Static = { name: string, boxes: List<StaticBox>, home: string? = null, debug: bool = false }
 
 /// Which instructions BRACKET a region — kept beside the enum, like
 /// every fact about it, so no consumer re-derives the list.
@@ -942,6 +884,10 @@ export enum RtHost {
     BytesAdopted
     /// An empty buffer with room: the evaluator's octets carry no room.
     BytesWithRoom
+    /// A word's octets appended to the bytes a cell holds.
+    CellBytesWord
+    /// A run of octets appended to the bytes a cell holds.
+    CellBytesRun
     FdRead
     FdTaken
     FdWrite
@@ -1036,6 +982,7 @@ export enum RtHost {
     /// covers it in the interpreter.
     Unhosted
     BoxThawed
+    SeatOpened
     // the wait set, gates, the tasks nothing runs, and what a task
     // carries: the evaluator files its virtual tasks with the same
     // policy, and keeps a task's slots and id itself
@@ -1124,8 +1071,9 @@ export enum RtHost {
 /// OPERAND, since that also matches an ordinary read. Empty means
 /// the row writes through nothing.
 ///
-/// `aliases_arg0` says an OWNED answer MAY BE THE SAME BOX as seat 0,
-/// not a fresh one — `avra_box_thawed`'s fast path is a retain of `p`
+/// `aliases_arg0` says an answer MAY BE THE SAME BOX as seat 0 — a
+/// lending row's answer too, which is then the box itself and never a
+/// part of it (`avra_seat_opened`, `avra_unwrap`) — not a fresh one — `avra_box_thawed`'s fast path is a retain of `p`
 /// itself, answering `p`; only the rare immortal-data case clones.
 /// `owns_result` alone stops `cell_root`'s trace at a row like this
 /// (an ordinary allocator's answer never aliases its argument, so the
@@ -1158,7 +1106,8 @@ export enum RtHost {
 /// an extern fills it: the registry's own rows take addresses of
 /// nothing.
 /// What a runtime row REACHES: `Pure` answers from its arguments
-/// alone, so a settlement may run it; `Embed` reads a file the BUILD
+/// alone, or touches only the running task's own state, so a settlement
+/// may run it; `Embed` reads a file the BUILD
 /// owns, beside the source, so a settlement may run it and records
 /// the file; `Lookup` reads the compiler's OWN declaration table —
 /// deterministic for a given program, never the process's world, so

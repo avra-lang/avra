@@ -10,7 +10,7 @@
 //! read a half-built answer.
 use core.{DeclId, ExprId, FileId, Span, Stmt, StmtId, SyntaxArena, some_list, flatten}
 use compiler.{WaitReader, NodeWait}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, Voice, said_as}
 
 /// One wait in a deferred body that parks outside every `within` the
 /// body writes, and the node it stands at.
@@ -66,12 +66,10 @@ impl Workspace {
     /// The voice: a deferred body that waits, with no bound it wrote.
     fn unbounded_cleanup(s: CancelSurvey, st: StmtId, stopped: Unbounded) -> Diag {
         let word = if runs_on_error(s.view.store, st) { "errdefer" } else { "defer" }
-        refusal(
+        said_as(
             "flow.unbounded_cleanup",
             s.view.loc_of(stopped.node),
-            "this `${word}`'s body waits, and no `within` it writes bounds the wait — it ${self.wait_said(stopped.wait)}",
-            "waits here",
-            "bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`",
+            cleanup_unbounded(word, self.wait_said(stopped.wait)),
         )
     }
 }
@@ -98,4 +96,14 @@ fn within_bounds(store: SyntaxArena, e: ExprId, at: Span) -> List<Span> {
 fn inside(inner: Span?, outer: Span) -> bool {
     let i? = inner else { return false }
     i.lo >= outer.lo && i.hi <= outer.hi
+}
+
+/// A `word` — `defer` or `errdefer` — whose body waits as `wait` says, which no `within` it writes
+/// bounds.
+export fn cleanup_unbounded(word: string, wait: string) -> Voice {
+    Voice {
+        message: "this `${word}`'s body waits, and no `within` it writes bounds the wait — it ${wait}",
+        label: "waits here",
+        help: "bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`",
+    }
 }

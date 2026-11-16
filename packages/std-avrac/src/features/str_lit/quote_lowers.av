@@ -1,0 +1,197 @@
+//! The lowering rule of a quote: ONE `@std/meta` `template` call, handed the name of the file that
+//! wrote it, where it stands there, its runs and each hole's value as a `Node`, then wrapped as the
+//! kind it answers. A hole's value becomes a node by what it is: a template its node, a list of
+//! templates through the row that joins them, a name, a number or a truth through the row that lifts
+//! it.
+use core.{
+    held_splicer,
+    CalledFn,
+    ExprId,
+    FillClass,
+    HoleKind,
+    Layout,
+    Lowering,
+    META_MODULE,
+    MetaKind,
+    Reg,
+    SignedType,
+    hole_kinds,
+    holes_kind,
+    holes_seat,
+    list_of,
+    signed_fill_class,
+    signed_template_kind,
+    owned_type,
+    quote_kind,
+    rt_sig_of,
+    rule_subject,
+}
+use core.expr.{Body}
+
+/// The quote `e`, of body `b`, as the template it builds. A hole whose value no row lifts, and a
+/// program without `@std/meta`, aren't lowered yet.
+fn quote_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
+    let made? = cx.type_at(e) else { return cx.unlowered(e) }
+    let wrap? = wrap_verb(cx, made) else { return cx.missed_as("a quote answering `${made.spelled()}`") }
+    let node? = meta(cx, "Node") else { return cx.missed_as(no_meta()) }
+    let classes = [fill_class(cx, cx.type_at(h)) for h in b.holes]
+    if classes.any(it == null) { return cx.missed_as("a quote hole whose value no `@std/meta` row lifts") }
+    let template? = meta_fn(cx, "template") else { return cx.missed_as(no_meta()) }
+    let wrapping? = meta_fn(cx, wrap) else { return cx.missed_as(no_meta()) }
+    let kinds = seat_kinds(cx, e, [c! for c in classes])
+    let file = cx.const_str(cx.program.home)
+    let at = cx.const_int(cx.store.expr_span(e)?.lo ?? 0)
+    let parts = listed(
+        cx,
+        cx.laid_out(list_of(owned_type("string"))),
+        [cx.const_str(spread_marked(cx, b, kinds, j, p)) for j, p in b.parts],
+    )
+    let fills = [filled(cx, classes[k]!, kinds[k], h, node) for k, h in b.holes]
+    let nodes = listed(cx, cx.laid_out(list_of(node)), fills)
+    let whole = cx.call_fn(cx.laid_out(node), template, [file, at, parts, nodes])
+    cx.call_fn(cx.layout_at(e), wrapping, [whole])
+}
+
+/// The run `p` before the hole `j` of `b`, ending in a spread's `..` where that hole is a run
+/// (`${..xs}`) standing in a run's seat, among expressions: `..${xs}` is the spelling the splice
+/// reads it by there, so the mark rides the text.
+fn spread_marked(cx: Lowering, b: Body, kinds: List<HoleKind>, j: int, p: string) -> string {
+    if j >= b.holes.length || !cx.store.is_run_hole(b.holes[j]) { return p }
+    match kinds[j] { .Run -> "${p}${SPREAD}", rest -> p }
+}
+
+/// How a run's spread is written.
+const SPREAD: string = ".."
+
+/// The seat each hole of the quote `e` stands in: where it's written, or for a body of holes alone,
+/// the one the kind its fills make gives each.
+fn seat_kinds(cx: Lowering, e: ExprId, classes: List<FillClass>) -> List<HoleKind> {
+    match quote_kind(cx.store, e) {
+        .Holes -> [holes_seat(holes_kind(classes) ?? MetaKind.Stmts, classes.length) for _c in classes],
+        .Expr or .Stmts or .Arms or .Decls -> hole_kinds(cx.store, e),
+    }
+}
+
+/// The `@std/meta` fn that wraps a node as the template kind `ty` is, absent for any other type.
+fn wrap_verb(cx: Lowering, ty: SignedType) -> string? {
+    let kind? = signed_template_kind(ty, (n: string) -> cx.program.checked.meta(n)) else { return null }
+    match kind {
+        .Code -> "as_code",
+        .Stmts -> "as_stmts",
+        .Arms -> "as_arms",
+        .Decls -> "as_decls",
+        .Rewrite -> "as_rewrite",
+    }
+}
+
+/// The type `@std/meta` declares as `name`, absent where it declares none.
+fn meta(cx: Lowering, name: string) -> SignedType? { cx.program.checked.meta(name) }
+
+/// The fn `@std/meta` declares as `name`, absent in a program that doesn't load it.
+fn meta_fn(cx: Lowering, name: string) -> CalledFn? { (cx.program.toolchain_fn)(META_MODULE, name) }
+
+/// What the hole of type `ty` holds, as a row lifts it; absent for an untyped hole or one no row lifts.
+fn fill_class(cx: Lowering, ty: SignedType?) -> FillClass? {
+    let t? = ty else { return null }
+    signed_fill_class(t, (m: string, n: string) -> (cx.program.checked.toolchain_type)(m, n))
+}
+
+/// The hole `h`, of class `class` standing in a seat of kind `kind`, as a `Node`.
+fn filled(mut cx: Lowering, class: FillClass, kind: HoleKind, h: ExprId, node: SignedType) -> Reg {
+    let l = cx.laid_out(node)
+    let v = cx.lower(h)
+    match class {
+        .Template(_) -> field_named(cx, v, cx.type_at(h)!, "node"),
+        .Templates(k) -> lifted(cx, list_row(k), l, v),
+        .Texts -> lifted(cx, "names_node", l, v),
+        .Text -> lifted(cx, "name_node", l, v),
+        .Named -> {
+            let name = field_named(cx, v, cx.type_at(h)!, "name")
+            lifted(cx, "name_node", l, name)
+        },
+        .Int -> lifted(cx, int_row(kind), l, v),
+        .Bool -> lifted(cx, "bool_node", l, v),
+        .Held -> lifted(cx, "text_node", l, held_text(cx, h, v)),
+        .Node -> own_lifted(cx, "typed_code_node", l, v),
+        .Nodes -> own_lifted(cx, "typed_codes_node", l, v),
+        .Id or .PatId -> lifted(cx, "int_node", l, field_named(cx, v, cx.type_at(h)!, "index")),
+        .Pattern -> cx.missed_as("a quote hole filled with a `Format` pattern"),
+    }
+}
+
+/// The text the held value `v` at `h` splices as: the compiler's handle its own source; a package
+/// rule's subject, whose fn is never called, none.
+fn held_text(mut cx: Lowering, h: ExprId, v: Reg) -> Reg {
+    if rule_subject(cx.type_at(h)!) { return cx.const_str("") }
+    own_call(cx, splicer_of(cx, h), owned_type("string"), v)
+}
+
+/// The verb that splices the held handle at `h` into a template as its text.
+fn splicer_of(cx: Lowering, h: ExprId) -> string {
+    let ty? = cx.type_at(h) else { return SPLICED_CODE }
+    held_splicer(ty, cx.program.checked.toolchain_type) ?? SPLICED_CODE
+}
+
+/// The verb that splices a rule's analysed code.
+const SPLICED_CODE: string = "spliced_text"
+
+/// The row that lifts a number where a hole of `kind` stands: a name's part spells it, every other
+/// seat holds it as a literal.
+fn int_row(kind: HoleKind) -> string {
+    match kind {
+        .Name -> "int_name",
+        .Expression or .Binder or .Type or .Statement or .Arm or .Run or .Fields or .Inits or .Tail -> "int_node",
+    }
+}
+
+/// The `@std/meta` row `verb` handed `v`, answering a node of layout `l`.
+fn lifted(mut cx: Lowering, verb: string, l: Layout, v: Reg) -> Reg {
+    let callee? = meta_fn(cx, verb) else { return cx.missed_as(no_meta()) }
+    cx.call_fn(l, callee, [v])
+}
+
+/// The compiler's own verb `verb` handed `v`, answering a node of layout `l`.
+fn own_lifted(mut cx: Lowering, verb: string, l: Layout, v: Reg) -> Reg {
+    let callee? = (cx.program.toolchain_fn)(OWN_MODULE, verb) else { return cx.missed_as(no_own(verb)) }
+    cx.call_fn(l, callee, [v])
+}
+
+/// The compiler's own verb `verb` handed `v`, answering a value of `ty`.
+fn own_call(mut cx: Lowering, verb: string, ty: SignedType, v: Reg) -> Reg { own_lifted(cx, verb, cx.laid_out(ty), v) }
+
+/// The row that joins a list of templates of kind `k` into one node.
+fn list_row(k: MetaKind) -> string {
+    match k {
+        .Code -> "code_nodes",
+        .Stmts -> "stmts_nodes",
+        .Arms -> "arms_nodes",
+        .Decls -> "decls_nodes",
+        .Rewrite -> "rewrite_nodes",
+    }
+}
+
+/// The field `name` of the record `v` of type `ty`.
+fn field_named(mut cx: Lowering, v: Reg, ty: SignedType, name: string) -> Reg {
+    let fields? = cx.fields_of(ty) else { return cx.missed_as(unfielded(ty)) }
+    let n? = fields.find_index(it.name == name) else { return cx.missed_as(unfielded(ty)) }
+    let laid? = cx.seat_layouts(fields) else { return cx.missed_as(unfielded(ty)) }
+    cx.field_read(v, ty, laid, n)
+}
+
+/// A list of layout `l` holding `items`, sized for them.
+fn listed(mut cx: Lowering, l: Layout, items: List<Reg>) -> Reg {
+    let dst = cx.call_row(l, rt_sig_of("avra_array_sized")!, [cx.const_int(items.length)])
+    for r in items { cx.push_slot(dst, r) }
+    dst
+}
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn no_meta() -> string { "a quote in a program that doesn't load `@std/meta`" }
+
+fn unfielded(ty: SignedType) -> string { "a field of `${ty.spelled()}`" }
+
+/// The module whose verbs fill a hole holding one of the compiler's own values.
+const OWN_MODULE: string = "@std.avrac.features"
+
+fn no_own(verb: string) -> string { "a quote hole the compiler's own `${verb}` fills, which this program doesn't carry" }

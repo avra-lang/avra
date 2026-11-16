@@ -28,13 +28,13 @@ use @std.meta.{
     Kind,
     Diagnostic,
     Declared,
-    Directive,
     Decls,
     Code,
     Stmts,
     literal,
     name,
     refuse_as_at,
+    declares,
 }
 use action.{Impact, faults}
 use wire.{ActionInfo, ActionParam, ActionRefusal, text_field, int_field, bool_field, unread_field}
@@ -50,7 +50,7 @@ export fn impact(f: Fn, i: Impact) -> List<Diagnostic> {
 export fn action(f: Fn) -> Declared {
     let problems = shape_problems(f)
     Declared {
-        made: if problems.is_empty() && impact_word(f) != null { [directive(f)] } else { [] },
+        made: if problems.is_empty() && impact_word(f) != null { [declares(f.name, f.at, generated(f))] } else { [] },
         problems: problems,
     }
 }
@@ -109,7 +109,7 @@ fn mentions_var(k: Kind) -> bool {
         .Map(a, b) or .Result(a, b) -> mentions_var(a) || mentions_var(b),
         .Named(_, args) -> args.any(mentions_var(it)),
         .Fn(seats, answer) -> seats.any(mentions_var(it.kind)) || mentions_var(answer),
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Dyn(_) or .Unspelled(_) -> false,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Dyn(_) or .Unspelled(_) or .Bytes -> false,
     }
 }
 
@@ -136,10 +136,6 @@ fn unwrapped(k: Kind) -> Kind {
 }
 
 // ── The generated declarations ──────────────────────────────────
-
-fn directive(f: Fn) -> Directive {
-    Directive { twin: "", name: f.name, at: f.at, source: generated(f) }
-}
 
 fn action_name(f: Fn) -> string { "${f.name}_action" }
 
@@ -203,7 +199,7 @@ fn read(p: Param, i: int) -> Stmts {
         .Int -> quote { let ${slot(i)} = int_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
         .Bool -> quote { let ${slot(i)} = bool_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
         .Str -> quote { let ${slot(i)} = text_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
-        .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unreadable(p, i),
+        .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> unreadable(p, i),
     }
 }
 

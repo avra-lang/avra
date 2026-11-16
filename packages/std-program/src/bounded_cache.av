@@ -1,0 +1,155 @@
+//! VALUES KEPT UNDER A BOUND ON THEIR BYTES, the one read least recently let go first. A value
+//! is put with what it weighs; a put that would pass the bound lets go of the least recently read
+//! values one at a time until it fits, so every letting go frees one value and the ones read often
+//! stay. Reads are kept in the order they happen, a value's latest read naming it there, and the
+//! record is packed down to the values held once it holds twice as many reads as values. An
+//! identity: every holder sees one cache.
+use @std.meta.{identity}
+
+/// The slot of a key whose value was let go.
+const NOT_HELD: int = -1
+
+/// Reads a record holds past twice its values before it's packed.
+const PACKED_SLACK: int = 64
+
+/// A value held, under its key, with what it weighs and its latest read's place in the record.
+type Held<V> = { key: string, value: V, bytes: int, read_at: int }
+
+@identity
+export type BoundedCache<V> = {
+    /// The bytes the held values may weigh together.
+    bound: Cell<int>,
+    /// Each key's slot, or NOT_HELD once its value is let go.
+    slot_of: Cell<Map<string, int>>,
+    /// Each slot's value, absent once let go.
+    slots: Cell<List<Held<V>?>>,
+    /// The slot each read touched, oldest first.
+    reads: Cell<List<int>>,
+    /// The record's oldest read that may still name a held value.
+    oldest: Cell<int>,
+    held_bytes: Cell<int>,
+    held_count: Cell<int>,
+}
+
+/// An empty cache whose values may weigh `bound` bytes together.
+export fn bounded_cache<V>(bound: int) -> BoundedCache<V> {
+    let slot_of: Cell<Map<string, int>> = Cell.new({})
+    let slots: Cell<List<Held<V>?>> = Cell.new([])
+    let reads: Cell<List<int>> = Cell.new([])
+    BoundedCache {
+        bound: Cell.new(bound),
+        slot_of: slot_of,
+        slots: slots,
+        reads: reads,
+        oldest: Cell.new(0),
+        held_bytes: Cell.new(0),
+        held_count: Cell.new(0),
+    }
+}
+
+impl BoundedCache<V> {
+    /// The value under `key`, absent when none is held; a value found is read most recently now.
+    fn get(key: string) -> V? {
+        let slot? = self.slot_of.get().get(key) else { return null }
+        if slot < 0 { return null }
+        let held? = self.slots.get()[slot] else { return null }
+        self.touched(slot, held)
+        held.value
+    }
+
+    /// `value` under `key`, weighing `bytes`, read most recently now. The least recently read
+    /// values are let go first until it fits; a value heavier than the bound is held alone.
+    fn put(key: string, value: V, bytes: int) {
+        self.let_go(key)
+        while self.held_count.get() > 0 && self.held_bytes.get() + bytes > self.bound.get() {
+            self.oldest_let_go()
+        }
+        let slot = self.slots.get().length
+        self.slots.push(Held { key: key, value: value, bytes: bytes, read_at: self.next_read() })
+        self.reads.push(slot)
+        self.slot_of.put(key, slot)
+        self.held_bytes.set(self.held_bytes.get() + bytes)
+        self.held_count.set(self.held_count.get() + 1)
+        self.pack_when_loose()
+    }
+
+    /// The bytes the held values weigh together.
+    fn bytes() -> int { self.held_bytes.get() }
+
+    /// How many values are held.
+    fn count() -> int { self.held_count.get() }
+
+    /// Nothing held.
+    fn clear() {
+        self.slot_of.set({})
+        self.slots.set([])
+        self.reads.set([])
+        self.oldest.set(0)
+        self.held_bytes.set(0)
+        self.held_count.set(0)
+    }
+
+    /// The value under `key` let go, when one is held.
+    fn let_go(key: string) {
+        let slot? = self.slot_of.get().get(key) else { return }
+        if slot < 0 { return }
+        let held? = self.slots.get()[slot] else { return }
+        self.slot_let_go(slot, held)
+    }
+
+    /// The held value read least recently, let go.
+    fn oldest_let_go() {
+        let reads = self.reads.get()
+        mut at = self.oldest.get()
+        while at < reads.length {
+            let slot = reads[at]
+            at = at + 1
+            let held? = self.slots.get()[slot] else { continue }
+            if held.read_at == at - 1 {
+                self.oldest.set(at)
+                self.slot_let_go(slot, held)
+                return
+            }
+        }
+        self.oldest.set(at)
+    }
+
+    fn slot_let_go(slot: int, held: Held<V>) {
+        self.slots.set_at(slot, null)
+        self.slot_of.put(held.key, NOT_HELD)
+        self.held_bytes.set(self.held_bytes.get() - held.bytes)
+        self.held_count.set(self.held_count.get() - 1)
+    }
+
+    /// `held`, in `slot`, read most recently now.
+    fn touched(slot: int, held: Held<V>) {
+        self.slots.set_at(slot, held with { read_at: self.next_read() })
+        self.reads.push(slot)
+        self.pack_when_loose()
+    }
+
+    /// The place the next read takes in the record.
+    fn next_read() -> int { self.reads.get().length }
+
+    /// The record packed down to the values held, in the order they were last read, once it holds
+    /// twice as many reads as values.
+    fn pack_when_loose() {
+        if self.reads.get().length <= 2 * self.held_count.get() + PACKED_SLACK { return }
+        let slots = self.slots.get()
+        let kept = [slots[slot]! for place, slot in self.reads.get() if read_last_at(slots[slot], place)]
+        self.slots.set([h with { read_at: at } for at, h in kept])
+        self.slot_of.set(slots_by_key(kept))
+        self.reads.set([at for at in 0..kept.length])
+        self.oldest.set(0)
+    }
+}
+
+/// Whether `held` is a value whose latest read is the record's read `at`.
+fn read_last_at<V>(held: Held<V>?, at: int) -> bool { held?.read_at == at }
+
+/// Each value's key, to the slot its place in `kept` gives it.
+fn slots_by_key<V>(kept: List<Held<V>>) -> Map<string, int> {
+    mut by_key: Map<string, int> = {}
+    for at, held in kept { by_key.set(held.key, at) }
+    by_key
+}

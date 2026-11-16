@@ -7,15 +7,26 @@
 //! `{"ok": …}` or `{"err": …}`, bytes `{"base64": …}`, a float its shortest
 //! round-trip text (`null` for infinity and NaN, which JSON has no word for).
 use core.{FileId, TypeId, TypeRegistry, joined}
-use features.{SettleRoot, MetaVal, MetaHeap, Unsettled, unsettled_label, absent_tag}
+use features.{
+    SettleRoot,
+    MetaVal,
+    MetaHeap,
+    Unsettled,
+    unsettled_label,
+    absent_tag,
+    type_of_const_in,
+}
 use @std.text.{base64}
 
 /// A float's bit pattern as the shortest text that reads back as the same number.
 extern fn avra_float_text_bits(bits: int) -> string
 
 impl Workspace {
-    /// The JSON text of the const `name` that the file `f` declares.
-    fn const_json(f: FileId, name: string) -> Result<string, string> {
+    /// The JSON text of the const `name` that the analysed file declares. The
+    /// analysis is the caller's, since a one-shot workspace's hooks are let go
+    /// before a reader asks and the folded facts still hold the type.
+    fn const_json(a: Analysis, name: string) -> Result<string, string> {
+        let f = a.view.file
         let d? = self
             .decls
             .decls_of_file(f)
@@ -23,7 +34,9 @@ impl Workspace {
             .find(it.kind is .Const && it.name == name) else {
             return .Err("no const `${name}` is declared here")
         }
-        let ty? = self.decls.type_of_const(f, d.stmt) else { return .Err("`${name}` has no type") }
+        let ty? = type_of_const_in(a.facts, a.view, d.stmt) else {
+            return .Err("`${name}` has no type")
+        }
         match self.settled(f, SettleRoot.Const(d.stmt), []) {
             .Ok(held) -> self.projected(held.answer, held.heap, ty),
             .Err(why) -> .Err(unsettled_words(name, why)),

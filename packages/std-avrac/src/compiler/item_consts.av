@@ -1,0 +1,474 @@
+//! A CONST THE SOURCE COMPUTES IS WORKED OUT ONCE, AT COMPILE TIME: its value lowered as a body of
+//! nothing answering the const's type, made into a program with every body it reaches, and run in
+//! the evaluator; what it answers crosses back and is laid out under the const's type: a scalar
+//! its word, an aggregate the binary's own data under the const's symbol, read by its address.
+use core.{
+    ConstSeed,
+    template_file,
+    module_symbol,
+    Seating,
+    CheckedProgram,
+    EmbedKind,
+    FieldSeat,
+    Layout,
+    NamedValue,
+    SettledWord,
+    SignedType,
+    Slot,
+    Static,
+    StaticBox,
+    StmtId,
+    SyntaxArena,
+    TaskChecks,
+    ABSENT_TAG,
+    flatten,
+}
+use features.{
+    EmbedFault,
+    MetaHeap,
+    MetaVal,
+    Unsettled,
+    budgets_of,
+    new_meta_heap,
+    unsettled_kind,
+    unsettled_label,
+}
+use features.fns.{embed_unread_words}
+use @std.program.address.{SourceFileAddress}
+use @std.meta.{derive}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{source_octets}
+use compiler.backend.{EmbedReader, run_lifted}
+
+extern fn avra_utf8_bad_at(b: Bytes) -> int
+
+/// What the const `d` names settles to, as code reads it: the words its value is carried in and the
+/// data the binary holds for them, or why it doesn't settle yet.
+fn settled_const(engine: QueryEngine, d: DeclaredName) -> NamedValue {
+    let s = const_settlement(engine, d.file, d.name, d.item)
+    let why = s.unsettled
+    if why != null { return NamedValue.Unsettled(why!) }
+    NamedValue.Settled(s.words, s.data!)
+}
+
+/// A const worked out at compile time: the words it settled to and the data the binary holds for
+/// them; or why it doesn't settle yet, and where its run broke one of a settlement's laws, that law.
+@derive(Saved)
+type ConstSettlement = { words: List<SettledWord>, data: Static?, unsettled: string?, broken: BrokenSettlement? }
+
+/// A settlement's law a const's run broke: the kind it is refused as, and the words its voice is handed.
+@derive(Saved)
+export type BrokenSettlement = { kind: string, words: string }
+
+/// THE CONST `name` OF THE WRITTEN ITEM `item` OF `file`, WORKED OUT ONCE: its value lowered as a body
+/// of nothing answering the const's type, run in the evaluator, and crossed back under that type. Read
+/// by every body that names the const and by the law that refuses a run that breaks a settlement's.
+@query
+fn const_settlement(engine: QueryEngine, file: SourceFileAddress, name: string, item: int) -> ConstSettlement {
+    match const_body_at(engine, file, name, item) {
+        .Ok(body) -> settlement_of(engine, file, body, name),
+        .Err(why) -> unsettled_as(why),
+    }
+}
+
+/// The value `body` holds, under the name `name` of `file`, worked out at compile time: lowered as a
+/// body of nothing answering its type, run in the evaluator, and crossed back under that type as the
+/// binary's own data.
+fn settlement_of(engine: QueryEngine, file: SourceFileAddress, body: SignedBody, name: string) -> ConstSettlement {
+    let ty = body.signature.answer
+    let symbol = declared_symbol(file, name)
+    let root = signed_lowered(engine, file, body, name, null)
+    if !root.whole() { return unsettled_as("a const whose value isn't lowered yet: ${root.missing[0]}") }
+    let survey = task_survey(engine)
+    let made = match made_reaching(survey, root, symbol, [], TaskChecks.Surveyed, lazy: true) {
+        .Made(l) -> l,
+        .Unmade(why, _) -> { return unsettled_as("a const whose value reaches a body not lowered yet: ${why}") },
+        .Refused(_) -> { return unsettled_as(const_refused()) },
+    }
+    let ran = match run_lifted(
+        made,
+        symbol,
+        [],
+        new_meta_heap(),
+        budgets_of(),
+        (n: string) -> named_lifted(engine, file, n),
+        EmbedReader { read: (path: string, kind: EmbedKind) -> embedded(engine, path, kind) },
+        null,
+        (symbol: string) -> reader_symbol(symbol, file.package_name),
+        late_door(survey, TaskChecks.Surveyed),
+    ) {
+        .Ok(lifted) -> lifted,
+        .Err(why) -> { return unsettled_as(unsettled_label(name, why)) with { broken: broken_of(why) } },
+    }
+    let boxes: Cell<List<StaticBox>> = Cell.new([])
+    let crossing = Crossing {
+        program: program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
+        heap: ran.heap,
+        boxes: boxes,
+    }
+    let carried? = crossing.words(ran.answer, ty) else { return unsettled_as("a const whose value doesn't cross as `${ty.spelled()}`") }
+    ConstSettlement {
+        words: carried,
+        data: Static { name: const_symbol(file, name), boxes: boxes.get() },
+        unsettled: null,
+        broken: null,
+    }
+}
+
+/// The type `m` declares, as a value of `ty` read by a body of `reader` carries it: its `Type`,
+/// crossed into the binary's own data, so a run reads it as a compile-time one does.
+fn settled_type(engine: QueryEngine, reader: SourceFileAddress, m: DeclaredName, ty: SignedType) -> NamedValue {
+    let lifted = lifted_decl(engine, m.file, m.name)
+    let boxes: Cell<List<StaticBox>> = Cell.new([])
+    let crossing = Crossing {
+        program: program_of(engine, reader, Signing { engine: engine, file: reader, type_params: [] }),
+        heap: lifted.heap,
+        boxes: boxes,
+    }
+    let carried? = crossing.words(lifted.answer, ty) else { return NamedValue.Unsettled("a gathered type that doesn't cross as `${ty.spelled()}`") }
+    NamedValue
+        .Settled(carried, Static { name: "${const_symbol(m.file, m.name)}\$type", boxes: boxes.get() })
+}
+
+/// A body's symbol as its reader names the fn: under its module, as a `use` line spells it — none for
+/// a module of `program`'s own package's source root — then its name. A symbol no declared body
+/// writes stands as it is.
+fn reader_symbol(symbol: string, program: string) -> string {
+    let cut = symbol.index_of(SOURCE_SPELLED)
+    if cut < 0 { return symbol }
+    let file = symbol.substring(0, cut)
+    let local = symbol.substring(cut + SOURCE_SPELLED.length, symbol.length)
+    let at = file.index_of(SOURCE_DIR)
+    if at < 0 { return symbol }
+    let package = file.substring(0, at)
+    let dirs = file.substring(at + SOURCE_DIR.length, file.length).split("/")
+    let own = if package == program { [] } else { [package.replace("/", ".")] }
+    module_symbol(own.concat(dirs.take(dirs.length - 1)).join("."), local)
+}
+
+/// Where a symbol's file ends and its name begins.
+const SOURCE_SPELLED: string = ".av."
+
+/// Where a symbol's package ends and its file's path in the package's sources begins.
+const SOURCE_DIR: string = "/src/"
+
+/// A const a body declares at `s` of `store`, its value of type `ty` reading, of what the body binds,
+/// only the consts before it `seeds` hands it as they settled, as the body reads it: worked out at
+/// compile time as a top-level const is, under a name its unit `unit` gives it, so a read of it is
+/// the binary's own data.
+fn body_const_value(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    unit: string,
+    s: StmtId,
+    ty: SignedType,
+    seeds: List<ConstSeed>,
+) -> NamedValue {
+    let settled = body_const_settlement(engine, file, store, unit, s, ty, seeds)
+    let why = settled.unsettled
+    if why != null { return NamedValue.Unsettled(why!) }
+    NamedValue.Settled(settled.words, settled.data!)
+}
+
+/// The const a body declares at `s` of `store` worked out as `body_const_value` says, or why it
+/// doesn't settle and the law its run broke.
+fn body_const_settlement(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    unit: string,
+    s: StmtId,
+    ty: SignedType,
+    seeds: List<ConstSeed>,
+) -> ConstSettlement {
+    let value? = store.const_value(s) else { return unsettled_as(valueless()) }
+    let name = store.let_name(s) ?? "const"
+    let body = SignedBody {
+        signature: value_signature(ty),
+        item: ReadItem { store: store, stmts: [s] },
+        body: value,
+        stmt: s,
+        seat: Seating.Binding(name),
+        consts: seeds,
+    }
+    settlement_of(engine, file, body, "${unit}.${name}\$const${s.index}")
+}
+
+/// A const that doesn't settle yet, and why.
+fn unsettled_as(why: string) -> ConstSettlement { ConstSettlement { words: [], data: null, unsettled: why, broken: null } }
+
+/// The law a run that didn't settle broke, as a finding keeps it; absent where it owes no voice.
+fn broken_of(why: Unsettled) -> BrokenSettlement? {
+    let kind? = unsettled_kind(why) else { return null }
+    BrokenSettlement { kind: kind, words: why.payload() }
+}
+
+/// The const `name` of the written item `item` of `file` as it settles: absent where its value is
+/// written as a literal or is an instance's its unit builds, which no run settles.
+export fn settled_in(engine: QueryEngine, d: DeclaredName) -> ConstSettlement? {
+    if built_instance(engine, d) || const_literal(engine, d) != null { return null }
+    const_settlement(engine, d.file, d.name, d.item)
+}
+
+/// The file a const's run reads as `path`, the place its lowering wrote (`pkg:path`, as
+/// `template_home` spells a file), through the build's own read of its octets: AN EMBEDDED FILE IS AN
+/// INPUT, so the const's value depends on the file and an edit of it moves exactly its readers.
+fn embedded(engine: QueryEngine, path: string, kind: EmbedKind) -> Result<Bytes, string> {
+    let at? = template_file(path) else { return .Err(embed_unread_words(EmbedFault.Outside, path)) }
+    let rel = at.path_in_package
+    let octets = match source_octets(engine, at) {
+        .Read(o) -> o,
+        .Missing -> { return .Err(embed_unread_words(EmbedFault.Missing, rel)) },
+        .Linked -> { return .Err(embed_unread_words(EmbedFault.Linked, rel)) },
+        .Refused(why) -> { return .Err(embed_unread_words(EmbedFault.Refused(why), rel)) },
+    }
+    let bad = match kind { .Text -> avra_utf8_bad_at(octets), .Octets -> 0 - 1 }
+    if bad >= 0 { return .Err(embed_unread_words(EmbedFault.NotText(bad), rel)) }
+    .Ok(octets)
+}
+
+/// The `const` `d`'s value as a body of no seats answering its type, or why it has none.
+fn const_body(engine: QueryEngine, d: DeclaredName) -> Result<SignedBody, string> { const_body_at(engine, d.file, d.name, d.item) }
+
+/// The `const` `name` of the written item `at` of `file` as `const_body` gives it.
+fn const_body_at(engine: QueryEngine, file: SourceFileAddress, name: string, at: int) -> Result<
+    SignedBody,
+    string,
+> {
+    let item = read_item(engine, file, at)
+    let stmt? = item
+        .stmts
+        .find((s) -> item.store.let_name(s) == name && item.store.const_value(s) != null) else { return .Err(valueless()) }
+    let ty? = binding_type(engine, file, name) ?? const_value_type(engine, file, name) else { return .Err("a const whose value's type isn't known") }
+    .Ok(
+        SignedBody {
+            signature: value_signature(ty),
+            item: item,
+            body: item.store.const_value(stmt)!,
+            stmt: stmt,
+            seat: Seating.Binding(name),
+        },
+    )
+}
+
+/// The name the data a const settles to is laid out under: its file, then its name.
+fn const_symbol(file: SourceFileAddress, name: string) -> string { "${spelled_file(file)}\$const\$${name}" }
+
+/// A value crossed out of the evaluator, laid out as the binary's own data: the program its types
+/// are laid out by, the heap its nodes stand in, and the boxes laid out so far, child first.
+type Crossing = { program: CheckedProgram, heap: MetaHeap, boxes: Cell<List<StaticBox>> }
+
+impl Crossing {
+    /// The words `v`, a value of `ty`, is carried in: its one slot, a value enum's tag and word, or a
+    /// value record's fields; absent where it doesn't fit the type.
+    fn words(v: MetaVal, ty: SignedType) -> List<SettledWord>? {
+        let l? = self.program.layout(ty) else { return null }
+        match l {
+            .Tagged(_) or .Fields(_) -> self.seat_words(self.held(v), ty, l),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare -> lone_word(self.slot(v, ty), l),
+            .Maybe(_) -> null,
+        }
+    }
+
+    /// What a value carried in several words holds: a node's slots, and an absent value enum's spare
+    /// tag and a zero word.
+    fn held(v: MetaVal) -> List<MetaVal> {
+        match v {
+            .Absent or .Gone -> [MetaVal.Int(ABSENT_TAG), MetaVal.Int(0)],
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Node(_) or .Map(_) or .Octets(_) -> self.heap.slots(v),
+        }
+    }
+
+    /// A value carried in several words, where one slot holds it: the box it crosses in.
+    fn crossed_box(v: MetaVal, ty: SignedType, l: Layout) -> Slot? {
+        let laid? = self.seat_words(self.held(v), ty, l) else { return null }
+        self.pushed(StaticBox.Slots([w.slot for w in laid]))
+    }
+
+    /// The one slot `v`, a value of `ty`, takes: a value carried in several words, the box it crosses
+    /// in; a named type's, its shape's. Absent where it doesn't fit the type.
+    fn slot(v: MetaVal, ty: SignedType) -> Slot? {
+        if ty.nullable() { return self.nullable_slot(v, ty) }
+        let shape = self.shape_under(ty)
+        if shape != null { return self.slot(v, shape!) }
+        let l? = self.program.layout(ty) else { return null }
+        match l {
+            .Word -> match v { .Int(n) -> Slot.Int(n), rest -> null },
+            .Truth -> match v { .Bool(b) -> Slot.Bool(b), rest -> null },
+            .Real -> match v { .Float(bits) -> Slot.Float(bits), rest -> null },
+            .Boxed(box) -> match box {
+                .Text -> match v { .Text(s) -> Slot.Text(s), rest -> null },
+                .Bytes -> self.octets_slot(v),
+                .List -> self.list_slot(v, ty),
+                .Record -> self.record_slot(v, ty),
+                .Enum -> self.variant_slot(v, ty),
+                .Map -> self.table_slot(v, ty),
+                .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+            },
+            .Fields(_) or .Tagged(_) -> self.crossed_box(v, ty, l),
+            .Void or .Bare or .Maybe(_) -> null,
+        }
+    }
+
+    /// A nullable's slot: its absence the null pointer, a word enum's spare tag or a scalar's mark;
+    /// present, what it holds, a flat record's in a one-slot box of its own. Under a nullable of a
+    /// nullable, only the slot's absent mark is its absence; a null is the present inner one.
+    fn nullable_slot(v: MetaVal, ty: SignedType) -> Slot? {
+        let absent = match v {
+            .Gone -> true,
+            .Absent -> !ty.unwrapped().nullable(),
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Node(_) or .Map(_) or .Octets(_) -> false,
+        }
+        let l? = self.program.layout(ty) else { return null }
+        match l {
+            .Boxed(_) -> when {
+                absent -> Slot.Null
+                l.slot_box() -> self.held_box(v, ty.unwrapped())
+                _ -> self.slot(v, ty.unwrapped())
+            },
+            .Word -> if absent { Slot.Int(ABSENT_TAG) } else { self.slot(v, ty.unwrapped()) },
+            .Maybe(_) -> if absent { Slot.Absent } else { self.slot(v, ty.unwrapped()) },
+            .Bare -> if absent { Slot.Null } else { null },
+            .Tagged(_) -> self.crossed_box(v, ty, l),
+            .Void or .Truth or .Real or .Fields(_) -> null,
+        }
+    }
+
+    /// A present nullable flat record: the one-slot box holding it.
+    fn held_box(v: MetaVal, inner: SignedType) -> Slot? {
+        let held = self.heap.slots(v)
+        if held.length != 1 { return null }
+        let c? = self.slot(held[0], inner) else { return null }
+        self.pushed(StaticBox.Slots([c]))
+    }
+
+    /// Octets: a box of their own.
+    fn octets_slot(v: MetaVal) -> Slot? {
+        let xs? = match v { .Octets(xs) -> xs, rest -> null } else { return null }
+        let b? = xs.bytes() else { return null }
+        self.pushed(StaticBox.Octets(b))
+    }
+
+    /// A list's box: each element's slot, in order.
+    fn list_slot(v: MetaVal, ty: SignedType) -> Slot? {
+        let elem? = ty.listed() else { return null }
+        let cells = [self.slot(x, elem) for x in self.heap.slots(v)]
+        if cells.any(it == null) { return null }
+        self.pushed(StaticBox.Slots([c! for c in cells]))
+    }
+
+    /// A record's box: its fields' cells in the order the fields are declared.
+    fn record_slot(v: MetaVal, ty: SignedType) -> Slot? {
+        let record? = (self.program.record_of)(ty) else { return null }
+        if ty.args.length != record.params || record.fields.any(it.state) { return null }
+        let cells? = self
+            .cells_of(self.heap.slots(v), [f with { ty: f.ty?.bound(ty.args) } for f in record.fields]) else { return null }
+        self.pushed(StaticBox.Slots(cells))
+    }
+
+    /// A variant's box: its tag, then its payloads' cells in order.
+    fn variant_slot(v: MetaVal, ty: SignedType) -> Slot? {
+        let shape? = self.program.enum_shape(ty) else { return null }
+        if ty.args.length != shape.params { return null }
+        let slots = self.heap.slots(v)
+        let head? = slots.first() else { return null }
+        let tag? = match head { .Int(n) -> n, rest -> null } else { return null }
+        if tag < 0 || tag >= shape.variants.length { return null }
+        let payloads = [p with { ty: p.ty?.bound(ty.args) } for p in shape.variants[tag].payloads]
+        let cells? = self.cells_of(slots.drop(1), payloads) else { return null }
+        self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(cells)))
+    }
+
+    /// A map's box: its keys in written order beside each value's slot.
+    fn table_slot(v: MetaVal, ty: SignedType) -> Slot? {
+        let value? = ty.mapped() else { return null }
+        let id? = match v { .Map(i) -> i, rest -> null } else { return null }
+        let row = self.heap.maps[id]
+        let cells = [self.slot(x, value) for x in row.values]
+        if cells.any(it == null) { return null }
+        self.pushed(StaticBox.Table(row.keys, [c! for c in cells]))
+    }
+
+    /// The cells of `seats` read off `slots` in order, each seat across as many slots as it takes in
+    /// a box: a value enum two, a value record one per field, any other one.
+    fn cells_of(slots: List<MetaVal>, seats: List<FieldSeat>) -> List<Slot>? {
+        mut at = 0
+        mut cells: List<List<Slot>> = []
+        for s in seats {
+            let ty? = s.ty else { return null }
+            let l? = self.program.layout(ty) else { return null }
+            let width = match l {
+                .Tagged(_) -> 2,
+                .Fields(fields) -> fields.length,
+                .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> 1,
+            }
+            if at + width > slots.length { return null }
+            let laid? = self.seat_words(slots.slice(at, at + width), ty, l) else { return null }
+            cells.push([w.slot for w in laid])
+            at = at + width
+        }
+        if at != slots.length { null } else { flatten(cells) }
+    }
+
+    /// One seat's words, laid out as `l`: a value enum's tag and the word its variant carries, a
+    /// value record's fields, else its one slot; a named type's, its shape's.
+    fn seat_words(xs: List<MetaVal>, ty: SignedType, l: Layout) -> List<SettledWord>? {
+        let shape = self.shape_under(ty)
+        if shape != null { return self.seat_words(xs, shape!, l) }
+        match l {
+            .Tagged(_) -> self.valued_words(xs, ty),
+            .Fields(fields) -> {
+                let record? = (self.program.record_of)(ty) else { return null }
+                if ty.args.length != record.params ||
+                    record.fields.length != xs.length ||
+                    fields.length != xs.length { return null }
+                let slots = [self.slot(x, record.fields[at].ty?.bound(ty.args) ?? ty) for at, x in xs]
+                if slots.any(it == null) { null } else { [SettledWord { slot: s!, layout: fields[at] } for at, s in slots] }
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> lone_word(self.slot(xs[0], ty), l),
+        }
+    }
+
+    /// A value enum's two words: its tag and the word its variant carries, a zero word for a variant
+    /// carrying nothing and for the spare tag.
+    fn valued_words(xs: List<MetaVal>, ty: SignedType) -> List<SettledWord>? {
+        if xs.length != 2 { return null }
+        let tag? = match xs[0] { .Int(n) -> n, rest -> null } else { return null }
+        let tagged = SettledWord { slot: Slot.Int(tag), layout: Layout.Word }
+        let shape? = self.program.enum_shape(ty.unwrapped()) else { return null }
+        if tag < 0 || tag >= shape.variants.length || shape.variants[tag].payloads.is_empty() { return [tagged, SettledWord { slot: Slot.Int(0), layout: Layout.Word }] }
+        let carried? = shape.variants[tag].payloads[0].ty?.bound(ty.unwrapped().args) else { return null }
+        let l? = self.program.layout(carried) else { return null }
+        let word? = self.slot(xs[1], carried) else { return null }
+        [tagged, SettledWord { slot: word, layout: l }]
+    }
+
+    /// The shape the named type `ty` stands over, which its value is carried as; absent for any other
+    /// type.
+    fn shape_under(ty: SignedType) -> SignedType? { (self.program.named_of)(ty) }
+
+    /// One more box, after every box it points at: its slot is its place.
+    fn pushed(b: StaticBox) -> Slot {
+        self.boxes.push(b)
+        Slot.Box(self.boxes.get().length - 1)
+    }
+}
+
+fn const_refused() -> string { "a const whose value reaches a body holding a value its seat refuses" }
+
+/// The one word `s`, laid out as `l`; absent where there is no slot.
+fn lone_word(s: Slot?, l: Layout) -> List<SettledWord>? {
+    let held? = s else { return null }
+    [SettledWord { slot: held, layout: l }]
+}
+
+collect listed_const_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a const's settlement is read through, for a process to hand its engine.
+export fn const_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_const_facts) }
+
+/// A const that names no value to settle.
+fn valueless() -> string { "a const with no value" }

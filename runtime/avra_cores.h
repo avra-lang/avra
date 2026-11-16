@@ -42,6 +42,9 @@ int64_t avra_cores_leave(int64_t g, int64_t core, int64_t accepted, int64_t err)
 int64_t avra_cores_end_fd(int64_t g, int64_t core);
 int64_t avra_cores_heard(int64_t g, int64_t core);
 
+// Core `core` killed when it has not ended, and reaped; 0 once it has ended.
+int64_t avra_cores_killed(int64_t g, int64_t core);
+
 // Every core told to stop. Only the supervisor can; elsewhere nothing.
 void avra_cores_stop(int64_t g);
 
@@ -49,5 +52,6 @@ void avra_cores_stop(int64_t g);
 // for the first that failed. A core that trapped or was killed traps
 // here, naming it. The group is gone after.
 int64_t avra_cores_result(int64_t g);
+int64_t avra_cores_finished(int64_t g);
 
 #endif

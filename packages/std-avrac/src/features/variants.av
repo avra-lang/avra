@@ -4,7 +4,7 @@
 //! (which UNIFIES, pinning a generic declaration's Vars); the answer
 //! is the declared type, instantiated when generic.
 use core.{ExprId, TypeId, Type, DeclId, same_decl}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 impl TypeCx {
     /// The one law, at the call — the module's header states it.
@@ -34,12 +34,10 @@ impl TypeCx {
     mut fn wrong_payload_count(e: ExprId, tname: string, variant: string, carries: int, found: int) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.variant_arity",
                     self.loc_of(e),
-                    "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}",
-                    "built here",
-                    "a variant's payload is a single value — wrap several in a record",
+                    payloads_miscounted(tname, variant, carries, found),
                 ),
             )
     }
@@ -253,12 +251,10 @@ impl TypeCx {
     mut fn carries_nothing(e: ExprId, tname: string, variant: string) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.variant_arity",
                     self.loc_of(e),
-                    "`${tname}.${variant}` carries nothing",
-                    "given an argument here",
-                    "write `${tname}.${variant}` on its own",
+                    variant_carries_nothing(tname, variant),
                 ),
             )
     }
@@ -294,12 +290,10 @@ impl TypeCx {
     mut fn given_nothing(e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.variant_arity",
                     self.loc_of(e),
-                    "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, given nothing",
-                    "built empty here",
-                    "write `${tname}.${variant}(<value>)`",
+                    variant_given_nothing(tname, variant, self.view.types.name_of(carried)),
                 ),
             )
     }
@@ -321,4 +315,31 @@ impl TypeCx {
 /// "ONE value" or "N values" — the arity as the refusal spells it.
 fn count_word(n: int) -> string {
     if n == 1 { "ONE value" } else { "${n} values" }
+}
+
+/// The variant `variant` of `tname`, which carries `carries` values, built from `found`.
+export fn payloads_miscounted(tname: string, variant: string, carries: int, found: int) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}",
+        label: "built here",
+        help: "a variant's payload is a single value — wrap several in a record",
+    }
+}
+
+/// The variant `variant` of `tname`, which carries nothing, called.
+export fn variant_carries_nothing(tname: string, variant: string) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` carries nothing",
+        label: "given an argument here",
+        help: "write `${tname}.${variant}` on its own",
+    }
+}
+
+/// The variant `variant` of `tname`, which carries `carried`, called with nothing.
+export fn variant_given_nothing(tname: string, variant: string, carried: string) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` carries `${carried}`, given nothing",
+        label: "built empty here",
+        help: "write `${tname}.${variant}(<value>)`",
+    }
 }

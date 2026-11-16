@@ -6,7 +6,7 @@
 //! constructor the module exports is the type's one door, and a value
 //! of the type anywhere is one that door answered.
 use core.{ExprId, TypeId, DeclId, Type}
-use diagnostics.{refusal}
+use diagnostics.{Voice, said_as}
 use @std.errors.{Loc}
 
 /// The declaration a nominal shape names; none for a structural one.
@@ -48,16 +48,15 @@ impl TypeCx {
 
     // ── The voice ──
 
-    mut fn sealed_built(at: Loc?, name: string, home: string, how: string) {
-        self
-            .emit(
-                refusal(
-                    "type.sealed",
-                    at,
-                    "`${name}` is sealed — only `${home}`, the module that declares it, builds or rewrites one",
-                    how,
-                    "ask `${home}` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere",
-                ),
-            )
+    mut fn sealed_built(at: Loc?, name: string, home: string, how: string) { self.emit(said_as("type.sealed", at, sealed_elsewhere(name, home, how))) }
+}
+
+/// A value of `name`, which the module `home` seals, built or rewritten elsewhere at a site labelled
+/// `how`.
+export fn sealed_elsewhere(name: string, home: string, how: string) -> Voice {
+    Voice {
+        message: "`${name}` is sealed — only `${home}`, the module that declares it, builds or rewrites one",
+        label: how,
+        help: "ask `${home}` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere",
     }
 }

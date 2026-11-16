@@ -217,13 +217,6 @@ fn some_name(n: string?) -> List<string> {
 /// A bound name without its plain mark.
 export fn unmarked(b: string) -> string { if b.starts_with("*") { b.substring(1, b.length) } else { b } }
 
-/// A text's lines as a set.
-fn lines_set(text: string) -> Map<string, bool> {
-    let set: Cell<Map<string, bool>> = Cell.new({})
-    for l in text.split("\n") { set.put(l, true) }
-    set.get()
-}
-
 /// Where a module's forms are kept: under their digest, so the same forms are one row.
 fn forms_key(forms: string) -> string { node_key(Stored.Unit, ["forms", forms]) }
 
@@ -239,25 +232,33 @@ fn implements_a_type(row: Row) -> bool {
 /// Whether a row is a fn whose record says it links a scheduler.
 fn links_a_scheduler(row: Row) -> bool {
     let kind? = declared_kind(row.shape, row.kind) else { return false }
-    records_cancel(kind) && row.reach().links
+    records_cancel(kind) && row.shaped().reach().links
 }
 
 /// THE PRODUCERS FILED, each bucket reader's index and the load walk's: the one place a
 /// module's filings reach the hold.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its producers in.
 export fn note_producers(ws: Workspace, p: Producers) {
-    for f in p.names { filed_under(ws.hold.named_by, f) }
-    for f in p.words { filed_under(ws.hold.worded_by, f) }
-    for f in p.marks { filed_under(ws.hold.marked_by, f) }
-    ws.hold.externed_by.set(ws.hold.externed_by.get().concat(p.externs))
+    ws.envs.noted(env_of(p))
     ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat(p.links)))
-    for f in p.refs { filed_under(ws.hold.refs_by_target, f) }
-    for path in p.implementors { if !ws.hold.typed_by.get().contains(path) { ws.hold.typed_by.push(path) } }
-    for path in distinct([r[1] for r in p.reexports]) { ws.hold.reexports.put(path, reexports_in(p.reexports, path)) }
 }
 
-fn filed_under(map: Cell<Map<string, List<string>>>, f: Filed) {
-    map.put(f.value, distinct((map.get().get(f.value) ?? []).concat([f.path])))
+/// A module's name environment, as its record's producers file it.
+fn env_of(p: Producers) -> NameEnv {
+    NameEnv {
+        names: filed_map(p.names),
+        words: filed_map(p.words),
+        marks: filed_map(p.marks),
+        externs: p.externs,
+        implementors: distinct(p.implementors),
+    }
+}
+
+/// Filings as each value's files, in filing order.
+fn filed_map(fs: List<Filed>) -> Map<string, List<string>> {
+    mut out: Map<string, List<string>> = {}
+    for f in fs { out.set(f.value, distinct((out.get(f.value) ?? []).concat([f.path]))) }
+    out
 }
 
 /// WHY A RECORD CANNOT BE LOADED: "" when it is whole and names no file the module has
@@ -441,16 +442,6 @@ impl Workspace {
         producers_of(m, record_fields(self, store, m))
     }
 
-    /// What a module stands as to a file that read it, whole: its record's seen lines and the listing of
-    /// its files — a name's read, judged by this digest before any narrowed view is rebuilt.
-    fn seen_stamp(store: Store, m: ModulePath) -> string {
-        let known: string? = self.records.record_stamps.get().get(m.text())
-        if known != null { return known! }
-        let made = self.stamped(self.producers_for(store, m)?.seen ?? "none", m)
-        self.records.record_stamps.put(m.text(), made)
-        made
-    }
-
     /// A module's stamp over the seen digest of its record and the listing of its files.
     fn stamped(seen: string, m: ModulePath) -> string {
         digest_of("${seen}\n${joined(self.module_files(m), "\n")}")
@@ -471,9 +462,6 @@ impl Workspace {
         [p[7] for p in pr.walk if p.length > 7 && p[0] == "gathers" && p[2] == path]
     }
 
-    /// The digest of a module's plain free fns' forms, as its row says them.
-    fn forms_stamp(store: Store, m: ModulePath) -> string { self.producers_for(store, m)?.forms ?? "none" }
-
     /// A record just written: its producers read from the lines it was made of, kept beside
     /// it and stood in for the one decoded earlier.
     fn keep_producers(store: Store, m: ModulePath, iface: string) {
@@ -493,21 +481,6 @@ impl Workspace {
         store.get(Stored.Unit, forms_key(pr.forms))
     }
 
-    /// The plain free fn names whose form differs between the forms a module had at `was` and its
-    /// forms now — added, removed or changed; null where either side's forms cannot be read.
-    fn moved_forms(store: Store, m: ModulePath, was: string) -> Map<string, bool>? {
-        let known: Map<string, bool>? = self.hold.forms_moved.get().get("${m.text()}\t${was}")
-        if known != null { return known }
-        let kept? = store.get(Stored.Unit, forms_key(was)) else { return null }
-        let now? = self.forms_at(store, m) else { return null }
-        let before = lines_set(kept)
-        let after = lines_set(now)
-        let moved: Cell<Map<string, bool>> = Cell.new({})
-        for l in before.keys() { if !after.has(l) { moved.put(l.split("\t")[1], true) } }
-        for l in after.keys() { if !before.has(l) { moved.put(l.split("\t")[1], true) } }
-        self.hold.forms_moved.put("${m.text()}\t${was}", moved.get())
-        moved.get()
-    }
 }
 
 // ── VOICES ──────────────────────────────────────────────────────────
@@ -515,4 +488,12 @@ impl Workspace {
 /// A kept row whose producers are not the ones its record makes.
 fn producers_disagree(m: ModulePath) -> string {
     "the producer row kept for module `${m.text()}` is not what its record makes — a row and its record are written together, so one of them was written by something else"
+}
+
+/// Whether a declaration of this kind binds its name in its module.
+fn binds_name(k: DeclKind) -> bool {
+    match k {
+        .Default or .Method or .Impl or .Case -> false,
+        .Fn or .Main or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State -> true,
+    }
 }

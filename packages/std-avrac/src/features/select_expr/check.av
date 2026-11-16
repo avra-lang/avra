@@ -19,9 +19,10 @@ use core.{
     some_list,
     same_type,
     same_decl,
+    Decision,
 }
 use features.{TypeCx, FileView, post_order, this_is}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, Voice, refusal, said_as}
 
 /// What an arm waits on, read from its head's type.
 enum Waited {
@@ -433,7 +434,7 @@ fn no_wait(mut cx: TypeCx, head: ExprId) -> List<TypeId>? {
 fn guard_checks(mut cx: TypeCx, guard: ExprId, tys: List<TypeId>) {
     cx.bind_types(guard, tys)
     let _ = cx.walk_type(guard)
-    cx.require_bool(guard, "a `select` arm's guard", "this decides whether the arm waits")
+    cx.require_bool(guard, Decision.SelectGuard)
     let read? = post_order(cx.dispatch, cx.view.store, guard)
         .find((k) -> reads_binder(cx, guard, k)) else {
         return
@@ -453,15 +454,20 @@ fn reads_binder(cx: TypeCx, guard: ExprId, k: ExprId) -> bool {
 // ── The voices ──
 
 fn not_waitable(cx: TypeCx, head: ExprId, help: string) -> Diag {
-    let n = cx.name_at(head)
-    refusal(
-        "flow.arm",
-        cx.loc_of(head),
-        "a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `${n}`",
-        this_is(n),
-        help,
-    )
+    said_as("flow.arm", cx.loc_of(head), arm_unwaitable(cx.name_at(head), help))
 }
+
+/// A `select` arm waiting on a value of `found`, `help` saying what it waits on instead.
+fn arm_unwaitable(found: string, help: string) -> Voice {
+    Voice {
+        message: "a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `${found}`",
+        label: "this is `${found}`",
+        help: help,
+    }
+}
+
+/// A `select` arm waiting on a value of `found`, in a program that loads `@std/time` where `timers`.
+export fn arm_unwaited(found: string, timers: bool) -> Voice { arm_unwaitable(found, if timers { waitable() } else { timers_unloaded() }) }
 
 fn waitable() -> string {
     "wait on what `spawn` answers, on a `Source`, or on `after`, `quiet` or `every` of `@std/time` — a head ending `.await` has already waited: drop it"
@@ -481,45 +487,13 @@ fn fresh_timer(cx: TypeCx, head: ExprId) -> Diag {
     )
 }
 
-fn index_of_one(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.arm_binder",
-        cx.loc_of(s.arm),
-        "`${s.index}` counts a list's members, and this arm waits on one task",
-        "one task here",
-        "drop the index — `${s.bind} in …`",
-    )
-}
+fn index_of_one(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("one", s.index, s.bind)) }
 
-fn index_of_literal(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.arm_binder",
-        cx.loc_of(s.arm),
-        "`${s.index}` counts the members of a list written in the head — each has its place there",
-        "the list is written here",
-        "give each task its own arm, or name the list first and wait on the name",
-    )
-}
+fn index_of_literal(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("literal", s.index, s.bind)) }
 
-fn index_of_source(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.arm_binder",
-        cx.loc_of(s.arm),
-        "`${s.index}` counts a list's members, and a source hands one item at a time",
-        "one item here",
-        "drop the index — `${s.bind} in …`",
-    )
-}
+fn index_of_source(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("source", s.index, s.bind)) }
 
-fn end_bound(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.arm_binder",
-        cx.loc_of(s.arm),
-        "an `.ended` arm waits on a supply's end and binds nothing",
-        "waits on an end",
-        "drop the binder — `x.ended -> …`",
-    )
-}
+fn end_bound(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("ended", s.index, s.bind)) }
 
 fn end_arm(cx: TypeCx, head: ExprId) -> Diag {
     let n = place_name(cx, head)
@@ -551,77 +525,68 @@ fn place_name(cx: TypeCx, e: ExprId) -> string {
     place_key(cx, e) ?? cx.name_at(e)
 }
 
-fn binds_nothing(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.arm_binder",
-        cx.loc_of(s.arm),
-        "`${s.bind}` has nothing to hold — the task this arm waits on answers nothing",
-        "answers nothing",
-        "a task answering nothing binds nothing — write the head bare, or `_ in t`",
-    )
-}
+fn binds_nothing(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("nothing", s.index, s.bind)) }
 
-fn timer_bound(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.arm_binder",
-        cx.loc_of(s.arm),
-        "a timer arm binds nothing — a timer fires and hands nothing over",
-        "a timer here",
-        "write the head alone",
-    )
-}
+fn timer_bound(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("timer", s.index, s.bind)) }
 
-fn spent_arm(cx: TypeCx, s: ArmSeats) -> Diag {
-    refusal(
-        "flow.spent_arm",
-        cx.loc_of(s.arm),
-        "a list arm is taken once, so no loop holds it",
-        "waits on a list, inside a loop",
-        "wait on the list once, outside the loop",
-    )
-}
+fn spent_arm(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.spent_arm", cx.loc_of(s.arm), arm_spent_said()) }
 
-fn guard_binder(cx: TypeCx, read: ExprId) -> Diag {
-    refusal(
-        "flow.guard_binder",
-        cx.loc_of(read),
-        "a guard is read before its arm's head, so it reads no name the arm binds",
-        "bound by this arm",
-        "test the value in the arm's body",
-    )
+fn guard_binder(cx: TypeCx, read: ExprId) -> Diag { said_as("flow.guard_binder", cx.loc_of(read), guard_reads_binder()) }
+
+/// A select arm's guard reading a name its own arm binds, which the guard is read before.
+export fn guard_reads_binder() -> Voice {
+    Voice {
+        message: "a guard is read before its arm's head, so it reads no name the arm binds",
+        label: "bound by this arm",
+        help: "test the value in the arm's body",
+    }
 }
 
 /// Every arm is `else`, so no arm waits and none is ever ready.
-fn no_waiting_arm(cx: TypeCx, e: ExprId) -> Diag {
-    refusal(
-        "flow.select",
-        cx.loc_of(e),
-        "a `select` needs an arm to wait on",
-        "every arm here is `else`",
-        "wait on a task, a source or a timer — `else` runs when no arm is ready",
-    )
-}
+fn no_waiting_arm(cx: TypeCx, e: ExprId) -> Diag { arms_refused(cx, e, NO_WAITING_ARM) }
 
 /// `else` runs when no other arm is ready, so a second never runs.
-fn else_twice(cx: TypeCx, arm: ExprId) -> Diag {
-    refusal(
-        "flow.select",
-        cx.loc_of(arm),
-        "a `select` has ONE `else` arm",
-        "a second `else`",
-        "drop it — `else` runs when no arm is ready, so the second never runs",
-    )
-}
+fn else_twice(cx: TypeCx, arm: ExprId) -> Diag { arms_refused(cx, arm, ELSE_TWICE) }
 
 /// The arms are scanned top to bottom, so nothing may wait below `else`.
-fn else_not_last(cx: TypeCx, arm: ExprId) -> Diag {
-    refusal(
-        "flow.select",
-        cx.loc_of(arm),
-        "the `else` arm ends a `select` — move it last",
-        "an arm waits after it",
-        "move `else` below every arm that waits",
-    )
+fn else_not_last(cx: TypeCx, arm: ExprId) -> Diag { arms_refused(cx, arm, ELSE_NOT_LAST) }
+
+/// The arm-set law `law` broken at `at`, in its words.
+fn arms_refused(cx: TypeCx, at: ExprId, law: string) -> Diag {
+    let said = select_refused_voice(law)
+    refusal("flow.select", cx.loc_of(at), said.message, said.label!, said.help!)
+}
+
+/// The arm-set law no arm waits under.
+export const NO_WAITING_ARM: string = "no waiting arm"
+
+/// The arm-set law a second `else` breaks.
+export const ELSE_TWICE: string = "else twice"
+
+/// The arm-set law an `else` with an arm waiting after it breaks.
+export const ELSE_NOT_LAST: string = "else not last"
+
+/// What a `select` the language refuses says: an arm-set law by its name, else a shape no lowering
+/// stands for, `what` naming it.
+export fn select_refused_voice(what: string) -> Voice {
+    when {
+        what == NO_WAITING_ARM -> Voice {
+            message: "a `select` needs an arm to wait on",
+            label: "every arm here is `else`",
+            help: "wait on a task, a source or a timer — `else` runs when no arm is ready",
+        }
+        what == ELSE_TWICE -> Voice {
+            message: "a `select` has ONE `else` arm",
+            label: "a second `else`",
+            help: "drop it — `else` runs when no arm is ready, so the second never runs",
+        }
+        what == ELSE_NOT_LAST -> Voice {
+            message: "the `else` arm ends a `select` — move it last",
+            label: "an arm waits after it",
+            help: "move `else` below every arm that waits",
+        }
+        _ -> select_unlowered_voice(what)
+    }
 }
 
 fn quiet_never(cx: TypeCx, head: ExprId) -> Diag {
@@ -632,4 +597,50 @@ fn quiet_never(cx: TypeCx, head: ExprId) -> Diag {
         "armed as the `select` is entered",
         "drop the `else`, or wait on a `Deadline`",
     )
+}
+
+/// A `select` arm binding what its head hands over not as it does, `how` as `Seating.ArmBinder` says,
+/// naming the index `index` and the binder `bind`.
+export fn arm_binder_said(how: string, index: string, bind: string) -> Voice {
+    match how {
+        "one" -> Voice {
+            message: "`${index}` counts a list's members, and this arm waits on one task",
+            label: "one task here",
+            help: "drop the index — `${bind} in …`",
+        },
+        "literal" -> Voice {
+            message: "`${index}` counts the members of a list written in the head — each has its place there",
+            label: "the list is written here",
+            help: "give each task its own arm, or name the list first and wait on the name",
+        },
+        "source" -> Voice {
+            message: "`${index}` counts a list's members, and a source hands one item at a time",
+            label: "one item here",
+            help: "drop the index — `${bind} in …`",
+        },
+        "ended" -> Voice {
+            message: "an `.ended` arm waits on a supply's end and binds nothing",
+            label: "waits on an end",
+            help: "drop the binder — `x.ended -> …`",
+        },
+        "nothing" -> Voice {
+            message: "`${bind}` has nothing to hold — the task this arm waits on answers nothing",
+            label: "answers nothing",
+            help: "a task answering nothing binds nothing — write the head bare, or `_ in t`",
+        },
+        _ -> Voice {
+            message: "a timer arm binds nothing — a timer fires and hands nothing over",
+            label: "a timer here",
+            help: "write the head alone",
+        },
+    }
+}
+
+/// A `select` arm waiting on a list of tasks inside a loop.
+export fn arm_spent_said() -> Voice {
+    Voice {
+        message: "a list arm is taken once, so no loop holds it",
+        label: "waits on a list, inside a loop",
+        help: "wait on the list once, outside the loop",
+    }
 }

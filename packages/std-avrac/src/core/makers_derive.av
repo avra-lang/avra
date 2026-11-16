@@ -1,35 +1,57 @@
 //! `@derive(Makes)` — a flat node's MAKERS, read off the declaration. A
 //! variant whose every payload has a `Slots` accessor gets one fn that
-//! builds it from its labels and one `Maker` row naming that fn. A
-//! payload that declares a default takes it where the rule leaves its
-//! label out. A variant with a payload no accessor reads is not made;
-//! it keeps its own builder.
+//! builds it from its labels and one `Maker` row naming that fn; a RECORD
+//! gets one `make_<Record>` fn the same way. A payload that declares a
+//! default takes it where the rule leaves its label out, and a `@local`
+//! span is where the build was written. A variant with a payload no
+//! accessor reads is not made; it keeps its own builder.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
 //! TYPES the file that declares it.
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, literal, name}
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Code,
+    literal,
+    name,
+    beside,
+}
 
 /// The compiler's derive for a node enum's makers.
 export trait Makes {
     static fn derive(t: MetaType) -> List<Directive> {
+        if t.variants.is_empty() { return [record_maker(t)] }
         [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
+            beside(
+                t,
+                quote {
             export fn ${"makers_${t.name}"}() -> List<Maker<${t}>> {
                 ${as_list_expr([maker_row(t, v) for v in t.variants.filter(makeable(it))])}
             }
         },
-            },
+            ),
         ]
             .concat([made(t, v) for v in t.variants.filter(makeable(it))])
     }
 
     /// The marks a maker reads: a facet rides to the payload's writer,
     /// and an anchor tells it where the node begins.
-    static fn marks(t: MetaType) -> List<string> { [facet_word, anchor_word] }
+    static fn marks(t: MetaType) -> List<string> { [facet_word, anchor_word, local_word, hollow_word, pronoun_word] }
+}
+
+/// A record's maker: the record built from its fields' labels.
+fn record_maker(t: MetaType) -> Directive {
+    let inits = [quote { W { ${f.name}: ${slot(f)} } } for f in t.fields if carried(f)]
+    beside(
+        t,
+        quote {
+            export fn ${"make_${t.name}"}(s: dyn Slots) -> Result<${t}, string> {
+                .Ok(${t} { ..${inits} })
+            }
+        },
+    )
 }
 
 /// A variant is made when every payload is one a `Slots` accessor reads,
@@ -55,6 +77,7 @@ fn known(f: Field) -> bool {
         "PatId",
         "List<Param>",
         "List<Arm>",
+        "List<CatchArm>",
         "List<Case>",
         "List<CompClause>",
         "List<MapEntry>",
@@ -62,13 +85,19 @@ fn known(f: Field) -> bool {
         "List<string>",
         "List<Variant>",
         "List<UseItem>",
+        "List<FieldPat>",
+        "List<Given>",
+        "List<FnSeat>",
         "List<TypeRef>",
         "TypeRef",
         "TypeRef?",
         "Scoped",
         "Scoped?",
+        "Nominal",
+        "Nominal?",
         "Plain",
         "string",
+        "string?",
         "int",
         "bool",
         "BinOp",
@@ -88,16 +117,14 @@ fn maker_row(t: MetaType, v: MetaVariant) -> Code {
 
 /// One variant's maker fn: the variant built from its payloads' labels.
 fn made(t: MetaType, v: MetaVariant) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             fn ${made_name(t, v)}(s: dyn Slots) -> Result<${t}, string> {
                 ${construction(v)}
             }
         },
-    }
+    )
 }
 
 /// The variant's constructor, its payloads read by label. A `@facet`
@@ -112,9 +139,25 @@ fn construction(v: MetaVariant) -> Code {
 /// One payload's value: its read, or its declared default when the rule
 /// writes nothing under the label.
 fn slot(f: Field) -> Code {
-    let fallback? = f.default else { return read(f) }
+    match field_route(f) {
+        .Local -> quote { s.built_at() },
+        .Plain or .Facet(_) -> payload_slot(f),
+    }
+}
+
+/// A carried payload's value, by its label or its default.
+fn payload_slot(f: Field) -> Code {
+    if is_hollow(f) { return quote { if s.present_of(${literal(f.name)})? { ${ridden(f)} } else { s.hollow() } } }
+    let fallback? = f.default else { return ridden(f) }
     if !known(f) { return fallback }
-    quote { if s.present_of(${literal(f.name)})? { ${read(f)} } else { ${fallback} } }
+    quote { if s.present_of(${literal(f.name)})? { ${ridden(f)} } else { ${fallback} } }
+}
+
+/// A payload's read, each expression riding the pronoun when its field
+/// says so.
+fn ridden(f: Field) -> Code {
+    if !rides_pronoun(f) { return read(f) }
+    quote { s.riding_of(${literal(f.name)})? }
 }
 
 /// One payload's read: the `Slots` accessor its type names, by its label.
@@ -126,11 +169,15 @@ fn read(f: Field) -> Code {
         "List<StmtId>" -> quote { s.stmts_of(${literal(f.name)})? },
         "List<Param>" -> quote { s.params_of(${literal(f.name)})? },
         "List<Arm>" -> quote { s.arms_of(${literal(f.name)})? },
+        "List<CatchArm>" -> quote { s.catch_arms_of(${literal(f.name)})? },
         "List<Case>" -> quote { s.cases_of(${literal(f.name)})? },
         "List<CompClause>" -> quote { s.comp_clauses_of(${literal(f.name)})? },
         "List<MapEntry>" -> quote { s.map_entries_of(${literal(f.name)})? },
         "List<Variant>" -> quote { s.variants_of(${literal(f.name)})? },
         "List<UseItem>" -> quote { s.use_items_of(${literal(f.name)})? },
+        "List<FieldPat>" -> quote { s.field_pats_of(${literal(f.name)})? },
+        "List<Given>" -> quote { s.givens_of(${literal(f.name)})? },
+        "List<FnSeat>" -> quote { s.fn_seats_of(${literal(f.name)})? },
         "List<Plain>" -> quote { [Plain(t) for t in s.texts_of(${literal(f.name)})?] },
         "List<string>" -> quote { s.texts_of(${literal(f.name)})? },
         "Scoped?" -> quote { s.scoped_opt_of(${literal(f.name)})? },
@@ -138,9 +185,11 @@ fn read(f: Field) -> Code {
         "PatId" -> quote { s.pat_of(${literal(f.name)})? },
         "List<TypeRef>" -> quote { s.types_of(${literal(f.name)})? },
         "TypeRef" -> quote { s.type_of(${literal(f.name)})? },
-        "Scoped" or "Plain" -> quote { ${f.ty}(s.text_of(${literal(f.name)})?) },
+        "Nominal?" -> quote { [Nominal(t) for t in s.texts_of(${literal(f.name)})?].first() },
+        "Scoped" or "Plain" or "Nominal" -> quote { ${f.ty}(s.text_of(${literal(f.name)})?) },
         "TypeRef?" -> quote { s.type_opt_of(${literal(f.name)})? },
         "string" -> quote { s.text_of(${literal(f.name)})? },
+        "string?" -> quote { (s.texts_of(${literal(f.name)})?).first() },
         "int" -> quote { s.int_of(${literal(f.name)})? },
         "BinOp" -> quote { s.op_of(${literal(f.name)})? },
         _ -> quote { s.flag_of(${literal(f.name)})? },

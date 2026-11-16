@@ -1,0 +1,48 @@
+//! The typing rules of `let` and `mut`: a value checked against its annotation, or read as it is,
+//! and its name bound to the type.
+use core.{Checking, Checks, ExprId, Expected, Seating, SignedType, StmtChecks, StmtId, TypeRef}
+use core.expr.{LetPattern}
+use core.stmt.{Let, MutLet}
+
+impl StmtChecks for Let {
+    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value, true) }
+}
+
+impl StmtChecks for MutLet {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        bound_to(cx, self.name.of, self.ty, self.value, false, true, cx.store.is_state_stmt(s))
+    }
+}
+
+/// `value` checked against `annotation` when one is written, and `name` bound to the annotation's
+/// type, else to the value's; a `let` narrows, a `mut` can be written again and doesn't, a write
+/// through it lands in its own cell, and a `state` is the one place every lambda that reaches it
+/// shares.
+fn bound_to(
+    mut cx: Checking,
+    name: string,
+    annotation: TypeRef?,
+    value: ExprId,
+    narrowable: bool,
+    writes: bool = false,
+    shared: bool = false,
+) {
+    let declared: SignedType? = if annotation == null { null } else { cx.written(annotation!) }
+    let read = cx.check_seated(value, declared, Seating.Binding(name))
+    if shared { return cx.bind_shared(name, declared ?? read) }
+    if writes { cx.bind_cell(name, declared ?? read) } else { cx.bind(name, declared ?? read, narrowable) }
+}
+
+impl Checks for LetPattern {
+    /// `let P = v else { … }` and what follows it: the pattern binds against `v` for the rest, which is
+    /// the value; the else checks as a dropped value.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        if self.otherwise != null { let _ = cx.check(self.otherwise!, Expected.Dropped) } else { cx.let_covers(e, subject, self.pat) }
+        cx.opened()
+        cx.check_pat(self.pat, subject)
+        let rest = if self.rest == null { null } else { cx.check(self.rest!, expected) }
+        cx.closed()
+        rest
+    }
+}

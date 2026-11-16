@@ -35,6 +35,7 @@
 //! block's statement contributes its reads as any expression does.
 use core.{ExprId, StmtId, DeclId, FileId, DeclKind, Binding, Span, SyntaxArena, flatten, some_list}
 use features.{FileView, NameFacts, bound_decl_of}
+use @std.program.address.{SourceFileAddress}
 
 /// A `state` place as the analysis names it.
 export enum StatePlace {
@@ -42,6 +43,10 @@ export enum StatePlace {
     Local(file: FileId, stmt: StmtId)
     /// a top-level `state` declaration
     Global(decl: DeclId)
+    /// a top-level `state` as the program layer names it: the file declaring it, and its name
+    Kept(file: SourceFileAddress, name: string)
+    /// a `state` statement of the body being read, which that body holds the cell of
+    Own(stmt: StmtId)
     /// a place the analysis cannot name: assume any
     Unknown
 }
@@ -55,7 +60,7 @@ export fn place_key(p: StatePlace) -> int {
     match p {
         .Local(f, s) -> if f.index + 1 < max_files && s.index < max_stmts { (f.index + 1) * max_stmts + s.index } else { 0 - 1 },
         .Global(d) -> if d.index + 2 < max_decls { 0 - (d.index + 2) } else { 0 - 1 },
-        .Unknown -> 0 - 1,
+        .Kept(_, _) or .Own(_) or .Unknown -> 0 - 1,
     }
 }
 
@@ -94,6 +99,66 @@ fn is_state_decl(k: DeclKind) -> bool {
     }
 }
 
+// ── what a body's names answer the walk ─────────────────────────────
+
+/// WHAT THE READ SET ASKS OF A BODY: its tree, the place a node names, the
+/// places a closure captures, whether a node reads the receiver, and the
+/// places a call's callee reaches. The walks below are the one definition of
+/// which reads count; each pipeline answers these from its own names.
+export trait ReadFacts {
+    /// The tree the body stands in.
+    fn tree() -> SyntaxArena
+
+    /// The `state` place the node names by its own binding, directly or
+    /// through the captures between it and its home; absent for any other.
+    fn named_place(e: ExprId) -> StatePlace?
+
+    /// The places a closure node captures.
+    fn captured_places(e: ExprId) -> List<StatePlace>
+
+    /// Whether the node reads the receiver, by its own binding or as a
+    /// closure capturing it.
+    fn reads_receiver(e: ExprId) -> bool
+
+    /// The places a call's callee reaches; `Unknown` for a callee no
+    /// declaration names.
+    fn callee_places(call: ExprId) -> List<StatePlace>
+}
+
+/// A body's names as the analysis resolved them, each callee answered by
+/// `reach` as `place_key`s.
+type NamedReads = { view: FileView, names: NameFacts, reach: fn(DeclId) -> List<int> }
+
+impl ReadFacts for NamedReads {
+    fn tree() -> SyntaxArena { self.view.store }
+
+    fn named_place(e: ExprId) -> StatePlace? {
+        let b? = self.names.binding(e) else { return null }
+        place_of(self.view, self.names, b)
+    }
+
+    fn captured_places(e: ExprId) -> List<StatePlace> {
+        let cap? = self.names.capture(e) else { return [] }
+        [p for src in cap.sources for p in some_list(place_of(self.view, self.names, src))]
+    }
+
+    fn reads_receiver(e: ExprId) -> bool {
+        let b = self.names.binding(e)
+        b != null && bound_to_receiver(self.names, b!) ||
+            (self.names.capture(e)?.sources ?? []).any((c) -> bound_to_receiver(self.names, c))
+    }
+
+    fn callee_places(call: ExprId) -> List<StatePlace> {
+        let d? = bound_decl_of(self.names, call) else { return [StatePlace.Unknown] }
+        [place_at_key(k) for k in (self.reach)(d)]
+    }
+}
+
+/// The analysis's names for a body, each callee answered by `reach`.
+fn named_reads(view: FileView, names: NameFacts, reach: fn(DeclId) -> List<int>) -> dyn ReadFacts {
+    NamedReads { view: view, names: names, reach: reach }
+}
+
 /// The `state` place a binding names, when it names one — a capture
 /// chased through the closures between a name's home and the use, since a
 /// nested closure captures a place its parent captured.
@@ -114,55 +179,42 @@ fn capture_place(view: FileView, names: NameFacts, l: ExprId, j: int) -> StatePl
     place_of(view, names, cap.sources[j])
 }
 
-/// The places a closure node CAPTURES.
-fn captured_places(view: FileView, names: NameFacts, e: ExprId) -> List<StatePlace> {
-    let cap? = names.capture(e) else { return [] }
-    [p for src in cap.sources for p in some_list(place_of(view, names, src))]
-}
+// ── the walks ───────────────────────────────────────────────────────
 
 /// The places THIS expression names directly — its own binding, and
 /// the captures a closure node carries.
-fn here(view: FileView, names: NameFacts, e: ExprId) -> List<StatePlace> {
-    let caps = captured_places(view, names, e)
-    let b? = names.binding(e) else { return caps }
-    some_list(place_of(view, names, b)).concat(caps)
-}
+fn here(f: dyn ReadFacts, e: ExprId) -> List<StatePlace> { some_list(f.named_place(e)).concat(f.captured_places(e)) }
 
 /// Every place `root`'s subtree names, children first — a closure is a
 /// leaf that yields its captures, never a branch into its body.
-fn reads_of(view: FileView, names: NameFacts, root: ExprId) -> List<StatePlace> {
-    let own = here(view, names, root)
-    if view.store.expr_is_closure(root) { return own }
-    flatten([reads_of(view, names, k) for k in view.store.reached(root)]).concat(own)
+fn reads_of(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
+    let own = here(f, root)
+    if f.tree().expr_is_closure(root) { return own }
+    flatten([reads_of(f, k) for k in f.tree().reached(root)]).concat(own)
 }
 
 /// The places the calls in the subtree reach: a callee this compile can
-/// name answers its own transitive places (`callee`, as `place_key`s), and
-/// a call whose body it cannot see (a fn value applied, a method dispatched
-/// on a runtime value, an `extern` row) answers `Unknown`. A CLOSURE is a
-/// frame of its own: its captures are the read, so its body is not walked,
-/// exactly as `reads_of` stops there.
+/// name answers its own transitive places, and a call whose body it cannot
+/// see (a fn value applied, a method dispatched on a runtime value, an
+/// `extern` row) answers `Unknown`. A CLOSURE is a frame of its own: its
+/// captures are the read, so its body is not walked, exactly as `reads_of`
+/// stops there.
+fn calls_of(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
+    let store = f.tree()
+    if store.expr_is_closure(root) { return [] }
+    let called = if store.expr_is_call(root) { f.callee_places(root) } else { [] }
+    let method = if applies_method(store, root) { [StatePlace.Unknown] } else { [] }
+    called.concat(method).concat(flatten([calls_of(f, k) for k in store.reached(root)]))
+}
+
+/// `calls_of` over the analysis's names, each callee answered by `callee`.
 export fn call_places_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
     callee: fn(DeclId) -> List<int>,
 ) -> List<StatePlace> {
-    if view.store.expr_is_closure(root) { return [] }
-    let called = if view.store.expr_is_call(root) { callee_places(names, root, callee) } else { [] }
-    let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
-    called
-        .concat(method)
-        .concat(flatten([call_places_of(view, names, k, callee) for k in view.store.reached(root)]))
-}
-
-/// What one call reaches: its callee's places, or `Unknown` for a callee no
-/// declaration names.
-fn callee_places(names: NameFacts, call: ExprId, callee: fn(DeclId) -> List<int>) -> List<
-    StatePlace,
-> {
-    let d? = bound_decl_of(names, call) else { return [StatePlace.Unknown] }
-    [place_at_key(k) for k in callee(d)]
+    calls_of(named_reads(view, names, callee), root)
 }
 
 /// Whether the expression APPLIES a method on a runtime value — the
@@ -172,12 +224,20 @@ fn applies_method(store: SyntaxArena, e: ExprId) -> bool {
 }
 
 /// Each place once, in first-read order.
-fn deduped(places: List<StatePlace>) -> List<StatePlace> {
-    mut out: List<StatePlace> = []
-    for p in places {
-        if !out.any(place_key(it) == place_key(p)) { out.push(p) }
+fn deduped(places: List<StatePlace>) -> List<StatePlace> { [p for j, p in places if !places.take(j).any(same_state_place(it, p))] }
+
+/// Whether two places are one.
+export fn same_state_place(a: StatePlace, b: StatePlace) -> bool {
+    match a {
+        .Local(f, s) -> match b { .Local(g, t) -> f == g && s == t, rest -> false },
+        .Global(d) -> match b { .Global(g) -> d == g, rest -> false },
+        .Kept(f, n) -> match b {
+            .Kept(g, m) -> n == m && f.package_name == g.package_name && f.path_in_package == g.path_in_package,
+            rest -> false,
+        },
+        .Own(s) -> match b { .Own(t) -> s == t, rest -> false },
+        .Unknown -> b is .Unknown,
     }
-    out
 }
 
 // ── the STRUCTURAL set: reads a reading does not answer for ───────────
@@ -186,19 +246,18 @@ fn deduped(places: List<StatePlace>) -> List<StatePlace> {
 /// minted to say a text again (its reads are the reading, answered by the
 /// page), and a handler an instance hears (it runs when the user speaks, not
 /// when the page is drawn).
-fn covered(view: FileView, e: ExprId) -> bool {
-    view.store.expr_is_closure(e) &&
-        (view.store.minted_for(e) != null || view.store.on_handler(e) != null)
+fn covered(store: SyntaxArena, e: ExprId) -> bool {
+    store.expr_is_closure(e) && (store.minted_for(e) != null || store.on_handler(e) != null)
 }
 
 /// The heads of an instance the page answers for: its text, which the
 /// instance's minted closure says again, and the props `answered` says a cell
 /// of the instance takes.
-fn sited_heads(view: FileView, e: ExprId, answered: fn(ExprId) -> List<ExprId>) -> List<ExprId> {
-    match view.store.expr(e) {
+fn sited_heads(store: SyntaxArena, e: ExprId, answered: fn(ExprId) -> List<ExprId>) -> List<ExprId> {
+    match store.expr(e) {
         .Component(_, _, heads, _, _, _) -> {
-            let lit? = view.store.expansion_of(e) else { return [] }
-            if says_again(view, lit) { heads.take(1) } else { [] }.concat(answered(e))
+            let lit? = store.expansion_of(e) else { return [] }
+            if says_again(store, lit) { heads.take(1) } else { [] }.concat(answered(e))
         },
         rest -> [],
     }
@@ -216,77 +275,69 @@ export fn bound_to_receiver(names: NameFacts, b: Binding) -> bool {
     }
 }
 
-/// `Unknown` where the expression reads the receiver, or is a closure that
-/// captures it: a frame's reads of `self` outside the heads a reading answers
-/// for are not places a page can name.
-fn receiver_reads(names: NameFacts, e: ExprId) -> List<StatePlace> {
-    let b = names.binding(e)
-    let own = b != null && bound_to_receiver(names, b!)
-    let caps = (names.capture(e)?.sources ?? []).any((b) -> bound_to_receiver(names, b))
-    if own || caps { [StatePlace.Unknown] } else { [] }
-}
-
 /// Whether a literal is extended by a closure the builder minted for it.
-fn says_again(view: FileView, lit: ExprId) -> bool {
-    view.store.extended_by(lit).any((v) -> view.store.expr_is_closure(v))
+fn says_again(store: SyntaxArena, lit: ExprId) -> bool {
+    store.extended_by(lit).any((v) -> store.expr_is_closure(v))
 }
 
 /// The places the subtree reads that no reading answers for, children first.
 /// A covered closure is a leaf with no read; the head a reading says again is
 /// not walked; every other closure yields its captures, as `reads_of` has it.
+/// A read of the receiver is `Unknown`: a page cannot name it.
 fn structural_reads(
-    view: FileView,
-    names: NameFacts,
+    f: dyn ReadFacts,
     root: ExprId,
     skip: List<ExprId>,
     answered: fn(ExprId) -> List<ExprId>,
 ) -> List<StatePlace> {
-    if skip.contains(root) || covered(view, root) { return [] }
-    let own = here(view, names, root).concat(receiver_reads(names, root))
-    if view.store.expr_is_closure(root) { return own }
-    let inner = skip.concat(sited_heads(view, root, answered))
-    flatten([structural_reads(view, names, k, inner, answered) for k in view.store.reached(root)])
-        .concat(own)
+    let store = f.tree()
+    if skip.contains(root) || covered(store, root) { return [] }
+    let own = here(f, root).concat(if f.reads_receiver(root) { [StatePlace.Unknown] } else { [] })
+    if store.expr_is_closure(root) { return own }
+    let inner = skip.concat(sited_heads(store, root, answered))
+    flatten([structural_reads(f, k, inner, answered) for k in store.reached(root)]).concat(own)
 }
 
 /// The places the calls in the subtree reach that no reading answers for: a
-/// callee's own STRUCTURAL places (`callee`, as `place_key`s), and `Unknown`
-/// where a body is out of sight.
+/// callee's own STRUCTURAL places, and `Unknown` where a body is out of sight.
 fn structural_calls(
-    view: FileView,
-    names: NameFacts,
+    f: dyn ReadFacts,
     root: ExprId,
     skip: List<ExprId>,
-    callee: fn(DeclId) -> List<int>,
     answered: fn(ExprId) -> List<ExprId>,
 ) -> List<StatePlace> {
-    if skip.contains(root) || covered(view, root) || view.store.expr_is_closure(root) { return [] }
-    let called = if view.store.expr_is_call(root) { callee_places(names, root, callee) } else { [] }
-    let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
-    let inner = skip.concat(sited_heads(view, root, answered))
+    let store = f.tree()
+    if skip.contains(root) || covered(store, root) || store.expr_is_closure(root) { return [] }
+    let called = if store.expr_is_call(root) { f.callee_places(root) } else { [] }
+    let method = if applies_method(store, root) { [StatePlace.Unknown] } else { [] }
+    let inner = skip.concat(sited_heads(store, root, answered))
     called
         .concat(method)
-        .concat(
-            flatten(
-                [structural_calls(view, names, k, inner, callee, answered) for k in view.store.reached(root)],
-            ),
-        )
+        .concat(flatten([structural_calls(f, k, inner, answered) for k in store.reached(root)]))
 }
 
 /// Every place the subtree reads at paint time that a reading does NOT
-/// answer for: a page whose cell is among them takes the full paint when it
-/// is written.
+/// answer for, each callee answering its STRUCTURAL places: a page whose cell
+/// is among them takes the full paint when it is written. `answered` says the
+/// heads of an instance a cell of the instance takes — what only the types of
+/// a body can tell.
+export fn structural_places_in(f: dyn ReadFacts, root: ExprId, answered: fn(ExprId) -> List<ExprId>) -> List<
+    StatePlace,
+> {
+    deduped(structural_reads(f, root, [], answered).concat(structural_calls(f, root, [], answered)))
+}
+
+/// `structural_places_in` over the analysis's names, no head answered.
 export fn structural_places_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
     callee: fn(DeclId) -> List<int>,
 ) -> List<StatePlace> {
-    structural_places_answering(view, names, root, callee, (e) -> [])
+    structural_places_in(named_reads(view, names, callee), root, (e) -> [])
 }
 
-/// `structural_places_of`, where `answered` says the heads of an instance a
-/// cell of the instance takes — what only the types of a body can tell.
+/// `structural_places_in` over the analysis's names.
 export fn structural_places_answering(
     view: FileView,
     names: NameFacts,
@@ -294,28 +345,30 @@ export fn structural_places_answering(
     callee: fn(DeclId) -> List<int>,
     answered: fn(ExprId) -> List<ExprId>,
 ) -> List<StatePlace> {
-    deduped(
-        structural_reads(view, names, root, [], answered)
-            .concat(structural_calls(view, names, root, [], callee, answered)),
-    )
+    structural_places_in(named_reads(view, names, callee), root, answered)
 }
 
 /// The `state` places `root`'s subtree reads, deduped. A call is a
 /// boundary: the callee's reads are the callee's body's, never folded
 /// in here.
 export fn read_set_of(view: FileView, names: NameFacts, root: ExprId) -> List<StatePlace> {
-    deduped(reads_of(view, names, root))
+    deduped(reads_of(named_reads(view, names, (d) -> []), root))
 }
 
-/// Every place the site depends on: the `state` it reads itself and what
-/// the calls it makes reach.
+/// Every place the site depends on, each callee answering its places: the
+/// `state` it reads itself and what the calls it makes reach.
+export fn site_places_in(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
+    deduped(reads_of(f, root).concat(calls_of(f, root)))
+}
+
+/// `site_places_in` over the analysis's names.
 export fn site_places_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
     callee: fn(DeclId) -> List<int>,
 ) -> List<StatePlace> {
-    deduped(read_set_of(view, names, root).concat(call_places_of(view, names, root, callee)))
+    site_places_in(named_reads(view, names, callee), root)
 }
 
 /// Whether the subtree reads any state at all.
@@ -433,7 +486,7 @@ export enum SiteWhy {
     Several(count: int)
 }
 
-fn is_unknown(p: StatePlace) -> bool { place_key(p) == place_key(StatePlace.Unknown) }
+fn is_unknown(p: StatePlace) -> bool { p is .Unknown }
 
 /// Why a site earns the lowering it does.
 export fn site_why_of(

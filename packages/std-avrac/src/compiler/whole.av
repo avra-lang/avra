@@ -29,6 +29,7 @@ use core.{
 use @std.text.{text_before}
 use compiler.store.{Reading}
 use @std.path.{under_dir, joined_path, normalized, dir_of}
+use features.fns.{embed_unread_words}
 use features.{
     Decls,
     Decl,
@@ -37,11 +38,13 @@ use features.{
     nothing,
     bound_decl_of,
     EmbedFault,
+    embed_spot,
     embed_literal_law,
     gathers_across_files,
     admits_package,
     AnnotationFact,
     LitArg,
+    Listed,
 }
 use features.collects.{collect_field_text}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
@@ -54,10 +57,11 @@ use compiler.lower.{
     FieldPlan,
     collect_answer_type,
 }
-use compiler.hosts.{BuildHost, host_named}
-use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
+use compiler.hosts.{BuildHost, host_fn_owed, host_fn_owed_diag, host_named}
+use compiler.host.{library_stem, Beneath, Manifest, Read, InputName, embedded_kind}
 use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
+use compiler.store.{Store}
 
 impl Workspace {
 
@@ -70,6 +74,10 @@ impl Workspace {
         for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
         self.timed("parse", t0)
+        let t_names = self.clock()
+        self.query_db().keeps_await()
+        self.names_settled()
+        self.timed("expand", t_names)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
@@ -85,8 +93,29 @@ impl Workspace {
         let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
         let out = [self.analysis(f) for f in ids]
         self.timed("bodies", t3)
+        let t4 = self.clock()
+        self.names_settled()
+        self.query_db().kept_owed()
+        self.timed("owed", t4)
         out
     }
+
+    /// THE PROGRAM'S NAMES, WHOLE: every file admitted and expanded, so no writer is left to
+    /// fill a name bucket. A file admitted later stands them down until they are settled again.
+    fn names_settled() {
+        if self.names_whole() { return }
+        let _ = self
+            .each_open_file(
+                (f: FileId) -> {
+                    let _ = self.items(f)
+                    self.admit_used(f)
+                    let _ = self.expanded(f)
+                },
+            )
+        self.records.names_stood.set(self.decls.file_count())
+    }
+
+    fn names_whole() -> bool { self.records.names_stood.get() == self.decls.file_count() }
 
     /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
     /// file's own resolve or its own body can admit a file none of this
@@ -101,7 +130,7 @@ impl Workspace {
         mut i = 0
         while i < self.decls.file_count() {
             let fi = self.decls.file(file_at(i))
-            if !self.is_held(fi.id) && self.reads_as_source(fi.path) {
+            if self.reads_as_source(fi.path) {
                 act(fi.id)
                 out.push(fi.id)
             }
@@ -125,6 +154,19 @@ impl Workspace {
         for msg in self.decls.types.drain_stale() { self.defect(msg) }
     }
 
+    /// The program as far as `files` go.
+    fn program_of(files: List<Analysis>) -> Program {
+        Program {
+            ws: self,
+            files: files,
+            entry: null,
+            cache: self.db.stats(),
+            defects: self.defects.get(),
+            voices: self.packages_voiced(),
+            manifests: [self.manifest_source(pkg) for pkg in self.packages() if self.has_manifest(pkg)],
+        }
+    }
+
     /// The program rooted at `ws.root`, entered at one of its files — its root
     /// walk trimmed to what `built` reaches when a build of it asks (`entry_files`).
     fn program(entry: string?, built: string? = null) -> Program {
@@ -136,7 +178,6 @@ impl Workspace {
             ws: self,
             files: files,
             entry: seat,
-            phases: self.phases.get(),
             cache: self.db.stats(),
             defects: self.defects.get(),
             voices: self.packages_voiced(),
@@ -151,24 +192,12 @@ impl Workspace {
         )
     }
 
-    /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
-    /// question the analysis asks before it does anything at all.
-    fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
-
     /// THE FILES A RECORD SUPPLIED: whose interface was loaded from the store,
     /// never parsed. The receipt an on-demand load pays against.
     fn loaded_files() -> int { self.records.met_files.get().length }
 
     /// Every file the program knows, held or read.
     fn program_files() -> int { self.decls.file_count() }
-
-    /// HOLD A FILE: from here it contributes its minted declarations and what the
-    /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
-    /// files holds forty-nine.
-    fn hold_only(path: string) { self.decls.held.put(path, true) }
-
-    /// MEET FILES: each enters the table, so it is read unless it is held.
-    fn met_all(paths: List<string>) { for path in paths { let _ = self.file_id(path) } }
 
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
     /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
@@ -178,7 +207,7 @@ impl Workspace {
         while i < self.decls.file_count() {
             let id = file_at(i)
             // a held file's declarations are minted when something reads them
-            if !self.is_held(id) && self.reads_as_source(self.decls.file(id).path) {
+            if self.reads_as_source(self.decls.file(id).path) {
                 let _ = self.items(id)
                 self.admit_used(id)
             }
@@ -191,13 +220,23 @@ impl Workspace {
     /// minted inside a query that already read the relation.
     fn admit_used(f: FileId) {
         if self.lone { return }
+        let path = self.decls.file(f).path
+        let from = self.packages()[self.holder_of_path(path)]
+        let kept = if self.rows_kept(f) { self.kept_admits(path) } else { null }
+        let reached = kept ?? self.admits_of(f)
+        for m in reached.modules { self.admit_module(from, qualified(module_path(m), from)) }
+        if reached.gathers { self.decls.admit_package_of(f) }
+        if kept == null { self.records.admits_seen.put(path, reached) }
+    }
+
+    /// What a file's parse reaches: the modules its `use` lines name, and whether a `collect`
+    /// of it gathers its package.
+    fn admits_of(f: FileId) -> Admits {
         let p = self.parsed(f)
-        let from = self.packages()[self.holder_of_path(p.source.file)]
-        for s in p.stmts {
-            let u = p.store.use_parts(s)
-            if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
-            let scope = p.store.collect_scope(s)
-            if scope != null { self.decls.admit_scope(scope!, f) }
+        Admits {
+            modules: [u.path for u in p.store.built_uses()],
+            gathers: p.stmts.any((s) -> admits_package(p.store.collect_scope(s) ?? CollectScope.Self)),
+            exports: uses_wire([u for u in p.store.built_uses() if p.store.is_exported(u.stmt)]),
         }
     }
 
@@ -248,45 +287,6 @@ impl Workspace {
         digest_of(fields_wire([self.member_print(g, m) for m in members]))
     }
 
-    /// A CROSS-FILE COLLECT AS A NAMED READ — `collect:<module>.<name>`, digested by
-    /// the set it gathers: a value that folds a collect is a function of its members,
-    /// which no file's text shows. Absent for a declaration that is no such collect.
-    fn collect_read(d: DeclId) -> Reading? {
-        let x = self.decls.decl(d)
-        if !self.gathers_across(d) { return null }
-        let name = "collect:${self.decls.module_of(d)}.${x.name}"
-        let digest? = self.collect_digest(self.decls.file(x.file).path, x.name) else { return null }
-        Reading { name: name, digest: digest }
-    }
-
-    /// Whether `d` is a collect gathering across files — for a held file, whether its
-    /// record holds one.
-    fn gathers_across(d: DeclId) -> bool {
-        let x = self.decls.decl(d)
-        let path = self.decls.file(x.file).path
-        if self.is_held(x.file) { return self.hold.gathered.get().any(it.collector == path) }
-        let scope? = self.parsed(x.file).store.collect_scope(x.stmt) else { return false }
-        gathers_across_files(scope)
-    }
-
-    /// A `collect:` read's digest now; absent for a name that names no cross-file collect.
-    fn collect_read_now(name: string) -> string? {
-        let parts = name.substring(8, name.length).split(".")
-        let gathers = parts.last() ?? ""
-        let files = self.module_files(module_path(parts.slice(0, parts.length - 1)))
-        let path? = files.find((p) -> self.collect_digest(p, gathers) != null) else { return null }
-        self.collect_digest(path, gathers)
-    }
-
-    /// The set the collect `name` in `path` gathers now — a held file's from its record,
-    /// since a held collector is one whose sets did not move.
-    fn collect_digest(path: string, name: string) -> string? {
-        let f = self.file_id(path)
-        if self.is_held(f) { return self.hold.gathered.get().find(it.collector == path && it.gathering.name == name)?.digest }
-        let g? = self.gatherings(path).find(it.name == name) else { return null }
-        self.gathered_set(g, f)
-    }
-
     /// One member as its collect sees it: where it is declared, its name, the mark
     /// that gathered it, its shape, and what each projected field reads of it. An import
     /// closure's member is only WHICH it is: its shape and fields are read through its own
@@ -325,40 +325,12 @@ impl Workspace {
     /// The text a member is declared in, as one digest.
     fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
 
-    /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
-    /// held members' records and moved members' fresh declarations, against what
-    /// its record says it gathered.
-    fn gathered_moved(read: List<FileId>) -> List<ReadFile> {
-        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g, read)]
-    }
-
-    /// Whether a held collector's set moved since its record was written.
-    fn gathered_away(g: HeldGather, read: List<FileId>) -> bool {
-        let f = self.file_id(g.collector)
-        self.is_held(f) &&
-            self.gathering_read(g.gathering.kind, read) &&
-            self.gathered_set(g.gathering, f) != g.digest
-    }
-
-    /// Whether a file this attempt does not hold gathers by `kind`, now or when its record was
-    /// written: a set gathered from held files alone stands as its collector's record says.
-    fn gathering_read(kind: CollectKind, read: List<FileId>) -> bool {
-        self.producers_of(kind).any((path) -> !self.held_path(path)) ||
-            read.any((f) -> self.gathers_in(kind, f))
-    }
-
     /// The files a module record says produce what `kind` gathers by.
     fn producers_of(kind: CollectKind) -> List<string> {
         match kind {
-            .Component(w) -> self.hold.worded_by.get().get(w) ?? [],
-            .Annotated(w) -> self.hold.marked_by.get().get(w) ?? [],
-            .UnknownKind(_) -> [],
+            .Component(w) -> self.envs.listed(Listed.Word(w)),
+            .Annotated(w) -> self.envs.listed(Listed.Mark(w)),
         }
-    }
-
-    /// Whether a read file declares something `kind` gathers by.
-    fn gathers_in(kind: CollectKind, f: FileId) -> bool {
-        self.decls.decls_of_file(f).any((d) -> gathered_by(kind, self.decls.decl(d)))
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -380,7 +352,7 @@ impl Workspace {
     /// The host fns of the files a program reads and of the files it holds: a
     /// held module defines its symbols for the link as a read one does.
     fn program_host_fns(read: List<FileId>) -> List<DeclId> {
-        [x.id for x in self.decls.host_fns() if self.is_held(x.file) || read.any(same_file(it, x.file))]
+        [x.id for x in self.decls.host_fns() if read.any(same_file(it, x.file))]
     }
 
     /// The host fns a build standing beside `hosts` exports: the program's
@@ -413,26 +385,22 @@ impl Workspace {
     fn host_fn_owes(d: DeclId, asked: List<string>) -> List<Diag> {
         let x = self.decls.decl(d)
         let from = self.packages()[self.holder_of_path(self.decls.file(x.file).path)]
-        if platform_defines(x.name) || entry_symbols.contains(x.name) { return [host_fn_shadows(self.decls.loc(d), x.name)] }
-        if from.ordinal == 0 { return [] }
-        if self.named_host(d) == null { return [host_fn_unhosted(self.decls.loc(d), x.name, from.key)] }
-        let theirs? = self
+        let theirs = self
             .decls
             .externs_named(x.name)
             .find(
                 (n: Decl) -> !self.decls.is_host_fn(n.id) &&
                     self.holder_of_path(self.decls.file(n.file).path) != from.ordinal,
-            ) else {
-            return if asked.contains(from.key) { [] } else { [host_fn_unasked(self.decls.loc(d), x.name, from.key)] }
-        }
-        [
-            host_fn_answers_another(
-                self.decls.loc(d),
-                x.name,
-                self.packages()[self.holder_of_path(self.decls.file(theirs.file).path)].key,
-                from.key,
-            ),
-        ]
+            )
+        let answers = if theirs == null { null } else { self.packages()[self.holder_of_path(self.decls.file(theirs!.file).path)].key }
+        let owed? = host_fn_owed(
+            host_fn_shadowing(x.name),
+            from.ordinal == 0,
+            self.named_host(d) != null,
+            answers,
+            asked.contains(from.key),
+        ) else { return [] }
+        [host_fn_owed_diag(self.decls.loc(d), x.name, from.key, owed)]
     }
 
     /// The deepest package root that holds `path`.
@@ -468,17 +436,15 @@ impl Workspace {
     /// refuses when neither — reading a file admits no package. A directory
     /// of this package named so is written `./@scope/…`.
     fn embed_place(source: string, rel: string, base: EmbedBase) -> Result<EmbedPlace, EmbedFault> {
-        if rel.starts_with("/") { fail EmbedFault.Outside }
         let from = self.packages()[self.holder_of_path(source)]
-        if !rel.starts_with("@") {
-            let start = match base { .Beside -> dir_of(source), .Root -> from.root }
-            return placed_beneath(from.root, joined_path(start, rel))
+        let source_in? = beneath_root(from.root, source) else { fail EmbedFault.Outside }
+        match embed_spot(source_in.rel, rel, base)? {
+            .Own(path) -> EmbedPlace { root: source_in.root, rel: path },
+            .Package(key, path) -> {
+                let root? = self.embed_root(from, key) else { fail EmbedFault.Undeclared(key) }
+                EmbedPlace { root: normalized(root), rel: path }
+            },
         }
-        let segments = rel.split("/")
-        let key = segments.slice(0, 2).join("/")
-        if segments.length < 3 { fail EmbedFault.Undeclared(key) }
-        let root? = self.embed_root(from, key) else { fail EmbedFault.Undeclared(key) }
-        placed_beneath(root, joined_path(root, segments.slice(2, segments.length).join("/")))
     }
 
     /// THE EMBED LAW, judged where the literal stands: the file's path,
@@ -516,10 +482,10 @@ impl Workspace {
         match self.embedded(path, kind) {
             .Text(text) -> text.bytes(),
             .Octets(octets) -> octets,
-            .Missing -> .Err("`embed` finds no `${place.rel}`"),
-            .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
-            .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
-            .Refused(why) -> .Err("`embed` could not read its file — ${why}"),
+            .Missing -> .Err(embed_unread_words(EmbedFault.Missing, place.rel)),
+            .Linked -> .Err(embed_unread_words(EmbedFault.Linked, place.rel)),
+            .NotText(at) -> .Err(embed_unread_words(EmbedFault.NotText(at), place.rel)),
+            .Refused(why) -> .Err(embed_unread_words(EmbedFault.Refused(why), place.rel)),
         }
     }
 
@@ -645,12 +611,12 @@ impl Workspace {
     }
 
     fn package_link(pkg: Package) -> List<string> {
-        let m = self.manifest(pkg.ordinal)
-        self
-            .package_objects(pkg, "")
-            .concat(["-L${d}" for d in self.filled_words(m.search)])
-            .concat(["-l${l}" for l in self.filled_words(m.libs)])
-            .concat(if pkg.ordinal == 0 { self.filled_words(m.raw) } else { [] })
+        manifest_link_words(
+            self.manifest(pkg.ordinal),
+            pkg.root,
+            pkg.ordinal == 0,
+            self.link_world(),
+        )
     }
 
     /// The objects a package's manifest links into every program that
@@ -660,9 +626,7 @@ impl Workspace {
         [joined_path(pkg.root, o) for o in self.filled_words(named)]
     }
 
-    fn package_wasm_objects(pkg: Package) -> List<string> {
-        [joined_path(pkg.root, o) for o in self.filled_words(self.manifest(pkg.ordinal).wasm_objects)]
-    }
+    fn package_wasm_objects(pkg: Package) -> List<string> { manifest_wasm_words(self.manifest(pkg.ordinal), pkg.root, self.link_world()) }
 
     /// The objects a link for `target` names that are not on disk.
     fn absent_objects(target: string) -> List<string> {
@@ -689,21 +653,12 @@ impl Workspace {
     /// on the build side, is LOUD: nothing opens and the refusal names
     /// the package.
     fn linked_packages() -> List<LinkedPackage> {
-        [self.linked_of(pkg) for pkg in self.packages() if self.owns_native(pkg)]
+        [l! for pkg in self.packages() for l in [self.linked_of(pkg)] if l != null]
     }
 
-    fn owns_native(pkg: Package) -> bool {
-        !self.manifest(pkg.ordinal).objects.is_empty()
-    }
-
-    fn linked_of(pkg: Package) -> LinkedPackage {
-        let named = self.manifest(pkg.ordinal).name
-        LinkedPackage {
-            name: named,
-            library: "build/lib${library_stem(named)}",
-            externs: self.externs_of(named),
-            wasm: !self.manifest(pkg.ordinal).wasm_objects.is_empty(),
-        }
+    fn linked_of(pkg: Package) -> LinkedPackage? {
+        let m = self.manifest(pkg.ordinal)
+        manifest_library(m, if m.objects.is_empty() { [] } else { self.externs_of(m.name) })
     }
 
     /// The extern fns a package declares, by name.
@@ -763,58 +718,14 @@ const entry_symbols: List<string> = [
     "__main_argc_argv",
 ]
 
-/// THE RULE'S CONDITION: "the platform defines it" is asked of the
-/// machine the compiler stands on, so the same name can refuse on one
-/// build machine and pass on another, and a build for another target is
-/// judged by this one's C library.
-fn host_fn_shadows(at: Loc?, name: string) -> Diag {
-    refusal(
-        "lower.host_fn_shadows",
-        at,
-        "`${name}` is a platform symbol — a host fn of that name would answer every caller of it",
-        "defined here",
-        "name the host fn for what its host asks of this program, as `avra_ui_event` is",
-    )
-}
-
-fn host_fn_answers_another(at: Loc?, name: string, theirs: string, from: string) -> Diag {
-    refusal(
-        "lower.host_fn_answers",
-        at,
-        "`${name}` is `${theirs}`'s to name, and `${from}` answers it — only the package that names an extern, or the program's own, answers it",
-        "answered here",
-        "answer it in the program's own package: a test stands there, and so does a host's stand-in",
-    )
-}
-
-fn host_fn_unhosted(at: Loc?, name: string, from: string) -> Diag {
-    refusal(
-        "lower.host_fn_unhosted",
-        at,
-        "the host fn `${name}` of `${from}` names no host, so no build can say whose it is",
-        "declared here",
-        "mark it with `@host(Host.Page)` (`@std/meta`) — the host that calls it by name",
-    )
-}
-
-fn host_fn_unasked(at: Loc?, name: string, from: string) -> Diag {
-    refusal(
-        "lower.host_fn_unasked",
-        at,
-        "the host fn `${name}` of `${from}` would be this program's export, and the program's own sources never import `${from}`",
-        "declared here",
-        "import from `${from}` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it",
-    )
-}
+/// Whether a host fn named `name` would define a symbol the link already has: the platform's, or a
+/// linked program's own start. THE RULE'S CONDITION: "the platform defines it" is asked of the
+/// machine the compiler stands on, so the same name can refuse on one build machine and pass on
+/// another, and a build for another target is judged by this one's C library.
+export fn host_fn_shadowing(name: string) -> bool { platform_defines(name) || entry_symbols.contains(name) }
 
 /// A package's root and a path beneath it.
 type EmbedPlace = { root: string, rel: string }
-
-/// `path` as it stands beneath `root`, or that it stands outside it.
-fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> {
-    let place? = beneath_root(root, path) else { fail EmbedFault.Outside }
-    place
-}
 
 /// A gathering mark's arguments as the key folds them; none for no mark.
 fn mark_prints(mark: AnnotationFact?) -> List<string> {
@@ -845,7 +756,7 @@ fn segments_of(dotted_text: string) -> List<string> {
 /// among them (none when the program is only checked). It answers
 /// as a lone Analysis does — report, lowered, run — so every engine
 /// takes either.
-export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
+export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
 
 /// A warning's kind under its package when it is a word; a kind
 /// that is not one is dropped — the warning speaks kind-less.
@@ -911,61 +822,110 @@ fn same_body(c: Case, body: ExprId) -> bool {
 }
 
 impl Workspace {
-    /// A row's words with their `${NAME}` holes filled, dropping any
-    /// that fill to nothing. A hole naming nothing asks for NO WORD:
-    /// an empty one would be an argument the linker still counts, and a
-    /// bare `-L` eats the word after it.
-    fn filled_words(words: List<string>) -> List<string> {
-        [w for w in [self.env_filled(x) for x in words] if !w.is_empty()]
-    }
+    /// A row's words with their `${NAME}` holes filled, dropping any that fill to nothing, each
+    /// variable and each file probed an input.
+    fn filled_words(words: List<string>) -> List<string> { link_filled(words, self.link_world()) }
 
-    /// A link input with its `${NAME}` holes filled from the
-    /// environment, each variable an input: a machine's own paths belong
-    /// to the machine, not to a checked-in manifest. A value is data — the
-    /// holes after it are filled, never the value itself.
-    fn env_filled(flag: string) -> string {
-        let opens = flag.index_of("\${")
-        if opens < 0 { return flag }
-        let closes = closing_brace(flag, opens)
-        if closes < opens { return flag }
-        let head = flag.substring(0, opens)
-        let name = flag.substring(opens + 2, closes)
-        let tail = flag.substring(closes + 1, flag.length)
-        "${head}${self.env(name) ?? self.platform_hole(name) ?? ""}${self.env_filled(tail)}"
+    /// What a link word reads of this machine, through the world's doors.
+    fn link_world() -> LinkWorld { LinkWorld { env: (n: string) -> self.env(n), there: (p: string) -> self.there(p) } }
+}
+
+/// What a link word reads of the machine it links on: an environment variable, and whether a file
+/// is there.
+export type LinkWorld = { env: fn(string) -> string?, there: fn(string) -> bool }
+
+/// A row's words with their `${NAME}` holes filled, dropping any that fill to nothing. A hole naming
+/// nothing asks for NO WORD: an empty one would be an argument the linker still counts, and a bare
+/// `-L` eats the word after it.
+export fn link_filled(words: List<string>, world: LinkWorld) -> List<string> {
+    [w for w in [env_filled(x, world) for x in words] if !w.is_empty()]
+}
+
+/// A link input with its `${NAME}` holes filled from the environment: a machine's own paths belong
+/// to the machine, not to a checked-in manifest. A value is data — the holes after it are filled,
+/// never the value itself.
+fn env_filled(flag: string, world: LinkWorld) -> string {
+    let opens = flag.index_of("\${")
+    if opens < 0 { return flag }
+    let closes = closing_brace(flag, opens)
+    if closes < opens { return flag }
+    let head = flag.substring(0, opens)
+    let name = flag.substring(opens + 2, closes)
+    let tail = flag.substring(closes + 1, flag.length)
+    "${head}${(world.env)(name) ?? platform_hole(name, world) ?? ""}${env_filled(tail, world)}"
+}
+
+/// WHAT A LINK HOLE MEANS ON THIS PLATFORM when the environment names nothing: the C++ runtime a
+/// static LLVM needs, and the directory the system's zstd lives in where the driver's default search
+/// does not reach it. The environment still wins (a machine's own paths belong to the machine); this
+/// is the floor, so a link run from any shell — a Sprite, a test binary, a bare `build/avra` —
+/// carries them without a shim having set them.
+fn platform_hole(name: string, world: LinkWorld) -> string? {
+    match name {
+        "AVRA_CXX_RUNTIME" -> if links_with_ld64() { "c++" } else { "stdc++" },
+        "AVRA_SYS_SEARCH" -> system_library_dir(world),
+        rest -> null,
     }
 }
 
-impl Workspace {
-    /// WHAT A LINK HOLE MEANS ON THIS PLATFORM when the environment names nothing: the C++ runtime a
-    /// static LLVM needs, and the directory the system's zstd lives in where the driver's default
-    /// search does not reach it. The environment still wins (a machine's own paths belong to the
-    /// machine); this is the floor, so a link run from any shell — a Sprite, a test binary, a bare
-    /// `build/avra` — carries them without a shim having set them.
-    fn platform_hole(name: string) -> string? {
-        match name {
-            "AVRA_CXX_RUNTIME" -> if links_with_ld64() { "c++" } else { "stdc++" },
-            "AVRA_SYS_SEARCH" -> self.system_library_dir(),
-            rest -> null,
-        }
+/// The directory holding the system's `libzstd`: Homebrew's on macOS, else the first multiarch or
+/// lib directory that has it. None when none does — the driver's own search then decides.
+fn system_library_dir(world: LinkWorld) -> string? {
+    let candidates = if links_with_ld64() {
+        ["/opt/homebrew/lib", "/usr/local/lib"]
+    } else {
+        ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
     }
+    candidates.find((dir) -> holds_zstd(dir, world))
+}
 
-    /// The directory holding the system's `libzstd`: Homebrew's on macOS, else the first multiarch
-    /// or lib directory that has it, each probe an INPUT through the world's door (a cached build
-    /// re-judges when the library appears or moves). None when none does — the driver's own search
-    /// then decides.
-    fn system_library_dir() -> string? {
-        let candidates = if links_with_ld64() {
-            ["/opt/homebrew/lib", "/usr/local/lib"]
-        } else {
-            ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
-        }
-        candidates.find((dir) -> self.holds_zstd(dir))
-    }
+fn holds_zstd(dir: string, world: LinkWorld) -> bool {
+    ["libzstd.a", "libzstd.so", "libzstd.dylib"]
+        .any((name) -> (world.there)(joined_path(dir, name)))
+}
 
-    fn holds_zstd(dir: string) -> bool {
-        ["libzstd.a", "libzstd.so", "libzstd.dylib"]
-            .any((name) -> self.there(joined_path(dir, name)))
+/// The library a package's manifest `m` builds for the evaluator to open, declaring `externs`; absent
+/// for a package that links no objects.
+export fn manifest_library(m: Manifest, externs: List<string>) -> LinkedPackage? {
+    if m.objects.is_empty() { return null }
+    LinkedPackage {
+        name: m.name,
+        library: "build/lib${library_stem(m.name)}",
+        externs: externs,
+        wasm: !m.wasm_objects.is_empty(),
     }
+}
+
+/// The words a package links into every program that reaches it, its manifest `m` read where it
+/// stands at `root`: its objects, its searched directories and libraries, and the root package's raw
+/// words.
+export fn manifest_link_words(
+    m: Manifest,
+    root: string,
+    is_root: bool,
+    world: LinkWorld,
+    shared: bool = false,
+) -> List<string> {
+    let search = link_filled(m.search, world)
+    let standing = if shared && m.shared != "" { search.find((d) -> shared_beside(d, m.shared, world)) } else { null }
+    [joined_path(root, o) for o in link_filled(m.objects, world)]
+        .concat(["-L${d}" for d in search])
+        .concat(
+            if standing != null { ["-l${m.shared}", "-Wl,-rpath,${standing!}"] } else { ["-l${l}" for l in link_filled(m.libs, world)] },
+        )
+        .concat(if is_root { link_filled(m.raw, world) } else { [] })
+}
+
+/// Whether the directory `dir` holds the shared library `name`, as ELF or Mach-O names it.
+fn shared_beside(dir: string, name: string, world: LinkWorld) -> bool {
+    (world.there)(joined_path(dir, "lib${name}.so")) ||
+        (world.there)(joined_path(dir, "lib${name}.dylib"))
+}
+
+/// The words a non-host link carries of the package `m` at `root`: the `wasm_objects` it names, its
+/// holes filled; never a native `-L`, `-l` or `[link.raw]`.
+export fn manifest_wasm_words(m: Manifest, root: string, world: LinkWorld) -> List<string> {
+    [joined_path(root, o) for o in link_filled(m.wasm_objects, world)]
 }
 
 /// The variables a word's `${NAME}` holes name, in order.
@@ -995,13 +955,4 @@ fn index_of_file(files: List<Analysis>, path: string) -> int? {
         if a.view.source.file == path { return i }
     }
     null
-}
-
-/// Whether `kind` gathers `d`: an instance of its component word, or a declaration wearing its mark.
-fn gathered_by(kind: CollectKind, d: Decl) -> bool {
-    match kind {
-        .Component(w) -> d.word == w,
-        .Annotated(w) -> d.marks.contains(w),
-        .UnknownKind(_) -> false,
-    }
 }

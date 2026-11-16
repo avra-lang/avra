@@ -7,7 +7,7 @@
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 
-R=build/store-quiet; fails=0
+R=build/store-quiet
 rm -rf "$R" && mkdir -p $R/p/src
 cat > $R/p/avra.toml <<'TOML'
 [package]

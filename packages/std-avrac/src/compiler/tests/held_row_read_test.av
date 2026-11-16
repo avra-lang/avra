@@ -1,0 +1,61 @@
+// A read of a declaration whose file's rows stand by what a read kept records that
+// declaration's own name bucket — never its file's or its module's whole — so an edit to
+// another declaration beside it leaves its readers standing.
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.core.{DeclId, FileId}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use @std.relation.engine.{Key, same_key}
+
+fn two_decls() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn x() -> int { 1 }\nfn y() -> int { 2 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+fn named(ws: Workspace, f: FileId, name: string) -> DeclId { ws.decls.decls_of_file(f).find((d) -> ws.decls.decl(d).name == name)! }
+
+/// What a query that reads only `x`'s row records, once its file's rows stand as minted.
+fn x_read(ws: Workspace) -> List<Key> {
+    let f = ws.file_id("/w/src/main.av")
+    let _ = ws.items(f)
+    let x = named(ws, f, "x")
+    ws.decls.note_rows(f, 2)
+    let outer = Key { family: ws.db.family(), arg: 0 }
+    if ws.db.ask(outer) is .Compute {
+        ws.db.begin(outer)
+        let _ = ws.decls.decl(x)
+        ws.db.settle(outer, 0)
+    }
+    ws.db.edges_by_reader(outer)
+}
+
+fn bucket_key(ws: Workspace, name: string) -> Key {
+    let f = ws.file_id("/w/src/main.av")
+    Key { family: family_ordinal("Named"), arg: ws.decls.raw_decl(named(ws, f, name)).bucket }
+}
+
+spec "compiler/decls — a minted declaration's reader stands on that declaration alone" {
+    given "two declarations in one file, its rows minted from what a read kept" {
+        then "reading x records x's name bucket" {
+            let ws = two_decls()
+            x_read(ws).any(same_key(it, bucket_key(ws, "x")))
+        }
+        then "reading x records nothing of y" {
+            let ws = two_decls()
+            !x_read(ws).any(same_key(it, bucket_key(ws, "y")))
+        }
+        then "reading x records nothing of its file's whole rows" {
+            let ws = two_decls()
+            let f = ws.file_id("/w/src/main.av")
+            !x_read(ws).any(same_key(it, Key { family: family_ordinal("Items"), arg: f.index }))
+        }
+    }
+}

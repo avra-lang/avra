@@ -121,6 +121,11 @@ compare() {
             echo "::notice::speed: the runner's fixed workload ran ${medpct}% against main's (${c1} ms against ${b1} ms), so a row gates only beyond twice that"
         fi
     fi
+    # A RUN THAT MEASURED ITS RUNNER AGAINST A BASELINE THAT NEVER DID has no yardstick: the fixed workload ran here, main's
+    # baseline carries no such row (it predates the calibration), and too few CPU rows stand for a median. Its rows are said
+    # unjudged, loudly — a wall time from an unknown machine is not a verdict, and the counters (tools/census_ratchet.py) decide.
+    unjudged=0
+    if [ -n "$cal" ] && [ -z "$b1" ] && { [ "$n" -lt 3 ] || [ -z "$med" ]; }; then unjudged=1; fi
     runner=0
     cpus=$(awk '$1 ~ /^speed\.(cpu|phases)-/ { print $1 }' "$cur" 2>/dev/null)
     for m in $METRICS $cpus; do
@@ -158,7 +163,9 @@ compare() {
             if [ "$pct" -gt 100 ] 2>/dev/null && [ "$grew" = 1 ] && gates "$m"; then
                 # BEYOND TWICE THE RUN: a row earns a gate only by growing twice as much as the run's
                 # middle row did. A uniform +120% run has median 2.2, and its rows sit at 2.2, not 4.4.
-                if [ "$n" -lt 3 ] || [ -z "$med" ] || awk -v c="$c" -v b="$b" -v m="$med" 'BEGIN { exit !(c / b >= 2 * m) }'; then
+                if [ "$unjudged" = 1 ]; then
+                    echo "::warning::speed: $m is ${pct}% slower than main (${b}s -> ${c}s) — UNJUDGED: the runner was measured here but main's baseline holds no calibration to compare it with, so the counters decide"
+                elif [ "$n" -lt 3 ] || [ -z "$med" ] || awk -v c="$c" -v b="$b" -v m="$med" 'BEGIN { exit !(c / b >= 2 * m) }'; then
                     if [ "$n" -lt 3 ] || [ -z "$med" ]; then
                         echo "::notice::speed: fewer than three comparable CPU rows, so $m is judged by the absolute backstop alone"
                     fi
@@ -279,6 +286,11 @@ case "${1:-}" in
         { [ "$stk" = 0 ] && printf '%s\n' "$outk" | grep -q "fixed workload ran 300%"; } || { echo "speed_note: a 4x slower runner did not excuse a 3.8x row ($stk): $outk"; exit 1; }
         printf 'speed.phases-site-cold 46\nspeed.phases-small-cold 10\nspeed.calib-ms-x 1020\n' > "$d/curk2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curk2" "$d/basek" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a row 3.8x over main's with a runner as fast as main's did not fail"; exit 1; }
+        # A RUNNER MEASURED AGAINST A BASELINE WITH NO CALIBRATION: a 3.8x row with too few rows for a median is said unjudged, never failed.
+        printf 'speed.phases-site-cold 46\nspeed.phases-small-cold 10\nspeed.calib-ms-x 1474\n' > "$d/curn"
+        printf 'speed.phases-site-cold 12\nspeed.phases-small-cold 10\n' > "$d/basen"
+        outn=$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/stdout sh "$0" compare "$d/curn" "$d/basen" 2>&1); stn=$?
+        { [ "$stn" = 0 ] && printf '%s\n' "$outn" | grep -q "UNJUDGED"; } || { echo "speed_note: a row with a measured runner and a calibration-less baseline failed or was not said unjudged ($stn): $outn"; exit 1; }
         # A SOCKET SUITE: its whole-step CPU swung 20 -> 58 s with the same compile phases, so it warns; its phases gate.
         printf 'speed.cpu-x-std-ui-http-cold 58\nspeed.phases-x-std-ui-http-cold 8\n' > "$d/curs1"
         printf 'speed.cpu-x-std-ui-http-cold 20\nspeed.phases-x-std-ui-http-cold 7\n' > "$d/bases1"
@@ -287,7 +299,7 @@ case "${1:-}" in
         printf 'speed.cpu-x-std-ui-http-cold 60\nspeed.phases-x-std-ui-http-cold 45\n' > "$d/curs2"
         printf 'speed.cpu-x-std-ui-http-cold 20\nspeed.phases-x-std-ui-http-cold 12\n' > "$d/bases2"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/curs2" "$d/bases2" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: compile phases 3.7x over main's, +33 s, did not fail"; exit 1; }
-        echo "speed_note: self-test passed — 28 fixtures"
+        echo "speed_note: self-test passed — 29 fixtures"
         exit 0 ;;
     *) echo "usage: speed_note.sh collect <log>... | compare <current> <main>" ;;
 esac

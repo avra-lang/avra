@@ -29,8 +29,15 @@ fn serve_static(q: Request<Static>) -> Response { text(200, "static " + q.params
 fn serve_png(q: Request<Png>) -> Response { text(200, "png " + q.params.path) }
 fn serve_word(_q: Request<Unrouted>) -> Response { text(200, "word") }
 
-fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static) }
-fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse(t), serve_png) }
+fn r_static() -> Route {
+    tailed<Static>(
+        Method.Get,
+        "/static/{path...}",
+        (t: Bytes) -> Static.parse_octets(t),
+        serve_static,
+    )
+}
+fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse_octets(t), serve_png) }
 
 /// The words of a table's fault variants, one per fault.
 fn kinds(rows: List<Route>) -> List<string> {
@@ -54,11 +61,11 @@ fn answer_of(rows: List<Route>, line: string) -> string {
 
 fn routes() -> List<Route> {
     [
-        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse_octets(t), serve_idea),
         routed<Search>(
             Method.Get,
             "/search/{term}/{page}",
-            (t: Bytes) -> Search.parse(t),
+            (t: Bytes) -> Search.parse_octets(t),
             serve_search,
         ),
     ]
@@ -130,7 +137,7 @@ spec "@std.http route" {
                         routed<Idea>(
                             Method.Get,
                             "/ideas/{id}",
-                            (t: Bytes) -> Idea.parse(t),
+                            (t: Bytes) -> Idea.parse_octets(t),
                             serve_gone,
                         ),
                     ],
@@ -146,13 +153,13 @@ spec "@std.http route" {
                         routed<Search>(
                             Method.Get,
                             "/search/{term}/{page}",
-                            (t: Bytes) -> Search.parse(t),
+                            (t: Bytes) -> Search.parse_octets(t),
                             serve_search,
                         ),
                         routed<Idea>(
                             Method.Get,
                             "/ideas/{id}",
-                            (t: Bytes) -> Idea.parse(t),
+                            (t: Bytes) -> Idea.parse_octets(t),
                             serve_idea,
                         ),
                     ],
@@ -167,11 +174,16 @@ spec "@std.http route" {
         then "two routes of one shape are named, later first" {
             faults(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Get,
                         "/ideas/{slug}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -181,11 +193,16 @@ spec "@std.http route" {
         then "the refusal names both patterns and says which is unreachable" {
             let found = faults(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Get,
                         "/ideas/{slug}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -198,11 +215,16 @@ spec "@std.http route" {
         then "one shape under two methods is two routes, not a conflict" {
             faults(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Post,
                         "/ideas/{id}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -284,7 +306,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/files",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -296,7 +318,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/{path}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -309,7 +331,7 @@ spec "@std.http route" {
                     routed<Static>(
                         Method.Get,
                         "/static/{path...}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -324,7 +346,7 @@ spec "@std.http route" {
                     routed<Search>(
                         Method.Get,
                         "/search/{term...}/{page}",
-                        (t: Bytes) -> Search.parse(t),
+                        (t: Bytes) -> Search.parse_octets(t),
                         serve_search,
                     ),
                 ],
@@ -341,7 +363,7 @@ spec "@std.http route" {
                     routed<Search>(
                         Method.Get,
                         "/static/{term}/{page}",
-                        (t: Bytes) -> Search.parse(t),
+                        (t: Bytes) -> Search.parse_octets(t),
                         serve_search,
                     ),
                 ],
@@ -354,7 +376,12 @@ spec "@std.http route" {
         then "NO ROUTE OF FIXED WIDTH CAN SHADOW A REST-TAKER — there is always a deeper target" {
             faults(
                 [
-                    routed<Idea>(Method.Get, "/static/{x}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/static/{x}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     r_static(),
                 ],
             )
@@ -370,7 +397,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/{rest...}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -383,11 +410,16 @@ spec "@std.http route" {
         then "two routes of one specificity over one set of targets are an Overlap" {
             kinds(
                 [
-                    routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
                     routed<Idea>(
                         Method.Get,
                         "/ideas/{slug}",
-                        (t: Bytes) -> Idea.parse(t),
+                        (t: Bytes) -> Idea.parse_octets(t),
                         serve_gone,
                     ),
                 ],
@@ -400,7 +432,7 @@ spec "@std.http route" {
                     tailed<Static>(
                         Method.Get,
                         "/static/files",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],
@@ -413,7 +445,7 @@ spec "@std.http route" {
                     routed<Static>(
                         Method.Get,
                         "/static/{path...}",
-                        (t: Bytes) -> Static.parse(t),
+                        (t: Bytes) -> Static.parse_octets(t),
                         serve_static,
                     ),
                 ],

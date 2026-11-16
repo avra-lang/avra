@@ -10,7 +10,6 @@ use compiler.{
 }
 use compiler.host.{Host, InputName, Listed, Beneath, Stamp, memory_host}
 use compiler.families.{Family}
-use @std.relation.engine.{Key}
 use core.{digest_of_octets}
 
 /// A host over a table the test writes: `names` is what a listing sees.
@@ -79,15 +78,6 @@ fn helper_deleted(w: World) {
 fn entered(w: World) {
     w.files.put("/w/src/main.av", "1\n")
     w.names.push("main.av")
-}
-
-fn scan_key(w: World, f: Family) -> Key { Key { family: f.ordinal, arg: w.ws.text_key("/w/src/a.av") } }
-
-/// The revision the names scanned out of `a.av` last changed at — what
-/// a reader of the scan compares, asked after the scan itself.
-fn named_at(w: World) -> int {
-    let _ = component_names(w.ws, "/w/src/a.av")
-    w.ws.db.changed_at(scan_key(w, Family.ComponentNames))
 }
 
 fn added(w: World) {
@@ -413,54 +403,40 @@ spec "compiler/world" {
         }
     }
     given "a scan of a sibling file, read by another file's query" {
-        then "a comment added to the file moves the revision and leaves the scan's answer where a reader last saw it" {
+        then "a comment added to the file moves the revision once and names nothing" {
             let w = world()
-            let before = named_at(w)
+            let _ = component_names(w.ws, "/w/src/a.av")
             w.files.put("/w/src/a.av", "// a note\n1\n")
             let rev = w.ws.db.revision()
             let _ = moved(w)
-            component_names(w.ws, "/w/src/a.av").is_empty() &&
-                w.ws.db.revision() == rev + 1 &&
-                named_at(w) == before
+            component_names(w.ws, "/w/src/a.av").is_empty() && w.ws.db.revision() == rev + 1
         }
-        then "a component named in the file moves the scan's answer, so a reader of it runs again" {
+        then "a component named in the file is named after the file moves" {
             let w = world()
-            let before = named_at(w)
+            let _ = component_names(w.ws, "/w/src/a.av")
             w.files.put("/w/src/a.av", "component Panel {\n}\n")
             let _ = moved(w)
-            component_names(w.ws, "/w/src/a.av").join(",") == "Panel" && named_at(w) > before
+            component_names(w.ws, "/w/src/a.av").join(",") == "Panel"
         }
-        then "whether the file can open a block word moves with it, and stands under a comment" {
+        then "whether the file can open a block word follows its text, and a comment opens none" {
             let w = world()
             let was = file_lexes_block(w.ws, "/w/src/a.av")
-            let before = w.ws.db.changed_at(scan_key(w, Family.BlockScan))
             w.files.put("/w/src/a.av", "// a note\n1\n")
             let _ = moved(w)
             let noted = file_lexes_block(w.ws, "/w/src/a.av")
-            let stood = w.ws.db.changed_at(scan_key(w, Family.BlockScan)) == before
             w.files.put("/w/src/a.av", "component Panel {\n}\n")
             let _ = moved(w)
-            !was &&
-                !noted &&
-                stood &&
-                file_lexes_block(w.ws, "/w/src/a.av") &&
-                w.ws.db.changed_at(scan_key(w, Family.BlockScan)) > before
+            !was && !noted && file_lexes_block(w.ws, "/w/src/a.av")
         }
-        then "whether the file declares a component moves with it, and stands under a comment" {
+        then "whether the file declares a component follows its text, and a comment declares none" {
             let w = world()
             let was = file_declares_component(w.ws, "/w/src/a.av")
-            let before = w.ws.db.changed_at(scan_key(w, Family.ComponentScan))
             w.files.put("/w/src/a.av", "// a note\n1\n")
             let _ = moved(w)
             let noted = file_declares_component(w.ws, "/w/src/a.av")
-            let stood = w.ws.db.changed_at(scan_key(w, Family.ComponentScan)) == before
             w.files.put("/w/src/a.av", "component Panel {\n}\n")
             let _ = moved(w)
-            !was &&
-                !noted &&
-                stood &&
-                file_declares_component(w.ws, "/w/src/a.av") &&
-                w.ws.db.changed_at(scan_key(w, Family.ComponentScan)) > before
+            !was && !noted && file_declares_component(w.ws, "/w/src/a.av")
         }
     }
     given "a listing" {

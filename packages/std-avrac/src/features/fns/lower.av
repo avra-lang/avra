@@ -176,25 +176,44 @@ fn named_reg(mut cx: LowerCx, e: ExprId, regs: List<Reg>) -> Reg? {
     cx.packed(e, regs)
 }
 
-/// A host call's arguments. A `mut` seat takes the ADDRESS of the
-/// caller's cell — an Avra `mut` seat writes through the shared box,
-/// and a C callee has no box, so the cell IS the mechanism — and
-/// every other seat takes the value. The declaration law already
-/// held the seat to a shape a cell can wear, and the call law to a
-/// LOCAL binding, so the cell is there.
-fn host_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg> {
+/// A host call: its arguments, the call, then each place a `mut` seat was handed along a path written
+/// back from the cell C wrote. A `mut` seat takes the ADDRESS of a cell — an Avra `mut` seat writes
+/// through the shared box, and a C callee has no box, so the cell IS the mechanism — and every other
+/// seat takes the value.
+fn host_call(mut cx: LowerCx, e: ExprId, symbol: string, args: List<ExprId>) -> Reg {
     let marks = host_marks(cx, e, args.length)
-    [seat_reg(cx, a, mut_mark(marks, j)) for j, a in args]
+    let seats = [host_seat(cx, a, mut_mark(marks, j)) for j, a in args]
+    let answer = extern_call_reg(cx, e, symbol, [s.reg for s in seats])
+    for s in seats {
+        if s.along {
+            cx.written_to(s.arg, cx.loaded_as(cx.out.type_of_reg(s.reg), s.reg))
+        }
+    }
+    answer
 }
 
-/// The register a seat is handed. An inout seat takes the CELL, and
-/// the two host-seat laws guarantee there is one — so absence here
-/// is the compiler's own defect, never the value as a fallback,
-/// which would hand C a copy and lose every write it makes.
-fn seat_reg(mut cx: LowerCx, a: ExprId, inout: bool) -> Reg {
-    if !inout { return cx.reg_of(a) }
-    let cell? = cx.cell_of(a) else { return cx.lower_defect(a, "a `mut` host seat with no cell behind it") }
-    cell
+/// What a host seat is handed: the register, and whether it is a cell seeded from a place along a
+/// path, which the call's write reaches only when the cell is written back.
+type HostSeat = { arg: ExprId, reg: Reg, along: bool }
+
+/// The register a seat is handed. An inout seat takes the CELL a `mut` local holds, or for a place
+/// along a path from one, a cell seeded with the place's value; the two host-seat laws guarantee one
+/// of them — so absence here is the compiler's own defect, never the value as a fallback, which would
+/// hand C a copy and lose every write it makes.
+fn host_seat(mut cx: LowerCx, a: ExprId, inout: bool) -> HostSeat {
+    if !inout { return HostSeat { arg: a, reg: cx.reg_of(a), along: false } }
+    let cell = cx.cell_of(a)
+    if cell != null { return HostSeat { arg: a, reg: cell!, along: false } }
+    let root = cx.view.store.place_root(a)
+    if root == null || root! == a {
+        return HostSeat {
+            arg: a,
+            reg: cx.lower_defect(a, "a `mut` host seat with no cell behind it"),
+            along: false,
+        }
+    }
+    let value = cx.view.store.expr(a).lower(cx, a)
+    HostSeat { arg: a, reg: cx.seeded_cell(cx.out.type_of_reg(value), value), along: true }
 }
 
 /// The callee's declared marks for this call's seats.
@@ -215,8 +234,7 @@ fn valued_call_reg(mut cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg
 /// the driver's last-value tracking never sees a return.
 export fn lower_return(mut cx: LowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
-    cx.leaving(v)
-    cx.emit(Ins.FnExit(v ?? cx.hollow_of(cx.type(void))))
+    cx.answer_exit(v)
     null
 }
 

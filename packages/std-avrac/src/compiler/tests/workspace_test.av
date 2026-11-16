@@ -4,6 +4,7 @@
 use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
+use @std.relation.stable.{indexed_scope}
 use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
 use compiler.host.{memory_host, memory_host_at}
 use @std.avrac.diagnostics.{Diag, render, new_source_file}
@@ -464,7 +465,7 @@ spec "signatures" {
             let y = TypeId { index: 2 }
             let together = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x, y], []] })
             let apart = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x], [y]] })
-            sig_hash(together) != sig_hash(apart)
+            sig_hash(together, indexed_scope()) != sig_hash(apart, indexed_scope())
         }
         then "a field's default is part of the record that declares it" {
             let x = TypeId { index: 1 }
@@ -474,12 +475,12 @@ spec "signatures" {
             let present: List<DeclId?> = [DeclId { index: 0 }]
             let held = StructSig { names: ["a"], types: [x], defaults: absent }
             let seeded = StructSig { names: ["a"], types: [x], defaults: present }
-            sig_hash(DeclSig.Record(held)) != sig_hash(DeclSig.Record(seeded))
+            sig_hash(DeclSig.Record(held), indexed_scope()) != sig_hash(DeclSig.Record(seeded), indexed_scope())
         }
         then "a named type's shape is its signature — `type Id = int` is not `type Id = string`" {
             let over_int = DeclSig.Named(NamedSig { of: TypeId { index: 1 } })
             let over_text = DeclSig.Named(NamedSig { of: TypeId { index: 2 } })
-            sig_hash(over_int) != sig_hash(over_text)
+            sig_hash(over_int, indexed_scope()) != sig_hash(over_text, indexed_scope())
         }
     }
 }
@@ -764,7 +765,7 @@ spec "avra fmt --write's own receipt" {
             }
         }
     }
-    given "a scope whose only content is its tail value — `tail_scoped`'s span narrows to the value alone, for a diagnostic pointing at the answer" {
+    given "a scope whose only content is its tail value" {
         then "an own-line comment before the closing brace stays inside it, stable under one write" {
             let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
             let ws = with_main(src)

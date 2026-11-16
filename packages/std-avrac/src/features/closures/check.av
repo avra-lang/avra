@@ -4,7 +4,7 @@
 //! `fn(params) -> body`.
 use core.{ExprId, Type, TypeId, Arrow, Param, SeatMark, mut_mark, settled_mark, same_expr}
 use features.{TypeCx, this_is, slot_worthy, Cap}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId {
     let names = [pp.name.of for pp in params]
@@ -40,8 +40,7 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let marks = heard_marks(cx, e, params)
     let ret = cx.lambda_body(e, ptys, marks, body, cx.promised(answer))
     if cx.errored_ty(ret) { return cx.error_type }
-    if cx
-        .escapes_with_task(cx.loc_of(body), "this body answers `${cx.view.types.name_of(ret)}`", ret) {
+    if cx.escapes_with_task(cx.loc_of(body), lambda_answer_label(cx.view.types.name_of(ret)), ret) {
         return cx.error_type
     }
     match answer {
@@ -174,9 +173,18 @@ fn captures_task(mut cx: TypeCx, e: ExprId, seats: List<TypeId>) -> bool {
     if cx.task_bodies.any(same_expr(it, e)) { return false }
     let j? = seats.find_index((t) -> cx.view.types.holds_tasks(t)) else { return false }
     let cap: Cap? = cx.names.capture(e)
-    let name = if cap == null { "a name" } else { "`${cap!.names[j]}`" }
-    cx.escapes_with_task(cx.loc_of(e), "${name} is captured here", seats[j])
+    let name = if cap == null { "a name" } else { capture_named(cap!.names[j]) }
+    cx.escapes_with_task(cx.loc_of(e), captured_label(name), seats[j])
 }
+
+/// Where a lambda's body answering `spelled` stands.
+export fn lambda_answer_label(spelled: string) -> string { "this body answers `${spelled}`" }
+
+/// Where a lambda captures `name`, as the capture is named.
+export fn captured_label(name: string) -> string { "${name} is captured here" }
+
+/// A captured binding as a capture names it.
+export fn capture_named(name: string) -> string { "`${name}`" }
 
 /// The first lane no slot can hold, when one exists.
 fn first_unslottable(cx: TypeCx, seats: List<TypeId>) -> int? {
@@ -213,7 +221,7 @@ export fn unfed_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId?) {
     if name == "it" && cx.view.types.arrow_parts(at) != null { return pronoun_unseated(cx, e, at) }
     if name == "it" { return pronoun_starved(cx, e, at) }
     if cx.view.types.arrow_parts(at) != null { return misfit_lambda(cx, e, at) }
-    if cx.view.store.is_trailing(e) { return block_at_scalar(cx, e, at) }
+    if cx.view.store.written_as_block(e) { return block_at_scalar(cx, e, at) }
     lambda_at_scalar(cx, e, at)
 }
 
@@ -225,29 +233,27 @@ fn first_param_name(cx: TypeCx, e: ExprId) -> string {
 // ── The voices ──
 
 fn not_offered(mut cx: TypeCx, e: ExprId, name: string, offered: List<string>) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.not_offered",
-                cx.loc_of(e),
-                "`${name}` is not offered here — this seat offers ${offered_list(offered)}",
-                "`${name}` asked for here",
-                "name what the seat offers, in any order and any subset",
-            ),
-        )
+    cx.spoken(said_as("type.not_offered", cx.loc_of(e), offer_unnamed(name, offered)))
 }
 
-fn typed_offer(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.not_offered",
-                cx.loc_of(e),
-                "`${name}` is taken by name, so it wears the offered field's type",
-                "annotated here",
-                "drop the annotation",
-            ),
-        )
+fn typed_offer(mut cx: TypeCx, e: ExprId, name: string) -> TypeId { cx.spoken(said_as("type.not_offered", cx.loc_of(e), offer_typed(name))) }
+
+/// A lambda taking its seat's record by name asking for `name`, where it offers `offered`.
+export fn offer_unnamed(name: string, offered: List<string>) -> Voice {
+    Voice {
+        message: "`${name}` is not offered here — this seat offers ${offered_list(offered)}",
+        label: "`${name}` asked for here",
+        help: "name what the seat offers, in any order and any subset",
+    }
+}
+
+/// A lambda taking its seat's record by name writing its field `name` a type.
+export fn offer_typed(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is taken by name, so it wears the offered field's type",
+        label: "annotated here",
+        help: "drop the annotation",
+    }
 }
 
 fn offered_list(names: List<string>) -> string {
@@ -270,14 +276,21 @@ fn never_heard(mut cx: TypeCx, e: ExprId, name: string) {
 fn pronoun_starved(mut cx: TypeCx, e: ExprId, seat: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.lambda",
                 cx.loc_of(e),
-                "`it` has no element here — this seat takes `${cx.view.types.name_of(seat)}`, not a fn",
-                "the pronoun",
-                "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`",
+                pronoun_without_element(cx.view.types.name_of(seat)),
             ),
         )
+}
+
+/// The pronoun's own lambda handed to a seat of `seat`, which takes no fn.
+export fn pronoun_without_element(seat: string) -> Voice {
+    Voice {
+        message: "`it` has no element here — this seat takes `${seat}`, not a fn",
+        label: "the pronoun",
+        help: "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`",
+    }
 }
 
 fn seat_named_twice(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
@@ -362,15 +375,14 @@ fn uncapturable(mut cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {
 }
 
 fn uncallable(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
-    let n = cx.name_at(subject)
-    cx
-        .spoken(
-            refusal(
-                "type.lambda",
-                cx.loc_of(e),
-                "this is not callable — it holds a `${n}`",
-                this_is(n),
-                "only fns and fn-typed values take arguments",
-            ),
-        )
+    cx.spoken(said_as("type.lambda", cx.loc_of(e), uncallable_value(cx.name_at(subject))))
+}
+
+/// A call of a value of `found`, which takes no arguments.
+export fn uncallable_value(found: string) -> Voice {
+    Voice {
+        message: "this is not callable — it holds a `${found}`",
+        label: this_is(found),
+        help: "only fns and fn-typed values take arguments",
+    }
 }

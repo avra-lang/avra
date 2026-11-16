@@ -2,7 +2,7 @@
 //! `.await` answers it back; `.done` is a `bool`.
 use core.{ExprId, TypeId, Type, ResSides, TypeRef}
 use features.{TypeCx, FileView, FailureView, Refusal, MethodCall, this_is}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
@@ -76,6 +76,19 @@ fn check_done(cx: TypeCx, _e: ExprId, _ty: TypeId) -> TypeId { cx.type(bool) }
 fn check_cancel(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     if !cx.seated(mc, "Task.cancel", []) { return cx.error_type }
     cx.type(void)
+}
+
+/// `t.filed(arm, member)` — the task's end files a wake for arm `arm` of the wait the task stands in,
+/// as member `member`.
+fn check_filed(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !cx.seated(mc, "Task.filed", [cx.type(int), cx.type(int)]) { return cx.error_type }
+    cx.type(void)
+}
+
+/// `t.since()` — the stamp the task's end took, 0 while it runs: what orders tasks that ended.
+fn check_since(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !cx.seated(mc, "Task.since", []) { return cx.error_type }
+    cx.type(int)
 }
 
 /// `Tasks.new()` — an empty owner.
@@ -168,43 +181,32 @@ fn task_app(cx: TypeCx, name: string, t: TypeId) -> TypeId? {
 
 // ── The voices ──
 
-fn yield_without(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.yield",
-                cx.loc_of(e),
-                "`yield` sends into the producer it stands in, and no producer encloses it",
-                "no producer here",
-                "write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands",
-            ),
-        )
+fn yield_without(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("flow.yield", cx.loc_of(e), yield_unenclosed())) }
+
+/// A `yield` no producer encloses.
+export fn yield_unenclosed() -> Voice {
+    Voice {
+        message: "`yield` sends into the producer it stands in, and no producer encloses it",
+        label: "no producer here",
+        help: "write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands",
+    }
 }
 
 fn no_task(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.produce",
-                cx.loc_of(e),
-                "`produce` answers `@std.task.Source`, and this program loads no `@std/task`",
-                "no `@std/task` here",
-                "add `use @std.task`",
-            ),
-        )
+    cx.spoken(said_as("flow.produce", cx.loc_of(e), taskless("produce", "Source")))
 }
 
 fn no_task_chan(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.channel",
-                cx.loc_of(e),
-                "`channel` answers `@std.task.Channel`, and this program loads no `@std/task`",
-                "no `@std/task` here",
-                "add `use @std.task`",
-            ),
-        )
+    cx.spoken(said_as("flow.channel", cx.loc_of(e), taskless("channel", "Channel")))
+}
+
+/// The form `form`, which answers `@std/task`'s `answer`, in a program that loads no `@std/task`.
+export fn taskless(form: string, answer: string) -> Voice {
+    Voice {
+        message: "`${form}` answers `@std.task.${answer}`, and this program loads no `@std/task`",
+        label: "no `@std/task` here",
+        help: "add `use @std.task`",
+    }
 }
 
 fn answers_nothing(mut cx: TypeCx, body: ExprId) -> TypeId {

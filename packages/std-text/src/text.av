@@ -16,7 +16,10 @@
 //! `parse_int` reads the other way: `-`? digits, the ceiling on both
 //! sides, absence for anything else; `parse_float` adds a fraction
 //! and an exponent, and absence past the largest float. `with_room` is
-//! an empty `Bytes` that appends grow in place.
+//! an empty `Bytes` that appends grow in place, and a `BytesBuilder`
+//! appends words and runs of octets to one such buffer, held in a cell.
+
+use @std.meta.{identity}
 
 extern fn avra_str_from_codepoint(code: int) -> string
 extern fn avra_str_parses_int(s: string) -> bool
@@ -33,6 +36,45 @@ extern fn avra_bytes_with_room(n: int) -> Bytes
 /// negative room traps.
 export fn with_room(n: int) -> Bytes {
     avra_bytes_with_room(n)
+}
+
+// ── Octets built in place ───────────────────────────────────────
+
+extern fn avra_cell_bytes_word(cell: Cell<Bytes>, word: int, width: int)
+extern fn avra_cell_bytes_run(cell: Cell<Bytes>, run: Bytes)
+
+/// Octets under construction, in one buffer that grows in place: an append copies its own octets
+/// and makes nothing, and the buffer moves only when its room is spent, doubling. Bytes it handed
+/// out never change. An identity: every holder appends to the one buffer.
+@identity
+export type BytesBuilder = { octets: Cell<Bytes> }
+
+/// A builder with nothing in it and room for `room` octets before its buffer first moves.
+export fn bytes_builder(room: int) -> BytesBuilder {
+    let octets: Cell<Bytes> = Cell.new(with_room(room))
+    BytesBuilder { octets: octets }
+}
+
+impl BytesBuilder {
+    /// The low octet of `octet` appended.
+    fn octet(octet: int) { avra_cell_bytes_word(self.octets, octet, 1) }
+
+    /// `width` octets of `word`, the most significant first, appended; a width outside one to eight
+    /// traps.
+    fn word(word: int, width: int) { avra_cell_bytes_word(self.octets, word, width) }
+
+    /// The octets of `run` appended.
+    fn run(run: Bytes) { avra_cell_bytes_run(self.octets, run) }
+
+    /// How many octets it holds.
+    fn length() -> int { self.octets.get().length }
+
+    /// The octets appended so far, and the builder empty again, with room for `room` more.
+    fn built(room: int) -> Bytes {
+        let octets = self.octets.get()
+        self.octets.set(with_room(room))
+        octets
+    }
 }
 
 // ── The builder ─────────────────────────────────────────────────
@@ -394,4 +436,35 @@ fn decoded64(s: Bytes, url: bool, padded: bool) -> Bytes? {
 export trait TextForm {
     fn text_form() -> string
     static fn from_text_form(text: string) -> Self?
+}
+
+/// Octets as lowercase hex, two characters each.
+export const hex_digits: string = "0123456789abcdef"
+
+/// Every octet's two digits, one entry per octet — settled once, so an
+/// encode reads its pair instead of building two digits and joining them.
+const hex_pairs: List<Bytes> = [hex_pair(v).bytes() for v in 0..256]
+
+export fn hex(b: Bytes) -> string { [hex_pairs[b.at(i)] for i in 0..b.length].bytes().text() ?? "" }
+
+fn hex_pair(v: int) -> string { "${hex_digit(v >> 4)}${hex_digit(v & 15)}" }
+
+export fn hex_digit(v: int) -> string { hex_digits.substring(v, v + 1) }
+
+/// One hex digit's value from its octet, -1 for any other octet.
+fn hex_nibble(c: int) -> int {
+    when {
+        c >= 48 && c <= 57 -> c - 48
+        c >= 97 && c <= 102 -> c - 87
+        _ -> -1
+    }
+}
+
+/// `hex` read back; absent for text that is not whole pairs of digits.
+export fn unhex(s: string) -> Bytes? {
+    if s.length % 2 != 0 { return null }
+    let octets = s.bytes()
+    let nibbles = [hex_nibble(octets.at(i)) for i in 0..s.length]
+    if nibbles.any(it < 0) { return null }
+    [nibbles[2 * i] * 16 + nibbles[2 * i + 1] for i in 0..s.length / 2].bytes()
 }

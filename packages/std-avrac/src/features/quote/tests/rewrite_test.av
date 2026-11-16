@@ -1,5 +1,5 @@
-// A `Rewrite` is a quote whose holes are arena ids: what a sugar
-// means, written once as the template it expands to.
+// A `Rewrite` is a quote whose holes are nodes of the tree it rewrites:
+// what a sugar means, written once as the template it expands to.
 use @std.avrac.core.{ExprId, PatId}
 use @std.meta.{Rewrite}
 use @std.avrac.compiler.{Program}
@@ -49,11 +49,20 @@ fn rewriting(body: string) -> Program {
 }
 
 spec "features/quote — a rewrite's holes" {
-    given "a hole that is no arena id" {
+    given "a hole that holds a number" {
         then "the rewrite refuses it in its own words" {
             refused_n(
                 rewriting("quote { \${v} ^ \${n} }"),
-                "a rewrite's holes are arena ids — `ExprId` or `PatId`, as `\${self.value}` — and this one is `int`",
+                "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `int`",
+                1,
+            )
+        }
+    }
+    given "a hole that holds a list of names" {
+        then "the rewrite refuses it in its own words" {
+            refused_n(
+                rewriting("let names = [\"a\"]\n    quote { f(\${v}, \${..names}) }"),
+                "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `List<string>`",
                 1,
             )
         }

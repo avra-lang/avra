@@ -1,0 +1,134 @@
+//! `avra check` on the program layer (`AVRA_PROGRAM=1`): what the old `check` says, its laws' and
+//! rules' findings read off saved per-file answers instead of a whole package typed again. A law
+//! that refuses the program refuses the check, as a derivation's error would; `--baseline <file>`
+//! holds the rule sites to a ratchet, a site the baseline doesn't list refusing it.
+use @std.avrac.compiler.{
+    Finding,
+    avra_fact_definitions,
+    file_rule_rows,
+    file_warned,
+    finding_diag,
+    program_erring,
+    program_files,
+    said_diag,
+}
+use @std.avrac.diagnostics.{Diag, SourceFile, new_source_file, render}
+use @std.io.{write_text}
+use @std.path.{joined_path, relative_path, under_dir}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+use @std.time.{now_ns}
+
+/// One rule site the program layer found: the finding a baseline reads, and the line it stands on.
+type SiteAt = { finding: Finding, line: int }
+
+/// `check` of the program `disk` reads on the program layer, as the old path says it: what its laws
+/// refuse, exit 1; else — held to the file `baseline` where one is named — a rule site it doesn't
+/// list refuses it, and a clean program's warnings are said, exit 0. `pruning`, the baseline is
+/// pruned to the sites still found instead, as `accepted` prunes it. Where the net accepted the
+/// program (`net`), a refusal is said as the program layer's defect.
+fn disk_checked(disk: Disk, baseline: string, timed: bool, pruning: bool, net: bool) -> int {
+    // LICENSED input.clock: a check's duration is timing, never an input of what is found
+    let t0 = now_ns()
+    let root = disk.root
+    let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions())
+    let refused = manifests_door(engine, disk)
+    if refused != null { return refused! }
+    let files = sorted_by(
+        [program_file(disk, f) for f in program_files(engine, disk.name)],
+        (a, b) -> said_before(disk, a, b),
+    )
+    let erring = program_erring(engine, disk.name)
+    let found = if erring.is_empty() { [file_found(engine, disk.name, h) for h in files] } else { [] }
+    let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
+    let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
+    engine.frontier_kept()
+    let _ = store.saved()
+    if timed { eprintln(program_time_line(files.length, t0)) }
+    if !erring.is_empty() {
+        if net { println(false_refusal_header()) }
+        println(refused)
+        return 1
+    }
+    let sites = [s for f in found for s in f.sites]
+    if pruning { return program_pruned(root, baseline, files, sites) }
+    if baseline != "" {
+        let bad = loaded_baseline(baseline).news([s.finding for s in sites])
+        if !bad.is_empty() { return refused_sites(bad) }
+    }
+    if warned != "" { println(warned) }
+    0
+}
+
+/// What `check` says of a file a law refuses: everything its laws find there, warnings among the
+/// refusals, in the order they find it — each site of one kind once.
+fn erring_said(engine: QueryEngine, h: ProgramFile) -> string {
+    let found = file_law_diags(engine, h)
+    if found.all(it.severity is .Warning) { return refusal_unworded(h.full) }
+    let src = new_source_file(h.full, text_at(h.full) ?? "")
+    [render(d, src) for i, d in found if !found.take(i).any((e) -> same_said(e, d))].join("\n\n")
+}
+
+/// Whether two diagnostics say one kind at one place.
+fn same_said(a: Diag, b: Diag) -> bool { a.kind == b.kind && a.primary.loc?.lo == b.primary.loc?.lo }
+
+/// The order `check` says files in: the root package's first, then by path.
+fn said_before(disk: Disk, a: ProgramFile, b: ProgramFile) -> bool {
+    let ra = a.file.package_name == disk.name
+    let rb = b.file.package_name == disk.name
+    if ra != rb { return ra }
+    text_before(a.full, b.full)
+}
+
+/// What one file of a program says: its rule sites, and its warnings rendered.
+type FileFound = { sites: List<SiteAt>, said: string }
+
+/// What the file `h` of the program `program` says: what its laws warn of, then its rule findings,
+/// each rendered over its text.
+fn file_found(engine: QueryEngine, program: string, h: ProgramFile) -> FileFound {
+    let rules = file_rule_rows(engine, program, h.file)
+    let src = new_source_file(h.full, text_at(h.full) ?? "")
+    let laws = [d! for f in file_warned(engine, h.file).findings for d in [finding_diag(f, h.full)] if d != null]
+    FileFound {
+        sites: [SiteAt { finding: Finding { rule: r.rule, file: h.full, text: r.text }, line: r.line } for r in rules.rows],
+        said: spoken(
+            [warned_among(laws, src), warned_among([said_diag(k, h.full) for k in rules.said], src)],
+        ),
+    }
+}
+
+/// The warnings among `found`, rendered over `src` — "" when none spoke.
+fn warned_among(found: List<Diag>, src: SourceFile) -> string {
+    [render(d, src) for d in found if !(d.severity is .Error)].join("\n\n")
+}
+
+/// What a clean program's files say, in their order.
+fn files_said(found: List<FileFound>) -> string { spoken([f.said for f in found]) }
+
+/// What was said, the silent dropped.
+fn spoken(texts: List<string>) -> string { [t for t in texts if !t.is_empty()].join("\n\n") }
+
+/// `--baseline_accept`'s verb over the program layer's sites: the baseline pruned to what is still
+/// found in the package's own files (`Baseline.pruned`, the one prune), written, said; exit 0.
+fn program_pruned(root: string, baseline: string, files: List<ProgramFile>, sites: List<SiteAt>) -> int {
+    let own = relative_path(here(), root)
+    let reached = [f for f in [relative_path(here(), h.full) for h in files] if f == own || under_dir(f, own)]
+    let kept = loaded_baseline(baseline)
+        .pruned(
+            (f) -> exists_at(joined_path(here(), f)),
+            keyed(reached),
+            keyed(fresh_keys([s.finding for s in sites])),
+        )
+    let _ = write_text(baseline, baseline_header + joined_lines(kept))
+    println("baseline: ${kept.length} site(s) kept")
+    0
+}
+
+fn program_time_line(files: int, t0: int) -> string {
+    // LICENSED input.clock: a check's duration is timing, never an input of what is found
+    "time: check · program layer — ${files} files in ${(now_ns() - t0) / 1000000} ms"
+}
+

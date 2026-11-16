@@ -12,14 +12,16 @@
 //! reached the way any other is: a feature's `mod.av` imports its own
 //! `idioms.av`'s rules, and the COMPILER's own (compiler/idioms.av,
 //! shapes no single feature owns) are imported here.
-use core.{flatten, SyntaxArena}
-use features.{Code, Fix, Fixes, rule}
+use core.{distinct_ints, flatten, sorted_by, SyntaxArena}
+use features.{Code, Fix, Fixes, Syntax, fact_rule, rule}
+use @std.text.{text_before}
 use compiler.{
     refusal_assembled,
     helpless_refusal,
     helpless_warning,
     str_grown_quadratically,
     cell_get_copy,
+    fn_field_pinned,
     bool_of_defaulted,
     text_of_defaulted,
     int_of_defaulted,
@@ -86,7 +88,31 @@ export const any_root: int = -1
 /// own raw `List<string>` (`check` refuses more than one), zero or
 /// one long; `declared_law` is the read that turns it into the
 /// `string?` a rule either carries or does not.
-export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> = [] }
+export type RuleEntry = { name: string, module: string, run: RuleRun, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> = [] }
+
+/// What a rule's fn reads: a node's syntax alone, or the code with what the compiler knows of it.
+export enum RuleRun {
+    Syntax(run: fn(Syntax) -> Fix?)
+    Facts(run: fn(Code) -> Fix?)
+}
+
+/// A rule over a node's syntax, as a fn of the code it stands in.
+export fn syntax_run(f: fn(Syntax) -> Fix?) -> fn(Code) -> Fix? { (c: Code) -> f(c.syntax()) }
+
+impl RuleRun {
+    /// The rule over `c`, through the syntax alone where that is all it reads.
+    fn applied(c: Code) -> Fix? {
+        match self { .Syntax(f) -> f(c.syntax()), .Facts(f) -> f(c) }
+    }
+
+    /// The rule over `s`, where it reads the syntax alone; absent for one that reads a fact.
+    fn on_syntax(s: Syntax) -> Fix? {
+        match self { .Syntax(f) -> f(s), .Facts(_) -> null }
+    }
+
+    /// Whether the rule reads the syntax alone.
+    fn reads_syntax() -> bool { match self { .Syntax(_) -> true, .Facts(_) -> false } }
+}
 
 /// `<module>.<name>` — the identity a finding's kind and `--only`
 /// both read.
@@ -101,20 +127,61 @@ export fn declared_law(r: RuleEntry) -> string? { r.law.first() }
 
 /// EVERY RULE, in module then name order — gathered, never listed by
 /// hand: a rule declared in any feature dir joins this with no edit
-/// here.
-export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, kinds: it.node_kinds, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law, says: it.says } by it.module, it.name
+/// here, whichever handle it reads.
+export once fn rule_entries() -> List<RuleEntry> {
+    sorted_by(
+        [r.entry() for r in syntax_rules].concat([r.entry() for r in fact_rules]),
+        (a, b) -> if a.module == b.module { text_before(a.name, b.name) } else { text_before(a.module, b.module) },
+    )
+}
 
-/// THE RULES BY ROOT KIND: each kind SOME rule is rooted at, the
-/// rules a node of that kind is tried against — its own (a rule
-/// sits under every kind its arms disagree over) and every
-/// `any_root` rule, in table order — and the `any_root` rules alone
-/// for every other kind. Design §5: nodes touched, never nodes ×
-/// rules.
-export type RuleIndex = { roots: List<int>, at_root: List<List<RuleEntry>>, anywhere: List<RuleEntry> }
+/// A rule over a node's syntax alone, as its declaration gathers.
+type SyntaxRuleEntry = { name: string, module: string, run: fn(Syntax) -> Fix?, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> }
+
+/// A rule over the code with what the compiler knows of it, as its declaration gathers.
+type FactRuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> }
+
+impl SyntaxRuleEntry {
+    fn entry() -> RuleEntry {
+        RuleEntry {
+            name: self.name,
+            module: self.module,
+            run: RuleRun.Syntax(self.run),
+            root: self.root,
+            kinds: self.kinds,
+            doc: self.doc,
+            fixes: self.fixes,
+            keeps: self.keeps,
+            law: self.law,
+            says: self.says,
+        }
+    }
+}
+
+impl FactRuleEntry {
+    fn entry() -> RuleEntry {
+        RuleEntry {
+            name: self.name,
+            module: self.module,
+            run: RuleRun.Facts(self.run),
+            root: self.root,
+            kinds: self.kinds,
+            doc: self.doc,
+            fixes: self.fixes,
+            keeps: self.keeps,
+            law: self.law,
+            says: self.says,
+        }
+    }
+}
+
+collect syntax_rules: List<SyntaxRuleEntry> = rule in closure as SyntaxRuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, kinds: it.node_kinds, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law, says: it.says } by it.module, it.name
+
+collect fact_rules: List<FactRuleEntry> = fact_rule in closure as FactRuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, kinds: it.node_kinds, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law, says: it.says } by it.module, it.name
 
 /// The rule table's index, built once.
-export once fn rule_index() -> RuleIndex {
-    rules_indexed(rules)
+export once fn rule_index() -> RootIndex<RuleEntry> {
+    rules_indexed(rule_entries())
 }
 
 /// Each rule this compiler's folds can never match, spoken once a process.
@@ -123,7 +190,7 @@ export fn stale_rules_spoken(store: SyntaxArena) {
     if said.get() { return }
     said.set(true)
     let known = store.known_kinds()
-    for r in rules { if r.kinds.any((k) -> !known.contains(k)) { eprintln(stale_rule(r)) } }
+    for r in rule_entries() { if r.kinds.any((k) -> !known.contains(k)) { eprintln(stale_rule(r)) } }
 }
 
 once fn stale_said() -> Cell<bool> { Cell.new(false) }
@@ -132,38 +199,50 @@ fn stale_rule(r: RuleEntry) -> string {
     "avra: rule ${rule_id(r)} was baked by an older compiler — its patterns name a node kind this one never folds, so it matches nothing; rebuild the compiler"
 }
 
-export fn rules_indexed(entries: List<RuleEntry>) -> RuleIndex {
-    let rooted = flatten([r.root for r in entries if !is_any_root(r)])
-    let roots = [k for i, k in rooted if rooted.index_of(k) == i]
-    RuleIndex {
+/// The rules filed by the node kinds they are rooted at.
+export fn rules_indexed(entries: List<RuleEntry>) -> RootIndex<RuleEntry> { root_indexed(entries, (r: RuleEntry) -> r.root) }
+
+/// ENTRIES BY ROOT KIND — design §5: nodes touched, never nodes × entries. Each kind some entry is
+/// rooted at holds the places, in table order, of the entries a node of that kind is tried against:
+/// its own (an entry sits under every kind its arms disagree over) and every `any_root` one. Every
+/// other kind meets the `any_root` entries alone.
+export type RootIndex<T> = { entries: List<T>, roots: List<int>, at_root: List<List<int>>, anywhere: List<int> }
+
+/// `entries` filed by the kinds `root` says each is rooted at.
+export fn root_indexed<T>(entries: List<T>, root: fn(T) -> List<int>) -> RootIndex<T> {
+    let kinds = [root(e) for e in entries]
+    let roots = distinct_ints(flatten([k for k in kinds if !tried_anywhere(k)]))
+    RootIndex {
+        entries: entries,
         roots: roots,
-        at_root: [[r for r in entries if is_any_root(r) || r.root.contains(k)] for k in roots],
-        anywhere: [r for r in entries if is_any_root(r)],
+        at_root: [[at for at, k in kinds if tried_anywhere(k) || k.contains(r)] for r in roots],
+        anywhere: [at for at, k in kinds if tried_anywhere(k)],
     }
 }
 
-/// A rule with no narrow root at all — tried at every node.
-fn is_any_root(r: RuleEntry) -> bool { r.root.contains(any_root) }
+/// Whether an entry rooted at `kinds` has no narrow root at all, and so is tried at every node.
+fn tried_anywhere(kinds: List<int>) -> bool { kinds.contains(any_root) }
 
-impl RuleIndex {
-    /// The rules a node of `kind` is tried against.
-    fn at(kind: int) -> List<RuleEntry> {
+impl RootIndex<T> {
+    /// The entries a node of `kind` is tried against, in table order.
+    fn at(kind: int) -> List<T> { self.picked(self.places_at(kind)) }
+
+    /// The entries a node is tried against: those filed under its shallow fold and those filed
+    /// under its kind alone (a pattern whose own root names a hole), each once.
+    fn at_node(shallow: int, kind: int) -> List<T> {
+        let j = self.roots.index_of(kind)
+        if j < 0 { return self.at(shallow) }
+        let i = self.roots.index_of(shallow)
+        if i < 0 { return self.picked(self.at_root[j]) }
+        let first = self.at_root[i]
+        self.picked(first.concat([p for p in self.at_root[j] if !first.contains(p)]))
+    }
+
+    fn places_at(kind: int) -> List<int> {
         let i = self.roots.index_of(kind)
         if i < 0 { self.anywhere } else { self.at_root[i] }
     }
 
-    /// The rules a node is tried against: those filed under its shallow
-    /// fold and those filed under its kind alone (a pattern whose own root
-    /// names a hole), each once.
-    fn at_node(shallow: int, kind: int) -> List<RuleEntry> {
-        let j = self.roots.index_of(kind)
-        if j < 0 { return self.at(shallow) }
-        let i = self.roots.index_of(shallow)
-        if i < 0 { return self.at_root[j] }
-        let first = self.at_root[i]
-        first.concat([r for r in self.at_root[j] if !first.any(same_rule(it, r))])
-    }
+    fn picked(places: List<int>) -> List<T> { [self.entries[p] for p in places] }
 }
-
-fn same_rule(a: RuleEntry, b: RuleEntry) -> bool { a.module == b.module && a.name == b.name }
 

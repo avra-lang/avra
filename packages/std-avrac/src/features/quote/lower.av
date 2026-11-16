@@ -1,8 +1,9 @@
-//! A quote lowers as ONE `template` call: this file, the quote's
+//! A quote lowers as ONE `template` call: this file by its name, the quote's
 //! offset, its runs, and its fills — each fill coerced by its seat's
 //! kind through a `@std/meta` row — wrapped as the kind the body
 //! parsed as. No new instruction.
 use core.{
+    code_handles,
     ExprId,
     SyntaxArena,
     Reg,
@@ -29,6 +30,7 @@ use core.{
     quote_pat_is_text,
     quote_pat_is_run,
     quote_pat_is_type,
+    quote_pat_whole,
 }
 use features.{LowerCx, EnumSig, FnSig}
 
@@ -38,7 +40,7 @@ export fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let kinds = hole_kinds(cx.view.store, e)
     let whole = quote_kind(cx.view.store, e)
     let classes = [class_of(cx.view.decls, cx.type_at(h), cx.shape_at(h)) for h in q.holes]
-    let file = cx.const_str(cx.view.source.file)
+    let file = cx.const_str(cx.view.template_home())
     let at = cx.const_int(cx.view.store.expr_span(e)?.lo ?? 0)
     let parts = boxed(cx, cx.type(List<string>), [cx.const_str(p) for p in q.parts])
     mut fills: List<Reg> = []
@@ -103,6 +105,8 @@ fn fill_reg(
             node_ty,
         ),
         .Held -> meta_call(cx, e, "text_node", [held_text(cx, h, ty)], node_ty),
+        .Node -> avrac_call(cx, "typed_code_node", [cx.reg_of(h)], node_ty),
+        .Nodes -> avrac_call(cx, "typed_codes_node", [cx.reg_of(h)], node_ty),
     }
 }
 
@@ -164,7 +168,7 @@ fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: Typ
 export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> Reg {
     if cx.view.decls.meta_type(vty, "Subject") { return uncalled(cx) }
     let root? = quote_pat_root(cx.view.store, body) else { return no_root(cx) }
-    if binds_whole(cx.view.store, body) { return cx.const_bool(true) }
+    if quote_pat_whole(cx.view.store, body) { return cx.const_bool(true) }
     let holes = quote_pat_holes(cx.view.store, body)
     let names = quote_pat_names(holes)
     let shape = quote_pat_shape(cx.view.store, root, holes, names)
@@ -179,21 +183,6 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let answer = avrac_call(cx, "matched_runs", [subj.store, subj.at, s], runs.ret)
     cx.bind_test(p, [answer])
     cx.presence_of(answer, runs.ret)
-}
-
-/// Whether the pattern is ONE code binder standing for the whole subject — `quote { ${x} }`:
-/// it takes every subject and binds the subject itself, so no match runs.
-fn binds_whole(store: SyntaxArena, body: ExprId) -> bool {
-    let root? = quote_pat_root(store, body) else { return false }
-    let holes = quote_pat_holes(store, body)
-    let names = quote_pat_names(holes)
-    if names.length != 1 { return false }
-    let n = names[0]
-    if quote_pat_is_text(holes, n) || quote_pat_is_run(holes, n) || quote_pat_is_type(holes, n) { return false }
-    match quote_pat_shape(store, root, holes, names) {
-        .Hole(_) -> true,
-        .Run(_) or .TypedNode(_, _, _) -> false,
-    }
 }
 
 // ── a package's rule: matched by the compiler, never called ──
@@ -224,7 +213,8 @@ fn uncalled_bind(mut cx: LowerCx, holes: List<QuoteHole>, n: string, v: Reg, vty
 /// a package rule's subject is never filled, its fn never called.
 fn held_text(mut cx: LowerCx, h: ExprId, ty: TypeId) -> Reg {
     if cx.view.decls.meta_type(ty, "Subject") { return cx.const_str("") }
-    avrac_call(cx, "spliced_text", [cx.reg_of(h)], cx.type(string))
+    let handle? = spliced_handle(cx.view.decls, ty) else { return cx.lower_defect(h, "a held hole whose handle splices no text") }
+    avrac_call(cx, handle.splices!, [cx.reg_of(h)], cx.type(string))
 }
 
 /// A quote subject's reads: its `of`, its `at` (and the `At` type,
@@ -262,7 +252,7 @@ fn subject_of(mut cx: LowerCx, v: Reg, code_ty: TypeId) -> Subject {
 /// unwrapping one element.
 export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> List<Reg> {
     if cx.view.decls.meta_type(vty, "Subject") { return uncalled_binds(cx, body, v, vty) }
-    if binds_whole(cx.view.store, body) { return [v] }
+    if quote_pat_whole(cx.view.store, body) { return [v] }
     let regs = cx.test_regs_of(p)
     if regs.length != 1 { return untested(cx) }
     let answer = regs[0]
@@ -307,12 +297,20 @@ fn bind_of(
     run: bool,
     ty: bool,
 ) -> Reg {
-    if run { return avrac_call(cx, "run_coded", [subj.of, span_j], cx.type(List<code_ty>)) }
+    if run { return avrac_call(cx, run_builder(cx, code_ty), [subj.of, span_j], cx.type(List<code_ty>)) }
     let at_j = cx.slot_read(span_j, 0, subj.at_ty)
     if text { return text_bind(cx, subj.store, at_j) }
     if ty { return type_bind(cx, subj.store, at_j) }
     cx.packed_struct(code_ty, [subj.of, at_j])
 }
+
+/// The verb that makes a run binder's list of handles, by the handle the subject is.
+fn run_builder(cx: LowerCx, code_ty: TypeId) -> string {
+    code_handles().find((h) -> cx.view.decls.avrac_type(code_ty, h.handle))?.runs ?? RUN_CODE
+}
+
+/// The verb that lists a rule's analysed code at each place of a run.
+const RUN_CODE: string = "run_coded"
 
 /// The `At`'s own name, insisted on — present by construction (see
 /// `quote_pat_binds`'s own note).

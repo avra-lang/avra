@@ -9,14 +9,17 @@ use @std.toml.{TomlDoc, TomlValue, TomlEntry, parse_toml, toml_text, toml_field}
 use features.{Budgets, budgets_of}
 use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
 use @std.errors.{Loc}
+use @std.relation.{codec}
 
 /// A dependency as the manifest names it: its key (`@scope/name`),
 /// its path when it is a path dependency, whether it serves tests
 /// only, and where its line is.
+@codec
 export type Dependency = { key: string, path: string?, dev: bool, at: Loc? }
 
 /// Where a declared tool comes from: one PATH lookup at start; the
 /// environment's variable `var`, else `default`; or the file `at`.
+@codec
 export enum Provenance {
     Path
     Env
@@ -26,6 +29,7 @@ export enum Provenance {
 /// A tool the package declares it may run — `[process.tools]`.
 /// `terminator` is the word after which the tool reads no options;
 /// absent when the tool has none (`terminator = false`).
+@codec
 export type ToolRow = { name: string, from: Provenance, var: string?, default: string?, at_path: string?, terminator: string?, at: Loc? }
 
 /// A manifest's facts. `bin` and `lib` are entry files relative to
@@ -36,13 +40,21 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag>, dev_server: string? = null }
+@codec
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
 type Reader = { src: SourceFile, doc: TomlDoc, voices: List<Diag> }
 
-export fn read_manifest(src: SourceFile) -> Manifest {
+/// A manifest as a value, and what reading it said — two answers, so the value carries no voice.
+export type ManifestRead = { manifest: Manifest, voices: List<Diag> }
+
+/// A manifest's value.
+export fn read_manifest(src: SourceFile) -> Manifest { manifest_read(src).manifest }
+
+/// A manifest read whole: its value and its voices.
+export fn manifest_read(src: SourceFile) -> ManifestRead {
     mut r = Reader { src: src, doc: parse_toml(src.text), voices: [] }
     for e in r.doc.errors {
         r
@@ -70,20 +82,22 @@ export fn read_manifest(src: SourceFile) -> Manifest {
                     ),
                 )
         }
-        return Manifest {
-            name: "",
-            version: "",
-            bin: null,
-            lib: null,
-            deps: [],
-            deps_at: null,
-            excludes: [],
-            objects: [],
-            wasm_objects: [],
-            search: [],
-            libs: [],
-            raw: [],
-            budgets: budgets_of(),
+        return ManifestRead {
+            manifest: Manifest {
+                name: "",
+                version: "",
+                bin: null,
+                lib: null,
+                deps: [],
+                deps_at: null,
+                excludes: [],
+                objects: [],
+                wasm_objects: [],
+                search: [],
+                libs: [],
+                raw: [],
+                budgets: budgets_of(),
+            },
             voices: r.voices,
         }
     }
@@ -94,7 +108,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     }
     if version != "" && !is_semver(version) { r.speak(r.bad_version(version)) }
     r.profiles()
-    Manifest {
+    let made = Manifest {
         name: name,
         version: version,
         bin: r.target("bin", "src/main.av"),
@@ -105,6 +119,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         wasm_objects: r.linked("wasm_objects"),
         search: r.linked("search"),
         libs: r.linked("libs"),
+        shared: r.link_name("shared"),
         dynamic_symbols: r.link_flag("dynamic_symbols"),
         raw: r.words_of("link.raw", "flags"),
         deps: r
@@ -113,8 +128,8 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         deps_at: r.deps_at(),
         tools: r.tools(),
         budgets: budgets_of(r.budget("steps"), r.budget("memory")),
-        voices: r.voices,
     }
+    ManifestRead { manifest: made, voices: r.voices }
 }
 
 /// A package name: `@scope/name`, or one bare word for a program
@@ -187,7 +202,10 @@ fn known_key(section: string, key: string) -> bool {
             .contains(key)
     }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
-    if section == "link" { return ["objects", "wasm_objects", "search", "libs", "dynamic_symbols"].contains(key) }
+    if section == "link" {
+        return ["objects", "wasm_objects", "search", "libs", "shared", "dynamic_symbols"]
+            .contains(key)
+    }
     if section == "link.raw" { return key == "flags" }
     if section == "lifted" { return key == "steps" || key == "memory" }
     if section == "dev" { return key == "server" }
@@ -562,6 +580,18 @@ impl Reader {
         }
     }
 
+    /// A `[link]` name: a word, absent read as none; any other value is refused and read as none.
+    fn link_name(key: string) -> string {
+        let e? = self.doc.entry("link", key) else { return "" }
+        match e.value {
+            .Str(w) -> w,
+            .Bool(_) or .Int(_) or .Strs(_) or .Table(_) -> {
+                self.speak(self.not_a_name(e))
+                ""
+            },
+        }
+    }
+
     fn words_of(section: string, key: string) -> List<string> {
         let e? = self.doc.entry(section, key) else { return [] }
         match e.value { .Strs(items) -> items, _ -> [] }
@@ -614,6 +644,16 @@ impl Reader {
             "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option",
             "here",
             "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest",
+        )
+    }
+
+    fn not_a_name(e: TomlEntry) -> Diag {
+        refusal(
+            "manifest.link_name",
+            self.entry_at(e),
+            "`${e.key}` under `[link]` is one library's name",
+            "here",
+            "write `${e.key} = \"LLVM\"`",
         )
     }
 

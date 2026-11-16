@@ -7,6 +7,9 @@
 use @std.errors.{Loc}
 use @std.grammar.{
     Lexeme,
+    TokenTables,
+    class_bits,
+    closing_bit,
     Grammar,
     parse_grammar as grammar_parse_tokens,
     Diagnostic,
@@ -19,12 +22,35 @@ use core.{Span, span_of}
 /// membership test (`term_kind`) and the vocabulary a grammar's own
 /// coherence check is handed (`avra_known_terminals`) both read it, so
 /// neither can list a name the other forgets.
-type TermKind = { name: string, kind: TokenKind }
+type TermKind = { name: string, kind: TokenKind, form: TokenForm = TokenForm.Any }
+
+/// Which of a kind's tokens a terminal takes: all of them, or the ones
+/// spelled one way — a `"""raw"""` string, a number with a point or
+/// without one.
+enum TokenForm {
+    Any
+    Raw
+    Fraction
+    Integer
+}
+
+/// Whether the token is spelled the way the form asks.
+fn spelled_as(form: TokenForm, t: Token) -> bool {
+    match form {
+        .Any -> true,
+        .Raw -> t.raw,
+        .Fraction -> t.is_fraction(),
+        .Integer -> !t.is_fraction(),
+    }
+}
 
 const terminal_kinds: List<TermKind> = [
     TermKind { name: "NAME", kind: TokenKind.Name },
     TermKind { name: "NUMBER", kind: TokenKind.Num },
+    TermKind { name: "INTEGER", kind: TokenKind.Num, form: TokenForm.Integer },
+    TermKind { name: "FRACTION", kind: TokenKind.Num, form: TokenForm.Fraction },
     TermKind { name: "STRING", kind: TokenKind.Str },
+    TermKind { name: "RAW_STRING", kind: TokenKind.Str, form: TokenForm.Raw },
     TermKind { name: "OCTETS", kind: TokenKind.Octets },
     TermKind { name: "ISTR_BEGIN", kind: TokenKind.IStrBegin },
     TermKind { name: "ISTR_MID", kind: TokenKind.IStrMid },
@@ -67,11 +93,75 @@ fn kind_is(self_kind: TokenKind, k: TokenKind) -> bool {
         k == TokenKind.Name && (self_kind == TokenKind.Hole || self_kind == TokenKind.Component)
 }
 
-fn token_lit_matches(t: Token, text: string) -> bool {
-    match t.kind {
-        .Name or .Num or .Op or .Break or .Pkg -> t.text == text,
+fn token_lit_matches(t: Token, text: string) -> bool { spells_literals(t.kind) && t.text == text }
+
+/// Whether a token of kind `k` can spell a grammar literal: by its text, when it does.
+fn spells_literals(k: TokenKind) -> bool {
+    match k {
+        .Name or .Num or .Op or .Break or .Pkg -> true,
         .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Env or .Provide or .On or .Octets -> false,
     }
+}
+
+/// A number for everything a terminal class reads of a token but its text: its kind and its
+/// spelling — two tokens of one class wear the same classes.
+fn token_class(t: Token) -> int {
+    let kind = match t.kind {
+        .Name -> 0,
+        .Num -> 1,
+        .Str -> 2,
+        .IStrBegin -> 3,
+        .IStrMid -> 4,
+        .IStrEnd -> 5,
+        .Op -> 6,
+        .Break -> 7,
+        .Eof -> 8,
+        .Pkg -> 9,
+        .Hole -> 10,
+        .HoleBegin -> 11,
+        .HoleEnd -> 12,
+        .Block -> 13,
+        .Body -> 14,
+        .Component -> 15,
+        .State -> 16,
+        .Octets -> 17,
+        .Env -> 18,
+        .Provide -> 19,
+        .On -> 20,
+    }
+    kind * 4 +
+        if t.raw { 2 } else { 0 } +
+        if t.kind == TokenKind.Num && t.is_fraction() { 1 } else { 0 }
+}
+
+/// What each token class wears, by `token_class`: -1 until a token of it is asked.
+export fn token_classes_worn() -> Cell<List<int>> {
+    Cell.new([0 - 1 for _k in 0..84])
+}
+
+/// Each token's literal slot by `lits` and its classes by `kinds`, as `token_tables` answers
+/// them — a class asked of the lexeme once in `worn`, for every token of it.
+export fn avra_token_tables(
+    tokens: List<Token>,
+    lits: Map<string, int>,
+    kinds: List<int>,
+    worn: Cell<List<int>>,
+) -> TokenTables {
+    let lit = [if spells_literals(t.kind) { lits.get(t.text) ?? 0 - 1 } else { 0 - 1 } for t in tokens]
+    let close = lits.get("}") ?? 0 - 1
+    TokenTables {
+        lit: lit,
+        mask: [class_worn(worn, kinds, t) | closing_bit(lit[i], close) for i, t in tokens],
+    }
+}
+
+fn class_worn(worn: Cell<List<int>>, kinds: List<int>, t: Token) -> int {
+    let key = token_class(t)
+    let known = worn.get()[key]
+    if known >= 0 { return known }
+    let bits = class_bits(avra_lexeme(), kinds, t)
+    worn.set_at(key, bits)
+    bits
 }
 
 fn token_is_eof(t: Token) -> bool { t.kind == TokenKind.Eof }
@@ -84,7 +174,9 @@ fn token_kind_of(term: string) -> int {
     [i for i, k in terminal_kinds if k.name == term].first() ?? 0 - 1
 }
 
-fn token_wears_kind(t: Token, k: int) -> bool { k >= 0 && kind_is(t.kind, terminal_kinds[k].kind) }
+fn token_wears_kind(t: Token, k: int) -> bool {
+    k >= 0 && kind_is(t.kind, terminal_kinds[k].kind) && spelled_as(terminal_kinds[k].form, t)
+}
 
 fn token_text(t: Token) -> string { t.text }
 
@@ -119,7 +211,7 @@ export fn parse_grammar(source: string) -> GrammarParse {
     let o = grammar_parse_tokens(lexed.tokens, avra_lexeme())
     GrammarParse {
         built: o.built,
-        diagnostics: [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors].concat(o.diagnostics),
+        diagnostics: [lex_diagnostic(e.message, e.span.engine_loc()) for e in lexed.errors].concat(o.diagnostics),
     }
 }
 
@@ -127,6 +219,3 @@ export fn parse_grammar(source: string) -> GrammarParse {
 /// re-exported so a caller need reach for only one module.
 export type GrammarParse = { built: Grammar?, diagnostics: List<Diagnostic> }
 
-fn span_loc(s: Span) -> Loc {
-    Loc { file: null, lo: s.lo, hi: s.hi }
-}

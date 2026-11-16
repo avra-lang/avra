@@ -27,7 +27,7 @@ Clean restart of the Avra compiler, built slowly, one reviewed file at a
 time. Front end first: an extensible grammar assembled from
 LanguageFeature components, producing an AST for later passes.
 Toolchain: the compiler builds itself — `./avra` runs `build/avra`,
-and a cold tree bootstraps from `bootstrap/seed.ll` (`make bootstrap`;
+and a cold tree bootstraps from `bootstrap/seed.ll.gz` (`make bootstrap`;
 README.md).
 
 Design sources of truth (in `../forge-crafting-intepreters`):
@@ -343,8 +343,8 @@ registry is the idiom engine's spec, written by dogfooding.
   5 GB where either alone is 2.2. Three holders keep one alive, and
   each needs its own answer. THE STACK: a caller's binding stands for
   the whole call, so the derivation that is superseded is bound in a
-  HELPER that returns the next attempt and dies (`stood_first`,
-  `heard`, `tried_anew`), never in the fn that asks again. THE HOOKS:
+  HELPER that returns the next attempt and dies (`heard`,
+  `tried_anew`), never in the fn that asks again. THE HOOKS:
   `Workspace.discarded()` ends every one, the registry's declare hook
   among them — it captures the table that holds the registry, and
   EVERY HOOK A `Decls` ARMS is cleared in `let_go`: the four producer
@@ -1649,6 +1649,8 @@ Syntax the grammar lacks:
 - A bare `table { … }` reads as a struct literal ("no `type table` is declared"); write `table<Row> { id | name … }` with a pipe header.
 - A record literal as a component instance's head stands in parentheses (`tally (Span { n: 2 }) { extra: 3 }`); bare, the brace opens the block — pinned by features/components/tests/components_head_test.av, not by this section.
 - A semicolon between statements is "unexpected character `;`"; a one-line body is `{ a }`.
+- A field's mark on its own line inside a type literal is "expected `}` while parsing `stmt`"; write it on the field's line (`{ @local at: int }`).
+- `if let v? = e { … }` takes an `else`: without one it is "expected BREAK" at the `let`; a guard is `let v? = e else { … }`, and a present-only test is `if e != null { … }`.
 - A range takes methods (`any`, `find`, `map`, `all`) but has no `.length`.
 - A `once fn` takes no type parameters ("expected `(`"), no arguments, and answers a managed value ("`once fn seed` answers `int`, which the runtime cannot keep").
 - A trailing block in a head (`if f(a) { x -> x } { … }`) is "expected BREAK"; parenthesise the call. `a?.m { … }` and `(f(a)) { … }` take no trailing block either — not pinned.
@@ -1691,6 +1693,7 @@ Wants the typer does not carry yet:
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
 - `==`, `contains`/`index_of` and a literal pattern compare a scalar, text, a tagged enum, or a one-field record; two fields is "`==` compares by value — …", and an enum carrying a payload is refused too (help: match on it).
 - A named type is opaque at a seat and transparent at a read: a `Rows` seat refuses a computed `List<int>` ("wants `Rows`, found `List<int>`") and takes a literal.
+- `r catch null` answers the ok side, so `let x? = r catch null else { … }` is "a `catch` arm answers the ok side: `D`, this is `null`" (and "`x?` asks a nullable"); a `Result` read as absence is a `match` (`.Ok(d) -> d, .Err(_) -> null`).
 
 Methods the runtime lacks:
 - `List.reverse()` / `sort()` are "calls a method, and `List<int>` has none"; core's `reversed` is the helper.
@@ -1712,7 +1715,7 @@ doctrine it expands.
 - ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
 
       sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
-      sh tools/work run <cmd>    # run it on this lane's Sprite, streamed, its exit status
+      sh tools/work run <cmd>    # run it on a GitHub runner (--sprite: the lane's Sprite), its exit status
       sh tools/work test         # what this branch touches, on this lane's Sprite
       sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
       sh tools/work status       # PRs and their merge state; each lane and its Sprite
@@ -2087,7 +2090,7 @@ doctrine it expands.
 - THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
   bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
   cli with the STANDING binary and copies the result; it never
-  touches `bootstrap/seed.ll`, which is a COMMITTED artifact naming
+  touches `bootstrap/seed.ll.gz`, which is a COMMITTED artifact naming
   every runtime symbol it needs, the `avra_io_` names among them. So
   deleting a runtime symbol gates clean under `make avra`, twice,
   while the cold path is already broken — `make bootstrap` links the

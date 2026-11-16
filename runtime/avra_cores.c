@@ -22,6 +22,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,6 +127,9 @@ static int kept(int fd, const int* keep, int n) {
 
 // Every descriptor but `keep` closed. What is open is read from the
 // system's own list, then closed — never while the listing is open.
+// NO STATIC HOLDS A DESCRIPTOR NUMBER ACROSS THIS CLOSE: a number kept past
+// it names whatever the core opens next. A static's descriptor is in
+// `keep`, or forgotten before the close, or opened only after it.
 static void close_all_but(const int* keep, int n) {
     DIR* d = opendir("/dev/fd");
     if (!d) avra_trap("a core could not list its descriptors");
@@ -148,13 +152,18 @@ static void close_all_but(const int* keep, int n) {
     free(open_fds);
 }
 
-// The child's half of a fork: its scheduler keeps the calling task
-// alone, and its descriptors are the standard three, the one it serves,
-// the stop pipe's read end and its own pipe's write end.
+// The child's half of a fork: its descriptors are the standard three, the
+// one it serves, the stop pipe's read end and its own pipe's write end, and
+// its scheduler keeps the calling task alone. DESCRIPTORS FIRST: what the
+// scheduler brings up in the child (the tick's wake pipe) opens its own, and
+// a close after it would free numbers the tick still reads while the
+// child's own files take them.
 static void became_core(Group* gr, int64_t i, int64_t serving) {
+    int keep[] = { 0, 1, 2, (int)serving, gr->stop_read, gr->core[i].end_write, avra_fiber_trace_fd() };
+    avra_pool_forked();
+    avra_descriptors_forgotten();
+    close_all_but(keep, 7);
     avra_fiber_forked();
-    int keep[] = { 0, 1, 2, (int)serving, gr->stop_read, gr->core[i].end_write };
-    close_all_but(keep, 6);
 }
 
 // THE FORK HOOKS: process-global state a package keeps (a database driver's connections and
@@ -272,6 +281,16 @@ int64_t avra_cores_heard(int64_t g, int64_t core) {
     return 0;
 }
 
+// Core `core` ended at once, by SIGKILL, when it has not ended yet, and reaped: a supervisor
+// that gives up waiting on it leaves nothing running. 0 once it has ended.
+int64_t avra_cores_killed(int64_t g, int64_t core) {
+    Group* gr = group_at(g);
+    if (gr->core[core].ended) return 0;
+    kill(gr->core[core].pid, SIGKILL);
+    while (avra_cores_heard(g, core) != 0) {}
+    return 0;
+}
+
 // Every core told to stop: the stop pipe's write end closed. Only the
 // supervisor holds it; anywhere else this does nothing.
 void avra_cores_stop(int64_t g) {
@@ -312,4 +331,15 @@ int64_t avra_cores_result(int64_t g) {
     }
     group_free(gr);
     return err != 0 ? -err : accepted;
+}
+
+// How many cores ended as a core ends with no errno left, once every core
+// has. A core that trapped or was killed is only not counted: nothing traps
+// here. The group is gone after.
+int64_t avra_cores_finished(int64_t g) {
+    Group* gr = group_at(g);
+    int64_t finished = 0;
+    for (int64_t i = 0; i < gr->n; i++) finished += clean(gr->core[i].status, gr->slots[i].err) && gr->slots[i].err == 0;
+    group_free(gr);
+    return finished;
 }

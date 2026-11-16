@@ -142,6 +142,29 @@ fn package_report(files: Map<string, string>) -> string {
     match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
 }
 
+/// Every registered code's witness, as the files a program on disk holds: a lone source at
+/// `/w/src/main.av` beside a lawful manifest, a package's files at their paths; none for a code no
+/// source reaches.
+export fn witness_files() -> List<WitnessFiles> { [files_of(w) for w in witnesses()] }
+
+/// One code's witness as files: the code, how it is witnessed — `source`, `package`, `built`,
+/// `beyond` or `absent` — each file at its path, and why no source reaches it where none does.
+export type WitnessFiles = { code: string, shape: string, files: Map<string, string>, why: string = "" }
+
+fn files_of(w: CodeWitness) -> WitnessFiles {
+    match w.witness {
+        .Source(text) -> WitnessFiles {
+            code: w.code,
+            shape: "source",
+            files: {"/w/avra.toml": app_manifest, "/w/src/main.av": text},
+        },
+        .Package(files) -> WitnessFiles { code: w.code, shape: "package", files: files },
+        .Built(files) -> WitnessFiles { code: w.code, shape: "built", files: files },
+        .Beyond(why) -> WitnessFiles { code: w.code, shape: "beyond", files: {}, why: why },
+        .Absent -> WitnessFiles { code: w.code, shape: "absent", files: {} },
+    }
+}
+
 /// One code's witness, run — what `avra docs` shows beside the
 /// summary: a REAL refusal with its holes filled, never a template.
 export fn shown_code(kind: string) -> Shown? {
@@ -455,6 +478,10 @@ fn witnesses() -> List<CodeWitness> {
             witness: Witness.Source("let m = {\"a\": 1}\nm.entries().length"),
         },
         CodeWitness {
+            code: "type.to_int",
+            witness: Witness.Source("let f = 2.5\nf.floor() catch _ -> 0"),
+        },
+        CodeWitness {
             code: "type.member_pattern",
             witness: Witness.Source("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a as x -> 1\n}"),
         },
@@ -706,6 +733,22 @@ fn witnesses() -> List<CodeWitness> {
             code: "resolve.nested_impl",
             witness: Witness
                 .Source("fn f() -> int {\n    impl X {\n        fn g() -> int { 1 }\n    }\n    1\n}\nf()"),
+        },
+        CodeWitness {
+            code: "type.fraction_pattern",
+            witness: Witness.Source("let x = 2\nmatch x {\n    1.5 -> 1\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.mixed_bitwise",
+            witness: Witness.Source("let a = 1\nlet b = 2\na | b & 3"),
+        },
+        CodeWitness {
+            code: "parse.spread",
+            witness: Witness.Source("type C = { a: int }\ntype A = { x: int, ..C = 1 }\n1"),
+        },
+        CodeWitness {
+            code: "resolve.impl_member",
+            witness: Witness.Source("type C = { n: int }\nimpl C {\n    mut x = 1\n}\n2"),
         },
         CodeWitness {
             code: "manifest.no_source",

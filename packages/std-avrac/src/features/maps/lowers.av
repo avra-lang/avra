@@ -1,0 +1,51 @@
+//! The lowering rules of a map literal: of pairs alone, every key, then every value, then the map,
+//! then each pair written into it; one that spreads, the map first, then each entry in written order:
+//! a pair written, a spread each of its map's entries in that map's order, a key already there keeping
+//! its place and taking the new value.
+use core.{
+    ExprId,
+    Lowering,
+    Lowers,
+    MapEntry,
+    Reg,
+    SignedType,
+    map_keys,
+    map_spreads,
+    map_values,
+    rt_sig_of,
+}
+use core.expr.{MapLit}
+
+impl Lowers for MapLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if !map_spreads(self.entries).is_empty() { return spread_lowered(cx, e, self.entries) }
+        let keys = [cx.lower(k) for k in map_keys(self.entries)]
+        let values = [cx.lower(v) for v in map_values(self.entries)]
+        let dst = cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
+        for at, k in keys { cx.map_written(dst, k, values[at]) }
+        dst
+    }
+}
+
+/// A literal that spreads: the map, then each entry written into it in order.
+fn spread_lowered(mut cx: Lowering, e: ExprId, entries: List<MapEntry>) -> Reg {
+    let ty? = cx.seen_at(e) else { return cx.untyped(e) }
+    let value? = ty.mapped() else { return cx.untyped(e) }
+    let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_map_new")!, [])
+    for entry in entries {
+        match entry {
+            .Pair(key, v) -> cx.map_written(dst, cx.lower(key), cx.lower(v)),
+            .Spread(from) -> spread_into(cx, dst, from, ty.args[0], value),
+        }
+    }
+    dst
+}
+
+/// The map `from` spreads, each of its entries written into `dst`, a map of `key`s to `value`s, in
+/// that map's order.
+fn spread_into(mut cx: Lowering, dst: Reg, from: ExprId, key: SignedType, value: SignedType) {
+    let w = cx.walk_map(cx.lower(from), key)
+    let here = cx.walk_turn(w.keys)
+    cx.map_written(dst, cx.key_at(w, here), cx.value_at(w, value, here))
+    cx.loop_end()
+}

@@ -1,0 +1,86 @@
+//! The typing rules of a component instance: one a component expands is what its meaning is — the
+//! literal under the `check` call where its component judges it;
+//! else its heads and block check for what they are, and an instance is the component's type, which
+//! a named instance binds its name to; an instance fn binds its seats in a fenced scope over its
+//! statements.
+use core.{Checking, Checks, ExprId, Expected, OwnType, SignedType, TypeHead, TypeRef, headed_type}
+use core.expr.{Component}
+
+impl Checks for Component {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let expanded = cx.store.meant(e)
+        if expanded != null && self.name == null {
+            let meant = cx.meaning_checked(e, expanded!, expected)
+            fate_judged(cx, e, meant)
+            return meant
+        }
+        cx.checked_free(self.heads)
+        if self.key != null { let _ = cx.check(self.key!, Expected.Free) }
+        if self.body != null { let _ = cx.check(self.body!, Expected.Unknown) }
+        let instance = instance_type(cx, self.word, self.targs)
+        if self.name != null { cx.bind(self.name!.of, instance) }
+        instance
+    }
+}
+
+impl Checks for InstanceFn {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        cx.fenced()
+        for p in self.seats {
+            cx
+                .bind(
+                    p.name.of,
+                    if p.ty == null { null } else { cx.written(p.ty!) },
+                    false,
+                    p.promises.mutable || p.state,
+                )
+        }
+        for s in self.stmts { cx.check_stmt(s) }
+        cx.closed()
+        null
+    }
+}
+
+/// The type an instance of the component `word` is: the component, applied to the type arguments
+/// written; absent when the word names no component the program declares.
+fn instance_type(cx: Checking, word: string, targs: List<TypeRef>) -> SignedType? {
+    let named = cx.type_named(word, null)
+    match named.head {
+        .Declared(_, _) -> named with { args: if targs.is_empty() { inferred_args(cx, named) } else { [cx.written(t) for t in targs] } },
+        rest -> null,
+    }
+}
+
+/// The type arguments an instance that writes none leaves its component's parameters: each one the
+/// instance's fields decide, so inferred.
+fn inferred_args(cx: Checking, declared: SignedType) -> List<SignedType> {
+    [headed_type(TypeHead.Inferred) for _p in 0..cx.record_of(declared)?.params ?? 0]
+}
+
+/// A COMPONENT THAT HOLDS A HANDLER WHICH CAN FAIL NAMES A FATE: the instance at `e`, of `instance`, a
+/// component another file declares whose record has the fate field, holding a fn that answers a
+/// `Result` and leaving its fate unset or `null`, refused at the handler.
+fn fate_judged(mut cx: Checking, e: ExprId, instance: SignedType?) {
+    let ty? = instance else { return }
+    if (cx.program.declared_here)(ty) { return }
+    let x? = cx.store.expansion_of(e) else { return }
+    let lit? = cx.store.struct_lit_parts(x) else { return }
+    let record? = cx.record_of(ty) else { return }
+    if !record.fields.any(it.name == FATE_FIELD) { return }
+    let handler? = lit.values.find((v) -> can_fail(cx.type_of(v))) else { return }
+    let slot = lit.fields.index_of(FATE_FIELD)
+    if slot >= 0 && !written_null(cx, lit.values[slot]) { return }
+    cx.fateless(handler, lit.name)
+}
+
+/// The field a component names its fate in.
+const FATE_FIELD: string = "dead"
+
+/// Whether a value of `ty` is a fn whose answer can fail.
+fn can_fail(ty: SignedType?) -> bool {
+    let t? = ty else { return false }
+    t.head is .Function && t.answer?.owns(OwnType.Result) ?? false
+}
+
+/// Whether `v` is written `null`.
+fn written_null(cx: Checking, v: ExprId) -> bool { cx.store.expr(v) is .NullLit }

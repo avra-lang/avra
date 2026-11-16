@@ -62,7 +62,7 @@ fn input_cell(rev: int, value_hash: int) -> QueryCell {
 /// took it from.
 type Restore = { edge: int, previous: int }
 
-/// THE ASKING HALF: the open queries, innermost last — five stacks
+/// THE ASKING HALF: the open queries, innermost last — six stacks
 /// that grow and shrink together — and the innermost's own reader id
 /// and grain, kept apart so a repeat read asks one cell.
 @identity
@@ -79,10 +79,16 @@ type Asker = {
     /// then, never later, so a write that moved its input while it ran
     /// leaves it re-verified on its next ask.
     began: Cell<List<int>>,
+    /// The open queries a recursive view re-entered, as edges: each settles standing on what it
+    /// read, never on its own cell.
+    views: Cell<List<int>>,
     /// Each open query's reader id; `reader` is the innermost's, 0
     /// when none is open.
     readers: Cell<List<int>>,
     reader: Cell<int>,
+    /// The reader in force when each open query began: what its close hands back. A frame's
+    /// parent is the one that was hearing then, never the stack's new top when unheard sat between.
+    outers: Cell<List<int>>,
     /// The edge the innermost open query appended last, `no_edge`
     /// when it has appended none since it began or resumed.
     last: Cell<int>,
@@ -95,7 +101,9 @@ fn new_asker() -> Asker {
         restore: list_cell(),
         began: list_cell(),
         readers: list_cell(),
+        views: list_cell(),
         reader: Cell.new(0),
+        outers: list_cell(),
         last: Cell.new(no_edge()),
     }
 }
@@ -206,6 +214,9 @@ fn spelled(edges: List<int>) -> string { ["${family_of(e)}:${arg_of(e)}" for e i
 @plain_field("reporting")
 export type Kernel = {
     rev: Cell<int>,
+    /// The revision one move of the world took — -1 in a move that has moved nothing yet, 0
+    /// outside one: every input a move sets moves to that one revision.
+    moving: Cell<int>,
     /// ONE TABLE PER FAMILY, each its own `Cell` — `cells[family]`
     /// holds that family's cells, indexed directly by `arg`. Grown in
     /// lockstep with `verifiers` and `stamps`: a cell's address never
@@ -276,6 +287,7 @@ fn no_dispatch(_family: int, _arg: int) -> int { 0 }
 export fn new_kernel() -> Kernel {
     Kernel {
         rev: Cell.new(1),
+        moving: Cell.new(0),
         cells: list_cell(),
         verifiers: list_cell(),
         by_dispatch: Cell.new(no_dispatch),
@@ -455,11 +467,21 @@ impl Kernel {
         self.family_names.set_at(family, name)
     }
 
-    /// A family's trace name: the name its owner gave, else its number.
-    fn family_name(family: int) -> string {
-        let known = if family < self.family_names.get().length { self.family_names.get()[family] } else { "" }
-        if known == "" { "${family}" } else { known }
+    /// The name a family's owner gave it, none when it gave none.
+    fn named_word(family: int) -> string? {
+        let names = self.family_names.get()
+        if family < 0 || family >= names.length || names[family] == "" { return null }
+        names[family]
     }
+
+    /// The family its owner named `name`, none when none is.
+    fn named_family(name: string) -> int? {
+        let at = self.family_names.get().index_of(name)
+        if at < 0 { null } else { at }
+    }
+
+    /// A family's trace name: the name its owner gave, else its number.
+    fn family_name(family: int) -> string { self.named_word(family) ?? "${family}" }
 
     /// A family of INPUTS: a cell changed when it was last set to a new
     /// value, and nothing is asked to verify it.
@@ -514,8 +536,18 @@ impl Kernel {
             self.write_cell(key, prior with { deps: [], verified_at: rev, value_hash: value_hash })
             return
         }
-        self.rev.set(rev + 1)
-        self.write_cell(key, input_cell(rev + 1, value_hash))
+        if self.moving.get() != rev {
+            self.rev.set(rev + 1)
+            if self.moving.get() != 0 { self.moving.set(rev + 1) }
+        }
+        self.write_cell(key, input_cell(self.rev.get(), value_hash))
+    }
+
+    /// ONE MOVE OF THE WORLD IS ONE REVISION: every input `run` sets moves together.
+    fn moved_once(run: fn() -> void) {
+        self.moving.set(0 - 1)
+        run()
+        self.moving.set(0)
     }
 
     /// An input set again before any reader read it: no reader can have seen the
@@ -584,11 +616,20 @@ impl Kernel {
 
     /// The revision a cell last changed at, by its family's verifier.
     fn verified(family: int, arg: int) -> int {
+        let key = Key { family: family, arg: arg }
         match self.verifiers.get()[family] {
-            .By -> (self.by_dispatch.get())(family, arg),
-            .Input -> self.changed_at(Key { family: family, arg: arg }),
+            .By -> self.settled_change(key) ?? (self.by_dispatch.get())(family, arg),
+            .Input -> self.changed_at(key),
             .Hash(live, seen, moved) -> self.moved_at(seen, moved, arg, live(arg)),
         }
+    }
+
+    /// A cell verified at this revision: the revision it last changed at,
+    /// read without its verifier.
+    fn settled_change(key: Key) -> int? {
+        let cell? = self.cell(key) else { return null }
+        if cell.verified_at != self.rev.get() { return null }
+        cell.changed_at
     }
 
     /// A hashed cell's hash as it stands, against the one last seen: the
@@ -605,6 +646,12 @@ impl Kernel {
     }
 
     fn active(key: Key) -> bool { self.asker.open.get().contains(edge_of(key)) }
+
+    /// The open frames, outermost first, as `family:arg` — what a defect names, so the asker
+    /// is never a hunt.
+    fn open_stack() -> string {
+        [self.edge_text(e) for e in self.asker.open.get()].join(" > ")
+    }
 
     /// Whether ANY key of a family is open — a query of that family is
     /// in flight. The kernel is language-agnostic, so the family is
@@ -734,6 +781,7 @@ impl Kernel {
         self.asker.restore.push(no_restore)
         self.asker.open.push(edge_of(key))
         self.asker.began.push(self.rev.get())
+        self.asker.outers.push(self.asker.reader.get())
         self.asker.readers.push(reader)
         self.asker.reader.set(reader)
         self.asker.last.set(no_edge())
@@ -742,7 +790,7 @@ impl Kernel {
 
     fn settle(key: Key, value_hash: int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
-        let deps = self.closed_frame()
+        let deps = self.closed_reads(key)
         let kept = kept_since(self.cell(key), value_hash)
         self.why(key.family, if kept != null { "same" } else { "changed" })
         self.settled(key, deps, kept ?? self.rev.get(), value_hash, began)
@@ -760,7 +808,7 @@ impl Kernel {
     /// comparison after it is exact.
     fn settle_lazy(key: Key, fingerprint: fn() -> int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
-        let deps = self.closed_frame()
+        let deps = self.closed_reads(key)
         let prior? = self.cell(key) else {
             self.settled(key, deps, self.rev.get(), null, began)
             if self.folds_kept.get() { self.folds.put("${edge_of(key)}", fingerprint) }
@@ -787,6 +835,23 @@ impl Kernel {
 
     /// Closes the innermost open frame: its edges, held at their own
     /// size, with the frame's restores replayed and its stacks popped.
+    /// `key`'s frame closed, its reads kept: a recursive view's read of its own cell
+    /// contributes nothing, so a re-entered view never stands on itself — while a query that
+    /// reads its own cell (a fixpoint member) keeps that read.
+    fn closed_reads(key: Key) -> List<int> {
+        let deps = self.closed_frame()
+        let own = edge_of(key)
+        if !self.asker.views.get().contains(own) { return deps }
+        if !self.active(key) { self.asker.views.set([e for e in self.asker.views.get() if e != own]) }
+        [e for e in deps if e != own]
+    }
+
+    /// A recursive view re-entered while `key` is open: its settles keep no read of itself.
+    fn reentered(key: Key) {
+        let own = edge_of(key)
+        if !self.asker.views.get().contains(own) { self.asker.views.push(own) }
+    }
+
     fn closed_frame() -> List<int> {
         let edges = self.asker.pending.get().last()!.get()
         let restores = self.asker.restore.get()
@@ -798,10 +863,11 @@ impl Kernel {
         dropped(self.asker.open)
         dropped(self.asker.began)
         dropped(self.asker.readers)
-        self.asker.reader.set(self.asker.readers.get().last() ?? 0)
+        self.asker.reader.set(self.asker.outers.get().last() ?? 0)
+        dropped(self.asker.outers)
         self.asker.last.set(no_edge())
         if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
-        edges.slice(0, edges.length)
+        edges
     }
 
     /// Writes a settled cell and publishes it.
@@ -839,6 +905,17 @@ impl Kernel {
         let row = self.stamp_row(family)
         let stamp = stamp_in(row.get(), arg)
         if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
+    }
+
+    /// `run` with no frame hearing its reads — a driver's act made from inside a query, such as
+    /// staging an input. `run` opens no frame of its own.
+    fn unheard(run: fn() -> void) {
+        let reader = self.asker.reader.get()
+        let last = self.asker.last.get()
+        self.asker.reader.set(0)
+        run()
+        self.asker.reader.set(reader)
+        self.asker.last.set(last)
     }
 
     /// The reader that last recorded a key, 0 for none.

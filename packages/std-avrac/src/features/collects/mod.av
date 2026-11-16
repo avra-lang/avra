@@ -4,16 +4,11 @@
 //! SYNTHESISED at lowering (compiler/lower/lower.av), from these same
 //! written parts — no code contributes by hand, a declaration of the
 //! kind IS its contribution.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn collects() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name                | build
-        "collect_decl"      | build_collect_decl
-        "collect_enum_decl" | build_collect_enum_decl
-    }
     let codes = table<DiagCode> {
         kind                         | summary
         "collect.kind"               | "a collect names a declaration kind it does not gather"
@@ -39,9 +34,9 @@ export fn collects() -> LanguageFeature {
     }
     LanguageFeature collects {
         gram: grammar {
-            stmt = "collect" n:NAME ":" t:type "=" ( k:PKG | k:NAME ) "in" sc:NAME "as" pt:NAME
-                "{" BREAK? ( fn:NAME ":" iw:NAME ( "." fp:NAME )? ( "," BREAK? fn:NAME ":" iw:NAME ( "." fp:NAME )? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )* ","? BREAK? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )? "}"
-                ( bw:NAME BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
+            stmt = "collect" name:NAME ":" ty:type "=" ( mark:PKG | kind:NAME ) "in" scope:NAME "as" of:NAME
+                "{" BREAK? ( fields:proj_field ( "," BREAK? fields:proj_field )* ","? BREAK? )? "}"
+                ( "by" BREAK? order:order_key ( "," BREAK? order:order_key )* ","? ( dense:"dense" )? )?
                 END
                 @expect("=", "expected `=` after a collect's type")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
@@ -49,18 +44,21 @@ export fn collects() -> LanguageFeature {
                 @expect("{", "expected `{` to open the projection — `as Entry { name: it.name }`")
                 @expect("}", "expected `}` to close the projection — each field is `name: it.path`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bp, bidx, dn)
-            stmt = "collect" "enum" n:NAME ( ":" tr:NAME ( "," tr:NAME )* ","? )? "=" ( k:PKG | k:NAME ) "in" sc:NAME
-                ( bw:NAME BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
+                -> Stmt.Collect by collect_written
+            proj_field = field:NAME ":" "it" ( "." path:NAME )? @expect(":", "expected `:` after a projection field's name — `name: it.name`") -> Record.ProjField
+            order_key = "it" ( "." segs:NAME )+ ( "[" index:INTEGER "]" )? -> Record.OrderKey
+            collected_trait = name:NAME -> Expr.Ident
+            stmt = "collect" "enum" name:NAME ( ":" traits:collected_trait ( "," traits:collected_trait )* ","? )? "=" ( mark:PKG | kind:NAME ) "in" scope:NAME
+                ( "by" BREAK? order:order_key ( "," BREAK? order:order_key )* ","? ( dense:"dense" )? )?
                 END
                 @expect("NAME", "expected the collected enum's name — `collect enum Kind = …`")
                 @expect("=", "expected `=` after the collected enum's name")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_enum_decl(n, k, sc, bw, biw, bp, bidx, dn, tr)
+                -> Stmt.CollectEnum by collect_enum_written
         }
-        builders: rows
         diags: codes
+        soft_words: ["it", "by", "dense"]
     }
     collects
 }

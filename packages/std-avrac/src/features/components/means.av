@@ -36,10 +36,10 @@ use core.{
     copier,
     flatten,
     some_list,
+    digest_of,
 }
 use features.{MeanCx}
 use core.expr.{Component}
-use @std.path.{stem_of}
 
 /// The closure an instance is extended by, and every node its copy made.
 type Again = { root: ExprId, minted: List<ExprId> }
@@ -54,9 +54,11 @@ fn said_again_note(word: string) -> string {
 /// statement.
 fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> List<StmtId> {
     match store.expr(body) {
-        .Block(stmts, _) -> {
-            let held? = store.tail_of(body) else { return stmts }
-            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
+        .Block(_) -> {
+            let held? = store.tail_of(body) else { return store.lead_of(body) }
+            store
+                .lead_of(body)
+                .concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
         },
         rest -> [store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, body, key)), at)],
     }
@@ -107,6 +109,7 @@ impl Mint {
             .Record(r) -> self.recorded(word.word, targs, r, heads, body, name),
             .Refused(why) -> .Err(why),
             .Spoken or .Unread -> .Ok(self.hole()),
+            .Shaped(_) -> .Err(shaped_meant(word.word)),
         }
     }
 
@@ -306,17 +309,18 @@ impl Mint {
 
     /// A pattern head's record: its string literal's format minted as a
     /// `grammar` declaration and hoisted to the file's top level, under a
-    /// name no writer can spell and no other file of the module mints.
-    /// Absent for a head that is code.
+    /// name no writer can spell, made of the format itself, so one format
+    /// is one declaration however many heads write it. Absent for a head
+    /// that is code.
     fn minted_format(word: ComponentWord, t: Template, field: string, head: ExprId) -> Result<
         Minted?,
         string,
     > {
         if !t.formats.contains(field) { return .Ok(null) }
         let text? = self.store.expr(head).text_of() else { return .Err(pattern_literal(word.word, field)) }
-        let name = "${word.word}\$${field}\$${stem_of(self.store.file)}\$${head.index}"
+        let name = "${word.word}\$${field}\$${digest_of(text).substring(0, 16)}"
         let at = self.store.expr_span(head)
-        self.store.hoist(self.store.declared_format(name, text, at, false)?)
+        if !self.store.hoists(name) { self.store.hoist(self.store.declared_format(name, text, at, false)?) }
         // minted before the copy, so it resolves in the user's file
         .Ok(Minted { name: name, named: self.store.alloc_expr(Expr.Ident(Scoped(name)), at) })
     }
@@ -414,7 +418,7 @@ type Field = { name: string, value: ExprId }
 impl SyntaxArena {
     /// A template copied in: each hole filled with the head value or
     /// the block its field names, every node it minted marked as the
-    /// provider's.
+    /// provider's, its binders kept apart from the user's names.
     fn instantiated(
         template: Template,
         word: ComponentWord,
@@ -423,19 +427,19 @@ impl SyntaxArena {
         minted: List<Minted?>,
         door: Means,
     ) -> ExprId {
-        let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
         // a component's own hole grammar has no `..` spelling, so no
         // fill here is ever a run
         mut rb = copier(
-            word.store,
+            template.store,
             self,
             [(kind: HoleKind) -> self.filled(kind, f) for f in fills],
             [false for f in fills],
             door,
         )
         let root = self.template_value(rb.stmts(template.stmts))
-        self.note_copied(since, word.origin)
+        self.note_copied(rb.made_nodes(), word.origin)
+        self.kept_apart_under(root, null)
         root
     }
 
@@ -443,7 +447,7 @@ impl SyntaxArena {
     /// statements as a block.
     fn template_value(copied: List<StmtId>) -> ExprId {
         let lone: ExprId? = if copied.length == 1 { self.answer_of(copied[0]) } else { null }
-        lone ?? self.branch_value(copied) ?? self.alloc_expr(Expr.Block(copied, null))
+        lone ?? self.alloc_expr(Expr.Block(copied))
     }
 
     /// A user's node in the seat a hole stands in — as the expression
@@ -465,7 +469,7 @@ impl SyntaxArena {
             .Type(
                 TypeRef {
                     name: minted.name,
-                    args: [],
+                    applied: [],
                     optional: false,
                     dynamic: false,
                     arrow: false,
@@ -524,7 +528,7 @@ impl Mint {
         let loop_stmt = self
             .store
             .alloc_stmt(Stmt.ForEach(null, Scoped(binder), source, stmts), self.span)
-        let loop_block = self.store.alloc_expr(Expr.Block([loop_stmt], null), self.span)
+        let loop_block = self.store.alloc_expr(Expr.Block([loop_stmt]), self.span)
         self.instance([], [], loop_block, null)
     }
 }
@@ -533,4 +537,10 @@ impl Mint {
 
 fn default_twice(word: string, event: string) -> string {
     "`${word}` hears `${event}` once: its bare statements are the `@default` handler, so `on ${event}` beside them says it twice"
+}
+
+/// An instance asked to mean while its word was known by its shape alone: its component was never
+/// handed to it.
+fn shaped_meant(word: string) -> string {
+    "an instance of `${word}` means once its component is at hand, and only its shape was read — a defect in the caller"
 }

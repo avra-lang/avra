@@ -3,6 +3,7 @@
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{
     SyntaxArena,
+    loc_span,
     new_node_store,
     Stmt,
     StmtId,
@@ -16,7 +17,7 @@ use core.{
     TypeRef,
     TypeId,
     flatten,
-    BlockVoice,
+    ParseRefusal,
     DeclId,
     FileId,
     joined,
@@ -30,7 +31,8 @@ use core.{
 }
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
-use diagnostics.{Diag, DiagCode, has_errors, is_note, render_among, user_code}
+use compiler.lower.{Unit}
+use diagnostics.{no_voices, Diag, DiagCode, has_errors, is_note, rendered_among, user_code}
 use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
 use @std.grammar.{
     Captured,
@@ -42,12 +44,13 @@ use @std.grammar.{
     Diagnostic,
     Cause,
 }
-use grammar.{Token, DocComment, lex_source, lex_blocks, TokenKind, avra_lexeme}
+use grammar.{Token, DocComment, lex_source, TokenKind, avra_lexeme, avra_token_tables}
 use features.{
     LangNode,
     PatSemantics,
     Dispatch,
     build_named,
+    build_row,
     list_at,
     stmt_id_at,
     type_ref_at,
@@ -62,7 +65,7 @@ use features.narrows.{NarrowPatSemantics}
 
 use diagnostics.{SourceFile, Voices}
 use compiler.backend.{run_lowered, run_kept, run_live, Ended, Kept}
-use compiler.lower.{Lowered, Instance}
+use compiler.lower.{Lowered}
 use compiler.memory.{memory}
 use compiler.host.{no_target}
 use compiler.format.{render_statement, render_expression}
@@ -118,19 +121,28 @@ export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> P
     if traced() { qtrace("Q\tparse\t${src.file}\n") }
     work_parsed()
     let quiet = parsed_fresh(lang, src, words, false)
-    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
+    let p = if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
+    // A `state` at the top level is a DECLARATION, marked where the parse makes it, so
+    // every reader of the arena — an admission, a body typed from kept lines — sees it so.
+    // A state inside a body keeps its statement mark alone.
+    for s in p.stmts {
+        if p.store.is_state_stmt(s) { p.store.mark_module_state(s) }
+    }
+    p
+}
+
+/// The words a parse under `words` lexes by.
+fn words_lexed(words: BlockWords) -> LexWords {
+    LexWords {
+        grammars: [g.word for g in words.grammars],
+        components: [c.word for c in words.components if !c.own],
+        own: [c.word for c in words.components if c.own],
+    }
 }
 
 fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     let store = new_node_store(src.file)
     parsed_as(lang, store, src, words, telling)
-}
-
-/// Parse into a store ALREADY standing — the target file's, when a
-/// generated declaration's source is admitted beside the one that
-/// asked for it. The returned statements are the newly minted ones.
-export fn parse_into(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWords) -> Parsed {
-    parsed_as(lang, store, src, words, true)
 }
 
 fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
@@ -142,13 +154,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
             voices: Voices { list: lang.diagnostics },
         }
     }
-    let lexed = lex_blocks(
-        src.text,
-        [g.word for g in words.grammars],
-        [c.word for c in words.components if !c.own],
-        [c.word for c in words.components if c.own],
-        lang.keywords,
-    )
+    let lexed = lexed_under(src.text, words_lexed(words), lang.keywords)
     let door = words with { door: sugar_door(lang) }
     let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
         lang.builders,
@@ -159,7 +165,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         src.text,
         door,
     )
-    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
+    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { quietly(lang, lexed.tokens, store, src.text, door, build) }
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
     // attach_docs: an orphaned doc group extends this list, and
@@ -167,42 +173,45 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
     store.keep_remarks(lexed.remarks)
     attach_docs(store, lexed.docs)
     if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
-    // what a block's grammar refused speaks with the parse, at the block
-    let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
-    let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors]
-        .concat(o.diagnostics)
-        .concat(blocked)
+    for e in lexed.errors { store.refuse(ParseRefusal.Grammar(Cause.Lex, e.message, e.span, [], "(lexing)")) }
+    for d in o.diagnostics {
+        store
+            .refuse(ParseRefusal.Grammar(d.cause, d.message, loc_span(d.loc), d.expected, d.in_rule))
+    }
+    let stmts = [store.declared_instance(s) for s in program_stmts(store, o)]
+        .concat(store.hoisted_decls())
+    store.settle_prints()
     Parsed {
         store: store,
-        stmts: [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls()),
+        stmts: stmts,
         source: src,
-        voices: Voices {
-            list: project_all(engine, src.file, lang.rows.codes)
-                .concat(refusals_spoken(store.refused.get(), src.file, lang.rows.codes)),
-        },
+        voices: Voices { list: refusals_spoken(store.refusals(), src.file, lang.rows.codes) },
     }
 }
 
-/// A block grammar's refusal as the engine's diagnostic it was.
-fn block_diagnostic(v: BlockVoice) -> Diagnostic {
-    Diagnostic {
-        cause: Cause.Block,
-        message: v.message,
-        loc: Loc { file: null, lo: v.lo, hi: v.hi },
-        expected: v.expected,
-        in_rule: v.in_rule,
-    }
-}
-
-/// The engine's own Loc, worn as this store's Span.
-fn loc_span(l: Loc?) -> Span? {
-    if l == null { return null }
-    span_of(l!.lo, l!.hi)
-}
-
-/// A byte range in this file, worn as the engine's own Loc.
-fn span_loc(s: Span) -> Loc {
-    Loc { file: null, lo: s.lo, hi: s.hi }
+/// The untold run of `tokens`: the generated parser's where the language has it, the engine's
+/// otherwise.
+fn quietly(
+    lang: Language,
+    tokens: List<Token>,
+    store: SyntaxArena,
+    text: string,
+    door: BlockWords,
+    build: fn(string, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>,
+) -> RunOutcome<Token, LangNode> {
+    let generated? = lang.untold else { return run_untold<Token, LangNode>(lang.syntax!, tokens, avra_lexeme(), build) }
+    let by_index: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string> = (
+        ix,
+        args,
+        loc,
+    ) -> build_row(generated.rows[ix], avra_builders[ix], store, args, loc_span(loc), text, door)
+    avra_untold(
+        tokens,
+        avra_lexeme(),
+        avra_token_tables(tokens, avra_lits(), generated.kinds, generated.worn),
+        generated.kinds,
+        by_index,
+    )
 }
 
 /// A type SPELLING (`List<ExprId>?`) as the written type it spells —
@@ -302,7 +311,7 @@ fn program_stmts(store: SyntaxArena, o: RunOutcome<Token, LangNode>) -> List<Stm
             out.push(sid!)
         }
     }
-    store.answered(out)
+    out
 }
 
 impl Program {
@@ -433,7 +442,7 @@ impl Program {
     /// it (`avra settled`).
     fn const_json(name: string) -> Result<string, string> {
         let a? = self.entry_file() else { return .Err("the program is empty") }
-        self.ws.const_json(a.view.file, name)
+        self.ws.const_json(a, name)
     }
 
     /// A fn's seat-0 WRITE-FLOW CHAIN — a method's receiver, a free
@@ -576,7 +585,7 @@ impl Program {
         let sources = self
             .manifests
             .concat([self.ws.source(f.id) for f in self.ws.decls.all_files()])
-        joined([render_among(d, sources) for d in ds], "\n\n")
+        rendered_among(ds, sources)
     }
 
     /// The rows the PACKAGE kinds among `ds` render under — one per
@@ -672,14 +681,19 @@ impl Program {
 
     fn lowered_bodies(entry: int?, every: bool, programs: bool, hashed: bool) -> Lowered {
         let ws = self.ws
+        // ONE LOWERING, ONE VOICE: a settlement's refusal speaks again in this
+        // pass, whatever an earlier pass in this workspace already said.
+        ws.spoken_settles.set([])
         // Every file this program reaches is typed by now (the
         // driver's own law: analysis before lowering). Settle the
         // references relation HERE, once, so the consuming pass
         // reads it below as an ordinary dependency rather than
         // computing it lazily mid-lower. The test after a call reads
         // its callee's cancel bits, so that fact settles here too.
-        touch(ws.references())
-        ws.cancels_settled()
+        if ws.records.read_again.get() == null {
+            touch(ws.references())
+            ws.cancels_settled()
+        }
         let lo = memory(
             self
                 .ws
@@ -690,12 +704,9 @@ impl Program {
                     every,
                     programs,
                     hashed,
-                    ws.held_wants(hashed),
-                    ws.hold.held_codes.get(),
-                    (w: Wanted) -> ws.lowered(ws.spec_id(w)),
-                    (f: FileId) -> ws.is_held(f),
+                    if ws.records.read_again.get() == null { [] } else { ws.laws_moved() },
+                    (w: Wanted) -> if self.lowers(w) { ws.program_unit(w) } else { self.unread_unit() },
                     (f: FileId) -> ws.is_program_file(f),
-                    (i: Instance) -> ws.kept_instance(i),
                 ),
         ) with { libraries: ws.linked_packages() }
         if leaves_traced() { eprintln(ws.leaves_report()) }
@@ -731,16 +742,33 @@ impl Program {
         let lo = self.lowered_as(null, true, true, hashed)
         let stale = self.layout_report()
         if stale != null { return .Err(stale!) }
-        let ws = self.ws
-        let spoken = lo
-            .diagnostics
-            .concat(
-                ws
-                    .decls
-                    .outside_entry(self.files, self.entry?.at, (f: FileId) -> ws.is_program_file(f)),
-            )
+        let spoken = lo.diagnostics.concat(self.outside_entry())
         if !spoken.is_empty() { return .Err(self.rendered(spoken)) }
         .Ok(lo)
+    }
+
+    /// Each file of the program, outside its entry, that runs statements the entry's law keeps to the
+    /// entry alone.
+    fn outside_entry() -> List<Diag> {
+        let ws = self.ws
+        ws.decls.outside_entry(self.files, self.entry?.at, (f: FileId) -> ws.is_program_file(f))
+    }
+
+    /// No unit: what a run on kept rows answers for a body it does not read.
+    fn unread_unit() -> Unit { Unit { bodies: [], wants: [], voices: no_voices(), statics: [] } }
+
+    /// Whether a unit is this run's to lower: on kept rows, what a read file holds and what
+    /// no standing record answers for.
+    fn lowers(w: Wanted) -> bool {
+        self.ws.records.read_again.get() == null ||
+            self.files.any(it.view.file == w.file) ||
+            self.ws.decls.instantiated(w) && !self.ws.law_stands(w)
+    }
+
+    /// What lowering says of these files, nothing else settled: a law spoken at a body.
+    fn diagnosed() -> Result<int, string> {
+        let lo = self.lowered_bodies(null, true, true, false)
+        if lo.diagnostics.is_empty() { .Ok(0) } else { .Err(self.rendered(lo.diagnostics)) }
     }
 
     fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {

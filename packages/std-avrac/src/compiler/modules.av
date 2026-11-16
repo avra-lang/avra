@@ -16,8 +16,10 @@ use core.{
     touch,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
-use features.{Decl, Import, nothing, table_of}
+use @std.relation.{query, lasting}
+use features.{Decl, Import, nothing, table_of, Listed}
 use diagnostics.{Diag, loc_at, is_error}
+use compiler.host.{Manifest}
 use @std.testing.{words}
 
 impl Workspace {
@@ -32,45 +34,30 @@ impl Workspace {
     /// source root, `.`-joined — "" for a file at the root package's
     /// source root, `@scope.name.a` for a dependency's.
     fn module_of(path: string) -> string {
-        // the answer is a walk over every package, and packages are admitted as
-        // `use` lines reach them: it is remembered for ONE size of that table
-        let key = "${self.packages().length}\t${path}"
-        let known: string? = self.module_names_of.get().get(key)
+        // a process only adds packages, so one table size names one answer
+        let at = "${self.packages().length}\t${path}"
+        let known: string? = self.keys.modules_of.get().get(at)
         if known != null { return known! }
-        let made = self.module_named(path)
-        self.module_names_of.put(key, made)
+        let pkg = self.packages()[self.holder_of_path(path)]
+        let made = module_in(self.module_prefix(pkg), pkg.src, self.per_file, path)
+        self.keys.modules_of.put(at, made)
         made
     }
 
+    /// What a package's module names begin with: nothing for the root's, its key for a
+    /// dependency's.
+    fn module_prefix(pkg: Package) -> string { if pkg.ordinal == 0 { "" } else { key_spelled(pkg.key) } }
+
     /// `module_of`, as the path it names.
     fn module_path_of(path: string) -> ModulePath { module_path(self.module_of(path).split(".")) }
-
-    fn module_named(path: string) -> string {
-        let pkg = self.packages()[self.holder_of_path(path)]
-        // EVERY FILE ITS OWN MODULE in a directory of programs: the
-        // module is the file's path under the root, stem included, so
-        // seventy programs' `P`s never share a namespace
-        let rel = below(path, pkg.src)
-        let local = if self.per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
-        if pkg.ordinal == 0 { return local }
-        if local.is_empty() { return key_spelled(pkg.key) }
-        "${key_spelled(pkg.key)}.${local}"
-    }
 
     /// The files a module path names: a directory's `.av` files, else
     /// the one file, else nothing (the module does not exist). A
     /// directory holding its own `avra.toml` is a package, never a
     /// module of the one above it.
     fn module_files(m: ModulePath) -> List<string> {
-        // a listing is the host's to give, and a `use` line asks it of the same
-        // module a hundred times: remembered for ONE size of the package table,
-        // since a package admitted later answers for modules it holds
-        let key = self.module_slot(m)
-        let known: List<string>? = self.files_of.get().get(key)
-        if known != null { return known! }
-        let made = self.listed_files(m)
-        self.files_of.put(key, made)
-        made
+        let pkg? = self.holder(m) else { return [] }
+        module_listed(self, pkg.root, pkg.src, pkg.ordinal == 0, m.text())
     }
 
     /// The files of `m` the program MET, in listing order — the files it registered.
@@ -95,34 +82,23 @@ impl Workspace {
 
     fn listed_files(m: ModulePath) -> List<string> {
         let pkg? = self.holder(m) else { return [] }
-        let src = pkg.src
+        self.listed_under(pkg.root, pkg.src, pkg.ordinal == 0, m)
+    }
+
+    /// A module's files under the source root `src` of the package rooted at `root`, which is
+    /// the root program's own when `as_root`: a pure function of those, the directory's listing
+    /// and the package's manifest.
+    fn listed_under(root: string, src: string, as_root: bool, m: ModulePath) -> List<string> {
         if self.crosses_package(src, m.local()) { return [] }
         let dir = m.dir_under(src)
         let entries = self.listing(dir)
-        if entries != null { return [joined_path(dir, e.name) for e in entries! if self.listed_source(dir, e.name)] }
+        if entries != null {
+            let mf = self.manifest_at(root)
+            return [joined_path(dir, e.name) for e in entries! if self.listed_in(mf, root, as_root, dir, e.name)]
+        }
         let file = m.file_under(src)
         if self.there(file) { return [file] }
         []
-    }
-
-    /// THE MODULES WHOSE RECORDS KEEP WHAT A PATH NAMES. A `use` may name ONE
-    /// FILE of a directory module (`@std.http.frame`), and a record is kept
-    /// under the name of the module that file belongs to.
-    fn record_modules(m: ModulePath) -> List<ModulePath> {
-        [module_path(name.split(".")) for name in distinct([self.module_of(f) for f in self.module_files(m)])]
-    }
-
-    /// THE MODULES A MODULE IMPORTS — read from the PARSE, which is the ONE time
-    /// they are free. The interface record keeps them so that every later
-    /// question about them costs nothing, which is what lets validation decide
-    /// whether to re-parse WITHOUT parsing.
-    ///
-    /// A file's `use` lines name paths qualified against the file's own package,
-    /// which is exactly what the resolver does — the record must agree with the
-    /// resolver about what an import MEANS, or it would validate a module
-    /// against a contract it never had.
-    fn imports_of(m: ModulePath) -> List<ModulePath> {
-        flatten([self.imported_by(path) for path in self.module_files(m)])
     }
 
     /// The modules ONE file imports, each path qualified against the file's own
@@ -143,29 +119,21 @@ impl Workspace {
     /// manifest EXCLUDES.
     fn excluded(path: string) -> bool {
         let pkg = self.packages()[self.holder_of_path(path)]
-        self
-            .manifest(pkg.ordinal)
-            .excludes
-            .any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
+        excluded_in(self.manifest(pkg.ordinal), pkg.root, path)
     }
 
     /// A source file the package lists — `.av`, not excluded, and not a
     /// dependency's entry.
     fn listed_source(dir: string, f: string) -> bool {
-        is_source(f, dir) &&
-            !self.excluded(joined_path(dir, f)) &&
-            !self.entry_of_dependency(joined_path(dir, f))
+        let pkg = self.packages()[self.holder_of_path(joined_path(dir, f))]
+        self.listed_in(self.manifest(pkg.ordinal), pkg.root, pkg.ordinal == 0, dir, f)
     }
 
-    /// A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
-    /// is that package's program, which runs only where the package is
-    /// the root — so it is no module file of a program that depends on
-    /// the package, and its names are not the library's.
-    fn entry_of_dependency(path: string) -> bool {
-        let pkg = self.packages()[self.holder_of_path(path)]
-        if pkg.ordinal == 0 { return false }
-        let bin? = self.manifest(pkg.ordinal).bin else { return false }
-        path == joined_path(pkg.root, bin) && bin != self.manifest(pkg.ordinal).lib
+    /// `listed_source` for the package rooted at `root` with manifest `mf`.
+    fn listed_in(mf: Manifest, root: string, as_root: bool, dir: string, f: string) -> bool {
+        is_source(f, dir) &&
+            !excluded_in(mf, root, joined_path(dir, f)) &&
+            !entry_in(mf, root, as_root, joined_path(dir, f))
     }
 
     /// Whether a directory is a package root of its own.
@@ -237,18 +205,6 @@ impl Workspace {
             }
         }
         out
-    }
-
-    /// The root package's source files — what `check <root>` analyzes.
-    /// EVERY package's sources — the build's input set, from the DISK rather than from
-    /// what resolution happened to load. This is what lets a held file be known without
-    /// being resolved.
-    fn every_source() -> List<string> {
-        // A TEST IS NOT PROGRAM CODE. `all_files` walks every `.av` under a package's
-        // source root, tests included, and analysing one as a program fails in its own
-        // words — "a module file holds declarations, only the entry runs statements" —
-        // which is a diagnostic about the TEST rather than about the build.
-        [f for f in flatten([self.all_files(pkg.src) for pkg in self.packages()]) if !self.is_test_path(f)]
     }
 
     /// Whether a source path is in its OWN package's test tree rather
@@ -351,7 +307,6 @@ impl Workspace {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
         let here = [self.decls.file(f).path for f in files]
-        self.minted_files([p for p in self.hold.named_by.get().get(name) ?? [] if here.contains(p)])
         let named = self.decls.named_filed(name)
         [x.id for f in files for x in named if self.written_export_in(x, f)]
     }
@@ -392,9 +347,10 @@ impl Workspace {
     /// file's `reexport` record lines.
     fn file_reexports(path: string) -> List<Reexport> {
         let f = self.file_id(path)
-        if self.is_held(f) { return self.hold.reexports.get().get(path) ?? [] }
-        let p = self.parsed(f)
         let from = self.packages()[self.holder_of_path(path)]
+        let kept = if self.rows_kept(f) { self.kept_admits(path) } else { null }
+        if kept != null { return flatten([self.use_reexports(u, from) for u in uses_of_wire(kept!.exports) ?? []]) }
+        let p = self.parsed(f)
         flatten([self.use_reexports(u, from) for u in use_lines(p) if p.store.is_exported(u.stmt)])
     }
 
@@ -430,7 +386,7 @@ impl Workspace {
     /// parse for a file that carries no annotation, and empty outright
     /// for a held one.
     fn expanded_exports(f: FileId) -> List<DeclId> {
-        if self.is_held(f) || !(self.has_declares(f) || self.has_marks(f)) { return [] }
+        if !(self.has_declares(f) || self.has_marks(f)) { return [] }
         [d for d in self.expanded(f) if self.is_exported(d)]
     }
 
@@ -459,12 +415,11 @@ impl Workspace {
             let exported = self.export_of(m, item)
             let id: DeclId? = exported ?? own.first()
             let claimed: DeclId? = if shared && id != null { self.export_of(self.module_path_of(p.source.file), u.bound_as(j)) } else { null }
-            if listed.contains(item) {
-                diags.push(listed_twice(at, item))
-            } else if id == null && self.reexports(m).any(it.name == item) {
-                diags.push(reexport_unreached(at, m, item))
-            } else if id == null {
-                diags
+            when {
+                listed.contains(item) -> diags.push(listed_twice(at, item))
+                id == null && self.reexports(m).any(it.name == item) -> diags
+                    .push(reexport_unreached(at, m, item))
+                id == null -> diags
                     .push(
                         not_exported(
                             at,
@@ -475,8 +430,7 @@ impl Workspace {
                             self.unread_source(m),
                         ),
                     )
-            } else if exported == null && own.length > 1 {
-                diags
+                exported == null && own.length > 1 -> diags
                     .push(
                         private_apart(
                             at,
@@ -485,12 +439,13 @@ impl Workspace {
                             [file_name(self.decls.file(self.decl_at(d).file).path) for d in own],
                         ),
                     )
-            } else if shared && self.closes_cycle(from, m) {
-                diags.push(reexport_cycle(at, from.key, m.package() ?? ""))
-            } else if claimed != null && !same_decl(claimed!, id!) {
-                if !self.declared_twice_here(p, u.bound_as(j)) { diags.push(reexport_twice(at, u.bound_as(j))) }
-            } else {
-                imports.push(Import { decl: id!, at: at, renamed: u.bound_as(j), shared: shared })
+                shared && self.closes_cycle(from, m) -> diags
+                    .push(reexport_cycle(at, from.key, m.package() ?? ""))
+                claimed != null && !same_decl(claimed!, id!) -> {
+                    if !self.declared_twice_here(p, u.bound_as(j)) { diags.push(reexport_twice(at, u.bound_as(j))) }
+                }
+                _ -> imports
+                    .push(Import { decl: id!, at: at, renamed: u.bound_as(j), shared: shared })
             }
             listed.push(item)
         }
@@ -596,16 +551,6 @@ fn reexport_line(path: string, r: Reexport) -> string {
     "reexport\t${path}\t${r.name}\t${r.from.text()}\t${r.item}"
 }
 
-/// A record's re-export lines for one file, read back.
-fn reexports_in(fields: List<List<string>>, path: string) -> List<Reexport> {
-    [held_reexport(p) for p in fields if p.length >= 5 && p[0] == "reexport" && p[1] == path]
-}
-
-/// `reexport_line`'s inverse.
-fn held_reexport(p: List<string>) -> Reexport {
-    Reexport { name: p[2], from: module_path(p[3].split(".")), item: p[4] }
-}
-
 /// A `use` whose every item was refused as a whole.
 fn refused_line(u: UseParts, diagnostics: List<Diag>) -> Imported {
     Imported { imports: [], diagnostics: diagnostics, refused: unbound(u, []) }
@@ -614,4 +559,41 @@ fn refused_line(u: UseParts, diagnostics: List<Diag>) -> Imported {
 /// The names a `use` line binds that no import answered.
 fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
     [u.bound_as(j) for j, _item in u.items if !imports.any(it.renamed == u.bound_as(j))]
+}
+
+/// A FILE'S MODULE, of the package that holds it — `prefix` its module names begin with, `src`
+/// its source root. A directory of programs (`per_file`) makes every file its own module, so
+/// seventy programs' `P`s never share a namespace.
+fn module_in(prefix: string, src: string, per_file: bool, path: string) -> string {
+    let rel = below(path, src)
+    let local = if per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
+    if prefix.is_empty() || local.is_empty() { return prefix + local }
+    "${prefix}.${local}"
+}
+
+/// A module's files, through the host's listing, under the source root `src` of the package
+/// that holds it; a dependency's `module` names its key.
+/// LASTING because its key is the package's root, its source root, whether it is the root
+/// program's and the module: it reads the directory listing, the Exists of nested manifests and
+/// the package's own manifest, every one a recorded input, and nothing of the process's package
+/// table.
+@query
+@lasting
+fn module_listed(ws: Workspace, root: string, src: string, as_root: bool, module: string) -> List<
+    string,
+> {
+    ws.listed_under(root, src, as_root, module_path(module.split(".")))
+}
+
+/// Whether `path` is one its package's manifest EXCLUDES, the package rooted at `root`.
+fn excluded_in(mf: Manifest, root: string, path: string) -> bool {
+    mf.excludes.any(under_dir(path, joined_path(root, it)) || path == joined_path(root, it))
+}
+
+/// Whether `path` is a dependency's own program: the file its `[bin]` names, which runs only where
+/// the package is the root.
+fn entry_in(mf: Manifest, root: string, as_root: bool, path: string) -> bool {
+    if as_root { return false }
+    let bin? = mf.bin else { return false }
+    path == joined_path(root, bin) && bin != mf.lib
 }

@@ -1,0 +1,99 @@
+//! WHERE A RE-EXPORT PUTS NOTHING, OR PUTS A NAME TWICE, ON ITS MODULE'S SURFACE: an `export use`
+//! names a declaration some module behind it writes, and a module's surface holds each name once.
+//! Read off the item's `use` lines and the surface its module's files make.
+use core.{Span, some_list}
+use compiler.{surface_taken, unreached_reexport}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// An `export use` line of a written item: where it stands, and its line.
+type Reexport = { at: Span?, line: UseLine }
+
+/// Every `use` line the written item `at` of `file` writes, re-exporting or not.
+fn uses_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Reexport> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [Reexport {
+        at: item.store.stmt_span(s),
+        line: UseLine {
+            path: u!.path,
+            items: u!.items,
+            aliases: u!.aliases,
+            exported: item.store.is_exported(s),
+        },
+    } for s in item.stmts for u in [item.store.use_parts(s)] if u != null]
+}
+
+/// Every `export use` line the written item `at` of `file` writes.
+fn reexports_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Reexport> { uses_in(engine, file, at).filter(it.line.exported) }
+
+/// Every item a `use` of the written item `at` of `file` reads through a re-export that no
+/// declaration stands behind — its own `export use`, or a module's that re-exports it — beside the
+/// module it names.
+fn unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: r.at, args: [r.line.path.join("."), item] } for r in uses_in(engine, file, at) for m in some_list(imported_module(engine, file, r.line)) for item in r.line.items if (r.line.exported || reexports_name(engine, m, item)) && surfaced(engine, m, item, []).is_empty()]
+}
+
+/// Whether `name`, read in `file`, is bound by a `use` line through a re-export no declaration
+/// stands behind: the re-export's law speaks for it, and no read of it is another refusal.
+export fn reexport_unreached_read(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    file_words(engine, file)
+        .uses
+        .any(
+            (u) -> (0..u.items.length)
+                .any((j: int) -> u.bound_as(j) == name && dead_reexport(engine, file, u, u.items[j])),
+        )
+}
+
+/// Whether the `use` line `u` of `file` reads `item` through a re-export with nothing behind it.
+fn dead_reexport(engine: QueryEngine, file: SourceFileAddress, u: UseLine, item: string) -> bool {
+    let m? = imported_module(engine, file, u) else { return false }
+    reexports_name(engine, m, item) && surfaced(engine, m, item, []).is_empty()
+}
+
+/// Every name an `export use` of the written item `at` of `file` re-exports that its module's
+/// surface already holds by an earlier declaration or re-export.
+fn taken_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let mine = reexports_in(engine, file, at)
+    if mine.is_empty() { return [] }
+    let surface = module_surface(
+        engine,
+        module_files(engine, file.package_name, module_segments(file), true),
+    )
+    [Found { at: r.at, args: [name] } for r in mine for m in some_list(imported_module(engine, file, r.line)) for j, item in r.line.items for name in [r.line.bound_as(j)] for d in surfaced(engine, m, item, []).take(1) if held_before(surface, name, d)]
+}
+
+/// Whether the surface holds `name` for a declaration other than `d` before it holds it for `d`.
+fn held_before(surface: List<SurfaceName>, name: string, d: DeclaredName) -> bool {
+    let mine? = surface.find_index(it.name == name && it.decl.is(d)) else { return false }
+    surface.take(mine).any(it.name == name && !it.decl.is(d))
+}
+
+/// a re-export names a declaration that stands behind it
+export law reexport_reached {
+    kind: "resolve.reexport_unreached"
+    reads: unreached
+    voice: unreached_words
+    witness: "use a.{x}\nx\n"
+    witness_files: {"src/a.av": "export use b.{x}\n", "src/b.av": "export use a.{x}\n"}
+}
+
+/// a module's surface holds each name once
+export law reexport_once {
+    kind: "resolve.reexport_twice"
+    reads: taken_twice
+    voice: twice_words
+    witness: "use facade.{f}\nf()\n"
+    witness_files: {
+        "src/util/u.av": "export fn f() -> int { 1 }\n",
+        "src/other/o.av": "export fn f() -> int { 2 }\n",
+        "src/facade/f.av": "export use util.{f}\nexport use other.{f}\n",
+    }
+}
+
+fn unreached_words(a: List<string>) -> Voice { unreached_reexport(a[0], a[1]) }
+
+fn twice_words(a: List<string>) -> Voice { surface_taken(a[0]) }

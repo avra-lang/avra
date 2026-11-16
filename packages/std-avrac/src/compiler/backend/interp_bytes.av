@@ -106,6 +106,26 @@ impl Machine {
         Val.Y([self.octets(x) for x in self.arrays[id]].bytes())
     }
 
+    /// `width` octets of a word, the most significant first, appended to the bytes the cell at
+    /// `vals[0]` holds.
+    fn cell_bytes_word_val(vals: List<Val>) -> Val {
+        let width = self.whole(vals[2])
+        if width < 1 || width > 8 { return self.trapped_val("a word appends one to eight octets") }
+        let word = self.whole(vals[1])
+        let octets = [(word >> 8 * (width - 1 - k)) & 255 for k in 0..width].bytes() ?? "".bytes()
+        self.cell_bytes_grown(vals[0], octets)
+    }
+
+    /// A run of octets appended to the bytes the cell at `vals[0]` holds.
+    fn cell_bytes_run_val(vals: List<Val>) -> Val { self.cell_bytes_grown(vals[0], self.octets(vals[1])) }
+
+    /// `more` appended to the bytes the cell `cell` holds: a new value in its one slot.
+    fn cell_bytes_grown(cell: Val, more: Bytes) -> Val {
+        let id? = array_id(cell) else { return self.defect_val("a non-cell's bytes grown") }
+        let held = self.slot_read_val(id, 0)
+        self.slot_written(id, 0, Val.Y(self.octets(held).concat(more)))
+    }
+
     fn bytes_of_list_val(v: Val) -> Val {
         let id? = array_id(v) else { return self.defect_val("a non-list reached byte construction") }
         let b? = [self.whole(x) for x in self.arrays[id]].bytes() else { return Val.N }

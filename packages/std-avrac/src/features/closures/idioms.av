@@ -1,6 +1,6 @@
 //! The formatter's idioms for this feature — `rule`s, reached by
 //! this feature's `mod.av`, the way any declaration is.
-use features.{Code, Fix, rule}
+use features.{Syntax, Fix, rule}
 use @std.meta.{name}
 
 /// A one-parameter lambda handed to a method call is `it` — the
@@ -28,18 +28,18 @@ export rule pronoun_lambda {
 }
 
 /// Whether `name` occurs anywhere under `c`, `c` itself included.
-fn mentions(c: Code, name: string) -> bool {
+fn mentions(c: Syntax, name: string) -> bool {
     c.name() == name || c.kids().any((k) -> mentions(k, name))
 }
 
 /// Whether `name` sits inside some nested call's own ARGUMENTS,
 /// anywhere under `c` — the shape `it` cannot rename, since `it`
 /// would bind at that NEARER call instead.
-fn handed_to_a_call(c: Code, name: string) -> bool {
+fn handed_to_a_call(c: Syntax, name: string) -> bool {
     c.call_args().any((a) -> mentions(a, name)) || c.kids().any((k) -> handed_to_a_call(k, name))
 }
 
-fn pronoun_lambda_fix(xs: Code, m: string, p: string, body: Code) -> Fix {
+fn pronoun_lambda_fix(xs: Syntax, m: string, p: string, body: Syntax) -> Fix {
     Fix.Rewrite(name("${xs.text()}.${m}(${renamed(body.text(), p, "it")})"))
 }
 

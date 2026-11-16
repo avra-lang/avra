@@ -48,35 +48,47 @@ fn link_objects(
         // `--strip-all` drops the DWARF and name sections the C toolchain
         // leaves in every object: a module is what a browser downloads, and
         // its debug info was four fifths of it.
-        ["-w", "--target=${target}", "-Wno-deprecated"]
-            .concat(if debug { [] } else { ["-Wl,--strip-all"] })
-            .concat(if reactor { ["-mexec-model=reactor"].concat(reactor_entry_words()) } else { [] })
-            .concat(host_export_words())
-            .concat(table_export_words())
-            .concat(objs)
-            .concat(ws.link_words(target))
-            .concat(
-                [
-                    runtime,
-                    "-lwasi-emulated-mman",
-                    "-lwasi-emulated-signal",
-                    "-lwasi-emulated-getpid",
-                    "-lsetjmp",
-                    "-o",
-                    out,
-                ],
-            )
+        wasm_link_head(target, reactor, debug).concat(objs).concat(ws.link_words(target)).concat(wasm_link_tail(runtime, out))
     } else {
-        // A HOST FN IS KEPT: its symbol is defined for a caller outside the
-        // program, which the linker cannot see reaching it.
-        ["-w", if ws.names_its_symbols() { "-rdynamic" } else { unreached_dropped() }]
-            .concat(if ld == "" { [] } else { ["--ld-path=${ld}"] })
-            .concat(host_kept_words(hosted))
-            .concat(link_named(binary))
+        native_link_head(ws.names_its_symbols(), ld, hosted, binary)
             .concat(objs)
             .concat(ws.link_words(""))
-            .concat([runtime, "-lm", "-o", out])
+            .concat(native_link_tail(runtime, out))
     }
+}
+
+/// The words a wasm link for `target` starts with: the driver's own target, which names crt1 and a
+/// libc; its debug sections stripped unless `debug`; a reactor's entry where `reactor`; the host
+/// fns and the function table exported.
+export fn wasm_link_head(target: string, reactor: bool, debug: bool) -> List<string> {
+    ["-w", "--target=${target}", "-Wno-deprecated"]
+        .concat(if debug { [] } else { ["-Wl,--strip-all"] })
+        .concat(if reactor { ["-mexec-model=reactor"].concat(reactor_entry_words()) } else { [] })
+        .concat(host_export_words())
+        .concat(table_export_words())
+}
+
+/// The words a wasm link ends with: the wasm runtime archive `runtime`, the libraries WASI emulates
+/// and `setjmp`, and the module it writes at `out`.
+export fn wasm_link_tail(runtime: string, out: string) -> List<string> {
+    [runtime, "-lwasi-emulated-mman", "-lwasi-emulated-signal", "-lwasi-emulated-getpid", "-lsetjmp", "-o", out]
+}
+
+/// The words a native link ends with: the runtime archive `runtime`, the maths library, and the
+/// binary it writes at `out`.
+export fn native_link_tail(runtime: string, out: string) -> List<string> { [runtime, "-lm", "-o", out] }
+
+/// The words a native link starts with: every symbol in the image's dynamic table where a package's
+/// C names the program's own symbols by name (`[link] dynamic_symbols`), else what nothing reaches
+/// dropped; the linker the host found; each host fn kept, since its caller is outside the program;
+/// and the binary named where it lands.
+export fn native_link_head(names_symbols: bool, ld: string, hosted: List<string>, binary: string) -> List<
+    string,
+> {
+    ["-w", if names_symbols { "-rdynamic" } else { unreached_dropped() }]
+        .concat(if ld == "" { [] } else { ["--ld-path=${ld}"] })
+        .concat(host_kept_words(hosted))
+        .concat(link_named(binary))
 }
 
 /// `x.av` builds `x`.

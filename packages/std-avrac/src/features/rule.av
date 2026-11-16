@@ -35,7 +35,7 @@
 //! why (what the rewrite would have to touch beyond the node, or decide for
 //! the author). A rule carries `@fixes` or `@says`, never both —
 //! `avra voices` holds a rule with neither to its baseline.
-use features.{Code, Fix}
+use features.{Code, Fix, Syntax}
 use @std.meta.{Diagnostic, refuse}
 
 /// One `@fixes` example: code the rule rewrites. `@fixes("before",
@@ -53,30 +53,34 @@ use @std.meta.{Diagnostic, refuse}
 export type Fixes = { before: string, after: string? = null, files: Map<string, string> = {} }
 
 export component rule {
-    run: fn(Code) -> Fix?
+    run: fn(Syntax) -> Fix?
     doc: string = ""
     fixes: List<Fixes> = []
     keeps: List<string> = []
     law: List<string> = []
     says: List<string> = []
 
-    fn check() -> List<Diagnostic> {
-        if self.fixes.is_empty() && self.keeps.is_empty() {
-            return [
-                refuse("a rule with no `@fixes` or `@keeps` has nothing to prove itself against"),
-            ]
-        }
-        if self.law.length > 1 { return [refuse("a rule takes at most one `@law` — the claim is singular")] }
-        if self.says.length > 1 { return [refuse("a rule takes at most one `@says` — one reason no rewrite is honest")] }
-        if !self.says.is_empty() && !self.fixes.is_empty() {
-            return [
-                refuse(
-                    "a rule that carries `@fixes` rewrites, and `@says` states that it does not — one of them",
-                ),
-            ]
-        }
-        []
+    fn check() -> List<Diagnostic> { rule_judged(self.fixes, self.keeps, self.law, self.says) }
+}
+
+/// What a rule's own declaration must hold to prove itself: an example, at most one `@law`, at most
+/// one `@says`, and never `@says` beside `@fixes`.
+fn rule_judged(fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string>) -> List<
+    Diagnostic,
+> {
+    if fixes.is_empty() && keeps.is_empty() {
+        return [refuse("a rule with no `@fixes` or `@keeps` has nothing to prove itself against")]
     }
+    if law.length > 1 { return [refuse("a rule takes at most one `@law` — the claim is singular")] }
+    if says.length > 1 { return [refuse("a rule takes at most one `@says` — one reason no rewrite is honest")] }
+    if !says.is_empty() && !fixes.is_empty() {
+        return [
+            refuse(
+                "a rule that carries `@fixes` rewrites, and `@says` states that it does not — one of them",
+            ),
+        ]
+    }
+    []
 }
 
 /// Whether an annotation's NAME is one `rule`'s instance reads

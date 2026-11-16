@@ -1,17 +1,32 @@
 //! `avra run` — evaluate a program and print its value.
 use @std.cli.{CliResult, Runnable, command}
 use @std.avrac.compiler.{Program}
+use @std.avrac.compiler.host.{no_target}
+use @std.avrac.diagnostics.{render_among}
 use @std.avrac.compiler.backend.{Ended}
 
 type RunCmd = {}
 
 impl Runnable for RunCmd {
     fn run(args: CliResult) -> int {
-        // a wasm run builds the module and hands it to the host runner; the
-        // evaluator answers every other target
+        // a wasm run builds the module, on the path the door chooses, and hands it to the host
+        // runner; the program layer or the evaluator answers every other run
         if args.option("target") != "" { return run_wasm_command(args) }
+        if program_door() { return program_ran(args) }
         phased(args, "lower+run", ran)
     }
+}
+
+/// `avra run` on the program layer: the program built there, then run at the terminal, its exit the
+/// run's — a trap's 2, a cancelled run's 1, as an evaluated run ends.
+fn program_ran(args: CliResult) -> int {
+    let path = path_arg(args)
+    if is_a_dir(path) && entry_written(path) == null {
+        println(render_among(no_target(root_workspace(path).root), []))
+        return 1
+    }
+    let binary = match built_binary(args) { .Ok(b) -> b, .Err(code) -> { return code } }
+    match run_binary(binary) { .Ok(exit) -> status_of_exit(exit), .Err(e) -> refused_by_host(e) }
 }
 
 fn ran(p: Program) -> Result<int, string> {

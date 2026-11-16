@@ -5,7 +5,6 @@ use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace, ErrorSite, Raised}
 use compiler.host.{memory_host}
 use @std.relation.engine.{Key}
-use compiler.families.{Family}
 use core.{DeclId, same_decl, same_expr}
 
 fn sites_workspace(main: string) -> Workspace {
@@ -24,7 +23,7 @@ fn sites_workspace(main: string) -> Workspace {
 /// `act` run as the `Failures` query — the one writer of the survey's
 /// and the solve's rows.
 fn as_failures(ws: Workspace, act: fn() -> void) {
-    let k = Key { family: Family.Failures.ordinal, arg: 0 }
+    let k = ws.cells_named("failures_solved").first() ?? Key { family: -1, arg: 0 }
     ws.db.kernel.begin(k)
     act()
     ws.db.kernel.settle(k, 0)
@@ -305,6 +304,8 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
         let f = decl_named(ws, "f")
         let g = decl_named(ws, "g")
         let _ = ws.failures()
+        // typing read these rows this revision: a later solve follows an edit
+        ws.db.kernel.bump()
         as_failures(ws, () -> ws.solve_raised([f, g]))
         as_failures(ws, () -> ws.solve_raised([f]))
         let rows = Raised.all(ws.decls.rows_db.get())

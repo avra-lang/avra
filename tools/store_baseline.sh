@@ -5,6 +5,8 @@
 # store's file syscalls by kind (strace). After the cold one: files and bytes
 # per part — `.avra-cache/store/` (body-*.pack, body-*.idx, seg-*.log, lock),
 # and the `obj/` and `bin/` files beside it — count, total, median, p95, max.
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 export AVRA_MEM_CEILING_MB=5000 AVRA_WATCH_HELD=1
 : "${LLVM_PREFIX:=/usr/lib/llvm-22}"
 export LLVM_PREFIX

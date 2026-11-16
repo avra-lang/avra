@@ -1,0 +1,144 @@
+//! WHAT A PACKAGE READS AS: every source file's items and what its top level sees, asked as one
+//! question, so a process asking it of a package nobody edited checks one record of inputs.
+use core.{flatten, distinct}
+use @std.meta.{derive}
+use @std.program.address.{DirectoryAddress, SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.worked_ahead.{WorkAhead, Worked, cores_online, engine_worked_ahead}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{listed}
+use @std.path.{dir_of}
+
+/// A package read whole: its source files, how many items they hold, and how many names clashed.
+@derive(Saved)
+export type PackageRead = { files: List<string>, items: int, clashes: int }
+
+@query
+export fn package_read(engine: QueryEngine, package: string) -> PackageRead {
+    let files = package_sources(engine, package, "src")
+    let reads = [file_tally(engine, source_at(package, f)) for f in files]
+    PackageRead {
+        files: files,
+        items: [r.items for r in reads].sum(),
+        clashes: [r.clashes for r in reads].sum(),
+    }
+}
+
+/// One file read: how many items it holds, and how many of its names clashed.
+@derive(Saved)
+export type FileTally = { items: int, clashes: int }
+
+@query
+export fn file_tally(engine: QueryEngine, file: SourceFileAddress) -> FileTally {
+    FileTally {
+        items: file_items_saved(engine, file).length,
+        clashes: file_scope(engine, file)?.clashes?.length ?? 0,
+    }
+}
+
+/// The store at `directory` a package is read from, and the engine to read it with, every source file it knows nothing of read
+/// first across the machine's cores. Each core reads its share of files' words, which lexes them
+/// and parses each item as it reads with no words, the parse most items mean; nothing it reads
+/// crosses to another file, so no core repeats another's work.
+export fn package_worked(directory: string, package: string) -> Worked {
+    engine_worked_ahead<SourceFileAddress, FileWords>(
+        directory,
+        avra_fact_definitions(),
+        WorkAhead {
+            items: (engine: QueryEngine) -> [source_at(package, f) for f in package_sources(engine, package, "src")],
+            is_known: file_words_is_known,
+            ask: file_words,
+            process_count: cores_online(),
+        },
+    )
+}
+
+/// The `.av` files under `dir`, in listing order; a directory holding its own manifest is another
+/// package's.
+export fn package_sources(engine: QueryEngine, package: string, dir: string) -> List<string> {
+    let names = listed(engine, DirectoryAddress { package_name: package, path_in_package: dir }) ?? []
+    if dir != "src" && names.contains("avra.toml") { return [] }
+    flatten(
+        [if name.ends_with(".av") { ["${dir}/${name}"] } else { package_sources(engine, package, "${dir}/${name}") } for name in names],
+    )
+}
+
+/// The files a package reaches: its own sources, then each file of every module one of them imports,
+/// and so on, each once.
+@derive(Saved)
+type ClosureFiles = { files: List<SourceFileAddress> }
+
+@query
+fn package_closure(engine: QueryEngine, package: string) -> ClosureFiles {
+    closure_from(
+        engine,
+        [SourceFileAddress { package_name: package, path_in_package: p } for p in package_sources(engine, package, "src")],
+    )
+}
+
+/// The files the program whose entry is `entry` reaches: the entry and every file of its own module,
+/// then each file of every module one of them imports, and so on, each once — what its build reads,
+/// and never a file of another module of its package nothing it reaches imports.
+@query
+fn entry_closure(engine: QueryEngine, entry: SourceFileAddress) -> ClosureFiles {
+    closure_from(engine, [entry].concat(module_mates(engine, entry)))
+}
+
+/// Every other file of the module the source `entry` stands in: the files of its directory under
+/// the package's sources, each of which is the module's whether anything imports it or not.
+fn module_mates(engine: QueryEngine, entry: SourceFileAddress) -> List<SourceFileAddress> {
+    let path = entry.path_in_package
+    if !path.starts_with("${SOURCE_ROOT}/") { return [] }
+    let dir = dir_of(path)
+    let local = if dir == SOURCE_ROOT { [] } else { dir.substring(SOURCE_ROOT.length + 1, dir.length).split("/") }
+    module_files(engine, entry.package_name, local, true).filter(it.path_in_package != path)
+}
+
+/// Every file the program whose entry is `entry` reads.
+export fn entry_files(engine: QueryEngine, entry: SourceFileAddress) -> List<SourceFileAddress> { entry_closure(engine, entry).files }
+
+/// `roots`, then each file of every module one of them imports, and so on, each once.
+fn closure_from(engine: QueryEngine, roots: List<SourceFileAddress>) -> ClosureFiles {
+    mut files = roots
+    mut seen: Map<string, bool> = {}
+    for f in files { seen.set(spelled_file(f), true) }
+    mut at = 0
+    while at < files.length {
+        let f = files[at]
+        for u in file_words(engine, f).uses {
+            let m? = imported_module(engine, f, u) else { continue }
+            for g in module_files(engine, m.package, m.local, m.as_root) {
+                if !seen.has(spelled_file(g)) {
+                    seen.set(spelled_file(g), true)
+                    files.push(g)
+                }
+            }
+        }
+        at = at + 1
+    }
+    ClosureFiles { files: files }
+}
+
+/// The packages a package's code can name: its own, then each one its files' imports reach, each once,
+/// in the order first reached.
+@derive(Saved)
+export type ReachedPackages = { packages: List<string> }
+
+@query
+export fn package_reach(engine: QueryEngine, package: string) -> ReachedPackages {
+    ReachedPackages {
+        packages: distinct([f.package_name for f in package_closure(engine, package).files]),
+    }
+}
+
+collect listed_package_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// Every file a program rooted at `package` reads: its own sources, then each module a `use` reaches.
+export fn program_files(engine: QueryEngine, package: string) -> List<SourceFileAddress> { package_closure(engine, package).files }
+
+/// The queries a package read whole reads through, for a process to hand its engine.
+export fn package_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_package_facts) }
+
+/// The source `path` of `package`.
+fn source_at(package: string, path: string) -> SourceFileAddress { SourceFileAddress { package_name: package, path_in_package: path } }

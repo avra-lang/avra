@@ -20,7 +20,7 @@ use features.{
     unknown_answer,
     void_answer,
 }
-use diagnostics.{DiagCode, refusal}
+use diagnostics.{DiagCode, Voice, refusal, said_as}
 
 export fn cells() -> LanguageFeature {
     let methods = table<MethodRow> {
@@ -237,14 +237,14 @@ fn unfit_cell(mut cx: TypeCx, arg: ExprId, held: TypeId) -> TypeId {
 /// `put` inserts into the map a cell holds — a cell holding anything
 /// else has no map to insert into.
 fn cell_holds_no_map(mut cx: TypeCx, e: ExprId, held: TypeId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.cell_map",
-                cx.loc_of(e),
-                "`put` inserts into the map a cell holds, and this cell holds `${cx.view.types.name_of(held)}`",
-                "not a map",
-                "put values in through a `Cell<Map<string, V>>`",
-            ),
-        )
+    cx.spoken(said_as("type.cell_map", cx.loc_of(e), cell_unmapped(cx.view.types.name_of(held))))
+}
+
+/// `put` on a cell holding `held`, which is no map.
+export fn cell_unmapped(held: string) -> Voice {
+    Voice {
+        message: "`put` inserts into the map a cell holds, and this cell holds `${held}`",
+        label: "not a map",
+        help: "put values in through a `Cell<Map<string, V>>`",
+    }
 }

@@ -1,0 +1,401 @@
+//! THE VERBS THE LANGUAGE OWNS THAT ARE MORE THAN ONE ROW: a verb `@std/prelude`'s `verbs/` declares
+//! on a type the language owns whose code is a shape of rows: an edge of a list or a map's value read
+//! into a nullable, a write through a place opened for writing, or a cell made, read or written.
+
+/// A verb the language owns that is a shape of rows.
+export enum OwnVerb {
+    /// The first element of a list, absent for an empty one.
+    First
+    /// The last element of a list, absent for an empty one.
+    Last
+    /// A map's value under a key, absent where it holds none.
+    Got
+    /// A list's element at a place, absent where the list holds none there.
+    GotAt
+    /// A map's value under a key, taken out of it; absent where it held none.
+    Removed
+    /// A list walked by a paired `for` head, which binds each place beside its element: the list.
+    Enumerated
+    /// One more element written onto a list.
+    Pushed
+    /// An element of a list written.
+    SetAt
+    /// The last element of a list, removed from it.
+    Popped
+    /// A map's value under a key written.
+    Put
+    /// A cell made holding a value.
+    CellNew
+    /// What a cell holds.
+    CellGet
+    /// A cell's value replaced.
+    CellSet
+    /// One more element written onto the list a cell holds.
+    CellPushed
+    /// An element of the list a cell holds written.
+    CellSetAt
+    /// A value written under a key of the map a cell holds.
+    CellPut
+    /// What a task answered, once it has: its end joined, then its one cell read.
+    Awaited
+    /// An owner of tasks made, holding none.
+    TasksNew
+}
+
+/// A verb on a type the language owns that is a shape of rows: the receiver's type, the verb's name,
+/// and its shape.
+export type OwnShape = { receiver: OwnType, verb: string, shape: OwnVerb }
+
+/// Every verb the language owns that is a shape of rows.
+export once fn own_shapes() -> List<OwnShape> {
+    table<OwnShape> {
+        receiver      | verb        | shape
+        OwnType.List  | "first"     | OwnVerb.First
+        OwnType.List  | "last"      | OwnVerb.Last
+        OwnType.List  | "push"      | OwnVerb.Pushed
+        OwnType.List  | "set"       | OwnVerb.SetAt
+        OwnType.List  | "pop"       | OwnVerb.Popped
+        OwnType.List  | "get"       | OwnVerb.GotAt
+        OwnType.List  | "enumerate" | OwnVerb.Enumerated
+        OwnType.Map   | "get"       | OwnVerb.Got
+        OwnType.Map   | "set"       | OwnVerb.Put
+        OwnType.Map   | "remove"    | OwnVerb.Removed
+        OwnType.Cell  | "new"       | OwnVerb.CellNew
+        OwnType.Cell  | "get"       | OwnVerb.CellGet
+        OwnType.Cell  | "set"       | OwnVerb.CellSet
+        OwnType.Cell  | "push"      | OwnVerb.CellPushed
+        OwnType.Cell  | "set_at"    | OwnVerb.CellSetAt
+        OwnType.Cell  | "put"       | OwnVerb.CellPut
+        OwnType.Task  | "await"     | OwnVerb.Awaited
+        OwnType.Tasks | "new"       | OwnVerb.TasksNew
+    }
+}
+
+/// The shape the verb `verb` on a value of `ty`, or called through it, is; absent when it's none.
+export fn own_shape(ty: SignedType, verb: string) -> OwnVerb? {
+    let own? = ty.own() else { return null }
+    own_shapes().find(it.receiver == own && it.verb == verb)?.shape
+}
+
+impl OwnVerb {
+    /// The type the value the verb writes through a receiver of `receiver`'s type takes: what the list,
+    /// the map or the cell holds, or what the list or map a cell holds holds. Absent for a verb that
+    /// writes no value, and a receiver holding no such seat.
+    fn stored_as(receiver: SignedType) -> SignedType? {
+        match self {
+            .Pushed or .SetAt -> receiver.listed(),
+            .Put -> receiver.mapped(),
+            .CellSet -> receiver.args.first(),
+            .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
+            .CellPut -> receiver.args.first()?.mapped(),
+            .First or .Last or .Popped or .Got or .GotAt or .Removed or .Enumerated or .CellNew or .CellGet or .Awaited or .TasksNew -> null,
+        }
+    }
+
+    /// How many arguments a call of the verb writes beside its receiver.
+    fn arguments() -> int {
+        match self {
+            .First or .Last or .Enumerated or .Popped or .CellGet or .Awaited or .TasksNew -> 0,
+            .Got or .GotAt or .Removed or .Pushed or .CellNew or .CellSet or .CellPushed -> 1,
+            .SetAt or .Put or .CellSetAt or .CellPut -> 2,
+        }
+    }
+
+    /// Whether the verb is called through its type rather than on a value of it.
+    fn on_the_type() -> bool {
+        match self {
+            .CellNew or .TasksNew -> true,
+            .First or .Last or .Got or .GotAt or .Removed or .Enumerated or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
+        }
+    }
+}
+
+impl Lowering {
+    /// The verb `v` called on `subject` with `args`, its answer the value of `e`: on a type it's
+    /// called through, `subject` is that type and isn't read.
+    mut fn own_verb_lowered(v: OwnVerb, e: ExprId, subject: ExprId, args: List<ExprId>) -> Reg {
+        match v {
+            .First -> self.edge(e, subject, false),
+            .Last -> self.edge(e, subject, true),
+            .Got -> self.got(e, subject, args[0]),
+            .GotAt -> self.got_at(e, subject, args[0]),
+            .Removed -> self.removed(e, subject, args[0]),
+            .Enumerated -> self.lower(subject),
+            .Pushed -> {
+                let list = self.opened_place(subject)
+                self.push_slot(list, self.stored_value(v, subject, args[0]))
+                self.nothing()
+            },
+            .SetAt -> {
+                let list = self.opened_place(subject)
+                let at = self.lower(args[0])
+                self.slot_written(list, at, self.stored_value(v, subject, args[1]), false)
+                self.nothing()
+            },
+            .Popped -> self.popped(e, self.opened_place(subject)),
+            .Put -> self.put(subject, args[0], args[1]),
+            .CellNew -> self.cell_new(e, args[0]),
+            .CellGet -> {
+                let cell = self.lower(subject)
+                self.proven_read(self.layout_at(e), cell, 0)
+            },
+            .CellSet -> {
+                let cell = self.lower(subject)
+                let at = self.const_int(0)
+                self.slot_written(cell, at, self.stored_value(v, subject, args[0]), true)
+                self.nothing()
+            },
+            .CellPushed -> {
+                let list = self.held_opened(subject)
+                self.push_slot(list, self.stored_value(v, subject, args[0]))
+                self.nothing()
+            },
+            .CellSetAt -> {
+                let list = self.held_opened(subject)
+                let at = self.lower(args[0])
+                self.slot_written(list, at, self.stored_value(v, subject, args[1]), false)
+                self.nothing()
+            },
+            .CellPut -> {
+                let map = self.held_opened(subject)
+                let k = self.lower(args[0])
+                self.map_written(map, k, self.stored_value(v, subject, args[1]))
+                self.nothing()
+            },
+            .Awaited -> self.awaited(e, subject),
+            .TasksNew -> self.call_row(self.layout_at(e), rt_sig_of("avra_array_sized")!, [self.const_int(4)]),
+        }
+    }
+
+    /// What the task `subject` answered: its end joined, its one cell then read; a task answering
+    /// nothing answers nothing.
+    mut fn awaited(e: ExprId, subject: ExprId) -> Reg { self.awaited_reg(self.layout_at(e), self.lower(subject)) }
+
+    /// What the task `task` answered, a value of layout `l`: its end joined, its one cell then read.
+    mut fn awaited_reg(l: Layout, task: Reg) -> Reg {
+        let cell = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_task_join")!, [task])
+        match l {
+            .Void -> self.nothing(),
+            .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> self.slot_read(l, cell, 0),
+        }
+    }
+
+    /// The value a write `v` through `subject` stores, lowered into the seat the receiver's type gives
+    /// it.
+    mut fn stored_value(v: OwnVerb, subject: ExprId, value: ExprId) -> Reg {
+        let receiver? = self.type_at(subject) else { return self.unlowered(subject) }
+        let seat? = v.stored_as(receiver) else { return self.missed_as("a write whose receiver holds no seat for it") }
+        self.lowered_into(value, seat)
+    }
+
+    /// What a verb that answers nothing answers.
+    mut fn nothing() -> Reg { self.hollow_of(owned_type("void")) }
+
+    // ── Reads into a nullable ───────────────────────────────────────
+
+    /// The first or last element of the list `subject`, present where the list isn't empty: a cell
+    /// seeded absent, written where the length passes zero.
+    mut fn edge(e: ExprId, subject: ExprId, last: bool) -> Reg {
+        let held? = self.held_of(e) else { return self.unlowered(e) }
+        let xs = self.lower(subject)
+        let l = self.layout_at(e)
+        let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [xs])
+        let zero = self.const_int(0)
+        self
+            .void_branches(self.bin(Layout.Truth, BinOp.Lt, zero, len)) { cx ->
+                let at = if last { cx.bin(Layout.Word, BinOp.Sub, len, cx.const_int(1)) } else { zero }
+                cx.stored(cell, cx.lifted(cx.element_at(held.l, xs, at), held.ty, held.opt))
+            } else { cx -> }
+        self.loaded(l, cell)
+    }
+
+    /// The last element of the list `list`, taken off it: a nullable scalar's presence read before
+    /// its word.
+    mut fn popped(e: ExprId, list: Reg) -> Reg {
+        match self.layout_at(e) {
+            .Maybe(value) -> {
+                let present = self
+                    .call_row(Layout.Truth, rt_sig_of("avra_array_last_present")!, [list])
+                self
+                    .pack(
+                        self.layout_at(e),
+                        [present, self.call_row(value, rt_sig_of("avra_array_pop")!, [list])],
+                    )
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(self.layout_at(e), rt_sig_of("avra_array_pop")!, [list]),
+        }
+    }
+
+    /// The value the map `subject` holds under `key`, present where the map's probe finds it.
+    mut fn got(e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+        let held? = self.held_of(e) else { return self.unlowered(e) }
+        let m = self.lower(subject)
+        let probe = self.call_row(Layout.Word, rt_sig_of("avra_map_slot")!, [m, self.lower(key)])
+        let l = self.layout_at(e)
+        let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
+        self
+            .void_branches(self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))) { cx ->
+                cx.stored(cell, cx.lifted(cx.map_value(held.l, m, probe), held.ty, held.opt))
+            } else { cx -> }
+        self.loaded(l, cell)
+    }
+
+    /// The element of the list `subject` at `index`, present where the list holds that place.
+    mut fn got_at(e: ExprId, subject: ExprId, index: ExprId) -> Reg {
+        let held? = self.held_of(e) else { return self.unlowered(e) }
+        let xs = self.lower(subject)
+        let at = self.lower(index)
+        let l = self.layout_at(e)
+        let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [xs])
+        self
+            .void_region(self.bin(Layout.Truth, BinOp.Le, self.const_int(0), at)) { cx ->
+                cx
+                    .void_region(cx.bin(Layout.Truth, BinOp.Lt, at, len)) { cx ->
+                        cx.stored(cell, cx.lifted(cx.element_at(held.l, xs, at), held.ty, held.opt))
+                    }
+            }
+        self.loaded(l, cell)
+    }
+
+    /// The value the map `subject` held under `key`, read where its probe finds it, then the key taken
+    /// out of the map, opened for the write in place.
+    mut fn removed(e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+        let held? = self.held_of(e) else { return self.unlowered(e) }
+        let m = self.opened_place(subject)
+        let k = self.lower(key)
+        let l = self.layout_at(e)
+        let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
+        let probe = self.call_row(Layout.Word, rt_sig_of("avra_map_slot")!, [m, k])
+        self
+            .void_region(self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))) { cx ->
+                cx.stored(cell, cx.lifted(cx.map_value(held.l, m, probe), held.ty, held.opt))
+            }
+        self.run_row(rt_sig_of("avra_map_remove")!, [m, k])
+        self.loaded(l, cell)
+    }
+
+    /// What the nullable `e` answers holds when present, and how it's laid out: of a nullable over a
+    /// nullable, the inner nullable, a present null its own value beside the outer absence.
+    mut fn held_of(e: ExprId) -> Held? {
+        let opt? = self.type_at(e) else { return null }
+        if !opt.nullable() { return null }
+        Held { opt: opt, ty: opt.unwrapped(), l: self.laid_out(opt.unwrapped()) }
+    }
+
+    /// The value at the probe's word `probe` of the map `m`, a value of layout `l`: a nullable scalar
+    /// as its pair, a value wider than a word out of its own box.
+    mut fn map_value(l: Layout, m: Reg, probe: Reg) -> Reg {
+        match l {
+            .Maybe(value) -> {
+                let present = self
+                    .call_row(Layout.Truth, rt_sig_of("avra_map_present_at")!, [m, probe])
+                self
+                    .pack(
+                        l,
+                        [present, self.call_row(value, rt_sig_of("avra_map_value_at")!, [m, probe])],
+                    )
+            },
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.call_crossed(l, rt_sig_of("avra_map_value_at")!, [m, probe]),
+        }
+    }
+
+    // ── Writes ──────────────────────────────────────────────────────
+
+    /// `m.set(k, x)`: the place opened, then the key and the value, then the write.
+    mut fn put(subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+        let map = self.opened_place(subject)
+        let k = self.lower(key)
+        self.map_written(map, k, self.stored_value(OwnVerb.Put, subject, value))
+        self.nothing()
+    }
+
+    /// `x` written into the map `map` under the key `k`: a nullable scalar beside its presence, else
+    /// the value as a row's seat takes it.
+    mut fn map_written(map: Reg, k: Reg, x: Reg) {
+        match self.layout_of(x) {
+            .Maybe(carried) -> self
+                .run_row(
+                    rt_sig_of("avra_map_set_maybe")!,
+                    [map, k, self.extracted(Layout.Truth, x, 0), self.extracted(carried, x, 1)],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.run_crossed(rt_sig_of("avra_map_set")!, [map, k, x]),
+        }
+    }
+
+    /// The list or map the cell `subject` holds, opened for a write in place.
+    mut fn held_opened(subject: ExprId) -> Reg {
+        let cell_ty? = self.type_at(subject) else { return self.unlowered(subject) }
+        let held? = cell_ty.args.first() else { return self.unlowered(subject) }
+        let cell = self.lower(subject)
+        self
+            .call_row(self.laid_out(held), rt_sig_of("avra_slot_unique")!, [cell, self.const_int(0)])
+    }
+
+    /// `x` written into slot `at` of the box `box`: a nullable scalar beside its presence; else the
+    /// value as a row's seat takes it, by the row that skips the bounds test where the box's type
+    /// `proven` the slot is there.
+    mut fn slot_written(box: Reg, at: Reg, x: Reg, proven: bool) {
+        match self.layout_of(x) {
+            .Maybe(carried) -> self
+                .run_row(
+                    rt_sig_of("avra_slot_set_maybe")!,
+                    [box, at, self.extracted(Layout.Truth, x, 0), self.extracted(carried, x, 1)],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self
+                .run_crossed(rt_sig_of(if proven { "avra_slot_put" } else { "avra_slot_set" })!, [box, at, x]),
+        }
+    }
+
+    /// `w` pushed as one more slot of the box `box`: a nullable scalar beside its presence, else the
+    /// value as a row's seat takes it.
+    mut fn push_slot(box: Reg, w: Reg) {
+        match self.layout_of(w) {
+            .Maybe(value) -> self
+                .run_row(
+                    rt_sig_of("avra_array_push_maybe")!,
+                    [box, self.extracted(Layout.Truth, w, 0), self.extracted(value, w, 1)],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.run_crossed(rt_sig_of("avra_array_push")!, [box, w]),
+        }
+    }
+
+    // ── Cells ───────────────────────────────────────────────────────
+
+    /// `Cell.new(v)`: a one-slot box holding `v`; a list or map it holds is parted from its other
+    /// holders, so the cell's writes in place never reach a binding it was made from — the binary's
+    /// own data stays shared, since every write opens it again and an immortal box's open is a clone.
+    mut fn cell_new(e: ExprId, value: ExprId) -> Reg {
+        let cell_ty? = self.type_at(e) else { return self.unlowered(e) }
+        let held? = cell_ty.args.first() else { return self.unlowered(e) }
+        self.celled(self.lowered_into(value, held), held, self.layout_at(e))
+    }
+
+    /// `v`, a value of `held`, in a one-slot box of layout `l`; a list or map it holds parted from its
+    /// other holders.
+    mut fn celled(v: Reg, held: SignedType, l: Layout) -> Reg {
+        let cell = self.call_row(l, rt_sig_of("avra_array_sized")!, [self.const_int(1)])
+        self.push_slot(cell, v)
+        let inner = self.laid_out(held)
+        if written_in_place(inner) {
+            let _ = self
+                .call_row(inner, rt_sig_of("avra_owned_slot_unshared")!, [cell, self.const_int(0)])
+        }
+        cell
+    }
+}
+
+/// What a nullable answer holds when present: the nullable, its present type, and that type's layout.
+type Held = { opt: SignedType, ty: SignedType, l: Layout }
+
+/// Whether a cell writes a value of layout `l` in place: a list or a map.
+fn written_in_place(l: Layout) -> bool {
+    match l {
+        .Boxed(box) -> match box {
+            .List or .Map -> true,
+            .Text or .Bytes or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> false,
+        },
+        .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+    }
+}

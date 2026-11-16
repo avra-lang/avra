@@ -1,0 +1,38 @@
+// proves: a `state` seat is handed its caller's Cell — a fn-local `state`, or
+// another `state` seat forwarding its own — so every write through the seat
+// lands in the caller's one place, a record's push included, while a module
+// `state` keeps its own and a call of the seat outside reads it.
+type R = { xs: List<string> }
+
+fn bump(state n: int) { n = n + 1 }
+
+fn twice(state n: int) {
+    bump(n)
+    bump(n)
+}
+
+fn add(state r: R) { r.xs.push("x") }
+
+fn local() -> int {
+    state k: int = 0
+    twice(k)
+    bump(k)
+    k
+}
+
+fn record() -> int {
+    state r: R = R { xs: [] }
+    add(r)
+    add(r)
+    r.xs.length
+}
+
+fn apart() -> int {
+    state a: int = 0
+    state b: int = 10
+    twice(a)
+    bump(b)
+    a * 100 + b
+}
+
+"${local()} ${record()} ${apart()} ${local()}"

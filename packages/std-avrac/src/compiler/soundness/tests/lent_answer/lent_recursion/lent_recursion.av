@@ -1,0 +1,40 @@
+// a recursive lent answer, and a recursion one branch of which answers a fresh tree
+type Node = { name: string, kids: List<string> }
+type Arena = { nodes: List<Node> }
+
+/// An arena of two run-time-named nodes.
+fn arena(tag: string) -> Arena {
+    Arena {
+        nodes: [
+            Node { name: ["${tag}", "0"].join(""), kids: [["k", tag].join("")] },
+            Node { name: ["${tag}", "1"].join(""), kids: [] },
+        ],
+    }
+}
+
+/// THE LENT ANSWER: every answer a view rooted at `a`.
+fn node_at(a: Arena, i: int) -> Node { a.nodes[i] }
+
+type Tree = { name: string, kids: List<Tree> }
+
+fn grown(tag: string, d: int) -> Tree {
+    if d == 0 { return Tree { name: ["leaf", tag].join("-"), kids: [] } }
+    Tree { name: ["n${d}", tag].join("-"), kids: [grown(tag, d - 1)] }
+}
+
+fn deep(t: Tree, d: int) -> Tree {
+    if d == 0 { t } else { deep(t.kids[0], d - 1) }
+}
+
+fn deep_or_new(t: Tree, d: int) -> Tree {
+    when {
+        d < 0 -> Tree { name: ["fresh", "${d}"].join(""), kids: [] }
+        d == 0 -> t
+        _ -> deep_or_new(t.kids[0], d - 1)
+    }
+}
+
+let a = deep(grown("a", 3), 2)
+let b = deep_or_new(grown("b", 3), 3)
+let c = deep_or_new(grown("c", 1), -2)
+[a.name, b.name, c.name, node_at(arena("r"), 0).name].join(" ")

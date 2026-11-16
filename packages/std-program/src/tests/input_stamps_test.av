@@ -1,0 +1,246 @@
+// Attacks on inputs held by a stamp: each process is a store and an engine over one directory, its
+// input a real file or directory. Every attack ends in the answer the world holds now — a stamp only
+// ever spares a read of a path that hasn't changed.
+use @std.io.{list_dir, make_dirs, read_text, write_text}
+use @std.process.{cmd, tool_at}
+use @std.time.{stamp}
+use answer_record.{question}
+use disk_store.{disk_store_at}
+use input_stamps.{places_now, use_places}
+use query_engine.{QueryDefinition, QueryEngine, query_engine, read_stamped}
+use sorted.{sorted_by}
+use @std.text.{text_before}
+
+/// What `name` answers about `argument`.
+fn asked(e: QueryEngine, name: string, argument: string) -> string {
+    e
+        .answer_to(question(name, e.definitions.get().get(name)!.code_hash, argument.bytes()))
+        .copied()
+        .text() ?? ""
+}
+
+/// `text` reads a file's text, held by its stamp, counting each read in `reads`, and runs `after`
+/// on the path once it has read; `shown` brackets a file's text; `placed` reads the file a name
+/// names under the places this process reads under, and `shown_placed` brackets it; `names` lists a
+/// directory, held by its stamp; `listing` joins those names.
+fn binary(reads: Cell<int>, after: fn(string) -> int) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "text",
+            code_hash: "c1",
+            is_input: true,
+            compute: (e, a) -> read_stamped(
+                e,
+                a.text() ?? "",
+                () -> counted_read(reads, a.text() ?? "", after),
+            )
+                .bytes(),
+        },
+        QueryDefinition {
+            query_name: "shown",
+            code_hash: "c1",
+            is_input: false,
+            compute: (e, a) -> "[${asked(e, "text", a.text() ?? "")}]".bytes(),
+        },
+        QueryDefinition {
+            query_name: "placed",
+            code_hash: "c1",
+            is_input: true,
+            compute: (e, a) -> read_stamped(
+                e,
+                "${places_now()}/${a.text() ?? ""}",
+                () -> counted_read(reads, "${places_now()}/${a.text() ?? ""}", nothing_after),
+            )
+                .bytes(),
+        },
+        QueryDefinition {
+            query_name: "shown_placed",
+            code_hash: "c1",
+            is_input: false,
+            compute: (e, a) -> "[${asked(e, "placed", a.text() ?? "")}]".bytes(),
+        },
+        QueryDefinition {
+            query_name: "names",
+            code_hash: "c1",
+            is_input: true,
+            compute: (e, a) -> read_stamped(e, a.text() ?? "", () -> names_counted(reads, a.text() ?? ""))
+                .bytes(),
+        },
+        QueryDefinition {
+            query_name: "listing",
+            code_hash: "c1",
+            is_input: false,
+            compute: (e, a) -> "(${asked(e, "names", a.text() ?? "")})".bytes(),
+        },
+    ]
+}
+
+/// The file at `path`'s text, the read counted, `after` run once it's read.
+fn counted_read(reads: Cell<int>, path: string, after: fn(string) -> int) -> string {
+    reads.set(reads.get() + 1)
+    let text = read_text(path) catch ""
+    let _ = after(path)
+    text
+}
+
+/// The names in the directory at `path`, in text order, the read counted.
+fn names_counted(reads: Cell<int>, path: string) -> string {
+    reads.set(reads.get() + 1)
+    sorted_by(list_dir(path) catch [], text_before).join(",")
+}
+
+fn nothing_after(_path: string) -> int { 0 }
+
+/// What a process answered, and how many reads it made.
+type Ran = { answer: string, reads: int }
+
+/// One whole process over the store in `directory`: asks `name` of `path`, leaves its frontier,
+/// publishes.
+fn ran_with(directory: string, name: string, path: string, after: fn(string) -> int) -> Ran {
+    use_places("")
+    let store = disk_store_at(directory)
+    let reads = Cell.new(0)
+    let engine = query_engine(store, binary(reads, after))
+    let answer = asked(engine, name, path)
+    engine.frontier_kept()
+    let _ = store.saved()
+    Ran { answer: answer, reads: reads.get() }
+}
+
+fn ran(directory: string, path: string) -> Ran { ran_with(directory, "shown", path, nothing_after) }
+
+/// One whole process over the store in `directory` reading under the places `print`: asks `shown` of
+/// `path`.
+fn ran_in(directory: string, print: string, path: string) -> Ran {
+    let store = disk_store_at(directory)
+    let reads = Cell.new(0)
+    let engine = query_engine(store, binary(reads, nothing_after))
+    use_places(print)
+    let answer = asked(engine, "shown", path)
+    engine.frontier_kept()
+    let _ = store.saved()
+    use_places("")
+    Ran { answer: answer, reads: reads.get() }
+}
+
+/// The places a world rooted at `root`, its std at `std` and its one dependency at `dep` reads under.
+fn places_of(root: string, std: string, dep: string) -> string { "${root}\napp\n${std}\n@lib=${dep}" }
+
+/// One whole process over the store in `directory` reading under the places `root`: asks
+/// `shown_placed` of `name`.
+fn ran_under(directory: string, root: string, name: string) -> Ran {
+    let store = disk_store_at(directory)
+    let reads = Cell.new(0)
+    let engine = query_engine(store, binary(reads, nothing_after))
+    use_places(root)
+    let answer = asked(engine, "shown_placed", name)
+    engine.frontier_kept()
+    let _ = store.saved()
+    use_places("")
+    Ran { answer: answer, reads: reads.get() }
+}
+
+/// A fresh place: its store, and a file in it holding `text`, left to settle past the stamp's two
+/// seconds.
+fn settled(label: string, text: string) -> string {
+    let place = "/tmp/avra-input-stamps/${stamp()}-${label}"
+    let _ = make_dirs("${place}/store") catch ""
+    let _ = write_text("${place}/file", text)
+    waited()
+    place
+}
+
+/// Long enough for every change before it to wear a stamp.
+fn waited() { let _ = cmd(tool_at("sleep", "/bin/sleep"), ["2.2"]).run() }
+
+/// `text` appended to the file at `path`: a change while it's being read.
+fn appended(path: string) -> int {
+    let _ = write_text(path, "${read_text(path) catch ""}!")
+    0
+}
+
+/// The tool `name` run on `args`.
+fn ran_tool(name: string, at: string, args: List<string>) { let _ = cmd(tool_at(name, at), args).run() }
+
+spec "input stamps — attacked" {
+    given "a file read by a stamp" {
+        then "a file that has stood is held by its stamp: the next process reads nothing" {
+            let place = settled("held", "abc")
+            let first = ran("${place}/store", "${place}/file")
+            let second = ran("${place}/store", "${place}/file")
+            "${first.answer} ${first.reads} ${second.answer} ${second.reads}" == "[abc] 1 [abc] 0"
+        }
+        then "an edit of the same size, the same second, is read" {
+            let place = settled("same_second", "abc")
+            let _ = ran("${place}/store", "${place}/file")
+            let _ = write_text("${place}/file", "xyz")
+            let after = ran("${place}/store", "${place}/file")
+            "${after.answer} ${after.reads}" == "[xyz] 1"
+        }
+        then "an edit of the same size whose modification time is set back is read once it settles" {
+            let place = settled("set_back", "abc")
+            let _ = ran("${place}/store", "${place}/file")
+            ran_tool("cp", "/bin/cp", ["-p", "${place}/file", "${place}/was"])
+            let _ = write_text("${place}/file", "xyz")
+            ran_tool("touch", "/usr/bin/touch", ["-m", "-r", "${place}/was", "${place}/file"])
+            waited()
+            let after = ran("${place}/store", "${place}/file")
+            "${after.answer} ${after.reads}" == "[xyz] 1"
+        }
+        then "a file changed while it's read keeps no stamp, and the next process reads it" {
+            let place = settled("meddled", "abc")
+            let during = ran_with("${place}/store", "shown", "${place}/file", appended)
+            waited()
+            let after = ran("${place}/store", "${place}/file")
+            "${during.answer} ${after.answer} ${after.reads}" == "[abc] [abc!] 1"
+        }
+        then "a stamps file that doesn't read back holds nothing, and the next one is whole again" {
+            let place = settled("torn", "abc")
+            let _ = ran("${place}/store", "${place}/file")
+            let _ = write_text("${place}/store/inputs.stamps", "avrastamps2 torn")
+            let after = ran("${place}/store", "${place}/file")
+            let again = ran("${place}/store", "${place}/file")
+            "${after.answer} ${after.reads} ${again.answer} ${again.reads}" == "[abc] 1 [abc] 0"
+        }
+    }
+    given "one question read under two places" {
+        then "the same question placed elsewhere is read there, though the path it was read at stood" {
+            let one = settled("placed_one", "abc")
+            let other = settled("placed_other", "xyz")
+            let store = "${one}/store"
+            let first = ran_under(store, one, "file")
+            let moved = ran_under(store, other, "file")
+            let again = ran_under(store, other, "file")
+            "${first.answer} ${moved.answer} ${moved.reads} ${again.answer} ${again.reads}" == "[abc] [xyz] 1 [xyz] 0"
+        }
+    }
+    given "a store opened under other places" {
+        then "no input it holds is held by its stamp: a root moved, a dependency's path changed, std moved, no places" {
+            let place = settled("other_places", "abc")
+            let store = "${place}/store"
+            let file = "${place}/file"
+            let base = places_of("/w/app", "/t/std", "/w/lib")
+            let _ = ran_in(store, base, file)
+            let others = [
+                places_of("/v/app", "/t/std", "/w/lib"),
+                places_of("/w/app", "/t/std", "/v/lib"),
+                places_of("/w/app", "/u/std", "/w/lib"),
+                "",
+            ]
+            let again = ran_in(store, base, file).reads
+            let reads = [n for p in others for n in [ran_in(store, p, file).reads, ran_in(store, base, file).reads]]
+            "${again} ${["${n}" for n in reads].join(" ")}" == "0 1 1 1 1 1 1 1 1"
+        }
+    }
+    given "a directory read by a stamp" {
+        then "a directory that gains a name is listed again; one that stood isn't" {
+            let place = settled("listed", "abc")
+            let store = "${place}/store"
+            let _ = ran_with(store, "listing", place, nothing_after)
+            let stood = ran_with(store, "listing", place, nothing_after)
+            let _ = write_text("${place}/more", "m")
+            let after = ran_with(store, "listing", place, nothing_after)
+            "${stood.answer} ${stood.reads} ${after.answer} ${after.reads}" == "(file,store) 0 (file,more,store) 1"
+        }
+    }
+}

@@ -1,0 +1,198 @@
+//! WHAT A CALL HANDS ITS SEATS: each argument lowered in the order it's written, into the seat its
+//! name or its place fills — a `mut` seat handed the place it writes through, opened as where it
+//! stands — then each seat in its own order; a seat no argument fills, its default's value; a seat
+//! taking the rest, one list of what's left.
+
+impl Lowering {
+    /// The registers a call through a value of the fn type `f` hands its seats, by position: a `mut`
+    /// seat the place it writes through, any other its value. Absent where a seat is `const` or
+    /// defaulted, the arguments don't fill every seat, or a `mut` seat's argument stands where no
+    /// write reaches back.
+    mut fn value_seated(f: SignedType, args: List<ExprId>) -> List<Reg>? {
+        if f.seats.length != args.length || f.seats.any(it.settled || it.defaulted) { return null }
+        let regs = [if f.seats[at].mutable { self.written_arg(a) } else { self.lower(a) } for at, a in args]
+        if regs.any(it == null) { null } else { [r! for r in regs] }
+    }
+
+    /// The registers a call of `callee` hands its seats, in the seats' order; absent for a call this
+    /// layer doesn't seat yet: one whose callee takes a `state` or `const` argument, one spreading a
+    /// record, a generic unit handed a rest or left to a default its type parameters type, and a `mut`
+    /// seat's argument standing where no write reaches back.
+    mut fn call_args(callee: CalledFn, args: List<ExprId>) -> List<Reg>? {
+        let named = args.any((a) -> self.store.arg_label(a) != null)
+        let spreads = args.any((a) -> self.store.spread_operand(a) != null)
+        if callee.plain && !named && !spreads { return self.seated_args(callee, args) }
+        if callee.params.is_empty() { return null }
+        let rest = callee.params.find_index(it.rest)
+        if spreads && rest == null { return self.spread_args(callee, args) }
+        if rest != null { return if named { null } else { self.rest_args(callee, rest!, args) } }
+        let seats = self.store.seat_plan(args, [p.name for p in callee.params])
+        let filling = [seats.index_of(at) for at in 0..args.length]
+        if filling.any(it < 0) ||
+            (0..seats.length).any((j) -> seats[j] < 0 && !callee.defaults_at(j)) { return null }
+        let regs = [self.callee_seat_arg(callee, callee.seat_at(filling[at])!, self.store.unnamed(a)) for at, a in args]
+        if regs.any(it == null) { return null }
+        [if i >= 0 { regs[i]! } else { self.defaulted(callee, callee.seat_at(j)!) } for j, i in seats]
+    }
+
+    /// The seats before `callee`'s rest seat at `k` filled in order, then one list of every argument
+    /// past them, a spread one's elements joined in; a lone spread hands its list over as it stands.
+    mut fn rest_args(callee: CalledFn, k: int, args: List<ExprId>) -> List<Reg>? {
+        let seats = [callee.seat_at(at) for at in 0..k + 1]
+        if seats.any(it == null) { return null }
+        let before = [self.callee_seat_arg(callee, seats[at]!, a) for at, a in args.take(k)]
+        if before.length < k || before.any(it == null) { return null }
+        let extras = args.drop(k)
+        let spreads = [self.store.spread_operand(a) != null for a in extras]
+        let list = seats[k]!.ty
+        let elem? = list.listed() else { return null }
+        let regs = [if spreads[at] { self.lower(self.store.spread_operand(a)!) } else { self.lowered_into(a, elem) } for at, a in extras]
+        let packed = if spreads.length == 1 && spreads[0] { regs[0] } else { self.listed(self.laid_out(list), regs, spreads) }
+        [r! for r in before].concat([packed])
+    }
+
+    /// `args` spreading records into the seats of `callee`, each seat given as `spread_givers` reads
+    /// them: every argument lowered once, in written order, a spread its record; each seat then its
+    /// giver's value, or the field of the record it spread, else its default. Absent where a spread's
+    /// fields aren't known, a seat with no default is given by nothing, or one a `mut` seat is given.
+    mut fn spread_args(callee: CalledFn, args: List<ExprId>) -> List<Reg>? {
+        let records = [self.spread_record(a) for a in args]
+        if (0..args.length)
+            .any((at: int) -> self.store.spread_operand(args[at]) != null && records[at] == null) { return null }
+        let givers = spread_givers(
+            [p.name for p in callee.params],
+            [self.store.arg_label(a) for a in args],
+            [r?.fields?.map(it.name) for r in records],
+        )
+        let seats = [callee.seat_at(j) for j in 0..callee.params.length]
+        if seats.any(it == null || it!.mutable) ||
+            (0..givers.length).any((j: int) -> givers[j] == null && !callee.defaults_at(j)) { return null }
+        let into = [seat_given(givers, at) for at in 0..args.length]
+        let regs = [self.spread_arg(a, records[at], if into[at] == null { null } else { seats[into[at]!] }) for at, a in args]
+        [self.given_reg(seats[j]!, g, records, regs) ?? self.defaulted(callee, seats[j]!) for j, g in givers]
+    }
+
+    /// The argument `a` lowered once: the record it spreads where `record` is one, else its value, into
+    /// the seat it gives where it gives `seat`.
+    mut fn spread_arg(a: ExprId, record: SpreadRecord?, seat: CalledSeat?) -> Reg {
+        let operand = self.store.spread_operand(a)
+        if record != null && operand != null { return self.lower(operand!) }
+        let into? = seat else { return self.lower(self.store.unnamed(a)) }
+        self.lowered_into(self.store.unnamed(a), into.ty)
+    }
+
+    /// The record the argument `a` spreads, with its fields, absent for an argument that spreads none
+    /// and one whose record's fields aren't known.
+    fn spread_record(a: ExprId) -> SpreadRecord? {
+        let operand? = self.store.spread_operand(a) else { return null }
+        let ty? = self.type_at(operand) else { return null }
+        let fields? = self.fields_of(ty) else { return null }
+        if fields.any(it.ty == null) { return null }
+        SpreadRecord { ty: ty, fields: fields }
+    }
+
+    /// What `seat` is handed where `giver` gives it: the argument's value, or the field of the record
+    /// it spread, lifted into the seat; absent where nothing gives it.
+    mut fn given_reg(seat: CalledSeat, giver: Giver?, records: List<SpreadRecord?>, regs: List<Reg>) -> Reg? {
+        let g? = giver else { return null }
+        let field? = g.field else { return regs[g.arg] }
+        let record = records[g.arg]!
+        let n = record.fields.find_index(it.name == field)!
+        let ty = record.fields[n].ty!
+        self
+            .lifted(
+                self.field_read(regs[g.arg], record.ty, self.seat_layouts(record.fields)!, n),
+                ty,
+                seat.ty,
+            )
+    }
+
+    /// The argument `a` into `seat`: a `state` seat's the Cell its `state` holds; the place a `mut` seat writes through, else its value lifted into
+    /// the seat's type. Absent for a spread, and for a `mut` seat's argument standing where no write
+    /// reaches back.
+    mut fn seat_arg(seat: CalledSeat, a: ExprId) -> Reg? {
+        if self.store.spread_operand(a) != null { return null }
+        if seat.state { return self.state_handed(a) }
+        if seat.mutable { self.written_arg(a) } else { self.lowered_into(a, seat.ty) }
+    }
+
+    /// The Cell a `state` seat is handed for `a`: the one the `state` it names holds its value in, a
+    /// `state` of this body's or a `state` seat it forwards. Absent for any other, which typing refuses.
+    mut fn state_handed(a: ExprId) -> Reg? {
+        let name? = self.store.ident_name(a) else { return null }
+        let b? = self.bound(name) else { return null }
+        self.shared_cell(b)
+    }
+
+    /// The argument `a` into `callee`'s `seat`: an extern's `mut` seat the cell C writes through; any
+    /// other as `seat_arg` hands it.
+    mut fn callee_seat_arg(callee: CalledFn, seat: CalledSeat, a: ExprId) -> Reg? {
+        if callee.external && seat.mutable { self.crossed_cell(a, seat.ty) } else { self.seat_arg(seat, a) }
+    }
+
+    /// The value the default `callee` writes for `seat` gives: a call of the default's own body.
+    mut fn defaulted(callee: CalledFn, seat: CalledSeat) -> Reg { self.call_fn(self.laid_out(seat.ty), callee.seat_default(seat.name), []) }
+
+    /// `regs` as one list of layout `l`, sized for each plain one and each spread one's length, then
+    /// each plain one pushed and each spread one's slots appended, in order.
+    mut fn listed(l: Layout, regs: List<Reg>, spreads: List<bool>) -> Reg {
+        mut size = self.const_int([s for s in spreads if !s].length)
+        for at, r in regs {
+            if spreads[at] {
+                size = self
+                    .bin(
+                        Layout.Word,
+                        BinOp.Add,
+                        size,
+                        self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [r]),
+                    )
+            }
+        }
+        let dst = self.call_row(l, rt_sig_of("avra_array_sized")!, [size])
+        for at, r in regs { if spreads[at] { self.run_row(rt_sig_of("avra_array_extend")!, [dst, r]) } else { self.push_slot(dst, r) } }
+        dst
+    }
+}
+
+impl CalledFn {
+    /// The seat at `j` as a call of this fn fills it: a generic unit's typed as its type arguments
+    /// fill it. Absent past its seats.
+    fn seat_at(j: int) -> CalledSeat? {
+        if j < 0 || j >= self.params.length { return null }
+        if self.parameters.is_empty() { return self.params[j] }
+        if j >= self.seats.length { return null }
+        self.params[j] with { ty: self.seats[j] }
+    }
+
+    /// Whether a call may leave the seat at `j` to its default: one it declares, of a type no type
+    /// parameter writes.
+    fn defaults_at(j: int) -> bool {
+        let seat? = self.seat_at(j) else { return false }
+        seat.defaulted && (self.parameters.is_empty() || !self.params[j].ty.generic())
+    }
+
+    /// The fn whose body is the default this fn writes for its seat `seat`, as a call reaches it: a
+    /// method's known by its type and its name.
+    fn seat_default(seat: string) -> CalledFn {
+        // LICENSED compiler.modified_copy_literal: a default is a fn of its own: only where it's declared carries over, and every other field starts at its default
+        CalledFn {
+            file: self.file,
+            name: seat,
+            symbol: "${self.symbol}.${seat}\$default",
+            external: false,
+            plain: true,
+            owner: self.owner ?? self.name,
+            of: self.of,
+            statics: self.statics,
+            defaulted: Defaulting.Seat,
+            seat_of: if self.owner == null { null } else { self.name },
+        }
+    }
+}
+
+/// A record a call's argument spreads, and its fields.
+type SpreadRecord = { ty: SignedType, fields: List<FieldSeat> }
+
+/// The seat the argument at `at` gives by its own value, absent where it gives none or a later one
+/// overrides it.
+fn seat_given(givers: List<Giver?>, at: int) -> int? { givers.find_index(it != null && it!.arg == at && it!.field == null) }

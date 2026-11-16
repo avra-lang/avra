@@ -19,20 +19,26 @@ use core.{
     ArenaRuns,
     list_eq,
     Exemplar,
+    Fingerprint,
 }
 use @std.errors.{Loc}
+use diagnostics.{Voice}
 use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+use @std.relation.{codec}
 
 /// A settled (`const`) seat's VALUE carried into the unit it selects:
 /// the seat's index (past a method's receiver), its fingerprint (the
 /// settlement key), and the value the unit's own consts read — the
 /// crossing tree every compile-time value already travels as, so a
 /// forwarded or aggregate seat binds exactly like a scalar.
+@codec
 export type SeatValue = { index: int, fp: string, ty: TypeId, value: MetaVal, heap: MetaHeap }
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
+@codec
 export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, seats: List<SeatValue> = [], root: ExprId? = null }
 
 /// What a settlement may spend: instructions, and bytes of the
@@ -40,6 +46,7 @@ export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, sea
 /// largest settlement in the compiler's derives and every gated
 /// program, times ten (design §4.4 names the run) — and a package
 /// raises either under `[lifted]` in its manifest.
+@codec
 export type Budgets = { steps: int, bytes: int }
 
 export const default_steps: int = 600000
@@ -93,7 +100,65 @@ export fn unsettled_label(ann: string, why: Unsettled) -> string {
     }
 }
 
+/// The kind a const that didn't settle is refused as, by the law it broke; absent where the cause
+/// already spoke or owes no voice.
+export fn unsettled_kind(why: Unsettled) -> string? {
+    match why {
+        .Reach(_) -> "const.reach",
+        .Budget(_) -> "const.budget",
+        .Trap(_) -> "const.trap",
+        .Param(_) -> "const.param",
+        .Spoken or .Recursive -> null,
+    }
+}
+
+/// THE THREE LAWS A SETTLEMENT CAN BREAK, each in its own words, said of the const `name`; absent
+/// where the cause already spoke or owes no voice.
+export fn unsettled_voice(name: string, why: Unsettled) -> Voice? {
+    match why {
+        .Reach(label) -> Voice {
+            message: "a const cannot read the world",
+            label: "`${name}` ${label}",
+            help: "a const settles at compile time from pure computation alone — read the world at run time, under `let`",
+        },
+        .Budget(label) -> Voice {
+            message: "a const ran past its budget",
+            label: "`${name}` ${label}",
+            help: "raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`",
+        },
+        .Trap(words) -> Voice {
+            message: "a const trapped while settling",
+            label: "`${name}` ${words}",
+            help: "the initializer runs at compile time, so what traps there is refused here",
+        },
+        .Param(runtime) -> Voice {
+            message: "a const cannot read a run-time parameter",
+            label: "`${name}` reads `${runtime}`",
+            help: "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`",
+        },
+        .Spoken or .Recursive -> null,
+    }
+}
+
+/// A settlement's broken law again, from the kind it is refused as and the words it carried.
+export fn unsettled_of(kind: string, words: string) -> Unsettled {
+    match kind {
+        "const.reach" -> Unsettled.Reach(words),
+        "const.budget" -> Unsettled.Budget(words),
+        "const.param" -> Unsettled.Param(words),
+        _ -> Unsettled.Trap(words),
+    }
+}
+
 impl Unsettled {
+    /// The words the law it broke carries, as `unsettled_of` reads them back.
+    fn payload() -> string {
+        match self {
+            .Reach(w) or .Budget(w) or .Trap(w) or .Param(w) -> w,
+            .Spoken or .Recursive -> "",
+        }
+    }
+
     /// Why, in the words a refusal's label carries.
     fn words() -> string {
         match self {
@@ -151,6 +216,8 @@ export fn seat_symbol(ty: string, fp: string) -> string {
 /// `Absent` is the null value; `Gone` a slot under the runtime's absent
 /// mark — a nullable nullable's absence, apart from its present null.
 @derive(Exemplar)
+@derive(Saved)
+@codec
 export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int), Octets(List<int>) }
 
 /// `keys`/`values` are PARALLEL — same length, paired by position —
@@ -159,6 +226,8 @@ export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Go
 /// mints a map whose own encoder walks `keys` and silently drops the
 /// value that named no key). Hand-exemplared instead; the derive
 /// would need to see the correlation to vary the two together.
+@derive(Saved)
+@codec
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
 impl MetaMap {
@@ -179,6 +248,8 @@ impl MetaMap {
 }
 
 @derive(Exemplar)
+@derive(Saved)
+@codec
 export type MetaHeap = { nodes: List<List<MetaVal>>, maps: List<MetaMap> }
 
 impl MetaHeap {

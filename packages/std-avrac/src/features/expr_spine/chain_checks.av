@@ -1,0 +1,40 @@
+//! The typing rule of a method called through `?.` (`a?.m(x)`): the method on what the subject holds
+//! when present, its answer made optional. Its arguments ride the pronoun as the method's block, as
+//! the chain's meaning makes them one: `it` is bound there, the element it's handed not told here.
+use core.{Checking, Checks, ExprId, Expected, PRONOUN, Seating, SignedType}
+
+impl Checks for ChainCall {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        let held = if subject?.nullable() ?? false { subject!.unwrapped() } else { null }
+        let rides = cx.store.any_rides(self.args)
+        if rides {
+            cx.opened()
+            cx.bind(PRONOUN, null)
+        }
+        let answer = args_applied(cx, self, held)
+        if rides { cx.closed() }
+        cx.chained(subject, (_s: SignedType) -> answer)
+    }
+}
+
+/// The arguments of `c` applied to its method on `held`, what the subject holds; checked against
+/// nothing, and no answer, where it holds nothing known or has no such method.
+fn args_applied(mut cx: Checking, c: ChainCall, held: SignedType?) -> SignedType? {
+    let seat? = held else { return unapplied(cx, c.args) }
+    let method? = cx.method_of(seat, c.name.of) else { return unapplied(cx, c.args) }
+    cx
+        .applied(
+            method,
+            seat,
+            c.args,
+            Expected.Free,
+            (at: int) -> Seating.Method(seat.spelled(), c.name.of, at),
+        )
+}
+
+/// Arguments no method takes: each checked against nothing, and no answer.
+fn unapplied(mut cx: Checking, args: List<ExprId>) -> SignedType? {
+    cx.checked_free(args)
+    null
+}

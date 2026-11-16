@@ -4,6 +4,10 @@
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
 use core.{
+    Decision,
+    Offered,
+    condition_help,
+    written_before,
     ExprId,
     StmtId,
     TypeId,
@@ -26,7 +30,7 @@ use core.{
     some_list,
     closest,
 }
-use diagnostics.{Diag, refusal, warning}
+use diagnostics.{Diag, Guess, Severity, Voice, guess_fix, refusal, said_as, warning}
 use @std.errors.{Confidence, Edit, Suggestion, Loc}
 
 /// The binding a copy is read from, and the place that HOLDS what was
@@ -110,11 +114,14 @@ impl TypeCx {
         }
     }
 
-    /// The condition law: `subject` names the site ("an `if`
-    /// condition"), `label` points at it ("this decides the branch").
-    mut fn require_bool(e: ExprId, subject: string, label: string) {
+    /// The condition law: the site and what it decides, as `d` names them.
+    mut fn require_bool(e: ExprId, d: Decision) {
         if self.shape_at(e) is .Bool || self.errored(e) { return }
-        self.emit(self.conditioned(self.wanted_voice(e, subject, "bool", label, condition_help), e))
+        self
+            .emit(
+                self
+                    .conditioned(self.wanted_voice(e, d.subject(), "bool", d.decides(), condition_help), e),
+            )
     }
 
     /// The counting law, the condition law's twin: a bound or an index
@@ -233,25 +240,14 @@ impl TypeCx {
     mut fn unslottable(head: ExprId, what: string) -> TypeId {
         if self.shape_at(head) is .Void {
             return self
-                .spoken(
-                    refusal(
-                        "type.list_scalar",
-                        self.loc_of(head),
-                        "${what} cannot hold nothing — this answers no value",
-                        "answers nothing",
-                        "a slot holds a value — a call that answers nothing is a statement, never an element",
-                    ),
-                )
+                .spoken(said_as("type.list_scalar", self.loc_of(head), slot_answers_nothing(what)))
         }
-        let n = self.name_at(head)
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.list_scalar",
                     self.loc_of(head),
-                    "${what} takes its type from its value, and `${n}` has none",
-                    this_is(n),
-                    "declare the type where it is bound — `let name: Type = …`",
+                    slot_untyped(what, self.name_at(head)),
                 ),
             )
     }
@@ -269,18 +265,7 @@ impl TypeCx {
             )
     }
 
-    mut fn chain_writes(e: ExprId, name: string) {
-        self
-            .emit(
-                warning(
-                    "type.receiver",
-                    self.loc_of(e),
-                    "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost",
-                    "the copy",
-                    "bind the value first — `if let v? = … { v.${name}(…) }`",
-                ),
-            )
-    }
+    mut fn chain_writes(e: ExprId, name: string) { self.receiver_warned(e, chain_receiver_copied(name)) }
 
     /// A UNIFIED SEAT AGREES, or not: `unify` binds the declaration's
     /// Vars, and a seat they leave concrete is judged by `accepts` alone,
@@ -366,7 +351,8 @@ impl TypeCx {
     /// each), and a lambda takes the seat's parameters, by field name
     /// where the seat offers a record.
     mut fn reheard(e: ExprId, want: TypeId) -> bool {
-        if !hears_want(self.view.store.expr(e)) { return false }
+        let heard = self.view.store.closure_of(e)
+        if !hears_want(self.view.store.expr(heard)) { return false }
         // a value already typed as the seat's present side hears nothing
         // new — and typed again, its body would say each mistake twice
         let present = self.view.types.carried(want) ?? want
@@ -374,6 +360,7 @@ impl TypeCx {
         let planted: TypeId? = self.want_at(e)
         if planted != null && !self.types_disagree(planted!, want) { return false }
         self.go_hungry(e)
+        self.go_hungry(heard)
         self.feed(e, want)
         true
     }
@@ -452,7 +439,7 @@ impl TypeCx {
     /// and `Name(v)` is how it crosses.
     mut fn named_accepts(e: ExprId, want: TypeId) -> bool {
         let of: TypeId? = self.view.types.stands_for(want)
-        if of == null || !self.view.store.expr(e).literal_form() { return false }
+        if of == null || !self.view.store.valued(e).literal_form() { return false }
         if self.seals(self.loc_of(e), want, "a literal fills it here") {
             // spoken: the literal absorbs every later ask of it
             self.facts.set_type(e, self.error_type)
@@ -601,34 +588,19 @@ impl TypeCx {
     }
 
     mut fn no_such_property(e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
+        let v = no_property_on(name, shown, self.answers_to(ty))
+        let subject = self.receiver_of(e)
+        let at: Loc? = if subject == null { null } else { self.name_after(subject!, name) }
         self
             .spoken(
-                self
-                    .nearest(
-                        refusal(
-                            "type.unknown_prop",
-                            self.loc_of(e),
-                            "no property `${name}` on `${shown}`",
-                            "read here",
-                            "a property is a record's field, or a measure like `length` on the shapes that have one",
-                        ),
-                        self.receiver_of(e),
-                        name,
-                        self.answers_to(ty),
-                    ),
+                said_as("type.unknown_prop", self.loc_of(e), v) with { suggestions: [guess_fix(g, l) for g in some_list(v.guess) for l in some_list(at)] },
             )
     }
 
     mut fn method_uncalled(e: ExprId, shown: string, name: string) -> TypeId {
         self
             .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "no property `${name}` on `${shown}`",
-                    "read here",
-                    "`${name}` is a method of `${shown}`, and a method is called — `.${name}(…)`",
-                ) with { suggestions: self.called(e, name) },
+                said_as("type.unknown_prop", self.loc_of(e), uncalled_method(name, shown)) with { suggestions: self.called(e, name) },
             )
     }
 
@@ -640,7 +612,7 @@ impl TypeCx {
         [
             Suggestion {
                 confidence: Confidence.Medium,
-                description: "call it — `.${name}()`",
+                description: call_it(name),
                 edits: [Edit { loc: l with { lo: l.hi }, replacement: "()" }],
             },
         ]
@@ -661,15 +633,7 @@ impl TypeCx {
 
     mut fn no_such_field(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
         self
-            .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "no field `${name}` on `${shown}`",
-                    "read here",
-                    fields_are(sig),
-                ),
-            )
+            .spoken(said_as("type.unknown_prop", self.loc_of(e), no_field_on(shown, name, sig.names)))
     }
 
     mut fn lacked_field(e: ExprId, shown: string, sig: StructSig, name: string, why: string) -> TypeId {
@@ -722,16 +686,7 @@ impl TypeCx {
         let tname: string? = match sh { .TypeName(_, n) -> n, _ -> null }
         if tname == null { return false }
         let n = tname!
-        self
-            .emit(
-                refusal(
-                    "type.type_value",
-                    self.loc_of(e),
-                    "`${n}` is a type, not a value",
-                    "used as a value here",
-                    "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)",
-                ),
-            )
+        self.emit(said_as("type.type_value", self.loc_of(e), type_as_value(n)))
         true
     }
 
@@ -814,12 +769,10 @@ impl TypeCx {
     mut fn kept_list_arm(v: ExprId, want: TypeId) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.kept_arm",
                     self.loc_of(v),
-                    "a kept arm answers one `${self.view.types.name_of(want)}`, and this one answers `${self.name_at(v)}`",
-                    "this arm",
-                    "write the list's values as the arm's statements — `.A -> {` with one per line, then `}`",
+                    kept_arm_listed(self.view.types.name_of(want), self.name_at(v)),
                 ),
             )
     }
@@ -833,7 +786,7 @@ impl TypeCx {
                         kind,
                         self.loc_of(v),
                         v,
-                        "${whose} disagree: `${n}` vs ${anchor_name}'s `${self.view.types.name_of(want)}`",
+                        arms_disagreement(whose, n, anchor_name, self.view.types.name_of(want)),
                         want,
                     ),
             )
@@ -1102,15 +1055,16 @@ impl TypeCx {
     /// The equality law's refusal — `==`, `!=` and a pattern's `==`
     /// speak it of the side that cannot compare.
     mut fn not_comparable(op: string, offender: ExprId) -> TypeId {
-        let n = self.name_at(offender)
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.mismatch",
                     self.loc_of(offender),
-                    "`${op}` compares by value — a scalar, text, a tagged enum, or a record of one such field",
-                    this_is(n),
-                    compare_help(self.seen_at(offender)),
+                    uncompared(
+                        op,
+                        self.name_at(offender),
+                        compare_help(offered_of(self.seen_at(offender))),
+                    ),
                 ),
             )
     }
@@ -1124,43 +1078,15 @@ impl TypeCx {
         held: TypeId,
     ) {
         let holds = if self.view.decls.is_identity(ty) { "is" } else { "holds" }
-        self
-            .emit(
-                refusal(
-                    "type.isolated",
-                    self.loc_of(a),
-                    "`${seat}` of `${callee}` is `isolated`, and this fn captures `${name}`, which ${holds} `${self.view.types.name_of(held)}` — an isolated fn shares nothing with its caller",
-                    "captured here",
-                    "make it inside the fn, so each place it runs makes its own",
-                ),
-            )
+        let voice = isolated_captures(callee, seat, name, holds, self.view.types.name_of(held))
+        self.emit(said_as("type.isolated", self.loc_of(a), voice))
     }
 
-    mut fn isolated_unknown(a: ExprId, callee: string, seat: string) {
-        self
-            .emit(
-                refusal(
-                    "type.isolated",
-                    self.loc_of(a),
-                    "`${seat}` of `${callee}` is `isolated`, and this fn value may hold anything its maker captured — an isolated fn shares nothing with its caller",
-                    "passed here",
-                    "write the fn here as a lambda, name a declared fn, or pass a parameter your own fn declares `isolated`",
-                ),
-            )
-    }
+    mut fn isolated_unknown(a: ExprId, callee: string, seat: string) { self.emit(said_as("type.isolated", self.loc_of(a), isolated_unknowable(callee, seat))) }
 
     /// THE arity refusal — every call shape shares the words.
     mut fn wrong_arity(e: ExprId, callee: string, want: int, found: int) {
-        self
-            .emit(
-                refusal(
-                    "type.mismatch",
-                    self.loc_of(e),
-                    "`${callee}` takes ${want} arguments, found ${found}",
-                    "this call",
-                    "pass exactly ${want} — `avra docs ${callee}` shows the signature",
-                ),
-            )
+        self.emit(said_as("type.mismatch", self.loc_of(e), arity_missed(callee, want, found)))
     }
 
     /// A variadic callee: its last seat takes every argument past the
@@ -1198,16 +1124,7 @@ impl TypeCx {
     }
 
     mut fn variadic_short(e: ExprId, callee: string, k: int, found: int) -> Placed? {
-        self
-            .emit(
-                refusal(
-                    "type.variadic",
-                    self.loc_of(e),
-                    "`${callee}` needs ${k} before its `..` seat, found ${found} arguments",
-                    "this call",
-                    "pass the ${k}, then any number more",
-                ),
-            )
+        self.emit(said_as("type.variadic", self.loc_of(e), variadic_short_of(callee, k, found)))
         null
     }
 
@@ -1359,16 +1276,7 @@ impl TypeCx {
     }
 
     mut fn spread_place_seat(a: ExprId, callee: string, name: string) -> bool {
-        self
-            .emit(
-                refusal(
-                    "type.spread_seat",
-                    self.loc_of(a),
-                    "`${callee}`'s seat `${name}` takes a place or a settled value, and a spread's field is neither",
-                    "spread here",
-                    "write `${name}` beside the spread",
-                ),
-            )
+        self.emit(said_as("type.spread_seat", self.loc_of(a), spread_placeless(callee, name)))
         false
     }
 
@@ -1401,28 +1309,17 @@ impl TypeCx {
 
     /// `..xs` where the callee has no seat that takes the rest.
     mut fn spread_into_fixed(a: ExprId, callee: string) -> Placed? {
-        self
-            .emit(
-                refusal(
-                    "type.spread_seat",
-                    self.loc_of(a),
-                    "`..` spreads into a seat that takes the rest of the arguments, and `${callee}` declares none",
-                    "spread here",
-                    "declare `..rest: List<T>` on `${callee}`, or pass each element",
-                ),
-            )
+        self.emit(said_as("type.spread_seat", self.loc_of(a), spread_restless(callee)))
         null
     }
 
     mut fn seats_unnamed(a: ExprId, callee: string) -> Placed? {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.named_arg",
                     self.loc_of(a),
-                    "`${self.view.store.arg_label(a) ?? ""}:` names a seat, and `${callee}`'s seats have no names",
-                    "named here",
-                    "drop the name — a fn value, a runtime method, a contract's member and an extern are called by position",
+                    nameless_seats(self.view.store.arg_label(a) ?? "", callee),
                 ),
             )
         null
@@ -1430,41 +1327,15 @@ impl TypeCx {
 
     mut fn seat_unknown(a: ExprId, callee: string, name: string, seats: List<string>) {
         self
-            .emit(
-                refusal(
-                    "type.named_arg",
-                    self.loc_of(a),
-                    "`${callee}` has no seat named `${name}`",
-                    "named here",
-                    "its seats are ${named_list(seats)}",
-                ),
-            )
+            .emit(said_as("type.named_arg", self.loc_of(a), seat_named_unknown(callee, name, seats)))
     }
 
     mut fn seat_twice(a: ExprId, callee: string, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.named_arg",
-                    self.loc_of(a),
-                    "seat `${name}` of `${callee}` is written twice",
-                    "written again here",
-                    "a positional argument fills the seat at its own position — drop one, or name the other's seat",
-                ),
-            )
+        self.emit(said_as("type.named_arg", self.loc_of(a), seat_named_twice(callee, name)))
     }
 
     mut fn seat_unwritten(e: ExprId, callee: string, name: string) -> Placed? {
-        self
-            .emit(
-                refusal(
-                    "type.named_arg",
-                    self.loc_of(e),
-                    "seat `${name}` of `${callee}` is written by no argument, and has no default",
-                    "this call",
-                    "write it — `${name}: …`",
-                ),
-            )
+        self.emit(said_as("type.named_arg", self.loc_of(e), seat_named_unwritten(callee, name)))
         null
     }
 
@@ -1472,12 +1343,10 @@ impl TypeCx {
     mut fn wrong_defaulted_arity(e: ExprId, callee: string, least: int, most: int, found: int) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.mismatch",
                     self.loc_of(e),
-                    "`${callee}` takes ${least} to ${most} arguments, found ${found}",
-                    "this call",
-                    defaulted_seats(most - least),
+                    defaulted_arity_missed(callee, least, most, found),
                 ),
             )
     }
@@ -1485,7 +1354,8 @@ impl TypeCx {
     /// Where a call's written arguments stand, as its refusal says it
     /// — a piped call's first one stands left of the `|>`.
     fn arguments_from(e: ExprId) -> string {
-        if self.view.store.minted_for(e) != null { "the pipe and the parentheses give" } else { "the parentheses give" }
+        let sugar? = self.view.store.minted_for(e) else { return parentheses_give() }
+        if self.view.store.expr(sugar) is .Pipe { "the pipe and the parentheses give" } else { parentheses_give() }
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
@@ -1556,7 +1426,7 @@ impl TypeCx {
     fn seat_help(found: ExprId, want: TypeId) -> string {
         match self.shape_at(found) {
             .TypeName(_, n) -> "`${n}` is a type, not a value — build one with `${n} { … }`",
-            _ -> "make the value `${self.view.types.name_of(want)}`, or change the declaration that wants it",
+            _ -> value_wanted(self.view.types.name_of(want)),
         }
     }
 
@@ -1605,7 +1475,7 @@ impl TypeCx {
         if inner.index != want.index { return null }
         let held = self.held_text(shown, at)
         Conversion {
-            help: "`${shown}` may be null — `${shown} ?? <default>` supplies a value, `if let n? = ${shown} { … }` branches, and `!` asserts presence",
+            help: "`${shown}` may be null — `${shown} ?? <default>` supplies a value, `if let n? = ${shown} { … } else { … }` branches, and `!` asserts presence",
             how: "assert it is present — `${held}!` (traps when it is null)",
             text: "${held}!",
             confidence: Confidence.Low,
@@ -1729,31 +1599,9 @@ impl TypeCx {
         false
     }
 
-    mut fn not_a_place_call(e: ExprId, name: string) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.place",
-                    self.loc_of(e),
-                    "`${name}` mutates a place, and this list is a value",
-                    "a value",
-                    "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`",
-                ),
-            )
-    }
+    mut fn not_a_place_call(e: ExprId, name: string) -> TypeId { self.spoken(said_as("type.place", self.loc_of(e), valued_receiver(name))) }
 
-    mut fn not_mut_call(e: ExprId, name: string, root: string) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.place",
-                    self.loc_of(e),
-                    "`${root}` is not `mut` — `${name}` mutates it",
-                    "mutated here",
-                    "declare it `mut ${root} = ...` — or build a changed copy",
-                ),
-            )
-    }
+    mut fn not_mut_call(e: ExprId, name: string, root: string) -> TypeId { self.spoken(said_as("type.place", self.loc_of(e), unwritten_receiver(root, name))) }
 
     // ── THE INOUT SEATS (ROADMAP: the inout receiver) ──
     /// Whether an expression is a PLACE rooted in a `mut` binding — what
@@ -1781,45 +1629,24 @@ impl TypeCx {
         let root: ExprId? = self.place_binding_root(subject)
         if root == null {
             self.plain_thaw_law(subject)
-            return self
-                .emit(
-                    warning(
-                        "type.receiver",
-                        self.loc_of(e),
-                        "`${name}` writes its receiver, and this is a value",
-                        "a value",
-                        "bind it `mut` first — the receiver becomes the caller's own place",
-                    ),
-                )
+            return self.receiver_warned(e, receiver_a_value(name))
         }
         let r = root!
         if self.view.store.chained_by(r) { return self.chain_writes(e, name) }
         let n = self.root_word(r)
         if self.captured(r) {
             if self.view.types.rides_pointer(self.type_at(subject)) { self.facts.mark_alias_copy(subject) }
-            return self
-                .emit(
-                    warning(
-                        "type.receiver",
-                        self.loc_of(e),
-                        "`${n}` is captured by value — `${name}` writes through the lambda's copy",
-                        "a copy",
-                        "a capture is a copy: write outside the lambda, or answer the new value",
-                    ),
-                )
+            return self.receiver_warned(e, receiver_captured(n, name))
         }
         self.boxed_law(r)
         if self.bare_let_stmt(r) == null { self.plain_thaw_law(subject) }
-        self
-            .emit(
-                warning(
-                    "type.receiver",
-                    self.loc_of(e),
-                    "`${n}` is not `mut` — `${name}` writes through it",
-                    "aliased here",
-                    "declare it `mut ${n} = …`",
-                ),
-            )
+        self.path_copy_law(e, subject, r)
+        self.receiver_warned(e, receiver_not_mut(n, name))
+    }
+
+    /// A writing method's receiver at `e` that is no place it may write, warned in `v`'s words.
+    mut fn receiver_warned(e: ExprId, v: Voice) {
+        self.emit(said_as("type.receiver", self.loc_of(e), v) with { severity: Severity.Warning })
     }
 
     /// A plain `let`'s own declaring statement, marked when it is a
@@ -1984,43 +1811,15 @@ impl TypeCx {
         }
     }
 
-    mut fn place_copy(e: ExprId, q: string, p: string) {
-        self
-            .emit(
-                warning(
-                    "type.alias_copy",
-                    self.loc_of(e),
-                    "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`",
-                    "a copy",
-                    "write through `${p}` to reach it, or `Cell<T>` it to share the copy",
-                ),
-            )
-    }
+    mut fn place_copy(e: ExprId, q: string, p: string) { self.alias_warned(e, place_copied(q, p)) }
 
-    mut fn local_path(e: ExprId, q: string, p: string) {
-        self
-            .emit(
-                warning(
-                    "type.alias_copy",
-                    self.loc_of(e),
-                    "`${q}` is a local — a write through `${p}` stays in `${q}`, and every other holder of what it reaches keeps its own",
-                    "stays local",
-                    "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared",
-                ),
-            )
-    }
+    mut fn local_path(e: ExprId, q: string, p: string) { self.alias_warned(e, path_kept_local(q, p)) }
 
-    mut fn lent_copy(e: ExprId, q: string, p: string) {
-        self
-            .emit(
-                warning(
-                    "type.alias_copy",
-                    self.loc_of(e),
-                    "`${q}` is a copy of what `${p}` holds — a write through it will not reach `${p}`",
-                    "a copy",
-                    "store the copy back into `${p}` if the write should reach it",
-                ),
-            )
+    mut fn lent_copy(e: ExprId, q: string, p: string) { self.alias_warned(e, holding_copied(q, p)) }
+
+    /// A write at `e` through a local that is a copy, warned in `v`'s words.
+    mut fn alias_warned(e: ExprId, v: Voice) {
+        self.emit(said_as("type.alias_copy", self.loc_of(e), v) with { severity: Severity.Warning })
     }
 
     /// A bare `mut` local's own declaring statement — null for `self`,
@@ -2069,16 +1868,7 @@ impl TypeCx {
     }
 
     mut fn value_in_state_seat(a: ExprId, callee: string, j: int) {
-        self
-            .emit(
-                refusal(
-                    "type.seat",
-                    self.loc_of(a),
-                    "seat ${j + 1} of `${callee}` is `state`, and this has no place to write",
-                    "a value",
-                    "pass the `state` binding it reads",
-                ),
-            )
+        self.emit(said_as("type.seat", self.loc_of(a), stateless_seat(callee, j)))
     }
 
     /// A DECLARATION'S marks for the seats its ARGUMENTS fill — from
@@ -2139,7 +1929,7 @@ impl TypeCx {
     }
 
     mut fn isolated_arg(a: ExprId, callee: string, seat: string) {
-        match self.view.store.expr(a) {
+        match self.view.store.valued(a) {
             .Lambda(_, _) -> self.isolated_lambda(a, callee, seat),
             rest -> { if !self.known_unshared(a) { self.isolated_unknown(a, callee, seat) } },
         }
@@ -2211,7 +2001,7 @@ impl TypeCx {
     }
 
     fn spelled_node(k: ExprId) -> bool {
-        let node: Expr = self.view.store.expr(k)
+        let node: Expr = self.view.store.valued(k)
         if is_literal(node) { return true }
         match node {
             .NullLit or .ListLit(_) or .MapLit(_) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
@@ -2246,18 +2036,7 @@ impl TypeCx {
         self.view.decls.facts_of(d)?.seats ?? []
     }
 
-    mut fn const_seat_unsettled(a: ExprId, callee: string, name: string) {
-        self
-            .emit(
-                refusal(
-                    "type.const_seat",
-                    self.loc_of(a),
-                    "`${name}` is a `const` seat — `${callee}` settles it at compile time, and this is computed at run time",
-                    "computed here",
-                    "fill it with a literal or a `const` — a value that settles at compile time",
-                ),
-            )
-    }
+    mut fn const_seat_unsettled(a: ExprId, callee: string, name: string) { self.emit(said_as("type.const_seat", self.loc_of(a), computed_const_seat(callee, name))) }
 
     /// One `mut` seat judged; the roots handed so far, grown by this
     /// one when it is lawful.
@@ -2291,46 +2070,17 @@ impl TypeCx {
         ba != null && bb != null && same_binding(ba!, bb!)
     }
 
-    mut fn value_in_mut_seat(a: ExprId, callee: string, j: int) {
-        self
-            .emit(
-                refusal(
-                    "type.seat",
-                    self.loc_of(a),
-                    "seat ${j + 1} of `${callee}` is `mut`, and this is a value",
-                    "a value",
-                    "bind it `mut` first — `mut x = …` — then hand `x`",
-                ),
-            )
-    }
+    mut fn value_in_mut_seat(a: ExprId, callee: string, j: int) { self.emit(said_as("type.seat", self.loc_of(a), valued_seat(callee, j))) }
 
     /// A WARNING while the contexts' closure fields become methods
     /// (ROADMAP: the inout receiver, S4b) — 70 sites in the compiler's
     /// own source hand a captured driver to a seat; then a refusal.
     mut fn captured_in_mut_seat(a: ExprId, callee: string, j: int, root: string) {
-        self
-            .emit(
-                refusal(
-                    "type.seat",
-                    self.loc_of(a),
-                    "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`",
-                    "a copy",
-                    "a capture is a copy: call outside the lambda, or answer the new value",
-                ),
-            )
+        self.emit(said_as("type.seat", self.loc_of(a), captured_seat(root, callee, j)))
     }
 
     mut fn not_mut_seat(a: ExprId, callee: string, j: int, root: string) {
-        self
-            .emit(
-                refusal(
-                    "type.seat",
-                    self.loc_of(a),
-                    "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it",
-                    "handed here",
-                    "declare it `mut ${root} = …`",
-                ),
-            )
+        self.emit(said_as("type.seat", self.loc_of(a), unwritten_seat(root, callee, j)))
     }
 
     mut fn shared_root(e: ExprId, callee: string, root: string) {
@@ -2490,6 +2240,33 @@ export fn comparable(sh: Type) -> bool {
 }
 
 /// The trailing seats with defaults, as the arity voice counts them.
+/// A call of `callee`, whose seats take `want` arguments, writing `found`.
+export fn arity_missed(callee: string, want: int, found: int) -> Voice {
+    Voice {
+        message: "`${callee}` takes ${want} arguments, found ${found}",
+        label: "this call",
+        help: "pass exactly ${want} — `avra docs ${callee}` shows the signature",
+    }
+}
+
+/// A call of `callee`, whose last seats have defaults, writing `found` outside `least` to `most`.
+export fn defaulted_arity_missed(callee: string, least: int, most: int, found: int) -> Voice {
+    Voice {
+        message: "`${callee}` takes ${least} to ${most} arguments, found ${found}",
+        label: "this call",
+        help: defaulted_seats(most - least),
+    }
+}
+
+/// A call of `callee` writing `found` arguments, fewer than the `k` seats before its `..` seat.
+export fn variadic_short_of(callee: string, k: int, found: int) -> Voice {
+    Voice {
+        message: "`${callee}` needs ${k} before its `..` seat, found ${found} arguments",
+        label: "this call",
+        help: "pass the ${k}, then any number more",
+    }
+}
+
 fn defaulted_seats(n: int) -> string {
     if n == 1 { "the last seat has a default, and a call may leave it unwritten" } else { "the last ${n} seats have defaults, and a call may leave them unwritten" }
 }
@@ -2512,11 +2289,6 @@ fn as_written(args: List<ExprId>, wants: List<TypeId>) -> Placed { Placed { args
 
 /// Whether seat `name` is written before argument `j` — by an earlier
 /// name, or by the positional argument standing at its place.
-fn written_before(labels: List<string>, seats: List<string>, name: string, j: int) -> bool {
-    let at = seats.index_of(name)
-    labels.slice(0, j).contains(name) || at < labels.length && labels[at] == ""
-}
-
 impl Conversion {
     /// The conversion as a suggestion: its edit replaces the value at `loc`.
     fn at(loc: Loc) -> Suggestion {
@@ -2555,12 +2327,28 @@ fn tested(g: Type, held: string) -> Conversion? {
 }
 
 /// What every slot law says: a slot holds a value.
+/// A slot `what` names, its value answering nothing.
+export fn slot_answers_nothing(what: string) -> Voice {
+    Voice {
+        message: "${what} cannot hold nothing — this answers no value",
+        label: "answers nothing",
+        help: "a slot holds a value — a call that answers nothing is a statement, never an element",
+    }
+}
+
+/// A slot `what` names, whose type its value of `named` can't give.
+export fn slot_untyped(what: string, named: string) -> Voice {
+    Voice {
+        message: "${what} takes its type from its value, and `${named}` has none",
+        label: this_is(named),
+        help: "declare the type where it is bound — `let name: Type = …`",
+    }
+}
+
 export const slot_help: string = "a slot holds a value — `void` and a type name are not one"
 
 /// What a declaration's warning says when it gave no way out.
 const warned_help: string = "stop using it, or ask the declaration's owner what replaces it"
-
-const condition_help: string = "a condition is a `bool` — state it as a comparison (`n > 0`, `s != \"\"`, `xs.length > 0`) or test a nullable with `v != null`"
 
 const counting_help: string = "a count or a position is an `int` — `xs.length` and `s.length` measure, and an `int` written as a digit run is one"
 
@@ -2570,7 +2358,7 @@ const counting_help: string = "a count or a position is an `int` — `xs.length`
 export type Conversion = { help: string, how: string, text: string, confidence: Confidence }
 
 /// `[x]` as a conversion.
-fn wrapped(shown: string) -> Conversion {
+export fn wrapped(shown: string) -> Conversion {
     Conversion {
         help: "the seat wants a list of what this is",
         how: "wrap it — `[${shown}]`",
@@ -2582,14 +2370,16 @@ fn wrapped(shown: string) -> Conversion {
 /// `"${x}"` — a scalar into the text seat: interpolation is how text is made.
 fn interpolated(g: Type, w: Type, shown: string) -> Conversion? {
     if !(w is .Str) { return null }
-    match g {
-        .Int or .Float or .Bool -> Conversion {
-            help: "text is made by interpolation, never by conversion",
-            how: "interpolate it — `\"\${${shown}}\"`",
-            text: "\"\${${shown}}\"",
-            confidence: Confidence.High,
-        },
-        _ -> null,
+    match g { .Int or .Float or .Bool -> interpolation(shown), _ -> null }
+}
+
+/// `"${x}"` as a conversion: a scalar written `shown` into text.
+export fn interpolation(shown: string) -> Conversion {
+    Conversion {
+        help: "text is made by interpolation, never by conversion",
+        how: "interpolate it — `\"\${${shown}}\"`",
+        text: "\"\${${shown}}\"",
+        confidence: Confidence.High,
     }
 }
 
@@ -2601,25 +2391,313 @@ fn postfix_ready(e: Expr) -> bool {
     }
 }
 
-/// Where to look instead, by what was offered.
-fn compare_help(sh: Type) -> string {
-    match sh {
-        .List(_) -> "compare an element or the `length` instead",
-        .Cell(_) -> "read the cell with `get` before comparing",
-        .Task(_) -> "compare what it answers — `.await` it first",
-        .Tasks -> "an owner of tasks is not a value to compare",
-        .Struct(_, _) -> "compare a field instead",
-        .Enum(_, _) or .Res(_, _) -> "match on it instead — only an enum carrying nothing compares, by variant",
-        .Opt(_) or .Null -> "answer the absence first — `??` gives it a value",
-        .EmptyList -> "an empty list compares with nothing — give it elements or a declared type",
-        .Map(_, _) or .EmptyMap -> "maps do not compare — ask `get`",
-        .Var(_, _, _) -> "a type parameter cannot compare — operator traits are recorded",
-        .Dyn(_, _) -> "a `dyn` compares behind its contract — operator traits are recorded",
-        .Fn(_, _, _) -> "fn values do not compare — call them instead",
-        .Void -> "nothing compares — a mutation answers no value",
-        .App(_, _, _) -> "reach for a member instead — the declaration decides field or `match`",
-        .Union(_) -> "`catch` narrows to a member instead — a union carries no value to compare",
-        .Range -> "compare a bound instead",
-        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .TypeName(_, _) or .Error -> "compare scalars or strings",
+/// `op` beside a value of `found`, which compares by no value, `help` saying what to reach for.
+export fn uncompared(op: string, found: string, help: string) -> Voice {
+    Voice {
+        message: "`${op}` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+        label: this_is(found),
+        help: help,
     }
 }
+
+/// What a value of shape `sh` offered where one that compares was wanted is.
+fn offered_of(sh: Type) -> Offered {
+    match sh {
+        .List(_) -> Offered.List,
+        .Cell(_) -> Offered.Cell,
+        .Task(_) -> Offered.Task,
+        .Tasks -> Offered.Tasks,
+        .Struct(_, _) -> Offered.Record,
+        .Enum(_, _) or .Res(_, _) -> Offered.Enum,
+        .Opt(_) or .Null -> Offered.Absence,
+        .EmptyList -> Offered.EmptyList,
+        .Map(_, _) or .EmptyMap -> Offered.Map,
+        .Var(_, _, _) -> Offered.Parameter,
+        .Dyn(_, _) -> Offered.Dyn,
+        .Fn(_, _, _) -> Offered.Fn,
+        .Void -> Offered.Void,
+        .App(_, _, _) -> Offered.Applied,
+        .Union(_) -> Offered.Union,
+        .Range -> Offered.Range,
+        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .TypeName(_, _) or .Error -> Offered.Scalar,
+    }
+}
+
+/// Where to look instead, by what was offered.
+export fn compare_help(o: Offered) -> string {
+    match o {
+        .List -> "compare an element or the `length` instead",
+        .Cell -> "read the cell with `get` before comparing",
+        .Task -> "compare what it answers — `.await` it first",
+        .Tasks -> "an owner of tasks is not a value to compare",
+        .Record -> "compare a field instead",
+        .Enum -> "match on it instead — only an enum carrying nothing compares, by variant",
+        .Absence -> "answer the absence first — `??` gives it a value",
+        .EmptyList -> "an empty list compares with nothing — give it elements or a declared type",
+        .Map -> "maps do not compare — ask `get`",
+        .Parameter -> "a type parameter cannot compare — operator traits are recorded",
+        .Dyn -> "a `dyn` compares behind its contract — operator traits are recorded",
+        .Fn -> "fn values do not compare — call them instead",
+        .Void -> "nothing compares — a mutation answers no value",
+        .Applied -> "reach for a member instead — the declaration decides field or `match`",
+        .Union -> "`catch` narrows to a member instead — a union carries no value to compare",
+        .Range -> "compare a bound instead",
+        .Scalar -> "compare scalars or strings",
+    }
+}
+
+fn parentheses_give() -> string { "the parentheses give" }
+
+/// The verb `verb`, which writes its receiver, called on a value that stands in no place.
+export fn valued_receiver(verb: string) -> Voice {
+    Voice {
+        message: "`${verb}` mutates a place, and this list is a value",
+        label: "a value",
+        help: "bind it first — `mut xs = …` — then `xs.${verb}(…)`; or build a new list with `concat`",
+    }
+}
+
+/// An argument named `label` handed `callee`, whose seats are called by position.
+export fn nameless_seats(label: string, callee: string) -> Voice {
+    Voice {
+        message: "`${label}:` names a seat, and `${callee}`'s seats have no names",
+        label: "named here",
+        help: "drop the name — a fn value, a runtime method, a contract's member and an extern are called by position",
+    }
+}
+
+/// What is no `state` binding handed the `state` seat `j` of `callee`, which writes the caller's place.
+export fn stateless_seat(callee: string, j: int) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${callee}` is `state`, and this has no place to write",
+        label: "a value",
+        help: "pass the `state` binding it reads",
+    }
+}
+
+/// A value handed the `mut` seat `j` of `callee`, which writes through a place.
+export fn valued_seat(callee: string, j: int) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${callee}` is `mut`, and this is a value",
+        label: "a value",
+        help: "bind it `mut` first — `mut x = …` — then hand `x`",
+    }
+}
+
+/// A place rooted in `root`, which a lambda holds a copy of, handed the `mut` seat `j` of `callee`.
+export fn captured_seat(root: string, callee: string, j: int) -> Voice {
+    Voice {
+        message: "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`",
+        label: "a copy",
+        help: "a capture is a copy: call outside the lambda, or answer the new value",
+    }
+}
+
+/// A place rooted in `root`, which isn't `mut`, handed the `mut` seat `j` of `callee`.
+export fn unwritten_seat(root: string, callee: string, j: int) -> Voice {
+    Voice {
+        message: "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it",
+        label: "handed here",
+        help: "declare it `mut ${root} = …`",
+    }
+}
+
+/// The verb `verb`, which writes its receiver, called on a place rooted in `root`, which isn't `mut`.
+export fn unwritten_receiver(root: string, verb: string) -> Voice {
+    Voice {
+        message: "`${root}` is not `mut` — `${verb}` mutates it",
+        label: "mutated here",
+        help: "declare it `mut ${root} = ...` — or build a changed copy",
+    }
+}
+
+/// A write through the `mut` local `q`, a copy of the place `p`.
+export fn place_copied(q: string, p: string) -> Voice {
+    Voice {
+        message: "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`",
+        label: "a copy",
+        help: "write through `${p}` to reach it, or `Cell<T>` it to share the copy",
+    }
+}
+
+/// A write through the path `p` of the `mut` local `q`, which stays in it.
+export fn path_kept_local(q: string, p: string) -> Voice {
+    Voice {
+        message: "`${q}` is a local — a write through `${p}` stays in `${q}`, and every other holder of what it reaches keeps its own",
+        label: "stays local",
+        help: "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared",
+    }
+}
+
+/// A write through the `mut` local `q`, a copy of what `p` holds.
+export fn holding_copied(q: string, p: string) -> Voice {
+    Voice {
+        message: "`${q}` is a copy of what `${p}` holds — a write through it will not reach `${p}`",
+        label: "a copy",
+        help: "store the copy back into `${p}` if the write should reach it",
+    }
+}
+
+/// The writing method `name` called on a value, which is no place.
+export fn receiver_a_value(name: string) -> Voice {
+    Voice {
+        message: "`${name}` writes its receiver, and this is a value",
+        label: "a value",
+        help: "bind it `mut` first — the receiver becomes the caller's own place",
+    }
+}
+
+/// The writing method `name` called on `n`, a lambda's capture.
+export fn receiver_captured(n: string, name: string) -> Voice {
+    Voice {
+        message: "`${n}` is captured by value — `${name}` writes through the lambda's copy",
+        label: "a copy",
+        help: "a capture is a copy: write outside the lambda, or answer the new value",
+    }
+}
+
+/// The writing method `name` called on `n`, which is not `mut`.
+export fn receiver_not_mut(n: string, name: string) -> Voice {
+    Voice {
+        message: "`${n}` is not `mut` — `${name}` writes through it",
+        label: "aliased here",
+        help: "declare it `mut ${n} = …`",
+    }
+}
+
+/// The writing method `name` called through a `?.` chain, on the copy it carries.
+export fn chain_receiver_copied(name: string) -> Voice {
+    Voice {
+        message: "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost",
+        label: "the copy",
+        help: "bind the value first — `let v? = … else { … }`, then `v.${name}(…)`",
+    }
+}
+
+/// The type `name` read where a value stands.
+export fn type_as_value(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a type, not a value",
+        label: "used as a value here",
+        help: "name a variant (`${name}.<variant>`) or build a record (`${name} { ... }`)",
+    }
+}
+
+/// A property `name` read on a value of `shown`, which has none of that name, guessing among
+/// `candidates`, the members it answers to: a short name one letter off is a typo, two off a
+/// different word.
+export fn no_property_on(name: string, shown: string, candidates: List<string>) -> Voice {
+    let v = Voice {
+        message: "no property `${name}` on `${shown}`",
+        label: "read here",
+        help: "a property is a record's field, or a measure like `length` on the shapes that have one",
+    }
+    let n? = closest(name, candidates) else { return v }
+    if name.length <= 4 && n.distance > 1 { return v }
+    v with { help: "did you mean `${n.name}`?", guess: Guess { written: name, meant: n.name, distance: n.distance } }
+}
+
+/// A method `name` of `shown` read as a property, uncalled.
+export fn uncalled_method(name: string, shown: string) -> Voice {
+    Voice {
+        message: "no property `${name}` on `${shown}`",
+        label: "read here",
+        help: "`${name}` is a method of `${shown}`, and a method is called — `.${name}(…)`",
+    }
+}
+
+/// The fix a method `name` read uncalled is offered: the call it lacks.
+export fn call_it(name: string) -> string { "call it — `.${name}()`" }
+
+/// The `const` seat `name` of `callee`, handed a value computed at run time.
+export fn computed_const_seat(callee: string, name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a `const` seat — `${callee}` settles it at compile time, and this is computed at run time",
+        label: "computed here",
+        help: "fill it with a literal or a `const` — a value that settles at compile time",
+    }
+}
+
+/// The `isolated` seat `seat` of `callee` handed a lambda capturing `name`, which `holds` (is, or
+/// holds) the identity `held`.
+export fn isolated_captures(callee: string, seat: string, name: string, holds: string, held: string) -> Voice {
+    Voice {
+        message: "`${seat}` of `${callee}` is `isolated`, and this fn captures `${name}`, which ${holds} `${held}` — an isolated fn shares nothing with its caller",
+        label: "captured here",
+        help: "make it inside the fn, so each place it runs makes its own",
+    }
+}
+
+/// The `isolated` seat `seat` of `callee` handed a fn value not known to share nothing.
+export fn isolated_unknowable(callee: string, seat: string) -> Voice {
+    Voice {
+        message: "`${seat}` of `${callee}` is `isolated`, and this fn value may hold anything its maker captured — an isolated fn shares nothing with its caller",
+        label: "passed here",
+        help: "write the fn here as a lambda, name a declared fn, or pass a parameter your own fn declares `isolated`",
+    }
+}
+
+/// `..` of a list into a call of `callee`, which declares no seat that takes the rest.
+export fn spread_restless(callee: string) -> Voice {
+    Voice {
+        message: "`..` spreads into a seat that takes the rest of the arguments, and `${callee}` declares none",
+        label: "spread here",
+        help: "declare `..rest: List<T>` on `${callee}`, or pass each element",
+    }
+}
+
+/// A spread's field filling the seat `name` of `callee`, which takes a place or a settled value.
+export fn spread_placeless(callee: string, name: string) -> Voice {
+    Voice {
+        message: "`${callee}`'s seat `${name}` takes a place or a settled value, and a spread's field is neither",
+        label: "spread here",
+        help: "write `${name}` beside the spread",
+    }
+}
+
+/// Arms of a construct (`whose`, its arms named) disagreeing: one answering `found` where `anchor`
+/// (the seat, or its first arm) answers `want`.
+export fn arms_disagreement(whose: string, found: string, anchor: string, want: string) -> string {
+    "${whose} disagree: `${found}` vs ${anchor}'s `${want}`"
+}
+
+/// What a seat wanting `want` asks of a value that isn't one, where no conversion carries it.
+export fn value_wanted(want: string) -> string { "make the value `${want}`, or change the declaration that wants it" }
+
+/// An arm of a `match` a `collect` keeps, answering `found` — a list — where the collect keeps one
+/// `want`.
+export fn kept_arm_listed(want: string, found: string) -> Voice {
+    Voice {
+        message: "a kept arm answers one `${want}`, and this one answers `${found}`",
+        label: "this arm",
+        help: "write the list's values as the arm's statements — `.A -> {` with one per line, then `}`",
+    }
+}
+
+/// An argument naming `name`, which no seat of `callee`, whose seats are `seats`, is named.
+export fn seat_named_unknown(callee: string, name: string, seats: List<string>) -> Voice {
+    Voice {
+        message: "`${callee}` has no seat named `${name}`",
+        label: "named here",
+        help: "its seats are ${named_list(seats)}",
+    }
+}
+
+/// An argument writing the seat `name` of `callee` another argument wrote.
+export fn seat_named_twice(callee: string, name: string) -> Voice {
+    Voice {
+        message: "seat `${name}` of `${callee}` is written twice",
+        label: "written again here",
+        help: "a positional argument fills the seat at its own position — drop one, or name the other's seat",
+    }
+}
+
+/// A call of `callee` writing no argument for its seat `name`, which has no default.
+export fn seat_named_unwritten(callee: string, name: string) -> Voice {
+    Voice {
+        message: "seat `${name}` of `${callee}` is written by no argument, and has no default",
+        label: "this call",
+        help: "write it — `${name}: …`",
+    }
+}
+

@@ -14,7 +14,19 @@
 //! the type's. A trait's `derive` must stand in another file than the
 //! type — expanding needs the type's file while its names are still
 //! being made — which `@std/derive` satisfies.
-use @std.meta.{Type, Variant, Field, Directive, Code, Decls, Arms, name, literal, interpolated}
+use @std.meta.{
+    Type,
+    Variant,
+    Field,
+    Directive,
+    Code,
+    Decls,
+    Arms,
+    name,
+    literal,
+    interpolated,
+    beside,
+}
 
 /// `@derive(Show)` gives a type `fn show() -> string` — a struct
 /// interpolates its fields, an enum names its variant.
@@ -23,12 +35,12 @@ export trait Show {
         if !t.variants.is_empty() {
             let arms = [quote { .${v} -> ${literal("${t.name}.${v.name}")} } for v in t.variants]
             return [
-                directive(t, quote { impl ${t} { fn show() -> string { match self { ${arms} } } } }),
+                beside(t, quote { impl ${t} { fn show() -> string { match self { ${arms} } } } }),
             ]
         }
         let reads = [quote { self.${f} } for f in t.fields]
         let shown = interpolated(shown_parts(t), reads)
-        [directive(t, quote { impl ${t} { fn show() -> string { ${shown} } } })]
+        [beside(t, quote { impl ${t} { fn show() -> string { ${shown} } } })]
     }
 }
 
@@ -50,7 +62,7 @@ export trait Eq {
         if !t.variants.is_empty() {
             let arms = [eq_arm(v) for v in t.variants]
             return [
-                directive(
+                beside(
                     t,
                     quote { impl ${t} { fn eq(other: ${t}) -> bool { match self { ${arms} } } } },
                 ),
@@ -58,14 +70,8 @@ export trait Eq {
         }
         let checks = [quote { self.${f} == other.${f} } for f in t.fields]
         let all = conj(checks)
-        [directive(t, quote { impl ${t} { fn eq(other: ${t}) -> bool { ${all} } } })]
+        [beside(t, quote { impl ${t} { fn eq(other: ${t}) -> bool { ${all} } } })]
     }
-}
-
-/// A generated impl the compiler admits beside the type — the one
-/// shape both traits answer.
-fn directive(t: Type, code: Decls) -> Directive {
-    Directive { twin: "", name: t.name, at: t.at, source: code }
 }
 
 /// The checks joined by `&&`, left to right — `true` when there are

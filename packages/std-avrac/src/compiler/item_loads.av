@@ -1,0 +1,89 @@
+//! WHERE A FORM ANSWERS A TYPE ITS PROGRAM DOES NOT LOAD: `produce` and `channel` answer
+//! `@std/task`'s types, `quote` `@std/meta`'s, so a package that reaches neither cannot write them.
+//! Read off the item's nodes and the packages its package reaches.
+use core.{ExprId, PatId, StmtId, SyntaxArena, body_behavior, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.quote.{metaless}
+use features.tasks.{taskless}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The package whose types `produce` and `channel` answer.
+const TASK: string = "@std/task"
+
+/// A form that answers a type of a package the program may not load.
+enum Answering {
+    Produce
+    Channel
+    Quote
+}
+
+/// Every node of the written item `at` of `file` that is `form`, where the package its file stands
+/// in reaches no `needs`: a component's body aside, which its composing trait reads, and a quote a
+/// pattern writes, which matches code rather than answering it.
+fn unloaded(engine: QueryEngine, file: SourceFileAddress, at: int, form: Answering, needs: string) -> List<
+    Found,
+> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    if !store.refusals().is_empty() { return [] }
+    let composed = [x.index for s in 0..store.stmts.count() for b in some_list(store.component_body(StmtId { index: s })) for x in store.every_expr(b)]
+        .concat(
+            [x.index for i in 0..store.pats.get().length for b in pattern_quote(store, PatId { index: i }) for x in store.every_expr(b)],
+        )
+    let nodes = [e for i in 0..store.expr_count() for e in [ExprId { index: i }] if store.home_of(e) == null && !composed.contains(i) && is_form(store, e, form)]
+    if nodes.is_empty() || package_reach(engine, file.package_name).packages.contains(needs) { return [] }
+    [Found { at: store.expr_span(e), args: [] } for e in nodes]
+}
+
+/// The quote the pattern `p` of `store` is; none for any other pattern.
+fn pattern_quote(store: SyntaxArena, p: PatId) -> List<ExprId> {
+    match store.pat(p) { .Quote(body) -> [body], rest -> [] }
+}
+
+/// Whether the node `e` of `store` is `form`.
+fn is_form(store: SyntaxArena, e: ExprId, form: Answering) -> bool {
+    match store.expr(e) {
+        .Produce(_, _, _) -> form is .Produce,
+        .Channel(_, _) -> form is .Channel,
+        .Body(word, _, _, _) -> form is .Quote && body_behavior(word) is .Quote,
+        rest -> false,
+    }
+}
+
+fn produces(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unloaded(engine, file, at, Answering.Produce, TASK) }
+
+fn channels(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unloaded(engine, file, at, Answering.Channel, TASK) }
+
+fn quotes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unloaded(engine, file, at, Answering.Quote, META) }
+
+/// `produce` needs `@std/task`
+export law produce_needs_task {
+    kind: "flow.produce"
+    reads: produces
+    voice: produce_words
+    witness: "let s = produce<int>(1) { yield 1 }\n"
+}
+
+/// `channel` needs `@std/task`
+export law channel_needs_task {
+    kind: "flow.channel"
+    reads: channels
+    voice: channel_words
+    witness: "channel<int>(2)\n"
+}
+
+/// `quote` needs `@std/meta`
+export law quote_needs_meta {
+    kind: "type.quote_meta"
+    reads: quotes
+    voice: quote_words
+    witness: "let q = quote { 1 }\n"
+}
+
+fn produce_words(_a: List<string>) -> Voice { taskless("produce", "Source") }
+
+fn channel_words(_a: List<string>) -> Voice { taskless("channel", "Channel") }
+
+fn quote_words(_a: List<string>) -> Voice { metaless("Code") }

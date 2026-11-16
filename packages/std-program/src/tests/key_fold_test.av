@@ -1,0 +1,60 @@
+// A key folded from values: equal values fold alike in both lanes, and values of other kinds, other
+// lengths, or texts split otherwise, fold apart.
+use interned.{HIGH_LANE, LOW_LANE, KeyLane}
+
+/// Two texts folded one after the other, in a lane, finished.
+fn two_texts(lane: KeyLane, a: string, b: string) -> int { lane.finished(lane.tagged_text(lane.tagged_text(lane.seed, a), b)) }
+
+/// Two texts' key, both lanes, as one text to compare.
+fn key_of_texts(a: string, b: string) -> string { "${two_texts(HIGH_LANE, a, b)}:${two_texts(LOW_LANE, a, b)}" }
+
+/// Every split of `whole` into two texts, as keys.
+fn splits(whole: string) -> List<string> { [key_of_texts(whole.substring(0, at), whole.substring(at, whole.length)) for at in 0..whole.length + 1] }
+
+/// Whether no two of `keys` are equal.
+fn all_apart(keys: List<string>) -> bool { (0..keys.length).all((i) -> (i + 1..keys.length).all(keys[i] != keys[it])) }
+
+spec "program/key_fold — values folded into a key" {
+    given "equal values" {
+        then "fold alike, in each lane" {
+            key_of_texts("package", "src/a.av") == key_of_texts("package", "src/a.av") &&
+                LOW_LANE.finished(LOW_LANE.number(LOW_LANE.seed, -5)) == LOW_LANE.finished(LOW_LANE.number(LOW_LANE.seed, -5))
+        }
+    }
+    given "values that differ" {
+        then "a text split anywhere else folds apart, across a word's eight bytes" {
+            all_apart(splits("abcdefghijklmnopq")) && all_apart(splits(""))
+        }
+        then "a number, a truth and a text of the same word fold apart" {
+            let lane = HIGH_LANE
+            all_apart(
+                [
+                    "${lane.finished(lane.number(lane.seed, 1))}",
+                    "${lane.finished(lane.truth(lane.seed, true))}",
+                    "${lane.finished(lane.tagged_text(lane.seed, "1"))}",
+                    "${lane.finished(lane.tagged_text(lane.seed, ""))}",
+                    "${lane.finished(lane.number(lane.seed, 0))}",
+                ],
+            )
+        }
+        then "texts one byte apart fold apart, short and long" {
+            all_apart(
+                [
+                    key_of_texts("a", ""),
+                    key_of_texts("b", ""),
+                    key_of_texts("abcdefgh", ""),
+                    key_of_texts("abcdefgi", ""),
+                    key_of_texts("abcdefghx", ""),
+                    key_of_texts("abcdefghy", ""),
+                ],
+            )
+        }
+    }
+    given "many keys" {
+        then "their low words spread over a table's slots" {
+            let slots = 64
+            let used = [LOW_LANE.finished(LOW_LANE.number(LOW_LANE.seed, n)) & slots - 1 for n in 0..64]
+            [s for s in 0..slots if used.contains(s)].length > 32
+        }
+    }
+}

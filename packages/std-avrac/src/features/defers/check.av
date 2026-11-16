@@ -5,19 +5,26 @@
 //! enclosing fn that answers a `Result`.
 use core.{StmtId, ExprId, TypeId}
 use features.{TypeCx}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Voice, said_as}
 
 fn check_defer(mut cx: TypeCx, s: StmtId) {
     cx.walk_value(s)
     let body? = cx.view.store.stmt_value(s) else { return }
     let inner: ExprId? = cx.view.store.lambda_parts(body)?.body
     if inner != null && cx.view.store.inert(inner!) {
-        cx.emit(does_nothing(cx, s, cx.name_at(inner!)))
+        cx.emit(said_as("type.defer_inert", cx.stmt_loc(s), deferred_inert(cx.name_at(inner!))))
         return
     }
     let answer: TypeId? = cx.view.types.arrow_parts(cx.type_at(body))?.answer
     if answer != null && cx.view.types.res_parts(answer!) != null {
-        cx.emit(unheard_failure(cx, s, cx.view.types.name_of(answer!)))
+        cx
+            .emit(
+                said_as(
+                    "type.defer",
+                    cx.stmt_loc(s),
+                    deferred_unheard(cx.view.types.name_of(answer!)),
+                ),
+            )
     }
     if runs_on_error(cx.view.store, s) { check_channel(cx, s) }
 }
@@ -26,67 +33,71 @@ fn check_defer(mut cx: TypeCx, s: StmtId) {
 /// must be able to fail.
 fn check_channel(mut cx: TypeCx, s: StmtId) {
     if cx.behind_lambda() {
-        cx.emit(lambda_channel(cx, s))
+        cx.emit(said_as("type.errdefer", cx.stmt_loc(s), errdefer_in_lambda()))
         return
     }
     let held: TypeId? = cx.enclosing_ret()
     if held == null {
-        cx.emit(no_channel(cx, s))
+        cx.emit(said_as("type.errdefer", cx.stmt_loc(s), errdefer_unenclosed()))
         return
     }
     let ret = held!
     if cx.view.types.shape_of(ret) is .Error { return }
-    if cx.view.types.res_parts(ret) == null { cx.emit(never_fails(cx, s, cx.view.types.name_of(ret))) }
+    if cx.view.types.res_parts(ret) == null {
+        cx
+            .emit(
+                said_as(
+                    "type.errdefer",
+                    cx.stmt_loc(s),
+                    errdefer_unfailing(cx.view.types.name_of(ret)),
+                ),
+            )
+    }
 }
 
 // ── voices ──
 
-fn does_nothing(cx: TypeCx, s: StmtId, named: string) -> Diag {
-    refusal(
-        "type.defer_inert",
-        cx.stmt_loc(s),
-        "`defer` runs its body later, and this one only names `${named}` — deferring a value does nothing",
-        "deferred here",
-        "call something — `defer child.stop()` — or write the work in a block: `defer { … }`",
-    )
+/// A `defer` whose body only names a value of `named`.
+export fn deferred_inert(named: string) -> Voice {
+    Voice {
+        message: "`defer` runs its body later, and this one only names `${named}` — deferring a value does nothing",
+        label: "deferred here",
+        help: "call something — `defer child.stop()` — or write the work in a block: `defer { … }`",
+    }
 }
 
-fn unheard_failure(cx: TypeCx, s: StmtId, answer: string) -> Diag {
-    refusal(
-        "type.defer",
-        cx.stmt_loc(s),
-        "`defer` drops what its body answers, and this one answers `${answer}` — a failure nobody would hear",
-        "deferred here",
-        "recover it with `catch`, or discard it on purpose: `defer { let _ = … }`",
-    )
+/// A `defer` whose body answers `answer`, a failure it drops.
+export fn deferred_unheard(answer: string) -> Voice {
+    Voice {
+        message: "`defer` drops what its body answers, and this one answers `${answer}` — a failure nobody would hear",
+        label: "deferred here",
+        help: "recover it with `catch`, or discard it on purpose: `defer { let _ = … }`",
+    }
 }
 
-fn no_channel(cx: TypeCx, s: StmtId) -> Diag {
-    refusal(
-        "type.errdefer",
-        cx.stmt_loc(s),
-        "an `errdefer` runs when the enclosing fn fails, and there is none enclosing",
-        "deferred here",
-        "at the top level there is no failure channel — `defer` runs regardless",
-    )
+/// An `errdefer` no fn encloses.
+export fn errdefer_unenclosed() -> Voice {
+    Voice {
+        message: "an `errdefer` runs when the enclosing fn fails, and there is none enclosing",
+        label: "deferred here",
+        help: "at the top level there is no failure channel — `defer` runs regardless",
+    }
 }
 
-fn lambda_channel(cx: TypeCx, s: StmtId) -> Diag {
-    refusal(
-        "type.errdefer",
-        cx.stmt_loc(s),
-        "an `errdefer` runs when the enclosing fn fails, and a lambda promises no failure — its answer is inferred",
-        "deferred here",
-        "handle failures inside the lambda, or write `defer`",
-    )
+/// An `errdefer` a lambda encloses.
+export fn errdefer_in_lambda() -> Voice {
+    Voice {
+        message: "an `errdefer` runs when the enclosing fn fails, and a lambda promises no failure — its answer is inferred",
+        label: "deferred here",
+        help: "handle failures inside the lambda, or write `defer`",
+    }
 }
 
-fn never_fails(cx: TypeCx, s: StmtId, promise: string) -> Diag {
-    refusal(
-        "type.errdefer",
-        cx.stmt_loc(s),
-        "an `errdefer` runs when this fn fails, and it promises `${promise}` — it never does",
-        "deferred here",
-        "declare the answer fallible — `-> Result<${promise}, E>` — or write `defer`",
-    )
+/// An `errdefer` in a fn promising `promise`, which never fails.
+export fn errdefer_unfailing(promise: string) -> Voice {
+    Voice {
+        message: "an `errdefer` runs when this fn fails, and it promises `${promise}` — it never does",
+        label: "deferred here",
+        help: "declare the answer fallible — `-> Result<${promise}, E>` — or write `defer`",
+    }
 }

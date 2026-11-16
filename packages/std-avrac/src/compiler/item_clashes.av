@@ -1,0 +1,109 @@
+//! WHERE A NAME IS DECLARED TWICE, as the module's bindings found it: a later declaration of a name
+//! its own file already declares, or of a name another file of its module declares where either
+//! exports it. Two private ones in different files keep the name apart, which is no clash.
+use core.{Span}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every declaration in the written item `at` of `file` that lost its name to one its file declared
+/// first, a value's.
+fn values_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [named_lost(engine, c) for c in lost_in(engine, file, at) if same_file(c.holder.file, file) && names_value(c.lost.kind)]
+}
+
+/// Every declaration in the written item `at` of `file` that lost its name to one its file declared
+/// first, a type's.
+fn types_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [named_lost(engine, c) for c in lost_in(engine, file, at) if same_file(c.holder.file, file) && !names_value(c.lost.kind)]
+}
+
+/// Every declaration in the written item `at` of `file` that lost its name to another file of its
+/// module, beside where that one stands.
+fn module_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found {
+        at: declaration_span(engine, c.lost),
+        args: [c.lost.name, below_root(c.holder.file.path_in_package)],
+    } for c in lost_in(engine, file, at) if !same_file(c.holder.file, file)]
+}
+
+/// A declaration that lost its name, found where it's written, its voice handed the name.
+fn named_lost(engine: QueryEngine, c: NameClash) -> Found { Found { at: declaration_span(engine, c.lost), args: [c.lost.name] } }
+
+/// The clashes of the module's own declarations whose loser the written item `at` of `file` holds.
+fn lost_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<NameClash> {
+    if at >= item_count(engine, file) { return [] }
+    let scope? = file_scope(engine, file) else { return [] }
+    [c for c in scope.clashes if !c.imported && same_file(c.lost.file, file) && c.lost.item == at]
+}
+
+/// Whether a declaration of `kind` names a value: a fn's, a const's, a collection's, a state's.
+fn names_value(kind: ItemKind) -> bool {
+    match kind {
+        .Fn or .Const or .Collect or .State -> true,
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> false,
+    }
+}
+
+/// Where the declaration `d` is written: its statement in its item.
+fn declaration_span(engine: QueryEngine, d: DeclaredName) -> Span? {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((s) -> item.store.declared_name(s) ?? item.store.let_name(s) == d.name) else { return null }
+    item.store.stmt_span(s)
+}
+
+/// A package's path as a voice names it: below the directory its sources stand in.
+fn below_root(path: string) -> string {
+    let cut = path.index_of("/")
+    if cut < 0 { path } else { path.substring(cut + 1, path.length) }
+}
+
+/// a name its own file declares again is defined more than once
+export law value_twice {
+    kind: "resolve.duplicate_fn"
+    reads: values_twice
+    voice: defined_twice
+    witness: "fn f(x: int) -> int { x }\n\nfn f(y: int) -> int { y }\n"
+}
+
+/// a type its own file declares again is declared more than once
+export law type_twice {
+    kind: "resolve.duplicate_type"
+    reads: types_twice
+    voice: redeclared
+    witness: "type P = { x: int }\n\nenum P {\n    a\n}\n"
+}
+
+/// an exported name is its module's one declaration
+export law name_twice_in_module {
+    kind: "resolve.duplicate_in_module"
+    reads: module_twice
+    voice: declared_twice_in_module
+    witness: "export fn f() -> int { 1 }\n"
+    witness_files: {"src/also.av": "export fn f() -> int { 2 }\n"}
+}
+
+fn defined_twice(a: List<string>) -> Voice {
+    Voice {
+        message: "`${a[0]}` is defined more than once",
+        label: "redefined here",
+        help: "rename one of them",
+    }
+}
+
+fn redeclared(a: List<string>) -> Voice {
+    Voice {
+        message: "`${a[0]}` is declared more than once",
+        label: "redeclared here",
+        help: "rename one of them",
+    }
+}
+
+fn declared_twice_in_module(a: List<string>) -> Voice {
+    Voice {
+        message: "`${a[0]}` is declared twice in this module — here and in `${a[1]}`",
+        label: "declared here",
+        help: "an exported name is its module's one declaration — rename one, or drop an `export`",
+    }
+}

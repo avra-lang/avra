@@ -41,7 +41,7 @@ use features.{
     unpinned_of,
     type_name_decl,
 }
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
@@ -148,16 +148,7 @@ fn fn_answer_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
 }
 
 fn callback_pointer(mut cx: TypeCx, s: StmtId, hname: string, seat: string) {
-    cx
-        .emit(
-            refusal(
-                "flow.callback_pointer",
-                cx.stmt_loc(s),
-                "seat `${seat}` of `${hname}` is a callback under a cancel, and it answers a pointer the C would follow",
-                "declared here",
-                "a callback under a cancel answers zero — answer a word, or read nothing on the C side when it does",
-            ),
-        )
+    cx.emit(said_as("flow.callback_pointer", cx.stmt_loc(s), callback_pointer_voice(hname, seat)))
 }
 
 /// WHAT A PLAIN EXTERN SEAT MAY WEAR: a machine word, or ONE pointer
@@ -260,7 +251,7 @@ fn row_answer_law(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
 /// The WIDTH a return annotation named, when it named one — a bare
 /// name carries no arguments and is the only shape a width word can
 /// wear, exactly as a seat's is.
-fn written_ret(hret: TypeRef) -> TypeRef? {
+export fn written_ret(hret: TypeRef) -> TypeRef? {
     if width_named(hret.name) == null { return null }
     hret
 }
@@ -269,7 +260,7 @@ fn written_ret(hret: TypeRef) -> TypeRef? {
 /// EXHAUSTIVE OVER THE PAIR THAT MATTERS: a narrow width and a word
 /// are DIFFERENT — `i32` against the row's `I64` is the truncation
 /// the width keeper exists for, one seam over.
-fn same_kind(a: RtKind, b: RtKind) -> bool {
+export fn same_kind(a: RtKind, b: RtKind) -> bool {
     match a {
         .I64 -> b is .I64,
         .Ptr -> b is .Ptr,
@@ -285,7 +276,7 @@ fn same_kind(a: RtKind, b: RtKind) -> bool {
 /// length either way, so a text row takes a `Bytes` (those bytes viewed
 /// as text) and an octet row takes a `string` — the engines agree on
 /// both, and the program tests beside `features/bytes` pin it.
-fn fits_box(t: TypeRef?, b: Box) -> bool {
+export fn fits_box(t: TypeRef?, b: Box) -> bool {
     let written? = t else { return false }
     if written.name == "ptr" { return true }
     match b {
@@ -308,7 +299,7 @@ fn fits_box(t: TypeRef?, b: Box) -> bool {
 /// 4294967295 where `i32` answers -1. A seat that is right for three
 /// prototypes and wrong for nineteen must make the author say which,
 /// and `i64` is how they say "the wide one" out loud.
-fn inout_able(t: TypeRef?) -> bool {
+export fn inout_able(t: TypeRef?) -> bool {
     let written? = t else { return false }
     ["ptr", "i64", "i32", "u32"].contains(written.name)
 }
@@ -358,16 +349,16 @@ fn variadic_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
 }
 
 fn variadic_misplaced(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
-    cx
-        .emit(
-            refusal(
-                "type.variadic",
-                cx.stmt_loc(s),
-                "`..${p.name.of}` takes the rest of `${fname}`'s arguments, so it is the one seat that stands last",
-                "this seat",
-                "move it to the end, and keep one",
-            ),
-        )
+    cx.emit(said_as("type.variadic", cx.stmt_loc(s), rest_not_last(p.name.of, fname)))
+}
+
+/// A `..seat` of `fname` that stands before another seat, or beside a second one.
+export fn rest_not_last(seat: string, fname: string) -> Voice {
+    Voice {
+        message: "`..${seat}` takes the rest of `${fname}`'s arguments, so it is the one seat that stands last",
+        label: "this seat",
+        help: "move it to the end, and keep one",
+    }
 }
 
 fn variadic_unlisted(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
@@ -412,7 +403,7 @@ export fn fits_seat_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeI
 
 /// Whether a body's statements hold a parse recovery.
 fn holds_error(cx: TypeCx, body: ExprId) -> bool {
-    let stmts: List<StmtId> = match cx.view.store.expr(body) { .Block(ss, _) -> ss, _ -> [] }
+    let stmts: List<StmtId> = match cx.view.store.expr(body) { .Block(ss) -> ss, _ -> [] }
     stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error)
 }
 
@@ -658,42 +649,56 @@ fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
 // ── The voices ──
 
 fn generic_default(mut cx: TypeCx, p: Param, fname: string) {
-    cx
-        .emit(
-            refusal(
-                "type.param_default",
-                cx.loc_of(p.default!),
-                "`${p.name.of}` carries a default, and its type names a type parameter of `${fname}` — a default is one body, lowered once, and that type differs per call",
-                "defaulted here",
-                "drop the default, or give `${fname}` a plain twin that fills the seat",
-            ),
-        )
+    cx.emit(said_as("type.param_default", cx.loc_of(p.default!), default_opened(p.name.of, fname)))
+}
+
+/// The seat `seat` of `fname` carrying a default whose type names one of `fname`'s type parameters.
+export fn default_opened(seat: string, fname: string) -> Voice {
+    Voice {
+        message: "`${seat}` carries a default, and its type names a type parameter of `${fname}` — a default is one body, lowered once, and that type differs per call",
+        label: "defaulted here",
+        help: "drop the default, or give `${fname}` a plain twin that fills the seat",
+    }
 }
 
 fn marked_default(mut cx: TypeCx, p: Param, fname: string) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.param_default",
                 cx.loc_of(p.default!),
-                "`${p.name.of}` is a ${seat_kind(p)} seat of `${fname}`, and a default body is neither a place nor a settled value",
-                "defaulted here",
-                "drop the default — every call writes this seat",
+                default_marked(p.name.of, seat_kind(p), fname),
             ),
         )
+}
+
+/// The seat `seat` of `fname`, a `kind` seat, carrying a default.
+export fn default_marked(seat: string, kind: string, fname: string) -> Voice {
+    Voice {
+        message: "`${seat}` is a ${kind} seat of `${fname}`, and a default body is neither a place nor a settled value",
+        label: "defaulted here",
+        help: "drop the default — every call writes this seat",
+    }
 }
 
 fn required_after_default(mut cx: TypeCx, unfilled: Param, first: Param) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.param_default",
                 cx.loc_of(first.default!),
-                "`${unfilled.name.of}` has no default and follows `${first.name.of}`, which has one — defaulted seats come last",
-                "the first default",
-                "move the defaulted seats last, or give `${unfilled.name.of}` a default too",
+                default_before_plain(unfilled.name.of, first.name.of),
             ),
         )
+}
+
+/// A seat `unfilled` with no default written after `first`, the first seat with one.
+export fn default_before_plain(unfilled: string, first: string) -> Voice {
+    Voice {
+        message: "`${unfilled}` has no default and follows `${first}`, which has one — defaulted seats come last",
+        label: "the first default",
+        help: "move the defaulted seats last, or give `${unfilled}` a default too",
+    }
 }
 
 /// The word for a seat's contract, as the default law names it.
@@ -734,31 +739,18 @@ fn names_a_fn(cx: TypeCx, f: ExprId) -> bool {
     cx.view.decls.decl(d).kind is .Fn
 }
 
-fn code_hash_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.code_hash_named",
-                cx.loc_of(f),
-                "`code_hash` hashes a declared fn, named where it is called",
-                "this names no declared fn",
-                "name the fn itself — `code_hash(answer)` — never a value or a call",
-            ),
-        )
+fn code_hash_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId { cx.spoken(said_as("type.code_hash_named", cx.loc_of(f), hashed_unnamed())) }
+
+/// `code_hash` handed what names no declared fn.
+export fn hashed_unnamed() -> Voice {
+    Voice {
+        message: "`code_hash` hashes a declared fn, named where it is called",
+        label: "this names no declared fn",
+        help: "name the fn itself — `code_hash(answer)` — never a value or a call",
+    }
 }
 
-fn embed_computed_path(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.embed_literal",
-                cx.loc_of(e),
-                embed_literal_law,
-                "this path is computed, not written here",
-                "name the file directly, as a string literal",
-            ),
-        )
-}
+fn embed_computed_path(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("type.embed_literal", cx.loc_of(e), embed_computed_voice())) }
 
 /// Whether a callee's name stands for a component — a record a block
 /// instantiates, never a fn.
@@ -812,107 +804,8 @@ fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId, kind: EmbedKind, base: Emb
         .Ok(_) -> { return null },
         .Err(why) -> why,
     }
-    match fault {
-        .Outside -> embed_outside(cx, path, rel),
-        .Undeclared(key) -> embed_undeclared(cx, path, rel, key),
-        .Linked -> embed_linked(cx, path, rel),
-        .Missing -> embed_missing(cx, path, rel, base),
-        .NotText(at) -> embed_not_text(cx, path, rel, at),
-        .Refused(why) -> embed_unread(cx, path, why),
-    }
-}
-
-fn embed_outside(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
     cx
-        .spoken(
-            refusal(
-                "type.embed_place",
-                cx.loc_of(path),
-                "`embed` reads inside its own package — `${rel}` names a file outside it",
-                "leaves the package here",
-                "keep the file in this package, or name a dependency's by its package — `embed(\"@scope/name/path\")`",
-            ),
-        )
-}
-
-fn embed_undeclared(mut cx: TypeCx, path: ExprId, rel: string, key: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.embed_place",
-                cx.loc_of(path),
-                "`embed` reads `${key}` as a package, and this package does not depend on it",
-                "names a dependency here",
-                "a directory of this package that is named so is `./${rel}`; a package's file needs the package in `[dependencies]`",
-            ),
-        )
-}
-
-fn embed_linked(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.embed_place",
-                cx.loc_of(path),
-                "`embed` follows no link — one stands on the way to `${rel}`",
-                "reached through a symlink",
-                "embed the file itself: a link can lead out of the package",
-            ),
-        )
-}
-
-fn embed_missing(mut cx: TypeCx, path: ExprId, rel: string, base: EmbedBase) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.embed_file",
-                cx.loc_of(path),
-                embed_missing_words(rel, base),
-                "no file stands here",
-                embed_missing_help(base),
-            ),
-        )
-}
-
-/// Where the missing file was looked for.
-fn embed_missing_words(rel: string, base: EmbedBase) -> string {
-    match base {
-        .Beside -> "`embed` finds no `${rel}` beside this source file",
-        .Root -> "`provided` finds no `${rel}` at this package's root",
-    }
-}
-
-fn embed_missing_help(base: EmbedBase) -> string {
-    match base {
-        .Beside -> "the path is read from this file's own directory",
-        .Root -> "the path is read from the package's root, whatever directory this file is in",
-    }
-}
-
-fn embed_not_text(mut cx: TypeCx, path: ExprId, rel: string, at: int) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.embed_file",
-                cx.loc_of(path),
-                "`embed` answers text, and `${rel}` is not UTF-8 — byte ${at}",
-                "not text",
-                "embed a UTF-8 file",
-            ),
-        )
-}
-
-fn embed_unread(mut cx: TypeCx, path: ExprId, why: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.embed_file",
-                cx.loc_of(path),
-                "`embed` could not read its file — ${why}",
-                "named here",
-                "the build reads this file as it reads its sources",
-            ),
-        )
+        .spoken(said_as(embed_fault_kind(fault), cx.loc_of(path), embed_fault_voice(fault, rel, base)))
 }
 
 fn not_callable(mut cx: TypeCx, e: ExprId, callee: string, bound: TypeId) -> TypeId {
@@ -993,32 +886,30 @@ fn null_cannot_pin(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: Exp
         )
 }
 
-fn no_fn_to_answer(mut cx: TypeCx, s: StmtId) {
-    cx
-        .emit(
-            refusal(
-                "type.return",
-                cx.stmt_loc(s),
-                "a `return` answers a fn, and there is none enclosing",
-                "returned here",
-                "at the top level the last statement IS the answer",
-            ),
-        )
+fn no_fn_to_answer(mut cx: TypeCx, s: StmtId) { cx.emit(said_as("type.return", cx.stmt_loc(s), return_fnless())) }
+
+/// A `return` no fn encloses.
+export fn return_fnless() -> Voice {
+    Voice {
+        message: "a `return` answers a fn, and there is none enclosing",
+        label: "returned here",
+        help: "at the top level the last statement IS the answer",
+    }
 }
 
 fn bare_return(mut cx: TypeCx, s: StmtId) {
     let want? = cx.enclosing_ret() else { return no_fn_to_answer(cx, s) }
     if cx.view.types.shape_of(want) is .Void { return }
-    cx
-        .emit(
-            refusal(
-                "type.return",
-                cx.stmt_loc(s),
-                "a bare `return` answers nothing, but this fn declares `${cx.view.types.name_of(want)}`",
-                "here",
-                "write `return <value>`, or declare no return",
-            ),
-        )
+    cx.emit(said_as("type.return", cx.stmt_loc(s), return_bare(cx.view.types.name_of(want))))
+}
+
+/// A bare `return` in a fn that declares it answers `want`.
+export fn return_bare(want: string) -> Voice {
+    Voice {
+        message: "a bare `return` answers nothing, but this fn declares `${want}`",
+        label: "here",
+        help: "write `return <value>`, or declare no return",
+    }
 }
 
 fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
@@ -1039,12 +930,10 @@ fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
 fn row_arity(mut cx: TypeCx, s: StmtId, row: RtSig, declared: int) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.row_shape",
                 cx.stmt_loc(s),
-                "`${row.name}` is a runtime row of ${row.params.length} seat(s), declared here with ${declared}",
-                "this extern",
-                "declare the row's seats, or name a fn the runtime does not carry",
+                row_arity_voice(row.name, row.params.length, declared),
             ),
         )
 }
@@ -1052,12 +941,15 @@ fn row_arity(mut cx: TypeCx, s: StmtId, row: RtSig, declared: int) {
 fn answer_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.row_shape",
                 cx.stmt_loc(s),
-                "`${row.name}` answers ${box_word(row.answer)}, this declares `${spelled(hret)}`",
-                "this extern",
-                "a runtime row answers the box its C body built — declare the answer `${box_seat(row.answer)}`, or `ptr` for the raw crossing",
+                answer_box_voice(
+                    row.name,
+                    box_word(row.answer),
+                    spelled(hret),
+                    box_seat(row.answer),
+                ),
             ),
         )
 }
@@ -1065,18 +957,16 @@ fn answer_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
 fn answer_not_the_row(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef, got: RtKind) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.row_shape",
                 cx.stmt_loc(s),
-                "`${row.name}` answers ${kind_word(row.ret)}, this declares `${spelled(hret)}`, which rides ${kind_word(got)}",
-                "this extern",
-                "a runtime row answers what its C body answers — declare the answer the row names, or name a fn the runtime does not carry",
+                answer_kind_voice(row.name, kind_word(row.ret), spelled(hret), kind_word(got)),
             ),
         )
 }
 
 /// A runtime kind as a reader meets it.
-fn kind_word(k: RtKind) -> string {
+export fn kind_word(k: RtKind) -> string {
     match k {
         .I64 -> "a word",
         .Ptr -> "a pointer",
@@ -1091,12 +981,16 @@ fn seat_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, j: int, pp: Param) {
     let b = row.box_at(j)
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.row_shape",
                 cx.stmt_loc(s),
-                "seat ${j + 1} of `${row.name}` reads ${box_word(b)}, this is `${spelled(pp.ty ?? void_written)}`",
-                "this extern",
-                "a runtime row reads the box its header names — declare the seat `${box_seat(b)}`, or `ptr` for the raw crossing",
+                seat_box_voice(
+                    row.name,
+                    j,
+                    box_word(b),
+                    spelled(pp.ty ?? void_written),
+                    box_seat(b),
+                ),
             ),
         )
 }
@@ -1106,7 +1000,7 @@ fn headered_text(name: string) -> bool {
     name == "string" || name == "Bytes"
 }
 
-fn box_word(b: Box) -> string {
+export fn box_word(b: Box) -> string {
     match b {
         .Any -> "any box",
         .Text -> "a text box",
@@ -1116,7 +1010,7 @@ fn box_word(b: Box) -> string {
     }
 }
 
-fn box_seat(b: Box) -> string {
+export fn box_seat(b: Box) -> string {
     match b {
         .Any -> "ptr",
         .Text -> "string",
@@ -1129,51 +1023,27 @@ fn box_seat(b: Box) -> string {
 fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Param) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.host_seat",
                 cx.stmt_loc(s),
-                "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written)}` — a `mut` host seat hands C the ADDRESS of the caller's cell",
-                "declared here",
-                "a cell C writes is `ptr`, `ptr?`, or an integer at its declared width — `i32` for `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`; a bare `int` is refused here alone, as only the declaration knows its width, and a managed value cannot cross: C keeps no refcount for what it writes",
+                inout_unable_voice(hname, j, spelled(pp.ty ?? void_written)),
             ),
         )
 }
 
-fn host_fn_names_a_row(mut cx: TypeCx, s: StmtId, hname: string) {
-    cx
-        .emit(
-            refusal(
-                "type.host_fn",
-                cx.stmt_loc(s),
-                "`${hname}` is the runtime's own symbol — a host fn cannot define it again",
-                "defined here",
-                "name the host fn for what the host asks of this program",
-            ),
-        )
-}
+fn host_fn_names_a_row(mut cx: TypeCx, s: StmtId, hname: string) { cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_row_voice(hname))) }
 
 fn host_seat_promises(mut cx: TypeCx, s: StmtId, hname: string, p: Param) {
-    cx
-        .emit(
-            refusal(
-                "type.host_fn",
-                cx.stmt_loc(s),
-                "seat `${p.name.of}` of the host fn `${hname}` is marked — a host makes no promise about a seat",
-                "marked here",
-                "drop the mark: a host fn's seats are plain values",
-            ),
-        )
+    cx.emit(said_as("type.host_fn", cx.stmt_loc(s), host_promise_voice(hname, p.name.of)))
 }
 
 fn host_seat_unhanded(mut cx: TypeCx, s: StmtId, hname: string, seat: string, p: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.host_fn",
                 cx.stmt_loc(s),
-                "seat `${seat}` of the host fn `${hname}` wears `${cx.view.types.name_of(p)}`, which no host can hand over",
-                "declared here",
-                "a host fn's seat is `int`, `float`, `string`, `Bytes` or `ptr`",
+                host_seat_voice(hname, seat, cx.view.types.name_of(p)),
             ),
         )
 }
@@ -1181,12 +1051,10 @@ fn host_seat_unhanded(mut cx: TypeCx, s: StmtId, hname: string, seat: string, p:
 fn host_answer_unhanded(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.host_fn",
                 cx.stmt_loc(s),
-                "the host fn `${hname}` answers `${cx.view.types.name_of(ret)}`, which no host can take",
-                "declared here",
-                "a host fn answers `int`, `float`, `string`, `Bytes`, `ptr`, or nothing",
+                host_answer_voice(hname, cx.view.types.name_of(ret)),
             ),
         )
 }
@@ -1194,12 +1062,10 @@ fn host_answer_unhanded(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
 fn seat_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.host_seat",
                 cx.stmt_loc(s),
-                "seat ${j + 1} of `${hname}` wears `${cx.view.types.name_of(p)}`, which cannot cross to C",
-                "declared here",
-                "a host seat is a machine word or one pointer C reads — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those; any other box has an address C cannot follow. Pass its parts one at a time, or make the callee a runtime row",
+                crossing_voice(hname, j, cx.view.types.name_of(p)),
             ),
         )
 }
@@ -1207,12 +1073,10 @@ fn seat_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId
 fn answer_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.host_seat",
                 cx.stmt_loc(s),
-                "the answer of `${hname}` wears `${cx.view.types.name_of(ret)}`, which cannot cross to C",
-                "declared here",
-                "an extern's answer is what ONE frame reads back out of a register: a machine word (`int`, `bool`, a width word), a `float`, a pointer (`ptr`, `ptr?`), text (`string`, `string?`), or nothing at all. Everything else is a box in Avra's layout and a foreign address is not one — the compiled program reads C memory as ours and the evaluator has no arm to make a box from an address. `Bytes` is refused HERE though a seat takes it: a seat hands C a box whose length the caller already knows, and an answer would have to invent one. Answer `ptr` and read the bytes yourself, or make the callee a runtime row, whose arm materialises the box on both sides.",
+                answer_crossing_voice(hname, cx.view.types.name_of(ret)),
             ),
         )
 }
@@ -1220,36 +1084,152 @@ fn answer_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
 fn row_seat_takes_no_absence(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.host_absence",
                 cx.stmt_loc(s),
-                "seat ${j + 1} of `${hname}` wears `${cx.view.types.name_of(p)}`, and a runtime row's seat takes no absence",
-                "declared here",
-                "a runtime row reads the pointer it is handed, so its seat takes no absence — spell it without the `?` (a package's own C may take a pointer-or-NULL)",
+                absence_voice(hname, j, cx.view.types.name_of(p)),
             ),
         )
 }
 
-fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) {
-    cx
-        .emit(
-            refusal(
-                "type.host_seat",
-                cx.loc_of(a),
-                "seat ${j + 1} of `${callee}` is `mut`, and only a LOCAL binding has a cell to hand over",
-                "handed here",
-                "bind it in this body first — `mut x = …` — then hand `x`; a parameter, a capture and a pattern bind are values with no cell behind them",
-            ),
-        )
+fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) { cx.emit(said_as("type.host_seat", cx.loc_of(a), cellless_seat(callee, j))) }
+
+/// A place handed the `mut` seat `j` of the extern `callee` that is no `mut` binding's own cell, which
+/// is what C writes through.
+export fn cellless_seat(callee: string, j: int) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${callee}` is `mut`, and only a LOCAL binding has a cell to hand over",
+        label: "handed here",
+        help: "bind it in this body first — `mut x = …` — then hand `x`; a parameter, a capture and a pattern bind are values with no cell behind them",
+    }
 }
 
 /// The stand-in when a seat wrote no type at all — the declare pass
 /// already refused it; the voice must still name something.
 const void_written: TypeRef = TypeRef {
     name: "void",
-    args: [],
+    applied: [],
     optional: false,
     dynamic: false,
     arrow: false,
     span: null,
+}
+
+// ── The extern-declaration voices, one per refusal, shared by both paths ──
+
+/// A callback seat `seat` of `hname` whose answer rides a pointer the C would follow under a cancel.
+export fn callback_pointer_voice(hname: string, seat: string) -> Voice {
+    Voice {
+        message: "seat `${seat}` of `${hname}` is a callback under a cancel, and it answers a pointer the C would follow",
+        label: "declared here",
+        help: "a callback under a cancel answers zero — answer a word, or read nothing on the C side when it does",
+    }
+}
+
+/// The runtime row `row`, of `seats` seats, declared with `declared`.
+export fn row_arity_voice(row: string, seats: int, declared: int) -> Voice {
+    Voice {
+        message: "`${row}` is a runtime row of ${seats} seat(s), declared here with ${declared}",
+        label: "this extern",
+        help: "declare the row's seats, or name a fn the runtime does not carry",
+    }
+}
+
+/// The runtime row `row`, answering `box` (a box's words), declared to answer `written`.
+export fn answer_box_voice(row: string, box: string, written: string, seat: string) -> Voice {
+    Voice {
+        message: "`${row}` answers ${box}, this declares `${written}`",
+        label: "this extern",
+        help: "a runtime row answers the box its C body built — declare the answer `${seat}`, or `ptr` for the raw crossing",
+    }
+}
+
+/// The runtime row `row`, answering in `kind`, declared to answer `written`, which rides `got`.
+export fn answer_kind_voice(row: string, kind: string, written: string, got: string) -> Voice {
+    Voice {
+        message: "`${row}` answers ${kind}, this declares `${written}`, which rides ${got}",
+        label: "this extern",
+        help: "a runtime row answers what its C body answers — declare the answer the row names, or name a fn the runtime does not carry",
+    }
+}
+
+/// Seat `j` of the runtime row `row`, which reads `box`, declared `written`.
+export fn seat_box_voice(row: string, j: int, box: string, written: string, seat: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${row}` reads ${box}, this is `${written}`",
+        label: "this extern",
+        help: "a runtime row reads the box its header names — declare the seat `${seat}`, or `ptr` for the raw crossing",
+    }
+}
+
+/// The `mut` seat `j` of `hname`, wearing `written`, which no cell C writes is.
+export fn inout_unable_voice(hname: string, j: int, written: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${hname}` is `mut` and wears `${written}` — a `mut` host seat hands C the ADDRESS of the caller's cell",
+        label: "declared here",
+        help: "a cell C writes is `ptr`, `ptr?`, or an integer at its declared width — `i32` for `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`; a bare `int` is refused here alone, as only the declaration knows its width, and a managed value cannot cross: C keeps no refcount for what it writes",
+    }
+}
+
+/// The host fn `hname`, named as the runtime's own symbol.
+export fn host_row_voice(hname: string) -> Voice {
+    Voice {
+        message: "`${hname}` is the runtime's own symbol — a host fn cannot define it again",
+        label: "defined here",
+        help: "name the host fn for what the host asks of this program",
+    }
+}
+
+/// The seat `seat` of the host fn `hname`, marked.
+export fn host_promise_voice(hname: string, seat: string) -> Voice {
+    Voice {
+        message: "seat `${seat}` of the host fn `${hname}` is marked — a host makes no promise about a seat",
+        label: "marked here",
+        help: "drop the mark: a host fn's seats are plain values",
+    }
+}
+
+/// The seat `seat` of the host fn `hname`, wearing `ty`, which no host hands over.
+export fn host_seat_voice(hname: string, seat: string, ty: string) -> Voice {
+    Voice {
+        message: "seat `${seat}` of the host fn `${hname}` wears `${ty}`, which no host can hand over",
+        label: "declared here",
+        help: "a host fn's seat is `int`, `float`, `string`, `Bytes` or `ptr`",
+    }
+}
+
+/// The host fn `hname`, answering `ty`, which no host takes.
+export fn host_answer_voice(hname: string, ty: string) -> Voice {
+    Voice {
+        message: "the host fn `${hname}` answers `${ty}`, which no host can take",
+        label: "declared here",
+        help: "a host fn answers `int`, `float`, `string`, `Bytes`, `ptr`, or nothing",
+    }
+}
+
+/// Seat `j` of `hname`, wearing `ty`, which cannot cross to C.
+export fn crossing_voice(hname: string, j: int, ty: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${hname}` wears `${ty}`, which cannot cross to C",
+        label: "declared here",
+        help: "a host seat is a machine word or one pointer C reads — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those; any other box has an address C cannot follow. Pass its parts one at a time, or make the callee a runtime row",
+    }
+}
+
+/// The answer of `hname`, wearing `ty`, which cannot cross back from C.
+export fn answer_crossing_voice(hname: string, ty: string) -> Voice {
+    Voice {
+        message: "the answer of `${hname}` wears `${ty}`, which cannot cross to C",
+        label: "declared here",
+        help: "an extern's answer is what ONE frame reads back out of a register: a machine word (`int`, `bool`, a width word), a `float`, a pointer (`ptr`, `ptr?`), text (`string`, `string?`), or nothing at all. Everything else is a box in Avra's layout and a foreign address is not one — the compiled program reads C memory as ours and the evaluator has no arm to make a box from an address. `Bytes` is refused HERE though a seat takes it: a seat hands C a box whose length the caller already knows, and an answer would have to invent one. Answer `ptr` and read the bytes yourself, or make the callee a runtime row, whose arm materialises the box on both sides.",
+    }
+}
+
+/// Seat `j` of the runtime row `hname`, wearing the nullable `ty`.
+export fn absence_voice(hname: string, j: int, ty: string) -> Voice {
+    Voice {
+        message: "seat ${j + 1} of `${hname}` wears `${ty}`, and a runtime row's seat takes no absence",
+        label: "declared here",
+        help: "a runtime row reads the pointer it is handed, so its seat takes no absence — spell it without the `?` (a package's own C may take a pointer-or-NULL)",
+    }
 }

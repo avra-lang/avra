@@ -1,0 +1,166 @@
+//! WHERE A FILE A BUILD READS AS DATA IS NAMED WRONG: an `embed` or `provided` whose path is
+//! computed, stands outside the package, names a package this one doesn't reach, or names a file
+//! that isn't there, is reached through a link, or isn't the text `embed` answers. Judged at the
+//! literal by the one embed place (`embed_file`), the file read as the build's own input.
+use core.{EmbedBase, ExprId, SyntaxArena}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{EmbedFault, embed_file}
+use features.fns.{embed_computed_voice, embed_fault_kind, embed_fault_voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.source_facts.{source_octets}
+use @std.text.{parse_int}
+
+extern fn avra_utf8_bad_at(b: Bytes) -> int
+
+/// What an embedded file's literal is judged as: its kind of refusal, and its voice's words.
+type EmbedJudged = { kind: string, found: Found }
+
+/// Each call in the written item `at` of `file` of `@std/meta`'s `embed` or `provided` whose literal
+/// the embed law refuses.
+fn embeds_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<EmbedJudged> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    let store = item.store
+    [j! for k in 0..store.expr_count() for j in [embed_judged(engine, file, store, ExprId { index: k })] if j != null]
+}
+
+/// The call `e` judged as an embedded file's: absent where it calls no embedding fn of `@std/meta`,
+/// or its literal names a file a const may read.
+fn embed_judged(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> EmbedJudged? {
+    let call? = store.call_parts(e) else { return null }
+    if call.args.length != 1 { return null }
+    let base? = embedding_base(engine, file, store, e, call.callee) else { return null }
+    let path = call.args[0]
+    let rel? = store.expr(path).text_of() else {
+        return EmbedJudged {
+            kind: "type.embed_literal",
+            found: Found { at: store.expr_span(e), args: [COMPUTED] },
+        }
+    }
+    let fault? = embed_fault(engine, file, rel, base) else { return null }
+    EmbedJudged {
+        kind: embed_fault_kind(fault),
+        found: Found { at: store.expr_span(path), args: fault_words(fault, rel, base) },
+    }
+}
+
+/// Where the fn `callee`, called at `e`, reads its file from: beside the source for `embed`, the
+/// package's root for `provided`; absent where the name is no embedding fn of `@std/meta`.
+fn embedding_base(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    callee: string,
+) -> EmbedBase? {
+    let base? = match callee {
+        "embed" -> EmbedBase.Beside,
+        "provided" -> EmbedBase.Root,
+        _ -> null,
+    } else { return null }
+    for f in read_from(engine, file, store.home_of(e)) {
+        let named? = resolved(engine, f, Space.Value, callee).named() else { continue }
+        return if named.file.package_name == META_PACKAGE { base } else { null }
+    }
+    null
+}
+
+/// What is wrong with the file the literal `rel`, written in `file`, names from `base`; absent where
+/// a const may read it.
+fn embed_fault(engine: QueryEngine, file: SourceFileAddress, rel: string, base: EmbedBase) -> EmbedFault? {
+    let at = match embed_file(file, rel, base) { .Ok(a) -> a, .Err(fault) -> { return fault } }
+    if !reaches(engine, file.package_name, at.package_name) { return EmbedFault.Undeclared(at.package_name) }
+    match source_octets(engine, at) {
+        .Read(octets) -> {
+            let bad = if base is .Beside { avra_utf8_bad_at(octets) } else { 0 - 1 }
+            if bad >= 0 { EmbedFault.NotText(bad) } else { null }
+        },
+        .Missing -> EmbedFault.Missing,
+        .Linked -> EmbedFault.Linked,
+        .Refused(why) -> EmbedFault.Refused(why),
+    }
+}
+
+/// A fault as a finding keeps it: its name, the literal, where it was read from, and what it says.
+fn fault_words(fault: EmbedFault, rel: string, base: EmbedBase) -> List<string> {
+    let from = if base is .Beside { BESIDE } else { ROOT }
+    match fault {
+        .Outside -> ["outside", rel, from, ""],
+        .Undeclared(key) -> ["undeclared", rel, from, key],
+        .Linked -> ["linked", rel, from, ""],
+        .Missing -> ["missing", rel, from, ""],
+        .NotText(at) -> ["not_text", rel, from, "${at}"],
+        .Refused(why) -> ["refused", rel, from, why],
+    }
+}
+
+/// A fault from the words a finding keeps.
+fn kept_fault(a: List<string>) -> EmbedFault {
+    match a[0] {
+        "outside" -> EmbedFault.Outside,
+        "undeclared" -> EmbedFault.Undeclared(a[3]),
+        "linked" -> EmbedFault.Linked,
+        "missing" -> EmbedFault.Missing,
+        "not_text" -> EmbedFault.NotText(parse_int(a[3]) ?? 0),
+        _ -> EmbedFault.Refused(a[3]),
+    }
+}
+
+/// The findings of one kind in the written item `at` of `file`.
+fn embeds_of(kind: string, engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [j.found for j in embeds_refused(engine, file, at) if j.kind == kind]
+}
+
+fn places_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { embeds_of("type.embed_place", engine, file, at) }
+
+fn files_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { embeds_of("type.embed_file", engine, file, at) }
+
+fn paths_computed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { embeds_of("type.embed_literal", engine, file, at) }
+
+fn fault_said(a: List<string>) -> Voice {
+    embed_fault_voice(
+        kept_fault(a),
+        a[1],
+        if a[2] == BESIDE { EmbedBase.Beside } else { EmbedBase.Root },
+    )
+}
+
+fn computed_said(_a: List<string>) -> Voice { embed_computed_voice() }
+
+/// an embedded file's literal leaves its package, names a package it doesn't reach, or a link stands
+/// on the way to it
+export law embed_place {
+    kind: "type.embed_place"
+    reads: places_refused
+    voice: fault_said
+    witness: "use @std.meta.{embed}\nconst T: string = embed(\"../../outside.txt\")\n"
+}
+
+/// an embedded file's literal names a file that isn't there, or that isn't the text `embed` answers
+export law embed_absent {
+    kind: "type.embed_file"
+    reads: files_refused
+    voice: fault_said
+    witness: "use @std.meta.{embed}\nconst T: string = embed(\"nowhere.txt\")\n"
+}
+
+/// an embedded file's path the source computes
+export law embed_computed {
+    kind: "type.embed_literal"
+    reads: paths_computed
+    voice: computed_said
+    witness: "use @std.meta.{embed}\nfn read(p: string) -> string { embed(p) }\n"
+}
+
+/// The package that declares the embedding fns.
+const META_PACKAGE: string = "@std/meta"
+
+/// The words a finding keeps for where a literal is read from.
+const BESIDE: string = "beside"
+
+const ROOT: string = "root"
+
+/// The words a finding keeps for a computed path.
+const COMPUTED: string = "computed"

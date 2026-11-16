@@ -67,6 +67,18 @@ fn read_in_order(first: string, second: string) -> bool {
     same_text(a, first) && same_text(b, second) && r.done()
 }
 
+/// Ints `0..n` written as single octets, then read back in order to the end.
+fn ints_read_in_order(n: int) -> bool {
+    let w = writer()
+    for v in 0..n { w.int(v) }
+    let r = reader(w.bytes())
+    (0..n).all(same_int(r.int(), it)) && r.done()
+}
+
+fn same_int(got: Result<int, CodecFault>, want: int) -> bool {
+    match got { .Ok(v) -> v == want, .Err(_) -> false }
+}
+
 fn same_text(got: Result<string, CodecFault>, want: string) -> bool {
     match got { .Ok(s) -> s == want, .Err(_) -> false }
 }
@@ -128,6 +140,9 @@ spec "query/stable" {
     given "the codec's integers" {
         then "small, negative, and the varint's seven-bit edges round-trip" {
             [0, 1, -1, 63, -64, 64, -65, 127, 128, 300, -300].all(int_round_trips(it))
+        }
+        then "twenty thousand single octets read back in order, across every pending close" {
+            ints_read_in_order(10000)
         }
         then "the widest ints round-trip" {
             int_round_trips(9223372036854775807) && int_round_trips(-9223372036854775807 - 1)

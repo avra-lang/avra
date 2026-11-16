@@ -9,6 +9,15 @@
 //! global, never another file's.
 use core.{
     mark_at,
+    Annotation,
+    PatId,
+    BindSite,
+    NameRead,
+    NamesRead,
+    OwnType,
+    SignedType,
+    TypeHead,
+    key_spelled,
     At,
     ExprId,
     StmtId,
@@ -22,7 +31,6 @@ use core.{
     Expr,
     TypeRef,
     SyntaxArena,
-    own_name_at,
     own_type_at,
     Arm,
     same_stmt,
@@ -31,9 +39,9 @@ use core.{
     some_list,
     hole_name,
     CompClause,
-    body_behavior,
 }
 use features.{
+    Decls,
     FileView,
     NameFacts,
     TypeFacts,
@@ -41,10 +49,11 @@ use features.{
     method_row,
     MethodRow,
     AnnotationFact,
+    ReceiverEffect,
+    arg_lit,
     bound_decl_of,
 }
 use features.enums.{answering_arms, binders}
-use diagnostics.{loc_at}
 use @std.errors.{Loc}
 use @std.meta.{Subject}
 
@@ -53,9 +62,215 @@ use @std.meta.{Subject}
 /// recomputed per bind.
 export type Analysed = { view: FileView, names: NameFacts, facts: TypeFacts }
 
+/// An analysed file as its syntax alone.
+export fn syntax_of(a: Analysed) -> SyntaxFile { SyntaxFile { view: SyntaxView { store: a.view.store, source: a.view.source } } }
+
+/// An analysed file as a rule reads it: its syntax, and the old pass tables as its facts.
+export fn analysed_file(a: Analysed) -> RuleFile { RuleFile { view: syntax_of(a).view, facts: RuleFacts.Analysed(a) } }
+
+/// What a rule reads of the file its code stands in: the syntax, and what was found about it.
+export type RuleFile = { view: SyntaxView, facts: RuleFacts }
+
+/// What was found about a rule's file beyond its syntax, by whichever layer found it: the old pass
+/// tables of a whole analysed file, or an item's bodies as the program layer typed them, each
+/// node's type by its index in the item's store.
+export enum RuleFacts {
+    Analysed(a: Analysed)
+    Typed(item: TypedFacts)
+}
+
+/// What the program layer found about an item: each node's type by its index in the item's store,
+/// the package its file is in (as source spells it), each fn its declarations name in `@cycled_by` or
+/// `@scoped_by`, the language's built-in method rows, the default each `impl Trait for` method of
+/// the item overrides, and — for the statements a program file runs, typed as its entry — the names
+/// they read and bind outside any fn.
+export type TypedFacts = {
+    types: List<SignedType?>,
+    package: string,
+    seat_fns: List<string>,
+    methods: List<MethodRow>,
+    defaults: List<TraitDefault>,
+    unused: List<UnusedImport>,
+    brackets: List<Bracketed>,
+    bodies: List<BodyNames>,
+    entry: NamesRead? = null,
+}
+
+/// The names one body of an item reads and the bindings it makes, as its typing resolved them, beside
+/// the statement declaring the fn whose body it is.
+export type BodyNames = { stmt: StmtId, names: NamesRead }
+
+impl TypedFacts {
+    /// Every read of the binding `site` makes in the body of the fn `owner` declares; absent where no
+    /// body typed here is `owner`'s, so nothing can be said of what it reads.
+    fn reads_of(site: BindSite, owner: StmtId) -> List<NameRead>? {
+        let body? = self.bodies.find(same_stmt(it.stmt, owner)) else { return null }
+        body.names.of_binder(site)
+    }
+
+    /// The fn whose typed body holds the statement `s` of `store`; absent for one no typed body holds.
+    fn holder_of(store: SyntaxArena, s: StmtId) -> StmtId? { self.bodies.find(fn_holds(store, it.stmt, s))?.stmt }
+
+    /// The names the body holding `at` of `store` reads and binds — the entry's outside any fn; absent
+    /// where no typed body holds it.
+    fn names_around(store: SyntaxArena, at: At) -> NamesRead? {
+        let f? = innermost_fn(store, at) else { return self.entry }
+        self.bodies.find(same_stmt(it.stmt, f))?.names
+    }
+}
+
+/// A fn of an item wearing `@std/meta`'s `@bracket(...)`: its statement, and each bracket it names.
+export type Bracketed = { fn_stmt: StmtId, names: List<string> }
+
+/// A `use` line of an item naming declarations nothing in the program reads: the line, and the
+/// names.
+export type UnusedImport = { stmt: StmtId, names: List<string> }
+
+/// The body a trait gives the member an `impl Trait for` method of an item overrides: the method's
+/// statement, and the trait's body in its own store.
+export type TraitDefault = { method: StmtId, store: SyntaxArena, body: ExprId }
+
+/// A fn's body in the store that holds it.
+export type HeldBody = { store: SyntaxArena, body: ExprId }
+
+impl RuleFacts {
+    /// The old pass tables, where these facts are theirs.
+    fn tables() -> Analysed? {
+        match self { .Analysed(a) -> a, .Typed(_) -> null }
+    }
+
+    /// The package the file is in, as source spells it (`@std.avrac`).
+    fn package() -> string {
+        match self {
+            .Analysed(a) -> a.view.decls.package_of_file(a.view.file),
+            .Typed(t) -> t.package,
+        }
+    }
+
+    /// Each fn the file's declarations name in `@cycled_by` or `@scoped_by`.
+    fn seat_fns() -> List<string> {
+        match self { .Analysed(a) -> analysed_seat_fns(a), .Typed(t) -> t.seat_fns }
+    }
+
+    /// The body the trait gives the member the `impl Trait for` method `m` declares overrides; absent
+    /// for an inherent method, a trait's own member without a body, and a trait not resolved.
+    fn default_of(m: StmtId) -> HeldBody? {
+        match self {
+            .Analysed(a) -> analysed_default_of(a, m),
+            .Typed(t) -> {
+                let d? = t.defaults.find(same_stmt(it.method, m)) else { return null }
+                HeldBody { store: d.store, body: d.body }
+            },
+        }
+    }
+
+    /// Whether the declaration that encloses `at` of `store` wears `@std/meta`'s `@bracket(name)` —
+    /// by declaration, never a bare compare of the word: a package's own fn named `bracket` answers
+    /// false.
+    fn bracketed(store: SyntaxArena, at: At, name: string) -> bool {
+        match self {
+            .Analysed(a) -> analysed_bracketed(a, at, name),
+            .Typed(t) -> {
+                let f? = innermost_fn(store, at) else { return false }
+                t.brackets.find(same_stmt(it.fn_stmt, f))?.names?.contains(name) ?? false
+            },
+        }
+    }
+
+    /// What the built-in method `name` does to the receiver `subject`, as the language's own row for
+    /// its type says; absent for a receiver no built-in row takes, a declared type's among them.
+    fn method_effect(subject: ExprId, name: string) -> ReceiverEffect? {
+        match self {
+            .Analysed(a) -> method_row(a.view.lang.methods, name, a.view.types.seen_shape(a.facts.type_at(subject)))?.effect,
+            .Typed(t) -> {
+                let own? = held_own(signed_at(t.types, subject)) else { return null }
+                method_row(t.methods, name, own_shape(own))?.effect
+            },
+        }
+    }
+
+    /// The type an expression was found to have; absent where none was.
+    fn type_at(e: ExprId) -> RuleType? {
+        match self {
+            .Analysed(a) -> RuleType.Interned(Ty { types: a.view.types, id: a.facts.type_at(e) }, a.view.decls),
+            .Typed(t) -> signed_rule_type(signed_at(t.types, e)),
+        }
+    }
+}
+
+/// A type as a rule asks of it, whichever layer found it.
+export enum RuleType {
+    Interned(ty: Ty, decls: Decls)
+    Signed(ty: SignedType)
+}
+
+/// A type a program declares, known by its package (as source spells it, `@std.relation`) and its
+/// name.
+export type DeclaredType = { package: string, name: string }
+
+fn interned_rule_type(t: Ty?, decls: Decls) -> RuleType? {
+    let held? = t else { return null }
+    RuleType.Interned(held, decls)
+}
+
+fn signed_rule_type(t: SignedType?) -> RuleType? {
+    let held? = t else { return null }
+    RuleType.Signed(held)
+}
+
+impl RuleType {
+    /// Whether this is text.
+    fn is_text() -> bool {
+        match self {
+            .Interned(t, _) -> t.types.shape_of(t.id) is .Str,
+            .Signed(t) -> t.owns(OwnType.Str),
+        }
+    }
+
+    /// Whether this is the type `d` declares, held directly.
+    fn is_declared(d: DeclaredType) -> bool {
+        match self {
+            .Interned(t, decls) -> decls.declared_as(t.id, d.package, d.name),
+            .Signed(t) -> t.nulls == 0 && !t.dynamic && declares(t.head, d),
+        }
+    }
+
+    /// What a list holds, absent for every other type.
+    fn element() -> RuleType? {
+        match self {
+            .Interned(t, decls) -> interned_rule_type(t.element(), decls),
+            .Signed(t) -> signed_rule_type(t.listed()),
+        }
+    }
+
+    /// What a nullable carries, absent for every other type.
+    fn carried() -> RuleType? {
+        match self {
+            .Interned(t, decls) -> interned_rule_type(t.carried(), decls),
+            .Signed(t) -> if t.nullable() { RuleType.Signed(t.unwrapped()) } else { null },
+        }
+    }
+
+    /// Whether this is the same type as `other`, found by the same layer.
+    fn same(other: RuleType) -> bool {
+        match self {
+            .Interned(t, _) -> match other { .Interned(o, _) -> t.same(o), .Signed(_) -> false },
+            .Signed(t) -> match other { .Signed(o) -> t.same_type(o), .Interned(_, _) -> false },
+        }
+    }
+}
+
+/// Whether `head` names the type `d` declares: its file in `d`'s package, under `d`'s name.
+fn declares(head: TypeHead, d: DeclaredType) -> bool {
+    match head {
+        .Declared(file, name) -> name == d.name && key_spelled(file.package_name) == d.package,
+        rest -> false,
+    }
+}
+
 /// One bound hole: the code a rule holds. `of` carries what the
 /// compiler knows about the file it stands in; `at` says which node.
-export type Code = { of: Analysed, at: At }
+export type Code = { of: RuleFile, at: At }
 
 /// A range `for` loop's own head, `for_range`'s answer: the loop
 /// variable's own text, its bound and its body, each still Code.
@@ -67,7 +282,7 @@ export type ArmInfo = { pats: List<Code>, guard: Code?, value: Code }
 
 /// One name an arm binds, and the type typing gave it — absent when
 /// the arm went untyped.
-export type ArmBind = { name: string, ty: Ty? }
+export type ArmBind = { name: string, ty: RuleType? }
 
 /// A SCAN's two halves: the list it walks and the tests it applies.
 export type Scan = { source: Code, tests: List<Code> }
@@ -75,7 +290,7 @@ export type Scan = { source: Code, tests: List<Code> }
 /// A RUN binder's whole match, wrapped: every `At` it captured
 /// carries this Code's own facts — `quote_pat_binds`' (features/
 /// quote/lower.av) one door for a `${..xs}` bind.
-export fn run_coded(of: Analysed, ats: List<At>) -> List<Code> {
+export fn run_coded(of: RuleFile, ats: List<At>) -> List<Code> {
     [Code { of: of, at: a } for a in ats]
 }
 
@@ -83,28 +298,27 @@ export fn run_coded(of: Analysed, ats: List<At>) -> List<Code> {
 impl Subject for Code {
     /// The node's own source, verbatim — "" for one no span names
     /// (a generated node).
-    fn text() -> string {
-        let sp? = self.of.view.store.span_at(self.at) else { return "" }
-        self.of.view.source.text.substring(sp.lo, sp.hi)
-    }
+    fn text() -> string { self.syntax().text() }
 }
 
 impl Code {
+    /// This node as its syntax alone: its file's tree and text, no fact a pass adds.
+    fn syntax() -> Syntax { Syntax { of: SyntaxFile { view: self.of.view }, at: self.at } }
+
+    /// The old pass tables this code was analysed with — read only by an `analysed_rule`, which the
+    /// program layer doesn't run, so asked of a program-layer item it traps.
+    fn analysed() -> Analysed { self.of.facts.tables()! }
+
+    /// The node `s` names, in this Code's analysis.
+    fn held(s: Syntax) -> Code { Code { of: self.of, at: s.at } }
+
     /// This node's children, each still carrying this Code's facts —
     /// `kids_at`'s walk, wrapped.
-    fn kids() -> List<Code> {
-        [Code { of: self.of, at: k } for k in self.of.view.store.kids_at(self.at)]
-    }
+    fn kids() -> List<Code> { [self.held(k) for k in self.syntax().kids()] }
 
     /// An ident's own text; a struct literal FIELD's or a fn PARAM's
     /// own name — null for every other seat.
-    fn name() -> string? {
-        match self.at {
-            .Expr(id) -> self.of.view.store.ident_name(id),
-            .Field(_, _) or .Param(_, _) -> own_name_at(self.of.view.store, self.at),
-            .Stmt(_) or .Pat(_) -> null,
-        }
-    }
+    fn name() -> string? { self.syntax().name() }
 
     /// This node's own WRITTEN TYPE — a `let`/`mut`/`const`'s own
     /// annotation, a call's one pinned type argument, a param's own
@@ -135,20 +349,14 @@ impl Code {
     /// Whether this node is a struct literal — false for every other
     /// seat, `.Field` included: a rule guards `lit.is_struct_lit()`
     /// before reading `lit.kids()` as its fields.
-    fn is_struct_lit() -> bool {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) { .StructLit(_, _, _) -> true, _ -> false },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
-        }
-    }
+    fn is_struct_lit() -> bool { self.syntax().is_struct_lit() }
+
+    /// Whether this node is an expression, or a statement that answers
+    /// one — a `let` or a loop is not.
+    fn is_value() -> bool { self.syntax().is_value() }
 
     /// Whether this node is a block — false for every other seat.
-    fn is_block() -> bool {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) { .Block(_, _) -> true, _ -> false },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
-        }
-    }
+    fn is_block() -> bool { self.syntax().is_block() }
 
     /// Whether this node is a plain string literal — false for every
     /// other seat, an interpolated one (`Expr.Format`) included: a
@@ -163,47 +371,19 @@ impl Code {
     /// This string literal's own decoded value — null for every
     /// other seat. `Expr.StrLit` carries the value already unescaped,
     /// so no quote-stripping of its own `.text()` is needed.
-    fn str_lit_value() -> string? {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) { .StrLit(v) -> v, _ -> null },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
-        }
-    }
+    fn str_lit_value() -> string? { self.syntax().str_lit_value() }
 
     /// A text literal's leading text — a plain literal's value, or an
     /// interpolated one's run before its first hole — null for every
     /// other seat.
-    fn text_head() -> string? { self.str_lit_value() ?? self.text_body_head() }
-
-    fn text_body_head() -> string? {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) {
-                .Body(word, parts, _, _) -> if body_behavior(word) is .Text {
-                    parts.first()
-                } else {
-                    null
-                },
-                _ -> null,
-            },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
-        }
-    }
+    fn text_head() -> string? { self.syntax().text_head() }
 
     /// Every name this node's FILE calls a fn by, once per call.
-    fn file_callees() -> List<string> {
-        flatten(
-            [some_list(self.of.view.store.callee_name(e)) for e in self.of.view.store.expr_ids()],
-        )
-    }
+    fn file_callees() -> List<string> { self.syntax().file_callees() }
 
     /// Whether this node is a method call (`subject.name(args)`) —
     /// false for every other seat, a plain `Call` by NAME included.
-    fn is_method_call() -> bool {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) { .MethodCall(_, _, _) -> true, _ -> false },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
-        }
-    }
+    fn is_method_call() -> bool { self.syntax().is_method_call() }
 
     /// Whether this node is a `mut` LOCAL declared with an explicit
     /// nullable type, seeded `null` — `mut best: T? = null`. A TYPE
@@ -212,39 +392,18 @@ impl Code {
     /// same law a NAME hole's `l${x}_y` is refused under — so the
     /// OPTIONALITY itself still reads structurally, off the
     /// declaration's own `ty` field.
-    fn is_nullable_flag_mut() -> bool {
-        match self.at {
-            .Stmt(id) -> match self.of.view.store.stmt(id) {
-                .MutLet(_, ty, value) -> mut_ty_optional(ty) && self.of.view.store.null_literal(value),
-                _ -> false,
-            },
-            _ -> false,
-        }
-    }
+    fn is_nullable_flag_mut() -> bool { self.syntax().is_nullable_flag_mut() }
 
     /// This node's own RANGE `for` head — `for NAME in FROM..TO {
-    /// STMTS }` — absent for every other shape, `ForEach` included. A
-    /// quote pattern cannot hold the loop variable open itself: the
-    /// range desugars to a `cond`/`step` that reads the variable
-    /// AGAIN (`features/loops/builders.av`'s `build_for`), and the
-    /// matcher's NAME-SEAT binder and an ordinary value `Hole` share
-    /// one accumulator slot under two incompatible comparisons — a
-    /// whole-statement `own_name_at` check, then a `subtree_fp` one —
-    /// so a pattern naming the loop variable twice can never hit
-    /// (avra-8sb5.25.45). Read structurally instead, off the
-    /// declaration's own fields.
+    /// STMTS }` — absent for every other shape: a `for` over anything
+    /// but a range, and every other statement.
     fn for_range() -> ForRange? {
-        match self.at {
-            .Stmt(id) -> match self.of.view.store.stmt(id) {
-                .For(name, from, to, _, _, stmts) -> ForRange {
-                    name: name.of,
-                    from: Code { of: self.of, at: At.Expr(from) },
-                    to: Code { of: self.of, at: At.Expr(to) },
-                    body: [Code { of: self.of, at: At.Stmt(s) } for s in stmts],
-                },
-                _ -> null,
-            },
-            _ -> null,
+        let r? = self.syntax().for_range() else { return null }
+        ForRange {
+            name: r.name,
+            from: self.held(r.from),
+            to: self.held(r.to),
+            body: [self.held(s) for s in r.body],
         }
     }
 
@@ -292,51 +451,33 @@ impl Code {
 
     /// A method call's own NAME — `xs.find(p)` answers `"find"` —
     /// null for every other seat.
-    fn method_name() -> string? {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) { .MethodCall(_, name, _) -> name.of, _ -> null },
-            _ -> null,
-        }
-    }
+    fn method_name() -> string? { self.syntax().method_name() }
 
     /// A property read's own NAME — `x.name` answers `"name"` — null
     /// for every other seat, so a field's VALUE is confirmed a `Prop`
     /// before its subject is trusted, never guessed from text alone.
-    fn prop_name() -> string? {
-        match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) { .Prop(_, name) -> name.of, _ -> null },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
-        }
-    }
+    fn prop_name() -> string? { self.syntax().prop_name() }
 
     /// This node's own CALL ARGUMENTS: its kids past the ones the node
     /// says are no argument (`args_after` — a method's subject) — empty
     /// for a node that is no call. A name found here is HANDED to this
     /// call, never a name merely read as a method's own RECEIVER.
-    fn call_args() -> List<Code> {
-        match self.at {
-            .Expr(id) -> {
-                let skip? = self.of.view.store.expr(id).args_after() else { return [] }
-                self.kids().slice(skip, self.kids().length)
-            },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
-        }
-    }
+    fn call_args() -> List<Code> { [self.held(a) for a in self.syntax().call_args()] }
 
     /// What a name USE resolves to — null for a Stmt/Pat seat and
     /// for an expression that names nothing.
     fn binding() -> Binding? {
         match self.at {
-            .Expr(id) -> self.of.names.binding(id),
+            .Expr(id) -> self.analysed().names.binding(id),
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
 
     /// The type this expression was typed at — null for a Stmt/Pat
     /// seat, since only an expression answers one.
-    fn type() -> Ty? {
+    fn type() -> RuleType? {
         match self.at {
-            .Expr(id) -> Ty { types: self.of.view.types, id: self.of.facts.type_at(id) },
+            .Expr(id) -> self.of.facts.type_at(id),
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
@@ -345,7 +486,7 @@ impl Code {
     /// that named it, never a later narrow.
     fn declared() -> Ty? {
         let b? = self.binding() else { return null }
-        declared_ty(self.of, self.at, b)
+        declared_ty(self.analysed(), self.at, b)
     }
 
     /// PURITY: evaluating this code has no effect and answers the
@@ -378,7 +519,7 @@ impl Code {
     fn answering() -> int? {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) {
-                .Match(_, arms) -> answering_arms(self.of.view.store, self.of.names, arms),
+                .Match(_, arms) -> answering_arms(self.of.view.store, self.analysed().names, arms),
                 _ -> null,
             },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
@@ -401,15 +542,54 @@ impl Code {
     /// enclosing fn's doc).
     fn doc() -> string? {
         let d? = self.declaring() else { return null }
-        let lines? = self.of.view.decls.doc_of(d) else { return null }
+        let lines? = self.analysed().view.decls.doc_of(d) else { return null }
         lines.join("\n")
     }
 
-    /// This node's own declaration's `@name(args)`, in written order —
-    /// empty for every node that is not a declaring statement.
-    fn annotations() -> List<AnnotationFact> {
-        let d? = self.declaring() else { return [] }
-        self.of.view.decls.annotations_of(d)
+    /// This fn declaration's own body, in this code's store; absent for any other node.
+    fn own_body() -> HeldBody? {
+        match self.at {
+            .Stmt(id) -> fn_body_held(self.of.view.store, id),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// The trait default this method declaration overrides, as `RuleFacts.default_of` finds it.
+    fn overridden_default() -> HeldBody? {
+        match self.at {
+            .Stmt(id) -> self.of.facts.default_of(id),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// The declaration this node's own statement makes, as a delete names it; none where the old
+    /// pass tables don't stand, whose deletes `avra fix` alone carries out.
+    fn deleted() -> List<DeclId> {
+        match self.of.facts { .Analysed(_) -> some_list(self.declaring()), .Typed(_) -> [] }
+    }
+
+    /// Whether the declaration enclosing this code wears `@std/meta`'s `@bracket(name)`.
+    fn wears_bracket(name: string) -> bool { self.of.facts.bracketed(self.of.view.store, self.at, name) }
+
+    /// The package this code's file is in, as source spells it (`@std.avrac`).
+    fn package() -> string { self.of.facts.package() }
+
+    /// This statement's own `@name(args)`, in written order — empty for every node that is not a
+    /// statement.
+    fn annotations() -> List<Annotation> {
+        match self.at {
+            .Stmt(id) -> self.of.view.store.annotations_of(id),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+        }
+    }
+
+    /// Whether a declaration of this file names this fn in `@cycled_by` or `@scoped_by`: the engine
+    /// shapes it with that query's own seats.
+    fn shaped_by_a_query() -> bool {
+        match self.at {
+            .Stmt(id) -> self.of.facts.seat_fns().contains(self.of.view.store.fn_parts(id)?.name ?? ""),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
     }
 
     /// The declaration THIS node's own statement makes — the exact
@@ -418,7 +598,7 @@ impl Code {
     /// body).
     fn declaring() -> DeclId? {
         match self.at {
-            .Stmt(id) -> self.of.view.decls.decl_of(self.of.view.file, id),
+            .Stmt(id) -> self.analysed().view.decls.decl_of(self.analysed().view.file, id),
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
     }
@@ -426,32 +606,19 @@ impl Code {
     /// Where this code stands in its file — a Say's own location, so
     /// a rule's finding points at the code that earned it rather than
     /// at the rule's declaration.
-    fn loc() -> Loc? {
-        loc_at(self.of.view.source.file, self.of.view.store.span_at(self.at))
-    }
+    fn loc() -> Loc? { self.syntax().loc() }
 
     /// Whether this node prints unambiguously wherever it is
     /// spliced — no operator outside it can steal its neighbours.
     /// A registry over `Expr`, the way `pure()`'s is; a Stmt/Pat
     /// seat is never atomic on its own terms (a rule's held fills
     /// are always expression holes).
-    fn atomic() -> bool {
-        match self.at {
-            .Expr(id) -> self.of.view.store.expr(id).atomic(),
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
-        }
-    }
+    fn atomic() -> bool { self.syntax().atomic() }
 
     /// This node's own structural fingerprint — the identity `make
     /// fingerprints` gates the tree on; null for a seat fingerprinting
     /// does not cover.
-    fn fp() -> int? {
-        match self.at {
-            .Expr(id) -> self.of.view.store.expr_fingerprint(id),
-            .Stmt(id) -> self.of.view.store.stmt_fingerprint(id),
-            .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
-        }
-    }
+    fn fp() -> int? { self.syntax().fp() }
 
     /// Every OTHER expression in this FILE sharing this node's own
     /// fingerprint — never itself, and never raw text: two sites
@@ -470,18 +637,7 @@ impl Code {
     /// A SIBLING WITH NO SPAN AT ALL IS NOT A SECOND COPY EITHER — a
     /// node minted with none is compiler-generated, invisible in the
     /// source a reader would dedupe, so nothing here is written twice.
-    fn fingerprint_siblings() -> List<Code> {
-        match self.at {
-            .Expr(id) -> {
-                let want = self.of.view.store.expr_fingerprint(id)
-                let mine = self.of.view.store.expr_span(id)
-                [self.coded(e) for e in self.of.view.store.expr_ids() if !same_expr(e, id) &&
-                    self.of.view.store.expr_fingerprint(e) == want &&
-                    sibling_span(mine, self.of.view.store.expr_span(e))]
-            },
-            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
-        }
-    }
+    fn fingerprint_siblings() -> List<Code> { [self.held(s) for s in self.syntax().fingerprint_siblings()] }
 
     /// `e`, still carrying this node's own facts — the wrap every
     /// Expr-returning walk shares (`fingerprint_siblings`, `forces`,
@@ -494,6 +650,33 @@ impl Code {
     /// knows the value is present and should guard once, not insist
     /// again and again.
     fn forces() -> List<Code> {
+        match self.of.facts {
+            .Analysed(_) -> self.analysed_forces(),
+            .Typed(t) -> {
+                let reading = [r.at for r in self.typed_reads(t) ?? []]
+                let store = self.of.view.store
+                [self.coded(s) for e in store.expr_ids() for s in some_list(force_subject(store, e)) if reading.contains(s.index)]
+            },
+        }
+    }
+
+    /// Every read, in the program layer's table, of the binding this node's own `let`/`mut`
+    /// statement or seat makes; absent where nothing typed here holds its reads.
+    fn typed_reads(t: TypedFacts) -> List<NameRead>? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .Let(_, _, _) or .MutLet(_, _, _) -> {
+                    let owner? = t.holder_of(self.of.view.store, id) else { return t.entry?.of_binder(BindSite.Stmt(id.index)) }
+                    t.reads_of(BindSite.Stmt(id.index), owner)
+                },
+                rest -> null,
+            },
+            .Param(owner, i) -> t.reads_of(BindSite.Seat(i), owner),
+            .Expr(_) or .Pat(_) or .Field(_, _) -> null,
+        }
+    }
+
+    fn analysed_forces() -> List<Code> {
         let b? = self.introduces() else { return [] }
         let range = self.local_range()
         let subjects = flatten([some_list(force_subject(self.of.view.store, e)) for e in range])
@@ -519,7 +702,7 @@ impl Code {
     /// references.av), read through `Decls`.
     fn callers() -> List<Ref> {
         let d? = self.declaring() else { return [] }
-        self.of.view.decls.callers(d)
+        self.analysed().view.decls.callers(d)
     }
 
     /// Every bare READ of the LOCAL this node's own `let`/`mut`/param
@@ -537,6 +720,19 @@ impl Code {
     }
 
     fn local_uses(want_write: bool) -> List<Code> {
+        match self.of.facts {
+            .Analysed(_) -> self.analysed_uses(want_write),
+            .Typed(t) -> [self.coded(ExprId { index: r.at }) for r in self.typed_reads(t) ?? [] if r.writes == want_write],
+        }
+    }
+
+    /// Whether this local's or seat's uses are known: on the program layer, where a body typed here
+    /// holds it; a program file's own statements are no fn's body.
+    fn uses_known() -> bool {
+        match self.of.facts { .Analysed(_) -> true, .Typed(t) -> self.typed_reads(t) != null }
+    }
+
+    fn analysed_uses(want_write: bool) -> List<Code> {
         let b? = self.introduces() else { return [] }
         let range = self.local_range()
         let roots = self.write_roots(range)
@@ -550,8 +746,8 @@ impl Code {
     /// directly. Bounded to `local_range()`'s one declaration, so a
     /// `.Param(i)` index never collides with another fn's.
     fn names_this(e: ExprId, b: Binding) -> bool {
-        match self.of.names.binding(e) {
-            x? -> same_binding(root_binding(self.of.names, x), b)
+        match self.analysed().names.binding(e) {
+            x? -> same_binding(root_binding(self.analysed().names, x), b)
             null -> false
         }
     }
@@ -567,7 +763,7 @@ impl Code {
                 .Let(_, _, _) or .MutLet(_, _, _) -> Binding.Def(id),
                 rest -> null,
             },
-            .Param(owner, i) -> Binding.Param(i + seat_base_of(self.of.view, owner)),
+            .Param(owner, i) -> Binding.Param(i + seat_base_of(self.analysed().view, owner)),
             .Expr(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
@@ -575,8 +771,8 @@ impl Code {
     /// The ENCLOSING declaration's own expression range — the bound
     /// a local's uses never leave.
     fn local_range() -> List<ExprId> {
-        let d? = enclosing_decl(self.of.view, self.at) else { return [] }
-        let x = self.of.view.decls.decl(d)
+        let d? = enclosing_decl(self.analysed().view, self.at) else { return [] }
+        let x = self.analysed().view.decls.decl(d)
         x.body_exprs()
     }
 
@@ -587,7 +783,7 @@ impl Code {
     /// receiver (`x.push(v)` writes `x` exactly as `x = …` does) —
     /// the write side of `local_uses`' split.
     fn write_roots(range: List<ExprId>) -> List<ExprId> {
-        let assigns = assign_roots_at(self.of.view, self.at)
+        let assigns = assign_roots_at(self.analysed().view, self.at)
         let calls = flatten([some_list(self.method_write_root(e)) for e in range])
         let seated = flatten([self.seat_write_roots(e) for e in range])
         assigns.concat(calls).concat(seated)
@@ -621,24 +817,33 @@ impl Code {
     }
 
     fn named_call_roots(e: ExprId, args: List<ExprId>) -> List<ExprId> {
-        match bound_decl_of(self.of.names, e) {
+        match bound_decl_of(self.analysed().names, e) {
             callee? -> self.marked_arg_roots(callee, args, 0)
             null -> []
         }
     }
 
     fn method_call_roots(subject: ExprId, name: string, args: List<ExprId>) -> List<ExprId> {
-        let target? = declaring_decl(self.of.view.types.shape_of(self.of.facts.type_at(subject))) else {
+        let target? = declaring_decl(
+            self.analysed().view.types.shape_of(self.analysed().facts.type_at(subject)),
+        ) else {
             return self.static_call_roots(subject, name, args)
         }
         let m? = self
-            .of
+            .analysed()
             .view
             .decls
             .methods_of(target)
-            .find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else {
+            .find((d: DeclId) -> self.analysed().view.decls.decl(d).name == name) else {
             return self
-                .valued_call_roots(self.of.view.decls.field_type_named(self.of.facts.type_at(subject), name), args)
+                .valued_call_roots(
+                    self
+                        .analysed()
+                        .view
+                        .decls
+                        .field_type_named(self.analysed().facts.type_at(subject), name),
+                    args,
+                )
         }
         // seat 0 is the receiver; a method's own arguments start at 1.
         self.marked_arg_roots(m, args, 1)
@@ -648,15 +853,15 @@ impl Code {
     /// has no receiver seat, so its arguments start at seat 0, and each
     /// one placed at a `mut` seat is written back all the same.
     fn static_call_roots(subject: ExprId, name: string, args: List<ExprId>) -> List<ExprId> {
-        let owner? = bound_decl_of(self.of.names, subject) else { return [] }
+        let owner? = bound_decl_of(self.analysed().names, subject) else { return [] }
         let m? = self
-            .of
+            .analysed()
             .view
             .decls
             .methods_of(owner)
             .find(
-                (d: DeclId) -> self.of.view.decls.decl(d).name == name &&
-                    self.of.view.decls.is_static_of(d),
+                (d: DeclId) -> self.analysed().view.decls.decl(d).name == name &&
+                    self.analysed().view.decls.is_static_of(d),
             ) else {
             return []
         }
@@ -667,7 +872,7 @@ impl Code {
     /// say, exactly as a declared callee's seats do.
     fn valued_call_roots(callee: TypeId?, args: List<ExprId>) -> List<ExprId> {
         let t? = callee else { return [] }
-        match self.of.view.types.shape_of(t) {
+        match self.analysed().view.types.shape_of(t) {
             .Fn(_, marks, _) -> flatten(
                 [some_list(self.of.view.store.place_root(a)) for j, a in args if mark_at(marks, j).mutable || mark_at(marks, j).state],
             ),
@@ -679,14 +884,14 @@ impl Code {
     /// picks — `store.seated_args`), each kept only when `callee`'s
     /// own seat at that position is declared `mut`.
     fn marked_arg_roots(callee: DeclId, args: List<ExprId>, base: int) -> List<ExprId> {
-        let seats = self.of.view.decls.facts_of(callee)?.seats ?? []
+        let seats = self.analysed().view.decls.facts_of(callee)?.seats ?? []
         flatten(
             [some_list(self.marked_root(callee, base, j, a)) for j, a in self.of.view.store.seated_args(args, seats)],
         )
     }
 
     fn marked_root(callee: DeclId, base: int, j: int, a: ExprId) -> ExprId? {
-        let m = self.of.view.decls.seat_mark(callee, base + j)
+        let m = self.analysed().view.decls.seat_mark(callee, base + j)
         if !m.mutable && !m.state { return null }
         self.of.view.store.place_root(a)
     }
@@ -699,7 +904,7 @@ impl Code {
     /// question, and a receiver `declaring_decl` names no type for
     /// (`unproven_method_writes`).
     fn method_writes(subject: ExprId, name: string) -> bool {
-        let sh = self.of.view.types.seen_shape(self.of.facts.type_at(subject))
+        let sh = self.analysed().view.types.seen_shape(self.analysed().facts.type_at(subject))
         match declaring_decl(sh) {
             d? -> self.user_method_writes(d, name)
             null -> self.unproven_method_writes(sh, name)
@@ -724,25 +929,25 @@ impl Code {
         match sh {
             .Dyn(decl, _) -> self.trait_method_writes(decl, name),
             .Var(_, _, _) -> true,
-            rest -> builtin_method_writes(self.of.view.lang.methods, sh, name),
+            rest -> builtin_method_writes(self.analysed().view.lang.methods, sh, name),
         }
     }
 
     fn trait_method_writes(tdecl: DeclId, name: string) -> bool {
-        let m? = self.of.view.decls.trait_member(tdecl, name) else { return false }
-        self.of.view.decls.declares_writing(m)
+        let m? = self.analysed().view.decls.trait_member(tdecl, name) else { return false }
+        self.analysed().view.decls.declares_writing(m)
     }
 
     fn user_method_writes(target: DeclId, name: string) -> bool {
         let m? = self
-            .of
+            .analysed()
             .view
             .decls
             .methods_of(target)
-            .find((d: DeclId) -> self.of.view.decls.decl(d).name == name) else {
+            .find((d: DeclId) -> self.analysed().view.decls.decl(d).name == name) else {
             return false
         }
-        self.of.view.decls.writes_receiver(m)
+        self.analysed().view.decls.writes_receiver(m)
     }
 
     /// Every imported NAME this `use` line names that answers no use
@@ -754,19 +959,26 @@ impl Code {
     /// unsure is never unused. A public re-export is used by being
     /// part of the module's surface, even without a local caller.
     fn unused_imports() -> List<string> {
-        [self.of.view.decls.decl(d).name for d in self.unused_import_decls()]
+        match self.of.facts {
+            .Analysed(a) -> [a.view.decls.decl(d).name for d in self.unused_import_decls()],
+            .Typed(t) -> match self.at {
+                .Stmt(id) -> t.unused.find(same_stmt(it.stmt, id))?.names ?? [],
+                .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+            },
+        }
     }
 
     /// `unused_imports`' own targets, DeclId for name — `Fix.Delete`'s
     /// payload for `modules.unused_import`: the DECLARATION each
     /// unused name imports, never its text.
     fn unused_import_decls() -> List<DeclId> {
-        if self.of.view.decls.refs_are_incomplete() { return [] }
+        let a? = self.of.facts.tables() else { return [] }
+        if a.view.decls.refs_are_incomplete() { return [] }
         match self.at {
             .Stmt(id) -> {
                 if self.of.view.store.is_exported(id) { return [] }
-                [r.decl for r in self.import_rows_at(id) if !(self.of.view.decls.facts_of(r.decl)?.instance ?? false) &&
-                    self.of.view.decls.used(r.decl).is_empty()]
+                [r.decl for r in self.import_rows_at(id) if !(self.analysed().view.decls.facts_of(r.decl)?.instance ?? false) &&
+                    self.analysed().view.decls.used(r.decl).is_empty()]
             },
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
@@ -774,7 +986,7 @@ impl Code {
 
     fn import_rows_at(id: StmtId) -> List<Ref> {
         if self.of.view.store.use_parts(id) == null { return [] }
-        [r for r in self.of.view.decls.refs_in_file(self.of.view.file) if r.kind is .Import && matches_stmt(r.at, id)]
+        [r for r in self.analysed().view.decls.refs_in_file(self.analysed().view.file) if r.kind is .Import && matches_stmt(r.at, id)]
     }
 
     /// Every parameter this FN DECLARATION's own body never reads nor
@@ -784,11 +996,25 @@ impl Code {
     /// owns the seat count, a `nothing()` body cannot drop one), and
     /// for a name starting `_` (unread by contract, I23).
     fn dead_params() -> List<string> {
-        let d? = self.declaring() else { return [] }
-        if self.of.view.decls.decl(d).root == null { return [] }
-        if self.of.view.decls.contract_bound(d) { return [] }
+        if !self.free_to_drop_seats() { return [] }
         let ps? = self.fn_params() else { return [] }
         flatten([some_list(dead_param_name(p)) for p in ps])
+    }
+
+    /// Whether this fn declaration's seats are its own to drop: it has a body, and no contract owns
+    /// its seat count — neither a `trait` signature nor an `impl Trait for` method. On the program
+    /// layer a fn no body typed here is the owner of says nothing.
+    fn free_to_drop_seats() -> bool {
+        match self.of.facts {
+            .Analysed(a) -> {
+                let d? = self.declaring() else { return false }
+                a.view.decls.decl(d).root != null && !a.view.decls.contract_bound(d)
+            },
+            .Typed(t) -> match self.at {
+                .Stmt(id) -> t.bodies.any(same_stmt(it.stmt, id)) && !contract_held(self.of.view.store, id),
+                .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+            },
+        }
     }
 
     /// Whether this node is a `mut` LOCAL its own enclosing
@@ -805,6 +1031,7 @@ impl Code {
                 // a MODULE-LEVEL state is a declaration, and other
                 // bodies write it: its own range says nothing
                 .MutLet(_, _, _) -> !self.of.view.store.is_module_state(id) &&
+                    self.uses_known() &&
                     self.writes().is_empty() &&
                     !self.reachable_by_hole(),
                 rest -> false,
@@ -817,9 +1044,12 @@ impl Code {
     /// a template placeholder standing for code spliced in only at
     /// expansion, never parsed here.
     fn reachable_by_hole() -> bool {
-        self
-            .local_range()
-            .any((e: ExprId) -> hole_name(self.of.view.store.ident_name(e) ?? "") != null)
+        let store = self.of.view.store
+        let range = match self.of.facts {
+            .Analysed(_) -> self.local_range(),
+            .Typed(_) -> store.expr_ids(),
+        }
+        range.any((e: ExprId) -> hole_name(store.ident_name(e) ?? "") != null)
     }
 }
 
@@ -830,17 +1060,24 @@ impl ArmInfo {
     /// the order typing keys each bind's type by.
     fn binds() -> List<ArmBind> {
         let p? = self.pats.first() else { return [] }
-        match p.at {
-            .Pat(id) -> [self.bound(j, b.name) for j, b in binders(p.of.view.store, p.of.names, id)],
-            _ -> [],
+        let id? = pat_of(p.at) else { return [] }
+        match p.of.facts {
+            .Analysed(a) -> [self.bound(a, j, b.name) for j, b in binders(p.of.view.store, a.names, id)],
+            .Typed(t) -> {
+                let names? = t.names_around(p.of.view.store, p.at) else { return [] }
+                let under = pats_under(p.of.view.store, At.Pat(id))
+                [ArmBind { name: b.name, ty: signed_rule_type(b.ty) } for b in names.binds if !b.compared && under.contains(pat_index(b.site))]
+            },
         }
     }
 
-    fn bound(j: int, name: string) -> ArmBind {
-        let of = self.value.of
+    fn bound(a: Analysed, j: int, name: string) -> ArmBind {
         ArmBind {
             name: name,
-            ty: match self.value.at { .Expr(v) -> opt_ty(of, of.facts.pattern_type(v, j)), _ -> null },
+            ty: match self.value.at {
+                .Expr(v) -> interned_rule_type(opt_ty(a, a.facts.pattern_type(v, j)), a.view.decls),
+                _ -> null,
+            },
         }
     }
 }
@@ -869,6 +1106,42 @@ fn sibling_span(mine: Span?, other: Span?) -> bool {
 
 /// `e`'s own FORCE subject — the value under `!` — null for every
 /// other expression shape.
+/// Whether the body of the fn `f` declares holds the statement `s`.
+fn fn_holds(store: SyntaxArena, f: StmtId, s: StmtId) -> bool {
+    let parts? = store.fn_parts(f) else { return false }
+    holds_stmt(store, At.Expr(parts.body), s)
+}
+
+/// Whether the statement `s` stands at or under `at`.
+fn holds_stmt(store: SyntaxArena, at: At, s: StmtId) -> bool {
+    match at { .Stmt(own) -> same_stmt(own, s), rest -> false } ||
+        store.kids_at(at).any((k) -> holds_stmt(store, k, s))
+}
+
+/// The index of every pattern at and under `at`.
+fn pats_under(store: SyntaxArena, at: At) -> List<int> {
+    let own = match at { .Pat(p) -> [p.index], rest -> [] }
+    own.concat(flatten([pats_under(store, k) for k in store.kids_at(at)]))
+}
+
+/// The pattern `at` is; absent for any other node.
+fn pat_of(at: At) -> PatId? { match at { .Pat(p) -> p, rest -> null } }
+
+/// The pattern a binding site is, -1 for any other.
+fn pat_index(site: BindSite) -> int { match site { .Pat(i) -> i, rest -> 0 - 1 } }
+
+/// Whether the fn `id` declares is a contract's: a `trait`'s signature, or a method of an `impl`
+/// that names the trait it implements.
+fn contract_held(store: SyntaxArena, id: StmtId) -> bool { store.stmt_ids().any(contract_holds(store, it, id)) }
+
+/// Whether the statement `s` is a `trait` whose signatures hold `id`, or an `impl Trait for` whose
+/// methods do.
+fn contract_holds(store: SyntaxArena, s: StmtId, id: StmtId) -> bool {
+    let signatures = store.trait_parts(s)?.fns ?? []
+    let methods = if store.impl_parts(s)?.of != null { store.impl_parts(s)!.fns } else { [] }
+    signatures.concat(methods).any(same_stmt(it, id))
+}
+
 fn force_subject(store: SyntaxArena, e: ExprId) -> ExprId? {
     match store.expr(e) { .Force(value) -> value, _ -> null }
 }
@@ -950,9 +1223,7 @@ fn mut_ty_optional(ty: TypeRef?) -> bool {
 /// A HELD `Code`'s own text, spliced as an expression — parenthesised
 /// when its top node is not atomic, so `${x}` filling `${x} * 2`
 /// never lets an outer operator read past what `x` bound.
-export fn spliced_text(c: Code) -> string {
-    if c.atomic() { c.text() } else { "(${c.text()})" }
-}
+export fn spliced_text(c: Code) -> string { spliced_syntax(c.syntax()) }
 
 /// A TYPE in hand: the registry it was interned into, and the id —
 /// every projection reads the registry alone.
@@ -1096,21 +1367,119 @@ fn filed_assign_roots(view: FileView) -> Map<string, List<ExprId>> {
 
 // ── pure(): a registry over Expr, folded through kids_at ──
 
-fn pure_at(of: Analysed, id: ExprId) -> bool {
+fn pure_at(of: RuleFile, id: ExprId) -> bool {
     if !could_be_pure(of, id) { return false }
     of.view.store.kids_at(At.Expr(id)).all(pure_of(of, it))
 }
 
-fn pure_of(of: Analysed, at: At) -> bool {
+fn pure_of(of: RuleFile, at: At) -> bool {
     match at {
         .Expr(id) -> pure_at(of, id),
         .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
     }
 }
 
+/// Whether the declaration enclosing `at` in an analysed file wears `@std/meta`'s `@bracket(name)`,
+/// its annotations read where they were written (`annotation_home`).
+fn analysed_bracketed(a: Analysed, at: At, name: string) -> bool {
+    let d? = enclosing_decl(a.view, at) else { return false }
+    let decls = a.view.decls
+    let file = decls.annotation_home(d)
+    decls
+        .annotations_of(d)
+        .any(
+            (m: AnnotationFact) -> m.args.length == 1 &&
+                m.args[0].text == name &&
+                decls.is_meta_annotation(m, file, "bracket"),
+        )
+}
+
+/// The innermost fn of `store` whose body holds `at`; absent for a node no fn's body holds.
+fn innermost_fn(store: SyntaxArena, at: At) -> StmtId? {
+    let span? = store.span_at(at) else { return null }
+    let holding = [s for s in store.stmt_ids() if fn_body_holds(store, s, span)]
+    holding
+        .fold(
+            null,
+            (best: StmtId?, s: StmtId) -> if best == null ||
+                body_width(store, s) < body_width(store, best!) { s } else { best },
+        )
+}
+
+/// Whether the body of the fn `s` declares stands around `span`.
+fn fn_body_holds(store: SyntaxArena, s: StmtId, span: Span) -> bool {
+    let parts? = store.fn_parts(s) else { return false }
+    let body? = store.expr_span(parts.body) else { return false }
+    body.lo <= span.lo && span.hi <= body.hi
+}
+
+/// How wide the body of the fn `s` declares is.
+fn body_width(store: SyntaxArena, s: StmtId) -> int {
+    let body = store.expr_span(store.fn_parts(s)!.body)!
+    body.hi - body.lo
+}
+
+/// The trait member the method `m` of an analysed file overrides, as its body: the method's own
+/// impl names a trait, and that trait declares a member of its name carrying a body
+/// (`Decls.default_member`, the dispatch fallback for a type that never wrote one).
+fn analysed_default_of(a: Analysed, m: StmtId) -> HeldBody? {
+    let decls = a.view.decls
+    let d? = decls.decl_of(a.view.file, m) else { return null }
+    let x = decls.decl(d)
+    if !(x.kind is .Method) { return null }
+    let parent? = x.parent else { return null }
+    let pd = decls.decl(parent)
+    let ip? = decls.store_of(pd.file).impl_parts(pd.stmt) else { return null }
+    let trait_name? = ip.of else { return null }
+    let tdecl? = decls.impl_trait(parent) ?? decls.trait_named(a.names, trait_name) else { return null }
+    let dm? = decls.default_member(tdecl, x.name) else { return null }
+    let member = decls.decl(dm)
+    let body? = member.root else { return null }
+    HeldBody { store: decls.store_of(member.file), body: body }
+}
+
+/// The body of the fn `s` declares, in `store`; absent for a statement that declares none.
+fn fn_body_held(store: SyntaxArena, s: StmtId) -> HeldBody? {
+    let parts? = store.fn_parts(s) else { return null }
+    HeldBody { store: store, body: parts.body }
+}
+
+/// The type at `e` in `types`, absent where none was found.
+fn signed_at(types: List<SignedType?>, e: ExprId) -> SignedType? { if e.index < types.length { types[e.index] } else { null } }
+
+/// The language's own type `t` is, held directly: absent for a nullable, a dynamic or a declared type.
+fn held_own(t: SignedType?) -> OwnType? {
+    let held? = t else { return null }
+    if held.nullable() || held.dynamic { null } else { held.own() }
+}
+
+/// The shape the language's own type `o` has, as a built-in row's `takes` reads it: its
+/// constructor alone, its parts unread.
+fn own_shape(o: OwnType) -> Type {
+    match o {
+        .Int -> Type.Int,
+        .Float -> Type.Float,
+        .Bool -> Type.Bool,
+        .Str -> Type.Str,
+        .Ptr -> Type.Ptr,
+        .Void -> Type.Void,
+        .Bytes -> Type.Bytes,
+        .List -> Type.List(UNREAD_PART),
+        .Map -> Type.Map(UNREAD_PART, UNREAD_PART),
+        .Cell -> Type.Cell(UNREAD_PART),
+        .Range -> Type.Range,
+        .Result -> Type.Res(UNREAD_PART, UNREAD_PART),
+        .Task -> Type.Task(UNREAD_PART),
+        .Tasks -> Type.Tasks,
+    }
+}
+
+/// The part of a shape `own_shape` leaves unread.
+const UNREAD_PART: TypeId = TypeId { index: 0 }
+
 /// Whether this node's OWN kind ever admits purity — the kid fold in
 /// `pure_at` still has the final word for every arm answering true.
-fn could_be_pure(of: Analysed, id: ExprId) -> bool {
+fn could_be_pure(of: RuleFile, id: ExprId) -> bool {
     match of.view.store.expr(id).purity() {
         .Never -> false,
         .Always -> true,
@@ -1122,9 +1491,24 @@ fn could_be_pure(of: Analysed, id: ExprId) -> bool {
 /// built-in vocabulary (List/Map/Cell/Bytes/Str); a user-declared
 /// method carries no purity fact yet, so it stays impure like any
 /// other call.
-fn method_could_be_pure(of: Analysed, id: ExprId) -> bool {
+fn method_could_be_pure(of: RuleFile, id: ExprId) -> bool {
     let mp? = of.view.store.method_parts(id) else { return false }
-    let sh = of.view.types.seen_shape(of.facts.type_at(mp.subject))
-    let row? = method_row(of.view.lang.methods, mp.name, sh) else { return false }
-    match row.effect { .Read or .Lends -> true, .Write or .Shared -> false }
+    let effect? = of.facts.method_effect(mp.subject, mp.name) else { return false }
+    match effect { .Read or .Lends -> true, .Write or .Shared -> false }
 }
+
+/// Whether `a` is a query mark naming `named` as a fn over the query's own seats.
+/// Each fn the declarations of an analysed file name in a mark the engine calls with a query's
+/// seats.
+fn analysed_seat_fns(a: Analysed) -> List<string> {
+    let decls = a.view.decls
+    [arg.text for q in decls.decls_of_file(a.view.file) for m in decls.annotations_of(q) if seat_fn_marks.contains(m.name) for arg in m.args]
+}
+
+/// Each fn the statements `stmts` of `store` name in a mark the engine calls with a query's seats.
+export fn seat_fns_of(store: SyntaxArena, stmts: List<StmtId>) -> List<string> {
+    [arg_lit(store, e).text for s in stmts for m in store.annotations_of(s) if seat_fn_marks.contains(m.name) for e in m.args]
+}
+
+/// The query marks that name a fn the engine calls with the query's own seats.
+const seat_fn_marks: List<string> = ["cycled_by", "scoped_by"]

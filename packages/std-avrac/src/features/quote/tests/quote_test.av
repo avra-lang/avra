@@ -115,7 +115,28 @@ fn canonical(source: string) -> string {
     render_source(parsed.store, parsed.stmts)
 }
 
+/// A provider whose derive hands back a template naming a file no program reads.
+fn nowhere_provider() -> string {
+    "use @std.meta.{Type, Directive, template, as_decls}\n" +
+        "export trait Nowhere {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: as_decls(template(\"@x/gone:src/gone.av\", 0, [\"fn gone() {}\"], [])) }]\n" +
+        "    }\n" +
+        "}\n"
+}
+
 spec "features/quote — a quote is `Code`" {
+    given "a template naming a file no program reads" {
+        then "speaks a defect naming the template, never copies nothing in silence" {
+            refused_in(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{Nowhere}\n@derive(Nowhere)\ntype P = { x: int }\n",
+                    nowhere_provider(),
+                ),
+                "the template at offset 0 of `@x/gone:src/gone.av` names a file this program does not read",
+            )
+        }
+    }
     given "the hole law" {
         then "text, a scalar, a named meta value and `Code` all splice" {
             clean(

@@ -2,8 +2,8 @@
 //! every pass's facts, every diagnostic, and every question —
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
-use core.{ExprId, StmtId, DeclId, TypeId, At, joined, FileId, Binding}
-use diagnostics.{Diag, SourceFile, render_among, has_errors}
+use core.{ExprId, StmtId, DeclId, TypeId, At, joined, FileId, Binding, fp, fp_list}
+use diagnostics.{Diag, SourceFile, rendered_among, has_errors}
 use features.{
     Decls,
     NameFacts,
@@ -11,6 +11,7 @@ use features.{
     FileView,
     Code,
     Analysed,
+    analysed_file,
     no_owner_spans,
     no_assign_roots,
     SiteLowering,
@@ -24,6 +25,7 @@ use features.{
     lowering_plan_of,
 }
 use compiler.lower.{Lowered}
+use compiler.families.{Family}
 use @std.relation.engine.{list_cell}
 use @std.text.{chars}
 
@@ -42,6 +44,20 @@ export type Analysis = {
 }
 
 impl Analysis {
+    /// What an analysis carries beyond its file's tree: its names' and its fold's digests, and
+    /// every diagnostic in pipeline order. `view` and `ws` are the workspace's own state.
+    fn fingerprint() -> int {
+        let f = self.view.file
+        fp(
+            1,
+            [
+                dep_hash_fp(self.ws.db.value_hash_of(key(Family.Resolved, f.index))),
+                dep_hash_fp(self.ws.db.value_hash_of(key(Family.Folded, f.index))),
+                fp_list([d.fingerprint() for d in self.diagnostics]),
+            ],
+        )
+    }
+
     /// The program this file belongs to.
     fn program() -> Program {
         self.ws.standing()
@@ -79,7 +95,7 @@ impl Analysis {
     /// Any diagnostics rendered for the terminal — analysis's or a
     /// later stage's, one look everywhere.
     fn rendered(ds: List<Diag>) -> string {
-        joined([render_among(d, [self.view.source]) for d in ds], "\n\n")
+        rendered_among(ds, [self.view.source])
     }
 
     /// What an expression's name resolves to, when it does — the
@@ -132,7 +148,8 @@ impl Analysis {
     fn place_name(p: StatePlace) -> string {
         match p {
             .Global(d) -> "`${self.view.decls.decl(d).name}`",
-            .Local(_, s) -> "`${self.view.store.let_name(s) ?? "state"}`",
+            .Local(_, s) or .Own(s) -> "`${self.view.store.let_name(s) ?? "state"}`",
+            .Kept(_, n) -> "`${n}`",
             .Unknown -> "an unnamed place",
         }
     }
@@ -146,7 +163,10 @@ impl Analysis {
     /// this analysis's three shared tables, plus the one node in
     /// hand.
     fn code_at(at: At) -> Code {
-        Code { of: Analysed { view: self.view, names: self.names, facts: self.facts }, at: at }
+        Code {
+            of: analysed_file(Analysed { view: self.view, names: self.names, facts: self.facts }),
+            at: at,
+        }
     }
 
     /// The program's printed answer, or the report/refusal that

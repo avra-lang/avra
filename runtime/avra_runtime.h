@@ -73,6 +73,8 @@ const char* avra_guard_words(void);
 void avra_array_reserve(void* arr, int64_t spare);
 void avra_array_push_owned(void* arr, void* v);
 int64_t avra_mem_live(void);
+// Every mortal byte not held by a `once` cache: what the program still owes.
+int64_t avra_mem_owed(void);
 
 // THE CLOCK, ONE FOR THE PROCESS: every reader asks here. FLOWING it is
 // the monotonic clock plus a skew; FROZEN it is one reading. VIRTUAL, it
@@ -115,6 +117,10 @@ int64_t avra_clock_jumped(int64_t at);
 // waited on the world has waited — its count of clock reads begins
 // again.
 void avra_clock_hold(int64_t by);
+// The memory pool's slots this process no longer fills, given back.
+void avra_mem_settle(void);
+void avra_descriptors_forgotten(void);
+void avra_pool_forked(void);
 // What tasks abandoned while holding the world held, let go: only that
 // share, never the holds a live task stands in.
 void avra_clock_holds_let_go(int64_t n);

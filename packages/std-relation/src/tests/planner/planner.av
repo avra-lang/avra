@@ -23,6 +23,10 @@ type Edge = { @local @index callee: Node, n: int }
 @relation
 type Coded = { @index code: Code, n: int }
 
+/// An int column, compared to a head's own index.
+@relation
+type Ranked = { @index rank: int, n: int }
+
 @relation
 type Item = { @index tag: string, @index shade: Shade, @index labels: List<string>, n: int, note: string? }
 
@@ -165,4 +169,57 @@ fn joins() -> string {
     "${shape(m)} ${hits.length} ${pairs(hits) == pairs(scan)}"
 }
 
-"${cases()} | ${empty_calls()} | ${coded()} | ${edges()} | ${joins()}"
+/// A field compared to the row's own field: no value fixed for the walk, so the head scans whole.
+fn self_compared() -> string {
+    let db = filled()
+    let m = opened()
+    let all = [i for i in Item.all(db) if i.tag == i.tag]
+    "${narrowed(m)} ${all.length}"
+}
+
+/// A field compared to the head's own index: a binder of the scanned head, so it scans whole.
+fn own_index() -> string {
+    let db = logged()
+    let _ = Ranked.insert(db, rank: 0, n: 1)
+    let _ = Ranked.insert(db, rank: 1, n: 2)
+    let _ = Ranked.insert(db, rank: 5, n: 3)
+    let m = opened()
+    let hits = [r.n for at, r in Ranked.all(db) if r.rank == at]
+    "${narrowed(m)} ${hits.length}"
+}
+
+/// Two filters a lookup could answer: the first whose value can't be absent plans the head.
+fn two_asks() -> string {
+    let db = filled()
+    let maybe: string? = "a"
+    let m = opened()
+    let hits = [i.n for i in Item.all(db) if i.tag == maybe && i.shade == Shade.Green]
+    "${narrowed(m)} ${ns_of(hits)}"
+}
+
+fn ns_of(xs: List<int>) -> string { ["${x}" for x in xs].join(",") }
+
+/// A head over a static no `@plans_all` marks: never swapped, so its own filter still decides.
+fn over_lookup() -> string {
+    let db = filled()
+    let m = opened()
+    let hits = [i for i in Item.tagged_a(db) if i.tag == "b"]
+    "${narrowed(m)} ${hits.length}"
+}
+
+impl Item {
+    /// The rows tagged `a`, through the lookup: a static of the relation that wears no mark.
+    static fn tagged_a(db: Db) -> List<Item> { Item.by_tag(db, "a") }
+}
+
+/// A comprehension inside another's element: the inner head's value reads the outer row, fixed for
+/// the inner walk, so the inner head looks up per outer row.
+fn nested() -> string {
+    let db = filled()
+    let rows = Item.all(db)
+    let m = opened()
+    let counts = [[j.n for j in Item.all(db) if j.tag == i.tag].length for i in rows]
+    "${narrowed(m)} ${ns_of(counts)}"
+}
+
+"${cases()} | ${empty_calls()} | ${coded()} | ${edges()} | ${joins()} | ${self_compared()} | ${own_index()} | ${two_asks()} | ${over_lookup()} | ${nested()}"

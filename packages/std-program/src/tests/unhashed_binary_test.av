@@ -1,0 +1,82 @@
+// A binary a query of which has no code hash: it can't tell its answers from another binary's, so it
+// keeps no frontier, reads none, and never asks a stored question of such a query again.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use answer_record.{question}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use defect.{defect}
+
+/// What `name` answers about `argument`, asked as this binary asks it.
+fn asked(e: QueryEngine, name: string, argument: string) -> string {
+    e
+        .answer_to(question(name, e.definitions.get().get(name)!.code_hash, argument.bytes()))
+        .copied()
+        .text() ?? ""
+}
+
+/// `seen` echoes its argument and stops the process when it's the one `world` poisons; `report` reads
+/// `seen` of the argument `world` names; `seen`'s code hash is `code`.
+fn binary(world: Cell<Map<string, string>>, code: string) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "seen",
+            code_hash: code,
+            is_input: false,
+            compute: (_e, a) -> seen_of(a.text() ?? "", world.get().get("poison") ?? ""),
+        },
+        QueryDefinition {
+            query_name: "report",
+            code_hash: "c1",
+            is_input: false,
+            compute: (e, _a) -> "report ${asked(e, "seen", world.get().get("which") ?? "")}".bytes(),
+        },
+    ]
+}
+
+fn seen_of(text: string, poison: string) -> Bytes {
+    if text == poison { defect("a stored question was asked again") }
+    text.bytes()
+}
+
+fn world_naming(which: string) -> Cell<Map<string, string>> {
+    let w: Map<string, string> = {"which": which}
+    Cell.new(w)
+}
+
+/// One process of `binary` over `store` asking `report`, its frontier kept.
+fn ran(store: StoreInMemory, binary: List<QueryDefinition>) -> QueryEngine {
+    let e = query_engine(store, binary)
+    let _ = asked(e, "report", "")
+    e.frontier_kept()
+    e
+}
+
+spec "an unhashed binary — trusts nothing it kept" {
+    given "a binary whose query has no code hash" {
+        then "it keeps no frontier and finds none" {
+            let store = store_in_memory()
+            let world = world_naming("ok")
+            let _ = ran(store, binary(world, ""))
+            let later = ran(store, binary(world, ""))
+            !later.frontier_found() && later.computed_queries().contains("seen")
+        }
+    }
+    given "a kept record read through such a query, whose stored argument would now stop the process" {
+        then "the record doesn't stand, and nothing stored is asked again" {
+            let store = store_in_memory()
+            let world = world_naming("old")
+            let _ = ran(store, binary(world, ""))
+            world.set({"which": "fine", "poison": "old"})
+            let later = ran(store, binary(world, ""))
+            asked(later, "report", "") == "report fine"
+        }
+    }
+    given "the same binary with the code hash known" {
+        then "its frontier stands, and an unchanged world works out nothing" {
+            let store = store_in_memory()
+            let world = world_naming("ok")
+            let _ = ran(store, binary(world, "c1"))
+            let later = ran(store, binary(world, "c1"))
+            later.frontier_found() && later.worked_count() == 0
+        }
+    }
+}

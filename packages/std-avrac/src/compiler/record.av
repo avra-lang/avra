@@ -13,20 +13,21 @@
 use @std.text.{parse_int}
 use @std.relation.engine.{list_cell}
 use core.{
+    Record as RecordForm,
+    ChildSlot,
+    Event as ComponentEvent,
     CollectKind,
     CollectScope,
     Plain,
     wire_fields,
     some_list,
-    hex,
-    unhex,
     digest_of,
-    digest_of_octets,
     blake_key,
     joined,
     sorted_texts,
     distinct,
     flatten,
+    grouped_by,
     same_decl,
     module_path,
     ModulePath,
@@ -38,6 +39,7 @@ use core.{
     SeatMark,
     Span,
 }
+use @std.text.{hex, unhex}
 use features.{
     implements_kind,
     admits_package,
@@ -49,67 +51,23 @@ use features.{
     NamedLit,
     LitKind,
     CancelReach,
+    tree_saved,
+    tree_unsaved,
 }
 use compiler.lower.{Body, program_symbol, FieldPlan}
-use compiler.store.{Store, Stored, Producer, node_key, producer_of}
-use compiler.host.{Host}
-use @std.meta.{code_hash}
+use compiler.store.{Store, Stored, node_key}
 use @std.path.{relative_path}
 
 impl Workspace {
     /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
     /// the entry file and its neighbours — and an empty name has no shard to live in and no key
     /// to be asked for, so it is spelled here rather than special-cased at every reader.
-    /// THE PRODUCER IS IN THE STAMP, not the key: the record's own FORMAT — which facts a
-    /// declaration carries, how a shape spells its payload — is the law of the code that
-    /// wrote and reads it, and the store files a record under that code's hash
-    /// (`sig_producer`), so a compiler whose producer or codec differs never reads it.
     fn record_key(m: ModulePath) -> string {
         node_key(Stored.Sig, [self.root, m.text()])
     }
 
     /// Where this compiler keeps record bodies, by module and interface.
     fn record_bodies() -> RecordBodies { RecordBodies { root: self.root, db: self.db } }
-
-    /// WHO MAY READ A MODULE'S RECORD: the code that produces it, the C that code runs,
-    /// the code that writes the record and the code that reads it back, each by its hash,
-    /// under the store's toolchain. A part the compiler cannot hash makes the rows its own.
-    /// Settled once a workspace, as its compiler's print is.
-    fn sig_producer() -> Producer { self.keys.sig_producer.get() ?? self.settled_sig_producer() }
-
-    /// The producer, made and kept for this workspace.
-    fn settled_sig_producer() -> Producer {
-        let made = self.made_sig_producer()
-        self.keys.sig_producer.set(made)
-        made
-    }
-
-    /// The producer from its parts' hashes.
-    fn made_sig_producer() -> Producer {
-        producer_of(
-            [
-                code_hash(held_sig_verified),
-                code_hash(keep_interfaces),
-                code_hash(record_cached),
-                code_hash(producers_of),
-                code_hash(producers_text),
-                code_hash(producers_read),
-                code_hash(iface_of),
-                code_hash(doc_of_wire),
-                runtime_bodies(self.host),
-            ],
-        )
-    }
-}
-
-/// THE C A RECORD'S PRODUCER RUNS: the runtime archive a program links, as one digest
-/// over its bytes — beside the compiler in a checkout, and under `lib/avra` in an install.
-/// A C body changes what an answer says without moving the row that names it, so the
-/// producer's stamp folds the bytes themselves. Absent when the host cannot read them,
-/// which keeps the rows their writer's own.
-export fn runtime_bodies(host: Host) -> string? {
-    let octets? = host.runtime_archive() else { return null }
-    digest_of_octets(octets)
 }
 
 /// A MODULE'S RECORD IS KEPT BY ITS INTERFACE: the row under `record_key` holds
@@ -121,8 +79,12 @@ export type RecordBodies = { root: string, db: Db }
 impl RecordBodies {
     fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.root, module, iface]) }
 
-    /// The body kept for a module under one interface, when one was.
-    fn body(store: Store, module: string, iface: string) -> string? { self.db.sig(store, self.key(module, iface)) }
+    /// The record kept for a module under one interface, when one was: its kept lines, then
+    /// each file's Items lines (`whole`).
+    fn body(store: Store, module: string, iface: string) -> string? {
+        let headers? = self.db.sig(store, self.key(module, iface)) else { return null }
+        self.whole(store, headers)
+    }
 }
 
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
@@ -215,6 +177,9 @@ fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
     out
 }
 
+/// Whether a declaration line keeps what holding it needs: a const's verdict, or nothing to keep.
+fn const_kept(parts: List<string>) -> bool { parts[0] != "const" || parts.length > 14 && parts[14] != "" }
+
 /// One file's declaration lines.
 fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
     if at == null { [] } else { fields.slice(at!.lo, at!.hi) }
@@ -293,7 +258,7 @@ fn shape_of(word: string) -> Shape? {
 /// (interface.av, the one writer). `payload` is what is left past the facts
 /// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
 /// marks, written bits, bounds, whether it may reach a cancel point), read
-/// through `Row`'s own verbs below.
+/// through `RowShape`'s verbs below.
 type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
 
 /// A declaration row, decoded from its already-split fields — null for a
@@ -324,7 +289,15 @@ fn read_row(parts: List<string>) -> Row? {
     }
 }
 
+/// A declaration's shape: its word and the payload past the facts block — what fills a
+/// declaration's signature, read the same from its record line and from its own row.
+type RowShape = { shape: Shape, payload: List<string> }
+
 impl Row {
+    fn shaped() -> RowShape { RowShape { shape: self.shape, payload: self.payload } }
+}
+
+impl RowShape {
     /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
     /// writes one field, and one with nothing to say writes it empty.
     fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
@@ -338,14 +311,6 @@ impl Row {
     /// `Struct`/`Boxed`'s fields, `Enum`'s arms, `Fn`/`Extern`'s seats — the
     /// shapes whose payload opens with a `;`-joined list.
     fn items() -> List<string> { self.list_at(0) }
-
-    /// `Named`'s underlying type, `Alias`'s, `Const`'s and `Collect`'s type — the shapes whose payload
-    /// opens with one wire (a `Const`'s carries its settled value's
-    /// fingerprint after a `;`, dropped here).
-    fn of_wire() -> string { self.field(0).split(";").first() ?? "" }
-
-    /// `Fn`/`Extern`'s return type wire.
-    fn ret_wire() -> string { self.field(1) }
 
     /// `Fn`/`Extern`'s seat marks, one per seat.
     fn marks() -> List<SeatMark> { [mark_of_word(w) for w in self.list_at(2)] }
@@ -490,12 +455,7 @@ fn interface_form(line: string) -> string {
 
 /// A record's declaration lines, by the file each names.
 fn lines_by_file(lines: List<string>) -> Map<string, List<string>> {
-    mut out: Map<string, List<string>> = {}
-    for line in lines {
-        let path = named_file(line)
-        if path != "" { out.set(path, (out.get(path) ?? []).concat([line])) }
-    }
-    out
+    grouped_by([line for line in lines if named_file(line) != ""], named_file)
 }
 
 /// The path a record line names, or "" — the second column, and nothing for a header line.
@@ -521,7 +481,49 @@ export fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? 0 - 1
     let shi = f.span?.hi ?? 0 - 1
     let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${if f.hosted { "1" } else { "0" }};${f.variadic ?? 0 - 1};${f.fingerprint()}"
-    packed([head, doc_wire(f.doc), annotations_wire(f.annotations)])
+    packed(
+        [
+            head,
+            doc_wire(f.doc),
+            annotations_wire(f.annotations),
+            form_wire(f.form),
+            list_field(["${t}" for t in some_list(f.template)]),
+        ],
+    )
+}
+
+/// A component's record form as a `packed` record — empty for none. Every text in it is
+/// a name a declaration wrote, which carries no `~`.
+fn form_wire(r: RecordForm?) -> string {
+    let f? = r else { return "" }
+    packed(
+        [
+            list_field(f.head),
+            packed([packed([s.name, s.of, bit_word(s.gathers)]) for s in f.slots]),
+            bit_word(f.named),
+            bit_word(f.checks),
+            list_field(some_list(f.fn_field)),
+            bit_word(f.fn_optional),
+            packed([packed([e.name, list_field(e.says), bit_word(e.default)]) for e in f.events]),
+            bit_word(f.words),
+        ],
+    )
+}
+
+/// The inverse: none for the empty wire, and none for one that is not eight parts.
+fn form_of_wire(wire: string) -> RecordForm? {
+    let p = unpacked(wire)
+    if p.length != 8 { return null }
+    RecordForm {
+        head: read_list(p[0]),
+        slots: [ChildSlot { name: q[0], of: q[1], gathers: q[2] == "1" } for x in unpacked(p[1]) for q in [unpacked(x)] if q.length == 3],
+        named: p[2] == "1",
+        checks: p[3] == "1",
+        fn_field: read_list(p[4]).first(),
+        fn_optional: p[5] == "1",
+        events: [ComponentEvent { name: q[0], says: read_list(q[1]), default: q[2] == "1" } for x in unpacked(p[6]) for q in [unpacked(x)] if q.length == 3],
+        words: p[7] == "1",
+    }
 }
 
 /// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
@@ -604,7 +606,7 @@ fn annotation_of_wire(wire: string) -> AnnotationFact {
     let slo = if p.length > 2 { wire_number(p[2]) ?? 0 - 1 } else { 0 - 1 }
     let shi = if p.length > 3 { wire_number(p[3]) ?? 0 - 1 } else { 0 - 1 }
     let named = if p.length > 4 { [named_lit_of_wire(x) for x in unpacked(p[4])] } else { [] }
-    AnnotationFact { name: name, args: args, span: span_of(slo, shi), named: named }
+    AnnotationFact { name: name, args: args, span: wire_span(slo, shi), named: named }
 }
 
 fn lit_arg_wire(x: LitArg) -> string { packed([field_text(x.text), lit_kind_word(x.kind)]) }
@@ -635,7 +637,7 @@ fn lit_kind_of(w: string) -> LitKind {
 
 /// A span from its two wire ints — the decoder `facts_unblocked` and
 /// `annotation_of_wire` share, both writing `-1` for the same absence.
-fn span_of(lo: int, hi: int) -> Span? {
+fn wire_span(lo: int, hi: int) -> Span? {
     if lo < 0 { null } else { Span { lo: lo, hi: hi } }
 }
 
@@ -675,7 +677,7 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
         external: p[0] == "1",
         stat: p[1] == "1",
         is_grammar: p[2] == "1",
-        span: span_of(slo, shi),
+        span: wire_span(slo, shi),
         tparams: read_list(p[5]),
         bounds: read_list(p[6]),
         seats: read_list(p[7]),
@@ -691,6 +693,8 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
         variadic: if seat < 0 { null } else { seat },
         doc: doc_of_wire(top[1]),
         annotations: annotations_of_wire(top[2]),
+        form: if top.length > 3 { form_of_wire(top[3]) } else { null },
+        template: if top.length > 4 { parse_int(read_list(top[4]).first() ?? "") } else { null },
     }
     if "${facts.fingerprint()}" != p[18] { return null }
     facts
@@ -704,15 +708,21 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         // a module none of whose files this attempt read has its lines carried forward whole
         if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
         let prior = record_cached(ws, store, m)
+        let forms_were = ws.producers_for(store, m)?.forms
         let made = ws.record_of(store, m)
+        ws.keep_items(store, m, made, prior)
         // a record is keyed by its module's NAME: a write is owed when its words moved
         if made != prior {
             let iface = iface_of(made) ?? ""
-            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
+            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), record_headers(made))
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
             ws.keep_producers(store, m, iface)
-            if seen_part(made) != seen_part(prior) { seen_moved = true }
+            // a plain free fn's form is what a file that spells its name sees of it
+            if seen_part(made) != seen_part(prior) ||
+                ws.producers_for(store, m)?.forms != forms_were {
+                seen_moved = true
+            }
         }
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
@@ -740,147 +750,13 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
     }
 }
 
-// ── REBUILDING ──────────────────────────────────────────────────────
-
-/// THE DECLARATIONS A MODULE'S RECORD DESCRIBES, minted into the workspace as if its file
-/// had been parsed. THE IMPORTS COME FIRST: a shape may name another module's type, and
-/// `by_name` can only answer for a type that exists.
-///
-/// A MINTED DECLARATION HAS NO BODY AND NO STORE, which is safe for the same reason a
-/// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
-/// rows are lies.
-export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want, true)
-}
-
-/// THE SAME WALK, NAMES ONLY: every file registered and every module's impl/trait names indexed,
-/// so a by-name ask can answer — but no interface loaded, no file met, nothing held. What an
-/// on-demand load reads the store for before it decides which modules to load for real.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-export fn bare_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want, false)
-}
-
-/// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
-/// each file met once. A `use` may name ONE FILE of a directory module
-/// (`@std.http.frame`) — its record is the directory's, and every file that record
-/// places is met with it: a module is one namespace, so naming one registers them all.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_named(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    named: List<string>,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
-    let key = ws.record_key(m)
-    let first = ws.records.loaded_records.get().get(key) == null
-    ws.records.loaded_records.put(key, true)
-    // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
-    // a module whose importers are all held is met nowhere else, and a file never
-    // met is neither parsed nor linked.
-    let pr? = ws.producers_for(store, m) else {
-        ws.met_all(named)
-        return
+/// `kind_words` read back; null for words no kind writes.
+fn kind_of_words(word: string, name: string) -> CollectKind? {
+    match word {
+        "mark" -> CollectKind.Annotated(name),
+        "component" -> CollectKind.Component(name),
+        _ -> null,
     }
-    let here = ws.module_files(m)
-    let why = fault_of(pr, here)
-    if why != "" {
-        if first {
-            ws
-                .hold
-                .read_files
-                .set(
-                    ws
-                        .hold
-                        .read_files
-                        .get()
-                        .concat([ReadFile { path: f, why: Reads.Undecodable(why) } for f in here]),
-                )
-        }
-        ws.met_all(named)
-        return
-    }
-    if first { load_imports(ws, store, pr, entry, want, meet) }
-    // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
-    // this same module finds it.
-    // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
-    // directory registers them all, and a registered file never met is asked no hold —
-    // it parses on every run, whatever moved.
-    for f in named.concat([f for f in here if pr.placed.contains(f) && !named.contains(f)]) {
-        if ws.records.met_files.get().get(f) != null { continue }
-        // ON-DEMAND: a names-only walk registers the file so the program is whole,
-        // and leaves its interface to the module a suspect asks for.
-        if !meet {
-            let _ = ws.registered(f)
-            continue
-        }
-        ws.records.met_files.put(f, true)
-        meet_file(ws, store, m, f, record_places(ws, store, m).get(f), entry, want)
-    }
-    // A NAMES-ONLY WALK REGISTERS THE MODULE'S OTHER FILES TOO: one the record never placed
-    // is one the module gained, and it is read.
-    if !meet { for f in here { if !pr.placed.contains(f) && ws.reads_as_source(f) { let _ = ws.registered(f) } } }
-    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
-    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
-}
-
-/// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
-/// import under the record that keeps it, and where its impls and traits are named.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
-    // every module sees the prelude and none imports it
-    ws.ensure_package(prelude_key)
-    load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
-    for parts in pr.walk {
-        if parts[0] == "import" {
-            // the ROOT module's name is empty, and `split` drops a trailing empty field
-            let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
-            let key = imp.package()
-            if key != null { ws.ensure_package(key!) }
-            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
-        }
-        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
-    }
-    note_producers(ws, pr)
-}
-
-/// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
-/// record — as a read `collect` admits it — so a file nothing imports stands, held,
-/// beside the ones its imports reach. What the collector gathered is held to the set
-/// its record names, judged once the program is analysed (`gathered_moved`).
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(
-    ws: Workspace,
-    store: Store,
-    parts: List<string>,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
-    if parts.length < 3 {
-        ws.defect(gathers_collectorless())
-        return
-    }
-    let pkg? = ws.packages().find(it.key == parts[1]) else {
-        ws.defect(gathers_unadmitted(parts[1]))
-        return
-    }
-    let line = held_gather(parts, relative_path(ws.root, pkg.src))
-    // an import closure's members are whatever the program's imports reach: no package is loaded for it
-    if line == null || admits_package(line!.gathering.scope) {
-        let files = gathered_files(ws, pkg.src)
-        for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
-    }
-    let held? = line else {
-        // NO LINE STANDS FOR THE COLLECT, so its collector is read: nothing recorded what
-        // it gathers, and a held file has no body to gather with.
-        ws.force_read(parts[2], Reads.GathersUnread)
-        return
-    }
-    if !ws.hold.gathered.get().any(it.collector == held.collector && it.digest == held.digest) { ws.hold.gathered.push(held) }
 }
 
 /// A `gathers` line read back as the collect it holds a file to; null for a line
@@ -904,10 +780,6 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
         digest: parts[7],
     }
 }
-
-/// A package's files a `collect` gathers from: every one that is not a test.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a source root in, the files out.
-fn gathered_files(ws: Workspace, src: string) -> List<string> { [path for path in ws.all_files(src) if !ws.is_test_path(path)] }
 
 /// A `gathers` line: the package, the collecting file, what it gathers by, in what
 /// order, what it reads of each member, the set, its scope and the collect's name.
@@ -966,11 +838,7 @@ fn plan_of_field(field: string) -> FieldPlan? {
 
 /// What a collect gathers by, as a record's two words.
 fn kind_words(kind: CollectKind) -> List<string> {
-    match kind {
-        .Annotated(w) -> ["mark", w],
-        .Component(w) -> ["component", w],
-        .UnknownKind(w) -> ["unknown", w],
-    }
+    match kind { .Annotated(w) -> ["mark", w], .Component(w) -> ["component", w] }
 }
 
 /// The scope a `gathers` line holds its collect to, as its last field.
@@ -988,14 +856,12 @@ fn scope_of_word(word: string) -> CollectScope? {
     match word { "package" -> CollectScope.Package, "closure" -> CollectScope.Closure, _ -> null }
 }
 
-/// `kind_words` read back; null for words no kind writes.
-fn kind_of_words(word: string, name: string) -> CollectKind? {
-    match word {
-        "mark" -> CollectKind.Annotated(name),
-        "component" -> CollectKind.Component(name),
-        "unknown" -> CollectKind.UnknownKind(name),
-        _ -> null,
-    }
+/// Whether a kept `import` line stands for the next record: the file that imports stands in the
+/// module and was held, so its imports are still what its text says.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace, the module's files and a line in.
+fn kept_import(ws: Workspace, files: List<string>, line: string) -> bool {
+    let parts = line.split("\t")
+    parts[0] == "import" && parts.length > 2 && files.contains(parts[2]) && !ws.read_here(parts[2])
 }
 
 /// Whether a kept `gathers` line stands for the next record: its collecting file was held.
@@ -1003,25 +869,6 @@ fn kind_of_words(word: string, name: string) -> CollectKind? {
 fn kept_gathers(ws: Workspace, line: string) -> bool {
     let parts = line.split("\t")
     parts[0] == "gathers" && parts.length > 3 && !ws.read_here(parts[2])
-}
-
-/// ONE FILE OF A RECORDED MODULE, MET: registered, held or not — a file the workspace
-/// never met is neither parsed nor linked — and read where the record's rows no longer
-/// stand in for it. A file it holds is marked by the hold once the whole read set stands.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a file in.
-fn meet_file(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    f: string,
-    at: Placed?,
-    entry: string?,
-    want: Want,
-) {
-    let _ = ws.file_id(f)
-    let is_entry = entry != null && f == entry!
-    let read? = read_why(ws, store, m, f, at, is_entry, want) else { return }
-    ws.force_read(f, read)
 }
 
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
@@ -1037,11 +884,9 @@ export enum Reads {
     Reached
     BodyAsked
     AsksUnread
-    Unruled
     Gathered(string)
     GathersUnread
     CodesUnread
-    Adrift
     Remembered(string)
 }
 
@@ -1061,38 +906,12 @@ impl Reads {
             .Reached -> "a program the evaluator runs reaches it",
             .BodyAsked -> "a compile-time run called one of its bodies",
             .AsksUnread -> "what its bodies ask could not be read back",
-            .Unruled -> "a check wants its rule findings, and none were kept",
             .Gathered(by) -> "what its collect gathers from ${by} moved",
             .GathersUnread -> "its record's `gathers` line cannot be read",
             .CodesUnread -> "what its code is could not be read back",
-            .Adrift -> "its key moved when the records were written",
             .Remembered(said) -> said,
         }
     }
-}
-
-/// Why a file a record knows is read — null when its hold may be asked. The entry
-/// is read: its law over every other file is spoken from its parse.
-// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
-fn read_why(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    f: string,
-    at: Placed?,
-    is_entry: bool,
-    want: Want,
-) -> Reads? {
-    if is_entry { return Reads.Entry }
-    let forced: Reads? = ws.hold.forced.get().get(f)
-    if forced != null { return forced! }
-    if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
-    if ws.reads_pending(store, m, f) { return null }
-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
-    let rows = file_rows(record_fields(ws, store, m), at)
-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
-    if !holdable(rows) { return Reads.Unholdable }
-    null
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
@@ -1163,16 +982,6 @@ fn decodable(parts: List<string>) -> bool {
 /// either is a MISS and parses. The honest boundary: the interface carries what it
 /// carries, and a fact it cannot is a rebuild, not a guess.
 
-fn holdable(rows: List<List<string>>) -> bool {
-    for parts in rows {
-        if parts.length >= 13 {
-            let f? = facts_unblocked(parts[12]) else { return false }
-            if f.is_grammar { return false }
-        }
-    }
-    true
-}
-
 /// A SEAT'S PROMISES as one character each, in a fixed order — the
 /// record's spelling of `SeatMark`, so every promise survives the trip.
 /// EVERY `SeatMark` FIELD GETS A CHARACTER: a field this word does not
@@ -1202,19 +1011,6 @@ fn mark_of_word(w: string) -> SeatMark {
         consumed: w.substring(4, 5) == "o",
     }
 }
-
-/// A NOMINAL type's declaration — the one place the registry knows which types a program
-/// declared. `rest -> null` is the licensed remainder: a structural or scalar shape names
-/// no declaration, and a future nominal variant is added here.
-fn nominal_decl(types: TypeRegistry, id: TypeId) -> DeclId? {
-    match types.shape_of(id) {
-        .Struct(d, _) or .Enum(d, _) or .App(d, _, _) or .Dyn(d, _) or .TypeName(d, _) or .Var(d, _, _) -> d,
-        rest -> null,
-    }
-}
-
-/// A field's NAME, from its `name:spelling` pair.
-fn field_name(pair: string) -> string { pair.split(":")[0] }
 
 /// A field's SPELLING, from the same pair — the part `by_name` is asked for.
 fn name_of_field(pair: string) -> string {
@@ -1340,13 +1136,9 @@ fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts
 
 /// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
 /// text, the texts its compile-time runs read, and the interfaces its bodies can see.
-// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
-export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    object_key_of_parts(ws, ws.key_parts(store, m, path))
-}
-
 /// THE OBJECT KEY OF A FILE'S PARTS under this workspace's compiler and build mode — the
 /// one fold, so a key computed on any route is the key the file was kept under.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and parts in, the key out.
 export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(k)]) }
 
@@ -1502,13 +1294,6 @@ impl Workspace {
             .pending_reads
             .set(self.hold.pending_reads.get().concat([PendingRead { reader: reader, read: read }]))
         "?${read.print}"
-    }
-
-    /// Whether `f`'s key carries a read whose declaration must be parsed before its
-    /// hold can be decided — the reader is a hold candidate until then.
-    fn reads_pending(store: Store, m: ModulePath, f: string) -> bool {
-        let _ = self.key_parts_cached(store, m, f)
-        self.hold.pending_reads.get().any(it.reader == f)
     }
 
     /// The modules a module's files see, each with its interface key and file
@@ -1984,6 +1769,10 @@ fn forms_moved(was: List<string>?, now: List<string>?) -> List<string> {
 }
 
 /// The interface digest a record names on its `iface` line.
+/// What a record keeps of itself: every line but its files' declaration and maker lines,
+/// which their own rows hold.
+fn record_headers(made: string) -> string { joined([l for l in made.split("\n") if !items_line(read_fields(l))], "\n") }
+
 fn iface_of(record: string) -> string? {
     let line? = record.split("\n").find(it.starts_with("iface\t")) else { return null }
     line.substring(6, line.length)
@@ -2047,13 +1836,14 @@ fn hex_fields_of(field: string) -> List<string>? {
 }
 
 /// ONE READ as one field: its five texts hexed, `~` between. Hexing each keeps
-/// a print holding `~`, `|` or a tab from spending the field's own separators.
+/// a print holding `~`, `|` or a tab from spending the field's own separators; the
+/// path and the declaration are spelled from the tree first, since no store reads inside hex.
 fn read_wire(r: RunRead) -> string {
     joined(
         [
-            hex(r.path.bytes()),
+            hex(tree_saved(r.path).bytes()),
             hex(r.digest.bytes()),
-            hex(r.ref.bytes()),
+            hex(tree_saved(r.ref).bytes()),
             hex(r.print.bytes()),
             hex(r.outline.bytes()),
         ],
@@ -2077,7 +1867,7 @@ fn unhex_text(s: string) -> string? {
 fn read_of_wire(s: string) -> RunRead? {
     if !s.contains("~") {
         let text? = unhex_text(s) else { return null }
-        return RunRead { path: text, digest: "", ref: "", print: "", outline: "" }
+        return RunRead { path: tree_unsaved(text), digest: "", ref: "", print: "", outline: "" }
     }
     let parts = wire_fields(s, "~")
     if parts.length > 5 { return null }
@@ -2087,7 +1877,7 @@ fn read_of_wire(s: string) -> RunRead? {
     let rt? = unhex_text(cells[2]) else { return null }
     let qt? = unhex_text(cells[3]) else { return null }
     let ot? = unhex_text(cells[4]) else { return null }
-    RunRead { path: pt, digest: dt, ref: rt, print: qt, outline: ot }
+    RunRead { path: tree_unsaved(pt), digest: dt, ref: tree_unsaved(rt), print: qt, outline: ot }
 }
 
 /// A list of reads as one record field, each a `read_wire`.
@@ -2133,29 +1923,27 @@ fn runs_of(parts: List<string>) -> List<RunRead>? {
 fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
     let known: List<string>? = ws.import_lists.get().get(name)
     if known != null { return known! }
-    let made = [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1]
+    let made = distinct(
+        [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1],
+    )
     ws.import_lists.put(name, made)
     made
 }
 
-/// THE MODULES A PROGRAM REACHES: its own package's, the prelude, and the closure of what they
-/// import — a parsed module by the `use` lines it has now, a held one by its record — with each
-/// package a held `collect` gathers whole, as `pkg:KEY`. What a held file said stands in the store
-/// whatever else ran in the directory; it is printed only when the program reaches it.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, a store and the program in, the modules reached out.
-fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool> {
+/// THE MODULES A PROGRAM REACHES: its own package's, the prelude, and the closure of what their
+/// `use` lines import.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace and the program in, the modules reached out.
+fn reached_modules(ws: Workspace, p: Program) -> Map<string, bool> {
     mut reached: Map<string, bool> = {}
     mut parsed_in: Map<string, List<Analysis>> = {}
     for a in p.files {
         let m = ws.module_of(a.view.source.file)
         parsed_in.set(m, (parsed_in.get(m) ?? []).concat([a]))
     }
-    mut held_in: Map<string, bool> = {}
-    for path in ws.decls.held.get().keys() { held_in.set(ws.module_of(path), true) }
     mut work: List<string> = [prelude_module().text()]
         .concat(
             distinct(
-                [ws.module_of(path) for path in ws.decls.held.get().keys().concat([a.view.source.file for a in p.files]) if ws.holder_of_path(path) == 0],
+                [ws.module_of(path) for path in [a.view.source.file for a in p.files] if ws.holder_of_path(path) == 0],
             ),
         )
     mut at = 0
@@ -2164,12 +1952,6 @@ fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool>
         at = at + 1
         if reached.get(m) != null { continue }
         reached.set(m, true)
-        if held_in.get(m) != null {
-            work = work.concat(imports_kept(ws, store, m))
-            for parts in ws.producers_in(store, module_path(m.split("."))).walk {
-                if parts[0] == "gathers" && parts.length > 1 { reached.set("pkg:${parts[1]}", true) }
-            }
-        }
         for a in parsed_in.get(m) ?? [] {
             let from = ws.packages()[ws.holder_of_path(a.view.source.file)]
             for s in a.view.stmts {
@@ -2215,56 +1997,4 @@ fn seen_modules(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
 // LICENSED compiler.free_state_verb: THE HELD WALK — a workspace and a store in, the modules worth loading out.
 export fn held_modules(ws: Workspace, store: Store, built: string?) -> List<ModulePath> {
     [m for m in [module_path(n.split(".")) for n in distinct([ws.module_of(p) for p in ws.entry_files(built)])] if record_cached(ws, store, m) != ""]
-}
-
-/// EVERY HELD FILE, by path — ONE derivation for the stubs, the objects and the
-/// interface writes, so no list of modules can disagree with the files actually held.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace in, its held files' paths out.
-export fn held_paths(ws: Workspace) -> List<string> {
-    [ws.decls.file(f).path for f in ws.decls.held_files()]
-}
-
-// ── STUB BODIES FOR HELD FUNCTIONS ──────────────────────────────────
-
-/// A HELD FN, AS A DECLARATION THE EMITTER CAN SEE. A body that is never LOWED into
-/// instructions is still a NAME and a SIGNATURE, and that is exactly what a caller's module
-/// needs: `emit_module` declares what its bodies NAME, so a call to a held function finds a
-/// declaration. IT IS NEVER DEFINED, because the file it belongs to is never emitted — its
-/// machine code comes from the object the store already holds.
-///
-/// WITHOUT THIS A FRESH MODULE THAT CALLS A HELD ONE HAS NOTHING TO DECLARE THE CALL
-/// AGAINST: `main.av` calling `twice` whose module was skipped died in the link, and that
-/// was the one thing between the skip and a sub-second edit.
-///
-/// AND A HELD FILE MAY BE AN IMPORT — the modules `held_modules` walks are the ROOT's,
-/// while `load_interface` holds imported files too — so the stub set is EVERY held file,
-/// never the root's module list.
-// LICENSED compiler.free_state_verb: A STUB — the workspace in, the bodies every held file lets a caller name.
-export fn held_stubs(ws: Workspace) -> List<Body> {
-    mut out: List<Body> = []
-    for d in ws.decls.all_decls() {
-        let stub = if ws.is_held(d.file) { ws.stub_of(d) } else { null }
-        if stub != null { out.push(stub!) }
-    }
-    // a held file's top level is a body of its object too
-    out
-        .concat(
-            [Body {
-                name: program_symbol(ws.file_name(path)),
-                params: [],
-                ret: ws.decls.types.type(int),
-                gives: null,
-                ins: [],
-                reg_types: [],
-                file: ws.file_id(path),
-            } for path in held_paths(ws)],
-        )
-}
-
-fn gathers_collectorless() -> string {
-    "a record's `gathers` line names no collecting file — a line this compiler never writes"
-}
-
-fn gathers_unadmitted(key: string) -> string {
-    "a record gathers package `${key}` whole, and this workspace has not admitted it — the collect's own package stands before its record is read"
 }

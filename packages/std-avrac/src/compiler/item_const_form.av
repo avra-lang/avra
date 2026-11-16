@@ -1,0 +1,102 @@
+//! WHERE A COMPUTED CONST HAS NO COMPILE-TIME VALUE FORM: its type holds behaviour — a fn, a `dyn`,
+//! a cell, a task — anywhere inside it, or it is a whole optional that rides no pointer, so no
+//! settlement can lay it out as the binary's own data. A const written as a literal, and a component
+//! instance, which its unit builds once per run, hold anything.
+use core.{Layout, SignedType, own_type_named}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.consts.{const_written, unformed_voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Whether a computed const of type `ty`, read where `file` reads it, has a compile-time value form:
+/// a whole optional only where it rides a pointer or is a word enum's spare tag, and every part it
+/// holds formed.
+export fn const_formed(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> bool {
+    if !ty.nullable() { return formed(engine, ty, []) }
+    let l? = program_of(engine, file, Signing { engine: engine, file: file, type_params: [] })
+        .layout(ty) else { return false }
+    (l is .Boxed || l is .Word) && formed(engine, ty.unwrapped(), [])
+}
+
+/// Whether every part a value of `ty` holds has a compile-time form: a record's fields, an enum's
+/// payloads, a list's elements, a map's values, a result's sides, an option's carried value — each
+/// declared type judged once, so a recursive one ends. A fn or a `dyn` anywhere inside is behaviour,
+/// which only a run can build.
+fn formed(engine: QueryEngine, ty: SignedType, seen: List<string>) -> bool {
+    if ty.dynamic { return false }
+    if ty.nullable() { return formed(engine, ty.unwrapped(), seen) }
+    match ty.head {
+        .Owned(word) -> owned_formed(engine, word, ty.args, seen),
+        .Declared(at, name) -> declared_formed(engine, at, name, ty, seen),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+    }
+}
+
+/// A type the language owns, applied to `args`: a scalar, text or octets is formed; a list, a map's
+/// values and a result's sides as what they hold are; anything else holds what only a run builds.
+fn owned_formed(engine: QueryEngine, word: string, args: List<SignedType>, seen: List<string>) -> bool {
+    let own? = own_type_named(word) else { return false }
+    match own {
+        .Int or .Float or .Bool or .Str or .Bytes -> true,
+        .List -> args.length == 1 && formed(engine, args[0], seen),
+        .Map -> args.length == 2 && formed(engine, args[1], seen),
+        .Result -> args.length == 2 && formed(engine, args[0], seen) && formed(engine, args[1], seen),
+        .Ptr or .Void or .Cell or .Range or .Task or .Tasks -> false,
+    }
+}
+
+/// A type `at` declares as `name`, `ty` applying it: a record by its fields, an enum by its payloads,
+/// a named type by the shape it stands over, an alias by its target.
+fn declared_formed(
+    engine: QueryEngine,
+    at: SourceFileAddress,
+    name: string,
+    ty: SignedType,
+    seen: List<string>,
+) -> bool {
+    let key = ty.spelled()
+    if seen.contains(key) { return true }
+    let deeper = seen.concat([key])
+    let parts = (t: SignedType?) -> t != null && formed(engine, t!.bound(ty.args), deeper)
+    let record = record_signature(engine, at, name)
+    if record != null { return record!.fields.all(parts(it.ty)) }
+    let variants = enum_signature(engine, at, name)
+    if variants != null { return variants!.variants.all((v) -> v.payloads.all(parts(it.ty))) }
+    let shape = named_shape(engine, at, name) ?? alias_target(engine, at, name)
+    shape != null && parts(shape!.of)
+}
+
+/// Each computed const the written item `at` of `file` declares, and each one its bodies declare
+/// that settles at compile time, whose type has no compile-time value form: at its value, its voice
+/// handed its name and its type.
+fn consts_unformed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    let store = item.store
+    mut found: List<Found> = []
+    for s in item.stmts {
+        let value? = store.const_value(s) else { continue }
+        let name? = store.let_name(s) else { continue }
+        if const_written(store.valued(value)) || store.is_component_inst(s) { continue }
+        let ty? = binding_type(engine, file, name) ?? const_value_type(engine, file, name) else { continue }
+        if !const_formed(engine, file, ty) { found.push(Found { at: store.expr_span(value), args: [name, ty.spelled()] }) }
+    }
+    found
+        .concat(
+            [Found { at: span_of(c.at), args: [c.name, c.words] } for c in item_refusals(engine, file, at).broken if c.kind == FORM],
+        )
+}
+
+fn unformed_said(a: List<string>) -> Voice { unformed_voice(a[0], a[1]) }
+
+/// a computed const whose type has no compile-time value form
+export law const_unformed {
+    kind: "const.form"
+    reads: consts_unformed
+    voice: unformed_said
+    witness: "fn mk() -> fn(int) -> int { (x: int) -> x }\n\nconst f: fn(int) -> int = mk()\n"
+}
+
+/// The kind a const with no compile-time value form is refused as.
+export const FORM: string = "const.form"

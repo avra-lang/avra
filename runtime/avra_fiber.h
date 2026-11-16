@@ -214,6 +214,7 @@ void avra_fiber_fd_interrupt(int64_t fd);
 // no other task runs again, and the poller — the parent's own under
 // epoll, not inherited under kqueue — opens afresh at the next park.
 void avra_fiber_forked(void);
+int avra_fiber_trace_fd(void);
 
 // ── The evaluator's tasks: no stack; the policy above files them and
 // names the next, and the evaluator switches its own call stacks. ──

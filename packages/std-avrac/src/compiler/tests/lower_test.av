@@ -232,14 +232,19 @@ spec "compiler/lower" {
         }
     }
     given "`!` on a niche nullable" {
-        then "a foreign pointer's is a null test, never the retaining insist" {
+        then "a foreign pointer's is a null test, never an unwrap row" {
             let text = render_ir(ir_of("extern fn f() -> ptr?\nfn g(p: ptr) -> int { 0 }\ng(f()!)"))
-            text.contains("avra_insist_scalar") &&
-                !text.replace("avra_insist_scalar", "").contains("avra_insist")
+            text.contains("avra_insist_scalar") && !text.contains("avra_unwrap")
         }
-        then "a counted box's still comes back owned through the insist" {
+        then "a counted box's that is only read rides its subject: the lending unwrap, no owned twin" {
             let text = render_ir(ir_of("extern fn f() -> string?\nf()!.length"))
-            text.contains("avra_insist") && !text.contains("avra_insist_scalar")
+            text.contains("avra_unwrap(") && !text.contains("avra_unwrap_owned")
+        }
+        then "a counted box's that is answered takes the owned twin" {
+            let text = render_ir(
+                ir_of("extern fn f() -> string?\nfn g() -> string { f()! }\ng().length"),
+            )
+            text.contains("avra_unwrap_owned")
         }
     }
     given "THE LAW: nullability never allocates" {

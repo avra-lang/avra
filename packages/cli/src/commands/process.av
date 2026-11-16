@@ -5,7 +5,7 @@ use @std.cli.{CliResult, Runnable, command, arg}
 use @std.path.{joined_path}
 use @std.process.{Tool, ProcessError}
 use @std.avrac.diagnostics.{Diag, new_source_file, render}
-use @std.avrac.compiler.host.{ToolRow, read_manifest}
+use @std.avrac.compiler.host.{ToolRow, manifest_read}
 
 type ProcessCmd = {}
 
@@ -28,9 +28,10 @@ fn explained_process(dir: string) -> int {
     }
     // LICENSED compiler.host_asked_directly: a command's read of the manifest it was given, at this instant — no query frame is open
     let src = new_source_file(manifest, host.spared_text(manifest).as_text() ?? "")
-    let m = read_manifest(src)
-    for d in m.voices { eprintln(render(d, src)) }
-    if m.voices.any(refuses(it)) { return 1 }
+    let read = manifest_read(src)
+    let m = read.manifest
+    for d in read.voices { eprintln(render(d, src)) }
+    if read.voices.any(refuses(it)) { return 1 }
     if m.tools.is_empty() {
         println(
             "no [process.tools] declared — the script rung: any tool a literal names, an open set",

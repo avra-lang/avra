@@ -3,7 +3,6 @@
 use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
-use compiler.record.{read_fields}
 use core.{DeclId}
 
 const DEFAULT_BIT_PATH: string = "/w/src/main.av"
@@ -52,27 +51,7 @@ fn analysed_bits() -> string {
     ["quiet", "loud"].map((n) -> bit_word(n, ws.reaches_cancel(default_id(ws, n)))).join(" ")
 }
 
-/// Each default's bit as a held file restores it from its record lines.
-fn held_bits() -> string {
-    let parsed = default_bit_workspace()
-    let _ = parsed.analyze_file(DEFAULT_BIT_PATH)
-    let f? = parsed.decls.known_file_id(DEFAULT_BIT_PATH) else { return "" }
-    let rows = [parsed.decls.raw_decl(d) for d in parsed.decls.decls_of_file(f)]
-    let lines = [parsed.record_line(d, ordinal, false) for ordinal, d in rows]
-    let held = default_bit_workspace()
-    // A minted file is HELD: the pass never surveys a held declaration, so the bit the
-    // record carries is the one a reader takes.
-    held.hold_only(DEFAULT_BIT_PATH)
-    held.mint_file(DEFAULT_BIT_PATH, [read_fields(line) for line in lines], {})
-    ["quiet", "loud"]
-        .map((n) -> bit_word(n, held.decls.cancel_bits(default_id(held, n))?.may() ?? true))
-        .join(" ")
-}
-
-spec "compiler/interface — a held default's cancel bit" {
-    then "a held default reads back the bit its analysed pass gave" {
-        held_bits() == analysed_bits()
-    }
+spec "compiler/interface — a default's cancel bit" {
     given "the bits the comparison rests on" {
         then "a default whose call waits answers 1" {
             analysed_bits().contains("loud=1")

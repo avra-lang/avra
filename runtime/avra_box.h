@@ -73,13 +73,18 @@ void avra_box_changed(void* payload);
 #endif
 #define AVRA_FLAGS_AT 5
 #define AVRA_STAMP_AT 6
+// Whether a write to the box is the first of its turn to an observed
+// box — the write that must stamp and log it.
+static inline int avra_box_unlogged(const void* payload) {
+    const uint8_t* at = (const uint8_t*)((const Header*)payload - 1);
+    if (__builtin_expect(at[AVRA_FLAGS_AT] != (AVRA_OBSERVED >> 8), 1)) return 0;
+    uint16_t stamp;
+    __builtin_memcpy(&stamp, at + AVRA_STAMP_AT, sizeof stamp);
+    return stamp != (uint16_t)(avra_turn_word >> 16);
+}
+
 static inline void avra_box_touch(void* payload) {
-    const uint8_t* at = (const uint8_t*)((Header*)payload - 1);
-    if (__builtin_expect(at[AVRA_FLAGS_AT] == (AVRA_OBSERVED >> 8), 0)) {
-        uint16_t stamp;
-        __builtin_memcpy(&stamp, at + AVRA_STAMP_AT, sizeof stamp);
-        if (stamp != (uint16_t)(avra_turn_word >> 16)) avra_box_changed(payload);
-    }
+    if (__builtin_expect(avra_box_unlogged(payload), 0)) avra_box_changed(payload);
 }
 
 // A slot array: `cap` cells at `data`, `len` of them written, and

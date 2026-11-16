@@ -1,0 +1,199 @@
+//! WHAT A PROGRAM FILE RUNS, AS IR: its top-level statements that run, in written order, one scope
+//! lowered as the program's entry, and the value of the last when it's an expression shown as text.
+use core.{
+    NamesRead,
+    BoxKind,
+    Expected,
+    ExprId,
+    Ins,
+    Layout,
+    Lowering,
+    Reg,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    lowering,
+    new_node_store,
+    owned_type,
+    rt_sig_of,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The unit a program file's entry is known by.
+const ENTRY: string = "main"
+
+/// The statements an entry runs as one body of no seats answering nothing, its value shown; absent
+/// for a file that runs none.
+fn entry_signed(read: EntryRead) -> SignedBody? {
+    let shown? = read.stmts.last() else { return null }
+    SignedBody {
+        signature: FnSignature { type_params: [], params: [], answer: owned_type("void"), answer_width: null },
+        item: ReadItem { store: read.store, stmts: read.stmts },
+        body: read.store.block_over(read.stmts, null),
+        stmt: shown,
+        want: Expected.Free,
+        fnless: true,
+    }
+}
+
+/// The statements of `file` that run, lowered as its entry, its task tests held: a scope
+/// holding them, the value of the last shown as text, the tasks they hold joined, then the entry's
+/// exit, which answers the process's status. The names they bind stand in a scope of their own inside
+/// the entry's seats, of which it has none. Absent when it runs none.
+export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
+    let read = entry_read(engine, file)
+    let signed? = entry_signed(read) else { return null }
+    let body = elaborated(engine, file, signed)
+    mut cx = lowering(
+        body.store,
+        lowered_program(engine, file, body.store, ENTRY, [], null) with { literal_symbol: (e: ExprId, ty: SignedType) -> read.literal_symbol(engine, file, body.store, e, ty) },
+        body.core,
+        body.seats,
+        owned_type("int"),
+    ) with { names: NamesRead { reads: body.reads } }
+    cx.scope_enter()
+    cx.opened()
+    let value = cx.lowered_open(body.body)
+    let shown = body.core[body.body.index]
+    let unprojected = answer_unprojected(read, shown)
+    if unprojected == null { shown_as_text(cx, shown, value) }
+    cx.closed()
+    cx.scope_exit(null)
+    cx.emit(Ins.Ret(0))
+    unit_lowered(cx, 0, Layout.Word) with { refused: body.refused, unread: body.unread, unprojected: unprojected }
+}
+
+/// The types an entry's answer is shown as, by the words the language spells them with: a scalar,
+/// a text, a list or a map, or nothing at all.
+const PROJECTED: List<string> = ["int", "float", "bool", "string", "List", "Map", "void"]
+
+/// The entry's answer of type `shown`, where no text projection spells it: its type and the
+/// statement that answers, the last of `read` that holds a value; absent where one spells it, or
+/// where it never arrives.
+fn answer_unprojected(read: EntryRead, shown: SignedType?) -> Unprojected? {
+    let ty? = shown else { return null }
+    let spelled = match ty.head {
+        .Owned(name) -> PROJECTED.contains(name),
+        .Never -> true,
+        rest -> false,
+    }
+    if spelled && !ty.nullable() && !ty.dynamic { return null }
+    let answering? = read.stmts.filter((s) -> read.store.stmt_value(s) != null).last() else { return null }
+    let span? = read.store.stmt_span(answering) else { return null }
+    Unprojected { name: ty.spelled(), lo: span.lo, hi: span.hi }
+}
+
+/// A file's running statements read back into one store, and where each item's nodes begin in it.
+type EntryRead = { store: SyntaxArena, stmts: List<StmtId>, items: List<ItemBase> }
+
+/// An item of the file, by its place, and the index its first node has in the entry's store.
+type ItemBase = { at: int, base: int }
+
+impl ItemBase {
+    /// The node `e` of the entry's store as the item's own store numbers it.
+    // LICENSED compiler.hand_sized_index: an item's nodes count from its base, the one place that offset is read
+    fn own(e: ExprId) -> ExprId { ExprId { index: e.index - self.base } }
+
+    /// The name the literal at `e` of the entry's store is laid out under where the item stands alone.
+    fn sourced(engine: QueryEngine, file: SourceFileAddress, e: ExprId, ty: SignedType) -> string? {
+        sourced_symbol(engine, file, read_item(engine, file, self.at).store, self.own(e), ty)
+    }
+}
+
+impl EntryRead {
+    /// The name the literal at `e`, standing in `store`, is laid out under: the item's own, read where
+    /// it stands alone, else the entry's for a literal no source wrote.
+    fn literal_symbol(
+        engine: QueryEngine,
+        file: SourceFileAddress,
+        store: SyntaxArena,
+        e: ExprId,
+        ty: SignedType,
+    ) -> string {
+        let item = self.items.filter(it.base <= e.index).last()
+        let sourced = item?.sourced(engine, file, e, ty)
+        sourced ?? made_symbol(file, store, ENTRY, e, ty)
+    }
+}
+
+/// Every item of `file` that runs a statement, read back into one store, and the statements among
+/// them that run.
+fn entry_read(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
+    let declaring = [d.item for d in file_declares(engine, file).names]
+    let store = new_node_store()
+    mut items: List<ItemBase> = []
+    mut stmts: List<StmtId> = []
+    for at in 0..item_count(engine, file) {
+        if declaring.contains(at) && !runs_in(engine, file, at) { continue }
+        items.push(ItemBase { at: at, base: store.exprs.count() })
+        stmts = stmts.concat(read_into(engine, file, store, at).filter((s) -> runs(store, s)))
+    }
+    EntryRead { store: store, stmts: stmts, items: items }
+}
+
+/// Whether the item `at` of `file` holds a statement that runs, beside what it declares: a `let`
+/// whose value an expansion made declares what the expansion hoists, and still runs.
+fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
+    let item = read_item(engine, file, at)
+    item.stmts.any(runs(item.store, it))
+}
+
+/// Whether a top-level statement runs: one that declares nothing.
+fn runs(store: SyntaxArena, s: StmtId) -> bool { !store.is_declaration(s) }
+
+/// The entry's shown value printed as text, as the type it's typed with spells it: text as itself, a
+/// number or a truth by its row, a list of them by the row that joins it. A value of any other type
+/// isn't shown yet; one of no type shows nothing.
+fn shown_as_text(mut cx: Lowering, ty: SignedType?, value: Reg) {
+    let shown? = ty else { return }
+    let spelled? = spelling_of(cx, shown) else {
+        if !(cx.laid_out(shown) is .Void) { cx.missed("a shown `${shown.spelled()}`, which no text spells yet") }
+        return
+    }
+    let text = match spelled {
+        .Itself -> value,
+        .Row(name) -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(name)!, [value]),
+    }
+    cx.run_row(rt_sig_of("avra_puts")!, [text])
+}
+
+/// How a shown value is spelled as text: itself, or by the runtime row that spells it.
+enum Spelling {
+    Itself
+    Row(name: string)
+}
+
+/// How a value of `ty` is spelled; absent for a type no row spells.
+fn spelling_of(cx: Lowering, ty: SignedType) -> Spelling? {
+    if ty.nullable() || ty.dynamic || !(ty.head is .Owned) { return null }
+    let l? = cx.program.checked.layout(ty) else { return null }
+    match l {
+        .Word -> Spelling.Row("avra_int_text"),
+        .Real -> Spelling.Row("avra_float_text"),
+        .Truth -> Spelling.Row("avra_bool_text"),
+        .Boxed(box) -> match box {
+            .Text -> Spelling.Itself,
+            .List -> list_spelling(cx, ty.args.first()),
+            .Bytes or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}
+
+/// How a list of `elem` is spelled: by the row that joins its elements as text; absent for an
+/// element no row joins.
+fn list_spelling(cx: Lowering, elem: SignedType?) -> Spelling? {
+    let e? = elem else { return null }
+    if e.nullable() || e.dynamic || !(e.head is .Owned) { return null }
+    let l? = cx.program.checked.layout(e) else { return null }
+    match l {
+        .Word -> Spelling.Row("avra_ints_text"),
+        .Truth -> Spelling.Row("avra_bools_text"),
+        .Boxed(box) -> match box {
+            .Text -> Spelling.Row("avra_strs_text"),
+            .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}

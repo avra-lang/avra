@@ -6,7 +6,7 @@
 use core.{PatId, Type, TypeId, FormatPart, binds}
 use features.{TypeCx, MethodCall, this_is}
 use features.formats.{adjacent_fault, repeated_fault, Fault, Reads, reads_of}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal, said_as}
 
 /// THE FORMAT LAW: the subject is text, the holes are separable and
 /// distinctly named, and each hole binds the span it takes — as
@@ -41,18 +41,17 @@ fn span_type(cx: TypeCx, expected: TypeId) -> TypeId? {
 // ── The voices ──────────────────────────────────────────────────
 
 fn not_text(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
-    let n = cx.view.types.name_of(expected)
-    cx
-        .emit(
-            refusal(
-                "type.format",
-                cx.pat_loc(p),
-                "a format pattern reads text, found `${n}`",
-                this_is(n),
-                "a format matches a `string` or a `Bytes`",
-            ),
-        )
+    cx.emit(said_as("type.format", cx.pat_loc(p), format_on(cx.view.types.name_of(expected))))
     []
+}
+
+/// A format pattern matching a value of `found`, which is no text.
+export fn format_on(found: string) -> Voice {
+    Voice {
+        message: "a format pattern reads text, found `${found}`",
+        label: this_is(found),
+        help: "a format matches a `string` or a `Bytes`",
+    }
 }
 
 /// The two laws over the holes, each in its own words.
@@ -65,46 +64,52 @@ fn broken(mut cx: TypeCx, p: PatId, fault: Fault) -> List<TypeId> {
 }
 
 fn adjacent(mut cx: TypeCx, p: PatId, a: string, b: string) -> List<TypeId> {
-    cx
-        .emit(
-            refusal(
-                "type.format_shape",
-                cx.pat_loc(p),
-                "`{${a}}` and `{${b}}` have nothing between them",
-                "here",
-                "a scan needs a literal to stop at — put one between the holes",
-            ),
-        )
+    cx.emit(said_as("type.format_shape", cx.pat_loc(p), holes_adjacent(a, b)))
     []
 }
 
 fn repeated(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
+    cx.emit(said_as("type.format_repeat", cx.pat_loc(p), hole_repeated(n)))
+    []
+}
+
+/// Two holes of a format with no literal between them.
+export fn holes_adjacent(a: string, b: string) -> Voice {
+    Voice {
+        message: "`{${a}}` and `{${b}}` have nothing between them",
+        label: "here",
+        help: "a scan needs a literal to stop at — put one between the holes",
+    }
+}
+
+/// A name a format binds twice.
+export fn hole_repeated(n: string) -> Voice {
+    Voice {
+        message: "`${n}` names two spans of this format",
+        label: "written twice",
+        help: "rename one, or write `{_}` for a span you do not need",
+    }
+}
+
+fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
     cx
         .emit(
-            refusal(
-                "type.format_repeat",
+            said_as(
+                "type.format_parse",
                 cx.pat_loc(p),
-                "`${n}` names two spans of this format",
-                "written twice",
-                "rename one, or write `{_}` for a span you do not need",
+                hole_unread(part.hole.name, part.hole.ty!.name),
             ),
         )
     []
 }
 
-fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
-    let n = part.hole.ty!.name
-    cx
-        .emit(
-            refusal(
-                "type.format_parse",
-                cx.pat_loc(p),
-                "`{${part.hole.name}: ${n}}` reads its span as `${n}`, and a hole reads text as `string` or `int`",
-                "here",
-                "take the span as text and convert it in the arm",
-            ),
-        )
-    []
+/// A format's hole `name` reading its span as `ty`, which text doesn't read as.
+export fn hole_unread(name: string, ty: string) -> Voice {
+    Voice {
+        message: "`{${name}: ${ty}}` reads its span as `${ty}`, and a hole reads text as `string` or `int`",
+        label: "here",
+        help: "take the span as text and convert it in the arm",
+    }
 }
 
 // ── The doors a grammar declares ────────────────────────────────
@@ -123,6 +128,15 @@ export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.worded(mc, "parse", [read_seat(cx, mc)], Type.Opt(named))
 }
 
+/// `Name.parse_octets(octets)` — what this grammar reads of octets, or absence; octets that are not
+/// UTF-8 answer absence.
+export fn check_parse_octets(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
+    cx.worded(mc, "parse_octets", [Type.Bytes], Type.Opt(named))
+}
+
+/// RECORDED TRIGGER: `parse` taking octets is the old path's door alone; every caller in the tree
+/// hands octets to `parse_octets`, and this seat goes with the old path.
 /// ONE DOOR, TWO SEATS: a grammar reads TEXT, or the OCTETS the text
 /// was framed from. A router holds a span and never had a string; a
 /// test holds a string and never had a span. The seat follows what

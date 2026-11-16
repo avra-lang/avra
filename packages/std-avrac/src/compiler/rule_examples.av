@@ -229,8 +229,9 @@ impl Workspace {
         // it can reach as its own package, the way any package-scope
         // check does.
         for path in self.root_files() { let _ = self.items(self.file_id(path)) }
-        let found = self.decls.decls_of_word("rule")
-        flatten([self.decls.entry_checked(found, r) for r in rules])
+        let found = self.decls.decls_of_word("rule").concat(self.decls.decls_of_word("fact_rule"))
+
+        flatten([self.decls.entry_checked(found, r) for r in rule_entries()])
     }
 }
 
@@ -242,8 +243,12 @@ impl Decls {
             list_eq(component_root_kind(self, d), r.root, (a, b) -> a == b),
         )
         [root_check]
-            .concat([checked("${rule_id(r)} @fixes", fixes_checked(r.run, f)) for f in r.fixes])
-            .concat([checked("${rule_id(r)} @keeps", checks_keeps(r.run, k)) for k in r.keeps])
+            .concat(
+                [checked("${rule_id(r)} @fixes", fixes_checked((c: Code) -> r.run.applied(c), f)) for f in r.fixes],
+            )
+            .concat(
+                [checked("${rule_id(r)} @keeps", checks_keeps((c: Code) -> r.run.applied(c), k)) for k in r.keeps],
+            )
     }
 }
 

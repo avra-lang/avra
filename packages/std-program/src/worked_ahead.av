@@ -1,0 +1,197 @@
+//! WORK AHEAD ACROSS CORES. When a store knows too little, forked processes answer shards of the
+//! work and publish packs, and the asking process then finds those answers like any others. The
+//! store already lets many processes publish at once, so nothing is shared but the directory, and
+//! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
+//! didn't work ahead reaches the same ones by itself.
+use disk_store.{DiskStore, disk_store_at}
+use @std.io.{read_text, remove, this_process, write_text}
+use @std.time.{now_ms}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use query_times.{QueryTimes, TimedSide}
+
+extern fn avra_cores_online() -> int
+extern fn avra_cores_group(count: int) -> int
+extern fn avra_cores_fork(group: int, serving: int) -> int
+extern fn avra_cores_leave(group: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_end_fd(group: int, core: int) -> int
+extern fn avra_cores_heard(group: int, core: int) -> int
+extern fn avra_cores_killed(group: int, core: int) -> int
+extern fn avra_cores_finished(group: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// Below this many unanswered items a fork costs more than it saves.
+const WORTH_FORKING: int = 16
+
+/// How long a wait for a core lasts before it looks again.
+const WAIT_MS: int = 1000
+
+/// No descriptor for a core to keep open.
+const NO_DESCRIPTOR: int = -1
+
+/// How many processes this machine runs at once.
+export fn cores_online() -> int { avra_cores_online() }
+
+/// What to work out ahead: the items, asked of the engine that works them out, whether an item's
+/// answer is already kept, how to ask for it, and how many processes to use.
+export type WorkAhead<T, R> = {
+    items: fn(QueryEngine) -> List<T>,
+    is_known: fn(QueryEngine, T) -> bool,
+    ask: fn(QueryEngine, T) -> R,
+    process_count: int,
+    timed: bool = false,
+}
+
+/// A store and the engine over it.
+export type Worked = { store: DiskStore, engine: QueryEngine }
+
+/// The store at `directory` and an engine over it, every unknown item answered across processes
+/// first when there are enough to be worth it. With nothing to fork, the engine is the one that
+/// asked what's known, so whatever it read stays read.
+export fn engine_worked_ahead<T, R>(
+    directory: string,
+    definitions: List<QueryDefinition>,
+    work: WorkAhead<T, R>,
+) -> Worked {
+    let before = disk_store_at(directory)
+    let asking = query_engine(before, definitions)
+    if work.timed { asking.time_queries() }
+    asking.kept_times()?.opened("the frontier opened", TimedSide.Outside)
+    let _ = asking.inputs_moved()
+    asking.kept_times()?.closed()
+    if !forked_for<T, R>(before, asking, definitions, work) { return Worked { store: before, engine: asking } }
+    asking.kept_times()?.opened("the work merged", TimedSide.Outside)
+    let after = disk_store_at(directory)
+    let engine = query_engine(after, definitions)
+    let _ = after.merged()
+    asking.kept_times()?.closed()
+    let times = asking.kept_times()
+    if times != null { eprintln(ahead_times(times!)) }
+    Worked { store: after, engine: engine }
+}
+
+/// Answers every unknown item across processes, and says whether any process ran. A process that
+/// didn't finish costs only time: what it published stands, and the rest is answered here.
+fn forked_for<T, R>(
+    store: DiskStore,
+    engine: QueryEngine,
+    definitions: List<QueryDefinition>,
+    work: WorkAhead<T, R>,
+) -> bool {
+    let known_by = work.is_known
+    let unknown = (work.items)(engine).filter((item) -> !known_by(engine, item))
+    if unknown.length < WORTH_FORKING || work.process_count < 2 { return false }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let _ = store.saved()
+    if store.has_news() {
+        eprintln(unpublished_before_fork())
+        return false
+    }
+    let group = avra_cores_group(work.process_count)
+    if group < 0 { return false }
+    let core = avra_cores_fork(group, NO_DESCRIPTOR)
+    if core < 0 { return false }
+    if core < work.process_count {
+        answered_and_gone<T, R>(
+            store,
+            definitions,
+            [item for at, item in unknown if at % work.process_count == core],
+            work.ask,
+            group,
+            core,
+            work.timed,
+        )
+    }
+    let finished = waited_for(group, work.process_count)
+    engine.kept_times()?.closed()
+    if finished < work.process_count { eprintln(cores_unfinished(work.process_count - finished, work.process_count)) }
+    true
+}
+
+/// A forked process's whole life: answers its share, publishes, and leaves without tidying up.
+fn answered_and_gone<T, R>(
+    store: DiskStore,
+    definitions: List<QueryDefinition>,
+    share: List<T>,
+    ask: fn(QueryEngine, T) -> R,
+    group: int,
+    core: int,
+    timed: bool,
+) {
+    let engine = query_engine(store, definitions)
+    if timed { engine.time_queries() }
+    let answered = [ask(engine, item) for item in share].length
+    let _ = store.saved_alone()
+    let times = engine.kept_times()
+    if times != null { eprintln(core_times(core, answered, times!)) }
+    let _ = avra_cores_leave(group, core, answered, 0)
+}
+
+/// How a run in a process of its own came out: what it answered, that it ended before it
+/// answered, or that it ran past its bound and was ended.
+export enum Apart {
+    Answered(text: string)
+    Ended
+    Outlasted
+}
+
+/// What `run` answers, worked out in a forked process of its own and left at `kept`, so what ends it
+/// — a signal, a trap — ends only that process, and one still running after `within_ms` is killed.
+/// A process `run` forks in turn that returns out of it is never that one: it leaves at once,
+/// answering nothing and running nothing more of its caller's.
+export fn answered_apart(run: fn() -> string, kept: string, within_ms: int) -> Apart {
+    let _ = remove(kept)
+    let group = avra_cores_group(1)
+    if group < 0 { return Apart.Ended }
+    let core = avra_cores_fork(group, NO_DESCRIPTOR)
+    if core < 0 { return Apart.Ended }
+    if core == 0 {
+        let mine = this_process()
+        let answer = run()
+        if this_process() == mine { let _ = write_text(kept, answer) }
+        let _ = avra_cores_leave(group, core, 0, 0)
+    }
+    let deadline = now_ms() + within_ms
+    while avra_cores_heard(group, 0) != 0 {
+        let left = deadline - now_ms()
+        if left <= 0 {
+            let _ = avra_cores_killed(group, 0)
+            let _ = avra_cores_finished(group)
+            return Apart.Outlasted
+        }
+        let _ = avra_fiber_park_fd(
+            avra_cores_end_fd(group, 0),
+            0,
+            if left < WAIT_MS { left } else { WAIT_MS },
+        )
+    }
+    if avra_cores_finished(group) != 1 { return Apart.Ended }
+    match read_text(kept) { .Ok(t) -> Apart.Answered(t), .Err(_) -> Apart.Ended }
+}
+
+/// Waits until every process has ended, and says how many finished their share.
+fn waited_for(group: int, process_count: int) -> int {
+    for core in 0..process_count {
+        while avra_cores_heard(group, core) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(group, core), 0, WAIT_MS) }
+    }
+    avra_cores_finished(group)
+}
+
+// ── The voices ──
+
+/// A fork with a draft standing would hand the draft to every core.
+fn unpublished_before_fork() -> string {
+    "avra: what this process learned could not be published before forking, so nothing was worked ahead"
+}
+
+/// Some processes ended before finishing their share.
+fn cores_unfinished(unfinished: int, of: int) -> string {
+    "avra: ${unfinished} of ${of} cores working ahead didn't finish; what they left is answered here"
+}
+
+/// Where the asking process's time went around its cores.
+fn ahead_times(times: QueryTimes) -> string { "ahead: time: ${times.spoken(15)}; split: ${times.split()}" }
+
+/// Where a core's asks spent their time.
+fn core_times(core: int, answered: int, times: QueryTimes) -> string {
+    "core ${core}: ${answered} answered; time: ${times.spoken(15)}; split: ${times.split()}"
+}

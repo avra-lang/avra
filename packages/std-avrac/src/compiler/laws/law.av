@@ -1,0 +1,40 @@
+//! A LAW, declared once: the diagnostic kind it speaks as, the fact query it reads over a file's
+//! item, the voice that words each fact, and a witness program it finds. A kind may have many laws;
+//! the kind's facts are what every law of it finds, gathered per item by `law_findings`, whose answer
+//! is saved and cut off early, while the voices are applied as a finding is said.
+use core.{Span}
+use diagnostics.{Voice}
+use @std.meta.{Diagnostic, refuse}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// One fact a law's query found: where it stands in the item's file, absent where it has no place
+/// there, the words its voice is handed, what the sugar it stands in means, said beside it, and the
+/// kind it speaks as where it is its own rather than its law's; where the name its voice's guess
+/// respells stands, and the edits it offers beside; and which of its words are paths relative to
+/// the file it stands in, which only the file's place on disk turns into the paths it says.
+export type Found = { at: Span?, args: List<string>, aside: Aside? = null, kind: string? = null, named: Span? = null, fixes: List<FoundFix> = [], local: List<int> = [] }
+
+/// An edit a finding offers: what it does, the text it writes where it stands, and whether it is
+/// sure, short of which it is offered as likely.
+export type FoundFix = { description: string, at: Span?, replacement: string, sure: bool = false }
+
+/// A sentence said beside a finding, at the place it names.
+export type Aside = { label: string, at: Span? }
+
+export component law {
+    kind: string
+    reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found>
+    voice: fn(List<string>) -> Voice
+    warns: bool = false
+    witness: string
+    /// The witness's package's other files, by their path in it, where the law needs more than one.
+    witness_files: Map<string, string> = {}
+    doc: string = ""
+
+    fn check() -> List<Diagnostic> {
+        if self.witness.is_empty() { return [refuse("a law's witness is a program it finds — write one")] }
+        []
+    }
+}
+

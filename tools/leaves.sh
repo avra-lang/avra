@@ -4,6 +4,8 @@
 # `sh tools/leaves.sh --check` fails when a package's named count falls or a blocking
 # family's count rises against tools/leaves.baseline; `--accept` rewrites the baseline
 # (only after the counts improved).
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -u
 cd "$(dirname "$0")/.."
 A=${AVRA_BIN:-build/avra}

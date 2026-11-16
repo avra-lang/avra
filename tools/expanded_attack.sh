@@ -3,6 +3,8 @@
 # the compiler's own package. A file's expansion is demanded from inside each member's
 # resolve, and every ask once re-ran the whole body (173 settles for the node enums' file).
 # Usage: sh tools/expanded_attack.sh [avra] [package]
+set -u
+. "$(dirname "$0")/lib/attack.sh"
 avra=${1:-build/avra}
 package=${2:-packages/std-avrac}
 # A re-entry nested inside the first re-entry reads what that one has minted, so a file

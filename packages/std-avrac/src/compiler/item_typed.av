@@ -1,0 +1,558 @@
+//! WHAT A FN'S BODY IS TYPED AS: every node checked by its feature's rule, under the fn's signature,
+//! each name it reads asked of the names layer and that declaration's signature alone. The answer is
+//! a column of types beside the item's tape, by each node's place in the item read back.
+use core.{
+    At,
+    TypeMemos,
+    ConstSeed,
+    BindSite,
+    Expr,
+    NamesRead,
+    Plain,
+    SyntaxArena,
+    some_list,
+    NameBound,
+    NameRead,
+    same_binder,
+    kept_by_key,
+    signed_said,
+    enum_said,
+    kept_answer,
+    record_said,
+    meta_type,
+    module_path,
+    CheckedProgram,
+    Checking,
+    Seating,
+    ReadAs,
+    EnumShape,
+    RecordShape,
+    TypeRef,
+    ExprId,
+    StmtId,
+    SignedSeat,
+    SignedType,
+    Span,
+    TypeHead,
+    Expected,
+    RECEIVER,
+    checking,
+    headed_type,
+}
+use @std.meta.{derive}
+use @std.program.sorted.{sorted_by}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A body's types: each node's, by its index in the item read back, where its feature has a rule.
+@derive(Saved)
+export type TypedBody = {
+    types: List<SignedType?>,
+    refused: List<RefusedAt> = [],
+    unread: List<UnreadAt> = [],
+    /// Each name the body reads, by its node's index in the item read back, as typing resolved it.
+    reads: List<NameRead> = [],
+    /// Each binding the body makes, once.
+    binds: List<NameBound> = [],
+    /// Each body const whose value reads a seat that holds a value only while its fn runs.
+    seats_read: List<SeatReadAt> = [],
+    /// The trait each of the body's type parameters is bound by, by its place; absent for one bound by
+    /// none.
+    bounds: List<SignedType?> = [],
+}
+
+/// A body const whose value reads a seat that holds a value only while its fn runs, by indices in the
+/// item read back: the const's statement, the seat, and the node that reads it.
+@derive(Saved)
+export type SeatReadAt = { stmt: int, name: string, at: int }
+
+/// A name read that nothing binds and the program gives no type, by its node's index in the item
+/// read back: the name, how it's read, and the home of the template that wrote it.
+@derive(Saved)
+export type UnreadAt = { at: int, name: string, read: ReadAs, home: string? }
+
+/// A node its seat refused, by its index in the item read back: what the seat wants, and what the
+/// node is; a pattern's refusal, the pattern it's said at, by its index.
+@derive(Saved)
+export type RefusedAt = { at: int, want: SignedType, found: SignedType, seat: Seating, pat: int? = null }
+
+/// A body as its checking left it.
+fn kept_body(cx: Checking) -> TypedBody {
+    TypedBody {
+        types: cx.types.get(),
+        refused: [RefusedAt { at: r.at.index, want: r.want, found: r.found, seat: r.seat, pat: r.pat?.index } for r in cx.refused.get()],
+        unread: unread_kept(cx),
+        reads: reads_kept(cx),
+        binds: [b for j, b in cx.names_bound.get() if !cx.names_bound.get().take(j).any((c) -> c.name == b.name && same_binder(c.site, b.site))],
+        seats_read: [SeatReadAt { stmt: r.stmt, name: r.name, at: r.at.index } for r in cx.seat_reads.get()],
+    }
+}
+
+/// Each name a body's checking read, as it resolved it, in the order of the nodes reading them.
+fn reads_kept(cx: Checking) -> List<NameRead> { sorted_by([r for _k, r in cx.names_read.get()], (a: NameRead, b: NameRead) -> a.at < b.at) }
+
+/// Each name a body's checking read that nothing binds and the program gives no type, as kept.
+fn unread_kept(cx: Checking) -> List<UnreadAt> {
+    [UnreadAt { at: u.at.index, name: u.name, read: u.read, home: u.home } for u in cx.unread.get()]
+}
+
+/// The body of the fn `file` declares as `name`, typed; absent when it declares none with a body.
+@query
+export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> TypedBody? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    typed_under(engine, file, signed)
+}
+
+/// `signed`'s body in `file`, typed under its signature, with the bounds its type parameters carry.
+fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> TypedBody {
+    kept_body(body_checked(engine, file, signed, false)) with { bounds: signed.signature.bounds }
+}
+
+/// A fn's body beside the signature it is typed under, the item that holds it, the statement that
+/// declares it (an entry's: the last it runs), for a method its receiver's type, and the want its
+/// body is checked under where that isn't its signature's answer.
+type SignedBody = {
+    signature: FnSignature,
+    item: ReadItem,
+    body: ExprId,
+    stmt: StmtId,
+    receiver: SignedType? = null,
+    /// Whether the body writes its receiver, which a receiver that rides no pointer is then handed
+    /// its place for.
+    receiver_written: bool = false,
+    want: Expected? = null,
+    /// Whether it's a program's entry, which no fn encloses.
+    fnless: bool = false,
+    /// What a generator an annotation on it names said instead of making its body.
+    unmade: string? = null,
+    /// The seat the body's value fills, where it's no fn's body.
+    seat: Seating? = null,
+    /// Its surface typing, where a saved answer already holds it.
+    typed: TypedBody? = null,
+    /// The consts a body declared before it that it reads, where it is one such const's value, each
+    /// as it settled.
+    consts: List<ConstSeed> = [],
+    /// Whether it is a suite's case, whose failure shows its sides.
+    case: bool = false,
+}
+
+/// The fn `file` declares as `name`, its body signed; absent when it declares none with a body. A
+/// fn an annotation wraps is its wrapper.
+fn signed_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedBody? {
+    let signature? = fn_signature(engine, file, name) else { return null }
+    let annotated = wrapping(engine, file, name)
+    let item? = annotated.wrapper ?? declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let stmt? = item.stmts.find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
+    SignedBody {
+        signature: signature,
+        item: item,
+        body: item.store.fn_parts(stmt)!.body,
+        stmt: stmt,
+        unmade: annotated.said.first(),
+    }
+}
+
+/// The body checked under its signature in `file`: each sugar by its own rule, or as the core it
+/// means when `meanings`.
+fn body_checked(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    meanings: bool,
+    written: bool = false,
+) -> Checking {
+    let signing = Signing {
+        engine: engine,
+        file: file,
+        type_params: signed.signature.type_params,
+        self_type: signed.receiver,
+        writer: written_by(signed.item.store, signed.stmt),
+        bounds: signed.signature.bounds,
+    }
+    mut cx = checking(
+        signed.item.store,
+        program_of(engine, file, signing, written),
+        signed.signature.answer,
+    ) with { meanings: meanings, fnless: signed.fnless }
+    if signed.receiver != null { cx.bind(RECEIVER, signed.receiver, true, true, BindSite.Receiver) }
+    for j, p in signed.signature.params {
+        cx
+            .bind_seat(p.name, p.ty, p.mutable || p.state, p.settled, BindSite.Seat(j), p.state, p.unshared)
+    }
+    for c in signed.consts { cx.bind(c.name, c.ty) }
+    let _ = if signed.want != null {
+        cx.check(signed.body, signed.want!)
+    } else {
+        cx
+            .check_seated(
+                signed.body,
+                signed.signature.answer,
+                signed.seat ?? Seating.Body(signed.item.store.fn_parts(signed.stmt)?.name ?? ""),
+            )
+    }
+    cx
+}
+
+/// The enum `ty` is: its type parameters and its variants, typed where it's declared. Absent for a
+/// type that isn't an enum the program declares.
+fn enum_shape(engine: QueryEngine, ty: SignedType) -> EnumShape? {
+    let at? = declared_at(ty) else { return null }
+    let declared? = enum_signature(engine, at.file, at.name) else { return null }
+    EnumShape { params: declared.type_params.length, variants: declared.variants }
+}
+
+/// The record `ty` is: its type parameters and its fields, typed where it's declared. Absent for a
+/// type that isn't a record the program declares.
+fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
+    let at? = declared_at(ty) else { return null }
+    let record? = record_signature(engine, at.file, at.name) else { return null }
+    RecordShape { params: record.type_params.length, fields: record.fields }
+}
+
+/// Whether `ty` is a record its package marks `@owns`.
+fn marked_owner(engine: QueryEngine, ty: SignedType) -> bool {
+    let at? = declared_at(ty) else { return false }
+    let d? = file_declares(engine, at.file)
+        .names
+        .find(it.name == at.name && it.kind == ItemKind.Record) else { return false }
+    wears_mark(engine, d, OWNS_MARK)
+}
+
+/// The module that seals `ty`, a type the program declares wearing `@sealed`, where it is another
+/// module than `file`'s; absent for any other type.
+fn sealed_home(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> string? {
+    let at? = declared_at(ty with { nulls: 0 }) else { return null }
+    let d? = file_declares(engine, at.file).names.find(it.name == at.name && it.kind != ItemKind.Fn) else { return null }
+    if !wears_mark(engine, d, SEALED_MARK) { return null }
+    let home = module_segments(at.file)
+    let local = home.join(".")
+    if at.file.package_name == file.package_name && local == module_segments(file).join(".") { return null }
+    if at.file.package_name == file.package_name { local } else { [at.file.package_name.replace("/", ".")].concat(home).join(".") }
+}
+
+/// The mark a type wears that only its declaring module builds or rewrites it under.
+const SEALED_MARK: string = "sealed"
+
+/// The mark a record wears that holds producers its binding's scope settles.
+const OWNS_MARK: string = "owns"
+
+/// What a body in `file` reads of the program: every answer typing asks, from the queries that hold
+/// it, under `signing`'s type parameters; a type written in the body is read where `signing`'s writer
+/// stands, a type named by a node where the template that wrote the node stands. A fn's answer is
+/// read with the error it infers, or where `written`, as it's written.
+fn program_of(engine: QueryEngine, file: SourceFileAddress, signing: Signing, written: bool = false) -> CheckedProgram {
+    let memos = type_memos(engine)
+    let answered = program_answered(engine, file, signing, memos)
+    if !written { return answered }
+    answered with { value_named: (n: string, home: string?) -> read_from(engine, file, home)
+        .find_map((f) -> value_type(engine, f, n, false)), declared_value: (f: SourceFileAddress, n: string) -> value_type(engine, f, n, false), method_of: (subject: SignedType, method: string) -> method_type(engine, subject, method, file.package_name) ?? bound_method(
+        engine,
+        signing,
+        subject,
+        method,
+    ) }
+}
+
+/// What a body in `file` reads of the program, each fn's answer with the error it infers.
+fn program_answered(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signing: Signing,
+    memos: TypeMemos,
+) -> CheckedProgram {
+    CheckedProgram {
+        value_named: (n: string, home: string?) -> kept_by_key(
+            memos,
+            memos.valued,
+            "value_named",
+            memos.read_key(file, home, n),
+            () -> read_from(engine, file, home).find_map((f) -> value_type(engine, f, n, true)),
+            signed_said,
+        ),
+        declared_value: (f: SourceFileAddress, n: string) -> value_type(engine, f, n, true),
+        written: (written: TypeRef) -> applied_signed(engine, written, signing.signed(written)),
+        type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
+        record_of: (ty: SignedType) -> kept_answer(
+            memos,
+            memos.records,
+            "record_of",
+            ty,
+            () -> record_shape(engine, ty),
+            record_said,
+        ),
+        named_of: (ty: SignedType) -> named_over(engine, ty),
+        owner: (ty: SignedType) -> marked_owner(engine, ty),
+        sealed_home: (ty: SignedType) -> sealed_home(engine, file, ty),
+        declared_here: (ty: SignedType) -> declared_in(ty, file),
+        enum_of: (ty: SignedType) -> kept_answer(
+            memos,
+            memos.enums,
+            "enum_of",
+            ty,
+            () -> enum_shape(engine, ty),
+            enum_said,
+        ),
+        compared: (n: string) -> compared_value(engine, file, n),
+        settles: (n: string) -> settled_value(engine, file, n),
+        method_of: (subject: SignedType, method: string) -> kept_by_key(
+            memos,
+            memos.method_types,
+            "method_of",
+            memos.member_key(file.package_name, subject, method),
+            () -> method_answered(engine, subject, method, file.package_name),
+            signed_said,
+        ) ?? bound_method(engine, signing, subject, method),
+        property_of: (subject: SignedType, property: string) -> property_type(engine, subject, property),
+        type_value: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> type_value(engine, f, signing with { writer: f }, n)),
+        static_of: (described: SignedType, s: string) -> static_type(engine, described, s) ?? bound_static(
+            engine,
+            signing,
+            described,
+            s,
+        ),
+        methods_among: (subject: SignedType, m: string) -> [g.ty for g in impls_giving(engine, subject, m, false, file.package_name)],
+        statics_among: (described: SignedType, s: string) -> [g.ty for g in impls_giving(engine, described, s, true, file.package_name)],
+        toolchain_type: (module: string, n: string) -> toolchain_declared(engine, module, n),
+        external: (n: string, home: string?) -> read_from(engine, file, home)
+            .any((f) -> names_extern(engine, f, n)),
+        memos: memos,
+    }
+}
+
+/// The type `name` names under `signing`, read where the template `home` names stands first: what that
+/// file names, else what the body's names.
+fn named_from(signing: Signing, home: string?, name: string) -> SignedType {
+    let h? = home_file(signing.engine, home) else { return signing.named(name) }
+    let homed = (signing with { writer: h }).named(name)
+    if homed.head is .Unnamed { signing.named(name) } else { homed }
+}
+
+/// The type the const `file` declares as `name` written with no type has: its value's, checked as
+/// any body is. Absent when it declares no such const, or its value's type isn't known.
+@query
+export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
+    let item? = declaring_item(engine, file, name, ItemKind.Const) else { return null }
+    let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
+        .first() else { return null }
+    mut cx = checking(
+        item.store,
+        program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
+        null,
+    )
+    cx.check(value, Expected.Free)
+}
+
+/// The type a top-level value's name has from `file`: a fn's, as a fn type, its answer with the error
+/// it infers where `answered`, and a const's or a collection's, as it's written or else as its value
+/// is. Absent for a name that names no value.
+fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string, answered: bool) -> SignedType? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    match d.kind {
+        .Fn -> {
+            let written? = declared_signature_of(engine, d) else { return null }
+            let s = if answered && infers(written.answer) { fn_answered(engine, d.file, d.name) ?? written } else { written }
+            fn_typed([], s)
+        },
+        .Const or .Collect -> binding_type(engine, d.file, d.name) ?? settled_value_type(engine, d),
+        .State -> binding_type(engine, d.file, d.name),
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> null,
+    }
+}
+
+/// The type the unwritten const or collection `d` has from its value, absent where that value reads
+/// back to `d` itself: a type asked for its own answer.
+fn settled_value_type(engine: QueryEngine, d: DeclaredName) -> SignedType? {
+    if d.kind == ItemKind.Const && reads_itself(engine, d.file, d.name) { return null }
+    const_value_type(engine, d.file, d.name)
+}
+
+/// Whether the value of the const `file` declares as `name`, written with no type, reads back to
+/// it: itself, or through other such consts.
+fn reads_itself(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { const_loop(engine, file, name) != null }
+
+/// The consts the value of the const `file` declares as `name`, written with no type, reads on its
+/// way back to it, itself first; absent where it never comes back.
+export fn const_loop(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<DeclaredAt>? {
+    const_reach(engine, declared_place(file, name), declared_place(file, name), [])
+}
+
+/// The unwritten consts the value of the unwritten const `here` reads on its way to `home`, `here`
+/// first, through none among `seen`; absent where it never gets there.
+fn const_reach(engine: QueryEngine, here: DeclaredAt, home: DeclaredAt, seen: List<DeclaredAt>) -> List<
+    DeclaredAt,
+>? {
+    if binding_type(engine, here.file, here.name) != null || seen.any((x) -> same_declared(x, here)) { return null }
+    let item? = declaring_item(engine, here.file, here.name, ItemKind.Const) else { return null }
+    let value? = [v! for s in item.stmts if item.store.let_name(s) == here.name for v in [item.store.const_value(s)] if v != null]
+        .first() else { return null }
+    let read = [DeclaredAt { file: d!.file, name: d!.name } for k in under(item.store, At.Expr(value)) for n in [read_name(item.store, k)] if n != null for d in [resolved(engine, here.file, Space.Value, n!).named()] if d != null && d!.kind == ItemKind.Const]
+    if read.any((d) -> same_declared(d, home)) { return [here] }
+    let rest? = read.find_map((d) -> const_reach(engine, d, home, seen.concat([here]))) else { return null }
+    [here].concat(rest)
+}
+
+/// The name the node `k` reads, where it's a name read.
+fn read_name(store: SyntaxArena, k: At) -> string? {
+    match k { .Expr(e) -> store.ident_name(e), rest -> null }
+}
+
+/// The signature of the fn `d` names: the one its own item declares, where its file declares
+/// another of its name.
+fn declared_signature_of(engine: QueryEngine, d: DeclaredName) -> FnSignature? {
+    let same = [x.item for x in file_declares(engine, d.file).names if x.name == d.name && x.kind == ItemKind.Fn]
+    let at = same.index_of(d.item)
+    if same.length < 2 || at < 0 { return fn_signature(engine, d.file, d.name) }
+    let signs = fn_signatures(engine, d.file, d.name)
+    if at < signs.length { signs[at] } else { null }
+}
+
+/// Whether `name` read from `file` names an `extern fn`, whose body C writes.
+fn names_extern(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    if d.kind != ItemKind.Fn { return false }
+    let item = read_item(engine, d.file, d.item)
+    item.stmts.any((s) -> item.store.extern_parts(s)?.name == d.name)
+}
+
+/// Whether the name `u` reads in a body of `file` names a declaration it can be read as, read where
+/// the template that wrote it stands before where the body stands.
+fn answered(engine: QueryEngine, file: SourceFileAddress, u: UnreadAt) -> bool {
+    read_from(engine, file, u.home).any(names_declaration(engine, it, u.name, u.read))
+}
+
+/// Whether `name` read from `file` as `read` names a declaration: a type's for the record a literal
+/// builds, a value's or a type's for any other read.
+fn names_declaration(engine: QueryEngine, file: SourceFileAddress, name: string, read: ReadAs) -> bool {
+    let typed = resolved(engine, file, Space.Type, name).named() != null
+    match read {
+        .Record -> typed,
+        .Value or .Call -> typed || resolved(engine, file, Space.Value, name).named() != null,
+        .Pronoun -> false,
+    }
+}
+
+/// What `name` reads as from `file` when it names a type and no value: the type, standing as a
+/// value. Absent for a name that names a value, or no type the program or the language declares.
+fn type_value(engine: QueryEngine, file: SourceFileAddress, signing: Signing, name: string) -> SignedType? {
+    if resolved(engine, file, Space.Value, name).named() != null { return null }
+    let named = signing.named(name)
+    match named.head {
+        .Declared(_, _) or .Owned(_) -> meta_type(named),
+        .Parameter(_, _) -> if signing.bound_of(named) == null { null } else { meta_type(named) },
+        .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> null,
+    }
+}
+
+/// The type the toolchain's module `module` (`@std.grammar`) declares as `name`, absent when it
+/// declares none.
+@query
+fn toolchain_declared(engine: QueryEngine, module: string, name: string) -> SignedType? {
+    let m = module_path(module.split("."))
+    let package? = m.package() else { return null }
+    let d? = declarations_of(engine, package, m.local(), false, name)
+        .find(space_of(it.kind) == Space.Type) else { return null }
+    headed_type(TypeHead.Declared(d.file, d.name))
+}
+
+/// The package that holds the language's compile-time shapes.
+const META: string = "@std/meta"
+
+/// A signature as a fn type, after `leading` seats; absent when a parameter's type isn't written.
+fn fn_typed(leading: List<SignedSeat>, s: FnSignature) -> SignedType? {
+    if s.params.any(it.ty == null) { return null }
+    headed_type(TypeHead.Function) with { seats: leading
+        .concat(
+            [SignedSeat {
+                ty: p.ty!,
+                mutable: p.mutable,
+                settled: p.settled,
+                defaulted: p.defaulted,
+                name: p.name,
+                rest: p.rest,
+                state: p.state,
+                unshared: p.unshared,
+            } for p in s.params],
+        ), answer: s.answer }
+}
+
+/// Where each node of the fn `file` declares as `name` stands, by its index in the item read back,
+/// for holding its types to another reading of the same text.
+export fn fn_body_spans(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<Span?> {
+    let item? = signed_body(engine, file, name)?.item else { return [] }
+    [item.store.expr_span(ExprId { index: at }) for at in 0..item.store.exprs.count()]
+}
+
+/// The kind of each node of the fn `file` declares as `name`, by its place in the item read back,
+/// for measuring which rules are missing.
+export fn node_kinds(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    let item? = signed_body(engine, file, name)?.item else { return [] }
+    [item.store.expr(ExprId { index: at }).surface().node for at in 0..item.store.exprs.count()]
+}
+
+collect listed_typed_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a fn's body is typed through, for a process to hand its engine.
+export fn typed_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_typed_facts) }
+
+/// The names the fn `file` declares as `name` reads and the bindings it makes, as typing resolved
+/// them, each read that roots the receiver of a declared method writing its receiver kept as a
+/// write; absent when it declares none with a body.
+export fn fn_names(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamesRead? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    let typed? = typed_fn(engine, file, name) else { return null }
+    written_reads(engine, file, signed.item.store, typed)
+}
+
+/// The names `typed`, a body of `store` in `file`, reads, a read that roots the receiver of a declared
+/// method its `receiver_use` says writes kept as a write.
+export fn written_reads(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    typed: TypedBody,
+) -> NamesRead {
+    let roots = [r.index for m in store
+        .exprs_by_kind(0, store.expr_count(), store.tag_expr(Expr.MethodCall(ExprId { index: 0 }, Plain(""), []))) for r in some_list(written_root(engine, file, store, typed, m))]
+    NamesRead {
+        reads: [if roots.contains(r.at) { r with { writes: true } } else { r } for r in typed.reads],
+        binds: typed.binds,
+    }
+}
+
+/// The root of the place the method call `m` is made on, where the method is a declared one that
+/// writes its receiver.
+fn written_root(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    typed: TypedBody,
+    m: ExprId,
+) -> ExprId? {
+    let call? = match store.expr(m) {
+        .MethodCall(subject, name, _) -> MethodNamed { subject: subject, name: name.of },
+        rest -> null,
+    } else { return null }
+    let ty? = (if call.subject.index < typed.types.length { typed.types[call.subject.index] } else { null }) else { return null }
+    let at? = declared_at(called_as(ty, typed.bounds)) else { return null }
+    if !receiver_use(engine, at.file, at.name, call.name, file.package_name).written() { return null }
+    store.place_root(call.subject)
+}
+
+/// The type a method called on a value of `ty` is asked of: the trait a type parameter is bound by
+/// among `bounds`, else `ty` itself, a `dyn` value's the trait it boxes.
+fn called_as(ty: SignedType, bounds: List<SignedType?>) -> SignedType {
+    let at? = match ty.head { .Parameter(at, _) -> at, rest -> null } else { return ty }
+    if ty.nullable() || at >= bounds.length { return ty }
+    bounds[at] ?? ty
+}
+
+/// A method call's subject and the method's name.
+type MethodNamed = { subject: ExprId, name: string }
+
+/// Whether the type `ty` is declared in `file`.
+fn declared_in(ty: SignedType, file: SourceFileAddress) -> bool {
+    match ty.head { .Declared(home, _) -> same_file(home, file), rest -> false }
+}

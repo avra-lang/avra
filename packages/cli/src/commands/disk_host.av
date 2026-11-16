@@ -1,6 +1,7 @@
 //! THE DISK HOST: the workspace's questions answered by this machine's
 //! disk, environment and running binary — the door's body on the CLI's side.
 use @std.avrac.compiler.{digest_of_binary}
+use @std.avrac.compiler.store.{machine_cache}
 use @std.avrac.core.{qtrace, traced, EmbedKind}
 use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
 use @std.path.{dir_of, joined_path, file_name}
@@ -31,7 +32,6 @@ fn disk_host() -> Host {
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
         is_dir: (dir: string) -> is_dir(dir),
-        stamp: (p: string) -> stamped(p),
         reads_ahead: (files: int) -> light_or_leave(files),
         env: process_env,
         print: own_print,
@@ -40,21 +40,8 @@ fn disk_host() -> Host {
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
         compiler: own_binary(),
+        cache: machine_cache(),
     }
-}
-
-/// `--verify`'s own: whether a run may trust a file's stamp instead of reading
-/// its bytes. A doubt about a kept stamp is settled by turning this off, which
-/// reads every input and so compares the bytes to the digest they were kept with.
-once fn stamp_trusted() -> Cell<bool> { Cell.new(true) }
-
-/// Ask this run to read every input, or to trust the stamps again.
-export fn trusting_stamps(carefully: bool) { stamp_trusted().set(carefully) }
-
-/// A file's stamp, and none where the run was asked not to trust one.
-fn stamped(path: string) -> int? {
-    if !stamp_trusted().get() { return null }
-    stamp(path)
 }
 
 /// Whether a directory stands at `path` — the door's listing, asked for
@@ -209,6 +196,7 @@ fn write_file(path: string, text: string) -> string? {
 /// under `lib/avra/std/`. Null when neither stands — a bare binary
 /// with no std beside it, which resolves what its manifests declare
 /// and nothing more.
-fn std_root() -> string? {
-    toolchain_files(["../packages", "../lib/avra/std"]).find(is_dir(it))
-}
+fn std_root() -> string? { std_roots().find(is_dir(it)) }
+
+/// Where the toolchain's std may stand, beside this binary: a checkout's, then an install's.
+fn std_roots() -> List<string> { toolchain_files(["../packages", "../lib/avra/std"]) }

@@ -20,7 +20,7 @@ use core.{
 }
 use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing, fills_type_seat}
 use @std.meta.{Diagnostic}
-use diagnostics.{refusal, loc_at}
+use diagnostics.{Voice, refusal, loc_at, said_as}
 use @std.errors.{Loc}
 
 export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
@@ -93,7 +93,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     // A declaration's NAME is source-known too: `@derive(Show)` must
     // reach the trait while the file's names are still being made.
     if declares &&
-        a.args.any((e: ExprId) -> !source_spelled(cx.view.store.expr(e)) && !names_a_decl(cx, e)) {
+        a.args.any((e: ExprId) -> !source_spelled(cx.view.store.valued(e)) && !names_a_decl(cx, e)) {
         computed_argument(cx, a)
         return
     }
@@ -239,29 +239,29 @@ fn at_annotation(cx: TypeCx, a: Annotation) -> Loc? {
 }
 
 fn not_a_fn(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.callee",
-                at_annotation(cx, a),
-                "an annotation names a fn over a declaration",
-                "`@${a.name}` names no fn",
-                "write `fn ${a.name}(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.callee", at_annotation(cx, a), names_no_fn(a.name)))
 }
 
 fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.receiver",
-                at_annotation(cx, a),
-                receiver_law,
-                "`${a.name}` takes nothing",
-                "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.receiver", at_annotation(cx, a), takes_nothing(a.name)))
+}
+
+/// An annotation whose name names no fn.
+export fn names_no_fn(name: string) -> Voice {
+    Voice {
+        message: "an annotation names a fn over a declaration",
+        label: "`@${name}` names no fn",
+        help: "write `fn ${name}(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it",
+    }
+}
+
+/// An annotation naming a fn that takes no declaration.
+export fn takes_nothing(name: string) -> Voice {
+    Voice {
+        message: receiver_law,
+        label: "`${name}` takes nothing",
+        help: "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum",
+    }
 }
 
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
@@ -284,17 +284,25 @@ fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) 
 }
 
 fn wrong_count(mut cx: TypeCx, a: Annotation, least: int, most: int) {
-    let count = if least == most { "${most}" } else { "${least}..${most}" }
     let _ = cx
         .spoken(
-            refusal(
+            said_as(
                 "annotation.seats",
                 at_annotation(cx, a),
-                seats_law,
-                "`${a.name}` takes ${count} after the declaration, this writes ${a.args.length}",
-                "write the arguments the annotation takes — `@${a.name}(…)`",
+                miscounted(a.name, "${least}", "${most}", "${a.args.length}"),
             ),
         )
+}
+
+/// The annotation `name` written with `written` arguments, where its fn takes `least..most` after
+/// the declaration.
+export fn miscounted(name: string, least: string, most: string, written: string) -> Voice {
+    let count = if least == most { most } else { "${least}..${most}" }
+    Voice {
+        message: seats_law,
+        label: "`${name}` takes ${count} after the declaration, this writes ${written}",
+        help: "write the arguments the annotation takes — `@${name}(…)`",
+    }
 }
 
 fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
@@ -485,19 +493,21 @@ fn derived_same_file(mut cx: TypeCx, a: Annotation) {
 
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
     let shown = match cx.view.types.shape_of(ret) {
-        .List(e) if cx.view.types.name_of(e) == "Diagnostic" -> "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`",
+        .List(e) if cx.view.types.name_of(e) == "Diagnostic" -> foreign_diagnostics,
         rest -> "`${cx.view.types.name_of(ret)}`",
     }
     let _ = cx
-        .spoken(
-            refusal(
-                "annotation.answer",
-                at_annotation(cx, a),
-                "an annotation answers an effect",
-                "`${a.name}` answers ${shown}",
-                [effect_words(x) for x in effect_census].join("; "),
-            ),
-        )
+        .spoken(said_as("annotation.answer", at_annotation(cx, a), answers_no_effect(a.name, shown)))
+}
+
+/// The annotation `name`, whose fn answers `shown` — written as the refusal shows it — which is no
+/// effect.
+export fn answers_no_effect(name: string, shown: string) -> Voice {
+    Voice {
+        message: "an annotation answers an effect",
+        label: "`${name}` answers ${shown}",
+        help: [effect_words(x) for x in effect_census].join("; "),
+    }
 }
 
 /// The effects' words, one sentence per arm.
@@ -576,4 +586,7 @@ const said_help: string = "change the declaration the annotation refuses, or the
 
 const derive_law_words: string = "an annotation derives through a trait that declares `derive`"
 export const receiver_law: string = "an annotation's first seat says what it takes"
+/// A list of a `Diagnostic` another module declares, as an annotation's answer is shown.
+export const foreign_diagnostics: string = "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`"
+
 const seats_law: string = "an annotation's arguments fill its seats"

@@ -155,7 +155,7 @@ language-agnostic, imported by everything above them.
 
 The compiler builds itself: `./avra` runs `build/avra`, `make avra`
 rebuilds it with the binary already there, and a cold tree
-bootstraps from `bootstrap/seed.ll` (`make bootstrap`; the rule is
+bootstraps from `bootstrap/seed.ll.gz` (`make bootstrap`; the rule is
 in bootstrap/README.md). Design sources of truth live in the old
 tree (`../forge-crafting-intepreters`):
 `docs/2026_04_18_FULL_SPEC.md` (the language),

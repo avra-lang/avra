@@ -83,6 +83,12 @@ export type Rebuilder = {
     // a seat or lambda param whose NAME came through a hole: a binder
     // with no node of its own, keyed by its ParamId
     holed_params: List<ParamId>,
+    // each binder a lone hole's fill built, whose name binds where the code lands
+    filled_pats: List<PatId>,
+    // every seat the copy made, each keeping the template's span
+    made_params: List<ParamId>,
+    // each statement whose name seats a hole filled, with those seats
+    landed: List<LandedAt>,
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
@@ -98,11 +104,44 @@ export type Rebuilder = {
     // the source reaches twice is one node in the copy. A cell, because it is
     // an identity — a walk that copies the rebuilder shares it.
     copies: Cell<List<ExprId?>>,
+    // the mark every name a sugar's template BINDS gains, at its binder
+    // and its reads, so none meets a name of the code it lands in; a name
+    // the template reads and never binds is its home's and keeps itself,
+    // as does one that comes through a hole. Absent for a copy that keeps
+    // its names.
+    fresh: string? = null,
+    // the names the template binds, which `fresh` marks
+    binds: List<string> = [],
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
 /// of each hole by index (`store.is_run_hole` over its fill
 /// expression).
+/// The nodes a copy made from its template, each keeping the template's span: those whose names
+/// read there and those whose names came through a hole, never what a fill built at its own; the
+/// expressions a hole named or filled apart, since their names read where the copy lands; and each
+/// statement's seats whose names a hole filled.
+export type CopiedNodes = { exprs: List<ExprId>, holed_exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, params: List<ParamId>, landed: List<LandedAt> }
+
+/// A copied statement's name seats a hole filled.
+export type LandedAt = { stmt: StmtId, seats: List<LandedSeat> }
+
+impl Rebuilder {
+    fn made_nodes() -> CopiedNodes {
+        CopiedNodes {
+            exprs: self.made_exprs,
+            holed_exprs: self.holed_exprs,
+            stmts: self.made_stmts.concat(self.holed_stmts),
+            pats: self.made_pats.concat(self.holed_pats),
+            params: self.made_params,
+            landed: [l with { seats: if self.holed_stmts.contains(l.stmt) { l.seats.concat([LandedSeat.Names]) } else { l.seats } } for l in self.landed]
+                .concat(
+                    [LandedAt { stmt: s, seats: [LandedSeat.Names] } for s in self.holed_stmts if !self.landed.any(it.stmt == s)],
+                ),
+        }
+    }
+}
+
 export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
     Rebuilder {
         src: store,
@@ -120,6 +159,9 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         holed_stmts: [],
         holed_pats: [],
         holed_params: [],
+        filled_pats: [],
+        made_params: [],
+        landed: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -154,6 +196,9 @@ export fn copier(
         holed_stmts: [],
         holed_pats: [],
         holed_params: [],
+        filled_pats: [],
+        made_params: [],
+        landed: [],
         misfits: [],
         unplaceable: [],
         holed: [],
@@ -192,9 +237,7 @@ export fn quote_kind(store: SyntaxArena, e: ExprId) -> QuoteKind {
             if !arms.is_empty() { return QuoteKind.Arms }
             if ss.is_empty() { return QuoteKind.Stmts }
             if ss.all((s: StmtId) -> store.bare_hole(s)) { return QuoteKind.Holes }
-            if store.hole_stmt(ss.last()!) == null &&
-                store.stmt(ss.last()!) is .ExprStmt &&
-                !store.guard_stmt(ss.last()!) {
+            if store.hole_stmt(ss.last()!) == null && store.answer_of(ss.last()!) != null {
                 return QuoteKind.Expr
             }
             if ss.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
@@ -215,8 +258,8 @@ impl Rebuilder {
             if !self.copying { return e }
             return self.placed_fill(e, self.fill_expr(k!))
         }
-        let tail: int? = self.tail_hole(x)
-        if tail != null { return self.tail_block(e, x, tail!) }
+        let tail: int? = self.tail_hole(e)
+        if tail != null { return self.tail_block(e, tail!) }
         let known? = self.copy_of(e) else { return self.rebuilt_expr(e, x) }
         known
     }
@@ -243,32 +286,24 @@ impl Rebuilder {
         copy
     }
 
-    /// The hole a block's value is, when it is a lone one.
-    fn tail_hole(x: Expr) -> int? {
-        match x {
-            .Block(ss, value) -> {
-                let v? = value else { return null }
-                let k? = self.lone_hole(self.src.ident_name(v)) else { return null }
-                if self.runs[k] { null } else { k }
-            },
-            _ -> null,
-        }
+    /// The hole a block's tail statement is, when it is a lone one.
+    fn tail_hole(e: ExprId) -> int? {
+        let stmts? = self.src.block_stmts(e) else { return null }
+        let last? = stmts.last() else { return null }
+        let k? = self.src.hole_stmt(last) else { return null }
+        if self.runs[k] { null } else { k }
     }
 
     /// A block whose LAST statement is a lone hole: the fill is the
-    /// block's tail — statements join it and the last that answers is
-    /// its value, an expression is its value outright.
-    mut fn tail_block(e: ExprId, x: Expr, k: int) -> ExprId {
+    /// block's tail — statements join it, an expression is its value outright.
+    mut fn tail_block(e: ExprId, k: int) -> ExprId {
         self.classify(k, HoleKind.Tail)
-        let ss: List<StmtId> = match x { .Block(held, _) -> held, _ -> [] }
+        let init = self.src.block_stmts(e)!
         self.holed.push(false)
-        let init = self.stmts(ss)
+        let kept = self.stmts(init.slice(0, init.length - 1))
         let holed = self.holed.pop()
         if !self.copying { return e }
-        let all = init.concat(self.fill_tail(k))
-        let last? = all.last() else { return self.minted_expr(e, Expr.Block([], null), holed) }
-        let value? = self.dst.answer_of(last) else { return self.minted_expr(e, Expr.Block(all, null), holed) }
-        self.minted_expr(e, Expr.Block(all.slice(0, all.length - 1), value), holed)
+        self.minted_expr(e, Expr.Block(kept.concat(self.fill_tail(k))), holed)
     }
 
     mut fn expr_opt(e: ExprId?) -> ExprId? {
@@ -407,10 +442,10 @@ impl Rebuilder {
             self.classify(k!, HoleKind.Type)
             if !self.copying { return t }
             let f = self.fill_type(k!)
-            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span, spliced: true } }
-            return t with { name: f.name, args: self.trefs(t.args), spliced: true }
+            if t.applied.is_empty() { return f with { optional: f.optional || t.optional, span: t.span, spliced: true } }
+            return t with { name: f.name, applied: self.trefs(t.applied), spliced: true }
         }
-        t with { name: self.rewritten(t.name), args: self.trefs(t.args), alternatives: self.trefs(t.alternatives), spliced: t.spliced || hole_name(t.name) != null }
+        t with { name: self.rewritten(t.name), applied: self.trefs(t.applied), seats: [s with { ty: self.tref(s.ty) } for s in t.seats], answer: self.tref_opt(t.answer), alternatives: self.trefs(t.alternatives), spliced: t.spliced || hole_name(t.name) != null }
     }
 
     mut fn trefs(ts: List<TypeRef>) -> List<TypeRef> { [self.tref(t) for t in ts] }
@@ -446,7 +481,13 @@ impl Rebuilder {
     /// where the code lands.
     mut fn scoped_name(text: Scoped) -> Scoped {
         if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
-        Scoped(self.rewritten(text.of))
+        let named = self.rewritten(text.of)
+        let mark? = self.fresh else { return Scoped(named) }
+        if self.copying &&
+            !self.verbatim &&
+            hole_name(text.of) == null &&
+            self.binds.contains(text.of) { return Scoped("${named}${mark}") }
+        Scoped(named)
     }
 
     mut fn scoped_name_opt(text: Scoped?) -> Scoped? {
@@ -492,6 +533,7 @@ impl Rebuilder {
         let rebuilt = p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), marks: self.marks(p.marks), says: self.said(p.says) }
         if !self.copying { return rebuilt }
         let id = self.dst.alloc_param_id(self.src.param_id_span(p.id))
+        self.made_params.push(id)
         if !self.verbatim && hole_name(p.name.of) != null { self.holed_params.push(id) }
         rebuilt with { id: id }
     }
@@ -571,6 +613,7 @@ impl Rebuilder {
                 self.holed_stmts = self.holed_stmts.concat(sub.holed_stmts)
                 self.holed_pats = self.holed_pats.concat(sub.holed_pats)
                 self.holed_params = self.holed_params.concat(sub.holed_params)
+                self.made_params = self.made_params.concat(sub.made_params)
                 copied
             },
             .Expanded(expansion) -> BodyView.Expanded(self.expr(expansion)),
@@ -599,12 +642,8 @@ impl Rebuilder {
         self.extended(e, id)
         let targs = self.src.struct_targs_of(e)
         if !targs.is_empty() { self.dst.mark_struct_targs(id, [self.tref(a) for a in targs]) }
-        let bp: BodyParts? = x.body_of()
-        if bp != null {
-            let b = bp!
-            if b.word == "quote" { self.dst.mark_quote_at(id) }
-            if b.word != "quote" && b.word != "text" { self.dst.mark_sublang(id, self.src.body_start(e)) }
-        }
+        if is_quote(x) { self.dst.mark_quote_at(id) }
+        if is_sublanguage(x) { self.dst.mark_sublang(id, self.src.body_start(e)) }
         if holed {
             self.holed_exprs.push(id)
         } else {
@@ -628,15 +667,20 @@ impl Rebuilder {
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
         let id = self.dst.alloc_stmt(x, self.src.stmt_span(s))
         self.src.copy_stmt_tables(s, self.dst, id)
-        let args = self.src.trait_args_of(s)
-        if !args.is_empty() { self.dst.mark_trait_args(id, [self.tref(a) for a in args]) }
-        let spreads = self.src.spreads_of(s)
-        if !spreads.is_empty() { self.dst.spread_fields(id, [x with { of: self.tref(x.of) } for x in spreads]) }
-        let docs: List<string>? = self.src.doc_comment(s)
-        if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }
+        let group = self.src.doc_group(s)
+        if group != null { self.dst.document(id, group!.lines, group!.at) }
         for a in annotations { self.dst.annotate(id, a) }
         if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
+        let seats = self.landed_seats(s)
+        if !seats.is_empty() { self.landed.push(LandedAt { stmt: id, seats: seats }) }
         id
+    }
+
+    /// The name seats of the source statement `s` a lone hole stands as: an impl's target and trait.
+    fn landed_seats(s: StmtId) -> List<LandedSeat> {
+        let p? = self.src.impl_parts(s) else { return [] }
+        let target = if self.lone_hole(p.target) == null { [] } else { [LandedSeat.Target] }
+        target.concat(if self.lone_hole(p.of) == null { [] } else { [LandedSeat.Trait] })
     }
 
     // ── holes and fills ──
@@ -684,8 +728,7 @@ impl Rebuilder {
     /// compiler's arithmetic.
     fn filled(k: int, kind: HoleKind) -> Filled {
         if k >= self.fills.length { return Filled.Unplaceable(no_fill_for(k, self.fills.length)) }
-        let fill = self.fills[k]
-        fill(kind)
+        (self.fills[k])(kind)
     }
 
     /// A fill with no place of its own — a name, a literal — stands
@@ -740,6 +783,13 @@ impl Rebuilder {
 
     /// A binder seat's fill: a pattern id stands as itself, a name is bound.
     mut fn fill_pat(k: int) -> PatId {
+        let p = self.filled_pat(k)
+        self.filled_pats.push(p)
+        p
+    }
+
+    /// The pattern a binder seat's fill stands as.
+    mut fn filled_pat(k: int) -> PatId {
         match self.filled(k, HoleKind.Binder) {
             .Pat(p) -> p,
             .Name(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t))),
@@ -753,6 +803,13 @@ impl Rebuilder {
     /// A binder run's fill: a pattern stands as itself, names are one
     /// binder each.
     mut fn fill_binders(k: int) -> List<PatId> {
+        let ps = self.filled_binders(k)
+        self.filled_pats = self.filled_pats.concat(ps)
+        ps
+    }
+
+    /// The patterns a binder run's fill stands as.
+    mut fn filled_binders(k: int) -> List<PatId> {
         match self.filled(k, HoleKind.Binder) {
             .Pat(p) -> [p],
             .Names(ts) -> [self.dst.alloc_pat(Pat.Bind(Scoped(t))) for t in ts],

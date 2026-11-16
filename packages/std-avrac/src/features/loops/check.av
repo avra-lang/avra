@@ -1,57 +1,19 @@
-//! The loops' typing laws: a while condition is a bool; a for range
-//! is ints; a jump ends the turn of a loop around it. When a bound
-//! refuses, the desugared cond/step stay unwalked — the refusal gate
-//! stops the program before their (absorbed) types matter.
-use core.{StmtId, ExprId, TypeId, Type, jump_word}
+//! The loops' typing laws: a while condition is a bool; a for walks a
+//! walk source or a range; a jump ends the turn of a loop around it.
+use core.{StmtId, ExprId, TypeId, Type, jump_word, Decision}
 use features.{TypeCx, nothing, this_is}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, Voice, refusal, said_as}
 
 export fn check_while(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .While(cond, stmts) -> {
             cx.walk(cond)
-            cx.require_bool(cond, "a `while` condition", "this decides the loop")
+            cx.require_bool(cond, Decision.While)
             cx.turn_stmts(s, stmts)
             cx.repeated_rows_law_in(stmts)
         },
         _ -> nothing(),
     }
-}
-
-export fn check_for(mut cx: TypeCx, s: StmtId) {
-    match cx.view.store.stmt(s) {
-        .For(_, from, to, cond, step, stmts) -> {
-            cx.walk(from)
-            cx.walk(to)
-            let ok = range_bound(cx, from, "starts") && range_bound(cx, to, "ends")
-            if ok {
-                cx.walk(cond)
-                cx.walk(step)
-            }
-            cx.turn_stmts(s, stmts)
-            cx.repeated_rows_law_in(stmts)
-        },
-        _ -> nothing(),
-    }
-}
-
-/// A range bound is an `int`; Error absorbs.
-fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
-    let sh = cx.shape_at(e)
-    if sh is .Int { return true }
-    if sh is .Error { return false }
-    let n = cx.name_at(e)
-    cx
-        .emit(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "a `for` range ${verb} at an `int`, found `${n}`",
-                this_is(n),
-                "a range counts between `int`s — `for i in 0..n`; to walk a list, name it directly: `for x in xs`",
-            ),
-        )
-    false
 }
 
 /// `for x in xs` — the subject is a walk source; the name binds its
@@ -136,44 +98,50 @@ fn aimed_well(mut cx: TypeCx, s: StmtId, word: string, at: int) {
 
 // ── The voices ──
 
-fn no_loop(cx: TypeCx, s: StmtId, word: string) -> Diag {
-    refusal(
-        "loop.jump",
-        cx.stmt_loc(s),
-        "`${word}` ends the turn of a loop around it, and no loop encloses it",
-        "no loop here",
-        "`return` leaves the fn",
-    )
-}
+fn no_loop(cx: TypeCx, s: StmtId, word: string) -> Diag { said_as("loop.jump", cx.stmt_loc(s), jump_unlooped(word)) }
 
-fn behind_lambda(cx: TypeCx, s: StmtId, word: string) -> Diag {
-    refusal(
-        "loop.jump",
-        cx.stmt_loc(s),
-        "`${word}` ends the turn of a loop around it, and a lambda's body runs apart from any loop outside it",
-        "inside a lambda",
-        "answer from the lambda, and decide in the loop",
-    )
-}
+fn behind_lambda(cx: TypeCx, s: StmtId, word: string) -> Diag { said_as("loop.jump", cx.stmt_loc(s), jump_behind_lambda(word)) }
 
-fn in_comprehension(cx: TypeCx, s: StmtId, word: string) -> Diag {
-    refusal(
-        "loop.jump",
-        cx.stmt_loc(s),
-        "`${word}` ends the turn of a loop around it, and a comprehension's walk builds its whole list",
-        "inside a comprehension",
-        "write the `for` and push, or keep elements with an `if` clause",
-    )
-}
+fn in_comprehension(cx: TypeCx, s: StmtId, word: string) -> Diag { said_as("loop.jump", cx.stmt_loc(s), jump_in_comprehension(word)) }
 
 fn not_a_loop(cx: TypeCx, label: ExprId, word: string) -> Diag {
-    refusal(
-        "loop.label",
-        cx.loc_of(label),
-        "`${word}` names a loop by its `for` binder, and `${cx.view.store.ident_name(label)!}` is no enclosing `for`'s name here",
-        "not a loop's name",
-        "a `while` has no name — `${word}` alone ends the innermost loop",
-    )
+    said_as("loop.label", cx.loc_of(label), jump_unaimed(word, cx.view.store.ident_name(label)!))
+}
+
+/// A `word` — `break` or `continue` — no loop encloses.
+export fn jump_unlooped(word: string) -> Voice {
+    Voice {
+        message: "`${word}` ends the turn of a loop around it, and no loop encloses it",
+        label: "no loop here",
+        help: "`return` leaves the fn",
+    }
+}
+
+/// A `word` a lambda's body holds, apart from the loop around the lambda.
+export fn jump_behind_lambda(word: string) -> Voice {
+    Voice {
+        message: "`${word}` ends the turn of a loop around it, and a lambda's body runs apart from any loop outside it",
+        label: "inside a lambda",
+        help: "answer from the lambda, and decide in the loop",
+    }
+}
+
+/// A `word` a comprehension holds, whose walk builds its whole list.
+export fn jump_in_comprehension(word: string) -> Voice {
+    Voice {
+        message: "`${word}` ends the turn of a loop around it, and a comprehension's walk builds its whole list",
+        label: "inside a comprehension",
+        help: "write the `for` and push, or keep elements with an `if` clause",
+    }
+}
+
+/// A `word` whose label `name` names no enclosing `for`.
+export fn jump_unaimed(word: string, name: string) -> Voice {
+    Voice {
+        message: "`${word}` names a loop by its `for` binder, and `${name}` is no enclosing `for`'s name here",
+        label: "not a loop's name",
+        help: "a `while` has no name — `${word}` alone ends the innermost loop",
+    }
 }
 
 fn nothing_to_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {

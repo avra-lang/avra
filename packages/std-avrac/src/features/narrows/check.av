@@ -6,7 +6,7 @@
 //! pattern's read for lowering to test against.
 use core.{PatId, Type, TypeId, TypeRef, DeclId}
 use features.{TypeCx, this_is}
-use diagnostics.{refusal, defect_at}
+use diagnostics.{Voice, defect_at, refusal, said_as}
 
 export fn narrow_types(mut cx: TypeCx, p: PatId, ty: TypeRef, expected: TypeId) -> List<TypeId> {
     let tr? = cx.view.types.dyn_trait(cx.seen(expected)) else { return not_dyn(cx, p, expected) }
@@ -69,33 +69,31 @@ fn not_dyn(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
 // ── The voices ──
 
 fn plain_subject(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
-    let n = cx.view.types.name_of(expected)
-    cx
-        .emit(
-            refusal(
-                "type.narrow",
-                cx.pat_loc(p),
-                "a type pattern narrows a `dyn` — this is `${n}`",
-                this_is(n),
-                "only a `dyn` hides which type it holds; match this value by its own shape",
-            ),
-        )
+    cx.emit(said_as("type.narrow", cx.pat_loc(p), narrow_plain(cx.view.types.name_of(expected))))
     []
 }
 
+/// A type pattern over a value of `found`, which is no `dyn`.
+export fn narrow_plain(found: string) -> Voice {
+    Voice {
+        message: "a type pattern narrows a `dyn` — this is `${found}`",
+        label: this_is(found),
+        help: "only a `dyn` hides which type it holds; match this value by its own shape",
+    }
+}
+
 fn absent_subject(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
-    let n = cx.view.types.name_of(expected)
-    cx
-        .emit(
-            refusal(
-                "type.narrow",
-                cx.pat_loc(p),
-                "a type pattern narrows a `dyn`, and this `${n}` may be absent",
-                this_is(n),
-                "unwrap it first — a `v?` arm — then narrow the `dyn` it holds",
-            ),
-        )
+    cx.emit(said_as("type.narrow", cx.pat_loc(p), narrow_absent(cx.view.types.name_of(expected))))
     []
+}
+
+/// A type pattern over a value of `found`, which may be absent.
+export fn narrow_absent(found: string) -> Voice {
+    Voice {
+        message: "a type pattern narrows a `dyn`, and this `${found}` may be absent",
+        label: this_is(found),
+        help: "unwrap it first — a `v?` arm — then narrow the `dyn` it holds",
+    }
 }
 
 fn not_implementor(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId, expected: TypeId) -> List<

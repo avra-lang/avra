@@ -14,8 +14,9 @@
 
 #ifdef AVRA_CENSUS
 #define CENSUS(x) x
-extern int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
+extern int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets, g_list_pushes;
 void note_retain(void* site);
+void note_push(void* site);
 #else
 #define CENSUS(x)
 #endif
@@ -35,6 +36,11 @@ static inline Header* avra_hdr(void* p) {
     return h->tag == AVRA_TAG ? h : 0;
 }
 
+// A box's flags byte: 0 for a box no site observed, OBSERVED for one a
+// site did, every bit for the binary's own data (runtime/avra_box.h).
+static inline uint8_t avra_box_flags(const void* payload) {
+    return ((const uint8_t*)((const Header*)payload - 1))[AVRA_FLAGS_AT];
+}
 // The leaves themselves (avra_hot.c).
 void avra_rc_retain(void* p);
 void avra_rc_release(void* p);
@@ -46,6 +52,13 @@ int64_t avra_slot_get(void* box, int64_t i);
 void* avra_slot_get_owned(void* box, int64_t i);
 int64_t avra_array_len(void* arr);
 void* avra_box_thawed(void* p);
+void* avra_seat_opened(void* p);
+void avra_array_push(void* arr, int64_t v);
+void avra_array_push_owned(void* arr, void* v);
+void avra_array_push_moved(void* arr, void* v);
+void avra_slot_put(void* arr, int64_t i, int64_t v);
+void avra_slot_set(void* arr, int64_t i, int64_t v);
+void* avra_slot_unique(void* arr, int64_t i);
 
 // AVRA_RC_GUARD, settled at load.
 #if AVRA_INSTRUMENTS
@@ -66,5 +79,14 @@ int64_t avra_get_guarded(void* arr, int64_t i);
 void* avra_get_owned_guarded(void* arr, int64_t i);
 __attribute__((noreturn)) void avra_trap_bounds(int64_t i, int64_t len);
 void* avra_box_thawed_cloned(void* p, void* ra);
+__attribute__((noreturn)) void avra_seat_static(void);
+// The writes' whole rows, for every case but the fast one.
+void avra_push_grown(void* arr, int64_t v);
+void avra_push_owned_grown(void* arr, void* v);
+void avra_push_moved_grown(void* arr, void* v);
+void avra_slot_put_logged(void* arr, int64_t i, int64_t v);
+void avra_slot_put_flagged(void* arr, int64_t i, int64_t v);
+void avra_slot_set_guarded(void* arr, int64_t i, int64_t v);
+void* avra_slot_opened(void* arr, int64_t i);
 
 #endif

@@ -9,7 +9,15 @@ use @std.avrac.compiler.lower.{program_symbol}
 use @std.process.{status_of, cmd, Env, Outcome, ProcessError, minimal}
 use @std.text.{parse_int}
 use @std.io.{env}
-use commands.{run_binary, refused_by_host, root_workspace, tool, ended_as}
+use commands.{
+    run_binary,
+    refused_by_host,
+    root_workspace,
+    tool,
+    ended_as,
+    program_door,
+    program_refuse_evaluated,
+}
 
 /// A child-run program test's EVAL leg's own hand-off word — a package's
 /// root and one file under it, never a suite binary.
@@ -53,6 +61,7 @@ export fn light_phase(words: List<string>) -> int? {
 /// not derive is no end at all: its report goes to stderr, where the
 /// suite reads a leg, under an exit of its own.
 fn refuse_eval(root: string, path: string) -> int {
+    if program_door() { return program_refuse_evaluated(root, path) }
     let ws = root_workspace(root)
     match ws.from_sources(null, Want.Binary) {
         .Ok(d) -> match program_ended(d.lowered, program_symbol(ws.file_name(path))) {

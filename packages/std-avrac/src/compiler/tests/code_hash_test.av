@@ -5,8 +5,8 @@
 use @std.avrac.compiler.{Program}
 use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
-use compiler.workspace_analysis.{inst_key_of}
 use compiler.lower.{code_graph, CodeFacts, FactNode}
+use compiler.lower.code_hash.{empty_sum, node_digest, summed, summed_hash}
 
 fn hashing(main: string) -> Program {
     let held = vendored_meta(
@@ -100,6 +100,18 @@ spec "compiler — a fn's code hash" {
             )
         }
         then "an impl method of the trait it dispatches moves it" { moved(dispatching(1, 1), dispatching(2, 1)) }
+        then "a callee swapped for another of the same body moves it" {
+            moved(
+                "fn b() -> int { 1 }\nfn c() -> int { 1 }\nfn answer() -> int { b() }",
+                "fn b() -> int { 1 }\nfn c() -> int { 1 }\nfn answer() -> int { c() }",
+            )
+        }
+        then "a cycle with a member doubled moves it" {
+            moved(
+                "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { a(3) }",
+                "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { c(n - 1) } }\nfn c(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { a(3) }",
+            )
+        }
         then "a fn handed through a cell the caller passes on moves it" {
             moved(
                 "fn leaf() -> int { 1 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn through(c: Cell<fn() -> int>) -> int { c.get()() }\nfn answer() -> int { through(slot()) }\nfn setup() { slot().set(leaf) }\nsetup()",
@@ -108,14 +120,14 @@ spec "compiler — a fn's code hash" {
         }
     }
     given "an edit that moves no code the fn reaches" {
-        then "a rename of a callee moves nothing" {
-            same(
+        then "a rename of a callee moves it, a name being part of the graph" {
+            moved(
                 "fn leaf() -> int { 1 }\nfn answer() -> int { leaf() }",
                 "fn leaf_renamed() -> int { 1 }\nfn answer() -> int { leaf_renamed() }",
             )
         }
-        then "a rename inside a recursion cycle moves nothing" {
-            same(
+        then "a rename inside a recursion cycle moves it" {
+            moved(
                 "fn even(n: int) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
                 "fn even(n: int) -> bool { if n == 0 { true } else { uneven(n - 1) } }\nfn uneven(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
             )
@@ -132,14 +144,14 @@ spec "compiler — a fn's code hash" {
                 "type P = { b: int }\nfn answer() -> int { P { b: 1 }.b }",
             )
         }
-        then "a record reached twice, renamed, moves nothing" {
-            same(
+        then "a record reached twice, renamed, moves it, a name being part of the graph" {
+            moved(
                 "type A = { x: int }\ntype P = { a: A, b: A }\nfn answer() -> int { P { a: A { x: 1 }, b: A { x: 2 } }.b.x }",
                 "type B = { x: int }\ntype P = { a: B, b: B }\nfn answer() -> int { P { a: B { x: 1 }, b: B { x: 2 } }.b.x }",
             )
         }
-        then "a recursive type renamed moves nothing" {
-            same(
+        then "a recursive type renamed moves it, a name being part of the graph" {
+            moved(
                 "type L = { v: int, next: L? }\nfn answer() -> int { L { v: 1, next: null }.v }",
                 "type M = { v: int, next: M? }\nfn answer() -> int { M { v: 1, next: null }.v }",
             )
@@ -175,14 +187,14 @@ spec "compiler — a fn's code hash" {
         }
     }
     given "a symmetric cycle of alike bodies" {
-        then "entered at either member hashes alike" {
-            same(
+        then "entered at either member hashes apart, each by its own name" {
+            moved(
                 "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { a(3) }",
                 "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { b(3) }",
             )
         }
-        then "renamed hashes alike" {
-            same(
+        then "renamed hashes apart" {
+            moved(
                 "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { a(3) }",
                 "fn p(n: int) -> int { if n == 0 { 0 } else { q(n - 1) } }\nfn q(n: int) -> int { if n == 0 { 0 } else { p(n - 1) } }\nfn answer() -> int { p(3) }",
             )
@@ -205,30 +217,9 @@ spec "compiler — a fn's code hash" {
     }
 }
 
-spec "compiler — an instantiation's kept key" {
-    given "the same home, arguments and symbol" {
-        then "name one key" {
-            inst_key_of("home", "int", "g\$^T") == inst_key_of("home", "int", "g\$^T")
-        }
-    }
-    given "a type argument whose shape differs" {
-        then "names another key" {
-            inst_key_of("home", "int", "g\$^T") != inst_key_of("home", "record 1 (int)", "g\$^T")
-        }
-        then "a field's type moved under the same name names another key" {
-            inst_key_of("home", "record 2 (int, int)", "g\$^T") != inst_key_of("home", "record 2 (int, string)", "g\$^T")
-        }
-    }
-    given "a home whose object key differs" {
-        then "names another key" {
-            inst_key_of("home", "int", "g\$^T") != inst_key_of("home2", "int", "g\$^T")
-        }
-    }
-}
-
 /// The hash of a fn whose one ref names `target`, which has no facts of its own.
 fn ref_hash(target: string, known: List<string>) -> string? {
-    mut g = code_graph(
+    let g = code_graph(
         [
             CodeFacts {
                 nodes: [FactNode { name: "a", own: "x", refs: [target] }],
@@ -236,11 +227,102 @@ fn ref_hash(target: string, known: List<string>) -> string? {
                 asked: [],
             },
         ],
-        [],
         known,
         [],
     )
     g.hash("a")
+}
+
+/// The hash of each of `targets` over one file of `nodes`.
+fn graph_hashes(nodes: List<FactNode>, targets: List<string>) -> List<string?> {
+    let g = code_graph([CodeFacts { nodes: nodes, addressed: [], asked: [] }], [], targets)
+    [g.hash(t) for t in targets]
+}
+
+/// A cycle of ten nodes, the fourth reaching `x`; `t1` and `t2` enter it, `t3` reaches `y` alone;
+/// `x`, `y` and the cycle's eighth member made of `own_x`, `own_y` and `own_7`.
+fn ringed(own_x: string, own_y: string, own_7: string) -> List<FactNode> {
+    let ring = [FactNode {
+        name: "c${i}",
+        own: if i == 7 { own_7 } else { "ring" },
+        refs: if i == 3 { ["c${(i + 1) % 10}", "x"] } else { ["c${(i + 1) % 10}"] },
+    } for i in 0..10]
+    ring
+        .concat(
+            [
+                FactNode { name: "x", own: own_x, refs: [] },
+                FactNode { name: "y", own: own_y, refs: [] },
+                FactNode { name: "t1", own: "t", refs: ["c0"] },
+                FactNode { name: "t2", own: "t", refs: ["c5"] },
+                FactNode { name: "t3", own: "t", refs: ["y"] },
+            ],
+        )
+}
+
+/// Which of `t1`, `t2`, `t3` hash otherwise in `a` than in `b`.
+fn moved_targets(a: List<FactNode>, b: List<FactNode>) -> string {
+    let before = graph_hashes(a, ["t1", "t2", "t3"])
+    let after = graph_hashes(b, ["t1", "t2", "t3"])
+    [t for i, t in ["t1", "t2", "t3"] if before[i] != after[i]].join(",")
+}
+
+spec "compiler — a code hash moves exactly the targets reaching an edit" {
+    given "a big cycle two targets enter" {
+        then "an edit to a node it reaches moves those two alone" { moved_targets(ringed("x", "y", "ring"), ringed("x2", "y", "ring")) == "t1,t2" }
+        then "an edit inside the cycle moves those two alone" { moved_targets(ringed("x", "y", "ring"), ringed("x", "y", "ring2")) == "t1,t2" }
+        then "an edit only the third reaches moves it alone" { moved_targets(ringed("x", "y", "ring"), ringed("x", "y2", "ring")) == "t3" }
+    }
+}
+
+/// The diamond `a` -> `b`, `a` -> `c`, `b` -> `d`, with `c` -> `d` too where `two_paths`.
+fn diamond(two_paths: bool) -> List<FactNode> {
+    [
+        FactNode { name: "a", own: "a", refs: ["b", "c"] },
+        FactNode { name: "b", own: "b", refs: ["d"] },
+        FactNode { name: "c", own: "c", refs: if two_paths { ["d"] } else { [] } },
+        FactNode { name: "d", own: "d", refs: [] },
+        FactNode { name: "t1", own: "t", refs: ["a"] },
+        FactNode { name: "t2", own: "t", refs: ["b"] },
+        FactNode { name: "t3", own: "t", refs: ["c"] },
+    ]
+}
+
+/// `a`'s hash worked out by the law: its own digest beside the sum of each node it reaches, once.
+fn diamond_by_law() -> string {
+    let d = [
+        node_digest("a", "a", ["b", "c"], false),
+        node_digest("b", "b", ["d"], false),
+        node_digest("c", "c", ["d"], false),
+        node_digest("d", "d", [], false),
+    ]
+    summed_hash("a", d[0], d.fold(empty_sum(), (sum, x) -> summed(sum, x)))
+}
+
+spec "compiler — a code hash sums the set a target reaches" {
+    given "a diamond" {
+        then "the node two paths reach is summed once" {
+            let g = code_graph(
+                [CodeFacts { nodes: diamond(true), addressed: [], asked: [] }],
+                [],
+                [],
+            )
+            g.hash("a") == diamond_by_law()
+        }
+        then "a node hashes alike whether the graph was asked for it or not" {
+            mut unasked = code_graph(
+                [CodeFacts { nodes: diamond(true), addressed: [], asked: [] }],
+                [],
+                [],
+            )
+            mut asked = code_graph(
+                [CodeFacts { nodes: diamond(true), addressed: [], asked: [] }],
+                [],
+                ["a"],
+            )
+            unasked.hash("a") == asked.hash("a") && asked.hash("a") != null
+        }
+        then "a second path to a node already reached moves only the targets reaching the node whose references changed" { moved_targets(diamond(false), diamond(true)) == "t1,t3" }
+    }
 }
 
 spec "compiler — a code hash's unknown symbols" {

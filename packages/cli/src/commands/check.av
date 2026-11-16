@@ -15,18 +15,41 @@ type CheckCmd = {}
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
         let path? = slotted_path(args) else { return 2 }
+        if program_door() { return program_door_checked(args, path) }
         if args.has_flag("counts") { count_reads() }
-        if args.has_flag("verify") { trusting_stamps(false) }
-        let base = match checked_at(path) {
+        match checked_at(path) {
             .Ok(c) -> said(args, path, c),
             .Err(report) -> {
                 println(report)
                 1
             },
         }
-        if base != 0 || !args.has_flag("verify_held") { return base }
-        verify_held_said(path)
     }
+}
+
+/// `avra check` on the program layer: a package — or the package a file belongs to by the old
+/// path's own rule (`file_home`), or, belonging to none, a package of that one file — checked as the
+/// old `check` says it, held to its baseline where one is named.
+fn program_door_checked(args: CliResult, path: string) -> int {
+    let refused = net_refused([path], NetJudge.Check)
+    if refused != null { return refused! }
+    let disk? = checked_disk(path) else { return std_unfound() }
+    disk_checked(
+        disk,
+        args.option("baseline"),
+        timed(args),
+        args.has_flag("baseline_accept"),
+        program_net(),
+    )
+}
+
+/// The program `check` of `path` reads on the program layer; absent where no std stands beside this
+/// compiler.
+fn checked_disk(path: string) -> Disk? {
+    if is_a_dir(path) { return disk_at(path, "") }
+    let at = rooted(path)
+    let home? = sourced_home(at) else { return lone_disk_at(at) }
+    disk_at(home, "")
 }
 
 /// A clean program's warnings, printed; exit 0 — unless `--baseline`
@@ -102,7 +125,7 @@ export fn accepted(path: string, baseline: string, c: Checked) -> int {
     let prog = c.program ?? root_program(path)
     let reached = [f for f in [relative_path(here(), a.view.source.file) for a in prog.files] if f == own || under_dir(f, own)]
     let kept = loaded_baseline(baseline)
-        .pruned(prog.ws, keyed(reached), keyed(fresh_keys(c.findings)))
+        .pruned((f) -> prog.ws.there(f), keyed(reached), keyed(fresh_keys(c.findings)))
     let _ = write_text(baseline, baseline_header + joined_lines(kept))
     println("baseline: ${kept.length} site(s) kept")
     0
@@ -128,14 +151,9 @@ export option baseline {
     description: "an idiom baseline file: refuse any rule finding it does not already list"
 }
 
-export flag verify {
-    description: "read every input again instead of trusting the stamp its digest was kept with"
-    aliases: ["--verify"]
-}
-
 export command check {
     description: "Report everything wrong with a source file or a package root"
-    flags: [time, counts, baseline_accept, verify_held, verify]
+    flags: [time, counts, baseline_accept]
     options: [baseline]
     args: [file]
     run: CheckCmd {}

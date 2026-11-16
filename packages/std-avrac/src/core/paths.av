@@ -1,0 +1,221 @@
+//! WHERE A WRITE LANDS: a place is opened top-down, its root's box first and then each box along its
+//! path made unique in the box that holds it, so a write is in place when nothing else holds the box
+//! and never seen by another holder when something does. The root decides how its own box opens: a
+//! `mut` binding's cell opened unique, a seat's box thawed.
+
+/// Where a boxed record's field stands: what each field is to the machine, the field's own index,
+/// and the slot it starts at.
+type FieldAt = { laid: List<Layout>, n: int, slot: int }
+
+/// Where a flat record's field stands: its fields' layouts and the field's index; no layouts for a
+/// record that travels as its one field.
+type FlatAt = { laid: List<Layout>, n: int }
+
+impl Lowering {
+    /// The box the place `s` holds, opened for a write: its root's box as its binding opens it, then
+    /// each field of a boxed record or element of a list below it opened unique in its holder. A
+    /// `state` field's place is its cell's. A place under an unwrap or a record laid in registers, or
+    /// rooted in a binding that's neither a cell nor a seat, isn't lowered yet.
+    mut fn opened_place(s: ExprId) -> Reg {
+        let step? = self.store.place_step(s) else { return self.missed_as("a write through a value") }
+        match step {
+            .Root(n) -> self.root_opened(n.of),
+            .Field(subject, name) -> {
+                let cell = self.state_cell(subject, name.of)
+                if cell != null { return self.slot_opened(s, cell!, self.const_int(0)) }
+                let at? = self.field_at(subject, name.of) else { return self.missed_as(unslotted_field()) }
+                let holder = self.opened_place(subject)
+                self.slot_opened(s, holder, self.const_int(at.slot))
+            },
+            .At(subject, index) -> {
+                let holder = self.opened_place(subject)
+                self.slot_opened(s, holder, self.lower(index))
+            },
+            .Unwrap(subject) -> self.opened_unwrapped(subject),
+        }
+    }
+
+    /// The box the place `subject` carries, opened for a write: `subject`'s own box opened, the
+    /// runtime refusing its absence. One a nullable carries in a box of its own isn't lowered yet.
+    mut fn opened_unwrapped(subject: ExprId) -> Reg {
+        let ty? = self.type_at(subject) else { return self.unlowered(subject) }
+        if !ty.nullable() { return self.opened_place(subject) }
+        let l = self.laid_out(ty)
+        let shared = match l {
+            .Boxed(_) -> !l.slot_box(),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+        if !shared { return self.missed_as(unwrap_written()) }
+        self
+            .call_row(self.laid_out(ty.unwrapped()), rt_sig_of("avra_unwrap")!, [self.opened_place(subject)])
+    }
+
+    /// The box the binding `name` holds, opened for a write: a `mut` binding's cell opened unique, a
+    /// seat's box thawed, a capture's lane opened unique in the lambda's own box.
+    mut fn root_opened(name: string) -> Reg {
+        let b? = self.bound(name) else {
+            return self.state_opened(name) ?? self
+                .missed_as("a write through a name the body doesn't bind")
+        }
+        match b {
+            .Slot(cell, ty) -> self.call_row(self.laid_out(ty), rt_sig_of("avra_cell_unique")!, [cell]),
+            .Value(r, ty) -> if self.seat_named(name) { self.call_row(self.laid_out(ty), seat_opening(self.mut_seat(name)), [r]) } else { self.missed_as("a write through a binding with no cell") },
+            .Const(_, _) -> self.missed_as("a write through a `const`"),
+            .Outer(_, ty, lanes) -> self
+                .call_row(
+                    self.laid_out(ty),
+                    rt_sig_of("avra_slot_unique")!,
+                    [
+                        Reg { index: 0 },
+                        self.const_int(capture_slot(lanes, name, self.laid_out(ty).slots())),
+                    ],
+                ),
+            .Held(_, _) -> self.missed_as("a write through a seat's value that rides no pointer"),
+            .Shared(_, ty) or .OuterShared(_, ty, _) -> self
+                .call_row(
+                    self.laid_out(ty),
+                    rt_sig_of("avra_slot_unique")!,
+                    [self.shared_cell(b)!, self.const_int(0)],
+                ),
+        }
+    }
+
+    /// The box slot `at` of the opened box `holder` holds, opened unique there, as the place `s`'s
+    /// type lays it out.
+    mut fn slot_opened(s: ExprId, holder: Reg, at: Reg) -> Reg {
+        let ty? = self.type_at(s) else { return self.unlowered(s) }
+        self.call_row(self.laid_out(ty), rt_sig_of("avra_slot_unique")!, [holder, at])
+    }
+
+    /// `v` written where the place `target` names: a `mut` binding's cell stored; a capture's lane
+    /// written in the lambda's own box, which every copy of the lambda shares; a `state` field's cell
+    /// stored; a boxed record's
+    /// field written over in its opened box; a flat record's field written as the record it holds with
+    /// that field replaced, written where the record stands; a list's element set in its opened box.
+    mut fn written_to(target: ExprId, v: Reg) {
+        let step? = self.store.place_step(target) else { return self.missed("a write to a value") }
+        match step {
+            .Root(n) -> {
+                let b? = self.bound(n.of) else {
+                    if !self.state_written(target, n.of, v) { self.missed("a write to a name the body doesn't bind") }
+                    return
+                }
+                match b {
+                    .Slot(cell, _) -> self.stored(cell, v),
+                    .Value(_, _) -> self.missed("a write to a `let`"),
+                    .Const(_, _) -> self.missed("a write to a `const`"),
+                    .Outer(_, ty, lanes) -> self
+                        .rewritten_from(Reg { index: 0 }, capture_slot(lanes, n.of, self.laid_out(ty).slots()), v),
+                    .Held(box, _) -> self.slot_written(box, self.const_int(0), v, true),
+                    .Shared(_, _) or .OuterShared(_, _, _) -> self.slot_written(self.shared_cell(b)!, self.const_int(0), v, true),
+                }
+            },
+            .Field(subject, name) -> {
+                let cell = self.state_cell(subject, name.of)
+                if cell != null {
+                    self.slot_written(cell!, self.const_int(0), v, true)
+                    return
+                }
+                let flat = self.flat_at(subject, name.of)
+                if flat != null { return self.written_to(subject, self.flat_replaced(subject, flat!, v)) }
+                let at? = self.field_at(subject, name.of) else { return self.missed(unslotted_field()) }
+                self.field_rewritten(self.opened_place(subject), at.laid, at.n, v)
+            },
+            .At(subject, index) -> {
+                let list = self.opened_place(subject)
+                self.slot_written(list, self.lower(index), v, false)
+            },
+            .Unwrap(_) -> self.missed(unwrap_written()),
+        }
+    }
+
+    /// Where the field `name` of the record `subject`, laid in registers, stands: among its fields'
+    /// registers, or as the whole of a record of one field that travels as it; absent for a record
+    /// laid any other way, a field that isn't known, and a `state` field.
+    fn flat_at(subject: ExprId, name: string) -> FlatAt? {
+        let ty? = self.type_at(subject) else { return null }
+        let l? = self.program.checked.layout(ty) else { return null }
+        let fields? = self.fields_of(ty) else { return null }
+        let n? = fields.find_index(it.name == name) else { return null }
+        if fields[n].state { return null }
+        match l {
+            .Fields(laid) -> FlatAt { laid: laid, n: n },
+            .Boxed(_) -> null,
+            .Void or .Word or .Truth or .Real or .Bare or .Tagged(_) or .Maybe(_) -> if fields.length == 1 { FlatAt { laid: [], n: 0 } } else { null },
+        }
+    }
+
+    /// The flat record the place `subject` holds, its field at `at` replaced by `v`: `v` itself for a
+    /// record that travels as its one field.
+    mut fn flat_replaced(subject: ExprId, at: FlatAt, v: Reg) -> Reg {
+        if at.laid.is_empty() { return v }
+        let whole = self.lower(subject)
+        self
+            .pack(
+                Layout.Fields(at.laid),
+                [if j == at.n { v } else { self.extracted(l, whole, j) } for j, l in at.laid],
+            )
+    }
+
+    /// The value a literal writes into the slot of the field `f`: `v` itself, or a cell of its own
+    /// holding it for a `state` field.
+    mut fn seat_filled(f: FieldSeat, v: Reg) -> Reg {
+        if !f.state { return v }
+        self.celled(v, f.ty!, self.laid_out(f.slot_type()!))
+    }
+
+    /// Field `n` of the record `v`, whose fields are `fields` laid out as `laid`, as a read sees it: a
+    /// value of layout `l`, the value its cell holds for a `state` field.
+    mut fn seat_read(v: Reg, fields: List<FieldSeat>, laid: List<Layout>, n: int, l: Layout) -> Reg {
+        if !fields[n].state { return self.boxed_field(v, laid, n, l) }
+        self.proven_read(l, self.boxed_field(v, laid, n, laid[n]), 0)
+    }
+
+    /// Field `n` of the record `v` of `ty`, whose fields are `fields` laid out as `laid`, as a read
+    /// sees it: the value its cell holds for a `state` field.
+    mut fn field_value(v: Reg, ty: SignedType, fields: List<FieldSeat>, laid: List<Layout>, n: int) -> Reg {
+        if !fields[n].state { return self.field_read(v, ty, laid, n) }
+        self.seat_read(v, fields, laid, n, self.laid_out(fields[n].ty!))
+    }
+
+    /// The cell the `state` field `name` of the record `subject` holds its value in; absent for a
+    /// field that isn't known or isn't a `state` field. A write through it lands where every copy of
+    /// the record reads it.
+    mut fn state_cell(subject: ExprId, name: string) -> Reg? {
+        let ty? = self.type_at(subject) else { return null }
+        let fields? = self.fields_of(ty) else { return null }
+        let n? = fields.find_index(it.name == name) else { return null }
+        if !fields[n].state { return null }
+        let laid? = self.seat_layouts(fields) else { return null }
+        self.boxed_field(self.lower(subject), laid, n, laid[n])
+    }
+
+    /// Where the field `name` of the boxed record `subject` is stands; absent for a record laid any
+    /// other way, a field that isn't known, and a `state` field, whose cell holds its value.
+    mut fn field_at(subject: ExprId, name: string) -> FieldAt? {
+        let ty? = self.type_at(subject) else { return null }
+        let boxed = match self.laid_out(ty) {
+            .Boxed(_) -> true,
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+        if !boxed { return null }
+        let fields? = self.fields_of(ty) else { return null }
+        let n? = fields.find_index(it.name == name) else { return null }
+        if fields[n].state { return null }
+        let laid? = self.seat_layouts(fields) else { return null }
+        FieldAt { laid: laid, n: n, slot: slots_before(laid, n) }
+    }
+}
+
+/// THE ROW A WRITE THROUGH A SEAT OPENS ITS BOX WITH: `self` and a `mut` seat hold a box their
+/// caller opened, so the write rides the seat (`avra_seat_opened`); any other seat may hold the
+/// binary's own data, which `avra_box_thawed` copies.
+fn seat_opening(opened_by_caller: bool) -> RtSig {
+    rt_sig_of(if opened_by_caller { "avra_seat_opened" } else { "avra_box_thawed" })!
+}
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn unslotted_field() -> string { "a write through a field of a record that isn't boxed" }
+
+fn unwrap_written() -> string { "a write under an unwrap" }

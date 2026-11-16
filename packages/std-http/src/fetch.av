@@ -557,16 +557,11 @@ fn sent(mut c: Client, wire: Bytes, body: Payload, deadline: int) -> Result<int,
 /// otherwise never park where a deadline is read.
 fn poured(c: Client, next: fn() -> Bytes?, deadline: int) -> Result<int, ClientError> {
     mut total = 0
-    mut more = true
-    while more {
+    while true {
         if now_ms() >= deadline { return .Err(.TimedOut(.Total)) }
-        match next() {
-            piece? -> {
-                carried(c.conn.wire_write(piece_on_wire(piece, .Chunked)))?
-                total = total + piece.length
-            }
-            null -> { more = false }
-        }
+        let piece? = next() else { break }
+        carried(c.conn.wire_write(piece_on_wire(piece, .Chunked)))?
+        total = total + piece.length
     }
     carried(c.conn.wire_write(body_end(.Chunked)))?
     .Ok(total)

@@ -1,0 +1,92 @@
+//! The typing rule of a block word's body: a text body (an interpolated string) is a `string`, a quote
+//! is the `@std/meta` shape its body holds, its holes checked for what they are; another language's
+//! text is what its expansion is, the calls its grammar's actions name, its holes among their
+//! arguments; one its grammar didn't expand has only its holes, and what it is isn't named here.
+use core.{
+    BodyBehavior,
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    SignedType,
+    body_behavior,
+    fits,
+    hole_kinds,
+    holes_kind,
+    meta_name,
+    owned_type,
+    quote_kind,
+    signed_fill_class,
+}
+use core.expr.{Body}
+
+impl Checks for Body {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let expansion = match self.view { .Expanded(x) -> x, rest -> null }
+        if body_behavior(self.word) is .Foreign && expansion != null { return cx.check(expansion!, expected) }
+        cx.checked_free(self.holes)
+        match body_behavior(self.word) {
+            .Text -> owned_type("string"),
+            .Quote -> {
+                let holes = [cx.type_of(h) for h in self.holes]
+                holes_judged(cx, e, self.holes, holes)
+                quoted(cx, e, holes, expected)
+            },
+            .Foreign -> null,
+        }
+    }
+}
+
+/// What a quote is, by what its body holds: statements are `Stmts`, arms `Arms`, declarations
+/// `Decls`, and an expression `Rewrite` when a hole fills with a node, else `Code`, or `Stmts` where
+/// its seat wants statements. A body of holes alone, or one with a hole not yet known, isn't named.
+fn quoted(cx: Checking, e: ExprId, holes: List<SignedType?>, expected: Expected) -> SignedType? {
+    match quote_kind(cx.store, e) {
+        .Stmts -> cx.meta_type("Stmts"),
+        .Arms -> cx.meta_type("Arms"),
+        .Decls -> cx.meta_type("Decls"),
+        .Expr -> when {
+            holes.any(it == null) -> null
+            holes.any((h) -> names_a_node(h!)) -> cx.meta_type("Rewrite")
+            _ -> expression_quoted(cx, expected)
+        },
+        .Holes -> holes_quoted(cx, holes),
+    }
+}
+
+/// A body of holes alone: the kind its fills make together; nothing named where a hole isn't known,
+/// its value is no template, or the fills disagree.
+fn holes_quoted(cx: Checking, holes: List<SignedType?>) -> SignedType? {
+    if holes.any(it == null) { return null }
+    let classes = [signed_fill_class(h!, (m: string, n: string) -> cx.toolchain_type(m, n)) for h in holes]
+    if classes.any(it == null) { return null }
+    let kind? = holes_kind([c! for c in classes]) else { return null }
+    cx.meta_type(meta_name(kind))
+}
+
+/// The first hole of a quote whose position doesn't take its value, refused in that position's words:
+/// of a quote over code, where every hole's value is known. A body of holes alone takes the seat its
+/// kind makes, a rewrite's holes are nodes, and text where an expression stands is ambiguous, not
+/// refused here.
+fn holes_judged(mut cx: Checking, e: ExprId, holes: List<ExprId>, types: List<SignedType?>) {
+    if quote_kind(cx.store, e) is .Holes ||
+        types.any(it == null) ||
+        types.any((t) -> names_a_node(t!)) { return }
+    let kinds = hole_kinds(cx.store, e)
+    for k, h in holes {
+        let class = signed_fill_class(types[k]!, (m: string, n: string) -> cx.toolchain_type(m, n))
+        if class != null && class! is .Text && (kinds[k] is .Expression || kinds[k] is .Tail) { return }
+        if class == null || !fits(class!, kinds[k]) { return cx.hole_refused(h, types[k]!, kinds[k]) }
+    }
+}
+
+/// Whether a hole fills with a node of the tree being rewritten: an `ExprId`, a `PatId`, or a
+/// meaning's handle on one.
+fn names_a_node(ty: SignedType) -> bool { ty.nulls == 0 && (ty.word() == "ExprId" || ty.word() == "PatId" || ty.word() == "TypedCode") }
+
+/// An expression quoted over no node: `Code`, or `Stmts` where its seat wants statements.
+fn expression_quoted(cx: Checking, expected: Expected) -> SignedType? {
+    let stmts = cx.meta_type("Stmts")
+    let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
+    if wanted != null && stmts != null && wanted!.names_as(stmts!) { stmts } else { cx.meta_type("Code") }
+}

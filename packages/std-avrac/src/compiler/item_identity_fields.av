@@ -1,0 +1,66 @@
+//! WHERE AN IDENTITY'S FIELD COULD FORK: every copy of an `@identity` type shares its tables, so
+//! each field is a `Cell`, another `@identity` type, a `state` field, or one the type licenses plain
+//! with `@plain_field`. Read off the record's signature and the marks its file's declarations wear.
+use core.{Literal, SignedType, Span}
+use compiler.laws.{Found, law}
+use compiler.typing.{identity_field_plain}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The mark an identity type wears, and the one licensing a plain field.
+const IDENTITY: string = "identity"
+
+const PLAIN_FIELD: string = "plain_field"
+
+/// Every field of an `@identity` record the written item `at` of `file` declares that a copy's
+/// write could fork: where the record stands, the field, and its type.
+fn plain_identity_fields(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let worn = file_marks(engine, file).worn
+    let records = [d for d in file_declares(engine, file).names if d.item == at && d.kind == ItemKind.Record && worn.any(it.name == d.name && it.mark == IDENTITY)]
+    if records.is_empty() { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: record_place(item, r.name), args: [f.name, f.ty!.spelled()] } for r in records for f in record_signature(engine, file, r.name)?.fields ?? [] if f.ty != null && !f.state && !licensed(engine, file, r.name, f.name) && !shared(engine, f.ty!)]
+}
+
+/// Where the record `name` the item `item` declares stands.
+fn record_place(item: ReadItem, name: string) -> Span? {
+    let s? = item.stmts.find((st) -> item.store.struct_parts(st)?.name == name) else { return null }
+    item.store.stmt_span(s)
+}
+
+/// Whether the record `record` of `file` licenses its field `field` plain.
+fn licensed(engine: QueryEngine, file: SourceFileAddress, record: string, field: string) -> bool {
+    file_marks(engine, file)
+        .worn
+        .any(
+            it.name == record &&
+                it.mark == PLAIN_FIELD &&
+                (it.literals ?? []).any((l: Literal) -> names_text(l, field)),
+        )
+}
+
+/// Whether the literal `l` is the text `text`.
+fn names_text(l: Literal, text: string) -> bool {
+    match l { .Text(t) -> t == text, rest -> false }
+}
+
+/// Whether every copy of a value of `ty` shares what a write through it reaches: a `Cell`, or a type
+/// wearing `@identity` itself.
+fn shared(engine: QueryEngine, ty: SignedType) -> bool {
+    match ty.head {
+        .Owned(word) -> word == "Cell",
+        .Declared(file, name) -> file_marks(engine, file).worn.any(it.name == name && it.mark == IDENTITY),
+        rest -> false,
+    }
+}
+
+/// an identity's fields are shared by every copy
+export law identity_field_plain_law {
+    kind: "type.identity_field"
+    reads: plain_identity_fields
+    voice: identity_words
+    witness: "use @std.meta.{identity}\n\n@identity\ntype T = { n: int }\n"
+}
+
+fn identity_words(a: List<string>) -> Voice { identity_field_plain(a[0], a[1]) }

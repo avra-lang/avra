@@ -3,7 +3,7 @@
 //! scope per turn. A step runs as the turn BEGINS, never after the
 //! body, so a turn ends at its back edge — which is all `continue`
 //! is. A `break` or `continue` ends a turn early (`Ins.LoopJump`).
-use core.{StmtId, ExprId, Ins, Type, TypeId}
+use core.{StmtId, ExprId, Ins, Type, TypeId, Reg, BinOp}
 use features.{LowerCx, LoopMark}
 
 export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<StmtId>) {
@@ -18,28 +18,32 @@ export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<Stmt
     cx.loop_end()
 }
 
-/// Two cells: the COUNT, stepped as each turn begins, and the NAME,
-/// which holds the turn's own value for every read in the body —
-/// bound BEFORE the condition lowers, which reads it.
-export fn lower_for(
-    mut cx: LowerCx,
-    s: StmtId,
-    from: ExprId,
-    cond: ExprId,
-    step: ExprId,
-    stmts: List<StmtId>,
-) {
-    let ty = cx.type_at(from)
-    let lo = cx.reg_of(from)
+/// `for i in lo..hi`: the range is read once — its bounds, or the two
+/// slots of a range value — and two cells count it: the COUNT, stepped as
+/// each turn begins, and the NAME, which holds the turn's own value for
+/// every read in the body.
+fn lower_range_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    let ty = cx.type(int)
+    let lo = range_bound(cx, subject, 0)
+    let hi = range_bound(cx, subject, 1)
     let count = cx.seeded_cell(ty, lo)
     let slot = cx.seeded_cell(ty, lo)
     cx.bind_slot(s, slot)
     cx.loop_start()
     cx.stored(slot, cx.loaded_as(ty, count))
-    cx.loop_cond(cx.reg_of(cond), s)
-    cx.stored(count, cx.reg_of(step))
+    cx.loop_cond(cx.bin(Type.Bool, BinOp.Lt, cx.loaded_as(ty, slot), hi), s)
+    cx.stored(count, cx.bin(Type.Int, BinOp.Add, cx.loaded_as(ty, slot), cx.const_int(1)))
     cx.lower_stmts(stmts)
     cx.loop_end()
+}
+
+/// One end of the walked range: the written bound itself, or the slot of
+/// a range value — no box is made for a range written in the head.
+fn range_bound(mut cx: LowerCx, subject: ExprId, end: int) -> Reg {
+    match cx.view.store.expr(subject) {
+        .Range(lo, hi) -> cx.reg_of(if end == 0 { lo } else { hi }),
+        _ -> cx.slot_read(cx.reg_of(subject), end, null),
+    }
 }
 
 /// `for x in xs`: the walk, plus the ELEMENT cell the name binds
@@ -49,6 +53,7 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     if is_source(cx, subject) { return lower_source_each(cx, s, subject, stmts) }
     match cx.seen_at(subject) {
         .Map(_, v) -> lower_map_each(cx, s, subject, stmts, v),
+        .Range -> lower_range_each(cx, s, subject, stmts),
         _ -> lower_list_each(cx, s, subject, stmts),
     }
 }

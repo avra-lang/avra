@@ -14,7 +14,27 @@
 //! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
-use core.{DeclId, SeatMark, TypeId, Type, DeclKind, CollectScope, list_eq}
+use core.{
+    same_type,
+    same_decl,
+    same_expr,
+    UseParts,
+    Record,
+    StmtId,
+    DeclId,
+    SeatMark,
+    TypeId,
+    Type,
+    DeclKind,
+    CollectScope,
+    ExprId,
+    SideTable,
+    list_eq,
+    opt_eq,
+    side_table_of,
+    expr_window,
+    stmt_window,
+}
 use features.{
     DeclFacts,
     AnnotationFact,
@@ -25,22 +45,21 @@ use features.{
     MetaVal,
     UseKind,
     kind_word,
-    Unsettled,
-    Settlement,
-    DeclSig,
-    FnSig,
-    StructSig,
-    EnumSig,
-    NamedSig,
-    Lacked,
+    TypeFacts,
+    Asked,
+    Sub,
+    ParamScope,
+    RunChoice,
+    PipeStage,
+    new_type_facts,
 }
-use diagnostics.{SourceFile, DiagFacts, Severity}
+use diagnostics.{Diag, Severity, no_voices}
+use @std.relation.stable.{indexed_scope}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use compiler.{avra, new_workspace, one_shot_let_go, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
-use @std.text.{from_codepoint}
-use compiler.failures.{Raised}
+use compiler.findings.{Finding}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
 
@@ -190,7 +209,7 @@ impl Workspace {
         let i = self.decls.types.type(int)
         let b = self.decls.types.type(bool)
         let marks = [
-            SeatMark { mutable: true, settled: false },
+            writing_mark(),
             SeatMark { mutable: false, settled: true, unshared: true, consumed: true },
         ]
         [
@@ -262,14 +281,6 @@ impl Workspace {
     /// The fixture's declared instance.
     fn codec_instance() -> DeclId { self.items(self.file_id("/w/src/other.av")).find((d) -> self.decls.decl(d).name == "twice")! }
 
-    /// A held asks row read back and every ask resolved — null when one does not.
-    fn codec_held_asks(raw: string) -> List<Wanted>? {
-        let asks? = self.held_asks_from_wire("/w/src/main.av", raw) else { return null }
-        let wants = [self.held_ask_wanted(h) for h in asks]
-        if wants.any(it == null) { return null }
-        [w! for w in wants]
-    }
-
     fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
         a.root == b.root && self.wanted_wire(a) == self.wanted_wire(b)
     }
@@ -282,51 +293,6 @@ impl Workspace {
     fn codec_decl_labels() -> List<string> { [self.decls.decl(d).name for d in self.codec_decl_exemplars()] }
 
     fn codec_same_decl(a: DeclId, b: DeclId) -> bool { self.decls.decl_wire(a) == self.decls.decl_wire(b) }
-
-    /// One `DeclSig` of every variant. The `defaults` seat carries a
-    /// builtin declaration's real `DeclId` — builtins are admitted with
-    /// the language, so no fixture file is needed.
-    fn codec_sig_exemplars() -> List<DeclSig> {
-        let t = self.decls.types.type(int)
-        let s = self.decls.types.type(string)
-        let b = self.decls.types.type(bool)
-        let d = self.decls.builtin_decls()[0]
-        [
-            DeclSig.Fn(FnSig { params: [t, s], ret: b }),
-            DeclSig
-                .Record(
-                    StructSig {
-                        names: ["a", "b"],
-                        types: [t, s],
-                        defaults: [null, d],
-                        lacking: [Lacked { field: "c", why: "not written" }],
-                        states: [false, true],
-                    },
-                ),
-            DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[], [t, b]] }),
-            DeclSig.Named(NamedSig { of: t }),
-            DeclSig.Alias(t),
-        ]
-    }
-
-    fn codec_same_decl_sig(a: DeclSig, b: DeclSig) -> bool { self.decl_sig_wire(a) == self.decl_sig_wire(b) }
-
-    fn codec_raised_exemplars() -> List<Raised> {
-        let d = self.codec_decl_exemplars()[0]
-        [
-            Raised { owner: d, errors: [] },
-            Raised { owner: d, errors: [self.decls.types.type(int), self.decls.types.type(bool)] },
-        ]
-    }
-
-    fn codec_same_raised(a: Raised, b: Raised) -> bool {
-        self.decls.decl_wire(a.owner) == self.decls.decl_wire(b.owner) &&
-            list_eq(
-                a.errors,
-                b.errors,
-                (x, y) -> self.decls.type_wire(x) == self.decls.type_wire(y),
-            )
-    }
 
     /// `Loc`s anchored to the fixture's real declarations: a loc with
     /// no file, a span at its declaration's start, a span inside it,
@@ -346,16 +312,12 @@ impl Workspace {
         ]
     }
 
-    fn codec_loc_labels() -> List<string> {
-        ["no file", "at its declaration's start", "inside its declaration", "cross-file"]
-    }
-
-    /// A `DiagFacts` bearing each loc shape, so the row's own `Loc`s
+    /// A `Diag` bearing each loc shape, so the row's own `Loc`s
     /// are exercised beside the pair's.
-    fn codec_diag_exemplars() -> List<DiagFacts> {
+    fn codec_diag_exemplars() -> List<Diag> {
         let at = self.codec_loc_exemplars()[2]
         [
-            DiagFacts {
+            Diag {
                 kind: "t.plain",
                 severity: Severity.Warning,
                 primary: Frame { label: null, loc: null },
@@ -365,7 +327,7 @@ impl Workspace {
                 help: null,
                 suggestions: [],
             },
-            DiagFacts {
+            Diag {
                 kind: "t.pointer",
                 severity: Severity.Note,
                 primary: Frame { label: "met here", loc: at },
@@ -375,7 +337,7 @@ impl Workspace {
                 help: null,
                 suggestions: [],
             },
-            DiagFacts {
+            Diag {
                 kind: "t.rich",
                 severity: Severity.Error,
                 primary: Frame { label: "here", loc: at },
@@ -394,7 +356,16 @@ impl Workspace {
         ]
     }
 
-    fn codec_diag_labels() -> List<string> { ["an unlocated warning", "a note pointing elsewhere", "an error with a frame and a fix"] }
+    /// A facts row of each shape: rules unknown, and rules found.
+    fn codec_file_facts_exemplars() -> List<FileFacts> {
+        let d = self.codec_diag_exemplars()
+        [
+            FileFacts { warnings: [d[1]], rules: null },
+            FileFacts { warnings: [], rules: d },
+            FileFacts { warnings: [placed_at(l) for l in self.codec_loc_exemplars()], rules: null },
+        ]
+    }
+
 }
 
 fn type_exemplar_labels() -> List<string> {
@@ -428,14 +399,7 @@ fn wanted_batch_labels() -> List<string> {
 // not `fn(W) -> T?` shaped and stands outside `derived`. ──
 
 fn dbrow_exemplars() -> List<DbRow> {
-    [
-        DbRow.Sig("n", "text"),
-        DbRow.Warn("n", "warn\ntext"),
-        DbRow.Scan("n", "1"),
-        DbRow.Licenses("n", "a.av\t7\tstyle.thing"),
-        DbRow.Findings("n", "style.thing\ta.av\tsome line"),
-        DbRow.Answer("n", "0aff"),
-    ]
+    [DbRow.Sig("n", "text"), DbRow.Answer("n", "0aff")]
 }
 
 fn dbrow_check() -> CodecCheck {
@@ -457,10 +421,6 @@ fn dbrow_one(r: DbRow) -> string? {
 fn dbrow_same(a: DbRow, b: DbRow) -> bool {
     match a {
         .Sig(name, text) -> match b { .Sig(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Warn(name, text) -> match b { .Warn(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Scan(name, text) -> match b { .Scan(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Licenses(name, text) -> match b { .Licenses(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
-        .Findings(name, text) -> match b { .Findings(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         .Answer(name, text) -> match b { .Answer(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         rest -> false,
     }
@@ -769,6 +729,132 @@ fn same_fact_node(a: FactNode, b: FactNode) -> bool { a.name == b.name && a.own 
 
 fn same_texts(a: List<string>, b: List<string>) -> bool { list_eq(a, b, (x, y) -> x == y) }
 
+// ── a body's typing table, as its codec's exemplars ──
+
+/// An empty table first, then one with EVERY column holding something: an absent optional, an
+/// empty list and a populated one, so the three shapes a column can wear are all on the wire.
+fn facts_exemplars() -> List<TypeFacts> {
+    let no_types: List<TypeId> = []
+    let widens: List<TypeId?> = [null, ty_at(12), null]
+    let asks: List<Asked?> = [null, Asked { subject: ExprId { index: 5 }, on_present: true }]
+    let substs: List<Sub?> = [
+        Sub { target: DeclId { index: 7 }, args: [ty_at(1), ty_at(2)], consts: ["c"] },
+        null,
+    ]
+    let params: List<List<TypeId>?> = [[ty_at(21), ty_at(22)]]
+    let marks: List<List<SeatMark>?> = [
+        [
+            writing_mark(),
+            SeatMark { mutable: false, settled: true, state: true, unshared: true, consumed: true },
+        ],
+    ]
+    let captures: List<List<TypeId>?> = [[], null]
+    let wants: List<TypeId?> = [ty_at(31)]
+    let starved: List<TypeId?> = [null, ty_at(41)]
+    let scopes: List<ParamScope?> = [ParamScope { params: [ty_at(51)] }, null]
+    let patterns: List<List<TypeId>> = [[ty_at(61)], no_types]
+    let bindings: List<TypeId?> = [null, ty_at(71)]
+    let indexes: List<TypeId?> = [ty_at(81), null]
+    let collections: List<List<ExprId>?> = [[ExprId { index: 63 }], []]
+    let chosen: List<DeclId?> = [null, DeclId { index: 91 }]
+    let dispatches: List<RunChoice?> = [
+        RunChoice { seat: 1, members: [DeclId { index: 92 }, DeclId { index: 93 }] },
+    ]
+    let stages: List<PipeStage?> = [null, PipeStage.FlatMap]
+    [
+        new_type_facts(0, 0, 0, 0, 0, ty_at(0)),
+        TypeFacts {
+            of_expr: side_table_of("of_expr", expr_window(4), [ty_at(11), ty_at(12), ty_at(13)], ty_at(9)),
+            widens: side_table_of("widens", expr_window(4), widens, null),
+            narrows: side_table_of("narrows", expr_window(4), widens, null),
+            asks: side_table_of("asks", expr_window(4), asks, null),
+            substs: side_table_of("substs", expr_window(4), substs, null),
+            lambda_params: side_table_of("lambda_params", expr_window(4), params, null),
+            lambda_marks: side_table_of("lambda_marks", expr_window(4), marks, null),
+            captures: side_table_of("captures", expr_window(4), captures, null),
+            wants: side_table_of("wants", expr_window(4), wants, null),
+            flags: side_table_of("flags", expr_window(4), [0, 257], 0),
+            starved: side_table_of("starved", expr_window(4), starved, null),
+            scopes: side_table_of("scopes", expr_window(4), scopes, null),
+            pattern_types: side_table_of("pattern_types", expr_window(4), patterns, no_types),
+            binding_types: side_table_of("binding_types", stmt_window(4), bindings, null),
+            const_types: side_table_of("const_types", stmt_window(4), bindings, null),
+            index_types: side_table_of("index_types", stmt_window(4), indexes, null),
+            stmt_flags: side_table_of("stmt_flags", stmt_window(4), [0, 1], 0),
+            collections: side_table_of("collections", expr_window(4), collections, null),
+            chosen: side_table_of("chosen", expr_window(4), chosen, null),
+            dispatches: side_table_of("dispatches", expr_window(4), dispatches, null),
+            stages: side_table_of("stages", expr_window(4), stages, null),
+            voices: no_voices(),
+        },
+    ]
+}
+
+fn ty_at(i: int) -> TypeId { TypeId { index: i } }
+
+/// Two tables compared WHOLE, column by column: its name, where its window starts, the value it
+/// grows with, and every cell in order.
+fn same_facts(a: TypeFacts, b: TypeFacts) -> bool {
+    same_column(a.of_expr, b.of_expr, same_type) &&
+        same_column(a.widens, b.widens, same_opt_type) &&
+        same_column(a.narrows, b.narrows, same_opt_type) &&
+        same_column(a.asks, b.asks, (x, y) -> opt_eq(x, y, same_asked)) &&
+        same_column(a.substs, b.substs, (x, y) -> opt_eq(x, y, same_sub)) &&
+        same_column(a.lambda_params, b.lambda_params, same_opt_types) &&
+        same_column(a.lambda_marks, b.lambda_marks, (x, y) -> opt_eq(x, y, same_marks)) &&
+        same_column(a.captures, b.captures, same_opt_types) &&
+        same_column(a.wants, b.wants, same_opt_type) &&
+        same_column(a.flags, b.flags, (x: int, y: int) -> x == y) &&
+        same_column(a.starved, b.starved, same_opt_type) &&
+        same_column(
+            a.scopes,
+            b.scopes,
+            (x, y) -> opt_eq(x, y, (p: ParamScope, q: ParamScope) -> same_types(p.params, q.params)),
+        ) &&
+        same_column(a.pattern_types, b.pattern_types, same_types) &&
+        same_column(a.binding_types, b.binding_types, same_opt_type) &&
+        same_column(a.const_types, b.const_types, same_opt_type) &&
+        same_column(a.index_types, b.index_types, same_opt_type) &&
+        same_column(a.stmt_flags, b.stmt_flags, (x: int, y: int) -> x == y) &&
+        same_column(
+            a.collections,
+            b.collections,
+            (x, y) -> opt_eq(x, y, (p: List<ExprId>, q: List<ExprId>) -> list_eq(p, q, same_expr)),
+        ) &&
+        same_column(a.chosen, b.chosen, (x, y) -> opt_eq(x, y, same_decl)) &&
+        same_column(a.dispatches, b.dispatches, (x, y) -> opt_eq(x, y, same_choice)) &&
+        same_column(
+            a.stages,
+            b.stages,
+            (x, y) -> opt_eq(x, y, (p: PipeStage, q: PipeStage) -> p.ordinal == q.ordinal),
+        ) &&
+        a.voices.list.is_empty() &&
+        b.voices.list.is_empty()
+}
+
+fn same_column<T>(a: SideTable<T>, b: SideTable<T>, eq: fn(T, T) -> bool) -> bool {
+    a.name == b.name && a.lo() == b.lo() && eq(a.seed, b.seed) && list_eq(a.cells, b.cells, eq)
+}
+
+/// The promise a seat makes to write through.
+fn writing_mark() -> SeatMark { SeatMark { mutable: true, settled: false } }
+
+fn same_opt_type(a: TypeId?, b: TypeId?) -> bool { opt_eq(a, b, same_type) }
+
+fn same_types(a: List<TypeId>, b: List<TypeId>) -> bool { list_eq(a, b, same_type) }
+
+fn same_opt_types(a: List<TypeId>?, b: List<TypeId>?) -> bool { opt_eq(a, b, same_types) }
+
+fn same_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool { list_eq(a, b, (x, y) -> x.codec_same(y)) }
+
+fn same_asked(a: Asked, b: Asked) -> bool { same_expr(a.subject, b.subject) && a.on_present == b.on_present }
+
+fn same_sub(a: Sub, b: Sub) -> bool {
+    same_decl(a.target, b.target) && same_types(a.args, b.args) && same_texts(a.consts, b.consts)
+}
+
+fn same_choice(a: RunChoice, b: RunChoice) -> bool { a.seat == b.seat && list_eq(a.members, b.members, same_decl) }
+
 // ── `use_kind_word`/`use_kind_of_word` — every variant, one character each. ──
 
 fn use_kind_exemplars() -> List<UseKind> {
@@ -797,27 +883,7 @@ fn same_text(a: string, b: string) -> bool { a == b }
 // ── The scalar family answers — `int`, `bool`, `string` and `bool?`
 // ride the `MetaVal` scalar wire (`scalar_wire.av`). ──
 
-fn int_wire_exemplars() -> List<int> { [0, 1, -1, 42, 9223372036854775807] }
-
-fn int_wire_labels() -> List<string> { ["zero", "one", "minus one", "forty-two", "the int ceiling"] }
-
-fn bool_wire_exemplars() -> List<bool> { [true, false] }
-
-fn bool_wire_labels() -> List<string> { ["true", "false"] }
-
-fn text_wire_exemplars() -> List<string> { ["", "a", from_codepoint(0), "two\nlines"] }
-
-fn text_wire_labels() -> List<string> { ["empty", "one character", "a NUL alone", "a newline inside"] }
-
-fn presence_wire_exemplars() -> List<bool?> { [null, true, false] }
-
-fn presence_wire_labels() -> List<string> { ["absent", "present true", "present false"] }
-
-fn same_opt_bool(a: bool?, b: bool?) -> bool {
-    (a == null) == (b == null) && (a == null || a! == b!)
-}
-
-// ── The `Loc` and `DiagFacts` wires — a span crosses anchored to its
+// ── The `Loc` and `Diag` wires — a span crosses anchored to its
 // declaration, its offsets relative to that declaration's start. ──
 
 fn same_loc(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
@@ -838,7 +904,137 @@ fn same_suggestion(a: Suggestion, b: Suggestion) -> bool {
         list_eq(a.edits, b.edits, same_edit)
 }
 
-fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
+fn same_file_facts(a: FileFacts, b: FileFacts) -> bool {
+    list_eq(a.warnings, b.warnings, same_diag_facts) &&
+        (a.rules == null) == (b.rules == null) &&
+        list_eq(a.rules ?? [], b.rules ?? [], same_diag_facts)
+}
+
+fn shaped_exemplars() -> List<Shaped> {
+    [
+        Shaped {
+            digest: "1.2.3.4",
+            words: LexWords { grammars: [], components: [], own: [] },
+            docs: false,
+        },
+        Shaped {
+            digest: "",
+            words: LexWords { grammars: ["sql", ""], components: ["scales"], own: ["a\tb"] },
+            docs: true,
+        },
+    ]
+}
+
+fn same_shaped(a: Shaped, b: Shaped) -> bool {
+    a.digest == b.digest &&
+        a.docs == b.docs &&
+        list_eq(a.words.grammars, b.words.grammars, (x, y) -> x == y) &&
+        list_eq(a.words.components, b.words.components, (x, y) -> x == y) &&
+        list_eq(a.words.own, b.words.own, (x, y) -> x == y)
+}
+
+fn check_said_exemplars() -> List<CheckSaid> {
+    [
+        CheckSaid { voices: "", voice_files: [], files: [] },
+        CheckSaid {
+            voices: "warning[x]: a voice",
+            voice_files: ["/w/avra.toml"],
+            files: [
+                FileSpoke {
+                    path: "/w/src/a.av",
+                    reached: true,
+                    said: "warning[y]: said\nover lines",
+                    findings: [Finding { rule: "style.thing", file: "/w/src/a.av", text: "let x =\t1" }],
+                    licenses: ["/w/src/a.av\t3\tstyle.gone"],
+                },
+                FileSpoke {
+                    path: "/w/src/b c.av",
+                    reached: false,
+                    said: "",
+                    findings: [],
+                    licenses: [],
+                },
+            ],
+        },
+    ]
+}
+
+fn same_finding(a: Finding, b: Finding) -> bool { a.rule == b.rule && a.file == b.file && a.text == b.text }
+
+fn same_spoke(a: FileSpoke, b: FileSpoke) -> bool {
+    a.path == b.path &&
+        a.reached == b.reached &&
+        a.said == b.said &&
+        list_eq(a.findings, b.findings, same_finding) &&
+        list_eq(a.licenses, b.licenses, (x, y) -> x == y)
+}
+
+fn same_check_said(a: CheckSaid, b: CheckSaid) -> bool {
+    a.voices == b.voices &&
+        list_eq(a.voice_files, b.voice_files, (x, y) -> x == y) &&
+        list_eq(a.files, b.files, same_spoke)
+}
+
+fn verdict_read_exemplars() -> List<VerdictRead> {
+    [
+        VerdictRead.Compiler,
+        VerdictRead.Closure("check:/w/src/main.av"),
+        VerdictRead.Files("/w/a dir"),
+        VerdictRead.Text("/w/avra.toml"),
+        VerdictRead.Shape("/w/src/a b.av"),
+        VerdictRead.Lined("/w/src/c.av"),
+        VerdictRead.Embed("/w/data.txt"),
+        VerdictRead.Object("/w/c/x.o"),
+    ]
+}
+
+/// A file's use lines: none, an item, an alias between plain items, a whole module, two lines.
+fn uses_exemplars() -> List<List<UseParts>> {
+    let at = StmtId { index: 0 }
+    [
+        [],
+        [UseParts { path: ["a"], items: ["x"], aliases: [""], stmt: at }],
+        [
+            UseParts {
+                path: ["@std", "text"],
+                items: ["x", "y", "z"],
+                aliases: ["", "w", ""],
+                stmt: at,
+            },
+        ],
+        [UseParts { path: ["a", "b"], items: [], aliases: [], stmt: at }],
+        [
+            UseParts { path: ["a"], items: ["x"], aliases: ["v"], stmt: at },
+            UseParts { path: ["b", "c"], items: ["y"], aliases: [""], stmt: at },
+        ],
+    ]
+}
+
+/// Two use lists alike in what each line names and binds.
+fn same_uses(a: List<UseParts>, b: List<UseParts>) -> bool {
+    a.length == b.length && [j for j, u in a if !same_use(u, b[j])].is_empty()
+}
+
+fn same_use(a: UseParts, b: UseParts) -> bool {
+    list_eq(a.path, b.path, (x: string, y: string) -> x == y) &&
+        list_eq(a.items, b.items, (x: string, y: string) -> x == y) &&
+        [j for j, _x in a.items if a.bound_as(j) != b.bound_as(j)].is_empty()
+}
+
+fn same_verdict_read(a: VerdictRead, b: VerdictRead) -> bool {
+    match a {
+        .Compiler -> b is .Compiler,
+        .Closure(x) -> match b { .Closure(y) -> x == y, rest -> false },
+        .Files(x) -> match b { .Files(y) -> x == y, rest -> false },
+        .Text(x) -> match b { .Text(y) -> x == y, rest -> false },
+        .Shape(x) -> match b { .Shape(y) -> x == y, rest -> false },
+        .Lined(x) -> match b { .Lined(y) -> x == y, rest -> false },
+        .Embed(x) -> match b { .Embed(y) -> x == y, rest -> false },
+        .Object(x) -> match b { .Object(y) -> x == y, rest -> false },
+    }
+}
+
+fn same_diag_facts(a: Diag, b: Diag) -> bool {
     a.kind == b.kind &&
         a.severity == b.severity &&
         same_frame(a.primary, b.primary) &&
@@ -855,22 +1051,37 @@ fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
 /// id-writing codecs name a real `DeclId` rather than an empty list.
 export fn codec_fixture_decl_names() -> List<string> { codec_workspace().codec_decl_labels() }
 
-/// The refusal law, exercised: a span no single declaration holds whole
-/// — one byte past its declaration's end — is refused, so a position
-/// that pointed outside its declaration never decodes to a moved one.
+/// The refusal law, exercised: a place no token holds — past the text's
+/// last — is refused, never clamped to a position it never named.
 export fn codec_loc_past_end_refused() -> bool {
     let ws = codec_workspace()
-    let a = ws.codec_decl_exemplars().find((d) -> ws.decls.decl(d).name == "a")!
-    let sp = ws.decls.decl_span(a)!
-    let past = Loc { file: "/w/src/main.av", lo: sp.lo, hi: sp.hi + 1 }
-    ws.loc_of_wire(ws.loc_wire(past)) == null
+    let _ = ws.codec_decl_exemplars()
+    let past = Loc { file: "/w/src/main.av", lo: 40, hi: 41 }
+    ws.diag_back(ws.diag_bytes(placed_at(past))) == null
 }
 
-/// A store written before held asks were names: its W2 asks row reads as unread — the file is
-/// parsed for one cold run — never as asks, and never a crash.
-export fn codec_w2_asks_unread() -> bool {
-    let ws = codec_workspace()
-    ws.held_asks_from_wire("/w/src/main.av", ws.wanted_list_wire(ws.codec_wanted_exemplars())) == null
+/// A diagnostic whose one frame stands at `l`.
+fn placed_at(l: Loc) -> Diag {
+    Diag {
+        kind: "t.placed",
+        severity: Severity.Warning,
+        primary: Frame { label: null, loc: l },
+        secondary: [],
+        cause_lines: [],
+        message: "a place",
+        help: null,
+        suggestions: [],
+    }
+}
+
+impl Workspace {
+    /// A diagnostic through its codec, under the workspace's scope.
+    fn diag_bytes(d: Diag) -> Bytes { d.encoded_in(self.facts_scope(0, 0)) }
+
+    /// `diag_bytes`' inverse; none where a place no longer stands.
+    fn diag_back(b: Bytes) -> Diag? {
+        match Diag.decoded_in(self.facts_scope(0, 0), b) { .Ok(d) -> d, .Err(_) -> null }
+    }
 }
 
 export fn codec_pairs() -> List<CodecCheck> {
@@ -930,6 +1141,14 @@ export fn codec_pairs() -> List<CodecCheck> {
             SeatMark.exemplar_labels(),
             mark_word,
             mark_of_word,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "record.form_wire/form_of_wire",
+            Record.exemplars(),
+            Record.exemplar_labels(),
+            (x) -> form_wire(x),
+            form_of_wire,
             (x, y) -> x.codec_same(y),
         ),
         derived_total(
@@ -1029,14 +1248,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
         ),
         derived(
-            "settlement_wire.held_asks_wire/held_asks_from_wire",
-            ws.codec_wanted_batches(),
-            wanted_batch_labels(),
-            (xs) -> ws.held_asks_wire(xs),
-            (w) -> ws.codec_held_asks(w),
-            (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
-        ),
-        derived(
             "references.use_kind_word/use_kind_of_word",
             use_kind_exemplars(),
             use_kind_labels(),
@@ -1051,38 +1262,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             reach_wire,
             reach_from_wire,
             same_text,
-        ),
-        derived(
-            "family.source_file_wire/source_file_of_wire",
-            SourceFile.exemplars(),
-            SourceFile.exemplar_labels(),
-            source_file_wire,
-            source_file_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "family.unsettled_wire/unsettled_of_wire",
-            Unsettled.exemplars(),
-            Unsettled.exemplar_labels(),
-            unsettled_wire,
-            unsettled_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "family.settlement_enum_wire/settlement_enum_of_wire",
-            Settlement.exemplars(),
-            Settlement.exemplar_labels(),
-            settlement_enum_wire,
-            settlement_enum_of_wire,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "family.lift_result_wire/lift_result_of_wire",
-            LiftResult.exemplars(),
-            LiftResult.exemplar_labels(),
-            lift_result_wire,
-            lift_result_of_wire,
-            (x, y) -> x.codec_same(y),
         ),
         derived_total(
             "record.packed/unpacked (ComponentNames)",
@@ -1101,92 +1280,71 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_decl(x, y),
         ),
         derived(
-            "family.decls_wire/decls_of_wire",
-            [ws.codec_decl_exemplars()],
-            ["the file's declarations"],
-            (ds) -> ws.decls_wire(ds),
-            (w) -> ws.decls_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_decl(x, y)),
+            "diag_wire.file_facts_wire/file_facts_of_wire",
+            ws.codec_file_facts_exemplars(),
+            ["no rules found anew", "rules found, one a fix", "a place of each shape"],
+            (f) -> ws.file_facts_wire(f),
+            (w) -> ws.file_facts_of_wire(w),
+            same_file_facts,
         ),
         derived(
-            "family.types_wire/types_of_wire",
-            [[], ws.codec_type_exemplars()],
-            ["empty", "every exemplar"],
-            (ts) -> ws.types_wire(ts),
-            (w) -> ws.types_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_type_shape(x, y)),
+            "verdict.shape_wire/shape_of_wire",
+            shaped_exemplars(),
+            ["no words", "every kind of word"],
+            shape_wire,
+            shape_of_wire,
+            same_shaped,
         ),
         derived(
-            "family.raised_wire/raised_of_wire",
-            ws.codec_raised_exemplars(),
-            ["one owner, no errors", "one owner, two errors"],
-            (r) -> ws.raised_wire(r),
-            (w) -> ws.raised_of_wire(w),
-            (x, y) -> ws.codec_same_raised(x, y),
+            "linked.linked_wire/linked_of_wire",
+            [
+                LinkedSaid { said: check_said_exemplars()[0], after: "", host_fns: [] },
+                LinkedSaid {
+                    said: check_said_exemplars()[1],
+                    after: "warning: no fallback\nmade",
+                    host_fns: ["pkg f", "pkg g (Host)"],
+                    bin: "ab12",
+                },
+            ],
+            ["nothing said", "said, a link's words after, two host fns, a binary's digest"],
+            linked_wire,
+            linked_of_wire,
+            (a, b) -> same_check_said(a.said, b.said) &&
+                a.after == b.after &&
+                a.bin == b.bin &&
+                list_eq(a.host_fns, b.host_fns, (x, y) -> x == y),
         ),
         derived(
-            "codec.loc_wire/loc_of_wire",
-            ws.codec_loc_exemplars(),
-            ws.codec_loc_labels(),
-            (l) -> ws.loc_wire(l),
-            (b) -> ws.loc_of_wire(b),
-            same_loc,
+            "verdict.verdict_wire/verdict_of_wire",
+            check_said_exemplars(),
+            ["nothing said", "voices, a reached file and a silent one"],
+            verdict_wire,
+            verdict_of_wire,
+            same_check_said,
         ),
         derived(
-            "codec.diag_facts_wire/diag_facts_of_wire",
-            ws.codec_diag_exemplars(),
-            ws.codec_diag_labels(),
-            (d) -> ws.diag_facts_wire(d),
-            (b) -> ws.diag_facts_of_wire(b),
-            same_diag_facts,
+            "uses_kept.uses_wire/uses_of_wire",
+            uses_exemplars(),
+            ["none", "one item", "aliased", "a module whole", "two lines"],
+            uses_wire,
+            uses_of_wire,
+            same_uses,
+        ),
+        derived(
+            "verdict.verdict_read_word/verdict_read_of_word",
+            verdict_read_exemplars(),
+            ["compiler", "closure", "files", "text", "shape", "lined", "embed", "object"],
+            verdict_read_word,
+            verdict_read_of_word,
+            same_verdict_read,
         ),
         derived(
             "interface.type_wire/read_type_wire",
             ws.codec_type_exemplars(),
             type_exemplar_labels(),
             (t) -> ws.decls.type_wire(t),
-            (w) -> ws.read_type_wire_of_wire(w),
+            (w) -> ws.type_from_wire(w),
             (x, y) -> ws.codec_same_type_shape(x, y),
-        ),
-        derived(
-            "family.int_wire/int_of_wire",
-            int_wire_exemplars(),
-            int_wire_labels(),
-            int_wire,
-            int_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived(
-            "family.bool_wire/bool_of_wire",
-            bool_wire_exemplars(),
-            bool_wire_labels(),
-            bool_wire,
-            bool_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived(
-            "family.text_wire/text_of_wire",
-            text_wire_exemplars(),
-            text_wire_labels(),
-            text_wire,
-            text_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived_total(
-            "family.presence_wire/presence_of_wire",
-            presence_wire_exemplars(),
-            presence_wire_labels(),
-            presence_wire,
-            presence_of_wire,
-            same_opt_bool,
-        ),
-        derived(
-            "family.decl_sig_wire/decl_sig_of_wire",
-            ws.codec_sig_exemplars(),
-            ["fn", "record", "enum", "named", "alias"],
-            (s) -> ws.decl_sig_wire(s),
-            (w) -> ws.decl_sig_of_wire(w),
-            (x, y) -> ws.codec_same_decl_sig(x, y),
         ),
         dbrow_check(),
     ]

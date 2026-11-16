@@ -2,7 +2,7 @@
 // takes the ABSORBING side of every terminal, the upper bound is
 // EXCLUDED, and a computed bound is walked exactly once. `map` over a
 // range answers a `List`, so the list vocabulary applies from there.
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 spec "features/ranges/adversarial" {
     given "empty and backwards ranges" {
@@ -42,6 +42,20 @@ spec "features/ranges/adversarial" {
         }
         then "an index reads through" {
             shown("(0..4).map((i: int) -> i * i)[3]") == "9"
+        }
+    }
+    given "a bound that is no int" {
+        then "a value's end refuses once, in the range's words" {
+            refused_with("let r = (0..\"x\")\n2", "a range ends at an `int`, found `string`")
+        }
+        then "a value's start refuses once, in the range's words" {
+            refused_with("let r = (\"x\"..2)\n2", "a range starts at an `int`, found `string`")
+        }
+        then "a for head's start refuses once, in the range's words" {
+            refused_with(
+                "for i in \"x\"..2 {\n    1\n}\n2",
+                "a range starts at an `int`, found `string`",
+            )
         }
     }
 }

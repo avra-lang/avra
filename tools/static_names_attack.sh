@@ -6,9 +6,9 @@
 # name inside the one object that reads them both. It CLEARS the store, as the
 # attacks beside it do.
 set -u
-cd "$(dirname "$0")/.."
+. "$(dirname "$0")/lib/attack.sh"
 . tools/lib/failed_tail.sh
-R=build/static-names-attack; fails=0
+R=build/static-names-attack
 rm -rf "$R" .avra-cache && mkdir -p $R/app/src/a $R/app/src/b
 cat > $R/app/avra.toml <<'TOML'
 [package]
@@ -22,9 +22,9 @@ kept() { # kept <a's list> <b's list>: both modules' k.av, one stem, one shape
 printf 'use a.{K as KA}\nuse b.{K as KB}\n\nprintln("${KA[0]} ${KB[0]}")\n' > $R/app/src/main.av
 B() { # B <label> <wanted output>: build through the store and run it
     ./avra build --time $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out $R/err; return 1; }
+    [ $st -eq 0 ] || { fail "$1: status $st"; failed_tail $R/out $R/err; return 1; }
     got=$($R/app/src/main 2>&1)
-    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted '$2'"; }
+    [ "$got" = "$2" ] || fail "$1: printed '$got', wanted '$2'"
 }
 # ONE STORE FOR EVERY COMPILER (S2): the objects stand at `.avra-cache/obj`,
 # where the per-compiler layout kept them under a print directory.
@@ -39,9 +39,8 @@ B "the same source cold" "1 9"
 cold=$(objects); same=0
 for f in $(cd $R/warm && find . -type f); do
     [ -f "$cold/$f" ] || continue
-    if cmp -s "$R/warm/$f" "$cold/$f"; then same=$((same+1)); else fails=$((fails+1)); echo "FAIL  object $f differs between the warm build and the cold one"; fi
+    if cmp -s "$R/warm/$f" "$cold/$f"; then same=$((same+1)); else fail "object $f differs between the warm build and the cold one"; fi
 done
 # A COMPARISON OF NOTHING IS NO COMPARISON: every file's object is kept under one key.
-[ $same -ge 3 ] || { fails=$((fails+1)); echo "FAIL  $same object(s) compared — the attack examined nothing"; }
-echo "static-names-attack: $same kept object(s) byte-identical warm and cold, $fails failed"
-[ "$fails" -eq 0 ]
+[ $same -ge 3 ] || fail "$same object(s) compared — the attack examined nothing"
+verdict "static-names-attack" "$same kept object(s) byte-identical warm and cold"

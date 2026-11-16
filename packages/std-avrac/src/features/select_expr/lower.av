@@ -9,7 +9,7 @@
 //! turn scans again.
 use core.{ExprId, Reg, Type, TypeId, BinOp, WaitProbe, flatten, some_list}
 use features.{LowerCx}
-use diagnostics.{refusal}
+use diagnostics.{Voice, refusal}
 
 /// What an arm's head is, as the scan reads it — the shapes a lowering
 /// stands for.
@@ -438,17 +438,19 @@ fn unwaited(mut cx: LowerCx, at: ExprId, what: string) -> Wait? {
 
 /// A shape that types and has no lowering yet, named by `what`.
 fn unlowered(mut cx: LowerCx, at: ExprId, what: string) -> Reg {
+    let said = select_unlowered_voice(what)
     cx
         .out
         .voices
-        .speak(
-            refusal(
-                "flow.select",
-                cx.view.loc_of(at),
-                "`select` type-checks but lowers to nothing",
-                "${what} stands here",
-                "wait on one task with `t.await`",
-            ),
-        )
+        .speak(refusal("flow.select", cx.view.loc_of(at), said.message, said.label!, said.help!))
     cx.result(at)
+}
+
+/// What a `select` shape no lowering stands for says, `what` naming it.
+export fn select_unlowered_voice(what: string) -> Voice {
+    Voice {
+        message: "`select` type-checks but lowers to nothing",
+        label: "${what} stands here",
+        help: "wait on one task with `t.await`",
+    }
 }

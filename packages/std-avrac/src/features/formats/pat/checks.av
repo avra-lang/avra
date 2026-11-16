@@ -1,0 +1,11 @@
+//! The typing rule of a format pattern: each hole binds the piece it stands for, octets over `Bytes`
+//! and text over text, or the `int` it reads as where its written type is one.
+use core.{Checking, PatChecks, PatId, SignedType, owned_type, reads_int}
+use core.pat.{Format}
+
+impl PatChecks for Format {
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let piece = if subject != null && subject!.word() == "Bytes" { subject! with { nulls: 0 } } else { owned_type("string") }
+        for part in self.parts { cx.bind(part.hole.name, if reads_int(part.hole) { owned_type("int") } else { piece }) }
+    }
+}

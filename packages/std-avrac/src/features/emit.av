@@ -85,6 +85,38 @@ impl LowerCx {
         self.emit(Ins.OnceCommit(sym, value))
     }
 
+    /// The answer kept in the body's `once` slot. EVERY EXIT THAT
+    /// ANSWERS KEEPS IT — the tail, a `return`, a failure — so the slot
+    /// holds what the body answered whichever way it left; an unwind
+    /// answers nothing, and the next call runs the body again.
+    mut fn kept(answer: Reg) {
+        let slot? = self.once_slot else { return }
+        self
+            .once_commit(slot.symbol, if slot.boxed { self.one_cell(answer, slot.answer) } else { answer })
+    }
+
+    // ── Exits ────────────────────────────────────────────────────
+    // An early exit leaves through one of these doors: the open
+    // frames' deferred calls run, a `once` body keeps the answer, and
+    // the fn exits. Nothing closes — other paths continue.
+
+    /// An exit that ANSWERS `answer`: every open frame's entries run,
+    /// innermost first — an `errdefer` behind the answer's tag.
+    mut fn answer_exit(answer: Reg?) {
+        self.run_from(0, answer)
+        let gives = answer ?? self.hollow_of(self.type(void))
+        self.kept(gives)
+        self.emit(Ins.FnExit(gives))
+    }
+
+    /// An exit that FAILS with `answer`: every open frame's `defer`s
+    /// AND `errdefer`s run.
+    mut fn fail_exit(answer: Reg) {
+        self.failing()
+        self.kept(answer)
+        self.emit(Ins.FnExit(answer))
+    }
+
     // ── Arithmetic and packing ──────────────────────────────────
 
     /// A binary op minted at `sh` — internal plumbing whose shape is

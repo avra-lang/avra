@@ -105,3 +105,97 @@ void* avra_box_thawed(void* p) {
     avra_rc_retain(p);
     return p;
 }
+
+// A write through `self` or a `mut` seat: its caller opened the box, so
+// the write rides the seat's own reference and the binary's own data
+// never reaches here.
+void* avra_seat_opened(void* p) {
+    Header* h = avra_hdr(p);
+    if (__builtin_expect(h != 0 && IS_IMMORTAL(avra_kind(h)), 0)) avra_seat_static();
+    return p;
+}
+
+// THE WRITES. Each fast path is the write a unique, roomy box takes —
+// the word and its mark stored, the length bumped — and every other
+// case is the WHOLE row, out of line in avra_runtime.c and tail-called
+// with the leaf's own arguments: a full list's grow, a box a turn's
+// log must stamp first, a guarded run, a shared slot's clone.
+
+// One word onto the list; a full list grows out of line.
+void avra_array_push(void* arr, int64_t v) {
+    CENSUS(g_list_pushes++);
+    CENSUS(note_push(AVRA_CALLER()));
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(a->len == a->cap, 0)) { avra_push_grown(arr, v); return; }
+    a->data[a->len] = v;
+    a->marks[a->len] = 0;
+    a->len++;
+}
+
+// RETAIN-AT-PACK: the list takes its own reference to a managed value
+// and marks the slot, so reclaim releases it.
+void avra_array_push_owned(void* arr, void* v) {
+    CENSUS(g_list_pushes++);
+    CENSUS(note_push(AVRA_CALLER()));
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(a->len == a->cap, 0)) { avra_push_owned_grown(arr, v); return; }
+    a->data[a->len] = (int64_t)(uintptr_t)v;
+    a->marks[a->len] = MARK_OWNED;
+    a->len++;
+    avra_rc_retain(v);
+}
+
+// The push twin of `avra_slot_set_moved`: the caller's reference moves
+// into the new slot.
+void avra_array_push_moved(void* arr, void* v) {
+    CENSUS(g_list_pushes++);
+    CENSUS(note_push(AVRA_CALLER()));
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(a->len == a->cap, 0)) { avra_push_moved_grown(arr, v); return; }
+    a->data[a->len] = (int64_t)(uintptr_t)v;
+    a->marks[a->len] = MARK_OWNED;
+    a->len++;
+}
+
+// A write into a slot the box's shape proves exists — a cell's one
+// slot, a record's declared field — so it has no bound to trap on. The
+// new word is stored BEFORE the old owned one is released, so a release
+// that frees reads a box already written, and is the leaf's tail. A box
+// with a flag set — one a site observed, or the binary's own data — is
+// the whole write out of line: one byte tested where a plain box is
+// written.
+static inline void slot_written(void* arr, int64_t i, int64_t v) {
+    if (__builtin_expect(avra_box_flags(arr) != 0, 0)) { avra_slot_put_flagged(arr, i, v); return; }
+    AvraArray* a = (AvraArray*)arr;
+    int64_t old = a->data[i];
+    uint8_t mark = a->marks[i];
+    a->data[i] = v;
+    a->marks[i] = 0;
+    if (mark & MARK_OWNED) avra_rc_release((void*)(uintptr_t)old);
+}
+
+void avra_slot_put(void* arr, int64_t i, int64_t v) { slot_written(arr, i, v); }
+
+// A write into a slot by index: bounds-checked, then the slot write.
+void avra_slot_set(void* arr, int64_t i, int64_t v) {
+    if (__builtin_expect(avra_rc_guard_on, 0)) { avra_slot_set_guarded(arr, i, v); return; }
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect((uint64_t)i >= (uint64_t)a->len, 0)) avra_trap_bounds(i, a->len);
+    slot_written(arr, i, v);
+}
+
+// The box in a slot opened for writing: itself when nothing else holds
+// it. A shared or immortal one — and any open a turn's log or the guard
+// must see — is the whole row out of line, which clones into the slot.
+void* avra_slot_unique(void* arr, int64_t i) {
+    if (__builtin_expect(avra_box_unlogged(arr), 0)) return avra_slot_opened(arr, i);
+    if (__builtin_expect(avra_rc_guard_on, 0)) return avra_slot_opened(arr, i);
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect((uint64_t)i >= (uint64_t)a->len, 0)) avra_trap_bounds(i, a->len);
+    void* p = (void*)(uintptr_t)a->data[i];
+    Header* h = avra_hdr(p);
+    if (h == 0) return p;
+    int32_t k = avra_kind(h);
+    if (__builtin_expect(IS_IMMORTAL(k) || (k >= 0 && h->rc > 1), 0)) return avra_slot_opened(arr, i);
+    return p;
+}

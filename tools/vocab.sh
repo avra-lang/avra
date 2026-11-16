@@ -70,8 +70,8 @@ Type	packages/std-avrac/src/features/crossing.av	kind_of	spelled	which @std/meta
 Type	packages/std-avrac/src/compiler/backend/llvm_emit.av	names_a_name	spelled	which shapes a callee reads as a NUL-terminated name
 Type	packages/std-avrac/src/core/types.av	ptr_shape	spelled	whether a shape travels as a pointer
 Type	packages/std-avrac/src/features/unify.av	slot_worthy	spelled	which shapes a slot may hold
-Type	packages/std-avrac/src/compiler/backend/llvm.av	ll_type_of	spelled	the LLVM type a shape becomes
-Type	packages/std-avrac/src/compiler/backend/llvm_emit.av	slot_form	spelled	which conversion a category owes the word slot
+Layout	packages/std-avrac/src/compiler/backend/llvm.av	ll_layout	spelled	the LLVM type a layout becomes
+Layout	packages/std-avrac/src/compiler/backend/llvm.av	slot_form	spelled	which conversion a layout owes the word slot
 SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	worded	spelled	the cast INTO the slot
 SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	unworded	spelled	the cast back out of it
 SlotForm	packages/std-avrac/src/compiler/backend/llvm_emit.av	answer_form	spelled	which of them survives a non-word answer
@@ -86,7 +86,6 @@ Cause	packages/std-avrac/src/compiler/codes.av	help_of	spelled	the advice a pars
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_name	spelled	whether a declaration is found by its name
 DeclKind	packages/std-avrac/src/core/nodes.av	binds_type	spelled	whether a declaration names a type
 DeclKind	packages/std-avrac/src/compiler/interface.av	record_shape	spelled	the shape a held declaration's record line is written as
-Shape	packages/std-avrac/src/compiler/interface.av	fill_shape	spelled	how a held declaration's row is filled back
 Shape	packages/std-avrac/src/compiler/record.av	declared_kind	spelled	the declaration kind a record line mints
 Origin	packages/std-avrac/src/features/worklist.av	at	spelled	which file a node's own name resolves in
 Origin	packages/std-avrac/src/features/worklist.av	spanned_at	spelled	which file's text a node's span indexes

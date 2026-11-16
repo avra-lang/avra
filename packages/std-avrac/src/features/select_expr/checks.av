@@ -1,0 +1,174 @@
+//! The typing rules of a `select`: each arm checks against what the seat wants, and the `select` is
+//! where their values meet, the seat's type first. A waiting arm's head checks for what it is, its
+//! names bind in a scope of its own to what the head hands over — a task's answer, a supply's item,
+//! a list member's place and answer — its guard is a `bool`, and its value checks against the seat.
+//! A shape no lowering stands for — `@fair`, an `AnyOf` or an `Every` arm — is refused by what it is.
+use core.{
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    OwnType,
+    SignedType,
+    owned_type,
+    supplied,
+    Decision,
+    Seating,
+}
+
+impl Checks for Select {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let arm = if expected is .Dropped { Expected.Free } else { expected }
+        if self.fair { cx.unwaited(e, "`@fair`") }
+        arms_held(cx, e, self.arms)
+        let types = [cx.check(a, arm) for a in self.arms]
+        let values = [arm_value(cx, a) for a in self.arms]
+        if values.any(it == null) { return null }
+        cx.arms_met([v! for v in values], types, expected)
+    }
+}
+
+impl Checks for WaitArm {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let head = cx.check(self.head, Expected.Free)
+        let unwaited = unlowered_head(head)
+        if unwaited != null { cx.unwaited(self.head, unwaited!) }
+        arm_head_judged(cx, e, self, head)
+        cx.opened()
+        if !self.index.of.is_empty() { cx.bind(self.index.of, owned_type("int")) }
+        if !self.bind.of.is_empty() { cx.bind(self.bind.of, handed_over(head)) }
+        if self.guard != null {
+            let _ = cx
+                .check_seated(self.guard!, owned_type("bool"), Seating.Condition(Decision.SelectGuard))
+        }
+        let value = cx.check(self.value, expected)
+        cx.closed()
+        value
+    }
+}
+
+impl Checks for ElseArm {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.check(self.value, expected) }
+}
+
+/// The arm-set laws: a `select` waits, so at least one arm isn't `else`; `else` is written once, and
+/// last. The first law the arms break is refused.
+fn arms_held(mut cx: Checking, e: ExprId, arms: List<ExprId>) {
+    let elses = [j for j, a in arms if cx.store.expr(a) is .ElseArm]
+    if elses.length == arms.length { return cx.unwaited(e, NO_WAITING_ARM) }
+    if elses.length > 1 { return cx.unwaited(arms[elses[1]], ELSE_TWICE) }
+    let at? = elses.first() else { return }
+    if at != arms.length - 1 { cx.unwaited(arms[at], ELSE_NOT_LAST) }
+}
+
+/// The value an arm answers with.
+fn arm_value(cx: Checking, arm: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.store.expr(arm) {
+        .WaitArm(index, bind, head, guard, value) -> value,
+        .ElseArm(value) -> value,
+        rest -> null,
+    }
+}
+
+/// The answer a task of type `task` carries; null for any other type.
+fn task_answer(task: SignedType?) -> SignedType? {
+    let ty? = task else { return null }
+    if ty.owns(OwnType.Task) && ty.args.length == 1 { return ty.args[0] }
+    null
+}
+
+/// What a head of type `head` hands its arm's binder: a task's answer, a list member's answer, a
+/// `@std/task` supply's item; nothing known for any other head.
+fn handed_over(head: SignedType?) -> SignedType? {
+    let ty? = head else { return null }
+    let own = task_answer(ty)
+    if own != null { return own }
+    let member = task_answer(ty.listed())
+    if member != null { return member }
+    supplied(ty)
+}
+
+/// Whether an arm waits on a value of `ty`: a task, a list of tasks, `@std/task`'s `Source` or `AnyOf`,
+/// or `@std/time`'s `Deadline`, `Quiet` or `Every`.
+fn waitable(ty: SignedType) -> bool {
+    if ty.nullable() { return false }
+    if task_answer(ty) != null || task_answer(ty.listed()) != null { return true }
+    match ty.head {
+        .Declared(file, name) -> file.package_name == "@std/task" && (name == "Source" || name == "AnyOf") ||
+            file.package_name == "@std/time" &&
+                (name == "Deadline" || name == "Quiet" || name == "Every"),
+        rest -> false,
+    }
+}
+
+/// The arm `arm` at `e`, whose head is a value of `head`, refused where nothing waits on its head, or
+/// where it binds what the head hands over not as the head hands it.
+fn arm_head_judged(mut cx: Checking, e: ExprId, arm: WaitArm, head: SignedType?) {
+    let h? = head else { return }
+    if !waitable(h) && !reads_ended(cx, arm.head) { cx.arm_unwaitable(arm.head, h) }
+    arm_bound(cx, e, arm, h)
+}
+
+/// The arm `arm` at `e`, waiting on a value of `head`, refused where it binds what its head hands
+/// over not as the head hands it, or waits on a list of tasks inside a loop.
+fn arm_bound(mut cx: Checking, e: ExprId, arm: WaitArm, head: SignedType) {
+    let index = arm.index.of
+    let bind = arm.bind.of
+    let indexed = !index.is_empty()
+    let named = !bind.is_empty() && bind != DISCARD
+    let how = when {
+        reads_ended(cx, arm.head) -> if indexed || named { "ended" } else { "" }
+        task_answer(head) != null -> when {
+            indexed -> "one"
+            named && answers_nothing(task_answer(head)!) -> "nothing"
+            _ -> ""
+        }
+        task_answer(head.listed()) != null -> {
+            if cx.in_loop() { return cx.arm_spent(e) }
+            when {
+                indexed && cx.store.list_lit_values(arm.head) != null -> "literal"
+                named && answers_nothing(task_answer(head.listed())!) -> "nothing"
+                _ -> ""
+            }
+        }
+        supplied(head) != null && waitable(head) -> if indexed { "source" } else { "" }
+        timed(head) -> if indexed || named { "timer" } else { "" }
+        _ -> ""
+    }
+    if !how.is_empty() { cx.arm_misbound(e, how, index, bind) }
+}
+
+/// The binder that names no value.
+const DISCARD: string = "_"
+
+/// Whether a task answering `answer` answers nothing.
+fn answers_nothing(answer: SignedType) -> bool { answer.owns(OwnType.Void) && !answer.nullable() }
+
+/// Whether `ty` is one of `@std/time`'s timers, which fire and hand nothing over.
+fn timed(ty: SignedType) -> bool {
+    match ty.head {
+        .Declared(file, name) -> file.package_name == "@std/time" &&
+            (name == "Deadline" || name == "Quiet" || name == "Every") &&
+            !ty.nullable(),
+        rest -> false,
+    }
+}
+
+/// Whether the arm head `head` reads `.ended` off a supply, which an arm waits on.
+fn reads_ended(cx: Checking, head: ExprId) -> bool { cx.store.prop_parts(head)?.name == "ended" }
+
+/// What a head of type `head` is where no lowering stands for an arm waiting on it: `@std/task`'s
+/// `AnyOf`, `@std/time`'s `Every`.
+fn unlowered_head(head: SignedType?) -> string? {
+    let ty? = head else { return null }
+    match ty.head {
+        .Declared(file, name) -> when {
+            ty.nullable() -> null
+            name == "AnyOf" && file.package_name == "@std/task" -> "an `AnyOf` arm"
+            name == "Every" && file.package_name == "@std/time" -> "an `Every` arm"
+            _ -> null
+        },
+        rest -> null,
+    }
+}

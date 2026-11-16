@@ -1,0 +1,59 @@
+//! AN ANSWER READ PIECE BY PIECE. A big answer, like everything a module names, is a table of
+//! parts, each with its own hash and sorted by the hash of its name. A reader looks up one part
+//! in place and records only that part, so a change to any other part leaves it standing.
+use @std.meta.{derive}
+use answer_record.{ContentHash, content_hash, entry_keyed}
+use defect.{defect}
+use saved_derive.{Saved}
+use saved_layout.{SavedBytes, SavedSlots}
+use sorted.{sorted_by}
+
+/// One part of an answer: what it's called, what it holds, and the hash of what it holds.
+@derive(Saved)
+export type AnswerPart = { part_name: ContentHash, part_hash: ContentHash, value: Bytes }
+
+/// An answer made of parts, sorted by the hash of their names. The hashes' high words are a list
+/// of their own, so a search touches one list of numbers and opens only the part it finds.
+@derive(Saved)
+export type AnswerParts = { name_high_words: List<int>, parts: List<AnswerPart> }
+
+/// A named value becoming one part of an answer.
+export type NamedValue = { name: string, value: Bytes }
+
+/// The hash a read records for a part that isn't there. It moves when the part appears.
+once fn absent_part_hash() -> ContentHash { content_hash("no such part".bytes()) }
+
+/// What a read of a part sees: the part's hash, or the hash of absence when it isn't there.
+export fn part_hash_seen(part: AnswerPart?) -> ContentHash { part?.part_hash ?? absent_part_hash() }
+
+/// The answer holding these values. Two values of one name are the caller's defect, since a
+/// reader of that name couldn't say which it saw.
+export fn answer_parts(values: List<NamedValue>) -> AnswerParts {
+    let sorted = sorted_by(
+        [answer_part(value) for value in values],
+        (a, b) -> a.part_name.comes_before(b.part_name),
+    )
+    for at in 1..sorted.length {
+        if sorted[at].part_name.same_as(sorted[at - 1].part_name) { defect(two_parts_named()) }
+    }
+    AnswerParts { name_high_words: [part.part_name.high_word for part in sorted], parts: sorted }
+}
+
+fn answer_part(named: NamedValue) -> AnswerPart {
+    AnswerPart {
+        part_name: content_hash(named.name.bytes()),
+        part_hash: content_hash(named.value),
+        value: named.value,
+    }
+}
+
+/// The part called `part_name` in a query's saved `AnswerParts`, found in place, absent when
+/// there's none. Only the part found is decoded.
+export fn part_in_saved_parts(saved: SavedBytes, part_name: ContentHash) -> AnswerPart? {
+    let answer_field = saved.root().record_at(0)!
+    let high_words = AnswerParts.name_high_words_in_place(answer_field)
+    let entry? = entry_keyed(high_words, AnswerParts.parts_in_place(answer_field), part_name) else { return null }
+    AnswerPart.read_from(entry)
+}
+
+fn two_parts_named() -> string { "an answer has two parts of one name" }

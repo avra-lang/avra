@@ -6,7 +6,7 @@
 //! body of its own.
 use core.{ExprId, StmtId, TypeId, Reg, SyntaxArena}
 use core.stmt.{StructDecl, NamedType, Alias}
-use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning, nested_types}
 
 use core.expr.{StructLit, With}
 
@@ -24,7 +24,7 @@ impl StmtSemantics for StructDecl {
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
 fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
-    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
+    if cx.refuses_nested(s, "resolve.nested_type", nested_types()) { return }
     let record? = cx.view.store.struct_parts(s) else { return }
     cx.check_params(record.fields, s)
 }
@@ -41,13 +41,13 @@ fn default_exprs(store: SyntaxArena, s: StmtId) -> List<ExprId> {
 /// (typing/declare.av's `declare_named`, `declare_alias`).
 impl StmtSemantics for NamedType {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+        let _ = cx.refuses_nested(s, "resolve.nested_type", nested_types())
     }
 }
 
 impl StmtSemantics for Alias {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+        let _ = cx.refuses_nested(s, "resolve.nested_type", nested_types())
     }
 }
 

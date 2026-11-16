@@ -13,6 +13,8 @@ import pathlib
 import re
 import sys
 
+import avsrc
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GENERATED = ROOT / "packages/std-avrac/src/testing/std_sources.av"
 ROOTS = ["time", "task", "db"]
@@ -26,12 +28,7 @@ def package_dir(name):
 
 
 def sources(name):
-    base = package_dir(name) / "src"
-    return sorted(
-        str(p.relative_to(base))
-        for p in base.rglob("*.av")
-        if "tests" not in p.relative_to(base).parts
-    )
+    return avsrc.av_files([""], str(package_dir(name) / "src"))
 
 
 def deps_of(name):

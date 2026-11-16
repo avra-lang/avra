@@ -3,7 +3,7 @@
 //! kind-free — and every projected kind is checked against the
 //! assembled registry. Passes never pass through this table: they
 //! emit Diag directly with their own registered kinds.
-use core.{flatten, Span, Refused}
+use core.{flatten, ParseRefusal, loc_span}
 use @std.errors.{Loc}
 use @std.grammar.{Diagnostic, Cause}
 use diagnostics.{Diag, DiagCode, Remedy, error_at, registered, loc_at, defect_at, defect_kind}
@@ -125,7 +125,7 @@ fn kind_for(c: Cause) -> string {
 /// subject up front; a parse voice states the law and, where it has one,
 /// its help.
 export fn project(d: Diagnostic, file: string?) -> Diag {
-    error_at(kind_for(d.cause), loc_at(file, engine_span(d.loc)), message_of(d)) with { help: help_of(d) }
+    error_at(kind_for(d.cause), loc_at(file, loc_span(d.loc)), message_of(d)) with { help: help_of(d) }
 }
 
 /// More alternatives than a reader weighs at a glance — the message
@@ -163,14 +163,6 @@ fn expected_help(d: Diagnostic) -> string {
     "it could begin with ${d.expected.take(crowded).join(", ")} — and ${more} more"
 }
 
-/// The engine's own Loc, worn as a Span — its `file` is always null
-/// (the engine tokenizes no file of its own) and `loc_at` stamps the
-/// real one.
-fn engine_span(l: Loc?) -> Span? {
-    if l == null { return null }
-    span_of(l!.lo, l!.hi)
-}
-
 /// An engine message with the rule it came from up front.
 fn in_rule(d: Diagnostic) -> string {
     "`${d.in_rule}`: ${d.message}"
@@ -182,12 +174,41 @@ export fn project_all(ds: List<Diagnostic>, file: string?, codes: List<DiagCode>
     flatten([netted(project(d, file), codes) for d in ds])
 }
 
-/// What the grammar's own refusals said, each in its registered kind,
-/// through the same net.
-export fn refusals_spoken(rs: List<Refused>, file: string?, codes: List<DiagCode>) -> List<Diag> {
+/// What a parse refused, each in its registered kind through the same net: the lexer's, then the
+/// grammar's, then the blocks', then the builders'.
+export fn refusals_spoken(rs: List<ParseRefusal>, file: string?, codes: List<DiagCode>) -> List<
+    Diag,
+> {
     flatten(
-        [netted(error_at(r.kind, loc_at(file, r.span), r.message) with { help: r.help }, codes) for r in rs],
+        [refusal_spoken(r, file, codes) for group in 0..4 for r in rs if refusal_group(r) == group],
     )
+}
+
+/// Where a refusal is said among a parse's: the lexer's, the grammar's, a block's, a builder's.
+fn refusal_group(r: ParseRefusal) -> int {
+    match r {
+        .Grammar(cause, _, _, _, _) -> match cause { .Lex -> 0, .Expected or .Trailing or .Builder or .Defect -> 1, .Block -> 2 },
+        .Builder(_, _, _, _) -> 3,
+    }
+}
+
+fn refusal_spoken(r: ParseRefusal, file: string?, codes: List<DiagCode>) -> List<Diag> {
+    match r {
+        .Grammar(cause, message, span, expected, in_rule) -> netted(
+            project(
+                Diagnostic {
+                    cause: cause,
+                    message: message,
+                    loc: span?.engine_loc(),
+                    expected: expected,
+                    in_rule: in_rule,
+                },
+                file,
+            ),
+            codes,
+        ),
+        .Builder(kind, message, help, span) -> netted(error_at(kind, loc_at(file, span), message) with { help: help }, codes),
+    }
 }
 
 /// The projected diagnostic — plus the net's defect when its kind

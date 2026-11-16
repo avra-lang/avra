@@ -1,0 +1,2765 @@
+//! WHAT A BODY IS TYPED WITH: the arena its nodes stand in, each node's type as it's checked, the
+//! bindings in scope, and what the program answers about the names a body reads. The program's
+//! answers come in as fns, so typing stands below the queries that answer them.
+
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.saved_derive.{Saved}
+
+/// What a seat wants of the node checked into it.
+export enum Expected {
+    /// Anything: the node says what it is.
+    Free
+    /// This type.
+    Exactly(ty: SignedType)
+    /// Nothing: the value is dropped where it stands.
+    Dropped
+    /// Unknown: the node stands under one with no rule, which may use its value or drop it.
+    Unknown
+}
+
+/// What a body's checking reads of the program: the type a top-level value's name has from the
+/// body's file, absent when it names none; a type written in the body, and one named, resolved where
+/// it stands; the record or enum a type is, and the method or property a value of it has as a fn of
+/// its receiver first, absent when the program names none.
+export type CheckedProgram = {
+    /// A top-level value's type by its name, read where the template that wrote the read stands
+    /// (its home, as an origin spells it) before where the body stands.
+    value_named: fn(string, string?) -> SignedType?,
+    /// A top-level value's type as the file that declares it names it: a binding's, never a name's.
+    declared_value: fn(SourceFileAddress, string) -> SignedType?,
+    written: fn(TypeRef) -> SignedType,
+    /// A type by its name, read where the template that wrote it stands (its home, as an origin
+    /// spells it) before where the body stands.
+    type_named: fn(string, string?) -> SignedType,
+    record_of: fn(SignedType) -> RecordShape?,
+    /// The shape a named type stands over, bound to its arguments; absent for any other type.
+    named_of: fn(SignedType) -> SignedType?,
+    enum_of: fn(SignedType) -> EnumShape?,
+    method_of: fn(SignedType, string) -> SignedType?,
+    /// Whether a pattern's bare name names a top-level value it compares with; absent where only a
+    /// generator gives such a value.
+    compared: fn(string) -> bool?,
+    /// Whether a name the body doesn't bind names a const or a collection its file reads: its own, its
+    /// module's (a sibling's private one too) or one it imports, written or a generator's.
+    settles: fn(string) -> bool,
+    property_of: fn(SignedType, string) -> SignedType?,
+    /// What a name naming a type and no value reads as, from its home before where the body stands.
+    type_value: fn(string, string?) -> SignedType?,
+    static_of: fn(SignedType, string) -> SignedType?,
+    /// The type of each method of one name several impls of a type give, a call choosing among them
+    /// by its arguments; empty where at most one gives it.
+    methods_among: fn(SignedType, string) -> List<SignedType>,
+    /// The type of each static of one name several impls of a type give, as `methods_among` says.
+    statics_among: fn(SignedType, string) -> List<SignedType>,
+    /// The type a module the toolchain carries (`@std.grammar`) declares under a name.
+    toolchain_type: fn(string, string) -> SignedType?,
+    /// Whether a type is a record its package marks `@owns`: one that holds producers its binding's
+    /// scope cancels, then joins, as it ends.
+    owner: fn(SignedType) -> bool,
+    /// The module that seals `ty`, where it is one other than the body's own; absent for any other.
+    sealed_home: fn(SignedType) -> string?,
+    /// Whether the type is declared in the file being checked.
+    declared_here: fn(SignedType) -> bool,
+    /// Whether a value's name, read where the template that wrote the read stands (its home) before
+    /// where the body stands, names an `extern fn`, whose body C writes.
+    external: fn(string, string?) -> bool,
+    /// What each type parameter of the body is to the machine, by its place, where the body is
+    /// lowered under one instantiation's layouts.
+    parameters: List<ParameterLayout> = [],
+    /// The answers the engine keeps per type.
+    memos: TypeMemos,
+}
+
+/// Whether a lambda answering `own` fills a fn seat answering `want` by boxing: `want` is a `dyn`
+/// that a value of `own` stands in.
+fn boxes_into(own: SignedType, want: SignedType?) -> bool {
+    let held? = want else { return false }
+    held.dynamic && own.reaches(held)
+}
+
+/// A fn type as named arguments fill it: its seats in the arguments' order, each argument's value,
+/// and the place in the fn's own seats each fills.
+export type FilledByName = { f: SignedType, values: List<ExprId>, seats: List<int> }
+
+/// A record as typing reads it: how many type parameters it has, and its fields, each typed under
+/// them.
+export type RecordShape = { params: int, fields: List<FieldSeat> }
+
+/// A record's field: its name, its type when it's written, and whether it's a `state` field, whose
+/// slot holds the cell its value lives in. A record's signature saves its fields as these, and typing
+/// reads them as saved.
+@derive(Saved)
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false }
+
+impl FieldSeat {
+    /// What the field's slot holds: its type, or the cell its value lives in for a `state` field;
+    /// absent when its type isn't written.
+    fn slot_type() -> SignedType? {
+        let ty? = self.ty else { return null }
+        if self.state { cell_of(ty) } else { ty }
+    }
+}
+
+/// A name bound in a body, its type when it's known, and whether it may narrow: a binding whose type
+/// isn't known still stands in front of every name further out, and only one that can't be written
+/// again (a `let`, a parameter) narrows where a test proves it present. `writes` when a write through
+/// it lands in it: a `mut` binding, a `mut` seat, the receiver; `celled` when it's a `mut` binding,
+/// whose own cell an extern's `mut` seat hands C; `shared` for a `state`, the one place every reader
+/// shares, a lambda's as much as the body's; `binder` where it was bound; `seat` where it is a seat
+/// of the fn that holds a value only while the fn runs.
+export type Local = {
+    ty: SignedType?,
+    narrowable: bool,
+    wide: SignedType? = null,
+    writes: bool = false,
+    celled: bool = false,
+    shared: bool = false,
+    binder: BindSite? = null,
+    seat: bool = false,
+    /// Whether it is an `isolated` seat of the fn, which shares nothing with its caller.
+    unshared: bool = false,
+}
+
+/// What a condition proves in the branch where it's `truth`: names bound there, as a presence test
+/// narrows its name and `is` binds its pattern's.
+export type Proof = { names: Map<string, Local>, truth: bool }
+
+/// An enum as typing reads it: how many type parameters it has, and its variants, each payload typed
+/// under them.
+export type EnumShape = { params: int, variants: List<VariantSeat> }
+
+/// An enum's variant: its name, its payloads, and for a gathered one the member's record it's made of.
+/// An enum's signature saves its variants as these, and typing reads them as saved.
+@derive(Saved)
+export type VariantSeat = { name: string, payloads: List<FieldSeat>, member: SignedType? = null }
+
+impl VariantSeat {
+    /// Its payloads' types, when it carries `arity` payloads and each one's type is known.
+    fn seats(arity: int) -> List<SignedType>? { all_known([p.ty for p in self.payloads], arity) }
+}
+
+/// What walking a value binds at each turn: its index (a list's position, a map's key) and its
+/// element, each absent when it isn't known.
+export type WalkBinds = { index: SignedType? = null, element: SignedType? = null }
+
+/// One scope of a body: the names bound in it, and whether it's a lambda's, which reads a name further
+/// out as it may be when the lambda runs, never as a test around the lambda narrowed it.
+type CheckScope = { names: Map<string, Local>, fenced: bool = false, lambda: int = -1, looped: bool = false }
+
+/// One body being checked. An identity: every rule writes the one table.
+export type Checking = {
+    store: SyntaxArena,
+    program: CheckedProgram,
+    /// What the body's fn answers, which a `return` checks against; absent when it isn't known.
+    answer: SignedType?,
+    /// Each node's type, by its index, once checked.
+    types: Cell<List<SignedType?>>,
+    /// The bindings in scope, innermost last.
+    scopes: Cell<List<CheckScope>>,
+    /// What each condition proves, by its node's index.
+    proofs: Cell<Map<string, Proof>>,
+    /// Whether a sugar with a meaning is checked as what it means: the core's typing, where the
+    /// sugar's own rule is the surface's.
+    meanings: bool = false,
+    /// Whether the statements checked are a program's entry, which no fn encloses: a `return` there,
+    /// a lambda's among them, answers nothing.
+    fnless: bool = false,
+    /// The type each node's seat wanted, by its index, where the body was checked as the core it means.
+    seats: Cell<Map<string, SignedType>>,
+    /// Each node whose seat refused it, in the order met.
+    refused: Cell<List<Refused>>,
+    /// The seats being checked in, innermost last, each beside the type it wants: a node checked
+    /// against that same type, passed down from it, fills that seat.
+    seated: Cell<List<SeatWant>>,
+    /// Each name read that nothing binds and the program gives no type, in the order met: a name
+    /// nothing declares among them.
+    unread: Cell<List<Unread>>,
+    /// The body consts being checked, innermost last, each by its statement's index.
+    consting: Cell<List<int>>,
+    /// Each body const whose value reads a seat of its fn that no run settles: the first such read.
+    seat_reads: Cell<List<SeatRead>>,
+    /// Each `if` condition met, by its node's index: a payload `is` there binds.
+    conditions: Cell<List<int>>,
+    /// Each name read, by its node's index, as `read` resolved it.
+    names_read: Cell<Map<string, NameRead>>,
+    /// Each binding made, in the order made.
+    names_bound: Cell<List<NameBound>>,
+    /// The node being checked, where a binding made now is bound.
+    site: BindSite? = null,
+}
+
+/// A body const's value reading a seat that holds a value only while the fn runs: the const's
+/// statement, the seat's name, and the node that reads it.
+export type SeatRead = { stmt: int, name: string, at: ExprId }
+
+/// The word that names the element a call's block is handed, and the subject an arms block matches.
+export const PRONOUN: string = "it"
+
+/// A name read that nothing binds and the program gives no type: the node that reads it, the name,
+/// how it reads it, and the home of the template that wrote it.
+export type Unread = { at: ExprId, name: string, read: ReadAs, home: string? }
+
+/// How a name nothing answers is read.
+@derive(Saved)
+export enum ReadAs {
+    /// As a value.
+    Value
+    /// As the fn a call calls.
+    Call
+    /// As the record a literal builds.
+    Record
+    /// As `it`, where no call binds the pronoun.
+    Pronoun
+}
+
+/// What a condition decides, as the condition law names it.
+@derive(Saved)
+export enum Decision {
+    If
+    While
+    When
+    MatchGuard
+    SelectGuard
+    Filter
+}
+
+impl Decision {
+    /// The site a refused condition stands at.
+    fn subject() -> string {
+        match self {
+            .If -> "an `if` condition",
+            .While -> "a `while` condition",
+            .When -> "a `when` condition",
+            .MatchGuard -> "a match guard",
+            .SelectGuard -> "a `select` arm's guard",
+            .Filter -> "a comprehension's filter",
+        }
+    }
+
+    /// What the condition decides, as its label says.
+    fn decides() -> string {
+        match self {
+            .If -> "this decides the branch",
+            .While -> "this decides the loop",
+            .When -> "this decides an arm",
+            .MatchGuard -> "this decides whether the arm is taken",
+            .SelectGuard -> "this decides whether the arm waits",
+            .Filter -> "this decides the element",
+        }
+    }
+}
+
+/// What every condition law says: a condition is a `bool`.
+export const condition_help: string = "a condition is a `bool` — state it as a comparison (`n > 0`, `s != \"\"`, `xs.length > 0`) or test a nullable with `v != null`"
+
+/// A place's last step, a field: the place it's read from, and the field's name.
+type FieldStep = { subject: ExprId, name: string }
+
+/// One row of patterns a match's coverage reads, one per column: absent for a payload no pattern read.
+type PatternRow = { pats: List<PatId?> }
+
+/// The row of `pats`, each read.
+fn pattern_row(pats: List<PatId?>) -> PatternRow { PatternRow { pats: pats } }
+
+/// The row of `pats`, each written.
+fn read_row(pats: List<PatId>) -> PatternRow { PatternRow { pats: [written_pattern(p) for p in pats] } }
+
+/// A written pattern, as a column holds it.
+fn written_pattern(p: PatId) -> PatId? { p }
+
+/// `n` columns no pattern read.
+fn unread_columns(n: int) -> List<PatId?> { filled<PatId?>(n, null) }
+
+/// The lengths a list pattern takes: exactly `n`, or `n` and more when `open`.
+type Lengths = { n: int, open: bool }
+
+/// A value a lambda captures that is or holds an identity: its name, whether it `is` or `holds` the
+/// identity, and the identity's type spelled.
+@derive(Saved)
+export type Captured = { name: string, holds: string, held: string }
+
+/// A pattern a pattern holds, and the type of what it matches, absent where it isn't known.
+type PatSeat = { pat: PatId, ty: SignedType? }
+
+/// A variant pattern: the variant it names, and the patterns of its payloads.
+type NamedPattern = { name: string, args: List<PatId> }
+
+/// A seat being checked in, and the type it wants, spelled.
+type SeatWant = { seat: Seating, want: string }
+
+/// A node its seat refused: the node, what the seat wants, what the node is, and the seat.
+/// A refusal of a pattern stands at the node that holds it, and is said at the pattern `pat`.
+export type Refused = { at: ExprId, want: SignedType, found: SignedType, seat: Seating, pat: PatId? = null }
+
+/// Why a `mut` seat refused the argument it was handed.
+@derive(Saved)
+export enum Unhanded {
+    /// A value, standing in no place.
+    Valued
+    /// A place rooted in a binding no write lands in.
+    Unwritten
+    /// A place rooted in a binding a lambda holds a copy of.
+    Captured
+    /// An extern's seat handed a place that is no `mut` binding's own cell, which C writes through.
+    Cellless
+    /// A `state` seat handed what is no `state` of the body's own, nor a `state` seat it forwards.
+    Stateless
+}
+
+/// Why `==` or `!=` refuses an operand.
+@derive(Saved)
+export enum Uncompared {
+    /// The right side's type isn't the left side's.
+    Mismatched
+    /// The side compares by no value: what it is, by what to compare instead.
+    Uncomparable(offered: Offered)
+    /// `null` beside a value that is never absent.
+    Unasked
+    /// Both sides are `null`.
+    Absent
+}
+
+/// What a value offered where a value that compares was wanted is, by what to reach for instead.
+@derive(Saved)
+export enum Offered {
+    List
+    Cell
+    Task
+    Tasks
+    Record
+    Enum
+    Absence
+    EmptyList
+    Map
+    Parameter
+    Dyn
+    Fn
+    Void
+    Applied
+    Union
+    Range
+    Scalar
+}
+
+/// The seat a node fills, as a refusal of it names it.
+@derive(Saved)
+export enum Seating {
+    /// An arm of a `match` a `collect` keeps, answering a list where the collect keeps one element.
+    KeptArm
+    /// Argument `at` of a call of `callee`.
+    Argument(callee: string, at: int)
+    /// Argument `at` of a call of the method `name` on a value of `owner`.
+    Method(owner: string, name: string, at: int)
+    /// The field `name` of a record literal.
+    Field(name: string)
+    /// A payload of the variant `variant` of the enum `owner`.
+    Payload(owner: string, variant: string)
+    /// The value a `let` or a `const` named `name` declares a type for.
+    Binding(name: string)
+    /// The value the `return` statement `stmt` hands the fn, by the statement's index.
+    Return(stmt: int)
+    /// The body of the fn `name`, which answers its declared type.
+    Body(name: string)
+    /// The default the record field `name` writes.
+    FieldDefault(name: string)
+    /// The default the fn seat `name` writes.
+    SeatDefault(name: string)
+    /// A quote's hole standing in a position of `kind`.
+    Hole(kind: HoleKind)
+    /// A condition: what it decides.
+    Condition(of: Decision)
+    /// A seat that takes no fn, handed the pronoun's own lambda: an `it` with no element.
+    Pronoun
+    /// The position an index names.
+    Index
+    /// An element of a list literal.
+    Element
+    /// A key of a map literal.
+    MapKey
+    /// A value of a map literal.
+    MapValue
+    /// A `match` on a value of the enum `owner` that handles none of its arms the variant `variant`.
+    Uncovered(owner: string, variant: string)
+    /// A `match` on a value of `owner`, no enum, that no arm takes every value of.
+    Catchless(owner: string)
+    /// A `let` taking a value of `owner` apart by a pattern that can refuse it, with no `else`.
+    Refutable(owner: string)
+    /// A `match` testing variants of a value that is no enum.
+    Unmatchable
+    /// An arm taking whole the variant `variant` an arm before it took.
+    Repeated(variant: string)
+    /// A pattern binding payloads of the variant `variant` of `owner`, which carries none.
+    Unbinding(owner: string, variant: string)
+    /// A pattern naming `named` payloads of the variant `variant`, which carries `carried`.
+    Arity(variant: string, carried: int, named: int)
+    /// A pattern binding the name `name` twice.
+    BindsTwice(name: string)
+    /// A list literal's element whose type isn't the first element's; `boxed` when both are declared
+    /// types, which a `dyn` list could hold.
+    ElementsApart(boxed: bool)
+    /// A spread in a literal of `of` — a list or a map — of a value that is no `of`.
+    SpreadUnlike(of: string)
+    /// A spread into a call of `callee` carrying the field `name`, whose seat takes a place or a
+    /// settled value.
+    SpreadPlace(callee: string, name: string)
+    /// A spread of a list into a call of `callee`, which declares no seat taking the rest.
+    Restless(callee: string)
+    /// The variant `variant` of an enum built with other than what it carries: `how` it's refused —
+    /// `nothing` called where it carries nothing, `empty` called with nothing where it carries
+    /// `carried`, `count` handed `handed` where it carries `carried` many, `bare` named without the
+    /// `carried` it carries.
+    VariantCount(variant: string, how: string, carried: string, handed: int)
+    /// `all` called on an enum whose variant `variant` carries a payload, which no list holds bare.
+    Unlistable(variant: string)
+    /// `put` on a cell holding `held`, which is no map.
+    CellUnmapped(held: string)
+    /// The extern `name`, whose seats are typed `types`, `mutable` where marked, read as a value.
+    ExternValue(name: string, types: List<string>, mutable: List<bool>)
+    /// A call of `callee`, whose seats are `seats`, naming its seat `name` `how`: `unknown` where no
+    /// seat is so named, `twice` where an argument before wrote it, `unwritten` where no argument
+    /// writes it and it has no default.
+    SeatNamed(callee: string, how: string, name: string, seats: List<string>)
+    /// A comprehension walking a value of `found`, which holds no element to walk.
+    CompUnwalked(found: string)
+    /// A lambda taking a record's fields by name asking for `name`: `offered` beside the fields it
+    /// offers where none is so named, `typed` where it writes the field a type.
+    NotOffered(name: string, how: string, fields: List<string>)
+    /// A `select` arm waiting on a value of `found`, which nothing waits on.
+    Unwaitable(found: string)
+    /// A `select` arm binding what its head hands over not as it does: `how` — `one`, `literal`,
+    /// `source` where it names an index of one task, a list written in the head or a source; `ended`,
+    /// `timer` where it binds what hands nothing over; `nothing` where its task answers nothing — the
+    /// index it names, then the binder.
+    ArmBinder(how: string, index: string, bind: string)
+    /// A `select` arm waiting on a list of tasks inside a loop, which takes it once.
+    SpentArm
+    /// A component `word`'s handler that can fail, where the component names no fate.
+    Fateless(word: string)
+    /// A pattern of `kind` — a variant's, an `as` member's, a record's, a list's, a type pattern's, or
+    /// a type pattern's over a value that may be absent — over a value of `found` that isn't its
+    /// shape; `name` the variant or record it names.
+    Misshapen(kind: string, name: string, found: string)
+    /// An `or` arm whose alternative `k` binds `own` where its first binds `names`.
+    OrBinds(names: List<string>, k: int, own: List<string>)
+    /// A payload `is` outside an `if` condition.
+    PayloadOutside
+    /// A value of `name`, which the module `home` seals, built or rewritten elsewhere, at a site
+    /// labelled `how`.
+    Sealed(name: string, home: string, how: string)
+    /// The `isolated` seat `seat` of `callee`, handed a lambda capturing what `caught` says, or a
+    /// fn value not known to share nothing where absent.
+    Isolated(callee: string, seat: string, caught: Captured?)
+    /// The `const` seat `seat` of `callee`, handed a value the source doesn't spell.
+    Computed(callee: string, seat: string)
+    /// Argument `at` of the walk `name` on a list of `owner`, called at the node `call`: the fn it
+    /// hands each element. Handed a value that is no fn it's the walk's own refusal; a fn taking
+    /// another element, `Unwalked`; else the method's argument's.
+    Walk(owner: string, name: string, at: int, call: int)
+    /// The fn the walk `name`, called at the node `call`, hands each `element`, taking another.
+    Unwalked(name: string, element: string, call: int)
+    /// The receiver of the verb `verb`, which writes it, rooted in the binding `root` nothing writes
+    /// through.
+    Unwritten(root: string, verb: string)
+    /// The receiver of the verb `verb`, which writes it, standing in no place.
+    Valued(verb: string)
+    /// Argument `at` of a call of `callee` into a `mut` seat, which writes through it, rooted in
+    /// `root` where it stands in a place, and refused as `how` says.
+    Handed(callee: string, at: int, root: string, how: Unhanded)
+    /// An argument named `label` handed the extern `callee`, whose seats are called by position.
+    Nameless(callee: string, label: string)
+    /// A pattern naming the variant `variant` of the enum `owner`, which declares only `variants`;
+    /// `asked` where an `is` names it, rather than a `match`'s arm.
+    Unvaried(owner: string, variant: string, variants: List<string>, asked: bool)
+    /// A `select` the language refuses — an arm-set law it breaks, or a shape no lowering stands for —
+    /// by what it is.
+    Unwaited(what: string)
+    /// An operand of the operator `op`, which needs both its sides of one type the left one decides;
+    /// `sugar` the node, written in its place, whose meaning the operator is, where one is (else -1).
+    Operand(op: string, sugar: int)
+    /// The value `!` negates, which is a `bool`.
+    Negated
+    /// An operand of `op`, `==` or `!=`, refused as `how` says.
+    Compared(op: string, how: Uncompared)
+    /// An operand wearing a name beside one wearing another: names never mix.
+    TwoNames
+    /// An operand beside one wearing a name its own type stands under: a name never mixes with its shape.
+    Shaped
+    /// The `return` statement `stmt`, which no fn encloses.
+    Fnless(stmt: int)
+    /// The bare `return` statement `stmt` in a fn that answers a value.
+    Bare(stmt: int)
+    /// A seat no refusal names yet.
+    Unnamed
+}
+
+impl CheckedProgram {
+    /// The enum `ty` is, `Result` among them, absent when it's none; the arguments it's applied to are
+    /// its reader's to hold to the shape's parameters.
+    fn enum_shape(ty: SignedType) -> EnumShape? {
+        if ty.nullable() || ty.dynamic { return null }
+        match ty.head {
+            .Owned(name) -> if name == "Result" { result_shape() } else { null },
+            rest -> (self.enum_of)(ty),
+        }
+    }
+}
+
+/// `Result<T, E>`: `Ok` holding a `T`, `Err` an `E`.
+fn result_shape() -> EnumShape {
+    EnumShape {
+        params: 2,
+        variants: [
+            VariantSeat {
+                name: "Ok",
+                payloads: [FieldSeat { name: "", ty: headed_type(TypeHead.Parameter(0, "T")) }],
+            },
+            VariantSeat {
+                name: "Err",
+                payloads: [FieldSeat { name: "", ty: headed_type(TypeHead.Parameter(1, "E")) }],
+            },
+        ],
+    }
+}
+
+/// What walking a value of `subject`'s type binds: a list's position and element, a map's key and
+/// value, octets' position and each octet, a range's integers; nothing known for any other type.
+/// Who gives a seat of a call: the argument at `arg`, or the field `field` of the record it spreads.
+export type Giver = { arg: int, field: string? = null }
+
+/// Who gives each of the seats `seats`, by name, of a call whose arguments are labelled `labels` (none
+/// for one in order) and spread the records whose fields are `spread`: in written order, an argument
+/// in order the next seat by place, a labelled one its seat, a spread one each seat a field of its
+/// record names, a later one winning; absent for a seat nothing gives.
+export fn spread_givers(seats: List<string>, labels: List<string?>, spread: List<List<string>?>) -> List<
+    Giver?,
+> {
+    let placed = [at for at in 0..labels.length if labels[at] == null && spread[at] == null]
+    [gives_last(seats[j], j, labels, spread, placed) for j in 0..seats.length]
+}
+
+/// The last argument that gives the seat `name` at place `j`.
+fn gives_last(
+    name: string,
+    j: int,
+    labels: List<string?>,
+    spread: List<List<string>?>,
+    placed: List<int>,
+) -> Giver? {
+    let at? = [at for at in 0..labels.length if j < placed.length && placed[j] == at ||
+        labels[at] == name ||
+        spread[at]?.contains(name) ?? false]
+        .last() else { return null }
+    if spread[at] == null { Giver { arg: at } } else { Giver { arg: at, field: name } }
+}
+
+export fn walk_binds(subject: SignedType?) -> WalkBinds {
+    let s? = subject else { return WalkBinds {} }
+    let element = s.listed()
+    if element != null { return WalkBinds { index: owned_type("int"), element: element } }
+    let value = s.mapped()
+    if value != null { return WalkBinds { index: s.args[0], element: value } }
+    if s.word() == "Bytes" && !s.nullable() { return WalkBinds { index: owned_type("int"), element: owned_type("int") } }
+    if s.word() == "Range" && !s.nullable() { return WalkBinds { element: owned_type("int") } }
+    let item? = supplied(s) else { return WalkBinds {} }
+    WalkBinds { element: item }
+}
+
+/// What a running supply `s` hands over, where it's `@std/task`'s `Source`: its one type argument.
+export fn supplied(s: SignedType) -> SignedType? {
+    if s.nullable() || s.args.length != 1 { return null }
+    match s.head {
+        .Declared(file, name) -> if name == "Source" && file.package_name == "@std/task" { s.args[0] } else { null },
+        rest -> null,
+    }
+}
+
+/// `types`, when there are `arity` of them and each is known.
+export fn all_known(types: List<SignedType?>?, arity: int) -> List<SignedType>? {
+    let all? = types else { return null }
+    if all.length == arity && all.all(it != null) { [t! for t in all] } else { null }
+}
+
+/// A seat's part, when it names no type parameter still open: a part that does is the call's to fill
+/// from what the lambda turns out to be.
+fn known(part: SignedType?) -> SignedType? { if part == null || part!.inferred() { null } else { part } }
+
+/// The fn type a lambda's seat wants, when it wants one of `arity` seats: a nullable fn's seat wants
+/// the fn, which a lambda is, present.
+fn seat_fn(expected: Expected, arity: int) -> SignedType? {
+    let seat? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
+    let wanted = if seat.nulls == 1 { seat.unwrapped() } else { seat }
+    if wanted.head is .Function && wanted.seats.length == arity && !wanted.nullable() { wanted } else { null }
+}
+
+/// A body of `store` to check against `program`, its fn answering `answer`.
+export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedType?) -> Checking {
+    let unchecked: SignedType? = null
+    let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
+    let scopes: Cell<List<CheckScope>> = Cell.new([open_scope()])
+    let proofs: Cell<Map<string, Proof>> = Cell.new({})
+    let seats: Cell<Map<string, SignedType>> = Cell.new({})
+    let refused: Cell<List<Refused>> = Cell.new([])
+    let seated: Cell<List<SeatWant>> = Cell.new([])
+    let unread: Cell<List<Unread>> = Cell.new([])
+    let consting: Cell<List<int>> = Cell.new([])
+    let seat_reads: Cell<List<SeatRead>> = Cell.new([])
+    let conditions: Cell<List<int>> = Cell.new([])
+    let names_read: Cell<Map<string, NameRead>> = Cell.new({})
+    let names_bound: Cell<List<NameBound>> = Cell.new([])
+    Checking {
+        unread: unread,
+        names_read: names_read,
+        names_bound: names_bound,
+        consting: consting,
+        seat_reads: seat_reads,
+        conditions: conditions,
+        seats: seats,
+        refused: refused,
+        seated: seated,
+        store: store,
+        program: program,
+        answer: answer,
+        types: types,
+        scopes: scopes,
+        proofs: proofs,
+    }
+}
+
+impl Checking {
+    /// `e` checked against `expected`, its type kept.
+    mut fn check(e: ExprId, expected: Expected) -> SignedType? {
+        let outer = self.site
+        self.site = BindSite.Expr(e.index)
+        let refused_before = self.refused.get().length
+        let meant = if self.meanings { self.store.meant(e) } else { null }
+        if self.meanings { self.seat_kept(e, expected) }
+        let made = if meant != null { self.meaning_checked(e, meant!, expected) } else { self.store.expr(e).checked(self, e, expected) }
+        // a type the body decides is known only once typing infers it
+        let ty = if made != null && made!.inferred() { null } else { made }
+        if ty != null {
+            self.types.set_at(e.index, ty)
+            if self.refused.get().length == refused_before || fnless_wanted(expected, ty!) { self.agreed(e, expected, ty!) }
+        }
+        self.site = outer
+        ty
+    }
+
+    /// What `e`, whose meaning is `meant`, is: what its meaning is; an instance its component judges
+    /// is the literal under the `check` call its meaning makes, that call checked as a value of its own.
+    mut fn meaning_checked(e: ExprId, meant: ExprId, expected: Expected) -> SignedType? {
+        let value = self.store.instance_value(e)
+        if value == null || self.store.checked_by(e) == null { return self.check(meant, self.store.expr(e).meaning_expected(expected)) }
+        let _ = self.check(meant, Expected.Free)
+        self.type_of(value!)
+    }
+
+    /// What `e` is, held to what its seat wants: a value that can't stand there is refused. A type
+    /// that stands over a parameter or one the body decides is the seat law's under what fills it, not
+    /// here; a seat answering nothing drops what it holds.
+    mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
+        let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
+        if want.generic() || found.generic() || want.inferred() || found.inferred() { return }
+        if want.unknown() || found.unknown() { return }
+        if want.owns(OwnType.Void) && !want.nullable() { return }
+        if self.stands_in(e, found, want) {
+            if !found.reaches(want) && self.store.expr(e).literal_form() { let _ = self.seals(e, want with { nulls: 0 }, "a literal fills it here") }
+            return
+        }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: e,
+                    want: want,
+                    found: found,
+                    seat: named_for(self.seat_wanting(want), want, found),
+                },
+            )
+    }
+
+    /// `v`, of type `read`, refused by the generic `seat` it doesn't unify with, where its type is
+    /// known and nothing inside it was refused since `before`.
+    mut fn unmet(v: ExprId, seat: SignedType, read: SignedType?, at: Seating, before: int) {
+        let found? = read else { return }
+        if found.inferred() || found.unknown() || seat.unknown() { return }
+        if self.refused.get().length != before && !fnless(seat, found) { return }
+        self
+            .refused
+            .push(Refused { at: v, want: seat, found: found, seat: named_for(at, seat, found) })
+    }
+
+    /// The fn `v`, of type `read`, refused by the generic fn seat `seat` it fills still open where
+    /// what it answers as it stands (a lambda's body, any other fn its answer) doesn't fill the seat:
+    /// a fn's answer is what it answers, never widened into a nullable a seat's answer spells, so a
+    /// seat answering `R?` takes no fn answering `int`. A seat its call already filled checked a
+    /// lambda's body against what it answers there.
+    mut fn unanswered(
+        v: ExprId,
+        seat: SignedType,
+        read: SignedType,
+        found: Map<string, SignedType>,
+        at: Seating,
+        before: int,
+    ) {
+        if !seat.generic() { return }
+        let body = self.store.closure_parts(v)?.body
+        let own? = (if body != null { self.type_of(body!) } else { read.answer }) else { return }
+        let answered = read with { answer: own }
+        mut probe = found
+        let wants_absence = seat.answer?.nulls ?? 0 > own.nulls && !own.bottom() && !own.absence()
+        if own.inferred() || !wants_absence && seat.unifies(answered, probe) { return }
+        if boxes_into(own, seat.filled(found).answer) { return }
+        self.unmet(v, seat, answered, at, before)
+    }
+
+    /// The `select` shape at `e`, which no lowering stands for, refused by `what` it is.
+    mut fn unwaited(e: ExprId, what: string) {
+        let none = owned_type("void")
+        self.refused.push(Refused { at: e, want: none, found: none, seat: Seating.Unwaited(what) })
+    }
+
+    /// The quote's hole `h`, holding a value of `found` its position of `kind` doesn't take, refused.
+    mut fn hole_refused(h: ExprId, found: SignedType, kind: HoleKind) {
+        self.refused.push(Refused { at: h, want: found, found: found, seat: Seating.Hole(kind) })
+    }
+
+    /// The innermost seat being checked in where it wants `want`; one no refusal names otherwise.
+    fn seat_wanting(want: SignedType) -> Seating {
+        let top? = self.seated.get().last() else { return Seating.Unnamed }
+        if top.want == want.spelled() { top.seat } else { Seating.Unnamed }
+    }
+
+    /// `v`, a value a `collect` of `elem`s keeps, checked as one: a list of values that stand as
+    /// `elem`, where `elem` is no list, joins the collect element by element, so it is seated as the
+    /// list it is and refused only where what it holds can't stand as `elem`.
+    mut fn kept_checked(v: ExprId, elem: SignedType?) -> SignedType? {
+        let before = self.refused.get().length
+        let read = self
+            .check(v, if elem == null { Expected.Unknown } else { Expected.Exactly(elem!) })
+        self.arms_kept(v, before)
+        let wanted? = elem else { return read }
+        let found? = read else { return read }
+        let held? = found.listed() else { return read }
+        if wanted.listed() != null { return read }
+        self.seats.put("${v.index}", found)
+        let all = self.refused.get()
+        self.refused.set(all.take(before).concat([r for r in all.drop(before) if r.at != v]))
+        if !self.stands_in(v, held, wanted) {
+            self
+                .refused
+                .push(
+                    Refused {
+                        at: v,
+                        want: owned_type("List") with { args: [wanted] },
+                        found: found,
+                        seat: Seating.Unnamed,
+                    },
+                )
+        }
+        read
+    }
+
+    /// Each refusal since `before` of an arm of `v`, a `match` a `collect` keeps, that answers a list:
+    /// seated as the kept arm it is, which answers one element.
+    mut fn arms_kept(v: ExprId, before: int) {
+        let arms? = self.store.match_arms(v) else { return }
+        let values = [a.value.index for a in arms]
+        let all = self.refused.get()
+        self
+            .refused
+            .set(
+                all
+                    .take(before)
+                    .concat(
+                        [if values.contains(r.at.index) && r.found.listed() != null { r with { seat: Seating.KeptArm } } else { r } for r in all.drop(before)],
+                    ),
+            )
+    }
+
+    /// `e` checked in `seat`, against `want` where it's known, else as anything.
+    mut fn check_seated(e: ExprId, want: SignedType?, seat: Seating) -> SignedType? {
+        let wanted? = want else { return self.check(e, Expected.Free) }
+        self.seated.push(SeatWant { seat: seat, want: wanted.spelled() })
+        let read = self.check(e, Expected.Exactly(wanted))
+        self.seated.set(self.seated.get().take(self.seated.get().length - 1))
+        read
+    }
+
+    /// Whether `e`, of type `found`, stands in a seat of `want`: it reaches it, a fn fits it but for
+    /// writing seats it never writes through, or a literal fills a named seat, or a nullable of one,
+    /// over its own shape.
+    fn stands_in(e: ExprId, found: SignedType, want: SignedType) -> bool {
+        if found.reaches(want) ||
+            found.fits_written(want) ||
+            self.program.rewrites(found, want.unwrapped()) { return true }
+        if !self.store.expr(e).literal_form() { return false }
+        let shape? = self.named_over(want with { nulls: 0 }) else { return false }
+        found.reaches(shape with { nulls: want.nulls })
+    }
+
+    /// The type a node's seat wants, kept by the node: what the core may answer in its place.
+    fn seat_kept(e: ExprId, expected: Expected) {
+        let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
+        self.seats.put("${e.index}", wanted)
+    }
+
+    /// A node with no rule of its own: the core it means checked in its place, where it's a sugar;
+    /// else every node it holds checked against what isn't known, and itself left unchecked.
+    mut fn unruled(e: ExprId, expected: Expected) -> SignedType? {
+        let meant? = self.store.meant(e) else { return self.children_checked(e) }
+        self.check(meant, expected)
+    }
+
+    /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked.
+    mut fn children_checked(e: ExprId) -> SignedType? {
+        for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Unknown) }
+        null
+    }
+
+    /// The names the pattern `p` binds against a subject of type `subject`, in the innermost scope.
+    mut fn check_pat(p: PatId, subject: SignedType?) {
+        let outer = self.site
+        self.site = BindSite.Pat(p.index)
+        self.store.pat(p).pat_checked(self, p, subject)
+        self.site = outer
+    }
+
+    /// The names `p` binds against `subject`, gathered in a scope of their own and handed back.
+    mut fn pattern_binds(p: PatId, subject: SignedType?) -> Map<string, Local> {
+        self.opened()
+        self.check_pat(p, subject)
+        let names = self.scopes.get().last()!.names
+        self.closed()
+        names
+    }
+
+    /// One arm against a subject of type `subject`: its patterns bind in a scope of its own, its
+    /// guard is a `bool`, and its value checks against `expected` — as a value even where the arms'
+    /// meeting is dropped.
+    mut fn arm_checked(arm: Arm, subject: SignedType?, expected: Expected, proof: Proof? = null) -> SignedType? {
+        self.opened()
+        if proof != null { self.scopes.push(CheckScope { names: proof!.names }) }
+        for p in arm.pats { self.check_pat(p, subject) }
+        if arm.guard != null {
+            let _ = self
+                .check_seated(arm.guard!, owned_type("bool"), Seating.Condition(Decision.MatchGuard))
+        }
+        let value = self
+            .check(arm.value, if expected is .Dropped { Expected.Free } else { expected })
+        if proof != null { self.closed() }
+        self.closed()
+        value
+    }
+
+    /// What the branches `branches`, of these types, are where they meet: their join, which each
+    /// branch of another type keeps as its seat under a seat that wants nothing, or the seat's type
+    /// where they don't join, which each lifts into; nothing under a seat that isn't known, which may widen them.
+    fn branches_met(branches: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
+        if expected is .Unknown || types.any(it == null) { return null }
+        let joined = types_joined(types)
+        if joined != null { return if expected is .Free { self.met_seated(branches, types, joined) } else { joined } }
+        match expected { .Exactly(wanted) -> wanted, rest -> null }
+    }
+
+    /// What the arms `arms`, of these types, are where they meet: the seat's type when it wants one,
+    /// which each lifts into, else their join, which each arm of another type keeps as its seat where
+    /// the arms' value is read; nothing under a seat that isn't known, which may widen them. Under a
+    /// free seat, an arm whose type isn't known is checked again where the others meet, which pins a
+    /// generic answer (a generic call's, a generic enum's variant).
+    mut fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
+        if expected is .Unknown || types.any(it == null) { return null }
+        match expected {
+            .Exactly(wanted) -> wanted,
+            .Free -> self.met_seated(arms, types, types_joined(types)),
+            .Dropped or .Unknown -> types_joined(types),
+        }
+    }
+
+    /// Where the known ones of arms typed `types` meet, under a seat that wants nothing: what each arm
+    /// whose type isn't known is checked again against, in the scope its own names bind in. Absent
+    /// where every arm is known, none is, or the seat wants something.
+    fn pinning(types: List<SignedType?>, expected: Expected) -> SignedType? {
+        if !(expected is .Free) || !types.any(it == null) { return null }
+        let known = [t for t in types if t != null]
+        if known.is_empty() { null } else { types_joined(known) }
+    }
+
+    /// `met`, where the arms `arms` of these types meet, kept as the seat of each arm of another type.
+    fn met_seated(arms: List<ExprId>, types: List<SignedType?>, met: SignedType?) -> SignedType? {
+        let meeting? = met else { return null }
+        for at, a in arms { if types[at]?.spelled() != meeting.spelled() { self.seat_kept(a, Expected.Exactly(meeting)) } }
+        meeting
+    }
+
+    /// Whether `e`, the pronoun's own lambda (`params` its one implicit seat), stands in a seat that
+    /// takes no fn: refused so, its `it` given no element.
+    mut fn pronoun_starved(e: ExprId, params: List<Param>, expected: Expected) -> bool {
+        if params.length != 1 || !params[0].implicit { return false }
+        let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return false }
+        if want.head is .Function || want.generic() || want.inferred() || want.dynamic { return false }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: e,
+                    want: want,
+                    found: headed_type(TypeHead.Function),
+                    seat: Seating.Pronoun,
+                },
+            )
+        true
+    }
+
+    /// Whether the lambda at `e` of `params`, in a fn seat taking one record, takes its fields by name —
+    /// more than one parameter, or one its field names — and asks for what no field offers, or writes
+    /// a field a type: refused.
+    mut fn offer_refused(e: ExprId, params: List<Param>, expected: Expected) -> bool {
+        if self.meanings || params.is_empty() { return false }
+        let one? = seat_fn(expected, 1) else { return false }
+        if one.seats.length != 1 { return false }
+        let record? = known(one.seats[0].ty) else { return false }
+        let fields? = self.record_of(record)?.fields?.map(it.name) else { return false }
+        if params.length == 1 &&
+            (params[0].name.of == PRONOUN || !fields.contains(params[0].name.of)) { return false }
+        let stranger = params.find((p) -> !fields.contains(p.name.of))
+        let typed = params.find(it.ty != null)
+        let seat = if stranger != null { Seating.NotOffered(stranger!.name.of, "offered", fields) } else if typed != null { Seating.NotOffered(typed!.name.of, "typed", []) } else { return false }
+        self.refused.push(Refused { at: e, want: record, found: record, seat: seat })
+        true
+    }
+
+    /// A lambda of `params` and `body` checked against `expected`: each parameter is its written type,
+    /// or its seat's when the lambda checks into a fn type, and makes the promises either makes; its
+    /// body checks in a fenced scope against the seat's answer, which is the lambda's answer and what
+    /// a `return` inside it answers. Absent
+    /// where it stands under a seat it can't see, which may widen it.
+    mut fn lambda_checked(params: List<Param>, body: ExprId, expected: Expected) -> SignedType? {
+        let one = seat_fn(expected, 1)
+        let record = known(one?.seats?.first()?.ty)
+        let fields = if record == null { null } else { self.record_of(record!)?.fields?.map(it.name) }
+        if takes_by_name(params, one?.seats?.length ?? 0, fields) { return self.offer_checked(params, body, one!, record!) }
+        let seat = seat_fn(expected, params.length)
+        let types = [if p.ty != null { self.written(p.ty!) } else { known(seat?.seats?.get(at)?.ty) } for at, p in params]
+        self.fenced()
+        for at, p in params {
+            self
+                .bind(
+                    p.name.of,
+                    types[at],
+                    false,
+                    p.promises.mutable || seat?.seats?.get(at)?.mutable ?? false,
+                )
+        }
+        let answer = self.lambda_answered(body, seat)
+        self.closed()
+        if expected is .Unknown || answer == null || types.any(it == null) { return null }
+        headed_type(TypeHead.Function) with { seats: [SignedSeat {
+            ty: types[at]!,
+            mutable: p.promises.mutable || seat?.seats?.get(at)?.mutable ?? false,
+            settled: p.promises.settled || seat?.seats?.get(at)?.settled ?? false,
+        } for at, p in params], answer: answer }
+    }
+
+    /// What a lambda's body `body` answers into the fn seat `seat`: checked against the seat's answer
+    /// where it's known, else read as it is, an arms block's match widened as `tailed_answer` says.
+    mut fn lambda_answered(body: ExprId, seat: SignedType?) -> SignedType? {
+        let wanted = known(seat?.answer)
+        let outer = self.answer
+        self.answer = wanted
+        let read = self
+            .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
+        self.answer = outer
+        wanted ?? self.tailed_answer(body, read, seat?.answer)
+    }
+
+    /// A lambda taking the fields of `record`, the one seat of the fn seat `seat`, by name: each
+    /// parameter is its field's type, its body checks against the seat's answer as any lambda's does,
+    /// and the lambda is the fn type of that one seat.
+    mut fn offer_checked(params: List<Param>, body: ExprId, seat: SignedType, record: SignedType) -> SignedType? {
+        let types = [self.field_of(record, p.name.of) for p in params]
+        self.fenced()
+        for at, p in params { self.bind(p.name.of, types[at], false, false) }
+        let answer = self.lambda_answered(body, seat)
+        self.closed()
+        if answer == null || types.any(it == null) { return null }
+        headed_type(TypeHead.Function) with { seats: [SignedSeat { ty: record, mutable: false, settled: false }], answer: answer }
+    }
+
+    /// What a lambda whose body `body` read as `read` answers into a seat answering `seat`: where the
+    /// seat answers a nullable this body doesn't pin and the body is an arms block's match, the arms'
+    /// answer made nullable — the variants they leave uncovered answer absence — kept as the match's
+    /// seat; else what the body read.
+    mut fn tailed_answer(body: ExprId, read: SignedType?, seat: SignedType?) -> SignedType? {
+        let own? = read else { return null }
+        let wants? = seat else { return own }
+        if !wants.nullable() || own.nullable() || !self.store.is_sugar_match(body) { return own }
+        let widened = own with { nulls: 1 }
+        self.seat_kept(body, Expected.Exactly(widened))
+        widened
+    }
+
+    /// Arms read as a lambda of one parameter that they match, checked against `expected`: `it` names
+    /// that parameter, and each arm binds against it and checks against its answer in a fenced scope; the
+    /// seat's fn type when every part of it is known, absent otherwise.
+    mut fn arms_lambda_checked(arms: List<Arm>, expected: Expected) -> SignedType? {
+        let seat = seat_fn(expected, 1)
+        let held = known(seat?.seats?.get(0)?.ty)
+        let wanted = known(seat?.answer)
+        let outer = self.answer
+        self.answer = wanted
+        self.fenced()
+        self.bind(PRONOUN, held, false, seat?.seats?.get(0)?.mutable ?? false)
+        for a in arms {
+            let _ = self
+                .arm_checked(a, held, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
+        }
+        self.closed()
+        self.answer = outer
+        if held == null || wanted == null { null } else { seat }
+    }
+
+    /// What `e` was checked as, absent when it wasn't.
+    fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
+
+    /// The binding a name has in this body's scopes, absent when the body binds it nowhere in view.
+    fn local(name: string) -> Local? {
+        for scope in reversed(self.scopes.get()) {
+            let local = scope.names.get(name)
+            if local != null { return local }
+        }
+        null
+    }
+
+    /// The type a name has here: the innermost binding of it, else what the program names by it;
+    /// absent past a scope that may have bound it unseen.
+    fn bound(name: string) -> SignedType? { self.bound_from(name, null) }
+
+    /// The type `name` read at `e` has: what `bound` answers, a name the program declares read from
+    /// the home of the template that wrote `e`.
+    fn read(e: ExprId, name: string) -> SignedType? {
+        self.name_read(e, name)
+        self.seat_read(e, name)
+        self.bound_from(name, self.home_of(e))
+    }
+
+    /// The name `name` read at `e` kept as it resolves: the innermost binding of it and each lambda
+    /// crossed to reach it, else the program's name read from `e`'s home.
+    fn name_read(e: ExprId, name: string) {
+        mut crossed: List<int> = []
+        for scope in reversed(self.scopes.get()) {
+            let local? = scope.names.get(name) else {
+                if scope.fenced { crossed.push(scope.lambda) }
+                continue
+            }
+            return self
+                .names_read
+                .put(
+                    "${e.index}",
+                    NameRead { at: e.index, name: name, binder: local.binder, crossed: crossed },
+                )
+        }
+        self
+            .names_read
+            .put(
+                "${e.index}",
+                NameRead { at: e.index, name: name, binder: null, home: self.home_of(e) },
+            )
+    }
+
+    /// The read at the root of the place `target` kept as a write of its seat.
+    fn wrote(target: ExprId) {
+        let root? = self.store.place_root(target) else { return }
+        let read? = self.names_read.get().get("${root.index}") else { return }
+        self.names_read.put("${root.index}", read with { writes: true })
+    }
+
+    /// Each value handed a `mut` or a `state` seat among `seats` kept as a write of its place.
+    fn seats_written(seats: List<SignedSeat>, values: List<ExprId>) {
+        for at, v in values { if at < seats.length && (seats[at].mutable || seats[at].state) { self.wrote(v) } }
+    }
+
+    /// Each of `values`, in the seat of `seats` it fills, the seat `seated[at]` names, refused where
+    /// the seat is `const` and the source doesn't spell the value: a `const` seat settles at compile
+    /// time.
+    fn seats_settled(seats: List<SignedSeat>, values: List<ExprId>, seated: List<Seating>) {
+        for at, v in values {
+            if at >= seats.length || !seats[at].settled || self.spelled_by_source(v) { continue }
+            let seat? = seats[at].name else { continue }
+            let callee? = called_name(seated[at]) else { continue }
+            let none = owned_type("void")
+            self
+                .refused
+                .push(Refused { at: v, want: none, found: none, seat: Seating.Computed(callee, seat) })
+        }
+    }
+
+    /// Each of `values` an `isolated` seat of `seats` takes, refused where it may share what its
+    /// caller has: a lambda capturing a value that is or holds an identity — a cell, a task, a
+    /// pointer, a fn — or a fn value not known to share nothing.
+    fn seats_isolated(seats: List<SignedSeat>, values: List<ExprId>, seated: List<Seating>) {
+        for at, v in values {
+            if at >= seats.length || !seats[at].unshared { continue }
+            let seat? = seats[at].name else { continue }
+            let callee? = called_name(seated[at]) else { continue }
+            let none = owned_type("void")
+            let lam = self.store.lambda_parts(v)
+            if lam == null {
+                if !self.known_unshared(v) {
+                    self
+                        .refused
+                        .push(
+                            Refused {
+                                at: v,
+                                want: none,
+                                found: none,
+                                seat: Seating.Isolated(callee, seat, null),
+                            },
+                        )
+                }
+                continue
+            }
+            let caught? = self.identity_captured(lam!) else { continue }
+            self
+                .refused
+                .push(
+                    Refused {
+                        at: v,
+                        want: none,
+                        found: none,
+                        seat: Seating.Isolated(callee, seat, caught),
+                    },
+                )
+        }
+    }
+
+    /// The first value the lambda `lam` captures that is or holds an identity, as its refusal says it.
+    fn identity_captured(lam: LambdaParts) -> Captured? {
+        let own = [p.name.of for p in lam.params]
+        let read = [n for e in self.store.every_expr(lam.body) for n in some_list(self.store.ident_name(e)) if !own.contains(n)]
+        for at, n in read {
+            if read.take(at).contains(n) { continue }
+            let ty? = self.local(n)?.ty else { continue }
+            let held? = self.identity_in(ty, []) else { continue }
+            return Captured {
+                name: n,
+                holds: if held.spelled() == ty.spelled() { "is" } else { "holds" },
+                held: held.spelled(),
+            }
+        }
+        null
+    }
+
+    /// The identity a value of `ty` is or holds, absent where it holds none: a cell, a task, a
+    /// pointer, a fn, a `dyn` value or a type parameter's, else what its parts hold.
+    fn identity_in(ty: SignedType, seen: List<string>) -> SignedType? {
+        let t = ty with { nulls: 0 }
+        if seen.contains(t.spelled()) { return null }
+        let shape = self.seen(t) ?? t
+        if shape.head is .Function || shape.dynamic || shape.head is .Parameter { return t }
+        if ["Cell", "Task", "Tasks", "ptr"].contains(shape.owned() ?? "") { return t }
+        let walked = seen.concat([t.spelled()])
+        [h! for p in self.parts_held(shape) for h in [self.identity_in(p, walked)] if h != null]
+            .first()
+    }
+
+    /// The types a value of `ty` holds: a list's element, a map's or a result's sides, a record's
+    /// fields, an enum's payloads, a union's members.
+    fn parts_held(ty: SignedType) -> List<SignedType> {
+        if !ty.alternatives.is_empty() { return ty.alternatives }
+        if ty.owned() != null { return ty.args }
+        let record = self.record_of(ty)
+        if record != null { return [f.ty!.bound(ty.args) for f in record!.fields if f.ty != null] }
+        let shape? = self.enum_of(ty) else { return [] }
+        [p.ty!.bound(ty.args) for v in shape.variants for p in v.payloads if p.ty != null]
+    }
+
+    /// Whether the fn value `v` is known to share nothing: a declared fn named, or an `isolated` seat
+    /// of the fn forwarded.
+    fn known_unshared(v: ExprId) -> bool {
+        let name? = self.store.ident_name(v) else { return false }
+        let local = self.local(name)
+        if local != null { return local!.unshared }
+        let ty? = self.type_of(v) else { return false }
+        ty.head is .Function
+    }
+
+    /// Whether every node of `e` is spelled by the source: a literal, an aggregate or a variant of
+    /// such, a `const`'s name, a settled seat forwarded, or a type's name under its variant.
+    fn spelled_by_source(e: ExprId) -> bool { self.store.every_expr(e).all((k) -> self.spelled_node(k)) }
+
+    /// Whether the node `k` is spelled by the source, its own nodes aside.
+    fn spelled_node(k: ExprId) -> bool {
+        let node = self.store.valued(k)
+        if is_literal(node) { return true }
+        match node {
+            .NullLit or .ListLit(_) or .MapLit(_) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
+            .Ident(name) -> self.settled_name(k, name.of),
+            .Prop(subject, _) or .MethodCall(subject, _, _) -> self.type_of(subject)?.described() != null,
+            rest -> false,
+        }
+    }
+
+    /// Whether the name `name` read at `k` settles: a `const`, the body's own or a declared one, a
+    /// settled seat of the fn, or a type's name.
+    fn settled_name(k: ExprId, name: string) -> bool {
+        if self.type_of(k)?.described() != null { return true }
+        let local? = self.local(name) else { return (self.program.settles)(name) }
+        let site? = local.binder else { return false }
+        match site {
+            .Stmt(i) -> self.store.const_value(StmtId { index: i }) != null,
+            .Seat(_) -> !local.seat,
+            .Expr(_) or .Pat(_) or .Receiver -> false,
+        }
+    }
+
+    /// A read of `name` at `e` noted where it is the first, in the body const being checked, of a seat
+    /// that no run settles.
+    fn seat_read(e: ExprId, name: string) {
+        let stmt? = self.consting.get().last() else { return }
+        if self.seat_reads.get().any(it.stmt == stmt) { return }
+        for scope in reversed(self.scopes.get()) {
+            let local? = scope.names.get(name) else { continue }
+            if local.seat { self.seat_reads.push(SeatRead { stmt: stmt, name: name, at: e }) }
+            return
+        }
+    }
+
+    /// The const at `s` opened: what its value reads is noted until it closes.
+    fn const_opened(s: StmtId) { self.consting.push(s.index) }
+
+    /// The innermost const opened, closed.
+    fn const_closed() {
+        let open = self.consting.get()
+        self.consting.set(open.take(open.length - 1))
+    }
+
+    /// What `bound` answers, a name the program declares read from `home` first, when there is one.
+    fn bound_from(name: string, home: string?) -> SignedType? {
+        mut fenced = false
+        for scope in reversed(self.scopes.get()) {
+            let local? = scope.names.get(name) else {
+                if scope.fenced { fenced = true }
+                continue
+            }
+            return if fenced && local.wide != null { local.wide } else { local.ty }
+        }
+        (self.program.value_named)(name, home)
+    }
+
+    /// Whether a write through the name `name` lands in it: a binding of this body's own that writes,
+    /// never one a lambda reads from further out, which it holds a copy of — unless it is a `state`,
+    /// whose one place the lambda shares.
+    fn writes_through(name: string) -> bool {
+        mut fenced = false
+        for scope in reversed(self.scopes.get()) {
+            let local? = scope.names.get(name) else {
+                if scope.fenced { fenced = true }
+                continue
+            }
+            return local.writes && (!fenced || local.shared)
+        }
+        false
+    }
+
+    /// The receiver `subject`, of `ty`, of the verb `verb` called at `e`, which writes it: refused where
+    /// it stands in no place, or where its place is rooted in a binding of the body's own that no write
+    /// lands in. A `state` field's cell is written whatever its root, and a name the body doesn't bind
+    /// is the program's, which its own law holds.
+    mut fn place_written(e: ExprId, subject: ExprId, ty: SignedType, verb: string) {
+        self.wrote(subject)
+        if self.state_field(subject) { return }
+        let root? = self.store.place_root(subject) else {
+            self.refused.push(Refused { at: e, want: ty, found: ty, seat: Seating.Valued(verb) })
+            return
+        }
+        let name? = self.root_word(root) else { return }
+        if self.local(name) == null || self.writes_through(name) { return }
+        self
+            .refused
+            .push(Refused { at: e, want: ty, found: ty, seat: Seating.Unwritten(name, verb) })
+    }
+
+    /// The argument `a`, of `ty`, handed the `mut` seat `at` of `callee`, which writes through it: refused
+    /// where it stands in no place, where its place is rooted in a binding of the body's own no write
+    /// lands in, and where the callee is an extern C writes through and the place isn't rooted in a
+    /// `mut` binding, whose cell, or one written back along the path, C writes. A name the body
+    /// doesn't bind is the program's, which its own law holds.
+    mut fn seat_written(a: ExprId, ty: SignedType, callee: string, at: int, external: bool) {
+        let root? = self.store.place_root(a) else { return self.unhanded(a, ty, callee, at, "", Unhanded.Valued) }
+        let name? = self.root_word(root) else { return }
+        let local? = self.local(name) else { return }
+        if !self.writes_through(name) {
+            let how = if self.captured(name) { Unhanded.Captured } else { Unhanded.Unwritten }
+            return self.unhanded(a, ty, callee, at, name, how)
+        }
+        if external && !local.celled { self.unhanded(a, ty, callee, at, name, Unhanded.Cellless) }
+    }
+
+    /// The argument `a` handed the `state` seat `at` of `callee`: refused unless it names a `state` of
+    /// the body's own, or a `state` seat it forwards, read where the body binds it — never a value, a
+    /// module's `state`, or one a lambda holds a copy of.
+    mut fn state_seat_handed(a: ExprId, ty: SignedType, callee: string, at: int) {
+        let name = self.store.ident_name(a) ?? ""
+        let local = self.local(name)
+        if local != null && local!.shared && !self.captured(name) { return }
+        self.unhanded(a, ty, callee, at, name, Unhanded.Stateless)
+    }
+
+    /// Whether the body binds `name` only outside a lambda it's read in, which holds a copy of it.
+    fn captured(name: string) -> bool {
+        for scope in reversed(self.scopes.get()) {
+            if scope.names.has(name) { return false }
+            if scope.fenced { return self.local(name) != null }
+        }
+        false
+    }
+
+    /// The argument `a`, named `label`, refused by the extern `callee`, whose seats are called by
+    /// position.
+    mut fn unplaced(a: ExprId, callee: string, label: string) {
+        let none = owned_type("void")
+        self
+            .refused
+            .push(Refused { at: a, want: none, found: none, seat: Seating.Nameless(callee, label) })
+    }
+
+    /// The argument `a` refused by the `mut` seat `at` of `callee` as `how` says.
+    mut fn unhanded(a: ExprId, ty: SignedType, callee: string, at: int, root: string, how: Unhanded) {
+        self
+            .refused
+            .push(Refused { at: a, want: ty, found: ty, seat: Seating.Handed(callee, at, root, how) })
+    }
+
+    /// The name a place's root `root` reads, absent for a root that reads none.
+    fn root_word(root: ExprId) -> string? {
+        let step? = self.store.place_step(root) else { return null }
+        match step { .Root(n) -> n.of, rest -> null }
+    }
+
+    /// The place `e`'s last step, where it's a field.
+    fn field_step(e: ExprId) -> FieldStep? {
+        let step? = self.store.place_step(e) else { return null }
+        match step {
+            .Field(subject, name) -> FieldStep { subject: subject, name: name.of },
+            rest -> null,
+        }
+    }
+
+    /// THE COVERAGE LAW. The match `e` on `on`, a value of `subject`, by `arms`: arms are tried in
+    /// order, and a guarded arm covers nothing. Over an enum, each variant is covered when the arms
+    /// that test it, column by column over its payloads, take every value, else refused once; a
+    /// variant pattern over a value of no enum is refused at the subject; over any other value, the
+    /// arms take every value by a catch-all, or a list by its lengths, else the match is refused, as
+    /// a `let` whose pattern can refuse where the `let` wrote it. A match is judged as it's written,
+    /// never as the core a sugar means.
+    mut fn arms_cover(e: ExprId, on: ExprId, subject: SignedType?, arms: List<Arm>) {
+        if self.meanings || self.store.is_sugar_match(e) { return }
+        let s? = subject else { return }
+        if s.generic() || s.inferred() || s.dynamic || s.head is .Unnamed { return }
+        let rows = [read_row([p]) for a in arms if a.guard == null for p in a.pats]
+        let shape? = self.enum_of(s) else { return self.unenumerated_cover(e, on, s, arms, rows) }
+        self.arms_once(arms)
+        for v in shape.variants {
+            if !self
+                .covered(self.specialized(rows, v.name, v.payloads.length), self.payload_columns(s, v)) {
+                self
+                    .refused
+                    .push(
+                        Refused {
+                            at: e,
+                            want: s,
+                            found: s,
+                            seat: Seating.Uncovered(s.spelled(), v.name),
+                        },
+                    )
+            }
+        }
+    }
+
+    /// The `let` `e` taking a value of `subject` apart by `pat` with no `else`: refused where the pattern
+    /// can refuse a value.
+    mut fn let_covers(e: ExprId, subject: SignedType?, pat: PatId) {
+        if self.meanings { return }
+        let s? = subject else { return }
+        if s.generic() || s.inferred() || s.dynamic || s.head is .Unnamed { return }
+        let rows = [read_row([pat])]
+        let shape = self.enum_of(s)
+        let takes = if shape != null {
+            shape!
+                .variants
+                .all(
+                    (v) -> self
+                        .covered(
+                            self.specialized(rows, v.name, v.payloads.length),
+                            self.payload_columns(s, v),
+                        ),
+                )
+        } else {
+            self.covered(rows, [s]) || self.lengths_cover(rows)
+        }
+        if !takes {
+            self
+                .refused
+                .push(Refused { at: e, want: s, found: s, seat: Seating.Refutable(s.spelled()) })
+        }
+    }
+
+    /// Whether building or rewriting a value of `ty` at `e` breaks its seal, refused where it does: a
+    /// type its declaring module seals, built here in another. `how` is the site's own label.
+    mut fn seals(e: ExprId, ty: SignedType?, how: string) -> bool {
+        if self.meanings { return false }
+        let t? = ty else { return false }
+        let home? = (self.program.sealed_home)(t) else { return false }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: e,
+                    want: t,
+                    found: t,
+                    seat: Seating.Sealed(declared_word(t), home, how),
+                },
+            )
+        true
+    }
+
+    /// The write at `e` through the place `target`: each value its path passes through held to its
+    /// seal.
+    mut fn seals_path(e: ExprId, target: ExprId) {
+        let step? = self.store.place_step(target) else { return }
+        let subject? = match step {
+            .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> subject,
+            rest -> null,
+        } else { return }
+        if self.seals(e, self.type_of(subject), "written through here") { return }
+        self.seals_path(e, subject)
+    }
+
+    /// The literal of `of` — a list or a map — whose `values` join to no type, refused at its first
+    /// value that breaks it: a spread of what is no `of`, else a value that doesn't stand in the first
+    /// single value's type, as `apart` names that seat. A value nothing typed breaks nothing.
+    fn literal_apart(of: string, values: List<ExprId>, spreads: List<bool>) {
+        if self.meanings { return }
+        for at, v in values {
+            if !spreads[at] { continue }
+            let t? = self.type_of(v) else { continue }
+            let seen = self.seen(t) ?? t
+            let holds = if of == "list" { seen.listed() != null } else { seen.mapped() != null }
+            if t.nullable() || holds || t.generic() || t.unknown() { continue }
+            return self
+                .refused
+                .push(Refused { at: v, want: t, found: t, seat: Seating.SpreadUnlike(of) })
+        }
+        let singles = [v for at, v in values if !spreads[at] && self.type_of(v) != null]
+        let first? = singles.first() else { return }
+        let f = self.type_of(first)!
+        for k in singles.drop(1) {
+            let t = self.type_of(k)!
+            if t.generic() || t.inferred() || t.unknown() || f.unknown() { continue }
+            if self.stands_in(k, t, f) { continue }
+            let seat = if of == "list" { Seating.ElementsApart(self.boxable(f) && self.boxable(t)) } else { Seating.MapValue }
+            return self.refused.push(Refused { at: k, want: f, found: t, seat: seat })
+        }
+    }
+
+    /// The pattern `p` of the node `e` and each it holds, over a value of `subject`, refused where it
+    /// isn't that value's shape: a variant pattern below the top over a value of no enum, an `as` over
+    /// a written variant, a record or a list pattern over another value, a type pattern over a value
+    /// no `dyn` is. `top` where `p` is an arm's own, whose subject the match's law holds.
+    /// The pattern `p` at the node `e`, over a value of `s`, refused as `seat` says.
+    mut fn pattern_wrong(e: ExprId, p: PatId, s: SignedType, seat: Seating) { self.refused.push(Refused { at: e, want: s, found: s, seat: seat, pat: p }) }
+
+    mut fn pattern_shaped(e: ExprId, p: PatId, subject: SignedType?, top: bool) {
+        if self.meanings { return }
+        let s? = subject else { return }
+        if s.generic() || s.inferred() || s.unknown() { return }
+        let wrong = self.misshapen(p, s, top)
+        if wrong != null { return self.pattern_wrong(e, p, s, wrong!) }
+        for inner in self.inner_patterns(p, s) { self.pattern_shaped(e, inner.pat, inner.ty, false) }
+    }
+
+    /// What refuses the pattern `p` over a value of `s` as its shape, absent where it fits.
+    fn misshapen(p: PatId, s: SignedType, top: bool) -> Seating? {
+        let found = s.spelled()
+        let seen = self.seen(s) ?? s
+        match self.store.pat(p) {
+            .Variant(name, _) -> if top || self.enum_of(s) != null { null } else { Seating.Misshapen("variant", name.of, found) },
+            .Member(name, _) -> self.member_misshapen(name.of, s, top),
+            .Fields(name, _, _) -> if self.record_of(seen) != null || s.nullable() { null } else { Seating.Misshapen("record", name.of, found) },
+            .Seq(_, _, _) -> if seen.listed() != null || s.nullable() { null } else { Seating.Misshapen("list", "", found) },
+            .Typed(_, _) -> self.narrow_misshapen(s),
+            rest -> null,
+        }
+    }
+
+    /// What refuses an `as` pattern over the variant `name` of a value of `s`, absent where it fits.
+    fn member_misshapen(name: string, s: SignedType, top: bool) -> Seating? {
+        let shape? = self.enum_of(s) else { return if top { null } else { Seating.Misshapen("variant", name, s.spelled()) } }
+        let variant? = shape.variants.find(it.name == name) else { return null }
+        if variant.member == null { Seating.Misshapen("member", name, s.spelled()) } else { null }
+    }
+
+    /// What refuses a type pattern over a value of `s`, absent for a `dyn` value, read through a name:
+    /// one that may be absent where it holds a `dyn`, any other value plain.
+    fn narrow_misshapen(s: SignedType) -> Seating? {
+        let held = self.seen(s with { nulls: 0 }) ?? s
+        if !s.nullable() && held.dynamic { return null }
+        Seating
+            .Misshapen(if s.nullable() && held.dynamic { "absent" } else { "typed" }, "", s.spelled())
+    }
+
+    /// The patterns the pattern `p` holds, each beside the type of what it matches over a value of
+    /// `s`, absent where it isn't known.
+    fn inner_patterns(p: PatId, s: SignedType) -> List<PatSeat> {
+        let seen = self.seen(s) ?? s
+        match self.store.pat(p) {
+            .Variant(name, args) -> self.payload_patterns(s, name.of, args),
+            .Seq(before, middle, after) -> [PatSeat { pat: q, ty: seen.listed() } for q in before.concat(after)]
+                .concat([PatSeat { pat: q, ty: s } for q in middle]),
+            .Fields(_, fields, _) -> [PatSeat { pat: f.pat, ty: self.field_typed(seen, f.name.of) } for f in fields],
+            rest -> [],
+        }
+    }
+
+    /// The payload patterns `args` of the variant `name` beside each payload's type on a value of `s`.
+    fn payload_patterns(s: SignedType, name: string, args: List<PatId>) -> List<PatSeat> {
+        let payloads = self.payloads_of(s, name)
+        [PatSeat {
+            pat: a,
+            ty: if payloads != null && at < payloads!.length { payloads![at] } else { null },
+        } for at, a in args]
+    }
+
+    /// The type of the field `name` of a record of `ty`, absent where it isn't known.
+    fn field_typed(ty: SignedType, name: string) -> SignedType? {
+        let record? = self.record_of(ty) else { return null }
+        record.fields.find(it.name == name)?.ty?.bound(ty.args)
+    }
+
+    /// Each `or` arm of the match `e`'s `arms` whose alternative binds other names than its first,
+    /// refused at the arm's value.
+    mut fn alternatives_alike(arms: List<Arm>) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        for a in arms {
+            if a.pats.length < 2 { continue }
+            let names = self.pattern_names(a.pats[0])
+            for k, p in a.pats {
+                let own = self.pattern_names(p)
+                if k > 0 && (own.length != names.length || own.any((n) -> !names.contains(n))) {
+                    self
+                        .refused
+                        .push(
+                            Refused {
+                                at: a.value,
+                                want: none,
+                                found: none,
+                                seat: Seating.OrBinds(names, k, own),
+                            },
+                        )
+                }
+            }
+        }
+    }
+
+    /// The names the pattern `p` binds, in order: a bare name that compares binds nothing.
+    fn pattern_names(p: PatId) -> List<string> { [b.name for b in self.store.pattern_binds(p) if !self.compares_bare(b.pat)] }
+
+    /// The `is` at `e` refused where it binds a payload outside an `if` condition.
+    mut fn is_placed(e: ExprId) {
+        if self.meanings ||
+            self.store.is_payload(e) == null ||
+            self.conditions.get().contains(e.index) { return }
+        let none = owned_type("void")
+        self.refused.push(Refused { at: e, want: none, found: none, seat: Seating.PayloadOutside })
+    }
+
+    /// Each pattern of the match `e`'s `arms` that binds one name twice, refused once for each binder
+    /// of that name after the first: a name binds one value. A bare name that compares binds nothing.
+    mut fn arms_bind_once(e: ExprId, arms: List<Arm>) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        for a in arms {
+            for p in a.pats {
+                let binders = [b for b in self.store.pattern_binds(p) if !self.compares_bare(b.pat)]
+                for b in binders {
+                    if binders.any(it.name == b.name && it.pat.index < b.pat.index) {
+                        self
+                            .refused
+                            .push(
+                                Refused {
+                                    at: e,
+                                    want: none,
+                                    found: none,
+                                    seat: Seating.BindsTwice(b.name),
+                                    pat: p,
+                                },
+                            )
+                    }
+                }
+            }
+        }
+    }
+
+    /// Each arm of `arms` before the first that takes the rest, refused at its value where it takes
+    /// whole a variant an arm before it took whole: a variant is chosen once. A guarded arm takes
+    /// nothing whole.
+    mut fn arms_once(arms: List<Arm>) {
+        let rest_at = arms.find_index(it.guard == null && it.pats.any((p) -> self.catches(p))) ?? arms
+            .length
+        let reached = arms.take(rest_at + 1)
+        let wholes = [if a.guard == null { [w for p in a.pats for w in some_list(self.whole_variant(p))] } else { [] } for a in reached]
+        let none = owned_type("void")
+        for k, a in reached {
+            for n in wholes[k] {
+                if wholes.take(k).any(it.contains(n)) {
+                    self
+                        .refused
+                        .push(
+                            Refused {
+                                at: a.value,
+                                want: none,
+                                found: none,
+                                seat: Seating.Repeated(n),
+                            },
+                        )
+                }
+            }
+        }
+    }
+
+    /// The variant the pattern `p` takes whole: one it tests whose payloads' patterns each take the
+    /// rest; absent for any other.
+    fn whole_variant(p: PatId) -> string? {
+        let named? = self.named_pattern(p) else { return null }
+        if named.args.all((a) -> self.catches(a)) { named.name } else { null }
+    }
+
+    /// The match `e` on `on`, a value of `s` that is no enum, by `arms` read as `rows`: refused at the
+    /// subject where an arm tests a variant, else where no arm takes the rest and no list's lengths
+    /// are all taken.
+    mut fn unenumerated_cover(
+        e: ExprId,
+        on: ExprId,
+        s: SignedType,
+        arms: List<Arm>,
+        rows: List<PatternRow>,
+    ) {
+        if arms.any(it.pats.any((p) -> self.named_pattern(p) != null)) {
+            return self
+                .refused
+                .push(Refused { at: on, want: s, found: s, seat: Seating.Unmatchable })
+        }
+        if self.covered(rows, [s]) || self.lengths_cover(rows) { return }
+        let seat = if self.store.minted_by_let(e) { Seating.Refutable(s.spelled()) } else { Seating.Catchless(s.spelled()) }
+        self.refused.push(Refused { at: e, want: s, found: s, seat: seat })
+    }
+
+    /// Whether `rows` take every value of the columns `tys`: nothing left to test means any row does.
+    /// In the first column the rows that test a variant cover it when their payloads, joined to the
+    /// remaining columns, are covered; a variant no row tests, and a column nothing tests at all,
+    /// falls to the rows whose first pattern takes the rest. Each step consumes a written pattern, so a
+    /// recursive enum ends.
+    fn covered(rows: List<PatternRow>, tys: List<SignedType?>) -> bool {
+        let first? = tys.first() else { return !rows.is_empty() }
+        let rest = tys.drop(1)
+        let defaults = [pattern_row(r.pats.drop(1)) for r in rows if self.hole_first(r)]
+        let ty? = first else { return self.covered(defaults, rest) }
+        let shape? = self.enum_of(ty) else { return self.covered(defaults, rest) }
+        let tested = [v.name for v in shape.variants if rows.any((r) -> self.tests_first(r, v.name))]
+        if tested.is_empty() { return self.covered(defaults, rest) }
+        shape
+            .variants
+            .all(
+                (v) -> if tested.contains(v.name) {
+                    self
+                        .covered(
+                            self.specialized(rows, v.name, v.payloads.length),
+                            self.payload_columns(ty, v).concat(rest),
+                        )
+                } else {
+                    self.covered(defaults, rest)
+                },
+            )
+    }
+
+    /// The rows that test the variant `name` of `arity` payloads in their first column, each with that
+    /// variant's payload patterns spread into the columns; a first pattern that takes the rest tests
+    /// every variant, its payloads unread.
+    fn specialized(rows: List<PatternRow>, name: string, arity: int) -> List<PatternRow> {
+        [pattern_row(args.concat(r.pats.drop(1))) for r in rows for args in some_list(self.first_args(r, name, arity))]
+    }
+
+    /// The payload patterns the row `r`'s first pattern reads of the variant `name` of `arity`
+    /// payloads, one per payload: none read where it takes the rest; absent where it tests another.
+    fn first_args(r: PatternRow, name: string, arity: int) -> List<PatId?>? {
+        if self.hole_first(r) { return unread_columns(arity) }
+        let named? = self.named_pattern(r.pats[0]!) else { return null }
+        if named.name != name { return null }
+        let read = if named.args.length < arity { named.args.length } else { arity }
+        read_row(named.args.take(read)).pats.concat(unread_columns(arity - read))
+    }
+
+    /// Whether the row `r`'s first pattern names the variant `name`.
+    fn tests_first(r: PatternRow, name: string) -> bool {
+        let head? = r.pats.first() else { return false }
+        if head == null { return false }
+        self.named_pattern(head!)?.name == name
+    }
+
+    /// Whether the row `r`'s first pattern is unread or takes the rest.
+    fn hole_first(r: PatternRow) -> bool {
+        let head? = r.pats.first() else { return false }
+        head == null || self.catches(head!)
+    }
+
+    /// Whether the pattern `p` takes every value: one that binds or discards it, or a record's whose
+    /// fields' patterns each do.
+    fn catches(p: PatId) -> bool {
+        let fields? = self.store.fields_parts(p) else { return self.store.irrefutable(p) && !self.compares_bare(p) }
+        fields.args.all((a) -> self.catches(a))
+    }
+
+    /// Whether the pattern `p` is a bare name that compares with the const it names.
+    fn compares_bare(p: PatId) -> bool {
+        match self.store.pat(p) { .Bind(name) -> self.compares(name.of), rest -> false }
+    }
+
+    /// The types of the variant `v`'s payloads on a value of `ty`, one per payload, absent where unknown.
+    fn payload_columns(ty: SignedType, v: VariantSeat) -> List<SignedType?> {
+        self.payloads_of(ty, v.name) ?? [p.ty for p in v.payloads]
+    }
+
+    /// Whether `rows` take a list of every length: a pattern of some length and up, and one of each
+    /// shorter length, each of whose elements takes the rest.
+    fn lengths_cover(rows: List<PatternRow>) -> bool {
+        let taken = [l for r in rows for head in r.pats.take(1) if head != null for l in some_list(self.lengths(head!))]
+        let from? = [l.n for l in taken if l.open].min() else { return false }
+        (0..from).all((k) -> taken.any(!it.open && it.n == k))
+    }
+
+    /// The lengths the list pattern `p` takes, where each of its elements takes the rest.
+    fn lengths(p: PatId) -> Lengths? {
+        let parts? = self.store.seq_parts(p) else { return null }
+        let elems = parts.before.concat(parts.after)
+        if !elems.all((x) -> self.catches(x)) { return null }
+        Lengths { n: elems.length, open: !parts.rest.is_empty() }
+    }
+
+    /// The variant the pattern `p` names, and its payloads' patterns, where it names one.
+    fn named_pattern(p: PatId) -> NamedPattern? {
+        match self.store.pat(p) {
+            .Variant(name, args) -> NamedPattern { name: name.of, args: args },
+            .Member(name, _) -> NamedPattern { name: name.of, args: [] },
+            rest -> null,
+        }
+    }
+
+    /// Whether the place `e` is a `state` field of the record it's read from.
+    fn state_field(e: ExprId) -> bool {
+        let field? = self.field_step(e) else { return false }
+        let ty? = self.type_of(field.subject) else { return false }
+        let shape? = self.record_of(self.seen(ty) ?? ty) else { return false }
+        shape.fields.any(it.name == field.name && it.state)
+    }
+
+    /// The pattern `p` at the node `e`, and each it holds, refused where it names a variant the enum
+    /// its subject, of `subject`, is doesn't declare; `asked` where an `is` holds it.
+    mut fn variants_named(e: ExprId, p: PatId, subject: SignedType?, asked: bool) {
+        let named? = self.named_pattern(p) else { return }
+        let s? = subject else { return }
+        let shape? = self.enum_of(s) else { return }
+        let wrong = self.pattern_refused(s, shape, named, asked)
+        if wrong != null { return self.pattern_wrong(e, p, s, wrong!) }
+        let payloads = self.payloads_of(s, named.name)
+        for at, a in named.args {
+            self
+                .variants_named(
+                    e,
+                    a,
+                    if payloads != null && at < payloads!.length { payloads![at] } else { null },
+                    asked,
+                )
+        }
+    }
+
+    /// What refuses the variant pattern `named` over a value of `s`, whose enum is `shape`: a variant
+    /// the enum doesn't declare, or one carrying another number of payloads than it names; absent
+    /// where neither does.
+    fn pattern_refused(s: SignedType, shape: EnumShape, named: NamedPattern, asked: bool) -> Seating? {
+        let variant? = shape.variants.find(it.name == named.name) else {
+            return Seating
+                .Unvaried(s.spelled(), named.name, [v.name for v in shape.variants], asked)
+        }
+        let carried = variant.payloads.length
+        if named.args.is_empty() || carried == named.args.length { return null }
+        if carried == 0 { Seating.Unbinding(s.spelled(), named.name) } else { Seating.Arity(named.name, carried, named.args.length) }
+    }
+
+    /// `name` bound in the innermost scope, to `ty` when it's known; `narrowable` when nothing can
+    /// write it again, `writes` when a write through it lands in it; bound at `binder`, else at the
+    /// node being checked.
+    mut fn bind(
+        name: string,
+        ty: SignedType?,
+        narrowable: bool = false,
+        writes: bool = false,
+        binder: BindSite? = null,
+    ) {
+        self
+            .bound_as(name, Local { ty: ty, narrowable: narrowable, writes: writes, binder: binder })
+    }
+
+    /// The fn's own seat `name`, bound at `site` to `ty`, writing through where `writes`; a seat a run settles —
+    /// a `const` one — is a value a body const may read, any other one holds a value only while the
+    /// fn runs.
+    mut fn bind_seat(
+        name: string,
+        ty: SignedType?,
+        writes: bool,
+        settled: bool,
+        site: BindSite,
+        shared: bool = false,
+        unshared: bool = false,
+    ) {
+        self
+            .bound_as(
+                name,
+                Local {
+                    ty: ty,
+                    narrowable: !shared,
+                    writes: writes,
+                    binder: site,
+                    seat: !settled,
+                    shared: shared,
+                    unshared: unshared,
+                },
+            )
+    }
+
+    /// `name` bound in the innermost scope as a `mut` binding, which its own cell holds: to `ty` when
+    /// it's known.
+    mut fn bind_cell(name: string, ty: SignedType?) { self.bound_as(name, Local { ty: ty, narrowable: false, writes: true, celled: true }) }
+
+    /// `name` bound in the innermost scope as a `state`, the one place every lambda that reaches it
+    /// shares: to `ty` when it's known.
+    mut fn bind_shared(name: string, ty: SignedType?) { self.bound_as(name, Local { ty: ty, narrowable: false, writes: true, shared: true }) }
+
+    /// Whether a bare pattern name `name` compares the subject with the const it names rather than
+    /// binding: no binding in view hides it, else the one that does is a `const` of the body.
+    fn compares(name: string) -> bool {
+        let local? = self.local(name) else { return (self.program.compared)(name) ?? false }
+        let site? = local.binder else { return false }
+        match site {
+            .Stmt(i) -> self.store.const_value(StmtId { index: i }) != null,
+            .Expr(_) or .Pat(_) or .Seat(_) or .Receiver -> false,
+        }
+    }
+
+    /// The pattern `p`'s bare name `name` kept as a comparison of a subject of `subject` with its const.
+    fn compared_at(p: PatId, name: string, subject: SignedType?) {
+        self
+            .names_bound
+            .push(NameBound { site: BindSite.Pat(p.index), name: name, ty: subject, compared: true })
+    }
+
+    /// `name` bound in the innermost scope as `local`, at the node being checked where it names no
+    /// binder of its own.
+    mut fn bound_as(name: string, local: Local) {
+        let scopes = self.scopes.get()
+        mut innermost = scopes.last()!
+        let site = local.binder ?? self.site
+        innermost.names.set(name, local with { binder: site })
+        if site != null { self.names_bound.push(NameBound { site: site!, name: name, ty: local.ty }) }
+        self.scopes.set_at(scopes.length - 1, innermost)
+    }
+
+    /// The condition `e` proves what `proof` says.
+    mut fn proved(e: ExprId, proof: Proof) { self.proofs.put("${e.index}", proof) }
+
+    /// The condition `e` asks whether `name` is present, true when it is if `on_present`: where the
+    /// name can narrow, a proof that it holds what it holds when present.
+    mut fn presence_asked(e: ExprId, name: string, on_present: bool) {
+        let local = self.local(name)
+        let held = local?.ty
+        if local == null || !local!.narrowable || held == null || !held!.nullable() { return }
+        mut names: Map<string, Local> = {}
+        names.set(name, local! with { ty: held!.unwrapped(), narrowable: true, wide: held })
+        self.proved(e, Proof { names: names, truth: on_present })
+    }
+
+    /// What the condition `e` proves in the branch where it's `truth`, absent when nothing.
+    fn proof_when(e: ExprId, truth: bool) -> Proof? {
+        let p? = self.proofs.get().get("${e.index}") else { return null }
+        if p.truth == truth { p } else { null }
+    }
+
+    /// `branch` checked against `expected` under `proof`: in a scope of its own holding the names it
+    /// proves.
+    mut fn check_proven(branch: ExprId, expected: Expected, proof: Proof?) -> SignedType? {
+        let held? = proof else { return self.check(branch, expected) }
+        self.scopes.push(CheckScope { names: held.names })
+        let ty = self.check(branch, expected)
+        self.closed()
+        ty
+    }
+
+    /// A scope opened inside the current one.
+    mut fn opened() { self.scopes.push(open_scope()) }
+
+    /// A loop's body's scope opened inside the current one.
+    mut fn loop_opened() { self.scopes.push(open_scope() with { looped: true }) }
+
+    /// Whether what's checked now runs in a loop's body, no lambda between.
+    fn in_loop() -> bool {
+        for scope in reversed(self.scopes.get()) {
+            if scope.looped { return true }
+            if scope.fenced { return false }
+        }
+        false
+    }
+
+    /// A lambda's scope opened inside the current one.
+    mut fn fenced() { self.scopes.push(open_scope() with { fenced: true, lambda: expr_index(self.site) }) }
+
+    /// The innermost scope closed.
+    mut fn closed() {
+        let scopes = self.scopes.get()
+        self.scopes.set(scopes.take(scopes.length - 1))
+    }
+
+    /// `s` checked, binding what it declares where it stands.
+    mut fn check_stmt(s: StmtId) {
+        let outer = self.site
+        self.site = BindSite.Stmt(s.index)
+        let meant = if self.meanings { self.store.stmt_meant(s) } else { null }
+        if meant == null { self.store.stmt(s).stmt_checked(self, s) } else { for m in meant! { self.check_stmt(m) } }
+        self.site = outer
+    }
+
+    /// Every expression `s` holds checked against what isn't known.
+    mut fn stmt_children_checked(s: StmtId) { for e in self.store.stmt_children(s) { let _ = self.check(e, Expected.Unknown) } }
+
+    /// A member read on a present value of `subject`'s type: its field, else its property, else the
+    /// member of the shape a named type stands over.
+    fn member_read(subject: SignedType, name: string) -> SignedType? {
+        self.field_of(subject, name) ?? self.property_read(subject, name) ?? self
+            .shape_member(subject, name)
+    }
+
+    /// The member `name` of the shape the named type `subject` stands over, which a read sees through
+    /// the name; absent for any other type.
+    fn shape_member(subject: SignedType, name: string) -> SignedType? {
+        let shape? = self.named_over(subject) else { return null }
+        if shape.spelled() == subject.spelled() { null } else { self.member_read(shape, name) }
+    }
+
+    /// What the property `name` of a value of `subject`'s type answers: its one seat takes the
+    /// receiver, filling what it names. Absent when the type has no such property.
+    fn property_read(subject: SignedType, name: string) -> SignedType? {
+        let property? = self.property_of(subject, name) else { return null }
+        mut found: Map<string, SignedType> = {}
+        if property.seats.length != 1 || !property.seats[0].ty.unifies(subject, found) { return null }
+        let answer? = property.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// The type of the field `name` on a value of `subject`'s type, bound to the arguments the record
+    /// is applied to: absent for an optional or dynamic subject, a type that's no record, a field it
+    /// doesn't have, and a subject that doesn't give the record every argument.
+    fn field_of(subject: SignedType, name: string) -> SignedType? {
+        if subject.nullable() || subject.dynamic { return null }
+        let record? = self.record_of(subject) else { return null }
+        if subject.args.length != record.params { return null }
+        record.fields.find(it.name == name)?.ty?.bound(subject.args)
+    }
+
+    /// The enum `ty` is, `Result` among them, absent when it's none.
+    fn enum_of(ty: SignedType) -> EnumShape? { self.program.enum_shape(ty) }
+
+    /// The member's record the gathered variant `name` on a value of `subject`'s type is made of;
+    /// absent for any other variant.
+    fn member_of(subject: SignedType?, name: string) -> SignedType? {
+        let s? = subject else { return null }
+        let shape? = self.enum_of(s) else { return null }
+        shape.variants.find(it.name == name)?.member
+    }
+
+    /// The payload types of the variant `name` on a value of `subject`'s type, bound to the arguments
+    /// the enum is applied to; absent when it has no such variant.
+    fn payloads_of(subject: SignedType?, name: string) -> List<SignedType?>? {
+        let s? = subject else { return null }
+        let shape? = self.enum_of(s) else { return null }
+        if s.args.length != shape.params { return null }
+        let variant? = shape.variants.find(it.name == name) else { return null }
+        [p.ty?.bound(s.args) for p in variant.payloads]
+    }
+
+    /// The one payload the variant `name` carries on a value of `subject`'s type, absent when it
+    /// carries another number of them.
+    fn payload_of(subject: SignedType?, name: string) -> SignedType? {
+        let all? = self.payloads_of(subject, name) else { return null }
+        if all.length == 1 { all[0] } else { null }
+    }
+
+    /// The shape the named type `ty` stands over, absent for any other type.
+    fn named_over(ty: SignedType) -> SignedType? { (self.program.named_of)(ty) }
+
+    /// `ty` as a read sees it: a named type's shape, any other type itself.
+    fn seen(ty: SignedType?) -> SignedType? {
+        let t? = ty else { return null }
+        self.named_over(t) ?? t
+    }
+
+    /// The record `ty` is, absent when it's none.
+    fn record_of(ty: SignedType) -> RecordShape? { (self.program.record_of)(ty) }
+
+    /// Whether the call at `e` of `callee`, a fn of `f` whose first `skip` seats are pinned, names its
+    /// seats as no call of it can: an argument naming no seat, a seat written twice, or a seat with no
+    /// default no argument writes. Refused, its arguments checked against nothing. A call by position,
+    /// spreading, of a fn whose seats have no names or that takes the rest, or writing more by
+    /// position than it has seats, is the other laws'.
+    mut fn seats_named(e: ExprId, f: SignedType, args: List<ExprId>, skip: int, callee: string) -> bool {
+        if self.meanings || !args.any((a) -> self.store.arg_label(a) != null) { return false }
+        if args.any((a) -> self.store.spread_operand(a) != null) || f.seats.any(it.rest) { return false }
+        let open = f.seats.drop(skip)
+        if open.any(it.name == null) { return false }
+        let seats = [s.name! for s in open]
+        let labels = [self.store.arg_label(a) ?? "" for a in args]
+        if (0..labels.length).any(labels[it] == "" && it >= seats.length) { return false }
+        let unknown = labels.find_index((l) -> l != "" && !seats.contains(l))
+        if unknown != null { return self.seat_named(args[unknown!], args, callee, "unknown", labels[unknown!], seats) }
+        let twice = (0..labels.length)
+            .find(labels[it] != "" && written_before(labels, seats, labels[it], it))
+        if twice != null { return self.seat_named(args[twice!], args, callee, "twice", labels[twice!], seats) }
+        let plan = self.store.seat_plan(args, seats)
+        let unwritten = (0..seats.length).find(plan[it] < 0 && !open[it].defaulted)
+        if unwritten != null { return self.seat_named(e, args, callee, "unwritten", seats[unwritten!], seats) }
+        false
+    }
+
+    /// The call's seat `name` refused `how` at `at`, its arguments `args` checked against nothing.
+    mut fn seat_named(
+        at: ExprId,
+        args: List<ExprId>,
+        callee: string,
+        how: string,
+        name: string,
+        seats: List<string>,
+    ) -> bool {
+        self.checked_free(args)
+        let none = owned_type("void")
+        self
+            .refused
+            .push(
+                Refused {
+                    at: at,
+                    want: none,
+                    found: none,
+                    seat: Seating.SeatNamed(callee, how, name, seats),
+                },
+            )
+        true
+    }
+
+    /// The comprehension source `source`, a value of `from`, holding no element to walk: refused, where
+    /// its type is known.
+    mut fn comp_unwalked(source: ExprId, from: SignedType?) {
+        let f? = from else { return }
+        if self.meanings || f.dynamic || f.generic() || f.inferred() || f.unknown() { return }
+        self
+            .refused
+            .push(Refused { at: source, want: f, found: f, seat: Seating.CompUnwalked(f.spelled()) })
+    }
+
+    /// The `select` arm at `arm` binding as `how` says, naming the index `index` and the binder `bind`.
+    mut fn arm_misbound(arm: ExprId, how: string, index: string, bind: string) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        self
+            .refused
+            .push(
+                Refused {
+                    at: arm,
+                    want: none,
+                    found: none,
+                    seat: Seating.ArmBinder(how, index, bind),
+                },
+            )
+    }
+
+    /// The handler `handler` of the component `word`, which can fail, refused where no fate is named.
+    mut fn fateless(handler: ExprId, word: string) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        self
+            .refused
+            .push(Refused { at: handler, want: none, found: none, seat: Seating.Fateless(word) })
+    }
+
+    /// The `select` arm at `arm`, waiting on a list of tasks, refused where a loop holds it.
+    mut fn arm_spent(arm: ExprId) {
+        if self.meanings || !self.in_loop() { return }
+        let none = owned_type("void")
+        self.refused.push(Refused { at: arm, want: none, found: none, seat: Seating.SpentArm })
+    }
+
+    /// The `select` arm head `head`, a value of `found` no arm waits on, refused where its type is known.
+    mut fn arm_unwaitable(head: ExprId, found: SignedType) {
+        if self.meanings || found.dynamic || found.generic() || found.inferred() || found.unknown() { return }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: head,
+                    want: found,
+                    found: found,
+                    seat: Seating.Unwaitable(found.spelled()),
+                },
+            )
+    }
+
+    /// Whether the name `name` read at `e` as a value of `f` names an extern, which is a C symbol and
+    /// no value: refused.
+    mut fn extern_read(e: ExprId, name: string, f: SignedType) -> bool {
+        if self.meanings ||
+            self.local(name) != null ||
+            !(self.program.external)(name, self.home_of(e)) { return false }
+        let seat = Seating
+            .ExternValue(name, [s.ty.spelled() for s in f.seats], [s.mutable for s in f.seats])
+        self.refused.push(Refused { at: e, want: f, found: f, seat: seat })
+        true
+    }
+
+    /// Whether the verb `name` called at `e` on a value of `subject` inserts into the map a cell holds
+    /// where the cell holds no map: refused, its arguments checked against nothing.
+    mut fn cell_unmapped(e: ExprId, subject: SignedType, name: string, args: List<ExprId>) -> bool {
+        if self.meanings || !puts_into_cell(own_shape(subject, name)) { return false }
+        let held? = subject.args.first() else { return false }
+        if held.mapped() != null || held.generic() || held.inferred() || held.unknown() { return false }
+        self.checked_free(args)
+        self
+            .refused
+            .push(
+                Refused {
+                    at: e,
+                    want: subject,
+                    found: subject,
+                    seat: Seating.CellUnmapped(held.spelled()),
+                },
+            )
+        true
+    }
+
+    /// Whether `t` is a declared record or enum, the kinds a `dyn` list holds.
+    fn boxable(t: SignedType) -> bool {
+        let seen = self.seen(t) ?? t
+        self.record_of(seen) != null || self.enum_of(seen) != null
+    }
+
+    /// A type named in the body, resolved from `home`, the template that wrote the name, first.
+    fn type_named(name: string, home: string?) -> SignedType { (self.program.type_named)(name, home) }
+
+    /// Where the names `e` reads are read, as its origin spells it; absent for a node the body's own
+    /// file wrote.
+    fn home_of(e: ExprId) -> string? { self.store.home_of(e) }
+
+    /// What the values checked into `seats` fill of the type parameters the seats name, beyond those
+    /// `pinned` already fills: each value whose seat isn't a fn first; then what the seat the call
+    /// fills wants of `answer`, for parameters still open; then each value that said nothing of
+    /// itself in a seat still open (a variant carrying nothing), against its seat as now filled; then
+    /// each fn value against its seat with what's filled so far, a seat still naming an unfilled
+    /// parameter unseen. Absent when a value can't fill its seat or two fill one parameter
+    /// differently.
+    mut fn fills(
+        seats: List<SignedType>,
+        values: List<ExprId>,
+        pinned: Map<string, SignedType>,
+        answer: SignedType?,
+        expected: Expected,
+        seat_of: fn(int) -> Seating,
+    ) -> Map<string, SignedType>? {
+        mut found = pinned
+        mut agreed = true
+        mut wanting: List<int> = []
+        for at, v in values {
+            let seat = seats[at]
+            if seat.head is .Function { continue }
+            let open = seat.generic() && !seat.fills_all(found)
+            let before = self.refused.get().length
+            let unread_before = self.unread.get().length
+            let read = self
+                .check_seated(v, if open { null } else { seat.filled(found) }, seat_of(at))
+            if open &&
+                read == null &&
+                self.refused.get().length == before &&
+                self.unread.get().length == unread_before {
+                wanting.push(at)
+            } else if open && (read == null || !seat.unifies(read!, found)) {
+                agreed = false
+                self.unmet(v, seat, read, seat_of(at), before)
+            }
+        }
+        let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
+        if answer != null && wanted != null {
+            mut from_seat: Map<string, SignedType> = {}
+            if answer!.unifies(wanted!, from_seat) { for k, v in from_seat { if !found.has(k) { found.set(k, v) } } }
+        }
+        for at in wanting {
+            let seat = seats[at]
+            let before = self.refused.get().length
+            let read = self
+                .check_seated(
+                    values[at],
+                    if seat.fills_all(found) { seat.filled(found) } else { null },
+                    seat_of(at),
+                )
+            if read == null || !seat.unifies(read!, found) {
+                agreed = false
+                self.unmet(values[at], seat, read, seat_of(at), before)
+            }
+        }
+        for at, v in values {
+            let seat = seats[at]
+            if !(seat.head is .Function) { continue }
+            let open = !seat.fills_all(found)
+            let lambda = self.store.closure_parts(v) != null
+            let before = self.refused.get().length
+            let read = if open && !lambda { self.check(v, Expected.Unknown) } else { self.check_seated(v, seat.filled_or_inferred(found), seat_of(at)) }
+            if open && (read == null || !seat.unifies(read!, found)) {
+                agreed = false
+                self.unmet(v, seat, read, seat_of(at), before)
+            } else if open && read != null {
+                self.unanswered(v, seat, read!, found, seat_of(at), before)
+            }
+        }
+        if agreed { found } else { null }
+    }
+
+    /// Each value checked against nothing.
+    mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
+
+    /// What a call answers when `args` fill no seat: each checked free, and nothing claimed.
+    mut fn unfilled(args: List<ExprId>) -> SignedType? {
+        self.checked_free(args)
+        null
+    }
+
+    /// The static `name` of the type `described`, as a fn of what it's called with; absent when the
+    /// program names none.
+    fn static_of(described: SignedType, name: string) -> SignedType? { (self.program.static_of)(described, name) }
+
+    /// The type of each method of one name several impls give a value of `subject`'s type.
+    fn methods_among(subject: SignedType, name: string) -> List<SignedType> { (self.program.methods_among)(subject, name) }
+
+    /// The type of each static of one name several impls give the type `described`.
+    fn statics_among(described: SignedType, name: string) -> List<SignedType> { (self.program.statics_among)(described, name) }
+
+    /// What a call of one of `candidates` answers where one `dyn` argument's run-time type chooses
+    /// among them: it is the only `dyn` argument, every other fits each candidate's seat past its
+    /// first `skip`, each takes a type of its own there, and all answer one type. Absent otherwise.
+    mut fn run_chosen_among(candidates: List<SignedType>, args: List<ExprId>, skip: int) -> SignedType? {
+        if candidates.length < 2 || args.any((a) -> self.store.names_its_seat(a)) { return null }
+        let refused = self.refused.get()
+        let unread = self.unread.get()
+        let typed = [self.check(a, Expected.Free) for a in args]
+        self.refused.set(refused)
+        self.unread.set(unread)
+        let dyns = [j for j, t in typed if t?.dynamic ?? false]
+        if dyns.length != 1 { return null }
+        let k = dyns[0]
+        let answer? = candidates[0].answer else { return null }
+        let fits = candidates
+            .all(
+                (c) -> c.seats.length == typed.length + skip &&
+                    !c.seats[k + skip].ty.dynamic &&
+                    c.answer?.spelled() == answer.spelled() &&
+                    (0..typed.length).all(it == k || seat_takes(c.seats[it + skip].ty, typed[it])),
+            )
+        if fits { answer } else { null }
+    }
+
+    /// The one of `candidates` whose seats past its first `skip` take `args` as each types alone;
+    /// absent where none or more than one does. Typing the arguments alone says nothing.
+    mut fn chosen_among(candidates: List<SignedType>, args: List<ExprId>, skip: int) -> SignedType? {
+        if candidates.is_empty() || args.any((a) -> self.store.names_its_seat(a)) { return null }
+        let refused = self.refused.get()
+        let unread = self.unread.get()
+        let typed = [self.check(a, Expected.Free) for a in args]
+        self.refused.set(refused)
+        self.unread.set(unread)
+        let fitting = [c for c in candidates if takes_typed(c, typed, skip)]
+        if fitting.length == 1 { fitting[0] } else { null }
+    }
+
+    /// The seats `count` arguments fill, in order, absent when they're too many, or too few to leave
+    /// only defaulted seats behind.
+    fn seats_filled(f: SignedType, count: int) -> List<SignedSeat>? {
+        if count > f.seats.length || f.seats.drop(count).any(!it.defaulted) { return null }
+        f.seats.take(count)
+    }
+
+    /// `args` as they fill the seats of `f` past its first `skip`: by name where one names its seat,
+    /// else in order — those seats in the arguments' order, each argument's value, and the place of
+    /// the seat each fills. Absent where an argument spreads (its seats are the spread's), fills no
+    /// seat, or leaves a seat with no default unfilled.
+    fn filling(f: SignedType, args: List<ExprId>, skip: int) -> FilledByName? {
+        let rest = f.seats.find_index(it.rest)
+        if rest != null && !args.any((a) -> self.store.arg_label(a) != null) { return self.rest_filling(f, args, rest!, skip) }
+        if args.any((a) -> self.store.spread_operand(a) != null) { return null }
+        if !args.any((a) -> self.store.names_its_seat(a)) {
+            return FilledByName { f: f, values: args, seats: [at for at in 0..args.length] }
+        }
+        let open = f.seats.drop(skip)
+        if open.any(it.name == null) { return null }
+        let plan = self.store.seat_plan(args, [s.name! for s in open])
+        let placed = [plan.index_of(at) for at in 0..args.length]
+        if placed.any(it < 0) || (0..plan.length).any(plan[it] < 0 && !open[it].defaulted) { return null }
+        FilledByName {
+            f: f with { seats: f.seats.take(skip).concat([open[j] for j in placed]) },
+            values: [self.store.unnamed(a) for a in args],
+            seats: placed,
+        }
+    }
+
+    /// `args` filling the seats of `f` past its first `skip`, its seat `k` taking the rest: the seats
+    /// before it in order, then each argument past them as an element of the rest's list, a spread
+    /// one's operand as a list of them. Absent where too few arguments reach the rest seat, or the rest
+    /// seat holds no list.
+    fn rest_filling(f: SignedType, args: List<ExprId>, k: int, skip: int) -> FilledByName? {
+        let before = k - skip
+        if before < 0 ||
+            args.length < before ||
+            args.take(before).any((a) -> self.store.spread_operand(a) != null) { return null }
+        let seat = f.seats[k]
+        let elem? = seat.ty.listed() else { return null }
+        let extras = args.drop(before)
+        FilledByName {
+            f: f with { seats: f
+                .seats
+                .take(k)
+                .concat(
+                    [if self.store.spread_operand(a) == null { seat with { ty: elem, rest: false } } else { seat with { rest: false } } for a in extras],
+                ) },
+            values: args.take(before).concat([self.store.spread_operand(a) ?? a for a in extras]),
+            seats: [at for at in 0..before].concat([before for a in extras]),
+        }
+    }
+
+    /// Whether `args` spread a record into the named seats of `f`: one spreads, and no seat of `f`
+    /// takes the rest, whose spread is a list's.
+    fn spreads_records(f: SignedType, args: List<ExprId>) -> bool {
+        args.any((a) -> self.store.spread_operand(a) != null) && !f.seats.any(it.rest)
+    }
+
+    /// What a call of `f` answers whose arguments spread records into its seats past its first `skip`,
+    /// `pinned` filled already: each spread checked once for the record it is; each seat given by the
+    /// last argument that gives it, as `spread_givers` reads them; a seat a field gives filled by that
+    /// field's type, then each argument that gives a seat checked against it; an argument a later one
+    /// overrides checked against nothing. Absent where a spread isn't a record, or a seat with no
+    /// default is given by nothing.
+    mut fn spread_called(
+        f: SignedType,
+        args: List<ExprId>,
+        skip: int,
+        pinned: Map<string, SignedType>,
+        expected: Expected,
+        seat_of: fn(int) -> Seating,
+    ) -> SignedType? {
+        let open = f.seats.drop(skip)
+        let records = [if self.store.spread_operand(a) == null { null } else { self.check(self.store.spread_operand(a)!, Expected.Free) } for a in args]
+        let listed = records.find_index(it != null && !it!.nullable() && it!.listed() != null)
+        if listed != null {
+            for a in args { if self.store.spread_operand(a) == null { let _ = self.check(self.store.unnamed(a), Expected.Free) } }
+            let t = records[listed!]!
+            self
+                .refused
+                .push(
+                    Refused {
+                        at: args[listed!],
+                        want: t,
+                        found: t,
+                        seat: Seating.Restless(callee_word(seat_of(0))),
+                    },
+                )
+            return null
+        }
+        let fields = [if records[at] == null { null } else { self.record_of(records[at]!)?.fields?.map(it.name) } for at, a in args]
+        let givers = spread_givers(
+            [s.name ?? "" for s in open],
+            [self.store.arg_label(a) for a in args],
+            fields,
+        )
+        let spread_at = [at for at, a in args if self.store.spread_operand(a) != null]
+        if open.any(it.name == null) ||
+            spread_at.any(fields[it] == null) ||
+            (0..open.length).any(givers[it] == null && !open[it].defaulted) {
+            for at, a in args { if self.store.spread_operand(a) == null { let _ = self.check(self.store.unnamed(a), Expected.Free) } }
+            return null
+        }
+        mut found = pinned
+        for j, g in givers {
+            let giving? = g else { continue }
+            let field? = giving.field else { continue }
+            let ty? = self.field_of(records[giving.arg]!, field) else { return null }
+            if !open[j].ty.unifies(ty, found) { return null }
+        }
+        let direct = [j for j, g in givers if g != null && g!.field == null]
+        let values = [self.store.unnamed(args[givers[j]!.arg]) for j in direct]
+        for at, a in args {
+            if self.store.spread_operand(a) == null && !direct.any(givers[it]!.arg == at) { let _ = self.check(self.store.unnamed(a), Expected.Free) }
+        }
+        let filled? = self
+            .fills(
+                [open[j].ty for j in direct],
+                values,
+                found,
+                f.answer,
+                expected,
+                (at: int) -> seat_of(direct[at]),
+            ) else { return null }
+        let answer? = f.answer else { return null }
+        if answer.fills_all(filled) { answer.filled(filled) } else { null }
+    }
+
+    /// What a call of the fn type `f` with `args` answers: each argument fills its seat as
+    /// `Checking.fills` has it, beyond what `pinned` fills, and the answer is claimed when every
+    /// parameter it names is filled.
+    mut fn called(
+        f: SignedType,
+        args: List<ExprId>,
+        expected: Expected,
+        seat_of: fn(int) -> Seating,
+        pinned: Map<string, SignedType> = {},
+    ) -> SignedType? {
+        if self.spreads_records(f, args) { return self.spread_called(f, args, 0, {}, expected, seat_of) }
+        let fill? = self.filling(f, args, 0) else { return self.unfilled(args) }
+        let seats? = self.seats_filled(fill.f, args.length) else { return self.unfilled(args) }
+        let filled = self
+            .fills(
+                [s.ty for s in seats],
+                fill.values,
+                pinned,
+                f.answer,
+                expected,
+                (at: int) -> seat_of(fill.seats[at]),
+            )
+        self.seats_written(seats, fill.values)
+        self
+            .seats_settled(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
+        self
+            .seats_isolated(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
+        let found? = filled else { return null }
+        let answer? = f.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// What a call of `f` answers when its type parameters are the body's own, which nothing here
+    /// fills: each argument checks against its seat as written.
+    mut fn rigidly_called(f: SignedType, args: List<ExprId>, seat_of: fn(int) -> Seating) -> SignedType? {
+        if self.spreads_records(f, args) { return self.spread_called(f, args, 0, {}, Expected.Free, seat_of) }
+        let fill? = self.filling(f, args, 0) else { return self.unfilled(args) }
+        let seats? = self.seats_filled(fill.f, args.length) else { return self.unfilled(args) }
+        for at, a in fill.values { let _ = self.check_seated(a, seats[at].ty, seat_of(fill.seats[at])) }
+        self.seats_written(seats, fill.values)
+        self
+            .seats_settled(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
+        self
+            .seats_isolated(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
+        f.answer
+    }
+
+    /// What a read through `?.` answers: what `read` answers on the subject's present value, made
+    /// optional, since an absent subject answers absent. Absent when the subject isn't optional or
+    /// the read isn't known.
+    fn chained(subject: SignedType?, read: fn(SignedType) -> SignedType?) -> SignedType? {
+        let s? = subject else { return null }
+        if !s.nullable() { return null }
+        let answer? = read(s.unwrapped()) else { return null }
+        answer with { nulls: if answer.nulls > 0 { answer.nulls } else { 1 } }
+    }
+
+    /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
+    fn meta_type(name: string) -> SignedType? { self.program.meta(name) }
+
+    /// The type a module the toolchain carries declares as `name` (`@std.grammar`'s `Grammar`).
+    fn toolchain_type(module: string, name: string) -> SignedType? { (self.program.toolchain_type)(module, name) }
+
+    /// What a name reads as when it names a type and no value: the type, standing as a value.
+    fn type_value(name: string, home: string?) -> SignedType? { (self.program.type_value)(name, home) }
+
+    /// The name `e` reads, `name`, as `read`, noted as one nothing binds and the program gives no
+    /// type, unless it names a type — a type parameter among them: whether anything declares it is
+    /// asked once the program is typed.
+    mut fn unbound_read(e: ExprId, name: string, read: ReadAs) {
+        if !(self.type_named(name, self.home_of(e)).head is .Unnamed) { return }
+        self.unread.push(Unread { at: e, name: name, read: read, home: self.home_of(e) })
+    }
+
+    /// A variant of the enum `enum_type` built from `args`: the enum, its arguments from the seat
+    /// when it names the enum, else from what the payloads fill. Absent when the enum has no such
+    /// variant, or the arguments don't fit it.
+    mut fn variant_built(
+        e: ExprId,
+        enum_type: SignedType,
+        name: string,
+        args: List<ExprId>,
+        called: bool,
+        expected: Expected,
+    ) -> SignedType? {
+        let shape = self.enum_of(enum_type)
+        let variant = shape?.variants?.find(it.name == name)
+        let carrying = shape?.variants?.find(it.payloads.length > 0)
+        if called &&
+            name == "all" &&
+            args.is_empty() &&
+            variant == null &&
+            carrying != null &&
+            !self.meanings {
+            self
+                .refused
+                .push(
+                    Refused {
+                        at: e,
+                        want: enum_type,
+                        found: enum_type,
+                        seat: Seating.Unlistable(carrying!.name),
+                    },
+                )
+            return null
+        }
+        let miscounted = if variant == null { null } else { variant_miscounted(variant!, args.length, called, shape!.params) }
+        if miscounted != null && !self.meanings {
+            self.checked_free(args)
+            self
+                .refused
+                .push(Refused { at: e, want: enum_type, found: enum_type, seat: miscounted! })
+            return null
+        }
+        let seats? = variant?.seats(args.length) else {
+            self.checked_free(args)
+            return null
+        }
+        let params = shape!.params
+        let wanted_args = match expected {
+            .Exactly(ty) -> if ty.names_as(enum_type) && ty.args.length == params { ty.args } else { [] },
+            rest -> [],
+        }
+        mut pinned: Map<string, SignedType> = {}
+        for at, a in wanted_args { pinned.set("${at}", a) }
+        let found? = self
+            .fills(
+                seats,
+                args,
+                pinned,
+                null,
+                Expected.Free,
+                (_at: int) -> Seating.Payload(enum_type.spelled(), name),
+            ) else { return null }
+        let filled = [found.get("${at}") for at in 0..params]
+        if filled.any(it == null) { null } else { enum_type with { args: [a! for a in filled] } }
+    }
+
+    /// The property `name` of a value of `subject`'s type, as a fn of the receiver alone; absent when
+    /// the program names none.
+    fn property_of(subject: SignedType, name: string) -> SignedType? { (self.program.property_of)(subject, name) }
+
+    /// What a method answers called on a value of `subject`'s type with `args`: its first seat takes
+    /// the receiver, filling what it names, and the rest fill as a call's do. Absent when a seat can't
+    /// take what it's given or the answer names a parameter nothing filled.
+    mut fn applied(
+        method: SignedType,
+        subject: SignedType,
+        args: List<ExprId>,
+        expected: Expected,
+        seat_of: fn(int) -> Seating,
+    ) -> SignedType? {
+        mut pinned: Map<string, SignedType> = {}
+        if self.spreads_records(method, args) {
+            if method.seats.is_empty() || !method.seats[0].ty.unifies(subject, pinned) { return self.unfilled(args) }
+            return self.spread_called(method, args, 1, pinned, expected, seat_of)
+        }
+        let fill? = self.filling(method, args, 1) else { return self.unfilled(args) }
+        let seats? = self.seats_filled(fill.f, args.length + 1) else { return self.unfilled(args) }
+        if !method.seats[0].ty.unifies(subject, pinned) { return self.unfilled(args) }
+        let filled = self
+            .fills(
+                [s.ty for s in seats.drop(1)],
+                fill.values,
+                pinned,
+                method.answer,
+                expected,
+                (at: int) -> seat_of(fill.seats[at]),
+            )
+        self.seats_written(seats.drop(1), fill.values)
+        self
+            .seats_settled(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
+        self
+            .seats_isolated(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
+        let found? = filled else { return null }
+        let answer? = method.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// The fn type of the method `name` on a value of `subject`'s type, its receiver the first seat;
+    /// absent when the program names none.
+    fn method_of(subject: SignedType, name: string) -> SignedType? { (self.program.method_of)(subject, name) }
+
+    /// A type written in the body, resolved.
+    fn written(ty: TypeRef) -> SignedType { (self.program.written)(ty) }
+}
+
+/// A scope with nothing bound in it yet.
+fn open_scope() -> CheckScope {
+    let names: Map<string, Local> = {}
+    CheckScope { names: names }
+}
+
+/// The one field a named type is a record over, read as the shape it stands over.
+export const NAMED_FIELD: string = "of"
+
+/// The package that holds the language's compile-time shapes.
+const META_PACKAGE: string = "@std.meta"
+
+impl CheckedProgram {
+    /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
+    fn meta(name: string) -> SignedType? { (self.toolchain_type)(META_PACKAGE, name) }
+
+    /// Whether a value of `from` lifts into `into` as a rule's rewrite: a template, `@std/meta`'s
+    /// `Code`, where a rule's `Fix` is wanted.
+    fn rewrites(from: SignedType, into: SignedType) -> bool {
+        if from.nullable() { return false }
+        let code? = self.meta("Code") else { return false }
+        if !code.names_as(from) { return false }
+        FIX_MODULES.any((m) -> (self.toolchain_type)(m, "Fix")?.names_as(into) ?? false)
+    }
+}
+
+/// The modules declaring a rule's `Fix`: the compiler's own, and `@std/meta`'s for a package's rules.
+const FIX_MODULES: List<string> = ["@std.avrac.features", "@std.meta"]
+
+/// A type the language owns, with nothing applied.
+export fn owned_type(name: string) -> SignedType { headed_type(TypeHead.Owned(name)) }
+
+/// The absent value's own type: `never?`, a value that is only ever null.
+export fn null_type() -> SignedType { never_type() with { nulls: 1 } }
+
+/// The type `described`, standing as a value.
+export fn meta_type(described: SignedType) -> SignedType { headed_type(TypeHead.Meta) with { args: [described] } }
+
+/// The type of code that doesn't finish.
+export fn never_type() -> SignedType { headed_type(TypeHead.Never) }
+
+/// A type that is its head alone: nothing applied, nothing optional.
+export fn headed_type(head: TypeHead) -> SignedType {
+    SignedType {
+        head: head,
+        args: [],
+        nulls: 0,
+        dynamic: false,
+        seats: [],
+        answer: null,
+        alternatives: [],
+    }
+}
+
+/// The seat a refusal of `found` where `want` stood names: a walk's fn handed a fn taking another
+/// element is the walk's, any other fn the method's argument.
+fn named_for(seat: Seating, want: SignedType, found: SignedType) -> Seating {
+    match seat {
+        .Walk(owner, name, at, call) -> walk_named(owner, name, at, call, want, found),
+        rest -> seat,
+    }
+}
+
+/// The seat a walk's fn argument handed `found` where `want` stood names: the walk's own where it's
+/// no fn, `Unwalked` where it's a fn taking another element, else the method's argument.
+fn walk_named(owner: string, name: string, at: int, call: int, want: SignedType, found: SignedType) -> Seating {
+    if !(found.head is .Function) { return Seating.Walk(owner, name, at, call) }
+    let element? = taken_apart(want, found) else { return Seating.Method(owner, name, at) }
+    Seating.Unwalked(name, element, call)
+}
+
+/// The element the fn seat `want` takes, spelled, where `found`, a fn of one seat, takes another.
+fn taken_apart(want: SignedType, found: SignedType) -> string? {
+    if want.seats.length != 1 || found.seats.length != 1 { return null }
+    let element = want.seats[0].ty
+    if element.generic() || element.inferred() || found.seats[0].ty.spelled() == element.spelled() { return null }
+    element.spelled()
+}
+
+/// Whether `found` is no fn where `want` is one: refused whatever refused inside it, since no value
+/// inside can make it a fn.
+fn fnless(want: SignedType, found: SignedType) -> bool {
+    want.head is .Function &&
+        !want.nullable() &&
+        !(found.head is .Function) &&
+        !found.dynamic &&
+        !found.generic() &&
+        !found.inferred()
+}
+
+/// Whether `expected` wants a fn and `found` is none.
+fn fnless_wanted(expected: Expected, found: SignedType) -> bool {
+    match expected { .Exactly(want) -> fnless(want, found), rest -> false }
+}
+
+/// Whether the fn type `f`'s seats past its first `skip` take values of the types `typed`, one each.
+fn takes_typed(f: SignedType, typed: List<SignedType?>, skip: int) -> bool {
+    f.seats.length == typed.length + skip &&
+        (0..typed.length).all((j) -> seat_takes(f.seats[j + skip].ty, typed[j]))
+}
+
+/// Whether a seat of type `seat` takes a value of type `read`: it reaches the seat, or fills the
+/// parameters the seat names.
+fn seat_takes(seat: SignedType, read: SignedType?) -> bool {
+    let t? = read else { return false }
+    mut found: Map<string, SignedType> = {}
+    t.reaches(seat) || seat.unifies(t, found)
+}
+
+/// The fn or method a seat refusal names, absent for a seat of no call.
+fn called_name(seat: Seating) -> string? {
+    match seat {
+        .Argument(callee, _) -> callee,
+        .Method(_, name, _) or .Walk(_, name, _, _) -> name,
+        rest -> null,
+    }
+}
+
+/// How the variant `v` of an enum of `params` type parameters, built from `count` arguments, `called`
+/// where it's written with them, carries other than it's given; absent where it carries that.
+fn variant_miscounted(v: VariantSeat, count: int, called: bool, params: int) -> Seating? {
+    let carried = v.payloads.length
+    if carried == 0 { return if called && params == 0 { Seating.VariantCount(v.name, "nothing", "", count) } else { null } }
+    let first = v.payloads[0].ty?.spelled() ?? ""
+    if !called { return if params == 0 { Seating.VariantCount(v.name, "bare", first, 0) } else { null } }
+    if count == 0 { return Seating.VariantCount(v.name, "empty", first, 0) }
+    if count == carried { return null }
+    Seating.VariantCount(v.name, "count", "${carried}", count)
+}
+
+/// Whether `verb` inserts into the map a cell holds.
+fn puts_into_cell(verb: OwnVerb?) -> bool { verb == OwnVerb.CellPut }
+
+/// The callee a call's seat names: a fn's, or a method's beside its owner.
+fn callee_word(seat: Seating) -> string {
+    match seat {
+        .Argument(callee, _) -> callee,
+        .Method(owner, name, _) or .Walk(owner, name, _, _) -> "${owner}.${name}",
+        rest -> "",
+    }
+}
+
+/// The name a declared type is declared under, else the type spelled.
+fn declared_word(t: SignedType) -> string {
+    match t.head { .Declared(_, name) -> name, rest -> t.spelled() }
+}
+
+/// Whether the argument at `j`, labelled `name`, writes a seat an argument before it wrote: one with
+/// the same name, or a positional one at the seat's place.
+export fn written_before(labels: List<string>, seats: List<string>, name: string, j: int) -> bool {
+    let at = seats.index_of(name)
+    labels.slice(0, j).contains(name) || at < labels.length && labels[at] == ""
+}

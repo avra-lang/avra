@@ -2,39 +2,29 @@
 //! over the instance as the compiler settles it, its diagnostics
 //! spoken at the instance. An instance only a run can build — one
 //! that reads a parameter or the world — is not checked.
-use core.{ExprId, StmtId, TypeId, Reg, Annotation, Span, joined, doc_first_paragraph}
-use features.{LowerCx, SettleRoot, Unsettled, nothing}
+use core.{ExprId, TypeId, Reg, Annotation, binding_read, settles_alone}
+use features.{LowerCx, SettleRoot, StructSig, Unsettled, nothing}
 use features.structs.{defaulted_reg}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal, warning}
 
-/// A component instance's `doc`/annotation-fed fields, filled from
-/// what only the WRAPPING STATEMENT carries — the `///` above it and
-/// its `@name(args)` annotations — since neither exists yet while
-/// the instance's own record literal is built (an annotation wraps
-/// the statement from OUTSIDE, once the statement already stands:
-/// `core/store.av`'s `annotate`/`annotate_before`). A field named
-/// `doc` reads the statement's own `///`, first paragraph; any OTHER
-/// `List<R>` field whose name an annotation shares gets one `R` per
-/// matching annotation, built from its arguments by position — a
-/// one-arg annotation into `List<string>` appends the string.
+/// A component instance's fields its wrapping statement fills (fills.av's law), written into the
+/// record its literal built.
 fn augmented(mut cx: LowerCx, e: ExprId, x: ExprId, base: Reg) -> Reg {
     let owner? = cx.view.store.instance_owner(e) else { return base }
     let ty = cx.type_at(x)
     let sig? = cx.fields_of(ty) else { return base }
-    for j, name in sig.names {
-        if name == "doc" {
-            cx.field_written(base, ty, j, cx.const_str(doc_text(cx, owner)))
-        } else {
-            let anns = [a for a in cx.view.store.annotations_of(owner) if a.name == name]
-            if !anns.is_empty() { cx.field_written(base, ty, j, annotation_list_reg(cx, anns, sig.types[j])) }
-        }
+    for f in instance_fills(cx.view.store, owner, sig.names) {
+        cx.field_written(base, ty, f.slot, filled_reg(cx, f.fill, sig.types[f.slot]))
     }
     base
 }
 
-fn doc_text(cx: LowerCx, owner: StmtId) -> string {
-    joined(doc_first_paragraph(cx.view.store.doc_comment(owner) ?? []), " ")
+fn filled_reg(mut cx: LowerCx, fill: StatementFill, ty: TypeId) -> Reg {
+    match fill {
+        .Doc(text) -> cx.const_str(text),
+        .Annotated(marks) -> annotation_list_reg(cx, marks, ty),
+    }
 }
 
 /// Every matching annotation, one `R` each, packed into the field's
@@ -46,20 +36,28 @@ fn annotation_list_reg(mut cx: LowerCx, anns: List<Annotation>, list_ty: TypeId)
     cx.grown_box(cx.view.types.shape_of(list_ty), size, regs)
 }
 
-/// One annotation's own `R`: its arguments packed positionally when
-/// `R` is a record — trailing fields it wrote none for default, the
-/// same law an omitted struct-literal field takes (`structs/
-/// lower.av`'s `defaulted_reg`), so `@fixes("before")` fills `Fixes`'
-/// `before` and defaults its `after` — else its ONE written
-/// argument, R's own shape.
+/// One annotation's own `R`, as `element_fill` says: an omitted trailing field defaults by the law an
+/// omitted struct-literal field takes (`structs/lower.av`'s `defaulted_reg`).
 fn annotation_elem_reg(mut cx: LowerCx, a: Annotation, elem_ty: TypeId) -> Reg {
-    let one? = a.args.first() else { return cx.mint_ty(elem_ty) }
-    let fsig? = cx.fields_of(elem_ty) else { return cx.reg_of(one) }
-    if a.args.length > fsig.names.length { return cx.reg_of(one) }
+    let fsig = cx.fields_of(elem_ty)
+    match element_fill(a, field_count(fsig)) {
+        .Zero -> cx.mint_ty(elem_ty),
+        .Arg(one) -> cx.reg_of(one),
+        .Packed(args) -> packed_reg(cx, a, elem_ty, fsig!, args),
+    }
+}
+
+/// How many fields a record has; absent for a type that is no record.
+fn field_count(sig: StructSig?) -> int? {
+    let held? = sig else { return null }
+    held.names.length
+}
+
+fn packed_reg(mut cx: LowerCx, a: Annotation, elem_ty: TypeId, fsig: StructSig, args: List<ExprId>) -> Reg {
     cx
         .packed_struct(
             elem_ty,
-            [if slot < a.args.length { cx.reg_of(a.args[slot]) } else { defaulted_reg(cx, a.callee, fsig, slot) } for slot in 0..fsig.names.length],
+            [if slot < args.length { cx.reg_of(args[slot]) } else { defaulted_reg(cx, a.callee, fsig, slot) } for slot in 0..fsig.names.length],
         )
 }
 
@@ -71,36 +69,12 @@ fn checked(mut cx: LowerCx, e: ExprId, check: ExprId) {
     }
 }
 
-/// Whether the instance reads only what the compiler knows: literals,
-/// declarations, `const`s, and what the instance binds itself. A value
-/// from outside it — a local, a parameter, `self`, a capture — exists
-/// only in a run.
+/// Whether the instance settles alone: `settles_alone` over each name its check reads, as the
+/// resolver bound it.
 fn settleable(cx: LowerCx, e: ExprId, check: ExprId) -> bool {
     let at? = cx.view.store.expr_span(e) else { return false }
-    cx.view.store.every_expr(check).all(known(cx, at, it))
-}
-
-fn known(cx: LowerCx, at: Span, x: ExprId) -> bool {
-    let b? = cx.names.binding(x) else { return true }
-    match b {
-        .Decl(_) or .TypeParam(_) -> true,
-        .Def(s) or .Index(s) -> cx.view.store.const_value(s) != null || held_in(at, cx.view.store.stmt_span(s)),
-        // a pattern's binder stands BEFORE its arm, so an arm that IS the
-        // instance was bound outside it
-        .Pattern(arm, _) or .LambdaParam(arm, _) -> held_within(at, cx.view.store.expr_span(arm)),
-        .Param(_) or .Receiver or .Capture(_, _) -> false,
-    }
-}
-
-fn held_in(at: Span, inner: Span?) -> bool {
-    let sp? = inner else { return false }
-    sp.lo >= at.lo && sp.hi <= at.hi
-}
-
-/// Held in the instance and smaller than it.
-fn held_within(at: Span, inner: Span?) -> bool {
-    let sp? = inner else { return false }
-    held_in(at, sp) && (sp.lo != at.lo || sp.hi != at.hi)
+    let reads = [binding_read(cx.view.store, b!) for x in cx.view.store.every_expr(check) for b in [cx.names.binding(x)] if b != null]
+    settles_alone(cx.view.store, at, reads)
 }
 
 /// A check that could not run: it trapped or ran past its budget —

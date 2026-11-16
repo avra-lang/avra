@@ -19,6 +19,8 @@
 # byte for byte.
 #
 # MEMCAP names the memory-cap wrapper each build runs under (cap 4000 MB).
+# A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 set -u
 
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"

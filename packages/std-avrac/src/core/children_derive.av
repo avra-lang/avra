@@ -48,11 +48,12 @@ use @std.meta.{
     Code,
     Arms,
     Kind,
-    Held,
     payload_of,
     holds,
     name,
     refuse_as_at,
+    beside,
+    Held,
 }
 
 /// The shape words a variant may wear. Exactly one decides how the
@@ -74,18 +75,16 @@ export trait Children {
         if !problems.is_empty() { return Declared { made: [refused_children(t)], problems: problems } }
         Declared {
             made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote {
+                beside(
+                    t,
+                    quote {
             impl SyntaxArena {
                 fn ${walk_of(t.name)}(id: ${holder_of(t.name)}) -> List<ExprId> {
                     match self.${reader_of(t.name)}(id) { ${[child_arm(t, v) for v in t.variants]} }
                 }
             }
         },
-                },
+                ),
             ],
             problems: [],
         }
@@ -101,16 +100,14 @@ export trait Children {
 /// What a refused enum is given: the walk answers nothing anyone
 /// wrote, so no caller is blamed for a method the build never made.
 fn refused_children(t: MetaType) -> Directive {
-    Directive {
-        twin: "",
-        name: t.name,
-        at: t.at,
-        source: quote {
+    beside(
+        t,
+        quote {
             impl SyntaxArena {
                 fn ${walk_of(t.name)}(_id: ${holder_of(t.name)}) -> List<ExprId> { [] }
             }
         },
-    }
+    )
 }
 
 /// What is wrong with a variant's shape, when anything is.
@@ -206,7 +203,7 @@ fn reach_through(t: MetaType, k: Kind, e: Code, apart: bool) -> Code? {
             quote { flatten([${each} for each in some_list(${e})]) }
         },
         .Named(n, _) -> declared_reach(t, n, e, apart),
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
     }
 }
 
