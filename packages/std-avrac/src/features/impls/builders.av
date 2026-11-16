@@ -16,7 +16,7 @@ fn build_impl(b: Builder) -> Result<LangNode, string> {
     let written = b.type_refs(1)?
     let tp = [Plain(spelled(w)) for w in written]
     let ib = b.tokens(2)?
-    let tp2 = b.tokens(3)?
+    let tp2 = params_at(b.args, 3)
     let fns = b.stmts(4)?
     for s in fns {
         if !is_fn(b, s) && b.store.hole_stmt(s) == null { return .Err("an `impl` block holds `fn` declarations only") }
@@ -29,8 +29,9 @@ fn build_impl(b: Builder) -> Result<LangNode, string> {
         return .Ok(LangNode.NStmt(s))
     }
     let s = b.store.alloc_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns), b.span)
-    mark_written_tparams(b, s, tp, [Plain(t.text) for t in tp2])
+    mark_written_tparams(b, s, tp, [Plain(p.name.of) for p in tp2])
     if !written.is_empty() { b.store.mark_trait_args(s, written) }
+    if tp2.any((p) -> p.ty != null) { b.store.mark_impl_bounds(s, tp2) }
     .Ok(LangNode.NStmt(s))
 }
 

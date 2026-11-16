@@ -1,0 +1,57 @@
+// A TRAIT IMPL'S TARGET PARAMETER TAKES A BOUND: `impl Sh for List<T: Sh>`
+// is an impl for exactly the lists whose element is `Sh`. Its body calls
+// `T`'s members through the bound; a type implements the trait only where
+// its arguments meet it, and a call on one that does not names the bound.
+use @std.avrac.testing.{shown, refused_with, refusals, provided, answered}
+
+/// A trait, a record answering it, and impls serving a generic record and
+/// the built-in list only where their element answers it too.
+fn shapes() -> string {
+    "trait Sh {\n    fn said() -> string\n}\ntype P = { n: int }\nimpl Sh for P {\n    fn said() -> string { \"p\${self.n}\" }\n}\ntype Box<T> = { v: T }\nimpl Sh for Box<T: Sh> {\n    fn said() -> string { \"[\${self.v.said()}]\" }\n}\nimpl Sh for List<T: Sh> {\n    fn said() -> string { [x.said() for x in self].join(\",\") }\n}\nfn shown_as<X: Sh>(x: X) -> string { x.said() }\n"
+}
+
+spec "features/impls — a bound on an impl's target parameter" {
+    given "an impl whose target parameter is bounded" {
+        then "its body calls the parameter's members through the bound" {
+            shown(shapes() + "Box { v: P { n: 2 } }.said()") == "[p2]"
+        }
+        then "serves the built-in list of a bounded element" {
+            shown(shapes() + "[P { n: 1 }, P { n: 2 }].said()") == "p1,p2"
+        }
+        then "nests: a list of boxes of lists" {
+            shown(shapes() + "[Box { v: [P { n: 3 }] }].said()") == "[p3]"
+        }
+    }
+    given "a type whose argument meets the bound" {
+        then "meets a bounded fn's bound" {
+            shown(shapes() + "shown_as([P { n: 4 }])") == "p4"
+        }
+        then "boxes as the trait" {
+            shown(shapes() + "let d: dyn Sh = Box { v: P { n: 5 } }\nd.said()") == "[p5]"
+        }
+    }
+    given "a type whose argument misses the bound" {
+        then "a call of the impl's method names the bound" {
+            refused_with(
+                shapes() + "[1].said()",
+                "error[type.bound_unmet]: `List<int>` has `said` only where `int` implements `Sh`",
+            )
+        }
+        then "does not meet a bounded fn's bound" {
+            refused_with(shapes() + "shown_as([1])", "`List<int>` does not implement `Sh`")
+        }
+        then "is refused once" {
+            refusals(shapes() + "[1].said()") == 1
+        }
+    }
+    given "an impl in a dependency" {
+        then "serves the dependency's list of a bounded element in the program" {
+            answered(
+                provided(
+                    "use @x.c.{Sh, P}\n[P { n: 6 }].said()",
+                    "export trait Sh {\n    fn said() -> string\n}\nexport type P = { n: int }\nimpl Sh for P {\n    fn said() -> string { \"p\${self.n}\" }\n}\nimpl Sh for List<T: Sh> {\n    fn said() -> string { [x.said() for x in self].join(\",\") }\n}\n",
+                ),
+            ) == "p6"
+        }
+    }
+}

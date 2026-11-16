@@ -99,6 +99,9 @@ export type SyntaxArena = {
     @copied(stmt, wear_impl_tparams) impl_tparams: Cell<List<ImplTypeParams?>>,
     // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
     @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") impl_trait_args: Cell<List<List<TypeRef>>>,
+    // a trait impl's target parameters as written, each with its bound,
+    // by its statement — absent where no bound is written
+    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through param") impl_bounds: Cell<List<List<Param>>>,
     // a trait's own type parameters beside `Self`, by its statement
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
@@ -220,6 +223,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         component_insts: list_cell(),
         impl_tparams: list_cell(),
         impl_trait_args: list_cell(),
+        impl_bounds: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -1309,6 +1313,7 @@ impl SyntaxArena {
         self.component_insts.push(null)
         self.impl_tparams.push(null)
         self.impl_trait_args.push([])
+        self.impl_bounds.push([])
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -1580,6 +1585,15 @@ impl SyntaxArena {
     }
 
     fn trait_args_of(s: StmtId) -> List<TypeRef> { self.impl_trait_args.get()[s.index] }
+
+    /// A trait impl's target parameters, each with the bound written on
+    /// it — `impl Decode for List<T: Decode>` — part of what it declares.
+    fn mark_impl_bounds(s: StmtId, params: List<Param>) {
+        self.impl_bounds.set_at(s.index, params)
+        self.restamp_carrying(s, 200, [fp_list(self.param_fps(params))])
+    }
+
+    fn impl_bounds_of(s: StmtId) -> List<Param> { self.impl_bounds.get()[s.index] }
 
     /// A declaration an instance minted, joining its file's top level.
     fn hoist(s: StmtId) {

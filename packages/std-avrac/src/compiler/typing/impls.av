@@ -189,6 +189,10 @@ impl TypeCx {
         if target == null { return }
         let d = target!
         self.view.decls.record_target(self.decl_of(s), d)
+        self
+            .view
+            .decls
+            .record_bound_args(self.decl_of(s), [self.bound_typed(s, p.ty) for p in self.view.store.decl_tbounds(s)])
         // A METHOD THAT WRITES THROUGH `self` KEEPS ITS BOX. A flat record is a value in a
         // register with no identity to write through — but an impl whose methods only READ
         // (a DERIVED `Fingerprint`, say) never writes, and sealing on its ACCOUNT made a
@@ -402,7 +406,7 @@ impl TypeCx {
         let wanted = [self.view.decls.fn_name(m) ?? "" for m in members]
         // the impl is recorded FIRST: a member the signatory never
         // wrote is answered by the trait's default through it
-        self.view.decls.record_impl(target, tdecl)
+        self.view.decls.record_impl(target, tdecl, self.decl_of(s))
         let at = TraitAt { decl: tdecl, args: [self.impl_self_type(target)].concat(args) }
         for m in members { self.check_trait_member(s, of, target, tname, m, at, fns) }
         for f in fns {
