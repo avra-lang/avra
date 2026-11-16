@@ -17,6 +17,8 @@
 # `.avra-cache` under packages/ and its own machine store.
 # Then AN INFERRED ERROR FOLLOWS ITS REACH: in a package of its own, a fn a `?` reaches gains a
 # `fail` of a new type; the warm build must be the cold one, and taken back, the first cold product.
+# Then A LAW FOLLOWS ITS ITEM: in a package of its own, an impl's method renamed to a name an earlier
+# impl took; the warm refusal must be the cold one word for word, and taken back, the first cold product.
 # First, A FILE A BUILD READS AS DATA IS AN INPUT: a package whose consts read one
 # file through `provided` and another through `embed`; the first file edited, the
 # warm build must be the cold one, worked out again through that file's read and
@@ -27,6 +29,7 @@
 #   WITNESS_ONLY=embed runs the embedded file's edit alone; WITNESS_ONLY=rename the seat renamed
 #   twice; WITNESS_ONLY=infer the inferred error's alone; WITNESS_ONLY=check the instance check's edits;
 #   WITNESS_ONLY=derived one of three derived records' alone.
+#   WITNESS_ONLY=lawed a law's edit alone.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -162,6 +165,31 @@ derived_edit() {
     cmp -s "$tmp/derived.back" "$tmp/derived.base" || { echo "witness_program_edit: with a derived record's edit taken back the warm product is not the cold one" >&2; exit 1; }
     echo "witness_program_edit: a derived record's edit taken back — warm == cold"
 }
+# A law's edit, over a package of its own: an impl's method renamed to a name an earlier impl of its
+# type already took, so a law silent before refuses; the warm refusal must be the cold one, word for
+# word, and taken back, the first cold product.
+lawed_edit() {
+    pkg="$tmp/lawed"
+    mkdir -p "$pkg/src"
+    printf '[package]\nname = "lawed"\nversion = "0.0.1"\n' >"$pkg/avra.toml"
+    body() { printf 'type P = { n: int }\nimpl P {\n    fn a() -> int { self.n }\n}\nimpl P {\n    fn %s() -> int { self.n + 1 }\n}\nfn shown(p: P) -> int { p.a() }\nprintln("${shown(P { n: 1 })}")\n' "$1" >"$pkg/src/main.av"; }
+    made() { "$avra" build "$pkg" >"$tmp/log" 2>&1 || { echo "witness_program_edit: the lawed build failed:" >&2; tail -5 "$tmp/log" >&2; exit 1; }; unsigned_at "$pkg/src/main" "$1" ""; }
+    refused() { if "$avra" build "$pkg" >"$tmp/log" 2>&1; then echo "witness_program_edit: the lawed edit was not refused" >&2; exit 1; fi; grep -v '^warning' "$tmp/log" | sed "s|$pkg|<pkg>|g" >"$1"; }
+    afresh() { find "$pkg/.avra-cache" -mindepth 1 -delete 2>/dev/null || :; find "$AVRA_CACHE_DIR" -mindepth 1 -delete; }
+    body b
+    afresh
+    made "$tmp/lawed.base"
+    body a
+    AVRA_FOLD_CHECK=1 refused "$tmp/lawed.warm"
+    afresh
+    refused "$tmp/lawed.cold"
+    cmp -s "$tmp/lawed.warm" "$tmp/lawed.cold" || { echo "witness_program_edit: after a law's edit the warm refusal is not the cold one:" >&2; diff "$tmp/lawed.warm" "$tmp/lawed.cold" >&2; exit 1; }
+    echo "witness_program_edit: an item's edit a law refuses — warm == cold"
+    body b
+    AVRA_FOLD_CHECK=1 made "$tmp/lawed.back"
+    cmp -s "$tmp/lawed.back" "$tmp/lawed.base" || { echo "witness_program_edit: with a law's edit taken back the warm product is not the cold one" >&2; exit 1; }
+    echo "witness_program_edit: an item's edit a law refuses, taken back — warm == cold"
+}
 # THE PRODUCT AS COMPARED: the binary `$1` into the file `$2`. A whole binary: its
 # unsigned bytes. A layered one (AVRA_PROGRAM_MODE naming `dev` or
 # `link=layered`), whose bytes name the directories its layers stand in: the
@@ -247,6 +275,10 @@ fi
 if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " derived "; then
     derived_edit
     [ "${WITNESS_ONLY:-}" = derived ] && exit 0
+fi
+if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " lawed "; then
+    lawed_edit
+    [ "${WITNESS_ONLY:-}" = lawed ] && exit 0
 fi
 if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " composed "; then
     composed_edit

@@ -3,7 +3,7 @@
 //! store already lets many processes publish at once, so nothing is shared but the directory, and
 //! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
 //! didn't work ahead reaches the same ones by itself.
-use disk_store.{DiskStore, disk_store_at}
+use layered_store.{LayeredStore, program_store_at}
 use @std.io.{read_text, remove, this_process, write_text}
 use @std.time.{now_ms}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
@@ -42,7 +42,7 @@ export type WorkAhead<T, R> = {
 }
 
 /// A store and the engine over it.
-export type Worked = { store: DiskStore, engine: QueryEngine }
+export type Worked = { store: LayeredStore, engine: QueryEngine }
 
 /// The store at `directory` and an engine over it, every unknown item answered across processes
 /// first when there are enough to be worth it. With nothing to fork, the engine is the one that
@@ -52,7 +52,7 @@ export fn engine_worked_ahead<T, R>(
     definitions: List<QueryDefinition>,
     work: WorkAhead<T, R>,
 ) -> Worked {
-    let before = disk_store_at(directory)
+    let before = program_store_at(directory)
     let asking = query_engine(before, definitions)
     if work.timed { asking.time_queries() }
     asking.kept_times()?.opened("the frontier opened", TimedSide.Outside)
@@ -60,7 +60,7 @@ export fn engine_worked_ahead<T, R>(
     asking.kept_times()?.closed()
     if !forked_for<T, R>(before, asking, definitions, work) { return Worked { store: before, engine: asking } }
     asking.kept_times()?.opened("the work merged", TimedSide.Outside)
-    let after = disk_store_at(directory)
+    let after = program_store_at(directory)
     let engine = query_engine(after, definitions)
     let _ = after.merged()
     asking.kept_times()?.closed()
@@ -72,7 +72,7 @@ export fn engine_worked_ahead<T, R>(
 /// Answers every unknown item across processes, and says whether any process ran. A process that
 /// didn't finish costs only time: what it published stands, and the rest is answered here.
 fn forked_for<T, R>(
-    store: DiskStore,
+    store: LayeredStore,
     engine: QueryEngine,
     definitions: List<QueryDefinition>,
     work: WorkAhead<T, R>,
@@ -109,7 +109,7 @@ fn forked_for<T, R>(
 
 /// A forked process's whole life: answers its share, publishes, and leaves without tidying up.
 fn answered_and_gone<T, R>(
-    store: DiskStore,
+    store: LayeredStore,
     definitions: List<QueryDefinition>,
     share: List<T>,
     ask: fn(QueryEngine, T) -> R,

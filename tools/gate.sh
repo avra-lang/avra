@@ -9,7 +9,7 @@
 # exiting 0 on PASS, 1 on FAIL.
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
-#   sh tools/gate.sh <slice> [arg]      one slice; `idioms` takes the base sha its diff starts at
+#   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
 #
 # GATE_OLD_PATH=0 drops every row that compares against the old path (they read AVRA_PROGRAM=0);
 # when the old path goes, its default goes to 0 and those rows go with one line each.
@@ -30,13 +30,19 @@ slices() {
     cat <<'EOF'
 build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm, net on and off, 0 false refusals
 avrac-a    test packages/std-avrac — src/compiler
-avrac-b    test packages/std-avrac — everything but src/compiler
+avrac-b    test packages/std-avrac — src/features/[a-e]*
+avrac-c    test packages/std-avrac — src/features/[f-m]*
+avrac-d    test packages/std-avrac — src/features/[n-z]*, its own files, and every other dir of src/
 cli        test packages/cli, its failing names held to tools/gate/cli.names
 program    test packages/std-program and std-relation; make runtime-tests
-idioms     check --baseline tools/idioms.baseline on each package the diff from <base> touches; the cli's sound check
+idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
+idioms-cli    the same on cli
+idioms     the same on every other package the diff from <base> touches
+sound      AVRA_SOUND_CHECK=1 check packages/cli (old path), 0 `defect: in` lines
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http
-findings   tapes --findings on every package, 0 refusals; every package but the cli built, 0 program-layer false refusals
+findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
+findings-b the same on every other package, each built
 witness-a  witness_program_refusal; witness_program_doors
 witness-b  witness_program_runs, _ledger, _suites; witness_program_differential
 warnings   witness_program_warnings
@@ -89,8 +95,9 @@ judged() {
 # a row that compares against the old path: run only while the old path stands
 old_row() { [ "$OLD_PATH" = 1 ] || return 0; row "$@"; }
 
-# the stores of the packages named emptied, so the rows after read them cold
-cold() { for p in "$@"; do [ -d "packages/$p/.avra-cache" ] && find "packages/$p/.avra-cache" -delete; done; return 0; }
+# every store under the packages named emptied — a nested package's and a program test's too — so the
+# rows after read them cold
+cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec find {} -delete \; ; done; return 0; }
 
 # build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made —
 # from the seed where none stands, else two generations from the one that does
@@ -133,7 +140,16 @@ avrac() {
     tested std-avrac "$@"
 }
 slice_avrac_a() { avrac packages/std-avrac/src/compiler; }
-slice_avrac_b() { avrac $(find packages/std-avrac/src -mindepth 1 -maxdepth 1 ! -name compiler | sort); }
+slice_avrac_b() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[a-e]*' | sort); }
+slice_avrac_c() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[f-m]*' | sort); }
+slice_avrac_d() {
+    avrac $(
+        {
+            find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 \( -name '*.av' -o -type d -name '[n-z]*' \)
+            find packages/std-avrac/src -mindepth 1 -maxdepth 1 ! -name compiler ! -name features ! -name '.*'
+        } | sort
+    )
+}
 
 # `test` over `$2…` as the row `$1`, judged by the NAMES that fail: each must be one
 # tools/gate/<package>.names pins (a case a sandbox's environment fails — root writes any directory, no
@@ -163,15 +179,19 @@ slice_program() {
     row runtime-tests make runtime-tests
 }
 
-slice_idioms() {
-    base=${1:-}
-    [ -n "$base" ] || { echo "gate: idioms needs the base sha its diff starts at" >&2; exit 2; }
-    touched=$(git diff --name-only "$base" HEAD -- packages | cut -d/ -f2 | sort -u)
-    for p in $touched; do
+# each package the diff from the base sha `$1` touches, whose name the pattern `$3` matches (`$2` keep)
+# or doesn't (`$2` drop), checked against the baseline
+idioms_on() {
+    [ -n "${1:-}" ] || { echo "gate: $slice needs the base sha its diff starts at" >&2; exit 2; }
+    if [ "$2" = drop ]; then pick=-vxE; else pick=-xE; fi
+    for p in $(git diff --name-only "$1" HEAD -- packages | cut -d/ -f2 | sort -u | grep $pick "$3"); do
         [ -d "packages/$p/src" ] || continue
         cold "$p"
         row "idioms-$p" build/avra check "packages/$p" --baseline tools/idioms.baseline
     done
+}
+
+slice_sound() {
     old_row sound-check-run env AVRA_PROGRAM=0 AVRA_SOUND_CHECK=1 build/avra check packages/cli
     if [ "$OLD_PATH" = 1 ]; then
         judged sound-check-defects "$(grep -c 'defect: in' "$out/sound-check-run.log")"
@@ -182,19 +202,22 @@ doors() { for p in "$@"; do cold "$p"; tested "test-$p" "packages/$p"; done; }
 slice_doors_a() { doors $DOORS_A; }
 slice_doors_b() { doors $DOORS_B; }
 
-slice_findings() {
-    for d in packages/*/; do
-        p=$(basename "$d")
-        [ -d "$d/src" ] || continue
+# each package named: tapes --findings with no refusal; built — a library stops at "declares no entry
+# point", which is no refusal — with no program-layer false refusal; the cli's builds are the build slice's
+findings_on() {
+    for p in "$@"; do
         cold "$p"
         row "findings-$p" build/avra tapes "$root/packages/$p" --findings
         judged "refusals-$p" "$(grep -c '^error\[' "$out/findings-$p.log")"
-        # a library's build stops at "declares no entry point", which is no refusal; the cli's builds
-        # are the build slice's
         [ "$p" != cli ] || continue
         sh tools/bounded.sh "$ROW_SECS" build/avra build "packages/$p" >"$out/build-$p.log" 2>&1
         judged "false-refusals-$p" "$(grep -c 'program-layer false refusal' "$out/build-$p.log")"
     done
+}
+HEAVY_FINDINGS="std-avrac cli"
+slice_findings_a() { findings_on $HEAVY_FINDINGS; }
+slice_findings_b() {
+    findings_on $(for d in packages/*/src; do basename "$(dirname "$d")"; done | grep -vxE "$(echo $HEAVY_FINDINGS | tr ' ' '|')")
 }
 
 slice_witness_a() {
@@ -218,12 +241,18 @@ if compiler; then
         build) slice_build ;;
         avrac-a) slice_avrac_a ;;
         avrac-b) slice_avrac_b ;;
+        avrac-c) slice_avrac_c ;;
+        avrac-d) slice_avrac_d ;;
         cli) slice_cli ;;
         program) slice_program ;;
-        idioms) slice_idioms "$@" ;;
+        idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
+        idioms-cli) idioms_on "${1:-}" keep cli ;;
+        idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
+        sound) slice_sound ;;
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
-        findings) slice_findings ;;
+        findings-a) slice_findings_a ;;
+        findings-b) slice_findings_b ;;
         witness-a) slice_witness_a ;;
         witness-b) slice_witness_b ;;
         warnings) slice_warnings ;;

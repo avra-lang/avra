@@ -391,12 +391,6 @@ wasm-routes-size:
 wasm-size-accept:
 	sh tools/wasm-size-guard.sh --accept
 
-# THE OLD PATH, NAMED WHERE IT IS STILL THE PROVED ONE: every wasm target but the board's — a page, a
-# footprint — takes the old path by the one switch (`AVRA_PROGRAM=0`, packages/cli/src/
-# commands/shared.av `program_door`) until its witness holds on the program layer's wasm build.
-OLD_PATH_TARGETS := wasm-refuses
-$(OLD_PATH_TARGETS): export AVRA_PROGRAM := 0
-
 # THE ARCHIVE'S LAW: never carries a fiber or a core.
 wasm-archive:
 	sh tools/wasm-archive.sh

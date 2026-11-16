@@ -66,6 +66,7 @@ use compiler.lower.code_hash.{
     values_node,
 }
 use compiler.memory.{memory, memory_late}
+use compiler.static_symbols.{module_spelled}
 use compiler.backend.{Owned, WasmCall, body_lines, in_symbol_order, program_closed, program_opens}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{MovedRead, QueryDefinition, QueryEngine}
@@ -386,8 +387,9 @@ fn in_name_order(w: Walked) -> Walked {
     }
 }
 
-/// The calls the program `file` runs makes: each reached body, the entry first, beside each name it
-/// was placed naming — what a target that may lack a body for one reads. None for a program not made.
+/// The calls the program `file` runs makes: the entry's, then each reached body's in the order a walk
+/// from the entry reaches it, beside each name it was placed naming — what a target that may lack a
+/// body for one reads, its first answer the one the old path names. None for a program not made.
 @derive(Saved)
 export type ProgramCalls = { calls: List<WasmCall> }
 
@@ -401,10 +403,30 @@ export fn program_calls(engine: QueryEngine, file: SourceFileAddress) -> Program
     let entry? = entry_lowered(engine, file) else { return none }
     let survey = task_survey(engine)
     let root = entry.placed_keeping(survey.kept(entry, scheduled_by(survey, entry)))
+    let named = [some_list(placed_body(engine, u.called, u.kept)).map(called_in_order).first() ?? [] for u in reached.units]
+    mut at_symbol: Map<string, int> = {}
+    for i, u in reached.units { at_symbol.set(u.called.symbol, i) }
+    mut calls = [WasmCall { caller: ENTRY, symbol: n } for n in called_in_order(root)]
+    mut queue = called_in_order(root)
+    mut met: Map<string, bool> = {}
+    mut at = 0
+    while at < queue.length {
+        let i = at_symbol.get(queue[at])
+        at = at + 1
+        if i == null || met.has(queue[at - 1]) { continue }
+        let unit = reached.units[i!].called
+        met.set(unit.symbol, true)
+        let caller = spoken_fn(unit)
+        // LICENSED loops.push_loop: the walk's own worklist grows while it is walked; a `concat` copies it per body
+        for n in named[i!] {
+            calls.push(WasmCall { caller: caller, symbol: n })
+            queue.push(n)
+        }
+    }
     ProgramCalls {
-        calls: [WasmCall { caller: ENTRY, symbol: n } for n in lowered_names(root)]
+        calls: calls
             .concat(
-                [WasmCall { caller: u.called.symbol, symbol: n } for u in reached.units for n in placed_names(engine, u.called, u.kept)],
+                [WasmCall { caller: spoken_fn(u.called), symbol: n } for i, u in reached.units if !met.has(u.called.symbol) for n in named[i]],
             ),
     }
 }
@@ -631,6 +653,17 @@ fn placed_body(engine: QueryEngine, c: CalledFn, kept: TestsKept) -> LoweredFn? 
     let f? = reached_body(engine, c) else { return null }
     f.placed_keeping(kept)
 }
+
+/// What a lowered body and its lambdas call, each once, in the order their instructions call them.
+fn called_in_order(f: LoweredFn) -> List<string> {
+    distinct(
+        [n! for i in f.ins.concat(flatten([l.ins for l in f.lifts])) for n in [body_symbol(i), hosted_symbol(i)] if n != null],
+    )
+}
+
+/// A reached fn as a build's words name it: its module, its owner where it has one, and its name —
+/// `@std.sqlite.opened`.
+fn spoken_fn(c: CalledFn) -> string { [module_spelled(c.file)].concat(some_list(c.owner)).concat([c.name]).join(".") }
 
 /// What a lowered body, its lambdas and its data name, in name order.
 fn lowered_names(f: LoweredFn) -> List<string> {
@@ -1011,13 +1044,13 @@ export fn program_code_shape(engine: QueryEngine, file: SourceFileAddress) -> Pr
 
 /// The name of every row a body of `file`'s program may name: the runtime's, then each its externs
 /// answer by; absent where the program isn't made. Kept apart from the shape, so a fold that wants
-/// only these reads no body of it.
+/// only these reads no body of it; the shape's externs are read where they lie.
 @query
 fn program_row_names(engine: QueryEngine, file: SourceFileAddress) -> List<string>? {
-    match program_code_shape(engine, file) {
-        .Program(s) -> [row.name for row in rt_sigs().concat(extern_rows(engine, s.externs))],
-        .Unmade(_why, _at) -> null,
-    }
+    let reach = program_code_shape_saved(engine, file)
+    if reach.variant_within(2) != 0 { return null }
+    let externs = ReachedProgram.externs_in(reach.record_at(0)!)
+    [row.name for row in rt_sigs().concat(extern_rows(engine, externs))]
 }
 
 /// THE PROGRAM'S CODE HASHES: each code hash `file`'s program calls, answered over the code graph its

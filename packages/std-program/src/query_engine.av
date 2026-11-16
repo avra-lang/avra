@@ -8,6 +8,7 @@ use @std.io.{env, stamp}
 use @std.text.{from_codepoints, parse_int}
 use address.{SourceFileAddress}
 use frontier.{Frontier, FrontierLearned, HeldEntry}
+use package_sets.{NO_NAMES, NameSets, name_sets}
 use input_stamps.{InputStamp, places_now}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
@@ -25,8 +26,12 @@ use answer_record.{
     keyed_question,
     QUESTION_SHAPE,
     question,
+    hashes_in,
     words_of,
 }
+
+/// The package named for a path no store places in one: no store shares it.
+const UNPLACED: string = "?"
 
 /// How a query runs.
 export type QueryDefinition = {
@@ -103,6 +108,22 @@ export trait AnswerStore {
 
     /// Keeps `stamps` as every input this store holds by a stamp, in place of those it held.
     fn keep_input_stamps(stamps: List<InputStamp>)
+
+    /// The package whose sources hold `path`, absent where the store knows no package there.
+    fn package_at(_path: string) -> string? { null }
+
+    /// Whether the package `name` is one this store shares with every store beside it: none,
+    /// unless the store is layered over one that's shared.
+    fn shares_package(_name: string) -> bool { false }
+
+    /// Keeps a record of a SHARED question: one whose every input lies in packages this store shares.
+    fn keep_shared_record(asked: Question, record: AnswerRecord) { self.keep_record(asked, record) }
+
+    /// Keeps a shared question's answer's bytes.
+    fn keep_shared_answer_bytes(answer: ContentHash, bytes: Bytes) { self.keep_answer_bytes(answer, bytes) }
+
+    /// Whether an answer's bytes lie where a shared question's answer is kept.
+    fn shared_answer_kept(answer: ContentHash) -> bool { self.answer_bytes(answer) != null }
 }
 
 /// A run of a query: its answer's bytes and every read it made.
@@ -184,6 +205,13 @@ export type QueryEngine = {
     stamps_kept: Cell<HashKeyedTable<InputStamp>?>,
     /// The inputs this process read under one stamp, or found held by one, by question.
     stamps_seen: HashKeyedTable<InputStamp>,
+    /// THE PACKAGES EACH QUESTION SETTLED HERE READ, as a set's id in `sets`: an input's, the package
+    /// holding each path it read; any other's, every package its reads read. Known by what was read,
+    /// never by who asked first or which way it settled.
+    read_sets: HashKeyedTable<int>,
+    sets: NameSets,
+    /// Whether each set's every package is one the store shares, by the set's id.
+    sets_shared: Cell<Map<string, bool>>,
     /// Which engine of this process it is: no two engines a process makes share one. What a table
     /// a caller keeps per engine, outside it, is keyed by.
     serial: int,
@@ -210,6 +238,8 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
     let times: Cell<QueryTimes?> = Cell.new(null)
     let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
     let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
+    let read_sets: HashKeyedTable<int> = hash_keyed_table()
+    let sets_shared: Cell<Map<string, bool>> = Cell.new({})
     let engine = QueryEngine {
         store: store,
         definitions: Cell.new(by_name),
@@ -225,6 +255,9 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         times: times,
         stamps_kept: stamps_kept,
         stamps_seen: stamps_seen,
+        read_sets: read_sets,
+        sets: name_sets(),
+        sets_shared: sets_shared,
         serial: next_serial(),
     }
     for definition in definitions {
@@ -291,7 +324,9 @@ impl QueryEngine {
             .store
             .records_of(asked.known_as)
             .find((record) -> self.stands_now(record)) else { return null }
-        self.learned(asked, standing.answer, standing.read_question_words())
+        let reads = standing.read_question_words()
+        self.read_sets.put(asked.known_as, self.set_of_reads(reads))
+        self.learned(asked, standing.answer, reads)
     }
 
     /// Whether every read of a record still sees what it saw.
@@ -556,6 +591,7 @@ impl QueryEngine {
             kept.places != places_now() ||
             stamp(kept.path) != kept.stamp { return false }
         self.stamps_seen.put(question, kept)
+        self.read_sets.put(question, self.set_at_path(kept.path))
         true
     }
 
@@ -614,20 +650,91 @@ impl QueryEngine {
         let run = self.checked_fold(asked, self.folded_run(asked)) ?? self.full_run(asked)
         let bytes = run.bytes
         let answer = content_hash(bytes)
-        if self.store.answer_bytes(answer) == null { self.keep_or_hold(asked, answer, bytes) }
         let recorded = run.reads.values()
+        let reads = words_of([r.question for r in recorded])
+        let read = if self.definition_of(asked).is_input { self.read_sets.get(asked.known_as) ?? NO_NAMES } else { self.set_of_reads(reads) }
+        self.read_sets.put(asked.known_as, read)
+        let is_shared = self.set_shared(read)
+        let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_bytes(answer) != null }
+        if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
         let record = answer_record(answer, recorded)
-        if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.store.keep_record(asked, record) }
-        self.learned(asked, answer, words_of([r.question for r in recorded]))
+        if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
+        self.learned(asked, answer, reads)
     }
 
     /// An input's bytes are read afresh in every process, so only this process holds them.
-    fn keep_or_hold(asked: Question, answer: ContentHash, bytes: Bytes) {
-        if self.definition_of(asked).is_input {
-            self.store.hold_answer_bytes(answer, bytes)
-        } else {
-            self.store.keep_answer_bytes(answer, bytes)
+    fn keep_or_hold(asked: Question, answer: ContentHash, bytes: Bytes, is_shared: bool) {
+        when {
+            self.definition_of(asked).is_input -> self.store.hold_answer_bytes(answer, bytes)
+            is_shared -> self.store.keep_shared_answer_bytes(answer, bytes)
+            _ -> self.store.keep_answer_bytes(answer, bytes)
         }
+    }
+
+    /// `record` kept for `asked`, beside the shared store where the question is shared.
+    fn record_kept(asked: Question, record: AnswerRecord, is_shared: bool) {
+        if is_shared { self.store.keep_shared_record(asked, record) } else { self.store.keep_record(asked, record) }
+    }
+
+    /// The set of packages every question `reads`' words name read.
+    fn set_of_reads(reads: List<int>) -> int { hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q))) }
+
+    /// The set of packages the question known as `question` read: as settled here, else as it stands
+    /// in the frontier, read by read; a question this process can't tell read a package nobody shares.
+    fn read_set_of(question: ContentHash) -> int {
+        let known = self.read_sets.get(question)
+        if known != null { return known! }
+        let open? = self.frontier_open() else { return self.unplaced() }
+        let at? = open.frontier.place_of(question) else { return self.unplaced() }
+        let found = self.read_set_at(open.frontier, at)
+        self.read_sets.put(question, found)
+        found
+    }
+
+    /// The set of packages the frontier's answer at `at` read: an input's, the package holding the
+    /// path its stamp names; any other's, every package its places read.
+    fn read_set_at(f: Frontier, at: int) -> int {
+        if f.input_at(at) {
+            let kept? = self.kept_stamps().get(f.question_at(at)) else { return self.unplaced() }
+            return self.set_at_path(kept.path)
+        }
+        let places? = f.reads_at(at) else { return self.unplaced() }
+        places.fold(NO_NAMES, (set, r) -> self.sets.union(set, self.read_set_of(f.question_at(r))))
+    }
+
+    /// The set holding the package whose sources hold `path`.
+    fn set_at_path(path: string) -> int { self.sets.of([self.store.package_at(path) ?? UNPLACED]) }
+
+    /// The set holding only the package no store knows.
+    fn unplaced() -> int { self.sets.of([UNPLACED]) }
+
+    /// Whether every package of the set `id` is one the store shares.
+    fn set_shared(id: int) -> bool {
+        let known = self.sets_shared.get().get("${id}")
+        if known != null { return known! }
+        let shared = self.sets.members_of(id).all((name) -> self.store.shares_package(name))
+        self.sets_shared.put("${id}", shared)
+        shared
+    }
+
+    /// The packages the question known as `question` read, sorted: what decides which store keeps it
+    /// and which objects may be shared. Absent for a question this process hasn't settled.
+    fn packages_read(question: ContentHash) -> List<string>? {
+        let id? = self.read_sets.get(question) else { return null }
+        self.sets.members_of(id)
+    }
+
+    /// The input being answered read the path `path`: the package holding it joins what it read.
+    fn input_read_at(path: string) {
+        let asker? = self.open_questions.get().last() else { return }
+        self
+            .read_sets
+            .put(
+                asker.question,
+                self
+                    .sets
+                    .union(self.read_sets.get(asker.question) ?? NO_NAMES, self.set_at_path(path)),
+            )
     }
 
     /// The query's answer from its body, with every question it asks recorded.
@@ -816,6 +923,7 @@ impl QueryEngine {
 /// `read`'s answer, read from the file or directory at `path` for the input `engine` is answering:
 /// held by the path's stamp where it wears one stamp before the read and the same after it.
 export fn read_stamped<T>(engine: QueryEngine, path: string, read: fn() -> T) -> T {
+    engine.input_read_at(path)
     let before = stamp(path)
     let answer = read()
     engine.read_under(path, before)

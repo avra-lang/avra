@@ -33,6 +33,7 @@ use @std.avrac.compiler.{
     program_warned,
 }
 use @std.avrac.compiler.host.{Manifest, library_stem, read_manifest}
+use @std.avrac.compiler.store.{machine_cache}
 use @std.avrac.diagnostics.{Diag, SourceFile, loc_at, new_source_file, render, rendered_among}
 use @std.avrac.compiler.hosts.{host_fn_owed_diag}
 use @std.errors.{Loc}
@@ -236,7 +237,14 @@ use @std.process.{
 use @std.time.{now_ns, secs}
 use @std.program.defect.{defect}
 use @std.program.address.{SourceFileAddress}
-use @std.program.disk_store.{DiskStore, disk_store_at}
+use @std.program.layered_store.{
+    LayeredStore,
+    MachineLayer,
+    PackagePlace,
+    program_store_at,
+    use_machine_store,
+    use_package_places,
+}
 use @std.program.query_engine.{QueryEngine, key_reader, query_engine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.answer_record.{Question}
@@ -258,7 +266,7 @@ impl Runnable for TapesCmd {
         let root = if args.has_flag("program_runs") { package_holding(argued) ?? argued } else { argued }
         let disk? = disk_at(root, args.option("only") ?? "") else { return std_unfound() }
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
-        let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
+        let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
         if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
         if args.option("share") != "" { return share_said(store, engine, disk, args.option("share")) }
@@ -275,6 +283,49 @@ impl Runnable for TapesCmd {
 /// the source world set to it; absent where no std stands beside this compiler.
 fn disk_at(root: string, only: string) -> Disk? { worlded(root, only, "") }
 
+/// Where each package a build reads stands: the toolchain's std packages, served by the machine's
+/// store; each path dependency, a std package pinned by one included, and the package at `root`,
+/// which are the project's own wherever they lie.
+fn package_places(root: string, name: string, std: string, deps: Map<string, string>) -> List<
+    PackagePlace,
+> {
+    let pinned = [PackagePlace { name: key, root: dir, shared: false } for key, dir in deps]
+    let std_places = [PackagePlace {
+        name: "${STD}${dir.substring(4, dir.length)}",
+        root: joined_path(std, dir),
+        shared: true,
+    } for dir in names_at(std) ?? [] if dir.starts_with("std-") && !deps.has("${STD}${dir.substring(4, dir.length)}")]
+    let own = if std_places.any(it.root == root) { [] } else { [PackagePlace { name: name, root: root, shared: false }] }
+    own.concat(pinned).concat(std_places)
+}
+
+/// The machine's store of what every package this binary builds shares, under
+/// `AVRA_MACHINE_STORE=1` (`AVRA_MACHINE_STORE_DIR` places it).
+fn machine_layer() -> MachineLayer? {
+    // LICENSED input.debug_flag: whether answers are shared across packages decides where they're kept, never what they are
+    if env("AVRA_MACHINE_STORE") != "1" { return null }
+    let directory? = machine_store_dir() else { return null }
+    let print? = compiler_print() else { return null }
+    MachineLayer { directory: directory, print: print }
+}
+
+/// Where the machine's store stands: `AVRA_MACHINE_STORE_DIR`, else `tapes` in the machine's cache.
+fn machine_store_dir() -> string? {
+    // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
+    let placed = env("AVRA_MACHINE_STORE_DIR")
+    if placed != null { return placed }
+    let cache? = machine_cache() else { return null }
+    joined_path(cache, "tapes")
+}
+
+/// What tells this compiler binary from any other: its file's stamp, which a binary written anew
+/// never keeps; absent where it can't be taken.
+fn compiler_print() -> string? {
+    let self_at? = own_binary() else { return null }
+    let taken? = stamp(self_at) else { return null }
+    "b${taken}".replace("-", "n")
+}
+
 /// The lone source file at `path`, standing in no package, as the program layer reads it: a package
 /// of that one file, its sources being it alone; absent where no std stands beside this compiler.
 fn lone_disk_at(path: string) -> Disk? { worlded(dir_of(path), "", file_name(path)) }
@@ -287,6 +338,8 @@ fn worlded(root: string, only: string, lone: string) -> Disk? {
     mut deps: Map<string, string> = {}
     mut admitted = NOTHING_ADMITTED
     if lone.is_empty() { rows_admitted(root, true, [home.name], home, deps, admitted) }
+    use_package_places(package_places(root, home.name, std, deps))
+    use_machine_store(machine_layer())
     let disk = Disk {
         root: root,
         name: home.name,
@@ -602,7 +655,7 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
 }
 
 /// The engine's frontier and its store, kept for the next build to read.
-fn store_kept(engine: QueryEngine, store: DiskStore) {
+fn store_kept(engine: QueryEngine, store: LayeredStore) {
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
     let _ = phased(
         engine,
@@ -1479,7 +1532,7 @@ fn first_asked(engine: QueryEngine, disk: Disk, asked: string) -> int {
 
 /// The share `asked` names, as `<core>/<of>`, lowered here as that process would: 0, or 1 when it
 /// names none.
-fn share_said(store: DiskStore, engine: QueryEngine, disk: Disk, asked: string) -> int {
+fn share_said(store: LayeredStore, engine: QueryEngine, disk: Disk, asked: string) -> int {
     let words = asked.split("/")
     let core? = parse_int(words.first() ?? "") else { return unnamed_share(asked) }
     let of? = parse_int(words.last() ?? "") else { return unnamed_share(asked) }
@@ -2732,7 +2785,7 @@ fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool, all_made:
             continue
         }
         let nested? = disk_at(root, "") else { return std_unfound() }
-        let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
+        let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
         let inner = query_engine(store, avra_fact_definitions())
         tally = ran_in(
             inner,
@@ -2802,7 +2855,7 @@ fn ran_in(
             wrong.push("${label}: ${said}")
             lines.push("${label}: ${said}")
             asking = query_engine(
-                disk_store_at(joined_path(disk.root, ".avra-cache/tapes")),
+                program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
                 avra_fact_definitions(),
             )
             continue
@@ -2931,7 +2984,7 @@ export fn program_tested(paths: List<string>) -> int {
     mut suites: List<SuiteRead> = []
     for r in roots {
         let disk? = disk_at(r, "") else { return std_unfound() }
-        let store = disk_store_at(joined_path(r, ".avra-cache/tapes"))
+        let store = program_store_at(joined_path(r, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
         let refused = manifests_door(engine, disk)
         if refused != null { return refused! }
@@ -3023,7 +3076,7 @@ once fn compiler_agreeing() -> string { digest_of_binary(own_binary() ?? "") ?? 
 
 /// One suite a test run proves: its package as the program layer reads it, the store and engine it
 /// is read through, the files whose specs it holds and its program tests.
-type SuiteRead = { disk: Disk, store: DiskStore, engine: QueryEngine, specs: List<SourceFileAddress>, tests: List<ProgramTest> }
+type SuiteRead = { disk: Disk, store: LayeredStore, engine: QueryEngine, specs: List<SourceFileAddress>, tests: List<ProgramTest> }
 
 /// The first of `children` — program tests run as a child, each proved by how it ends — that ends
 /// otherwise than its marker says, in either engine, said; absent when every one holds. Each is made
@@ -3063,7 +3116,7 @@ fn children_wrong(engine: QueryEngine, disk: Disk, children: List<RefusesCall>) 
 export fn program_refuse_evaluated(root: string, path: string) -> int {
     let disk? = disk_at(root, "") else { return std_unfound() }
     let engine = query_engine(
-        disk_store_at(joined_path(root, ".avra-cache/tapes")),
+        program_store_at(joined_path(root, ".avra-cache/tapes")),
         avra_fact_definitions(),
     )
     let lowered = match made_program(
