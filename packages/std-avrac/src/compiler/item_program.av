@@ -1342,6 +1342,20 @@ export fn program_fact_definitions() -> List<QueryDefinition> { definitions_of(l
 /// The tests a program whose entry is `entry` places: the tick too where it links a scheduler.
 export fn scheduled_by(survey: TaskSurvey, entry: LoweredFn) -> TaskChecks { if survey.links_from(entry) { TaskChecks.Scheduled } else { TaskChecks.Tested } }
 
+/// Whether what `root` reaches holds a collect gathering `in closure`: a value made of it is each
+/// program's own, read over that program's closure.
+export fn reaches_gathered(survey: TaskSurvey, root: LoweredFn) -> bool {
+    match walked_from(
+        survey,
+        survey.placed(root, TaskChecks.Surveyed),
+        TaskChecks.Surveyed,
+        null,
+        true,
+        null,
+        true,
+    ) { .Met(w) -> w.met.any(it.called.gathers_closure), .Stopped(_why, _at) -> false }
+}
+
 /// The program `root` and each body it reaches make, the memory pass applied: `root` the entry,
 /// known as `name` with `seats` its first registers, each body taken from `survey` with the task
 /// tests `checks` names placed. Each body not lowered yet is filed in `missed` where it's given, and
@@ -1438,7 +1452,9 @@ fn walked_from(
 ) -> Walking {
     walked(
         survey,
-        every_callee_of(root).concat(hosted_in(survey.engine, home, program)),
+        every_callee_of(root)
+            .concat(hosted_in(survey.engine, home, program))
+            .concat(package_hosted(survey.engine, program)),
         {},
         held_of(root.wrappers),
         checks,

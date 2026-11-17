@@ -82,7 +82,7 @@ S() { # S <program> <want output>: built and run natively, then run by the evalu
     if [ $st -ne 0 ]; then fail "$1: did not build (status $st)"; tail -5 $B/err; return; fi
     got=$($B/$1/src/main 2>&1)
     [ "$got" = "$2" ] || fail "program $1 printed '$got' natively, wanted '$2'"
-    ran=$($AVRA run $B/$1 2>&1 | grep -v '^watch:')
+    ran=$($AVRA run --eval $B/$1 2>&1 | grep -v '^watch:')
     [ "$ran" = "$2" ] || fail "program $1 printed '$ran' evaluated, wanted '$2'"
 }
 S b "[knob] 1 10 101";              S a "[] 0 0"

@@ -379,21 +379,37 @@ fn reads_itself(engine: QueryEngine, file: SourceFileAddress, name: string) -> b
 /// The consts the value of the const `file` declares as `name`, written with no type, reads on its
 /// way back to it, itself first; absent where it never comes back.
 export fn const_loop(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<DeclaredAt>? {
-    const_reach(engine, declared_place(file, name), declared_place(file, name), [])
+    const_reach(engine, declared_place(file, name), declared_place(file, name), [], false)
 }
 
-/// The unwritten consts the value of the unwritten const `here` reads on its way to `home`, `here`
-/// first, through none among `seen`; absent where it never gets there.
-fn const_reach(engine: QueryEngine, here: DeclaredAt, home: DeclaredAt, seen: List<DeclaredAt>) -> List<
+/// THE CONSTS WHOSE VALUES READ `name`'s BACK TO IT, whatever their types say: `name` first, then each
+/// its value reads on the way; absent where its value never reads itself. Such a value has nothing to
+/// settle from but itself.
+export fn const_value_loop(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
     DeclaredAt,
 >? {
-    if binding_type(engine, here.file, here.name) != null || seen.any((x) -> same_declared(x, here)) { return null }
+    const_reach(engine, declared_place(file, name), declared_place(file, name), [], true)
+}
+
+/// The consts the value of the const `here` reads on its way to `home`, `here` first, through none
+/// among `seen` — and, unless `through_written`, through none whose type is written; absent where it
+/// never gets there.
+fn const_reach(
+    engine: QueryEngine,
+    here: DeclaredAt,
+    home: DeclaredAt,
+    seen: List<DeclaredAt>,
+    through_written: bool,
+) -> List<DeclaredAt>? {
+    if !through_written && binding_type(engine, here.file, here.name) != null ||
+        seen.any((x) -> same_declared(x, here)) { return null }
     let item? = declaring_item(engine, here.file, here.name, ItemKind.Const) else { return null }
     let value? = [v! for s in item.stmts if item.store.let_name(s) == here.name for v in [item.store.const_value(s)] if v != null]
         .first() else { return null }
     let read = [DeclaredAt { file: d!.file, name: d!.name } for k in under(item.store, At.Expr(value)) for n in [read_name(item.store, k)] if n != null for d in [resolved(engine, here.file, Space.Value, n!).named()] if d != null && d!.kind == ItemKind.Const]
     if read.any((d) -> same_declared(d, home)) { return [here] }
-    let rest? = read.find_map((d) -> const_reach(engine, d, home, seen.concat([here]))) else { return null }
+    let rest? = read
+        .find_map((d) -> const_reach(engine, d, home, seen.concat([here]), through_written)) else { return null }
     [here].concat(rest)
 }
 

@@ -51,30 +51,30 @@ fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUn
     if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
     let text = source_text(engine, file) ?? ""
     ItemUngiven {
-        rows: flatten(
-            [body_ungiven(engine, file, text, b) for b in item_signed_bodies(engine, file, at, item)],
-        ),
+        rows: flatten([body_ungiven(engine, text, b) for b in item_signed_bodies(engine, file, at, item)]),
     }
 }
 
-/// Each body the written item `at` of `file` declares, signed, beside the store its nodes stand in:
-/// each fn's, then each method's and static's an impl there writes that declares no type
-/// parameters of its own.
+/// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
+/// fn's, then each method's and static's an impl there writes that declares no type parameters of
+/// its own.
 fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
-    SignedBody,
+    CheckedBody,
 > {
-    let fns = [b! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
+    let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     fns
         .concat(
-            [m!.signed for a in impls_at(engine, file, at) for s in impl_fns(item, a) if item.store.fn_parts(s)!.tparams.is_empty() for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null],
+            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls_at(engine, file, at) for s in impl_fns(item, a) if item.store.fn_parts(s)!.tparams.is_empty() for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
         )
 }
 
-/// Each method call in the body `signed` that its type parameter's bound doesn't give.
-fn body_ungiven(engine: QueryEngine, file: SourceFileAddress, text: string, signed: SignedBody) -> List<
-    UngivenAt,
-> {
-    let typed = kept_body(body_checked(engine, file, signed, false))
+/// A body an item declares, signed, beside its typing.
+type CheckedBody = { signed: SignedBody, typed: TypedBody }
+
+/// Each method call in the body `b` that its type parameter's bound doesn't give.
+fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<UngivenAt> {
+    let signed = b.signed
+    let typed = b.typed
     let store = signed.item.store
     let own = [p.name.of for p in store.fn_parts(signed.stmt)?.tparams ?? []]
     [r! for k in 0..typed.types.length for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]

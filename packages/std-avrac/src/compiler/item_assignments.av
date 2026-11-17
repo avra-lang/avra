@@ -1,7 +1,8 @@
 //! WHERE AN ASSIGNMENT LANDS ON NO PLACE: its target is no name, field or index, or the name it
 //! replaces whole binds what is never written — a plain `let`, a seat that isn't `mut`, a `mut` seat
 //! (written along a path, never replaced), the receiver, a pattern's bind, a pairing loop's index, a
-//! capture, a const, a fn. Read off each body's names as its typing resolved them, judged as the old
+//! capture, a const, a fn. Read off each body's names as its surface typing resolved them, over the
+//! store it was read into — an assignment is a statement its source writes — judged as the old
 //! path's assignment rule judges a whole root; a path under a root waits for its fields there, and is
 //! left alone here.
 use core.{
@@ -49,9 +50,9 @@ enum Unplaced {
     Fn
 }
 
-/// A body whose assignments are judged: elaborated, and its seats' marks by their index; the node
-/// range of it the item writes.
-type AssignedBody = { body: ElaboratedBody, signed: SignedBody, lo: int, hi: int }
+/// A body whose assignments are judged: the store it was read into, its root, the names its typing
+/// read, and its seats' marks by their index; the node range of it the item writes.
+type AssignedBody = { store: SyntaxArena, root: ExprId, reads: List<NameRead>, signed: SignedBody, lo: int, hi: int }
 
 /// Every assignment of the written item `at` of `file` that lands on no place.
 fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
@@ -66,28 +67,39 @@ fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found
 fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     AssignedBody,
 > {
-    let fns = [whole(engine, file, sb! with { typed: typed_fn(engine, file, p!.name) }) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
-    let methods = [whole(engine, file, m!.signed with { typed: method_body_typed(engine, a, name, statics) }) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
+    let fns = [whole(sb! with { typed: typed_fn(engine, file, p!.name) }) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
+    let methods = [whole(m!.signed with { typed: method_body_typed(engine, a, name, statics) }) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
     fns.concat(methods).concat(entry_share(engine, file, at))
 }
 
-/// A signed body, elaborated, all of it judged.
-fn whole(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> AssignedBody {
-    let body = elaborated(engine, file, signed)
-    AssignedBody { body: body, signed: signed, lo: 0, hi: body.store.expr_count() }
+/// A signed body under the typing its query keeps, all of it judged.
+fn whole(signed: SignedBody) -> AssignedBody {
+    let store = signed.item.store
+    AssignedBody {
+        store: store,
+        root: signed.body,
+        reads: signed.typed?.reads ?? [],
+        signed: signed,
+        lo: 0,
+        hi: store.expr_count(),
+    }
 }
 
-/// The entry's statements the written item `at` of `file` writes, elaborated; none where it runs none.
+/// The entry's statements the written item `at` of `file` writes, under the typing the entry's query
+/// keeps; none where it runs none.
 fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<AssignedBody> {
     if file_declares(engine, file).names.any(it.item == at) && !runs_in(engine, file, at) { return [] }
-    if entry_types(engine, file).bases.is_empty() { return [] }
+    let types = entry_types(engine, file)
+    if types.bases.is_empty() { return [] }
     let read = entry_read(engine, file)
     let mine? = read.items.find(it.at == at) else { return [] }
     let signed? = entry_signed(read) else { return [] }
     let hi = read.items.find(it.at > at)?.base ?? read.store.expr_count()
     [
         AssignedBody {
-            body: elaborated(engine, file, signed),
+            store: signed.item.store,
+            root: signed.body,
+            reads: types.reads,
             signed: signed,
             lo: mine.base,
             hi: hi,
@@ -97,9 +109,9 @@ fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<As
 
 /// Every assignment in `b` that lands on no place, where it stands.
 fn assignments_in(engine: QueryEngine, file: SourceFileAddress, b: AssignedBody) -> List<Found> {
-    let store = b.body.store
-    let names = NamesRead { reads: b.body.reads }
-    [found! for s in every_stmt(store, At.Expr(b.body.body)) for t in [store.assign_target(s)] if t != null && t!.index >= b.lo && t!.index < b.hi && store.stmt_origins.get()[s.index] == null for found in [judged(engine, file, b, names, s, t!)] if found != null]
+    let store = b.store
+    let names = NamesRead { reads: b.reads }
+    [found! for s in every_stmt(store, At.Expr(b.root)) for t in [store.assign_target(s)] if t != null && t!.index >= b.lo && t!.index < b.hi && store.stmt_origins.get()[s.index] == null for found in [judged(engine, file, b, names, s, t!)] if found != null]
 }
 
 /// The assignment `s` to `t`, refused where it lands on no place; absent where it does, or where its
@@ -112,7 +124,7 @@ fn judged(
     s: StmtId,
     t: ExprId,
 ) -> Found? {
-    let store = b.body.store
+    let store = b.store
     let at = store.stmt_span(s)
     let root = store.place_root(t)
     if root == null || store.forced(t) != null { return said(at, Unplaced.NoPlace, "") }
@@ -127,7 +139,7 @@ fn judged(
 
 /// Why the whole root `read` reads is no place; absent where it is one.
 fn unplaced_root(engine: QueryEngine, file: SourceFileAddress, b: AssignedBody, read: NameRead) -> Unplaced? {
-    let store = b.body.store
+    let store = b.store
     let site? = read.binder else { return program_place(engine, file, read) }
     if state_bound(store, site) { return null }
     if !read.crossed.is_empty() { return Unplaced.Capture }

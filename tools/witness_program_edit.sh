@@ -28,7 +28,8 @@
 #   WITNESS_ONLY="7 8" runs just the edits of those numbers, counted from one;
 #   WITNESS_ONLY=embed runs the embedded file's edit alone; WITNESS_ONLY=rename the seat renamed
 #   twice; WITNESS_ONLY=infer the inferred error's alone; WITNESS_ONLY=check the instance check's edits;
-#   WITNESS_ONLY=derived one of three derived records' alone.
+#   WITNESS_ONLY=derived one of three derived records' alone; WITNESS_ONLY=gathered a member appended to
+#   a collect gathered in closure, which a const folds.
 #   WITNESS_ONLY=lawed a law's edit alone; WITNESS_ONLY=modes the cli built in each mode over a store
 #   the other left, working ahead and alone (modes-whole, modes-layered: one mode's).
 set -eu
@@ -139,6 +140,37 @@ composed_edit() {
     AVRA_FOLD_CHECK=1 made "$tmp/composed.back"
     cmp -s "$tmp/composed.back" "$tmp/composed.base" || { echo "witness_program_edit: with a composition's body edit taken back the warm product is not the cold one" >&2; exit 1; }
     echo "witness_program_edit: a composition's body taken back — warm == cold"
+}
+# A member appended to a collect gathered `in closure`, over a package of its own: a library declares
+# the collect, a const folding it and a fn reading the const; the program declares the members. The
+# product prints the count only the program's own closure answers, never the library's.
+gathered_edit() {
+    pkg="$tmp/gathered"
+    lib="$tmp/gathered-lib"
+    mkdir -p "$pkg/src" "$lib/src"
+    printf '[package]\nname = "@w/gather"\nversion = "0.0.1"\n\n[dependencies]\n"@std/meta" = { path = "%s/packages/std-meta" }\n' "$root" >"$lib/avra.toml"
+    printf 'use @std.meta.{Named, Marker}\n\nexport fn seat(_d: Named) -> Marker { Marker {} }\n\nexport type Row = { owner: string }\n\nexport type Gathered = { row: Row }\n\nexport collect rows: List<Gathered> = @seat in closure as Gathered { row: it } by it.name\n\nexport const count: int = rows.length * 10\n\nexport fn told() -> int { count }\n' >"$lib/src/gather.av"
+    printf '[package]\nname = "gathered"\nversion = "0.0.1"\n\n[dependencies]\n"@std/meta" = { path = "%s/packages/std-meta" }\n"@w/gather" = { path = "../gathered-lib" }\n' "$root" >"$pkg/avra.toml"
+    printf 'use @w.gather.{told, Row, seat}\n\n@seat\nexport const knob: Row = Row { owner: "knob" }\n\nprintln("${told()}")\n' >"$pkg/src/main.av"
+    made() { "$avra" build "$pkg" >"$tmp/log" 2>&1 || { echo "witness_program_edit: the gathered build failed:" >&2; tail -5 "$tmp/log" >&2; exit 1; }; unsigned_at "$pkg/src/main" "$1" ""; }
+    afresh() { find "$pkg/.avra-cache" "$lib/.avra-cache" -mindepth 1 -delete 2>/dev/null || :; find "$AVRA_CACHE_DIR" -mindepth 1 -delete; }
+    says() { [ "$("$pkg/src/main")" = "$1" ] || { echo "witness_program_edit: the gathered program printed $("$pkg/src/main") $2, not $1" >&2; exit 1; }; }
+    afresh
+    made "$tmp/gathered.base"
+    says 10 "cold"
+    cp "$pkg/src/main.av" "$tmp/gathered.av"
+    printf '\n@seat\nexport const lamp: Row = Row { owner: "lamp" }\n' >>"$pkg/src/main.av"
+    AVRA_FOLD_CHECK=1 made "$tmp/gathered.warm"
+    says 20 "warm, a member appended"
+    afresh
+    made "$tmp/gathered.cold"
+    cmp -s "$tmp/gathered.warm" "$tmp/gathered.cold" || { echo "witness_program_edit: after a gathered member's edit the warm product is not the cold one" >&2; exit 1; }
+    echo "witness_program_edit: a member gathered in closure — warm == cold, its fold read over the program's own closure"
+    cp "$tmp/gathered.av" "$pkg/src/main.av"
+    AVRA_FOLD_CHECK=1 made "$tmp/gathered.back"
+    says 10 "warm, the member taken back"
+    cmp -s "$tmp/gathered.back" "$tmp/gathered.base" || { echo "witness_program_edit: with a gathered member taken back the warm product is not the cold one" >&2; exit 1; }
+    echo "witness_program_edit: a member gathered in closure taken back — warm == cold"
 }
 # A derived record's edit, over a package of its own: three records each deriving one trait in one
 # file, the middle one given a field. Only its site runs its generator again.
@@ -292,6 +324,10 @@ fi
 if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " composed "; then
     composed_edit
     [ "${WITNESS_ONLY:-}" = composed ] && exit 0
+fi
+if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " gathered "; then
+    gathered_edit
+    [ "${WITNESS_ONLY:-}" = gathered ] && exit 0
 fi
 
 stores() { find packages -name .avra-cache -type d -prune; }

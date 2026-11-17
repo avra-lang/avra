@@ -467,7 +467,7 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
 /// The `const` `d` names, as code reads it: an instance's value its unit builds, the literal it's
 /// written as, or what it settles to.
 fn const_named(engine: QueryEngine, d: DeclaredName) -> NamedValue {
-    if built_instance(engine, d) { return NamedValue.Built(unit_callee(d)) }
+    if built_where_read(engine, d) { return NamedValue.Built(unit_callee(d)) }
     let value = const_literal(engine, d)
     if value == null { settled_const(engine, d) } else { NamedValue.Literal(value!) }
 }
@@ -775,11 +775,11 @@ fn unit_callee(m: DeclaredName) -> CalledFn {
     }
 }
 
-/// The unit the component instance `file` declares as `name` builds its value by: no seats, its value
-/// answered. Absent for any other declaration.
+/// The unit the const `file` declares as `name` builds its value by where it's read
+/// (`built_where_read`): no seats, its value answered. Absent for any other declaration.
 fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
     let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Const) else { return null }
-    if !built_instance(engine, d) { return null }
+    if !built_where_read(engine, d) { return null }
     match const_body(engine, d) {
         .Ok(body) -> signed_lowered(engine, file, body, name, null),
         .Err(_) -> null,
@@ -792,6 +792,13 @@ fn gathers_closure(engine: QueryEngine, d: DeclaredName) -> bool {
     let parts? = [p! for s in item.stmts for p in [item.store.collect_parts(s)] if p != null]
         .find(it.name == d.name) else { return false }
     parts.scope is .Closure
+}
+
+/// Whether the `const` `d`'s value is built by its unit where it's read: a component's instance, or a
+/// value each program gathers over its own closure.
+fn built_where_read(engine: QueryEngine, d: DeclaredName) -> bool {
+    built_instance(engine, d) ||
+        d.kind == ItemKind.Const && const_settlement(engine, d.file, d.name, d.item).per_program
 }
 
 /// Whether the `const` `d` is a component's instance, whose value its unit builds where it's read.

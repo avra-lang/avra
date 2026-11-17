@@ -115,6 +115,37 @@ export fn hosted_in(engine: QueryEngine, file: SourceFileAddress?, program: stri
     [h.called for h in file_host_fns(engine, f).fns if f.package_name == package || h.host != null]
 }
 
+/// THE HOST FNS A PROGRAM ANSWERS FOR ITS HOST, whatever reaches them: every one its own package
+/// `program`'s sources declare, its tests aside (`package_host_fns`). A host calls each by name, so the
+/// program carries it though none of the program's own code does.
+export fn package_hosted(engine: QueryEngine, program: string?) -> List<CalledFn> {
+    let package? = program else { return [] }
+    [h.called for h in package_host_fns(engine, package).fns]
+}
+
+/// The host fns `package`'s sources declare, its tests aside, each file's read through its own
+/// question, over the sources' paths alone (`package_source_paths`): a file that is no source, or a
+/// source edited without moving what it declares as a host fn, moves nothing that reads this.
+@query
+fn package_host_fns(engine: QueryEngine, package: string) -> HostFns {
+    HostFns {
+        fns: [h for p in package_source_paths(engine, package).paths for h in file_host_fns(engine, SourceFileAddress { package_name: package, path_in_package: p }).fns],
+    }
+}
+
+/// The paths of `package`'s sources, its tests aside: its listings settled on the names of its sources,
+/// so a name a listing gains that is no source — a binary placed beside them, an asset — moves no reader.
+@query
+fn package_source_paths(engine: QueryEngine, package: string) -> SourcePaths {
+    SourcePaths {
+        paths: [p for p in package_sources(engine, package, "src") if !p.starts_with(TESTS_DIR)],
+    }
+}
+
+/// A package's source paths, in listing order.
+@derive(Saved)
+type SourcePaths = { paths: List<string> }
+
 /// The host fns a build of the program `file` runs for `target` exports, beside the word that names
 /// each one's host: each hosted body its reach holds that its own package declares, and each another
 /// package declares naming a host the target stands beside.

@@ -3204,9 +3204,10 @@ fn children_wrong(engine: QueryEngine, disk: Disk, children: List<RefusesCall>) 
 }
 
 /// A child-run program test's eval leg on the program layer: the program the file `path` of the
-/// package at `root` runs, made there and evaluated in this process, ending as `avra run` ends it;
-/// one not made yet says so and ends 3, no end a test asks for.
-export fn program_refuse_evaluated(root: string, path: string) -> int {
+/// package at `root` runs, made there and evaluated in this process, ending as `avra run` ends it —
+/// `live`, every line printed as it is printed, as `avra run --eval` runs it; one not made yet says so
+/// and ends 3, no end a test asks for.
+export fn program_refuse_evaluated(root: string, path: string, live: bool = false) -> int {
     let disk? = disk_at(root, "") else { return std_unfound() }
     let engine = query_engine(
         program_store_at(joined_path(root, ".avra-cache/tapes")),
@@ -3231,7 +3232,12 @@ export fn program_refuse_evaluated(root: string, path: string) -> int {
             return 3
         },
     }
-    match program_ended(lowered with { libraries: linked_libraries(engine, disk) }, ENTRY_SYMBOL) {
+    let entry = disk.file_at(path.substring(root.length + 1, path.length))
+    match program_ended(
+        lowered with { libraries: linked_libraries(engine, disk, entry) },
+        ENTRY_SYMBOL,
+        live,
+    ) {
         .Ok(end) -> ended_as(end),
         .Err(words) -> {
             eprintln("avra: ${words}")

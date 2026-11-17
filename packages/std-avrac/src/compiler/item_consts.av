@@ -56,7 +56,15 @@ fn settled_const(engine: QueryEngine, d: DeclaredName) -> NamedValue {
 /// A const worked out at compile time: the words it settled to and the data the binary holds for
 /// them; or why it doesn't settle yet, and where its run broke one of a settlement's laws, that law.
 @derive(Saved)
-type ConstSettlement = { words: List<SettledWord>, data: Static?, unsettled: string?, broken: BrokenSettlement? }
+type ConstSettlement = {
+    words: List<SettledWord>,
+    data: Static?,
+    unsettled: string?,
+    broken: BrokenSettlement?,
+    /// Whether its value is each program's own — it reaches a collect gathering `in closure` — so it
+    /// is never settled once, and is built where it's read.
+    per_program: bool = false,
+}
 
 /// A settlement's law a const's run broke: the kind it is refused as, and the words its voice is handed.
 @derive(Saved)
@@ -67,6 +75,7 @@ export type BrokenSettlement = { kind: string, words: string }
 /// by every body that names the const and by the law that refuses a run that breaks a settlement's.
 @query
 fn const_settlement(engine: QueryEngine, file: SourceFileAddress, name: string, item: int) -> ConstSettlement {
+    if const_value_loop(engine, file, name) != null { return unsettled_as(settles_from_itself()) }
     match const_body_at(engine, file, name, item) {
         .Ok(body) -> settlement_of(engine, file, body, name),
         .Err(why) -> unsettled_as(why),
@@ -82,6 +91,7 @@ fn settlement_of(engine: QueryEngine, file: SourceFileAddress, body: SignedBody,
     let root = signed_lowered(engine, file, body, name, null)
     if !root.whole() { return unsettled_as("a const whose value isn't lowered yet: ${root.missing[0]}") }
     let survey = task_survey(engine)
+    if reaches_gathered(survey, root) { return unsettled_as(per_program()) with { per_program: true } }
     let made = match made_reaching(survey, root, symbol, [], TaskChecks.Surveyed, lazy: true) {
         .Made(l) -> l,
         .Unmade(why, _) -> { return unsettled_as("a const whose value reaches a body not lowered yet: ${why}") },
@@ -198,6 +208,12 @@ fn body_const_settlement(
 }
 
 /// A const that doesn't settle yet, and why.
+/// Why a const whose value is each program's own isn't settled once.
+fn per_program() -> string { "a const whose value each program gathers over its own closure" }
+
+/// Why a const whose value reads itself, through other consts or none, doesn't settle.
+fn settles_from_itself() -> string { "a const whose value reads itself" }
+
 fn unsettled_as(why: string) -> ConstSettlement { ConstSettlement { words: [], data: null, unsettled: why, broken: null } }
 
 /// The law a run that didn't settle broke, as a finding keeps it; absent where it owes no voice.

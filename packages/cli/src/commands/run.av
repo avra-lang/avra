@@ -1,9 +1,10 @@
 //! `avra run` — evaluate a program and print its value.
-use @std.cli.{CliResult, Runnable, command}
+use @std.cli.{CliResult, Runnable, command, flag}
 use @std.avrac.compiler.{Program}
 use @std.avrac.compiler.host.{no_target}
 use @std.avrac.diagnostics.{render_among}
 use @std.avrac.compiler.backend.{Ended}
+use @std.path.{dir_of, joined_path}
 
 type RunCmd = {}
 
@@ -12,7 +13,7 @@ impl Runnable for RunCmd {
         // a wasm run builds the module, on the path the door chooses, and hands it to the host
         // runner; the program layer or the evaluator answers every other run
         if args.option("target") != "" { return run_wasm_command(args) }
-        if program_door() { return program_ran(args) }
+        if program_door() { return if args.has_flag("eval") { program_evaluated(args) } else { program_ran(args) } }
         phased(args, "lower+run", ran)
     }
 }
@@ -27,6 +28,19 @@ fn program_ran(args: CliResult) -> int {
     }
     let binary = match built_binary(args) { .Ok(b) -> b, .Err(code) -> { return code } }
     match run_binary(binary) { .Ok(exit) -> status_of_exit(exit), .Err(e) -> refused_by_host(e) }
+}
+
+/// `avra run --eval` on the program layer: the program made there and run in this compiler's own
+/// evaluator, the engine a native run is held to, ending as a native run ends.
+fn program_evaluated(args: CliResult) -> int {
+    let path = rooted(path_arg(args))
+    if !is_a_dir(path) { return program_refuse_evaluated(file_home(path) ?? dir_of(path), path, live: true) }
+    let root = package_root(path) ?? path
+    let entry? = entry_written(root) else {
+        println(render_among(no_target(root_workspace(root).root), []))
+        return 1
+    }
+    program_refuse_evaluated(root, joined_path(root, entry), live: true)
 }
 
 fn ran(p: Program) -> Result<int, string> {
@@ -48,8 +62,11 @@ fn said(words: string, code: int) -> int {
 
 export command run {
     description: "Run a program and print its value"
-    flags: [time, wasm_reactor, wasm_debug]
+    flags: [time, wasm_reactor, wasm_debug, eval]
     options: [target]
     args: [file]
     run: RunCmd {}
 }
+
+/// `run`'s own: the program evaluated, never built.
+export flag eval { description: "run the program in the compiler's own evaluator instead of building it — the engine a native run is held to" }
