@@ -1,9 +1,9 @@
 //! `avra docs dump` — every exported declaration's own facts, one
-//! row per symbol (compiler/program.av's `Program.dumped_decls`).
+//! row per symbol, as the command dumps them where a package stands.
+//! `avra_said_in` is runs.av's own.
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
-use commands.{root_program, dump_listing}
-use @std.avrac.compiler.{DocRow}
+use commands.{DocRow, dump_listing}
 
 /// One directory per run, so no earlier run's cache answers for this one.
 once fn dump_base() -> string { "/tmp/avra-dump-test/${stamp()}" }
@@ -15,8 +15,12 @@ fn row(address: string, signature: string) -> DocRow {
 fn dump_pkg_named(name: string) -> string {
     let root = "${dump_base()}/${name}"
     let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
     root
 }
+
+/// What `avra docs --json` dumps for the package at `root`.
+fn dumped(root: string) -> string? { avra_said_in(root, ["docs", "--json"]) }
 
 spec "commands/docs dump" {
     given "no rows" {
@@ -39,12 +43,7 @@ spec "commands/docs dump" {
                 "${root}/src/main.av",
                 "/// adds one\nexport fn bump(n: int) -> int {\n    n + 1\n}\n\nfn hidden(n: int) -> int {\n    n\n}\n\nfn main() -> int {\n    bump(1) + hidden(1)\n}\n",
             )
-            mut p = root_program(root)
-            let rows = p.dumped_decls(root)
-            let found? = rows.find(it.address.contains("bump")) else { return false }
-            rows.length == 1 &&
-                found.signature == "fn bump(int) -> int" &&
-                found.prose_lines.join("\n") == "adds one"
+            dumped(root) == "[{\"address\":\".bump\",\"kind\":\"fn\",\"signature\":\"fn bump(int) -> int\",\"prose_lines\":[\"adds one\"],\"package\":\"${root}\"}]"
         }
     }
     given "an exported fn with no doc and a documented private one" {
@@ -54,18 +53,14 @@ spec "commands/docs dump" {
                 "${root}/src/main.av",
                 "export fn bare(n: int) -> int {\n    n\n}\n\n/// kept inside\nfn inner(n: int) -> int {\n    n\n}\n\nfn main() -> int {\n    bare(1) + inner(1)\n}\n",
             )
-            mut p = root_program(root)
-            let rows = p.dumped_decls(root)
-            let found? = rows.first() else { return false }
-            rows.length == 1 && found.address.contains("bare") && found.prose_lines.is_empty()
+            dumped(root) == "[{\"address\":\".bare\",\"kind\":\"fn\",\"signature\":\"fn bare(int) -> int\",\"prose_lines\":[],\"package\":\"${root}\"}]"
         }
     }
     given "a package exporting nothing" {
         then "the dump is empty, not a defect" {
             let root = dump_pkg_named("nothing-exported")
             let _ = write_text("${root}/src/main.av", "fn main() -> int {\n    0\n}\n")
-            mut p = root_program(root)
-            p.dumped_decls(root).is_empty()
+            dumped(root) == "[]"
         }
     }
 }

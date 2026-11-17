@@ -4,8 +4,7 @@
 // (fixed by wearing the value's own span). Kept apart from
 // block_test.av so this set can grow without drowning the feature's
 // vertical story.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, judged}
 
 spec "features/block adversarial — an explicit block value" {
     given "degenerate shapes" {
@@ -13,7 +12,7 @@ spec "features/block adversarial — an explicit block value" {
             shown("let x = { { 7 } }\nx") == "7"
         }
         then "an empty fn body is unaffected — still void, no braces lost" {
-            let a = analyze_source("fn f() -> int {}\nf()")
+            let a = judged("fn f() -> int {}\nf()")
             a.diagnostics.length == 1 && a.report().contains("void")
         }
         then "a block whose only statement diverges still leaves" {
@@ -23,7 +22,7 @@ spec "features/block adversarial — an explicit block value" {
     given "the diagnostic points at the value, never the brace" {
 
         then "a type mismatch inside `{ v }` blames `v`'s own span" {
-            let a = analyze_source("let x: string = { 7 }\nx")
+            let a = judged("let x: string = { 7 }\nx")
             let loc? = a.diagnostics[0].primary.loc else { return false }
             // "let x: string = { 7 }" — `7` starts at byte 18, the
             // brace two characters earlier; this is the caret 2169022
@@ -31,7 +30,7 @@ spec "features/block adversarial — an explicit block value" {
             loc.lo == 18 && loc.hi == 19
         }
         then "the same mismatch without braces blames the same span shape" {
-            let a = analyze_source("let x: string = 7\nx")
+            let a = judged("let x: string = 7\nx")
             let loc? = a.diagnostics[0].primary.loc else { return false }
             loc.hi - loc.lo == 1
         }
@@ -58,14 +57,14 @@ spec "features/block adversarial — an explicit block value" {
             // whole chain as a value — proves this goes through
             // `answers` (core/store.av), not the if_expr feature (whose
             // own refusal reads differently, "branches disagree")
-            let a = analyze_source("fn f() -> int {\n    if true { let x = 1 } else { 8 }\n}\nf()")
+            let a = judged("fn f() -> int {\n    if true { let x = 1 } else { 8 }\n}\nf()")
             a.diagnostics.length == 1 && a.report().contains("the body answers `void`")
         }
         then "explicit single-statement block branches keep their braces" {
             shown("fn f(c: bool) -> int {\n    if c { { 7 } } else { { 8 } }\n}\nf(true)") == "7"
         }
         then "a value branch's diagnostic blames the value, never the brace" {
-            let a = analyze_source("fn f() -> string { if true { 7 } else { \"a\" } }\nf()")
+            let a = judged("fn f() -> string { if true { 7 } else { \"a\" } }\nf()")
             let loc? = a.diagnostics[0].primary.loc else { return false }
             // "fn f() -> string { if true { 7 } else { "a" } }" — the
             // seat is `string`, so `7` is the branch that does not fit

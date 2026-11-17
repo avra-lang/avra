@@ -1,0 +1,54 @@
+// A program held in memory, asked of the program layer: what its build says, what it runs to, and
+// the count of what it says.
+use @std.avrac.testing.{judged, refusals, refused_at_run, refused_with, shown}
+
+spec "testing/held — a lone source on the program layer" {
+    given "a program its build accepts" {
+        then "runs to its answer" {
+            shown("1 + 2") == "3"
+        }
+        then "reads the prelude's verbs" {
+            shown("[1, 2, 3].filter(it > 1).length") == "2"
+        }
+        then "says nothing" {
+            refusals("enum E { A, B }\nE.B.name") == 0
+        }
+        then "is clean" {
+            judged("fn f() -> int { 2 }\nf()").clean()
+        }
+    }
+    given "a program its build refuses" {
+        then "is refused once, in the law's words" {
+            refused_with(
+                "enum P { A, B(int) }\nP.all().length",
+                "`all` lists an enum whose variants carry nothing, and `P.B` carries a payload",
+            )
+        }
+        then "is placed in `<source>`" {
+            judged("let a: int = \"x\"\na").report().contains("<source>:1:14")
+        }
+        then "says each mistake" {
+            refusals("let a: int = \"x\"\nlet b: string = 1\nnope()") == 3
+        }
+        then "shows as refused" {
+            shown("nope()") == "<refused>"
+        }
+        then "does not run" {
+            judged("nope()").ran() == null
+        }
+    }
+    given "a program that refuses to run" {
+        then "the evaluator's refusal is the run's" {
+            refused_at_run("let z = 0\n1 / z", "division by zero")
+        }
+        then "a const that traps while settling" {
+            refused_at_run(
+                "fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ",
+                "trapped while settling",
+            )
+        }
+        then "a program that runs is not refused" {
+            !refused_at_run("1 + 2", "")
+        }
+    }
+}

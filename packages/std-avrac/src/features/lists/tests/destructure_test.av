@@ -1,14 +1,13 @@
 // Destructuring `let` and `is` over list and record patterns, by attack
 // class. Accepted programs run through `shown`; each refusal pins its
 // voice, and the goldens pin the rendering.
-use @std.avrac.testing.{shown, refused_with, projected}
-use compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, projected, judged}
 
 const PT: string = "type P = { x: int, y: int }\n"
 
 /// A program whose report says `phrase`; a refused `let` may leave later
 /// statements unjudged, so these do not pin the count.
-fn says(source: string, phrase: string) -> bool { analyze_source(source).report().contains(phrase) }
+fn says(source: string, phrase: string) -> bool { judged(source).report().contains(phrase) }
 
 spec "features/lists — destructuring let and is" {
     given "let over a record" {
@@ -106,8 +105,7 @@ spec "features/lists — destructuring let and is" {
     }
     given "the refusals, rendered" {
         then "a refutable let without an else" {
-            analyze_source("fn f(xs: List<int>) -> int {\n    let [h, ..t] = xs\n    h\n}\n1")
-                .report() == "error[type.let_pattern]: this `let` takes a `List<int>` apart by a pattern that can refuse it, and says nothing for the values it refuses\n  ╭─[<source>:2:5]\n2 │     let [h, ..t] = xs\n  ·     ┬\n  ·     ╰── this `let`\n──╯\nhelp: add an `else` that leaves — `let [first, ..] = xs else { return … }`"
+            judged("fn f(xs: List<int>) -> int {\n    let [h, ..t] = xs\n    h\n}\n1").report() == "error[type.let_pattern]: this `let` takes a `List<int>` apart by a pattern that can refuse it, and says nothing for the values it refuses\n  ╭─[<source>:2:5]\n2 │     let [h, ..t] = xs\n  ·     ┬\n  ·     ╰── this `let`\n──╯\nhelp: add an `else` that leaves — `let [first, ..] = xs else { return … }`"
         }
     }
     given "the printer" {

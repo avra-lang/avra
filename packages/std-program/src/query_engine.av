@@ -116,6 +116,10 @@ export trait AnswerStore {
     /// unless the store is layered over one that's shared.
     fn shares_package(_name: string) -> bool { false }
 
+    /// Whether any package is one this store shares: where none is, every answer is kept in the one
+    /// store, whatever it read, and what packages an answer read decides nothing.
+    fn shares_any() -> bool { false }
+
     /// Keeps a record of a SHARED question: one whose every input lies in packages this store shares.
     fn keep_shared_record(asked: Question, record: AnswerRecord) { self.keep_record(asked, record) }
 
@@ -693,8 +697,12 @@ impl QueryEngine {
         if is_shared { self.store.keep_shared_record(asked, record) } else { self.store.keep_record(asked, record) }
     }
 
-    /// The set of packages every question `reads`' words name read.
-    fn set_of_reads(reads: List<int>) -> int { hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q))) }
+    /// The set of packages every question `reads`' words name read; none asked where the store shares
+    /// no package, since then no set decides where anything is kept.
+    fn set_of_reads(reads: List<int>) -> int {
+        if !self.store.shares_any() { return NO_NAMES }
+        hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q)))
+    }
 
     /// The set of packages the question known as `question` read: as settled here, else as it stands
     /// in the frontier, read by read; a question this process can't tell read a package nobody shares.

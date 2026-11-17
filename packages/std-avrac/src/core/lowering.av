@@ -742,16 +742,19 @@ impl Lowering {
     /// The fn's seat `name` of type `ty`: the next register, as the seats mint in order.
     mut fn seated(name: string, ty: SignedType) { self.bind(name, Bound.Value(self.mint(self.laid_out(ty)), ty)) }
 
-    /// The fn's seat `name` of type `ty`, `written` where the fn writes through it: one that rides no
-    /// pointer is handed its place, the box its caller holds it in; any other as `seated` binds it.
-    /// A `state` seat is handed its caller's Cell, the one place every write through it lands in.
     /// The `state` seat `name` of `ty`: the caller's Cell, shared as a `state` of the body's own is.
     mut fn seated_state(name: string, ty: SignedType) { self.bind(name, Bound.Shared(self.mint(self.laid_out(cell_of(ty))), ty)) }
 
+    /// The fn's seat `name` of type `ty`, `written` where the fn writes through it: one that rides no
+    /// pointer is handed its place, the box its caller holds it in; any other as `seated` binds it.
     mut fn seated_written(name: string, ty: SignedType, written: bool) {
         if !written || !self.place_handed(ty) { return self.seated(name, ty) }
-        self.bind(name, Bound.Held(self.mint(self.laid_out(cell_of(ty))), ty))
+        self.bind(name, Bound.Held(self.mint(self.seat_laid(ty, written)), ty))
     }
+
+    /// What a seat of `ty` takes to the machine: the box its place is handed in where it's `written`
+    /// and handed one, else its value.
+    mut fn seat_laid(ty: SignedType, written: bool) -> Layout { self.laid_out(if written && self.place_handed(ty) { cell_of(ty) } else { ty }) }
 
     /// A read of `b` at `e`: its register, or what its cell holds now — read as a shape its named type
     /// stands over, at any depth, which is free; where a test proved a nullable binding present, what

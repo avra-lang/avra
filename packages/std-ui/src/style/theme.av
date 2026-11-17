@@ -9,6 +9,8 @@
 use style.tokens.{Tone, Sizes, Tones, Inks, Fonts, Levels, TypeSizes, LineHeights, Trackings}
 use @std.meta.{derive}
 use style.words.{Words}
+use style.look.{Look, Wear, Shading, unstyled}
+use tree.node.{Prims}
 
 /// Which scheme a page wears: the one the reader's settings ask for, or one
 /// held whatever they ask.
@@ -28,12 +30,35 @@ export enum Contrast {
     @word(more) More
 }
 
+/// One of the two schemes a colour has a shade in.
+@derive(Words)
+export enum Scheme {
+    @word(light) Light
+    @word(dark) Dark
+}
+
 /// A colour in each scheme.
 export type Shades = { light: string, dark: string }
+
+impl Shades {
+    /// The shade a scheme reads.
+    fn of(s: Scheme) -> string {
+        match s { .Light -> self.light, .Dark -> self.dark }
+    }
+}
 
 /// A colour in each scheme, and the stronger shades a reader who asks for
 /// more contrast reads instead; with none, the normal ones stand.
 export type Dial = { light: string, dark: string, more: Shades? = null }
+
+impl Dial {
+    /// The shades a reader at this contrast reads: the stronger ones at more
+    /// contrast where the colour has them, else the normal ones.
+    fn read_at(c: Contrast) -> Shades {
+        let normal = Shades { light: self.light, dark: self.dark }
+        match c { .More -> self.more ?? normal, .System or .Standard -> normal }
+    }
+}
 
 /// A surface's colours: its fill, and what sits on it.
 export type Swatch = { fill: Dial, on: Dial }
@@ -41,7 +66,9 @@ export type Swatch = { fill: Dial, on: Dial }
 /// Every token family one target needs, together. A level names the
 /// surface it wears; a type size is whole units, leading a multiple of it,
 /// tracking a fraction of it. `control` is a control's height and `row` a
-/// row's padding, in whole units.
+/// row's padding, in whole units. `look` is what each primitive wears when
+/// its author says nothing, and `shading` how far a surface shades in a
+/// state.
 export type Theme = {
     mode: Mode,
     contrast: Contrast = .System,
@@ -56,6 +83,8 @@ export type Theme = {
     tracking: Trackings<float>,
     control: int,
     row: int,
+    look: Prims<Look>,
+    shading: Shading,
 }
 
 const sans = "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
@@ -73,6 +102,12 @@ const green = Dial { light: "#0F5132", dark: "#7FE0AE" }
 const edge = Shades { light: "#0A0A0A", dark: "#FAFAFA" }
 
 const ground = Swatch { fill: paper, on: ink }
+
+/// A control's frame: the corner and the height every control keeps.
+const framed = Wear { radius: .M, least: .Control }
+
+/// A control a reader acts on, drawn by the target inside Crisp's frame.
+const control = Look { rest: framed, acts: true }
 
 const sunk = Swatch { fill: Dial { light: "#F2F2F2", dark: "#1C1C1C" }, on: ink }
 
@@ -137,4 +172,34 @@ export const default_theme = Theme {
     tracking: Trackings { tight: -0.02, normal: 0.0, wide: 0.06 },
     control: 36,
     row: 10,
+    look: Prims {
+        text: unstyled,
+        heading: unstyled,
+        button: Look {
+            rest: framed with { ground: .Clear, line: .Field, block: .Step(.Xs), inline: .Step(.S) },
+            acts: true,
+        },
+        link: unstyled,
+        image: unstyled,
+        field: control,
+        checkbox: control,
+        row: unstyled,
+        column: unstyled,
+        dialog: Look { rest: Wear { ground: .Fill(.SurfaceRaised, 0) } },
+        divider: unstyled,
+        icon: unstyled,
+        surface: unstyled,
+        list: unstyled,
+        item: Look { rest: Wear { block: .Row } },
+        card: unstyled,
+        progress: unstyled,
+        alert: unstyled,
+        spinner: unstyled,
+        form: unstyled,
+        fieldset: unstyled,
+        switch: control,
+        slider: control,
+        key: unstyled,
+    },
+    shading: Shading { hover: 8, pressed: 16 },
 }

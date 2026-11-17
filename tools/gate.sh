@@ -256,18 +256,29 @@ dealt() { awk -v k="$1" -v n="$2" '(NR - 1) % n == k'; }
 # `test` over `$2…` as the row `$1`, judged by the NAMES that fail: each must be one
 # tools/gate/<package>.names pins (a case a sandbox's environment fails — root writes any directory, no
 # terminal, no network), never a count. With no pin file, every failure fails the row.
+# A CASE THAT ENDS THE SUITE'S PROCESS (`avra: while running <case>`) fails no case by name and leaves
+# every case after it unrun, so it is never passed over: each must be one tools/gate/<package>.traps
+# lists, by the first line the runner says it under.
 tested() {
     name=$1; shift
     pkg=$(echo "$1" | cut -d/ -f2)
     sh tools/bounded.sh "$ROW_SECS" build/avra test "$@" >"$out/$name.log" 2>&1
     ran=$?
     grep '^    ✗' "$out/$name.log" | sed 's/ @ .*//; s/^    ✗ //' | sort -u >"$out/$name.failed"
-    if [ -f "tools/gate/$pkg.names" ]; then grep -v '^#' "tools/gate/$pkg.names" | sort -u >"$out/$name.known"; else : >"$out/$name.known"; fi
+    listed "tools/gate/$pkg.names" >"$out/$name.known"
     comm -23 "$out/$name.failed" "$out/$name.known" >"$out/$name.unpinned"
-    # a run that fails no case must have exited clean; one that fails only pinned cases stopped on them
-    if [ ! -s "$out/$name.failed" ]; then judged "$name" "$ran"; return; fi
+    grep '^avra: while running ' "$out/$name.log" | sed 's/ @ .*//; s/^avra: while running //' | sort -u >"$out/$name.trapped"
+    listed "tools/gate/$pkg.traps" >"$out/$name.traps"
+    comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
+    if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
+    # a run that fails no case and ends none must have exited clean; one that fails only pinned cases
+    # or ends at a listed one stopped on them
+    if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ]; then judged "$name" "$ran"; return; fi
     judged "$name" "$(wc -l <"$out/$name.unpinned" | tr -d ' ')"
 }
+
+# the lines the pin file `$1` lists, sorted, each once; none where there is no such file
+listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
 # THE CLI'S SUITE RUNS WITH THE NET: its cases run build/avra as a user does and hold the words a user
 # meets, refusals among them, and where the program layer accepts a program the old path refuses, those

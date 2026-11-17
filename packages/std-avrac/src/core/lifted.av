@@ -1,12 +1,14 @@
 //! A VALUE LIFTED INTO ITS SEAT: what `SignedType.reaches` judges, made. A seat that takes a value
 //! as more than it is (a nullable of it, a `Result` it's the `Ok` of) is where that value takes its
-//! wider layout, at the one edge every node passes through.
+//! wider layout, at the one edge every node passes through. A fn seat that hands a place where the fn
+//! takes a value is where the fn is boxed behind the code that reads the place.
 
 impl Lowering {
     /// `r`, a value of `from`, as a seat of `into` holds it: itself where the seat takes it as it is
     /// or doesn't take it at all.
     mut fn lifted(r: Reg, from: SignedType, into: SignedType) -> Reg {
         if self.program.checked.rewrites(from, into.unwrapped()) { return if into.nullable() { self.adopted(r, from, into) } else { self.rewritten(r, into) } }
+        if self.reseats(from, into) { return self.reseated(r, from, into) }
         if from.stands_as(into) || from.bottom() || !from.reaches(into) { return r }
         if into.dynamic && !into.nullable() { return self.dyn_boxed(r, from, into) }
         if into.nullable() { return self.adopted(r, from, into) }

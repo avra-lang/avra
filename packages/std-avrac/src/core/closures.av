@@ -152,6 +152,44 @@ impl Lowering {
     }
 }
 
+impl Lowering {
+    /// Whether a fn of `from` in a seat of `into` is called with a seat handed its place that the fn
+    /// takes as a value: a `mut` seat of `into`, of a type that rides no pointer, the fn never
+    /// writes through.
+    fn reseats(from: SignedType, into: SignedType) -> bool {
+        from.fits_written(into) &&
+            [s for at, s in into.seats if s.mutable && !from.seats[at].mutable && self.place_handed(s.ty)]
+                .length > 0
+    }
+
+    /// `r`, a fn of `from`, as a seat of `into` that `reseats` it holds it: a box of the code that
+    /// takes `into`'s seats, then the fn; under a `?`, present.
+    mut fn reseated(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        if from.generic() || into.generic() { return self
+                .missed_as("a fn value under type parameters in a seat that writes where it doesn't") }
+        let seat = into.unwrapped()
+        let made = self.fn_box(self.laid_out(seat), self.reseating_code(from, seat), [r], seat)
+        if into.nullable() { self.adopted(made, seat, into) } else { made }
+    }
+
+    /// The code a fn of `from` is called by through a seat of `into` that `reseats` it: a unit taking
+    /// its box, then `into`'s seats, that calls the fn the box carries, handing it what a place holds
+    /// wherever it takes a value.
+    mut fn reseating_code(from: SignedType, into: SignedType) -> string {
+        let symbol = "seated\$${from.spelled()}\$${into.spelled()}"
+        if self.program.lifts.get().any(it.symbol == symbol) { return symbol }
+        let answer = into.answer ?? owned_type("void")
+        mut shim = lowering(self.store, self.program, self.types, self.seats, answer)
+        let box = shim.mint(shim.laid_out(into))
+        let seats = [shim.mint(shim.seat_laid(s.ty, s.mutable)) for s in into.seats]
+        shim.scope_enter()
+        let held = shim.unboxed_at(shim.laid_out(from), box, 1)
+        let args = [if s.mutable && !from.seats[at].mutable && shim.place_handed(s.ty) { shim.proven_read(shim.laid_out(s.ty), seats[at], 0) } else { seats[at] } for at, s in into.seats]
+        let r = shim.called_code(shim.laid_out(answer), shim.code_of(held), held, args, from)
+        self.shim_kept(shim, symbol, seats.length, r, answer)
+    }
+}
+
 /// A fn value's type as a key: its seat count, then its seats' types, with no seat's marks, and its
 /// answer's. A fn type naming a type parameter keys by its seat count alone, since the body a box is
 /// made in and the one that calls it may each see a different type there. A `dyn` box's type keys by

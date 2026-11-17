@@ -14,16 +14,60 @@ use compiler.{
     write_checked_under,
 }
 use compiler.host.{Host, memory_host}
+use testing.held.{Judged, entry_of, held_alone}
 use testing.std_sources.{StdFile, StdPkg, std_sources}
 use @std.avrac.diagnostics.{Diag}
-use @std.avrac.core.{FileId, flatten}
+use @std.avrac.core.{FileId, flatten, sorted_texts}
+use @std.io.{env}
 use @std.meta.{embed}
 use compiler.lower.{Lowered}
 use compiler.format.{render_source}
 
+/// What the program layer says of one source standing in no package.
+export fn judged(source: string) -> Judged {
+    let j = held_alone(source).judged(entry_of("alone"))
+    if differential() { differ(source, j) }
+    j
+}
+
+/// Whether every source a spec asks is asked of the old path too, and each difference printed:
+/// `AVRA_SPEC_DIFFERENTIAL=1`.
+fn differential() -> bool { differential_flag() == "1" }
+
+once fn differential_flag() -> string? {
+    // LICENSED input.debug_flag: a test switch that prints where the two paths differ; it changes no answer
+    env("AVRA_SPEC_DIFFERENTIAL")
+}
+
+/// Where the old path and the program layer differ over `source`, printed as one block: the kinds
+/// and words each says, sorted, and what each runs to — the run's words only where neither says
+/// a diagnostic.
+fn differ(source: string, j: Judged) {
+    let a = analyze_source(source)
+    let quiet = a.diagnostics.is_empty()
+    let old_said = said_sorted(a.diagnostics)
+    let new_said = said_sorted(j.diagnostics)
+    let old_run = run_said(a.run(), quiet)
+    let new_run = run_said(j.run(), quiet)
+    if old_said == new_said && old_run == new_run { return }
+    println(
+        "=====DIFF\n--SRC\n${source}\n--OLDK\n${old_said}\n--NEWK\n${new_said}\n--OLDRUN\n${old_run}\n--NEWRUN\n${new_run}\n=====END",
+    )
+}
+
+/// Each diagnostic's kind and message, a line each, in text order.
+fn said_sorted(ds: List<Diag>) -> string {
+    sorted_texts(["${d.kind}: ${d.message}" for d in ds]).join("\n")
+}
+
+/// A run's answer, or that it refused — in the refusal's words where `worded`.
+fn run_said(r: Result<string, string>, worded: bool) -> string {
+    match r { .Ok(v) -> "OK:" + v, .Err(e) -> if worded { "ERR:" + e } else { "ERR" } }
+}
+
 /// A program's printed value, or "<refused>".
 export fn shown(source: string) -> string {
-    analyze_source(source).ran() ?? "<refused>"
+    judged(source).ran() ?? "<refused>"
 }
 
 /// The source projected through the printer's canonical form — "<parse
@@ -38,7 +82,7 @@ export fn projected(source: string) -> string {
 /// How many diagnostics one program earns. The COUNT is half of a
 /// refusal test: a cascade hides behind `contains` alone.
 export fn refusals(source: string) -> int {
-    analyze_source(source).diagnostics.length
+    judged(source).diagnostics.length
 }
 
 /// A program refused EXACTLY ONCE, saying `phrase`. The count is not
@@ -47,17 +91,16 @@ export fn refusals(source: string) -> int {
 /// spelled this by hand, and the ones that wrote `>= 1` instead were
 /// asserting almost nothing.
 export fn refused_with(source: string, phrase: string) -> bool {
-    let a = analyze_source(source)
+    let a = judged(source)
     a.diagnostics.length == 1 && a.report().contains(phrase)
 }
 
-/// A program that analyzes CLEAN and then refuses to RUN, saying
-/// `phrase` — the refusal is lowering's or the evaluator's, never
-/// analysis's. A diagnosed program refusing to run proves nothing
-/// about the run, so the clean premise is half the assertion.
+/// A program that refuses to RUN, saying `phrase`: the evaluator's refusal of a program its build
+/// accepts, or the one thing its build says of what it runs before any program does — a const's
+/// settling — and never a cascade.
 export fn refused_at_run(source: string, phrase: string) -> bool {
-    let a = analyze_source(source)
-    if !a.diagnostics.is_empty() { return false }
+    let a = judged(source)
+    if a.diagnostics.length > 1 { return false }
     match a.run() { .Err(msg) -> msg.contains(phrase), .Ok(_) -> false }
 }
 

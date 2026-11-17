@@ -3,9 +3,10 @@
 //! thing's own doc — a diagnostic's meaning, or a declared symbol's
 //! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{avra, DocRow, current_read_digest, package_root_of}
-use @std.avrac.core.{distinct}
-use @std.avrac.compiler.store.{Reading, Store, Stored, node_key}
+use @std.avrac.compiler.{DeclDoc, FileDocs, avra, avra_fact_definitions, file_docs}
+use @std.path.{joined_path}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{query_engine}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.compiler.dev.{shown_code}
 use @std.json.{Json, field, to_text}
@@ -52,36 +53,51 @@ fn shown_witness(kind: string) {
 }
 
 /// `avra docs <name>` — a declared fn/type/enum/trait/const's own
-/// `///` doc and `@name(args)` annotations, when `name` is not a
-/// known diagnostic kind. The package is the directory the command
-/// stands in.
-///
-/// THE FAST PATH: the answer saved by an earlier process answers with no
-/// program built at all, while every read it was saved with still has its
-/// digest. A miss derives and saves what it found.
+/// `///` doc — or, absent one, its FILE's `//!` header — and its
+/// `@name(args)` annotations, when `name` is not a known diagnostic
+/// kind. The package is the directory the command stands in. A name two
+/// of its modules both declare is named as a collision, never answered
+/// from whichever file was read first. Each file's facts are an answer
+/// the package's store keeps (`file_docs`), so a second asking reads no
+/// file nobody edited.
 fn explained_decl(name: string, json: bool) -> int {
-    let root = here()
-    let ws = root_workspace(root)
-    let store = ws.opened_store()
-    let key = node_key(Stored.Rows, ["docs", root, ws.compiler_id(), name])
-    let cached? = store.get_valid(Stored.Rows, key, current_read_digest) else { return derived_decl(store, root, key, name, json) }
-    print_decl(name, cached, json)
-    0
-}
-
-fn derived_decl(store: Store, root: string, key: string, name: string, json: bool) -> int {
-    let p? = clean_program() else { return 1 }
-    let found? = p.explain_doc(name) else {
+    let docs = match package_docs(here()) { .Ok(d) -> d, .Err(code) -> { return code } }
+    let text? = decl_said(name, docs) else {
         eprintln(
             "avra: nothing registered under `${name}` — no diagnostic kind or declared fn/type/enum/trait/const wears it",
         )
         return 1
     }
-    let packages = distinct([root].concat([package_root_of(f) ?? root for f in found.files]))
-    let reads = [Reading { name: r, digest: current_read_digest(r) ?? "-" } for r in packages.concat(found.files)]
-    let _ = store.keep_reading(Stored.Rows, key, found.text, reads)
-    print_decl(name, found.text, json)
+    print_decl(name, text, json)
     0
+}
+
+/// What `avra docs <name>` says of the name `name` over a package's files: its doc and annotations,
+/// a collision named where several modules declare it, absent where none does.
+export fn decl_said(name: string, docs: List<FileDocs>) -> string? {
+    let found = [Documented { file: f, decl: d } for f in docs for d in f.decls if d.name == name]
+    if found.length > 1 { return collision_said(name, [m.file.module for m in found]) }
+    let one? = found.first() else { return null }
+    let lines = (one.decl.doc ?? one.file.header ?? []).concat(one.decl.annotations)
+    if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+}
+
+/// A declaration's documentation beside its file's.
+type Documented = { file: FileDocs, decl: DeclDoc }
+
+fn collision_said(name: string, modules: List<string>) -> string {
+    "`${name}` names more than one declaration in this package — qualify it: ${["${m}.${name}" for m in modules].join(", ")}"
+}
+
+/// What each source file of the package at `root` says of the names it declares, read on the
+/// program layer; the exit spoken where no std stands beside this compiler.
+fn package_docs(root: string) -> Result<List<FileDocs>, int> {
+    let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
+    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions())
+    let docs = [file_docs(engine, disk.file_at(p)) for p in disk.held(engine)]
+    store_kept(engine, store)
+    docs
 }
 
 fn print_decl(name: string, text: string, json: bool) {
@@ -94,16 +110,29 @@ fn print_decl(name: string, text: string, json: bool) {
     println(text)
 }
 
+/// One exported symbol's row: its address (`module.name`), its kind, its signature, its own `///`
+/// lines, and the package it stands in.
+export type DocRow = { address: string, kind: string, signature: string, prose_lines: List<string>, package: string }
+
+/// EVERY EXPORTED DECLARATION OF A PACKAGE'S OWN, one row each, addressed `module.name` so two
+/// modules exporting one bare name never collide. Each row's prose is its OWN `///` alone: an
+/// undocumented symbol does not borrow whatever `//!` its file opens with.
+export fn dump_rows(docs: List<FileDocs>, package: string) -> List<DocRow> {
+    [DocRow {
+        address: "${f.module}.${d.name}",
+        kind: d.kind,
+        signature: d.signature,
+        prose_lines: d.doc ?? [],
+        package: package,
+    } for f in docs for d in f.decls if d.exported]
+}
+
 /// `avra docs` with no name — every EXPORTED declaration's own facts,
 /// this package's own, one row per symbol: `{address, kind, signature,
-/// prose_lines, package}`. A pure read, deliberately: caching each row
-/// into `Db` the way a single lookup does would need the same
-/// collision grouping `explain_doc` already does, and doing that
-/// without an O(n²) scan over a large package is real work this
-/// door doesn't owe yet — left for whoever needs it next.
+/// prose_lines, package}`.
 fn dumped(json: bool) -> int {
-    let p? = clean_program() else { return 1 }
-    let rows = p.dumped_decls(here())
+    let docs = match package_docs(here()) { .Ok(d) -> d, .Err(code) -> { return code } }
+    let rows = dump_rows(docs, here())
     println(if json { to_text(Json.Arr([dump_json(r) for r in rows])) } else { dump_listing(rows) })
     0
 }

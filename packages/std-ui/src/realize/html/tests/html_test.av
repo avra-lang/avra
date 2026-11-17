@@ -4,7 +4,8 @@
 use @std.ui.tree.node.{Node, Prim, Attribute}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.env.{Env}
-use @std.ui.realize.html.css.{all_rules, class_names}
+use @std.ui.realize.html.css.{all_rules, class_names, unplaced_looks, worn_by}
+use @std.ui.style.look.{Look, Wear, StateWear}
 use @std.text.{codepoints}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, around}
@@ -54,6 +55,19 @@ fn unraised() -> Theme {
 /// The default theme with the surface's dark fill replaced.
 fn night() -> Theme {
     default_theme with { tone: default_theme.tone with { surface: default_theme.tone.surface with { fill: default_theme.tone.surface.fill with { dark: "#123456" } } } }
+}
+
+/// The default theme with a button filled by the accent, its focus named.
+fn filled() -> Theme {
+    let focus = StateWear { state: .Focus, wear: Wear { line: .Focus } }
+    default_theme with { look: default_theme.look with { button: Look { rest: Wear { ground: .Fill(.Accent, 0) }, acts: true, states: [focus] } } }
+}
+
+fn filled_sheet() -> string { css_of(render(tree(), Env { theme: filled() })) }
+
+/// The default theme with a look on a row, which draws as a bare `div`.
+fn filled_row() -> Theme {
+    default_theme with { look: default_theme.look with { row: Look { rest: Wear { radius: .S } } } }
 }
 
 spec "std/ui html — primitives" {
@@ -249,16 +263,22 @@ spec "std/ui html — primitives" {
             ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
                 .all((c) -> count(sheet(), ".${c}{") == 1)
         }
-        then "it holds the variables, the stronger colours, the thirteen base rules and one line per class the tree named" {
-            sheet().split("\n").length == 1 + 1 + 13 + 8
+        then "it holds the variables, the stronger colours, nine base rules, five lines of the theme's look and one line per class the tree named" {
+            sheet().split("\n").length == 1 + 1 + 9 + 5 + 8
         }
         then "a button shows what it stands on inside a border, so a fill it names is the fill a reader sees" {
             sheet()
                 .contains(
-                    "\nbutton{background:transparent;border:1px solid var(--ink-field);padding:var(--space-xs) var(--space-s)}\n",
+                    "\nbutton{background:transparent;border:1px solid var(--ink-field);border-radius:var(--radius-m);min-height:var(--control);padding:var(--space-xs) var(--space-s)}\n",
                 )
         }
-        then "a button that cannot speak wears the disabled ink" { sheet().contains("\nbutton:disabled{color:var(--ink-disabled)}\n") }
+        then "every other control keeps the theme's corner and height, under one rule" {
+            sheet().contains("\ninput{border-radius:var(--radius-m);min-height:var(--control)}\n")
+        }
+        then "an item stands a row's padding above and below" { sheet().contains("\nli{padding-block:var(--row)}\n") }
+        then "a control that cannot speak wears the disabled ink" {
+            sheet().contains("\nbutton:disabled,input:disabled{color:var(--ink-disabled)}\n")
+        }
         then "what an item holds on one line stands a step apart, and the item keeps its marker" {
             sheet()
                 .contains("\nli:not(.dir-row):not(.dir-col)>*+*{margin-inline-start:var(--space-s)}\n")
@@ -278,15 +298,40 @@ spec "std/ui html — primitives" {
             sheet()
                 .contains("\nlabel{display:inline-flex;align-items:center;gap:var(--space-xs)}\n")
         }
-        then "a dialog wears the raised surface, and a closed one is not drawn whatever its classes say" {
-            sheet()
+        then "a dialog stands over the page and wears the raised surface, and a closed one is not drawn whatever its classes say" {
+            sheet().contains("\ndialog{position:fixed;inset-block:0}\n") &&
+                sheet()
                     .contains(
-                        "\ndialog{position:fixed;inset-block:0;background:var(--tone-surface-raised);color:var(--on-surface-raised)}\n",
+                        "\ndialog{background:var(--tone-surface-raised);color:var(--on-surface-raised)}\n",
                     ) &&
-                sheet().contains("\ndialog:not([open]){display:none}")
+                sheet().contains("\ndialog:not([open]){display:none}\n")
         }
         then "two renders of one tree are equal" { render(tree(), Env {}) == render(tree(), Env {}) }
         then "it holds no `<`" { !sheet().contains("<") }
+    }
+    given "the look a theme gives each primitive" {
+        then "the web places every look Crisp names" { unplaced_looks(default_theme).is_empty() }
+        then "a look on a primitive the web cannot tell apart is named" {
+            unplaced_looks(filled_row()).map(it.word()).join(",") == "row"
+        }
+        then "a filled control shades toward what sits on it while pointed at and pressed" {
+            filled_sheet()
+                    .contains("\nbutton{background:var(--tone-accent);color:var(--on-accent)}\n") &&
+                filled_sheet()
+                    .contains(
+                        "\nbutton:hover{background:color-mix(in srgb,var(--tone-accent),var(--on-accent) 8%);color:var(--on-accent)}\n",
+                    ) &&
+                filled_sheet()
+                    .contains(
+                        "\nbutton:active{background:color-mix(in srgb,var(--tone-accent),var(--on-accent) 16%);color:var(--on-accent)}\n",
+                    )
+        }
+        then "a state the theme names stands in place of the rule" {
+            filled_sheet().contains("\nbutton:focus-visible{border:1px solid var(--ink-focus)}\n")
+        }
+        then "a theme whose look moves is worn differently, whatever its variables" {
+            worn_by(filled()) != worn_by(default_theme)
+        }
     }
     given "the page" {
         then "it is a complete document around the tree" {

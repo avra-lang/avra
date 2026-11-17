@@ -1,0 +1,62 @@
+//! `avra expand <file>` — the file as compiled: what each instance became and
+//! each sugar means under its statement, and each generated declaration after
+//! the item it was made over, under the line that says who asked and which
+//! template wrote it. Through the command as a shell runs it. `avra_ran`,
+//! `scratch_dir` and `exit_is_zero` are the neighbouring tests' own: this
+//! module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// What `avra expand` prints for a one-file program of `source`.
+fn expanded(source: string) -> string {
+    let dir = "${scratch_dir()}/expand_${stamp()}"
+    let _ = make_dirs(dir)
+    let _ = write_text("${dir}/p.av", source)
+    match avra_ran(["expand", "${dir}/p.av"]) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { "refused: ${o.out.stdout}${o.out.stderr}" },
+        .Err(_) -> "the command did not run",
+    }
+}
+
+spec "avra expand — the file as compiled" {
+    given "a fn wearing a declaring annotation" {
+        then "the written fn stands as written, and what the annotation made follows it, named for who asked" {
+            let shown = expanded(
+                "use @std.meta.{Fn, Directive, traced}\n\n@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)\n",
+            )
+            shown
+                    .contains(
+                        "@traced(\"x\")\nfn sum(a: int, b: int) -> int {\n    a + b\n}\n\n// from @traced on sum\nfn sum_traced(a: int, b: int) -> int {",
+                    ) &&
+                shown.ends_with("\n\nsum(1, 2)\n")
+        }
+    }
+    given "a type wearing a derive" {
+        then "the impl the derive made follows the type, with the template that wrote it" {
+            expanded(
+                "use @std.meta.{derive}\nuse @std.program.saved_derive.{Saved}\n\n@derive(Saved)\ntype P = { x: int }\n\n1\n",
+            )
+                .contains("// from @derive on P — template @std/program/src/saved_derive.av:")
+        }
+    }
+    given "a component instance" {
+        then "what it became is noted under its statement" {
+            expanded(
+                "component nest(depth: int) {\n    extra: int = 0\n    fn total() -> int { self.depth + self.extra }\n}\n\nlet n = nest 2 {\n    extra: 3\n}\n\"\${n.total()}\"\n",
+            )
+                .contains(
+                    "let n = nest 2 {\n    extra: 3\n}\n\n// `nest` expands to:\n//     nest { depth: 2, extra: 3 }\n",
+                )
+        }
+    }
+    given "a sugar" {
+        then "what it means is noted under its statement" {
+            expanded("let m = ~7\n\"\${m}\"\n").contains("let m = ~7\n\n// `~7` means `7 ^ -1`\n")
+        }
+    }
+    given "a file nothing generates over" {
+        then "it is its statements, a blank line apart" {
+            expanded("fn f() -> int { 1 }\nf()\n") == "fn f() -> int {\n    1\n}\n\nf()\n"
+        }
+    }
+}

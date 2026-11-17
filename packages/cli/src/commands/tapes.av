@@ -15,6 +15,9 @@ use @std.avrac.compiler.{
     RefusesCall,
     Finding,
     LawFinding,
+    ProgramFile,
+    file_law_diags,
+    file_refusals,
     in_scope,
     proofs_said,
     made_suite,
@@ -26,7 +29,6 @@ use @std.avrac.compiler.{
     finding_diag,
     held_kinds,
     finding_line,
-    is_manifest,
     item_count,
     law_findings,
     manifest_voices,
@@ -78,14 +80,7 @@ use @std.avrac.core.{
     same_reg,
     sorted_texts,
 }
-use @std.avrac.compiler.lower.{
-    Body,
-    LinkedPackage,
-    Lowered,
-    Unit,
-    entry_only_refused,
-    no_projection_refused,
-}
+use @std.avrac.compiler.lower.{Body, LinkedPackage, Lowered, Unit}
 use @std.avrac.compiler.memory.{rc_reasons_said}
 use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of}
 use @std.avrac.compiler.backend.{
@@ -120,12 +115,10 @@ use @std.avrac.compiler.{
     unhashed,
     lowering_moved,
     program_refused,
-    strays_of,
     entry_files,
     admission,
     dep_chain,
     entering,
-    entry_lowered,
     digest_of_binary,
     written_across,
     opt_level,
@@ -998,7 +991,7 @@ fn refusals_said(
     if net { eprintln(false_refusal_header()) }
     let held = [program_file(disk, f) for f in files]
     let entered = program_file(disk, entry)
-    let said = [refused_in(engine, h, entered) for h in held]
+    let said = [file_refusals(engine, h, entered) for h in held]
     for j, ds in said { if ds.is_empty() { eprintln(refusal_unworded(held[j].full)) } }
     let sources = [new_source_file(h.full, text_at(h.full) ?? "") for h in held]
     let all = flatten(said)
@@ -1037,29 +1030,6 @@ fn hosts_owed_said(disk: Disk, owed: List<HostOwedAt>) -> int {
 fn span_of_at(at: FindingAt?) -> Span? {
     let held? = at else { return null }
     Span { lo: held.lo, hi: held.hi }
-}
-
-/// What fails a build in the file `h` of the program whose entry is `entry`: each refusal its laws,
-/// or its manifest's, find, then each statement it runs where it isn't the entry, or where it is, an
-/// answer no text spells.
-fn refused_in(engine: QueryEngine, h: ProgramFile, entry: ProgramFile) -> List<Diag> {
-    let found = if is_manifest(h.file) { manifest_diags(h) } else { file_law_diags(engine, h) }
-    let own = !is_manifest(h.file) && h.full == entry.full
-    let strays = if is_manifest(h.file) || own { [] } else { strays_of(engine, h.file) }
-    let unspelled = if own { entry_lowered(engine, h.file)?.unprojected } else { null }
-    [d for d in found if refuses(d)]
-        .concat([entry_only_refused(Loc { file: h.full, lo: s.lo, hi: s.hi }, entry.full) for s in strays])
-        .concat(
-            [no_projection_refused(Loc { file: h.full, lo: u.lo, hi: u.hi }, u.name) for u in some_list(unspelled)],
-        )
-}
-
-/// Whether `d` fails a build: anything above a warning.
-fn refuses(d: Diag) -> bool { !(d.severity is .Warning) }
-
-/// The diagnostics every law finds in the file `h`, item by item.
-fn file_law_diags(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
-    [d! for at in 0..item_count(engine, h.file) for f in law_findings(engine, h.file, at).findings for d in [finding_diag(f, h.full)] if d != null]
 }
 
 fn refusal_unworded(path: string) -> string { "avra: ${path}: a seat refuses a value here, in a body no law reads yet" }
@@ -1677,9 +1647,6 @@ fn findings_said(engine: QueryEngine, disk: Disk) -> int {
     if !said.is_empty() { println([s! for s in said].join("\n\n")) }
     0
 }
-
-/// A file the program reads, and where it stands on disk.
-type ProgramFile = { file: SourceFileAddress, full: string }
 
 /// The file `f` and where it stands on `disk`.
 fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {

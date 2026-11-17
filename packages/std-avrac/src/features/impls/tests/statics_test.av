@@ -3,8 +3,7 @@
 // receiver, called `Type.name(…)`. The variant WINS that spelling,
 // so an enum's variant is never shadowed, and the pair is refused
 // where it is written.
-use @std.avrac.testing.{shown, refused_with}
-use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, judged}
 
 /// A type with a static constructor and an ordinary method.
 fn pointed() -> string {
@@ -106,7 +105,7 @@ spec "features/impls/statics" {
             )
         }
         then "an unknown static under a record names the fn and lists the ones it has" {
-            let a = analyze_source(
+            let a = judged(
                 "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n    static fn zero() -> P { P { x: 0 } }\n    fn twice() -> int { self.x * 2 }\n}\nP.nope().x",
             )
             a.diagnostics.length == 1 &&
@@ -114,7 +113,7 @@ spec "features/impls/statics" {
                 a.report().contains("help: its static fns are `of`, `zero`")
         }
         then "an unknown static under a record, rendered whole" {
-            analyze_source(
+            judged(
                 "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n    static fn zero() -> P { P { x: 0 } }\n}\nP.nope().x",
             )
                 .report()
@@ -123,13 +122,13 @@ spec "features/impls/statics" {
                 )
         }
         then "a record with no static fn is told how a record is built" {
-            let a = analyze_source("type P = { x: int }\nP.nope().x")
+            let a = judged("type P = { x: int }\nP.nope().x")
             a.diagnostics.length == 1 &&
                 a.report().contains("`P` has no static fn `nope`") &&
                 a.report().contains("build a record with `P { ... }`")
         }
         then "a static fn read as a value names the law and writes the lambda" {
-            let a = analyze_source(
+            let a = judged(
                 "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply(P.of)",
             )
             a.diagnostics.length == 1 &&
@@ -141,7 +140,7 @@ spec "features/impls/statics" {
                 a.report().contains("help: wrap it in a lambda — `(n: int) -> P.of(n)`")
         }
         then "a static fn read as a value, rendered whole" {
-            analyze_source(
+            judged(
                 "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply(P.of)",
             )
                 .report()
@@ -150,13 +149,13 @@ spec "features/impls/statics" {
                 )
         }
         then "the lambda spells every seat of a static fn" {
-            let a = analyze_source(
+            let a = judged(
                 "type P = { x: int }\nimpl P {\n    static fn sum(a: int, b: int) -> P { P { x: a + b } }\n}\nfn apply(f: fn(int, int) -> P) -> int { f(1, 2).x }\napply(P.sum)",
             )
             a.diagnostics.length == 1 && a.report().contains("`(a: int, b: int) -> P.sum(a, b)`")
         }
         then "the lambda it writes is the fix" {
-            let a = analyze_source(
+            let a = judged(
                 "type P = { x: int }\nimpl P {\n    static fn of(n: int) -> P { P { x: n } }\n}\nfn apply(f: fn(int) -> P) -> int { f(1).x }\napply((n: int) -> P.of(n))",
             )
             a.diagnostics.is_empty()

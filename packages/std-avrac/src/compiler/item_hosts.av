@@ -2,7 +2,7 @@
 //! program reads, judged by the one decision the old path makes (`host_fn_owed`) — its name no
 //! symbol the link already has; a dependency's naming its host, answering no other package's extern,
 //! and standing in a package the program's own sources import.
-use core.{CalledFn, some_list, sorted_texts}
+use core.{CalledFn, flatten, some_list, sorted_texts}
 use compiler.hosts.{BuildHost, HostFnOwed, host_fn_line, host_fn_owed, host_named, hosts_of}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
@@ -29,14 +29,19 @@ export type HostOwedAt = {
 export type HostsOwed = { rows: List<HostOwedAt> }
 
 /// A fn a read file declares, as a call reaches it.
+@derive(Saved)
 type ReadFn = { declared: DeclaredName, called: CalledFn }
+
+/// The fns a file declares that C defines or a host answers, each as a call reaches it.
+@derive(Saved)
+type BoundFns = { fns: List<ReadFn> }
 
 /// Every host fn of the files a build of the package `package` reads, its own tests aside, that owes
 /// the program what it doesn't pay.
 @query
 export fn program_hosts_owed(engine: QueryEngine, package: string) -> HostsOwed {
     let read = [f for f in package_closure(engine, package).files if !(f.package_name == package && f.path_in_package.starts_with(TESTS_DIR))]
-    let fns = [ReadFn { declared: d, called: c } for f in read for d in file_declares(engine, f).names if d.kind == ItemKind.Fn for c in some_list(callee_of(engine, d))]
+    let fns = flatten([file_bound_fns(engine, f).fns for f in read])
     let asked = [m.package for f in read if f.package_name == package for u in file_words(engine, f).uses for m in some_list(imported_module(engine, f, u))]
     let bodiless = [r for r in fns if r.called.external]
     let hosted = [r for r in fns if r.called.hosted]
@@ -148,15 +153,19 @@ type SourcePaths = { paths: List<string> }
 
 /// The host fns a build of the program `file` runs for `target` exports, beside the word that names
 /// each one's host: each hosted body its reach holds that its own package declares, and each another
-/// package declares naming a host the target stands beside.
-fn speaking_host_fns(engine: QueryEngine, file: SourceFileAddress, target: string) -> List<HostFn> {
+/// package declares naming a host the target stands beside. One answer, which stands where the
+/// program's reach and its files' host fns do, so a build reads the reach back only where it moved.
+@query
+fn speaking_host_fns(engine: QueryEngine, file: SourceFileAddress, target: string) -> HostFns {
     let reached = match program_reached(engine, file) {
         .Program(p) -> p,
-        .Unmade(_why, _at) -> { return [] },
+        .Unmade(_why, _at) -> { return HostFns { fns: [] } },
     }
     let hosts = hosts_of(target)
-    [h for u in reached.units if u.called.hosted for h in file_host_fns(engine, u.called.file).fns if h.called.symbol == u.called.symbol &&
-        (u.called.file.package_name == file.package_name || named_among(h.host, hosts))]
+    HostFns {
+        fns: [h for u in reached.units if u.called.hosted for h in file_host_fns(engine, u.called.file).fns if h.called.symbol == u.called.symbol &&
+            (u.called.file.package_name == file.package_name || named_among(h.host, hosts))],
+    }
 }
 
 /// Whether the host the `@host(…)` word `written` names is one of `hosts`.
@@ -170,7 +179,7 @@ fn named_among(written: string?, hosts: List<BuildHost>) -> bool {
 export fn program_host_symbols(engine: QueryEngine, file: SourceFileAddress, target: string) -> List<
     string,
 > {
-    [h.called.symbol for h in speaking_host_fns(engine, file, target)]
+    [h.called.symbol for h in speaking_host_fns(engine, file, target).fns]
 }
 
 /// The line a build of the program `file` for `target` says for each host fn it exports, in text
@@ -179,7 +188,7 @@ export fn program_host_fn_lines(engine: QueryEngine, file: SourceFileAddress, ta
     string,
 > {
     sorted_texts(
-        [host_fn_line(h.called.file.package_name, h.called.name, host_named(h.host ?? "")) for h in speaking_host_fns(engine, file, target)],
+        [host_fn_line(h.called.file.package_name, h.called.name, host_named(h.host ?? "")) for h in speaking_host_fns(engine, file, target).fns],
     )
 }
 
@@ -191,6 +200,16 @@ type HostFn = { called: CalledFn, host: string? = null }
 /// The host fns a file declares.
 @derive(Saved)
 type HostFns = { fns: List<HostFn> }
+
+/// Every fn `file` declares that C defines or a host answers, read from its own items alone: what a
+/// program's host fns are judged against, which an edit to another file, or to a body here, leaves
+/// standing.
+@query
+fn file_bound_fns(engine: QueryEngine, file: SourceFileAddress) -> BoundFns {
+    BoundFns {
+        fns: [ReadFn { declared: d, called: c } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in some_list(callee_of(engine, d)) if c.external || c.hosted],
+    }
+}
 
 /// Every host fn `file` declares, read from its own items alone.
 @query

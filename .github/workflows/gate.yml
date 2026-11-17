@@ -1,0 +1,147 @@
+# THE GATE ON A RUNNER: every slice `tools/gate.sh list` names, run from ONE seeded compiler, on a
+# push to `gate/**`. The pushed branch is a one-commit mirror — the batch's tree over its parent, the
+# trunk's — so the workflow is the pushed commit's own and nothing touches main; the idioms slices
+# take that parent (HEAD~1) as the base their diff starts at.
+#
+#   seed    `sh tools/gate.sh seed`: HEAD's compiler, one generation, packed with its objects
+#   slice   one job a slice: the pack unpacked, the slice run, its words kept where it fails
+#   verdict one table: slice, PASS or FAIL, seconds
+name: gate
+
+on:
+  push:
+    branches: ["gate/**"]
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  LLVM_PREFIX: /usr/lib/llvm-22
+  # a runner holds 16 GB and runs one slice; the old path's whole-package checks pass 6 GB
+  AVRA_MEM_CEILING_MB: "12000"
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    container: &gate-image
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      options: --cap-add=SYS_PTRACE
+    timeout-minutes: 75
+    outputs:
+      slices: ${{ steps.slices.outputs.list }}
+      sha8: ${{ steps.slices.outputs.sha8 }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - name: safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # the builder is the last seed's compiler, or the published `gate-builder` one
+      - name: builder cached
+        id: builder
+        uses: actions/cache/restore@v4
+        with:
+          path: gate-builder.tar.gz
+          key: gate-builder-${{ github.sha }}
+          restore-keys: gate-builder-
+      - name: builder
+        run: |
+          [ -s gate-builder.tar.gz ] || curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+          tar xzf gate-builder.tar.gz build/avra
+          build/avra --version
+      - name: seed
+        timeout-minutes: 70
+        run: |
+          sh tools/gate.sh seed && exit 0
+          find build/gate/pack -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
+          exit 1
+      - name: slices
+        id: slices
+        run: |
+          echo "list=$(sh tools/gate.sh list | awk '{ print $1 }' | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')" >> "$GITHUB_OUTPUT"
+          echo "sha8=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-pack
+          path: build/gate/compiler-*.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+      - name: next builder
+        run: cp build/gate/compiler-*.tar.gz gate-builder.tar.gz
+      - uses: actions/cache/save@v4
+        with:
+          path: gate-builder.tar.gz
+          key: gate-builder-${{ github.sha }}
+
+  slice:
+    needs: [seed]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.seed.outputs.slices) }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - name: safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with: { name: gate-pack, path: pack }
+      - name: unpack
+        run: sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz
+      - name: ${{ matrix.slice }}
+        timeout-minutes: 55
+        run: |
+          case "${{ matrix.slice }}" in idioms*) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
+          st=0
+          sh tools/gate.sh "${{ matrix.slice }}" $base > gate.out 2>&1 || st=$?
+          cat gate.out
+          mkdir -p verdict
+          line=$(grep '^GATE ' gate.out | tail -1)
+          [ -n "$line" ] || line="GATE ${{ matrix.slice }} ${{ needs.seed.outputs.sha8 }} FAIL rows=0 failed=0 0s (no GATE line, exit $st)"
+          echo "$line" > "verdict/${{ matrix.slice }}"
+          echo "$line"
+          exit "$st"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-verdict-${{ matrix.slice }}
+          path: verdict/
+          retention-days: 7
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.slice }}
+          path: build/gate/${{ matrix.slice }}/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  verdict:
+    needs: [seed, slice]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: gate-verdict-*, path: verdicts, merge-multiple: true }
+      - name: table
+        run: |
+          [ "${{ needs.seed.result }}" = success ] || { echo "gate: the seed did not build — ${{ needs.seed.result }}"; exit 1; }
+          printf '%-14s %-5s %s\n' slice verdict seconds
+          failed=0
+          for s in $(echo '${{ needs.seed.outputs.slices }}' | tr -d '[]",' ); do
+            line=$(cat "verdicts/$s" 2>/dev/null || echo "GATE $s - FAIL rows=0 failed=0 0s (no verdict)")
+            verdict=$(echo "$line" | awk '{ print $4 }')
+            secs=$(echo "$line" | awk '{ print $7 }')
+            printf '%-14s %-5s %s\n' "$s" "$verdict" "$secs"
+            [ "$verdict" = PASS ] || failed=$((failed + 1))
+          done
+          echo "gate: ${{ needs.seed.outputs.sha8 }} — $failed slice(s) failed"
+          [ "$failed" = 0 ]

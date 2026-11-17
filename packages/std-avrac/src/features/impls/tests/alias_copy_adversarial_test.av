@@ -4,8 +4,7 @@
 // ORDER cases were found by attacking it — a value receiver ran after
 // its arguments, and a copied receiver's index operand after the
 // argument it precedes.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, judged}
 
 spec "features/impls (alias copy, adversarial)" {
     given "degenerate shapes" {
@@ -158,7 +157,7 @@ spec "features/impls (alias copy, adversarial)" {
             ) == "1 1 0"
         }
         then "the warning names the place that holds what was read" {
-            let a = analyze_source(
+            let a = judged(
                 "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n}\n1",
             )
             a.clean() &&
@@ -171,7 +170,7 @@ spec "features/impls (alias copy, adversarial)" {
                 a.report().contains("store the copy back into `w.c` if the write should reach it")
         }
         then "a fresh seed is no copy, and says nothing" {
-            let a = analyze_source(
+            let a = judged(
                 "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn made() -> R { R { xs: [] } }\nfn shadow() -> int {\n    mut q = made()\n    q.add(1)\n    mut s = R { xs: [] }\n    s.add(2)\n    q.xs.length + s.xs.length\n}\nshadow()",
             )
             a.diagnostics.is_empty() && a.ran() == "2"
@@ -300,7 +299,7 @@ spec "features/impls (alias copy, adversarial)" {
             ) == "10"
         }
         then "the warning names the local and the path, once per local" {
-            let a = analyze_source(
+            let a = judged(
                 "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f(r: R) {\n    mut out = [r]\n    out[0].add(1)\n    out[0].add(2)\n}\n1",
             )
             a.clean() &&
@@ -317,7 +316,7 @@ spec "features/impls (alias copy, adversarial)" {
                     )
         }
         then "a path rooted at `self` or a seat says nothing" {
-            let a = analyze_source(
+            let a = judged(
                 "type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\n1",
             )
             a.clean() && a.diagnostics.is_empty()

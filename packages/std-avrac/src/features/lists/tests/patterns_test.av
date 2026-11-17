@@ -1,12 +1,11 @@
 // List and record patterns, by attack class. Accepted programs run
 // through `shown`; each refusal pins its voice, and the goldens pin
 // the rendering.
-use @std.avrac.testing.{shown, refused_with, projected}
-use compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, projected, judged}
 
 /// A program whose report says `phrase` — a refused pattern may also leave
 /// its arm's coverage unspoken for, so these do not pin the count.
-fn says(source: string, phrase: string) -> bool { analyze_source(source).report().contains(phrase) }
+fn says(source: string, phrase: string) -> bool { judged(source).report().contains(phrase) }
 
 const PT: string = "type P = { x: int, y: int }\n"
 
@@ -141,11 +140,10 @@ spec "features/lists — patterns, adversarial" {
     }
     given "the refusals, rendered" {
         then "a field after a record pattern's rest" {
-            analyze_source("${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { .., x } -> x\n}")
-                .report() == "error[type.record_pattern]: `..` ends a record pattern — nothing is named after it\n  ╭─[<source>:4:5]\n4 │     P { .., x } -> x\n  ·     ┬\n  ·     ╰── a field after `..`\n──╯\nhelp: move the `..` after the last field"
+            judged("${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { .., x } -> x\n}").report() == "error[type.record_pattern]: `..` ends a record pattern — nothing is named after it\n  ╭─[<source>:4:5]\n4 │     P { .., x } -> x\n  ·     ┬\n  ·     ╰── a field after `..`\n──╯\nhelp: move the `..` after the last field"
         }
         then "a list pattern over a non-list" {
-            analyze_source("let n = 3\nmatch n {\n    [a, ..] -> a\n    _ -> 0\n}").report() == "error[type.list_pattern]: a list pattern matches a list, found `int`\n  ╭─[<source>:3:5]\n3 │     [a, ..] -> a\n  ·     ┬\n  ·     ╰── this pattern\n──╯\nhelp: match a list — `[first, ..rest]`; for any other value, match what it is"
+            judged("let n = 3\nmatch n {\n    [a, ..] -> a\n    _ -> 0\n}").report() == "error[type.list_pattern]: a list pattern matches a list, found `int`\n  ╭─[<source>:3:5]\n3 │     [a, ..] -> a\n  ·     ┬\n  ·     ╰── this pattern\n──╯\nhelp: match a list — `[first, ..rest]`; for any other value, match what it is"
         }
     }
     given "the printer" {

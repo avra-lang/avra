@@ -10,6 +10,7 @@ use style.box.{Box}
 use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout, around}
 use style.theme.{Theme, Mode, Contrast, Dial, Shades}
+use style.look.{Ground, Measure, Wear, worn}
 use tree.lists.{flatten}
 use tree.node.{Node, Prim, Attribute, own_axis, gap_between}
 use style.tokens.{Size, Tone, Ink, Font, Level, TypeSize, LineHeight, Tracking}
@@ -461,8 +462,8 @@ fn appearance_vocabulary() -> List<CssRule> {
 /// It is the same for every program on this version of the vocabulary.
 export fn all_rules() -> List<CssRule> { distinct_rules(layout_vocabulary().concat(appearance_vocabulary())) }
 
-/// The vocabulary as a stylesheet — the page's base and every rule, with no
-/// theme in it: one file for every page of every program.
+/// The vocabulary as a stylesheet — the page's plumbing and every rule, with
+/// no theme in it: one file for every page of every program.
 export fn atoms_sheet() -> string { base_rules().concat([rule_source(r) for r in all_rules()]).join("\n") }
 
 // ── the stylesheet ──────────────────────────────────────────────
@@ -490,22 +491,12 @@ fn colour_vars(t: Theme) -> List<ColourVar> {
         .concat([ColourVar { name: "ink-${c.word()}", dial: t.ink.at(c) } for c in Ink.every()])
 }
 
-/// A colour's normal shades.
-fn normal(d: Dial) -> Shades { Shades { light: d.light, dark: d.dark } }
-
-/// A colour's more-contrast shades, or its normal ones when it has none.
-fn stronger(d: Dial) -> Shades { d.more ?? normal(d) }
-
 /// A colour in both schemes; the scheme the page wears picks one.
 fn dialed(name: string, s: Shades) -> string { "--${name}:light-dark(${s.light},${s.dark});" }
 
-/// The colours at rest: the normal shades, or the stronger ones when the
-/// theme holds more contrast.
+/// The colours at rest: the shades the theme's contrast reads.
 fn colours_at_rest(t: Theme) -> string {
-    match t.contrast {
-        .More -> [dialed(v.name, stronger(v.dial)) for v in colour_vars(t)].join(""),
-        .System or .Standard -> [dialed(v.name, normal(v.dial)) for v in colour_vars(t)].join(""),
-    }
+    [dialed(v.name, v.dial.read_at(t.contrast)) for v in colour_vars(t)].join("")
 }
 
 /// The colours a reader who asks for more contrast reads instead: only
@@ -520,7 +511,7 @@ fn more_contrast(t: Theme) -> string {
     }
 }
 
-fn present(s: Shades?) -> List<Shades> {
+fn present<T>(s: T?) -> List<T> {
     match s {
         v? -> [v]
         null -> []
@@ -580,37 +571,178 @@ fn tags(of: List<HtmlTag>) -> string { [t.word() for t in of].join(",") }
 /// The axis classes, as what an element that is no flex box does not wear.
 fn unflexed() -> string { [":not(.${axis_word(a).name})" for a in [Axis.Row, .Column]].join("") }
 
-/// What the page looks like under every node, read from the same
-/// variables. The page wears the canvas, what sits on it and the body
-/// face, and a control wears them too rather than the browser's own: a
-/// button shows what it stands on inside a field's border, so a fill it
-/// names is the fill a reader sees, and one that cannot speak wears the
-/// disabled ink. A heading
-/// and a rule keep no margin: space is a gap or a pad. A control and its
-/// words sit on one line, a step apart; what an item holds on one line
-/// stands a step apart too, and the item keeps its marker. A dialog wears
-/// the surface over the middle of the page, and a closed one is not
-/// drawn whatever its classes say.
+/// What the page is under every node, read from the same variables: the
+/// web's plumbing, never a look a theme gives a primitive. The page wears
+/// the canvas, what sits on it and the body face, and a control wears them
+/// too rather than the browser's own. A heading and a rule keep no margin:
+/// space is a gap or a pad. A control and its words sit on one line, a step
+/// apart; what an item holds on one line stands a step apart too, and the
+/// item keeps its marker. A dialog stands over the middle of the page, and
+/// a closed one is not drawn whatever its classes say.
 fn base_rules() -> List<string> {
     [
         "*,*::before,*::after{box-sizing:border-box}",
         "@property --grow{syntax:\"<number>\";inherits:false;initial-value:1}",
         "body{margin:0;overflow-wrap:break-word;${fill_word(.Canvas).decl};${on_word(.Canvas).decl};${face_word(.Body).decl};${text_size_word(.Body).decl};${line_height_word(.Normal).decl}}",
         "${tags([.Button, .Input])}{font:inherit;color:inherit}",
-        "${tags([.Button, .Input])}{min-height:var(--control);border-radius:var(--radius-${Size.M.word()})}",
-        "${tags([.Button])}{background:transparent;border:1px solid var(--ink-${Ink.Field.word()});padding:var(--space-${Size.Xs.word()}) var(--space-${Size.S.word()})}",
-        "${tags([.Button])}:disabled{${color_word(.Disabled).decl}}",
         "${tags([.H1, .H2, .H3, .H4, .H5, .H6, .Hr])}{margin:0}",
         "${tags([.Label])}{display:inline-flex;align-items:center;${gap_word(.Xs).decl}}",
-        "${tags([.Li])}{padding-block:var(--row)}",
         "${tags([.Li])}${unflexed()}>*+*{margin-inline-start:var(--space-${Size.S.word()})}",
-        "${tags([.Dialog])}{position:fixed;inset-block:0;${fill_word(.SurfaceRaised).decl};${on_word(.SurfaceRaised).decl}}",
+        "${tags([.Dialog])}{position:fixed;inset-block:0}",
         "${tags([.Dialog])}:not([open]){display:none}",
     ]
 }
 
-/// A whole page's stylesheet: the theme, the page's own base, then the
-/// rules the tree named.
+// ── the look a theme gives each primitive ───────────────────────
+
+/// How the web finds a primitive's element: the tags it is drawn as, and
+/// what narrows a tag to it where another primitive draws the same one.
+type Placed = { tags: List<string>, kinds: List<string> }
+
+/// A primitive alone on its tag.
+fn alone(tag: HtmlTag) -> Placed { Placed { tags: [tag.word()], kinds: [] } }
+
+/// An `input`, narrowed to the kinds a primitive draws.
+fn input(kinds: List<string>) -> Placed { Placed { tags: [HtmlTag.Input.word()], kinds: kinds } }
+
+/// Where the web finds each primitive's element, or nothing where its tag
+/// is shared and nothing on the element tells it apart. Every primitive
+/// spelled.
+fn placed(p: Prim) -> Placed? {
+    match p {
+        .Text -> alone(.Span),
+        .Heading -> Placed { tags: [t.word() for t in [HtmlTag.H1, .H2, .H3, .H4, .H5, .H6]], kinds: [] },
+        .Button -> alone(.Button),
+        .Link -> alone(.A),
+        .Field -> input(["[type=text]", "[type=password]"]),
+        .Checkbox -> input(["[type=checkbox]:not([role=switch])"]),
+        .Switch -> input(["[role=switch]"]),
+        .Slider -> input(["[type=range]"]),
+        .Dialog -> alone(.Dialog),
+        .Divider -> alone(.Hr),
+        .List -> alone(.Ul),
+        .Item -> alone(.Li),
+        .Card -> alone(.Article),
+        .Progress -> alone(.Progress),
+        .Form -> alone(.Form),
+        .Fieldset -> alone(.Fieldset),
+        .Image or .Icon or .Row or .Column or .Surface or .Alert or .Spinner or .Key -> null,
+    }
+}
+
+/// The primitives a theme gives a look the web cannot place: their tag is
+/// another primitive's too, and nothing on the element tells them apart.
+export fn unplaced_looks(t: Theme) -> List<Prim> {
+    [p for p in Prim.every() if placed(p) == null && states().any(looked(t, p, it) != "")]
+}
+
+/// A length a look names, as the variable that carries it.
+fn measured(m: Measure) -> string {
+    match m {
+        .Step(z) -> "var(--space-${z.word()})",
+        .Control -> "var(--control)",
+        .Row -> "var(--row)",
+    }
+}
+
+/// The surface a look stands on, shaded toward what sits on it.
+fn ground_decls(g: Ground) -> List<string> {
+    match g {
+        .Native -> [],
+        .Clear -> ["background:transparent"],
+        .Fill(t, mix) -> [if mix == 0 { fill_word(t).decl } else { shade_decl(t, mix) }],
+    }
+}
+
+/// A surface `mix` percent of the way to what sits on it.
+fn shade_decl(t: Tone, mix: int) -> string {
+    "background:color-mix(in srgb,var(--tone-${t.word()}),var(--on-${t.word()}) ${mix}%)"
+}
+
+/// The ink a look is drawn in: the one it names, else what sits on its fill.
+fn ink_decls(w: Wear) -> List<string> {
+    let i? = w.ink else {
+        return match w.ground { .Fill(t, _) -> [on_word(t).decl], .Native or .Clear -> [] }
+    }
+    [color_word(i).decl]
+}
+
+/// The padding above and below, and at each side.
+fn pad_decls(w: Wear) -> List<string> {
+    let b? = w.block else { return ["padding-inline:${measured(i)}" for i in present(w.inline)] }
+    match w.inline {
+        i? -> ["padding:${measured(b)} ${measured(i)}"]
+        null -> ["padding-block:${measured(b)}"]
+    }
+}
+
+/// What a wear declares on the web.
+fn wear_decls(w: Wear) -> string {
+    flatten(
+        [
+            ground_decls(w.ground),
+            ink_decls(w),
+            ["border:1px solid var(--ink-${i.word()})" for i in present(w.line)],
+            [radius_word(z).decl for z in present(w.radius)],
+            ["min-height:${measured(m)}" for m in present(w.least)],
+            pad_decls(w),
+        ],
+    )
+        .join(";")
+}
+
+/// What a primitive's look declares at rest, or in a state.
+fn looked(t: Theme, p: Prim, s: Interaction?) -> string {
+    match s {
+        v? -> wear_decls(worn(t.look.at(p), v, t.shading))
+        null -> wear_decls(t.look.at(p).rest)
+    }
+}
+
+/// One primitive's look in one state.
+type LookRule = { prim: Prim, state: Interaction?, decls: string }
+
+/// Every placed primitive's look that declares anything, at rest and then
+/// in each state.
+fn look_rules(t: Theme) -> List<LookRule> {
+    [LookRule { prim: p, state: s, decls: looked(t, p, s) } for s in states() for p in Prim.every() if placed(p) != null && looked(t, p, s) != ""]
+}
+
+/// Two rules share a line when they declare the same in the same state.
+fn alike(a: LookRule, b: LookRule) -> bool { a.state == b.state && a.decls == b.decls }
+
+/// The selectors a set of primitives is written under: a tag alone where
+/// every primitive drawn as it is in the set, else each one's kinds.
+fn parts(prims: List<Prim>) -> List<string> {
+    let ps = [pl for p in prims for pl in present(placed(p))]
+    flatten([tag_parts(k, ps) for k in names_once([pl.tags.join(",") for pl in ps])])
+}
+
+fn tag_parts(key: string, ps: List<Placed>) -> List<string> {
+    let mine = [pl for pl in ps if pl.tags.join(",") == key]
+    let every = [pl for p in Prim.every() for pl in present(placed(p)) if pl.tags.join(",") == key]
+    if mine.length == every.length { return key.split(",") }
+    [t + k for pl in mine for t in pl.tags for k in pl.kinds]
+}
+
+/// The theme's look for every primitive; primitives that declare alike in a
+/// state share one rule.
+fn look_sheet(t: Theme) -> List<string> {
+    let rules = look_rules(t)
+    ["${[part + pseudo_of(r.state) for part in parts([q.prim for q in rules if alike(q, r)])].join(",")}{${r.decls}}" for i, r in rules if !rules.slice(0, i).any(alike(it, r))]
+}
+
+/// What a page wears of its theme: the variables every class reads and the
+/// look of every primitive. A page whose theme moves either is sent its
+/// sheet again.
+export fn worn_by(t: Theme) -> string { [root_vars(t)].concat(look_sheet(t)).join("\n") }
+
+/// A whole page's stylesheet: the theme, the page's own base, the look the
+/// theme gives each primitive, then the rules the tree named.
 export fn page_sheet(rules: List<CssRule>, t: Theme) -> string {
-    [root_vars(t)].concat(base_rules()).concat([rule_source(r) for r in rules]).join("\n")
+    [root_vars(t)]
+        .concat(base_rules())
+        .concat(look_sheet(t))
+        .concat([rule_source(r) for r in rules])
+        .join("\n")
 }

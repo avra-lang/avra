@@ -1,8 +1,8 @@
 // The type surface: every annotation is written in ONE rule, so `?`
 // works wherever a type is spelled — params, returns — and an
 // unknown name still refuses in the words it always did.
-use @std.avrac.compiler.{analyze_source, parse_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{shown, refused_with, judged}
 
 spec "features/type_expr" {
     given "a written type" {
@@ -10,15 +10,15 @@ spec "features/type_expr" {
             shown("fn f(x: int) -> int { x + 1 }\nf(41)") == "42"
         }
         then "`?` is part of the type, in a param" {
-            let a = analyze_source("fn g(x: int?) -> int { 1 }\ng(1)")
+            let a = judged("fn g(x: int?) -> int { 1 }\ng(1)")
             a.diagnostics.is_empty()
         }
         then "`?` is part of the type, in a return" {
-            let a = analyze_source("fn g() -> int? { null }\ng() ?? 0")
+            let a = judged("fn g() -> int? { null }\ng() ?? 0")
             a.diagnostics.is_empty()
         }
         then "a nullable and its value are DIFFERENT types" {
-            let a = analyze_source("fn g(x: int?) -> int { 1 }\nfn h(y: int) -> int { g(y) }\nh(1)")
+            let a = judged("fn g(x: int?) -> int { 1 }\nfn h(y: int) -> int { g(y) }\nh(1)")
             a.diagnostics.is_empty()
         }
         then "`List<int>` annotates a PARAM — the fn-boundary hole, closed" {

@@ -2,9 +2,8 @@
 // absence, `??` answers it — and the right side runs ONLY when the
 // left is absent. Non-null by default is the law every refusal here
 // is defending.
-use @std.avrac.compiler.{analyze_source}
 use @std.avrac.diagnostics.{suggested}
-use @std.avrac.testing.{shown, refused_with, refusals, refused_at_run, makers, finder}
+use @std.avrac.testing.{shown, refused_with, refusals, refused_at_run, makers, finder, judged}
 
 spec "features/nullable" {
     given "a nullable pointer in a slot — the niche" {
@@ -205,33 +204,33 @@ spec "features/nullable" {
     }
     given "non-null by default" {
         then "`null` is not an `int`" {
-            let a = analyze_source("fn f() -> int { null }\nf()")
+            let a = judged("fn f() -> int { null }\nf()")
             a.diagnostics.length == 1 &&
                 a.report().contains("the body answers `null` but `f` declares `int`")
         }
         then "a nullable is not its value" {
-            let a = analyze_source("${makers}some(1) + 1")
+            let a = judged("${makers}some(1) + 1")
             a.diagnostics.length == 1 &&
                 a.report().contains("`+` needs `int` operands, found `int?`")
         }
         then "a nullable never widens BACK" {
-            let a = analyze_source("fn f(x: int) -> int { x }\n${makers}f(some(1))")
+            let a = judged("fn f(x: int) -> int { x }\n${makers}f(some(1))")
             a.diagnostics.length == 1 &&
                 a.report().contains("argument 1 of `f` wants `int`, found `int?`")
         }
     }
     given "`??`'s own law" {
         then "on a guarantee it warns — never fires — and answers the guarantee" {
-            let a = analyze_source("1 ?? 2")
+            let a = judged("1 ?? 2")
             a.diagnostics.length == 1 && a.report().contains("never fires") && a.ran() == "1"
         }
         then "the warning carries a real Suggestion — drop `?? 2`, leaving `1` alone" {
-            let d = analyze_source("1 ?? 2").diagnostics[0]
+            let d = judged("1 ?? 2").diagnostics[0]
             let fixes = suggested(d)
             fixes.length == 1 && fixes[0] == "<source>: "
         }
         then "the right side carries the nullable's own type" {
-            let a = analyze_source("${makers}some(1) ?? \"s\"")
+            let a = judged("${makers}some(1) ?? \"s\"")
             a.diagnostics.length == 1 &&
                 a.report().contains("`??` answers with a `int`, this is `string`")
         }

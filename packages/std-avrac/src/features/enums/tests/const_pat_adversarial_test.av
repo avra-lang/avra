@@ -1,8 +1,7 @@
 // A const as a pattern under attack: what a bare name compares to,
 // what makes it bind instead, what it refuses, and what the writer is
 // told where the two readings could be mistaken for each other.
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with, refusals, projected}
+use @std.avrac.testing.{shown, refused_with, refusals, projected, judged}
 
 fn codes() -> string {
     "const tab = 9\nconst escape = 27\n"
@@ -11,7 +10,7 @@ fn codes() -> string {
 /// A program that RUNS, answers `answer`, and earns exactly one
 /// diagnostic saying `phrase`.
 fn warned(source: string, answer: string, phrase: string) -> bool {
-    let a = analyze_source(source)
+    let a = judged(source)
     a.ran() == answer && a.diagnostics.length == 1 && a.report().contains(phrase)
 }
 
@@ -137,12 +136,12 @@ spec "features/enums/patterns — a const's name compares" {
     }
     given "exhaustiveness" {
         then "a comparison covers nothing — the catch-all is still owed" {
-            analyze_source(over("    match c {\n        tab -> 1\n        escape -> 2\n    }", "9"))
+            judged(over("    match c {\n        tab -> 1\n        escape -> 2\n    }", "9"))
                 .report()
                 .contains("a `match` over `int` needs a catch-all arm")
         }
         then "comparing a unit enum's every const still owes each variant" {
-            let a = analyze_source(
+            let a = judged(
                 "enum M {\n    A\n    B\n}\nconst a = M.A\nconst b = M.B\nfn f(m: M) -> int {\n    match m {\n        a -> 1\n        b -> 2\n    }\n}\nf(M.A)",
             )
             a.report().contains("must handle `.A`") && a.report().contains("must handle `.B`")
@@ -160,9 +159,7 @@ spec "features/enums/patterns — a const's name compares" {
             refusals(over("    match c {\n        tab -> 1\n        _ -> 0\n    }", "9")) == 0
         }
         then "a guarded one is no ending — nothing is said of it" {
-            analyze_source(
-                over("    match c {\n        9 -> 1\n        tab if c > 0 -> 2\n    }", "9"),
-            )
+            judged(over("    match c {\n        9 -> 1\n        tab if c > 0 -> 2\n    }", "9"))
                 .report()
                 .contains("is a const here") == false
         }
