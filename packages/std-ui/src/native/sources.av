@@ -4,8 +4,9 @@
 //! runs inside `App.turn` like a control's word, and it ends when the
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
-//! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
+//! from its own callbacks (docs/2026_11_16_UI.md, the native ledger).
 use app.{Act, App, Door, Heard, Job, Msg, Want, running}
+use tree.trap.{trapped}
 use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, every, ms, now_ms, sleep}
 use @std.task.{Channel, Posted, Sink, Source, unbounded_channel}
@@ -16,7 +17,7 @@ export fn unshown() {}
 /// The inbox of an app's loop, open: the app's door leads to it, so what
 /// a source leaves is kept for the loop that serves it.
 export fn opened(on: App, net: fn(Request) -> Result<Reply, string>) -> Channel<Msg> {
-    if on.looping.get() { avra_trap(one_loop()) }
+    if on.looping.get() { trapped(one_loop()) }
     on.looping.set(true)
     let inbox = unbounded_channel<Msg>()
     let send = (m: Msg) -> taken(inbox.sink.post(m))
@@ -57,8 +58,6 @@ fn asked(
 fn taken(p: Posted) -> bool {
     match p { .Taken or .Full -> true, .Ended -> false }
 }
-
-extern fn avra_trap(message: string)
 
 /// A task of the loop that runs jobs one at a time: the queue it is
 /// handed them on, the line a cancel of its current job travels, the

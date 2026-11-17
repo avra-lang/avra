@@ -263,3 +263,70 @@ spec "std/ui place — cells" {
         }
     }
 }
+
+spec "std/ui place — cells / percent sizes" {
+    given "a width that is a share of what holds the box" {
+        then "a row's children take half and a quarter of its twenty cells" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node(""), Layout { width: .Percent(50.0), height: .Fixed(1) }),
+                        laid(text_node(""), Layout { width: .Percent(25.0), height: .Fixed(1) }),
+                    ],
+                ),
+                20,
+            ) == "row 0,0 20x1\n  text 0,0 10x1\n  text 10,0 5x1"
+        }
+        then "a share that does not divide is rounded, halves up" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node(""), Layout { width: .Percent(50.0), height: .Fixed(1) }),
+                        laid(text_node(""), Layout { width: .Percent(10.0), height: .Fixed(1) }),
+                    ],
+                ),
+                5,
+            ) == "row 0,0 5x1\n  text 0,0 3x1\n  text 3,0 0x1"
+        }
+        then "two halves and the row's own gap overflow it, and both give way by half a cell" {
+            at(
+                row(
+                    Layout {},
+                    [
+                        laid(text_node(""), Layout { width: .Percent(50.0), height: .Fixed(1) }),
+                        laid(text_node(""), Layout { width: .Percent(50.0), height: .Fixed(1) }),
+                    ],
+                ),
+                20,
+            ) == "row 0,0 20x1\n  text 0,0 10x1\n  text 11,0 9x1"
+        }
+        then "a column's child takes its share across" {
+            at(column(Layout {}, [laid(text_node("a"), Layout { width: .Percent(30.0) })]), 20) == "column 0,0 20x1\n  text 0,0 6x1"
+        }
+        then "a share of nothing is nothing" {
+            at(
+                row(
+                    Layout {},
+                    [laid(text_node(""), Layout { width: .Percent(0.0), height: .Fixed(1) })],
+                ),
+                20,
+            ) == "row 0,0 20x1\n  text 0,0 0x1"
+        }
+    }
+    given "a height that is a share of what holds the box" {
+        then "a column that fixes its height gives a child half of it" {
+            at(
+                column(
+                    Layout { height: .Fixed(10) },
+                    [laid(text_node("a"), Layout { height: .Percent(50.0) })],
+                ),
+                20,
+            ) == "column 0,0 20x10\n  text 0,0 20x5"
+        }
+        then "a container with no height of its own gives a share of nothing, and the child hugs its content" {
+            at(column(Layout {}, [laid(text_node("a"), Layout { height: .Percent(50.0) })]), 20) == "column 0,0 20x1\n  text 0,0 20x1"
+        }
+    }
+}

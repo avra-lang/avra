@@ -176,7 +176,7 @@ and EXISTS NOWHERE ON DISK** — not in this repo, not in this repo's git histor
 not in any worktree, not in the older `forge-crafting-intepreters` tree or its
 siblings. A search of the whole project directory by name returns nothing.
 
-`2026_09_29_WEB_UI.md` names it *"the normative home"* for *"principals, the
+`2026_11_16_UI.md` names it *"the normative home"* for *"principals, the
 action lifecycle, impact, … safeguard, receipt, waiver and mandate laws"*, and
 defers to it for at least nine sections. That design was written and lost. **It
 must be found or rewritten before the identity axis is implemented** — a

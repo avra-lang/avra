@@ -1,7 +1,7 @@
 # Authority and receipts — actions, impact, safeguards, mandates
 
 > 2026-09-29. DESIGN, normative, nothing built, nothing ratified.
-> Extracted from `2026_09_29_WEB_UI.md` (§7, §9.3, §16) because none of it
+> Extracted from `2026_11_16_UI.md` (§7, §9.3, §16) because none of it
 > is web-specific. Decision trail: WEB_UI §25 T3, T5, T12, T13, T14, T15.
 > Rationale and scale-out research: `2026_09_24_AUTONOMOUS_SYSTEMS_AND_STATE.md`.
 > All syntax is illustrative.

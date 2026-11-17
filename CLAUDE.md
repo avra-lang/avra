@@ -336,6 +336,30 @@ registry is the idiom engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- A STREAM ENDS BECAUSE ITS PEER IS GONE, NEVER BECAUSE A WRITE
+  FAILED. A client that closed sends FIN, and a write into a
+  half-closed socket SUCCEEDS — so a loop that learns of a departure
+  only from a failed write keeps serving a departed peer, holding the
+  connection, the stream and the count that names it. When the RST
+  happens to land first the write does fail, which is what makes the
+  defect read as a flake: `crud_feed`'s count answered 3, 5 and 0
+  across schedules while the evaluator always answered 0, and the
+  native leg's own reap could not clear the leftovers in twenty
+  seconds of writes. The same shape hides in any socket loop whose
+  only failure signal is the write: the read side's EOF is the fact,
+  and a loop that cannot see it has to be given one.
+- A LOOP THAT WAITS FOR THE SERVER TO CATCH UP IS BOUNDED BY WHAT IT
+  ASKED, NEVER BY THE SERVER'S COOPERATION. The cache re-asked a view
+  behind a layer on every landing until the reading's stand passed the
+  write's; a server whose stand lagged (a replica, a stale proxy) made
+  that unbounded — a hang at zero latency, a poll forever otherwise.
+  Ask once per layer and let the layer stand over a reading that is
+  still behind. AND A LOOP OVER CALLBACKS CONTAINS EACH ONE: a caller's
+  parse that trapped inside the watcher loop left its view loading and
+  every later view of the entry untold, with the answer's bookkeeping
+  skipped. A callback the loop does not own runs under `contained`, and
+  its trap is that view's own failure. Witnesses:
+  std-ui/src/tests/observed_layer_attacks, observed_trapped_parse.
 - ONE DERIVATION IS ALIVE AT A TIME. A derivation that turns, owes
   its instantiations, or quarrels under a hold is asked AGAIN in a
   fresh workspace, and the one before must be LET GO first or the

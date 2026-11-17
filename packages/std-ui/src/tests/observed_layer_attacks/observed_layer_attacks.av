@@ -1,0 +1,237 @@
+use @std.ui.app.{Async, Fetch, Overlay, fetch, fetched, running}
+use @std.ui.components.{column}
+use @std.ui.headless.{Screen, headless}
+use @std.http_message.message.{Body, Header, Reply, Request}
+use @std.json.{Field, Json, parse, to_text}
+use @std.time.{ms}
+
+state tasks: string = "[{\"id\":1,\"title\":\"a\",\"done\":false},{\"id\":2,\"title\":\"b\",\"done\":false}]"
+state notes: string = "[{\"slug\":\"x\",\"title\":\"x\",\"done\":false}]"
+state clock: int = 1
+state received: List<string> = []
+state lag: int = 0
+
+fn rows_of(text: string) -> List<Json> {
+    match parse(text) { .Ok(.Arr(items)) -> items, .Ok(_) or .Err(_) -> [] }
+}
+
+fn member(row: Json, key: string) -> Json {
+    match row {
+        .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null,
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> Json.Null,
+    }
+}
+
+fn text_of(j: Json) -> string {
+    match j {
+        .Str(s) -> s,
+        .Int(n) -> "${n}",
+        .Bool(b) -> "${b}",
+        .Float(_) or .Null or .Arr(_) or .Obj(_) -> "?",
+    }
+}
+
+fn merged(row: Json, patch: Json) -> Json {
+    match row {
+        .Obj(fields) -> match patch {
+            .Obj(over) -> .Obj(
+                [if over.any(it.key == f.key) { over.find(it.key == f.key)! } else { f } for f in fields],
+            ),
+            .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> row,
+        },
+        .Arr(_) or .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> row,
+    }
+}
+
+fn key_of(path: string) -> string { if path == "/tasks" { "id" } else { "slug" } }
+
+fn body_of(r: Request) -> Json {
+    match r.body {
+        .Json(t) -> match parse(t) { .Ok(j) -> j, .Err(_) -> Json.Null },
+        .Empty or .Text(_) or .Form(_) or .Octets(_, _) -> Json.Null,
+    }
+}
+
+fn stored(path: string) -> List<Json> { rows_of(if path == "/tasks" { tasks } else { notes }) }
+
+fn keep(path: string, rows: List<Json>) {
+    if path == "/tasks" { tasks = to_text(Json.Arr(rows)) } else { notes = to_text(Json.Arr(rows)) }
+}
+
+fn said(body: string, stand: int) -> Result<Reply, string> {
+    .Ok(
+        Reply {
+            status: 200,
+            headers: [
+                Header { name: "avra-stand", value: "${stand}" },
+                Header { name: "avra-wrote", value: "T" },
+                Header { name: "avra-reads", value: "T" },
+            ],
+            body: body.bytes(),
+        },
+    )
+}
+
+/// The server: GET answers a collection, PATCH merges a row, POST makes one — the id the next integer for tasks, the title
+/// for notes. A title of `bad` is refused.
+fn serve(r: Request) -> Result<Reply, string> {
+    let path = r.url.split("?").first() ?? ""
+    let at = if r.method is .Get { path } else { path.split("/").take(2).join("/") }
+    let col = key_of(at)
+    let body = body_of(r)
+    received
+        .push("${r.method.word()} ${r.url} ${if r.method is .Get { "" } else { to_text(body_of(r)) }}")
+    if r.method is .Get {
+        let query = r.url.split("?").drop(1).join("?")
+        let open = [row for row in stored(at) if query != "done=false" || text_of(member(row, "done")) == "false"]
+        return .Ok(
+            Reply {
+                status: 200,
+                headers: [
+                    Header { name: "avra-stand", value: "${clock - lag}" },
+                    Header { name: "avra-reads", value: "T" },
+                ],
+                body: to_text(Json.Arr(open)).bytes(),
+            },
+        )
+    }
+    if text_of(member(body, "title")) == "bad" { return .Ok(Reply { status: 422, body: "no".bytes() }) }
+    clock = clock + 1
+    if r.method is .Post {
+        let id = if at == "/tasks" { Json.Int(stored(at).length + 1) } else { member(body, "title") }
+        let made = merged(
+            Json
+                .Obj(
+                    [
+                        Field { key: col, value: id },
+                        Field { key: "title", value: Json.Null },
+                        Field { key: "done", value: Json.Null },
+                    ],
+                ),
+            body,
+        )
+        keep(at, stored(at).concat([made]))
+        return said(to_text(made), clock)
+    }
+    let id = path.split("/").last() ?? ""
+    keep(
+        at,
+        [if text_of(member(row, col)) == id { merged(row, body) } else { row } for row in stored(at)],
+    )
+    said("{}", clock)
+}
+
+fn parsed(r: Reply) -> Result<List<Json>, string> {
+    match parse(r.body.text() ?? "") {
+        .Ok(.Arr(items)) -> .Ok(items),
+        .Ok(_) -> .Err("not a list"),
+        .Err(_) -> .Err("not json"),
+    }
+}
+
+fn wrote(r: Reply) -> Result<int, string> { if r.status < 300 { .Ok(r.status) } else { .Err("status ${r.status}") } }
+
+fn shown(f: Fetch<List<Json>>, key: string) -> string {
+    let rows = f.value() ?? []
+    [for_row(f, i, r, key) for i, r in rows].join(" ")
+}
+
+fn for_row(f: Fetch<List<Json>>, i: int, r: Json, key: string) -> string {
+    "${f.key_of(i, text_of(member(r, key)))}=${text_of(member(r, "done"))}"
+}
+
+fn layers_held() -> int {
+    let on? = running() else { return -1 }
+    on.observed.layers.get().length
+}
+
+fn patch(path: string, key: string, id: string, done: bool) -> Request {
+    Request
+        .patch(
+            "${path}/${id}",
+            Body.Json("{\"${key}\":${if key == "id" { id } else { "\"${id}\"" }},\"done\":${done}}"),
+        )
+}
+
+fn tick(path: string, key: string, id: string, done: bool) {
+    let _ = fetched(
+        fetch<int>(),
+        patch(path, key, id, done),
+        wrote,
+        foresee: Overlay.Patch(key, id),
+    )
+}
+
+// proves: a layer stays until a reading at or past its own write arrives, wherever the answers fall. A reading that
+// is behind the write leaves it over the stale rows; an entry that is let go or re-pointed while a layer stands
+// leaves no layer behind and shows the next key's own rows; a refused write in the middle of a burst on other rows
+// drops its own layer and no other; a hide of a row the list lacks and a patch of one it lacks change nothing —
+// eval == native.
+fn titled(path: string, id: string, title: string, done: bool) -> Request {
+    Request
+        .patch("${path}/${id}", Body.Json("{\"id\":${id},\"title\":\"${title}\",\"done\":${done}}"))
+}
+
+fn lay(r: Request, id: string) {
+    let _ = fetched(fetch<int>(), r, wrote, foresee: Overlay.Patch("id", id))
+}
+
+let screen = headless(() -> column {})
+screen.wired(serve)
+screen
+    .running(
+        () -> {
+            let all: Fetch<List<Json>> = fetch()
+            let _ = fetched(all, Request.get("/tasks"), parsed)
+            screen.advance(ms(10))
+            println("loaded: ${shown(all, "id")}")
+            lag = 1
+            tick("/tasks", "id", "1", true)
+            screen.advance(ms(10))
+            println(
+                "answered, then read behind the write: ${shown(all, "id")} | layers ${layers_held()}",
+            )
+            let _ = fetched(all, Request.get("/tasks"), parsed)
+            screen.advance(ms(10))
+            println("asked again, still behind: ${shown(all, "id")} | layers ${layers_held()}")
+            lag = 0
+            let _ = fetched(all, Request.get("/tasks"), parsed)
+            screen.advance(ms(10))
+            println("a reading at the write: ${shown(all, "id")} | layers ${layers_held()}")
+            tick("/tasks", "id", "2", true)
+            let _ = fetched(all, Request.get("/notes"), parsed)
+            println(
+                "re-pointed while the layer stands: ${shown(all, "slug")} | layers ${layers_held()}",
+            )
+            screen.advance(ms(10))
+            println("answered: ${shown(all, "slug")} | layers ${layers_held()}")
+            let _ = fetched(all, Request.get("/tasks"), parsed)
+            screen.advance(ms(10))
+            println("back to the first key: ${shown(all, "id")} | layers ${layers_held()}")
+            received = []
+            lay(titled("/tasks", "1", "a", false), "1")
+            lay(titled("/tasks", "2", "bad", false), "2")
+            lay(titled("/tasks", "1", "z", true), "1")
+            println(
+                "a burst, the middle write to be refused: ${shown(all, "id")} | layers ${layers_held()}",
+            )
+            screen.advance(ms(10))
+            println("answered: ${shown(all, "id")} | layers ${layers_held()}")
+            println("sent: ${received.filter(it.starts_with("PATCH")).join(" ; ")}")
+            let _ = fetched(
+                fetch<int>(),
+                Request.patch("/tasks/99", Body.Json("{\"id\":99,\"done\":true}")),
+                wrote,
+                foresee: Overlay.Patch("id", "99"),
+            )
+            let _ = fetched(
+                fetch<int>(),
+                Request.delete("/tasks/98"),
+                wrote,
+                foresee: Overlay.Hide("id", "98"),
+            )
+            println("a patch and a hide of rows the list lacks: ${shown(all, "id")}")
+            screen.advance(ms(10))
+            println("answered: ${shown(all, "id")} | layers ${layers_held()}")
+        },
+    )

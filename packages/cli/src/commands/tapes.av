@@ -338,8 +338,6 @@ fn worlded(root: string, only: string, lone: string) -> Disk? {
     mut deps: Map<string, string> = {}
     mut admitted = NOTHING_ADMITTED
     if lone.is_empty() { rows_admitted(root, true, [home.name], home, deps, admitted) }
-    use_package_places(package_places(root, home.name, std, deps))
-    use_machine_store(machine_layer())
     let disk = Disk {
         root: root,
         name: home.name,
@@ -349,19 +347,7 @@ fn worlded(root: string, only: string, lone: string) -> Disk? {
         lone: lone,
         admitted: admitted,
     }
-    use_source_world(
-        avra_source_world(
-            (f) -> text_at(disk.on_disk(f.package_name, f.path_in_package)),
-            (d) -> disk.listed(d.package_name, d.path_in_package),
-            "avra-tapes",
-            (f) -> disk_octets(disk.package_root(f.package_name), f.path_in_package),
-            WorldPlaces {
-                file: (f) -> disk.on_disk(f.package_name, f.path_in_package),
-                directory: (d) -> disk.on_disk(d.package_name, d.path_in_package),
-                print: disk.places_print(),
-            },
-        ),
-    )
+    disk.entered()
     disk
 }
 
@@ -1102,6 +1088,27 @@ impl Disk {
         [self.root, self.name, self.std, self.lone]
             .concat(sorted_by(["${k}=${v}" for k, v in self.deps], text_before))
             .join("\n")
+    }
+
+    /// THE PROCESS READS THROUGH THIS DISK: where each of its packages lies, the machine's store, and
+    /// the source world — every file, directory and embedded file read — set to it. One process may
+    /// hold several disks, a suite each; the one whose engine works next is entered first.
+    fn entered() {
+        use_package_places(package_places(self.root, self.name, self.std, self.deps))
+        use_machine_store(machine_layer())
+        use_source_world(
+            avra_source_world(
+                (f) -> text_at(self.on_disk(f.package_name, f.path_in_package)),
+                (d) -> self.listed(d.package_name, d.path_in_package),
+                "avra-tapes",
+                (f) -> disk_octets(self.package_root(f.package_name), f.path_in_package),
+                WorldPlaces {
+                    file: (f) -> self.on_disk(f.package_name, f.path_in_package),
+                    directory: (d) -> self.on_disk(d.package_name, d.path_in_package),
+                    print: self.places_print(),
+                },
+            ),
+        )
     }
 
     /// Where a package stands: a path dependency's directory, a std package's in the toolchain, else
@@ -2773,6 +2780,7 @@ fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool, all_made:
     for root in roots {
         let mine = printing.filter(it.root == root)
         if root == disk.root {
+            disk.entered()
             tally = ran_in(
                 engine,
                 disk,
@@ -3004,6 +3012,7 @@ export fn program_tested(paths: List<string>) -> int {
     let children = flatten([[t.child! for t in s.tests if t.child != null] for s in suites])
     if !children.is_empty() {
         for s in suites {
+            s.disk.entered()
             let wrong = children_wrong(
                 s.engine,
                 s.disk,
@@ -3017,9 +3026,11 @@ export fn program_tested(paths: List<string>) -> int {
         println("${counted(children.length, "refusal")} proved")
     }
     let spell = (path: string) -> relative_path(here(), joined_path(dir_of(path), stem_of(path)))
+    mut red = 0
     for s in suites {
         let printing = s.tests.filter(it.expected != null)
         if printing.is_empty() && s.specs.is_empty() { continue }
+        s.disk.entered()
         let binary = joined_path(s.disk.root, "build/suite")
         let status = if s.specs.is_empty() {
             0
@@ -3050,9 +3061,13 @@ export fn program_tested(paths: List<string>) -> int {
         for l in tally.lines { println(l) }
         let green = status == 0 && tally.proved.length == printing.length
         if green && !printing.is_empty() { println("${counted(tally.proved.length, "program")} proved") }
-        if !green { return judged(binary, if status == 0 { 1 } else { status }) }
+        if !green {
+            let code = judged(binary, if status == 0 { 1 } else { status })
+            if !every_suite() { return code }
+            if red == 0 { red = code }
+        }
     }
-    0
+    red
 }
 
 /// WHETHER A SUITE STANDS as the old runner's kept binary does: every file its package reads and

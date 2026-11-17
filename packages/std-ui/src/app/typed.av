@@ -44,8 +44,14 @@ export fn ask_list<A: Args, T: Decode>(held: Fetch<List<T>>, route: Route<A, Lis
 }
 
 /// `held` shows what a door that writes answers once the server has taken the write: a row created or replaced, or
-/// `Nothing` for a removal. A door that only reads is `ask`'s.
-export fn send<A: Args, T: Decode>(held: Fetch<T>, route: Route<A, T>, args: A) -> bool {
+/// `Nothing` for a removal. The write goes in order with the writes to its row, and `foresee` is the layer it lays over
+/// what it reaches until the server's reading passes it (`fetched`). A door that only reads is `ask`'s.
+export fn send<A: Args, T: Decode>(
+    held: Fetch<T>,
+    route: Route<A, T>,
+    args: A,
+    foresee: Overlay? = null,
+) -> bool {
     if reads(route.method) {
         return unaskable(
             held,
@@ -53,7 +59,7 @@ export fn send<A: Args, T: Decode>(held: Fetch<T>, route: Route<A, T>, args: A) 
         )
     }
     match requested(route.method, route.path, args.args()) {
-        .Ok(request) -> fetched(held, request, (r: Reply) -> read_one<T>(r)),
+        .Ok(request) -> fetched(held, request, (r: Reply) -> read_one<T>(r), foresee: foresee),
         .Err(why) -> unaskable(held, why),
     }
 }

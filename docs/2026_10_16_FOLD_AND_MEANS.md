@@ -200,7 +200,7 @@ block", "a block after a type literal") become `Expr.Trailed`'s check on its
 ### 2.1 The substrate already exists — this reuses it
 
 Components expand through a path the doc for it calls "already paid"
-(docs/2026_09_23_COMPONENT_EXPANSION.md §5-6, `features/components/template.av`):
+(docs/2026_11_16_UI.md §5-6, `features/components/template.av`):
 
 | need | already there |
 |---|---|

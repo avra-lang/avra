@@ -10,6 +10,12 @@
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
+#   sh tools/gate.sh pack               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler and every object a
+#                                       tree links with, built here first where they are not HEAD's
+#   sh tools/gate.sh unpack <file>      seeds this tree from a pack, and holds its stamp to HEAD's: a
+#                                       seeded slice builds no compiler
+#
+# A test row runs every suite (AVRA_SUITE_ALL=1), so it names every failing case, never only the first.
 #
 # GATE_OLD_PATH=0 drops every row that compares against the old path (they read AVRA_PROGRAM=0);
 # when the old path goes, its default goes to 0 and those rows go with one line each.
@@ -17,6 +23,7 @@ set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_PROGRAM_MODE
+export AVRA_SUITE_ALL=1
 
 OLD_PATH=${GATE_OLD_PATH:-1}
 # the bound of one row, and of a compiler build
@@ -50,11 +57,43 @@ edit       witness_program_edit, WITNESS_ONLY="embed infer composed 1 5 10 renam
 EOF
 }
 
+# whether build/avra was built from this tree's compiler source: the stamp's hash of that source, the
+# commit it stood at aside — a commit that moves no compiler source moves no compiler
+compiler_stands() {
+    [ -x build/avra ] && [ "$(cut -d' ' -f1 build/.avra-built-from 2>/dev/null)" = "$(sh tools/work built-from . | cut -d' ' -f1)" ]
+}
+
+# what a built tree holds that a fresh one needs to stand as built: the compiler, its hot leaves, its
+# stamp, and every object, archive, library, content stamp and dependency list build/ keeps at its top
+packed() {
+    for f in build/avra build/avra_hot.bc build/avra_hot.inc build/.avra-built-from; do [ ! -f "$f" ] || echo "$f"; done
+    find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.sha' -o -name '*.d' \) | sort
+}
+
+# a tree seeded from the pack `$1`: its files laid down and touched, so make finds every object newer
+# than the source a checkout just wrote — the content stamps decide what moved — and its stamp HEAD's
+unpacked() {
+    [ -f "${1:-}" ] || { echo "gate: unpack names a pack — sh tools/gate.sh unpack <file>" >&2; exit 2; }
+    pack=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+    tar -xzf "$pack" || exit 1
+    # one instant for every file, so no object is older than its own stamp
+    mkdir -p build/gate
+    touch build/gate/.unpacked
+    tar -tzf "$pack" | xargs touch -r build/gate/.unpacked
+    if ! compiler_stands; then
+        echo "gate: the pack's compiler was built from $(cut -d' ' -f1 build/.avra-built-from), this tree's source is $(sh tools/work built-from . | cut -d' ' -f1) — not seeded" >&2
+        exit 1
+    fi
+    echo "gate: seeded from $(basename "$pack") — build/avra stands as HEAD's compiler"
+    exit 0
+}
+
 [ $# -ge 1 ] || { echo "gate: name a slice, or \`list\`" >&2; exit 2; }
 slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
-slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
+if [ "$slice" = unpack ]; then unpacked "$@"; fi
+[ "$slice" = pack ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
 
 sha8=$(git rev-parse --short=8 HEAD)
 out="$root/build/gate/$slice"
@@ -102,8 +141,7 @@ cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec fin
 # build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made —
 # from the seed where none stands, else two generations from the one that does
 compiler() {
-    now=$(sh tools/work built-from .)
-    if [ -x build/avra ] && [ "$(cat build/.avra-built-from 2>/dev/null)" = "$now" ]; then return 0; fi
+    if compiler_stands; then return 0; fi
     if [ ! -x build/avra ]; then
         row compiler-bootstrap make bootstrap || return 1
     else
@@ -238,6 +276,11 @@ slice_edit() { row edit-witness env WITNESS_ONLY="embed infer composed 1 5 10 re
 
 if compiler; then
     case $slice in
+        pack)
+            tarball="build/gate/compiler-$sha8.tar.gz"
+            packed >"$out/files"
+            row pack tar -czf "$tarball" -T "$out/files" && echo "pack: $tarball, $(wc -l <"$out/files" | tr -d ' ') files, $(du -k "$tarball" | cut -f1) KB" >>"$out/rows"
+            ;;
         build) slice_build ;;
         avrac-a) slice_avrac_a ;;
         avrac-b) slice_avrac_b ;;

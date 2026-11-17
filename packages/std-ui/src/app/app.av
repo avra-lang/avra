@@ -206,7 +206,7 @@ impl App {
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
-        let before = self.standers()
+        let before = self.standing.get()
         self.painting.set(true)
         let root = view(self.stands)
         self.painting.set(false)
@@ -214,7 +214,9 @@ impl App {
         hung_up(self)
         for w in dead_keys(root) { self.stands.says(w) }
         self.show(root, theme())
-        if self.standers() != before { self.woken() }
+        let joined = self.joined(before)
+        if joined { self.refuse(joined_by_order()) }
+        if joined || standers(before) != standers(self.standing.get()) { self.woken() }
     }
 
     /// State moved: the next frame shows it. A target that paints at each
@@ -350,14 +352,24 @@ impl App {
     }
 
     /// Whether the control at `owner` is on the screen the last paint
-    /// showed. Work no control asked is always owned.
+    /// showed, told from no sibling by order alone. Work no control asked
+    /// is always owned.
     fn owns(owner: string?) -> bool {
         let at? = owner else { return true }
-        self.standing.get().any(it.key == at)
+        alone_at(self.standing.get(), at)
     }
 
-    /// Who stands on the screen, as one text.
-    fn standers() -> string { [o.key for o in self.standing.get()].join("\n") }
+    /// Whether a control that stood alone in `before` is now told from a
+    /// sibling by order alone: what it asked belongs to a place that now
+    /// names another control.
+    fn joined(before: List<Owner>) -> bool {
+        self.standing.get().any(it.ordered && alone_at(before, it.key))
+    }
+
+    /// `voice` said among the refusals, once an app.
+    fn refuse(voice: string) {
+        if !self.refused.get().contains(voice) { self.refused.push(voice) }
+    }
 
     /// Whether work asked now is turned away: the control asking it is
     /// told from its siblings by order alone, so its place says nothing of
@@ -365,7 +377,7 @@ impl App {
     fn refuses() -> bool {
         let at? = self.asking.get() else { return false }
         let told = self.standing.get().any(it.key == at && it.ordered)
-        if told && !self.refused.get().contains(placed_by_order()) { self.refused.push(placed_by_order()) }
+        if told { self.refuse(placed_by_order()) }
         told
     }
 
@@ -444,7 +456,17 @@ export fn stood(on: App?) { afoot().set(on) }
 /// The app whose loop runs, if any.
 export fn running() -> App? { afoot().get() }
 
+/// Who stands on a screen, as one text.
+fn standers(on: List<Owner>) -> string { [o.key for o in on].join("\n") }
+
+/// Whether a control stood at `key` in `on`, told from no sibling by order alone.
+fn alone_at(on: List<Owner>, key: string) -> bool { on.any(it.key == key && !it.ordered) }
+
 // ── voices ──────────────────────────────────────────────────────
+
+fn joined_by_order() -> string {
+    "work a control asked while it stood alone is dropped when siblings join it and tell it apart by order alone, since its place now names another control: give each its own `key`"
+}
 
 fn placed_by_order() -> string {
     "work a control asks belongs to the control's place, and among siblings told apart by order alone a place does not outlive a removal before it: give each its own `key`"
