@@ -5,6 +5,7 @@
 //! differs and how many it read.
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
+use @std.avrac.compiler.backend.{inlines_runtime}
 use @std.avrac.compiler.{
     default_opt,
     raw_borrowed,
@@ -624,6 +625,7 @@ fn binary_asked(
         dir: joined_path(disk.root, "${BUILD_DIR}-${t.target}"),
         opt: mode.opt,
         layered: false,
+        inlined: inlines_runtime(),
         target: t.target,
         runtime: t.runtime,
         linker: t.linker,
@@ -650,6 +652,7 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
         dir: joined_path(disk.root, BUILD_DIR),
         opt: mode.opt,
         layered: mode.layered && hosted.is_empty(),
+        inlined: inlines_runtime(),
     }
 }
 
@@ -676,6 +679,7 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
         asked.dir,
         asked.opt,
         asked.layered,
+        asked.inlined,
         asked.target,
         asked.runtime,
         asked.linker,
@@ -716,6 +720,9 @@ type BinaryAsked = {
     dir: string,
     opt: string,
     layered: bool,
+    /// Whether its objects carry the runtime's hot leaves inlined, as this process emits them
+    /// (`inlines_runtime`), or keep them calls.
+    inlined: bool,
     /// The triple a non-host build is for, its runtime archive, the C compiler that links it, and the
     /// optimizer it ships through; each empty for a native build.
     target: string = "",
@@ -795,6 +802,7 @@ fn program_binary(
     dir: string,
     opt: string,
     layered: bool,
+    inlined: bool,
     target: string,
     runtime: string,
     linker: string,
@@ -811,6 +819,7 @@ fn program_binary(
             dir: dir,
             opt: opt,
             layered: layered,
+            inlined: inlined,
             target: target,
             runtime: runtime,
             linker: linker,
@@ -890,9 +899,16 @@ fn binary_made(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
 }
 
 /// What makes a program's objects besides its own answers: the backend's code, as the build's own
-/// code hash, the level they are emitted at, and the runtime and archives it links.
+/// code hash, the level they are emitted at, whether the runtime's hot leaves are inlined, and the
+/// runtime and archives it links.
 fn objects_salt(engine: QueryEngine, asked: BinaryAsked) -> List<string> {
-    [binary_question(engine, asked).code_hash, asked.opt, asked.target].concat(asked.linked)
+    [
+        binary_question(engine, asked).code_hash,
+        asked.opt,
+        if asked.inlined { "inlined" } else { "calls" },
+        asked.target,
+    ]
+        .concat(asked.linked)
 }
 
 /// The build `asked` names, as its answer stands where its kept binary still does; else made again
@@ -908,6 +924,7 @@ fn standing_binary(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
         asked.dir,
         asked.opt,
         asked.layered,
+        asked.inlined,
         asked.target,
         asked.runtime,
         asked.linker,

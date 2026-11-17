@@ -395,7 +395,7 @@ HOST_MUTATIONS = [
     ("the source ignores its period", "    if (us < 0) us = 0;\n", "    if (us < 0) us = 0;\n    us = 0;\n"),
     ("a parked source is never woken", "        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();\n", ""),
     ("a forked child keeps its parent's source", "        pthread_atfork(NULL, NULL, tick_after_fork);\n", "        if (0) pthread_atfork(NULL, NULL, tick_after_fork);\n"),
-    ("a forked child is armed under its parent's pid", "static void tick_after_fork(void) { g_owner = 0; }", "static void tick_after_fork(void) { }"),
+    ("a forked child is armed under its parent's pid", "static void tick_after_fork(void) {\n    g_owner = 0;\n", "static void tick_after_fork(void) {\n"),
     ("the hot arm reads the process id again", "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();", "    if (g_started && g_owner == this_pid()) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();"),
     ("the arm ignores the owner", "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();", "    if (g_started) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();"),
     ("the stood-down arm reads the process id again", "void avra_tick_stood_down(void) {\n    if (g_started && g_owner) wake_once();\n}", "void avra_tick_stood_down(void) {\n    if (g_started && g_owner == this_pid()) wake_once();\n}"),

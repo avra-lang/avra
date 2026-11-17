@@ -62,12 +62,12 @@ fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found
 }
 
 /// The bodies the written item `at` of `file` writes: each fn's, each method's of its impls, and its
-/// share of its file's entry.
+/// share of its file's entry, each typed as its query keeps it.
 fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     AssignedBody,
 > {
-    let fns = [whole(engine, file, sb!) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
-    let methods = [whole(engine, file, m!.signed) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
+    let fns = [whole(engine, file, sb! with { typed: typed_fn(engine, file, p!.name) }) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
+    let methods = [whole(engine, file, m!.signed with { typed: method_body_typed(engine, a, name, statics) }) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
     fns.concat(methods).concat(entry_share(engine, file, at))
 }
 

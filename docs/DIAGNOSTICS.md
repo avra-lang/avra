@@ -2432,6 +2432,34 @@ error[manifest.link_flag]: `dynamic_symbols` under `[link]` is `true` or `false`
 help: write `dynamic_symbols = true`
 ```
 
+## manifest.link_name
+
+a `[link]` name row is one library's name, a word
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link]
+shared = true
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.link_name]: `shared` under `[link]` is one library's name
+  ╭─[/w/avra.toml:6:1]
+6 │ shared = true
+  · ┬
+  · ╰── here
+──╯
+help: write `shared = "LLVM"`
+```
+
 ## manifest.borrowed_raw
 
 `[link.raw]` is the program's own — a dependency names what it needs, never how to link it
