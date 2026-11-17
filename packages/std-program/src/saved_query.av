@@ -40,6 +40,7 @@ use query_engine.{
     Folding,
     FreshAnswer,
     HeldAnswer,
+    HeldQuestion,
     MovedRead,
     QueryDefinition,
     QueryEngine,
@@ -195,7 +196,7 @@ fn asked_of(f: Fn) -> Code {
 fn held_questions(f: Fn) -> List<Directive> {
     let seats = argument_seats(f)
     let folds = [slot_folded(saved_shape(p.kind)!, name(p.name)) for p in seats]
-    let held = quote { once fn ${asked_door(f)}() -> HashKeyedTable<Question> { hash_keyed_table() } }
+    let held = quote { once fn ${asked_door(f)}() -> HashKeyedTable<HeldQuestion> { hash_keyed_table() } }
     let folding = quote {
         fn ${folded_door(f)}(${FOLD_LANE}: KeyLane, ..${seats_of(f)}) -> int {
             mut ${FOLDED} = ${name(FOLD_LANE)}.seed
@@ -254,8 +255,9 @@ fn asking_wrapper(f: Fn) -> Decls {
     if !answer_held(f) { return decoding_wrapper(f) }
     quote {
         fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
-            let asked = ${asked_of(f)}
-            let answer = ${engine_of(f)}.hash_of_answer_to(asked)
+            let held = ${asked_of(f)}
+            let asked = held.question
+            let answer = ${engine_of(f)}.hash_of_answer_held(held)
             let kept = ${held_door(f)}().get(answer)
             if kept != null { return kept!.value }
             let fresh = ${fresh_door(f)}().get().first()
@@ -276,7 +278,7 @@ fn asking_wrapper(f: Fn) -> Decls {
 fn decoding_wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
-            let record = ${engine_of(f)}.answer_to(${asked_of(f)}).root()
+            let record = ${engine_of(f)}.answer_to(${asked_of(f)}.question).root()
             ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
         }
     }

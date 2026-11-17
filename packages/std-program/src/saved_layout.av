@@ -14,7 +14,6 @@
 //! Octets another process wrote may lie, so they're read through doors that check a node lies
 //! within them before reading it: a lie reads as absent, never as a trap.
 
-use @std.text.{BytesBuilder, bytes_builder}
 use defect.{defect}
 
 /// In a label's first octet, the value saying a variant or a length follows in full.
@@ -43,28 +42,24 @@ export enum SavedSlot {
 
 /// An answer being written. An identity: every holder writes the one answer.
 ///
-/// A node's slots are pushed onto a stack of words as its values are written, and its node pops
-/// them: two words a slot, what it holds and its number or child. The stack is reused node after
-/// node, so a slot makes nothing. A list being written opens with a mark holding where the list
-/// around it opened.
-export type SavedLayoutWriter = {
-    octets: BytesBuilder,
-    slot_words: Cell<List<int>>,
-    slot_height: Cell<int>,
-    open_list: Cell<int>,
-}
+/// The writer is the runtime's (`avra_sw_*`): an answer's octets grow in one buffer, and a node's
+/// slots are pushed onto one stack of words as its values are written, two a slot — what it holds,
+/// then its number or child — and its node pops them, written whole in one call. The writer is
+/// reused answer after answer, so a slot makes nothing. A list being written opens with a mark
+/// holding where the list around it opened.
+export type SavedLayoutWriter = { handle: ptr }
 
 /// A writer with nothing written: one a finished answer left idle where there is one, else a new one.
 export fn saved_layout_writer() -> SavedLayoutWriter {
     let pool = idle_writers()
     let count = pool.count.get()
-    if count == 0 { return new_writer() }
+    if count == 0 { return SavedLayoutWriter { handle: avra_sw_new(ANSWER_ROOM) } }
     pool.count.set(count - 1)
     pool.writers.get()[count - 1]
 }
 
-/// The writers whose answers are finished, the first `count` of `writers`: a writer's cells and
-/// stacks outlive the answers it writes, so writing one makes only its octets.
+/// The writers whose answers are finished, the first `count` of `writers`: a writer's buffers
+/// outlive the answers it writes, so writing one makes only its octets.
 type IdleWriters = { writers: Cell<List<SavedLayoutWriter>>, count: Cell<int> }
 
 once fn idle_writers() -> IdleWriters {
@@ -72,140 +67,95 @@ once fn idle_writers() -> IdleWriters {
     IdleWriters { writers: writers, count: Cell.new(0) }
 }
 
-fn new_writer() -> SavedLayoutWriter {
-    let slot_words: Cell<List<int>> = Cell.new([])
-    SavedLayoutWriter {
-        octets: bytes_builder(ANSWER_ROOM),
-        slot_words: slot_words,
-        slot_height: Cell.new(0),
-        open_list: Cell.new(0),
-    }
-}
-
-/// What a pushed slot holds, its first word: a number, a child, no child, or the mark a list opens
-/// with.
+/// What a pushed slot holds, its first word: a number, a child, or no child.
 const HELD_NUMBER: int = 0
 const HELD_CHILD: int = 1
 const HELD_NOTHING: int = 2
-const HELD_LIST_MARK: int = 3
+
+extern fn avra_sw_new(room: int) -> ptr
+extern fn avra_sw_length(writer: ptr) -> int
+extern fn avra_sw_push(writer: ptr, held: int, word: int)
+extern fn avra_sw_record(writer: ptr, variant: int, count: int) -> int
+extern fn avra_sw_list_open(writer: ptr)
+extern fn avra_sw_list_close(writer: ptr) -> int
+extern fn avra_sw_label(writer: ptr, width: int, variant: int, length: int)
+extern fn avra_sw_big(writer: ptr, value: int, width: int)
+extern fn avra_sw_octets(writer: ptr, octets: Bytes) -> int
+extern fn avra_sw_text(writer: ptr, text: string) -> int
+extern fn avra_sw_closed(writer: ptr, root: int) -> int
+extern fn avra_sw_octets_at(writer: ptr) -> ptr
+extern fn avra_sw_emptied(writer: ptr)
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 
 impl SavedLayoutWriter {
     /// A slot holding `value` pushed.
-    fn number(value: int) { self.slot_pushed(HELD_NUMBER, value) }
+    fn number(value: int) { avra_sw_push(self.handle, HELD_NUMBER, value) }
 
     /// A slot holding the child that starts at `position` pushed.
-    fn child(position: int) { self.slot_pushed(HELD_CHILD, position) }
+    fn child(position: int) { avra_sw_push(self.handle, HELD_CHILD, position) }
 
     /// A slot holding no child pushed.
-    fn no_child() { self.slot_pushed(HELD_NOTHING, 0) }
+    fn no_child() { avra_sw_push(self.handle, HELD_NOTHING, 0) }
 
     /// A record of the last `count` slots pushed, as `variant`, popped: answers where it starts.
-    fn record_closed(variant: int, count: int) -> int {
-        let from = self.slot_height.get() - 2 * count
-        self.slot_height.set(from)
-        let words = self.slot_words.get()
-        let start = self.written_length()
-        self.write_label(1, variant, count)
-        for first in 0..size_code_octets(count) { self.write_octet(held_size_codes(words, start, from, count, first * 4)) }
-        for slot in 0..count {
-            let value = held_slot_value(words, start, from + 2 * slot)
-            self.write_big_endian(value, width_holding(value))
-        }
-        start
-    }
+    fn record_closed(variant: int, count: int) -> int { avra_sw_record(self.handle, variant, count) }
 
     /// A record of the last `count` slots pushed, as `variant`, popped, and a slot holding it pushed.
     fn record_child(variant: int, count: int) { self.child(self.record_closed(variant, count)) }
 
     /// A list opened: each slot pushed until it closes is one of its items.
-    fn list_opened() {
-        self.slot_pushed(HELD_LIST_MARK, self.open_list.get())
-        self.open_list.set(self.slot_height.get())
-    }
+    fn list_opened() { avra_sw_list_open(self.handle) }
 
     /// The list opened last, of every slot pushed since, all as wide as the widest, popped with its
     /// mark: answers where it starts.
-    fn list_closed() -> int {
-        let from = self.open_list.get()
-        let count = (self.slot_height.get() - from) / 2
-        let words = self.slot_words.get()
-        self.open_list.set(words[from - 1])
-        self.slot_height.set(from - 2)
-        let start = self.written_length()
-        mut width = 1
-        for slot in 0..count { width = max_of(width, width_holding(held_slot_value(words, start, from + 2 * slot))) }
-        self.write_label(width, 0, count)
-        for slot in 0..count {
-            self.write_big_endian(held_slot_value(words, start, from + 2 * slot), width)
-        }
-        start
-    }
+    fn list_closed() -> int { avra_sw_list_close(self.handle) }
 
     /// The list opened last closed, and a slot holding it pushed.
     fn list_child() { self.child(self.list_closed()) }
 
-    /// A slot of two words pushed: what it holds, then its word.
-    fn slot_pushed(held: int, word: int) {
-        self.word_pushed(held)
-        self.word_pushed(word)
-    }
-
-    /// One word onto the slot stack, over a word a popped node left where there is one.
-    fn word_pushed(word: int) {
-        let height = self.slot_height.get()
-        if height < self.slot_words.get().length { self.slot_words.set_at(height, word) } else { self.slot_words.push(word) }
-        self.slot_height.set(height + 1)
-    }
-
     /// A record of `slots`, as `variant`, answering where it starts.
     fn write_record(variant: int, slots: List<SavedSlot>) -> int {
-        let start = self.written_length()
-        self.write_label(1, variant, slots.length)
-        for first in 0..size_code_octets(slots.length) { self.write_octet(size_codes_from(start, slots, first * 4)) }
-        for slot in slots {
-            let value = slot_value(start, slot)
-            self.write_big_endian(value, width_holding(value))
-        }
-        start
+        for slot in slots { self.slot(slot) }
+        self.record_closed(variant, slots.length)
     }
 
     /// A list of `slots`, all as wide as the widest, answering where it starts.
     fn write_list(slots: List<SavedSlot>) -> int {
-        let start = self.written_length()
-        let width = widest_slot(start, slots)
-        self.write_label(width, 0, slots.length)
-        for slot in slots {
-            self.write_big_endian(slot_value(start, slot), width)
+        self.list_opened()
+        for slot in slots { self.slot(slot) }
+        self.list_closed()
+    }
+
+    /// `slot` pushed.
+    fn slot(slot: SavedSlot) {
+        match slot {
+            .Number(value) -> self.number(value),
+            .Child(position) -> self.child(position),
+            .NoChild -> self.no_child(),
         }
-        start
     }
 
     /// A list of `numbers`, the octets a list of their number slots takes, answering where it starts.
     fn write_numbers(numbers: List<int>) -> int {
         let start = self.written_length()
         let width = widest_number(numbers)
-        self.write_label(width, 0, numbers.length)
-        for number in numbers {
-            self.write_big_endian(zigzagged(number), width)
-        }
+        avra_sw_label(self.handle, width, 0, numbers.length)
+        for number in numbers { avra_sw_big(self.handle, zigzagged(number), width) }
         start
     }
 
     /// A node of one-octet slots holding `octets`, answering where it starts.
-    fn write_octets(octets: Bytes) -> int {
-        let start = self.written_length()
-        self.write_label(1, 0, octets.length)
-        self.octets.run(octets)
-        start
-    }
+    fn write_octets(octets: Bytes) -> int { avra_sw_octets(self.handle, octets) }
 
     /// A text as a node of its octets, answering where it starts.
-    fn write_text(text: string) -> int { self.write_octets(text.bytes()) }
+    fn write_text(text: string) -> int { avra_sw_text(self.handle, text) }
 
-    /// The whole answer, with `root` as its root. The writer is idle after, for the next answer.
+    /// The whole answer, with `root` as its root, ending in how far back the root starts. The
+    /// writer is idle after, for the next answer.
     fn finished(root: int) -> Bytes {
-        self.root_written(root)
-        let octets = self.octets.built(ANSWER_ROOM)
+        let length = avra_sw_closed(self.handle, root)
+        let octets = avra_bytes_adopted(avra_sw_octets_at(self.handle), length)
+        avra_sw_emptied(self.handle)
         self.idled()
         octets
     }
@@ -214,69 +164,16 @@ impl SavedLayoutWriter {
     /// one by one. The writer is idle after.
     fn finished_runs_of(root: int) -> List<Bytes> { [self.finished(root)] }
 
-    /// How far back `root` starts, written at the answer's end.
-    fn root_written(root: int) {
-        self
-            .write_big_endian(self.written_length() + ROOT_DISTANCE_LENGTH - root, ROOT_DISTANCE_LENGTH)
-    }
-
     /// The writer, with nothing written, handed to the next answer.
     fn idled() {
-        self.slot_height.set(0)
-        self.open_list.set(0)
         let pool = idle_writers()
         let count = pool.count.get()
         if count < pool.writers.get().length { pool.writers.set_at(count, self) } else { pool.writers.push(self) }
         pool.count.set(count + 1)
     }
 
-    /// A node's label: one octet for a small node, up to seven for a large one.
-    fn write_label(width: int, variant: int, length: int) {
-        let variant_bits = if variant < WRITTEN_IN_FULL { variant } else { WRITTEN_IN_FULL }
-        let length_bits = if length < WRITTEN_IN_FULL { length } else { WRITTEN_IN_FULL }
-        self.write_octet((code_of_width(width) << 6) | (variant_bits << 3) | length_bits)
-        if variant >= WRITTEN_IN_FULL { self.write_big_endian(variant, 2) }
-        if length >= WRITTEN_IN_FULL { self.write_big_endian(length, 4) }
-    }
-
     /// How many octets the answer holds so far.
-    fn written_length() -> int { self.octets.length() }
-
-    /// `value` as exactly `width` octets, most significant first.
-    fn write_big_endian(value: int, width: int) {
-        self.octets.word(value, width)
-    }
-
-    /// One octet onto the end of the answer.
-    fn write_octet(octet: int) { self.octets.octet(octet) }
-}
-
-/// What a slot stores: a number zigzagged so a small negative stays small, a child as how far
-/// back it starts from `start`, and no child as zero, since a real child is never zero back.
-fn slot_value(start: int, slot: SavedSlot) -> int {
-    match slot {
-        .Number(value) -> zigzagged(value),
-        .Child(position) -> start - position,
-        .NoChild -> 0,
-    }
-}
-
-/// What the pushed slot whose words start at `at` stores, in a node written from `start`.
-fn held_slot_value(words: List<int>, start: int, at: int) -> int {
-    let held = words[at]
-    if held == HELD_NUMBER { return zigzagged(words[at + 1]) }
-    if held == HELD_CHILD { start - words[at + 1] } else { 0 }
-}
-
-/// One octet of size codes for the up to four of the `count` pushed slots from `from` starting at
-/// slot `first`, the first in the high bits.
-fn held_size_codes(words: List<int>, start: int, from: int, count: int, first: int) -> int {
-    mut codes = 0
-    for slot in first..first + 4 {
-        let code = if slot < count { code_of_width(width_holding(held_slot_value(words, start, from + 2 * slot))) } else { 0 }
-        codes = (codes << 2) | code
-    }
-    codes
+    fn written_length() -> int { avra_sw_length(self.handle) }
 }
 
 /// A number as its slot stores it.
@@ -294,14 +191,6 @@ fn width_holding(value: int) -> int {
     }
 }
 
-/// The fewest octets every one of `slots` fits in, written from `start`: a loop, where a fold's
-/// closure would be a box made for every list written.
-fn widest_slot(start: int, slots: List<SavedSlot>) -> int {
-    mut widest = 1
-    for slot in slots { widest = max_of(widest, width_holding(slot_value(start, slot))) }
-    widest
-}
-
 /// The fewest octets every one of `numbers` fits in as a slot stores it.
 fn widest_number(numbers: List<int>) -> int {
     mut widest = 1
@@ -311,24 +200,6 @@ fn widest_number(numbers: List<int>) -> int {
 
 /// The octets holding `slot_count` two-bit size codes.
 fn size_code_octets(slot_count: int) -> int { (slot_count + 3) / 4 }
-
-/// One octet of size codes, for the up to four slots from `first`, the first in the high bits;
-/// spelled out, where a fold's closure would be a box made for every octet.
-fn size_codes_from(start: int, slots: List<SavedSlot>, first: int) -> int {
-    let high = (size_code_of(start, slots, first) << 6) | (size_code_of(start, slots, first + 1) << 4)
-    high | (size_code_of(start, slots, first + 2) << 2) | size_code_of(start, slots, first + 3)
-}
-
-/// One slot's two-bit size code, zero past the last slot.
-fn size_code_of(start: int, slots: List<SavedSlot>, slot: int) -> int {
-    if slot >= slots.length { return 0 }
-    code_of_width(width_holding(slot_value(start, slots[slot])))
-}
-
-/// A width of 1, 2, 4 or 8 octets as its two-bit code.
-fn code_of_width(width: int) -> int {
-    match width { 1 -> 0, 2 -> 1, 4 -> 2, _ -> 3 }
-}
 
 /// A float's bits, so every float reads back exactly: an infinity, a NaN, a negative zero.
 export fn float_bits(value: float) -> int { avra_float_to_bits(value) }

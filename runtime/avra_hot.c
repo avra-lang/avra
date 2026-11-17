@@ -199,3 +199,28 @@ void* avra_slot_unique(void* arr, int64_t i) {
     if (__builtin_expect(IS_IMMORTAL(k) || (k >= 0 && h->rc > 1), 0)) return avra_slot_opened(arr, i);
     return p;
 }
+
+// THE ARITHMETIC AND OCTET LEAVES: a shift is two instructions behind its range test, and an
+// octet read one load behind its bound; a call around either costs more than the work, so both
+// are here, inlined where they are used, the trap out of line.
+int64_t avra_int_shl(int64_t a, int64_t b) {
+    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
+    /* shifting INTO the sign bit is undefined for a signed left
+       operand, so the shift is done on the unsigned twin and read
+       back — the bits are what the program asked for either way. */
+    return (int64_t)((uint64_t)a << (uint64_t)b);
+}
+
+int64_t avra_int_shr(int64_t a, int64_t b) {
+    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
+    /* ARITHMETIC: the sign bit fills, so `-8 >> 1` is -4 and not a
+       huge positive. That is the shift Avra's one integer means, and
+       it is what LLVM's `ashr` does on the other side. */
+    return a >> b;
+}
+
+int64_t avra_bytes_at(const char* b, int64_t i) {
+    int64_t n = (int64_t)((const Header*)b - 1)->len;
+    if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
+    return (unsigned char)b[i];
+}

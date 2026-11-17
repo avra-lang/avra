@@ -290,6 +290,23 @@ impl QueryEngine {
         answer
     }
 
+    /// The hash of the answer to `held`'s question, recorded as a read of whoever is asking, as
+    /// `hash_of_answer_to` records it: settled once in this engine, and read off `held` after.
+    fn hash_of_answer_held(held: HeldQuestion) -> ContentHash {
+        let answer = if held.settled_in.get() == self.serial { held.answer.get() } else { self.held_settled(held) }
+        self
+            .record_read(RecordedRead { question: held.question.known_as, whole_answer: answer, part: null })
+        answer
+    }
+
+    /// The answer `held`'s question settles to in this engine, kept on `held`.
+    fn held_settled(held: HeldQuestion) -> ContentHash {
+        let answer = self.settled_answer(held.question)
+        held.answer.set(answer)
+        held.settled_in.set(self.serial)
+        answer
+    }
+
     /// The hash of the answer, recorded as a read of whoever is asking. Nothing is decoded.
     fn hash_of_answer_to(asked: Question) -> ContentHash {
         let answer = self.settled_answer(asked)
@@ -1021,24 +1038,36 @@ fn two_queries_named(definition: QueryDefinition) -> string {
     "two queries are named `${definition.query_name}`, so their saved answers would collide"
 }
 
+/// A QUESTION A QUERY'S WRAPPER HOLDS, under the key its arguments fold to, with the answer it
+/// settled to in the engine whose serial `settled_in` holds: a question settles once in an engine,
+/// so a later ask of it in that engine reads the answer here and looks nothing up. A wrapper's
+/// table outlives an engine, and an answer settled in one is never another's.
+export type HeldQuestion = { question: Question, settled_in: Cell<int>, answer: Cell<ContentHash> }
+
+/// `question`, held, settled in no engine yet.
+fn held_question(question: Question) -> HeldQuestion {
+    HeldQuestion { question: question, settled_in: Cell.new(-1), answer: Cell.new(unanswered()) }
+}
+
 /// The question a query's wrapper holds under the key its arguments fold to, the key's two words;
 /// absent when it holds none, and always under `AVRA_HELD_QUESTIONS_CHECK`, so each ask makes its
 /// question again and `question_kept` compares the two.
-export fn question_at(held: HashKeyedTable<Question>, high: int, low: int) -> Question? {
+export fn question_at(held: HashKeyedTable<HeldQuestion>, high: int, low: int) -> HeldQuestion? {
     if held_questions_checked() != null { return null }
     held.get_at(high, low)
 }
 
 /// `made`, held under the key its arguments fold to, so a later ask of the same arguments makes
 /// nothing to know what it asks. A question held there already must be the one made.
-export fn question_kept(held: HashKeyedTable<Question>, high: int, low: int, made: Question) -> Question {
-    if !questions_held() { return made }
+export fn question_kept(held: HashKeyedTable<HeldQuestion>, high: int, low: int, made: Question) -> HeldQuestion {
+    if !questions_held() { return held_question(made) }
     let was? = held.get_at(high, low) else {
-        held.put_at(high, low, made)
-        return made
+        let fresh = held_question(made)
+        held.put_at(high, low, fresh)
+        return fresh
     }
-    if !was.known_as.same_as(made.known_as) { defect(key_folded_twice(made.query_name)) }
-    made
+    if !was.question.known_as.same_as(made.known_as) { defect(key_folded_twice(made.query_name)) }
+    was
 }
 
 fn key_folded_twice(query: string) -> string { "two questions of `${query}` fold to one key: a held question's key is folded from every argument, each after a tag of its kind" }

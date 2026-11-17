@@ -59,6 +59,9 @@ void avra_array_push_moved(void* arr, void* v);
 void avra_slot_put(void* arr, int64_t i, int64_t v);
 void avra_slot_set(void* arr, int64_t i, int64_t v);
 void* avra_slot_unique(void* arr, int64_t i);
+int64_t avra_int_shl(int64_t a, int64_t b);
+int64_t avra_int_shr(int64_t a, int64_t b);
+int64_t avra_bytes_at(const char* b, int64_t i);
 
 // AVRA_RC_GUARD, settled at load.
 #if AVRA_INSTRUMENTS
@@ -78,6 +81,7 @@ void avra_release_dead(void* p, int32_t kind);
 int64_t avra_get_guarded(void* arr, int64_t i);
 void* avra_get_owned_guarded(void* arr, int64_t i);
 __attribute__((noreturn)) void avra_trap_bounds(int64_t i, int64_t len);
+__attribute__((noreturn)) void avra_trap(const char* msg);
 void* avra_box_thawed_cloned(void* p, void* ra);
 __attribute__((noreturn)) void avra_seat_static(void);
 // The writes' whole rows, for every case but the fast one.

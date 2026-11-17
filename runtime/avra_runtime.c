@@ -1894,21 +1894,7 @@ int64_t avra_int_or(int64_t a, int64_t b)  { return a | b; }
 int64_t avra_int_xor(int64_t a, int64_t b) { return a ^ b; }
 int64_t avra_int_not(int64_t a)            { return ~a; }
 
-int64_t avra_int_shl(int64_t a, int64_t b) {
-    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
-    /* shifting INTO the sign bit is undefined for a signed left
-       operand, so the shift is done on the unsigned twin and read
-       back — the bits are what the program asked for either way. */
-    return (int64_t)((uint64_t)a << (uint64_t)b);
-}
 
-int64_t avra_int_shr(int64_t a, int64_t b) {
-    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
-    /* ARITHMETIC: the sign bit fills, so `-8 >> 1` is -4 and not a
-       huge positive. That is the shift Avra's one integer means, and
-       it is what LLVM's `ashr` does on the other side. */
-    return a >> b;
-}
 
 /* WHETHER THE EXACT ANSWER FITS: 1 when `a op b` has no int, 0 when it
    does. `checked_*` answers absence on a 1; one body serves both engines.
@@ -4110,11 +4096,6 @@ int64_t avra_bytes_eq(const char* a, const char* b) {
 }
 
 // One octet, 0..255. A bad index traps: -1 is not a byte.
-int64_t avra_bytes_at(const char* b, int64_t i) {
-    int64_t n = (int64_t)bytes_len(b);
-    if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
-    return (unsigned char)b[i];
-}
 
 // The octets from lo up to hi, owned. Bounds are a precondition: a
 // slice traps and never clamps, because a short answer parses.
@@ -4478,9 +4459,10 @@ const char* avra_mmap_slice(void* h, int64_t lo, int64_t hi) {
 int64_t avra_mmap_word_at(void* h, int64_t i) {
     AvraMmap* m = mmap_handle(h);
     if (i < 0 || i + 8 > m->len) avra_trap_bounds(i < 0 ? i : m->len, m->len);
-    uint64_t w = 0;
-    for (int j = 0; j < 8; j++) w = (w << 8) | (unsigned char)m->base[i + j];
-    return (int64_t)w;
+    // One unaligned load, read big-endian: the word the eight octets spell, first octet highest.
+    uint64_t w;
+    memcpy(&w, m->base + i, sizeof w);
+    return (int64_t)__builtin_bswap64(w);
 }
 
 // Unmaps and frees the handle. Using `h`, or closing it, again after
@@ -4904,6 +4886,154 @@ int64_t avra_str_char_code(const char* s, int64_t i) {
     int64_t n = (int64_t)str_len(s);
     if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
     return (unsigned char)s[i];
+}
+
+// THE SAVED LAYOUT'S WRITER, held in C: an answer's octets grown in one buffer and the slots
+// its open nodes hold on one stack of words, two a slot (what it holds, then its number or the
+// child's position). A node is written whole in one call: its label, its size codes, its slots
+// big-endian at their widths, byte for byte as `saved_layout.av`'s reader reads them. A writer
+// outlives the answers it writes: `closed` ends an answer, its octets are adopted from
+// `octets_at`, and `emptied` readies it for the next.
+typedef struct {
+    unsigned char* buf; size_t len, cap;
+    int64_t* slots; size_t height, slot_cap;
+    int64_t open_list;
+} SavedWriter;
+
+enum { SW_NUMBER = 0, SW_CHILD = 1, SW_NOTHING = 2, SW_LIST_MARK = 3 };
+
+static void sw_room(SavedWriter* w, size_t more) {
+    if (w->len + more <= w->cap) return;
+    size_t cap = w->cap ? w->cap : 256;
+    while (cap < w->len + more) cap *= 2;
+    w->buf = realloc(w->buf, cap);
+    if (!w->buf) avra_trap("a saved answer's writer could not grow");
+    w->cap = cap;
+}
+
+static void sw_big(SavedWriter* w, uint64_t value, int width) {
+    sw_room(w, (size_t)width);
+    for (int i = width - 1; i >= 0; i--) w->buf[w->len++] = (unsigned char)(value >> (8 * i));
+}
+
+static int sw_width(int64_t v) {
+    if (v < 0) return 8;
+    if (v < 256) return 1;
+    if (v < 65536) return 2;
+    if (v < 4294967296LL) return 4;
+    return 8;
+}
+
+static int sw_code(int width) { return width == 1 ? 0 : width == 2 ? 1 : width == 4 ? 2 : 3; }
+
+static int64_t sw_zigzag(int64_t v) { return (int64_t)(((uint64_t)v << 1) ^ (uint64_t)(v >> 63)); }
+
+static int64_t sw_value(const SavedWriter* w, int64_t start, size_t at) {
+    int64_t held = w->slots[at];
+    if (held == SW_NUMBER) return sw_zigzag(w->slots[at + 1]);
+    return held == SW_CHILD ? start - w->slots[at + 1] : 0;
+}
+
+static void sw_label(SavedWriter* w, int width, int64_t variant, int64_t length) {
+    int64_t vb = variant < 7 ? variant : 7, lb = length < 7 ? length : 7;
+    sw_big(w, (uint64_t)((sw_code(width) << 6) | (vb << 3) | lb), 1);
+    if (variant >= 7) sw_big(w, (uint64_t)variant, 2);
+    if (length >= 7) sw_big(w, (uint64_t)length, 4);
+}
+
+void* avra_sw_new(int64_t room) {
+    SavedWriter* w = calloc(1, sizeof *w);
+    if (!w) avra_trap("a saved answer's writer could not be made");
+    sw_room(w, room > 0 ? (size_t)room : 256);
+    return w;
+}
+
+int64_t avra_sw_length(void* h) { return (int64_t)((SavedWriter*)h)->len; }
+
+void avra_sw_push(void* h, int64_t held, int64_t word) {
+    SavedWriter* w = h;
+    if (w->height + 2 > w->slot_cap) {
+        size_t cap = w->slot_cap ? w->slot_cap * 2 : 64;
+        w->slots = realloc(w->slots, cap * sizeof *w->slots);
+        if (!w->slots) avra_trap("a saved answer's writer could not grow");
+        w->slot_cap = cap;
+    }
+    w->slots[w->height++] = held;
+    w->slots[w->height++] = word;
+}
+
+int64_t avra_sw_record(void* h, int64_t variant, int64_t count) {
+    SavedWriter* w = h;
+    size_t from = w->height - 2 * (size_t)count;
+    w->height = from;
+    int64_t start = (int64_t)w->len;
+    sw_label(w, 1, variant, count);
+    for (int64_t first = 0; first < count; first += 4) {
+        int codes = 0;
+        for (int64_t slot = first; slot < first + 4; slot++)
+            codes = (codes << 2) | (slot < count ? sw_code(sw_width(sw_value(w, start, from + 2 * (size_t)slot))) : 0);
+        sw_big(w, (uint64_t)codes, 1);
+    }
+    for (int64_t slot = 0; slot < count; slot++) {
+        int64_t v = sw_value(w, start, from + 2 * (size_t)slot);
+        sw_big(w, (uint64_t)v, sw_width(v));
+    }
+    return start;
+}
+
+void avra_sw_list_open(void* h) {
+    SavedWriter* w = h;
+    avra_sw_push(w, SW_LIST_MARK, w->open_list);
+    w->open_list = (int64_t)w->height;
+}
+
+int64_t avra_sw_list_close(void* h) {
+    SavedWriter* w = h;
+    size_t from = (size_t)w->open_list;
+    int64_t count = (int64_t)(w->height - from) / 2;
+    w->open_list = w->slots[from - 1];
+    w->height = from - 2;
+    int64_t start = (int64_t)w->len;
+    int width = 1;
+    for (int64_t slot = 0; slot < count; slot++) {
+        int sw = sw_width(sw_value(w, start, from + 2 * (size_t)slot));
+        if (sw > width) width = sw;
+    }
+    sw_label(w, width, 0, count);
+    for (int64_t slot = 0; slot < count; slot++) sw_big(w, (uint64_t)sw_value(w, start, from + 2 * (size_t)slot), width);
+    return start;
+}
+
+void avra_sw_label(void* h, int64_t width, int64_t variant, int64_t length) { sw_label(h, (int)width, variant, length); }
+
+void avra_sw_big(void* h, int64_t value, int64_t width) { sw_big(h, (uint64_t)value, (int)width); }
+
+static int64_t sw_run(SavedWriter* w, const char* octets, size_t n) {
+    int64_t start = (int64_t)w->len;
+    sw_label(w, 1, 0, (int64_t)n);
+    sw_room(w, n);
+    memcpy(w->buf + w->len, octets, n);
+    w->len += n;
+    return start;
+}
+
+int64_t avra_sw_octets(void* h, const char* b) { return sw_run(h, b, bytes_len(b)); }
+
+int64_t avra_sw_text(void* h, const char* s) { return sw_run(h, s, str_len(s)); }
+
+int64_t avra_sw_closed(void* h, int64_t root) {
+    SavedWriter* w = h;
+    sw_big(w, (uint64_t)((int64_t)w->len + 8 - root), 8);
+    return (int64_t)w->len;
+}
+
+void* avra_sw_octets_at(void* h) { return ((SavedWriter*)h)->buf; }
+
+void avra_sw_emptied(void* h) {
+    SavedWriter* w = h;
+    w->len = 0;
+    w->height = 0;
+    w->open_list = 0;
 }
 
 // A WHOLE VALUE FOLDED INTO ONE LANE OF A KEY, in one call: its bytes eight to a
