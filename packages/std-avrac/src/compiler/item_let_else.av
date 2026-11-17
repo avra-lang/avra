@@ -1,0 +1,85 @@
+//! WHERE A `let v? = … else { … }` CAN'T STAND: its `else` falls through to the binding it skipped,
+//! or what it binds from is never absent, or always is. The first read off the item's syntax, the
+//! others off its typed nodes — a subject typing doesn't know whole is left alone.
+use core.{ExprId, OwnType, SignedType, Span, StmtId, SyntaxArena, flatten}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.nullable.{bound_absent, bound_present, else_stays}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every `let … else` statement the store holds that its source wrote, not a template.
+fn lets_else(store: SyntaxArena) -> List<StmtId> {
+    [s for i in 0..store.stmts.count() for s in [StmtId { index: i }] if store.stmt_origins.get()[i] == null && store.stmt(s) is .LetElse]
+}
+
+/// The statements a `let … else`'s `else` runs; none for any other statement.
+fn else_run(store: SyntaxArena, s: StmtId) -> List<StmtId> {
+    match store.stmt(s) { .LetElse(_, _, stmts) -> stmts, rest -> [] }
+}
+
+/// The name a `let … else` binds, as its refusals say it.
+fn bind_of(store: SyntaxArena, s: StmtId) -> string { store.let_name(s) ?? "this binding" }
+
+/// Every `let … else` of the written item `at` of `file` whose `else` doesn't leave.
+fn falling_elses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    if !store.refusals().is_empty() { return [] }
+    [Found { at: store.stmt_span(s), args: [bind_of(store, s)] } for s in lets_else(store) if !leaves(store, else_run(store, s))]
+}
+
+/// Whether statements run in order leave: their last one does.
+fn leaves(store: SyntaxArena, stmts: List<StmtId>) -> bool {
+    let last? = stmts.last() else { return false }
+    store.diverges(last)
+}
+
+/// Every `let … else` of the written item `at` of `file` whose subject is never absent, or always is:
+/// its binding's name, then the subject's type spelled, or none where it is always absent.
+fn unasked_elses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    flatten([unasked_in(t) for t in item_typed_nodes(engine, file, at, item)])
+}
+
+/// Every `let … else` whose subject stands among the nodes `t` reads and is never absent, or always.
+fn unasked_in(t: TypedNodes) -> List<Found> {
+    [Found { at: t.store.expr_span(v!), args: [bind_of(t.store, s)].concat(present_words(ty!)) } for s in lets_else(t.store) for v in [t.store.stmt_value(s)] if v != null && v!.index >= t.lo && v!.index < t.hi for ty in [(t.type_at)(v!.index)] if ty != null && unasked(ty!)]
+}
+
+/// Whether a subject of `ty` makes the null check pointless: always absent, or a type the language
+/// owns, known whole, never absent.
+fn unasked(ty: SignedType) -> bool {
+    if ty.absence() { return true }
+    ty.head is .Owned &&
+        !ty.dynamic &&
+        !ty.generic() &&
+        !ty.inferred() &&
+        ty.nulls == 0 &&
+        !ty.owns(OwnType.Void)
+}
+
+/// The subject's type spelled where it is present, none where it is always absent.
+fn present_words(ty: SignedType) -> List<string> { if ty.absence() { [] } else { [ty.spelled()] } }
+
+/// a `let … else`'s `else` leaves
+export law else_leaves {
+    kind: "type.let_else"
+    reads: falling_elses
+    voice: stays_words
+    witness: "fn f(x: int?) -> int {\n    let v? = x else { 1 }\n    v\n}\n\nf(2)\n"
+}
+
+/// a `let … else` binds from a value that may be absent
+export law let_else_asks {
+    kind: "type.let_else"
+    reads: unasked_elses
+    voice: unasked_words
+    witness: "fn f() -> int {\n    let v? = 1 else { return 0 }\n    v\n}\n\nf()\n"
+}
+
+fn stays_words(a: List<string>) -> Voice { else_stays(a[0]) }
+
+fn unasked_words(a: List<string>) -> Voice { if a.length > 1 { bound_present(a[0], a[1]) } else { bound_absent(a[0]) } }

@@ -123,7 +123,7 @@ fn check_let_else(mut cx: TypeCx, s: StmtId) {
             "type.let_else",
             "`${bind}?` asks",
             "`${bind}?` can never bind",
-            "the else always runs — write its statements alone",
+            LET_ELSE_REMEDY,
         )
     }
     cx.record_binding(s, held ?? cx.error_type)
@@ -338,18 +338,25 @@ fn arms_disagree(mut cx: TypeCx, present: ExprId, absent: ExprId) -> TypeId {
         )
 }
 
-fn else_falls_through(mut cx: TypeCx, s: StmtId, bind: string) {
-    cx
-        .emit(
-            refusal(
-                "type.let_else",
-                cx.stmt_loc(s),
-                "the `else` must LEAVE — control cannot fall through to `${bind}`",
-                "falls through",
-                "end the else with `return`",
-            ),
-        )
+fn else_falls_through(mut cx: TypeCx, s: StmtId, bind: string) { cx.emit(said_as("type.let_else", cx.stmt_loc(s), else_stays(bind))) }
+
+/// A `let ${bind}? = … else { … }` whose `else` doesn't leave.
+export fn else_stays(bind: string) -> Voice {
+    Voice {
+        message: "the `else` must LEAVE — control cannot fall through to `${bind}`",
+        label: "falls through",
+        help: "end the else with `return`",
+    }
 }
+
+/// `let ${bind}? = …` over a value of `named`, which is never absent.
+export fn bound_present(bind: string, named: string) -> Voice { present_checked_voice("`${bind}?` asks", named) }
+
+/// `let ${bind}? = …` over a value always absent.
+export fn bound_absent(bind: string) -> Voice { always_absent("`${bind}?` can never bind", LET_ELSE_REMEDY) }
+
+/// What a `let … else` over a value always absent is told to do instead.
+const LET_ELSE_REMEDY: string = "the else always runs — write its statements alone"
 
 fn absence_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId) -> TypeId {
     let promise = cx.view.types.name_of(promised)

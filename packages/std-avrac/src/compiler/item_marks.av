@@ -1,0 +1,37 @@
+//! WHERE A MARK HAS NO READER: a mark written on a declaration's fields or variants that nothing
+//! claims. Judged where the old path knows the claims exactly: a declaration wearing no annotation
+//! claims only the marks the compiler reads itself. One a `@derive` or another annotation stands on —
+//! whose claims are its traits' to say — and a `collect enum`, whose members' marks its readers hold,
+//! are left alone. Read off the item's syntax.
+use core.{StmtId, SyntaxArena}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every mark the written item `at` of `file` writes that no reader claims, with the marks read.
+fn unread_marks(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    if !store.refusals().is_empty() { return [] }
+    let claimed = compiler_marks()
+    [Found { at: m.span, args: [m.name].concat(claimed) } for s in read_item(engine, file, at).stmts if claims_known(store, s) for m in store.marks_written(s) if !claimed.contains(m.name)]
+}
+
+/// Whether the statement `s`'s claims are known exactly: its source's own, wearing no annotation,
+/// and no `collect enum`.
+fn claims_known(store: SyntaxArena, s: StmtId) -> bool {
+    store.stmt_origins.get()[s.index] == null &&
+        store.annotations_of(s).is_empty() &&
+        store.collect_enum_parts(s) == null
+}
+
+/// every mark is read by something that claims it
+export law mark_has_a_reader {
+    kind: "annotation.unread_mark"
+    reads: unread_marks
+    voice: unread_words
+    witness: "enum E {\n    @nobody A\n}\n"
+}
+
+fn unread_words(a: List<string>) -> Voice { unread_mark_said(a[0], a.drop(1), null) }

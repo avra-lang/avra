@@ -569,20 +569,25 @@ fn many_in_expression() -> string {
 /// the claims that ARE standing, so a typo reads as a typo.
 /// `gatherer` is the enum a gathered member's mark is held to — named,
 /// since another enum gathering the same member may read it.
-fn unclaimed_mark(m: Mark, claimed: List<string>, gatherer: string?, at: Loc?) -> Diag {
-    refusal(
-        "annotation.unread_mark",
-        at,
-        "every mark is read by something that claims it",
-        unread_label(m, gatherer),
-        claims_help(claimed),
-    )
+fn unclaimed_mark(m: Mark, claimed: List<string>, gatherer: string?, at: Loc?) -> Diag { said_as("annotation.unread_mark", at, unread_mark_said(m.name, claimed, gatherer)) }
+
+/// The mark `@${mark}` no reader claims, among the `claimed` that are read — on a member `gatherer`
+/// gathers, where one does.
+export fn unread_mark_said(mark: string, claimed: List<string>, gatherer: string?) -> Voice {
+    Voice {
+        message: "every mark is read by something that claims it",
+        label: unread_label(mark, gatherer),
+        help: claims_help(claimed),
+    }
 }
 
-fn unread_label(m: Mark, gatherer: string?) -> string {
-    let g? = gatherer else { return "`@${m.name}` — nothing on this declaration reads it" }
-    "`@${m.name}` — nothing on `${g}`, which gathers this, reads it"
+fn unread_label(mark: string, gatherer: string?) -> string {
+    let g? = gatherer else { return "`@${mark}` — nothing on this declaration reads it" }
+    "`@${mark}` — nothing on `${g}`, which gathers this, reads it"
 }
+
+/// The marks the compiler reads itself, which every declaration claims.
+export fn compiler_marks() -> List<string> { own_marks() }
 
 fn claims_help(claimed: List<string>) -> string {
     if claimed.is_empty() { return "a mark is read by a `@derive` whose trait declares `marks`" }

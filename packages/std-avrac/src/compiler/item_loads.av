@@ -32,9 +32,20 @@ fn unloaded(engine: QueryEngine, file: SourceFileAddress, at: int, form: Answeri
         .concat(
             [x.index for i in 0..store.pats.get().length for b in pattern_quote(store, PatId { index: i }) for x in store.every_expr(b)],
         )
-    let nodes = [e for i in 0..store.expr_count() for e in [ExprId { index: i }] if store.home_of(e) == null && !composed.contains(i) && is_form(store, e, form)]
+    let marked = [m.span!.lo for s in 0..store.stmts.count() for m in store.marks_written(StmtId { index: s }) if m.span != null]
+    let nodes = [e for i in 0..store.expr_count() for e in [ExprId { index: i }] if store.home_of(e) == null &&
+        !composed.contains(i) &&
+        is_form(store, e, form) &&
+        !written_by_mark(store, e, marked)]
     if nodes.is_empty() || package_reach(engine, file.package_name).packages.contains(needs) { return [] }
     [Found { at: store.expr_span(e), args: [] } for e in nodes]
+}
+
+/// Whether the node `e` is what a mark writes, standing where the mark does: a mark is data a reader
+/// claims, and answers nothing.
+fn written_by_mark(store: SyntaxArena, e: ExprId, marked: List<int>) -> bool {
+    let at? = store.expr_span(e) else { return false }
+    marked.contains(at.lo)
 }
 
 /// The quote the pattern `p` of `store` is; none for any other pattern.
