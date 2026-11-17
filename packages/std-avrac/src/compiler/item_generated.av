@@ -24,7 +24,7 @@ use core.{
     spelled,
 }
 use features.{budgets_of}
-use @std.meta.{Directive, derive}
+use @std.meta.{Diagnostic, Directive, derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -43,7 +43,27 @@ export type GeneratedItem = { tape: SyntaxTape, wraps: bool = false, wrapper: Sy
 /// What generators made, in the order their declarations are written, and what they said instead
 /// wherever they made nothing or the splice couldn't place what they made.
 @derive(Saved)
-export type GeneratedItems = { items: List<GeneratedItem>, said: List<string> }
+export type GeneratedItems = { items: List<GeneratedItem>, said: List<string>, problems: List<KeptProblem> = [] }
+
+/// What a generator said about the declaration it ran over, kept whole: its words, where it points —
+/// a span in the file `home` spells by package and path, absent for the declaration itself — its own
+/// kind, and whether it only warns; then the site it ran at — the item, the declaration — and what
+/// ran there: `@std/meta`'s `delegate` over a `collect enum`, else the annotation's name.
+@derive(Saved)
+export type KeptProblem = {
+    message: string,
+    help: string?,
+    kind: string?,
+    warning: bool,
+    at: FindingAt?,
+    home: string?,
+    item: int = -1,
+    owner: string = "",
+    by: string = "",
+    from: string = "",
+    trapped: bool = false,
+    unplaced: bool = false,
+}
 
 /// What a site hands its generator past the declaration it stands on: each argument, and what the
 /// item writing each declaration among them means, so a site runs again when one changes.
@@ -76,8 +96,22 @@ export fn generated(
         generator_plan(print, l),
         method,
     ) {
-        .Ran(made, problems) -> if problems.is_empty() { items_spliced(engine, file, name, made, method) } else { said_only([p.message for p in problems]) },
+        .Ran(made, problems) -> {
+            let made_here = items_spliced(engine, file, name, made, method)
+            made_here with { problems: made_here.problems.concat([kept_problem(p) for p in problems]) }
+        },
         .Stopped(why) -> said_only([why]),
+        .Trapped(why) -> said_only([why]) with { problems: [
+            KeptProblem {
+                message: why,
+                help: null,
+                kind: null,
+                warning: false,
+                at: null,
+                home: null,
+                trapped: true,
+            },
+        ] },
     }
 }
 
@@ -110,6 +144,7 @@ fn gathered_items(made: List<GeneratedItems>) -> GeneratedItems {
     GeneratedItems {
         items: flatten([m.items for m in made]),
         said: flatten([m.said for m in made]),
+        problems: flatten([m.problems for m in made]),
     }
 }
 
@@ -147,7 +182,7 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Gen
         args: site.handed,
         meanings: [item_meaning(engine, d.file, d.item) for h in site.handed for d in handed_decl(h)],
     }
-    generated(
+    let made_here = generated(
         engine,
         file,
         item_meaning(engine, file, site.item),
@@ -157,6 +192,7 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Gen
         handed,
         site.method,
     )
+    made_here with { problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file.package_name } for p in made_here.problems] }
 }
 
 /// The declaration an argument hands, where it hands one.
@@ -204,6 +240,15 @@ fn items_spliced(
             .concat(
                 if stmts.is_empty() && made.all(it.twin.is_empty()) { some_list(unplaced(made)) } else { [] },
             ),
+        problems: [KeptProblem {
+            message: w,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            unplaced: true,
+        } for w in spliced.unplaced],
     }
 }
 
@@ -321,6 +366,21 @@ fn moved_name(name: string) -> string { "${name}\$body" }
 fn annotated_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> Wrapping { wrapping(engine, file, name) }
 
 fn said_only(words: List<string>) -> GeneratedItems { GeneratedItems { items: [], said: words } }
+
+/// The annotation a generator's site wears: `derive` for a trait's own, else the generator's name.
+fn annotation_named(g: GeneratorAt) -> string { if g.kind is .Derive { "derive" } else { g.name } }
+
+/// A generator's problem, kept whole.
+fn kept_problem(d: Diagnostic) -> KeptProblem {
+    KeptProblem {
+        message: d.message,
+        help: d.help,
+        kind: d.kind,
+        warning: d.warning,
+        at: if d.at == null { null } else { FindingAt { lo: d.at!.lo, hi: d.at!.hi } },
+        home: d.at?.file,
+    }
+}
 
 /// The generated item `at` names among a file's items, counting past its written ones; absent for
 /// a written one.

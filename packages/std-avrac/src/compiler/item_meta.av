@@ -31,6 +31,7 @@ use core.{
     spelled,
 }
 use features.{Lifted, arg_lit, meta_of_type, new_meta_heap}
+use @std.errors.{Loc}
 use @std.meta.{
     derive,
     Annotation as MetaAnnotation,
@@ -96,7 +97,15 @@ export fn meta_of_trait_decl(engine: QueryEngine, file: SourceFileAddress, name:
     let methods = [f for f in trait_fns(item) if !item.store.is_static(f) && item.store.fn_parts(f) != null]
     let fns = [fn_meta(engine, file, item.store, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
     if fns.length != methods.length { return null }
-    MetaTrait { name: name, at: null, fns: fns }
+    MetaTrait { name: name, at: trait_place(file, item, name), fns: fns }
+}
+
+/// Where the trait `name` stands, as `@std/meta` hands a place: its file spelled by package and path
+/// — never a path on disk — and its statement's span.
+fn trait_place(file: SourceFileAddress, item: ReadItem, name: string) -> Loc? {
+    let s? = item.stmts.find((x: StmtId) -> item.store.trait_parts(x)?.name == name) else { return null }
+    let span? = item.store.stmt_span(s) else { return null }
+    Loc { file: spelled_file(file), lo: span.lo, hi: span.hi }
 }
 
 /// The fn `s` writes in `store` of `file`, signed as `sig`, as a `Fn`.

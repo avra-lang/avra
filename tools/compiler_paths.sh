@@ -14,6 +14,15 @@ set -eu
 key=0
 [ "${1:-}" != --key ] || { key=1; shift; }
 cd "${1:-.}"
+# the text of every `.av` source under `$1` git tracks, so nothing a build or a run leaves there adds a
+# package; outside a git tree, every `.av` there
+sources() {
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git ls-files -- "$1" | grep '\.av$' | while IFS= read -r f; do [ ! -f "$f" ] || cat "$f"; done
+    else
+        find "$1" -name '*.av' -type f -exec cat {} +
+    fi
+}
 paths() {
     pending="cli"
     seen=""
@@ -23,7 +32,7 @@ paths() {
         case " $seen " in *" $d "*) continue ;; esac
         seen="$seen $d"
         [ -d "packages/$d/src" ] || continue
-        for dep in $(grep -rhoE 'use +@std\.[A-Za-z0-9_]+' "packages/$d/src" 2>/dev/null | sed -E 's/^use +@std\.//' | sort -u); do
+        for dep in $(sources "packages/$d/src" | grep -hoE 'use +@std\.[A-Za-z0-9_]+' | sed -E 's/^use +@std\.//' | sort -u); do
             pending="$pending std-$dep"
         done
     done

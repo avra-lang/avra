@@ -124,6 +124,7 @@ fn copied_template(lang: Language, store: SyntaxArena, said: Rewrite, fresh: str
         lang: lang,
         store: store,
         refused: refused,
+        unplaced: list_cell(),
         spliced: map_cell(),
         binders: list_cell(),
         written: nothing_written(),
@@ -336,7 +337,7 @@ fn scratch(lang: Language, source: string) -> Scratch? {
 
 /// Declarations a generator's directives made, spliced into a store of their own: the statements,
 /// and the words for each fill the splice couldn't place.
-export type SplicedDecls = { store: SyntaxArena, stmts: List<StmtId>, refused: List<string> }
+export type SplicedDecls = { store: SyntaxArena, stmts: List<StmtId>, refused: List<string>, unplaced: List<string> = [] }
 
 /// Each node of `sources` spliced as declarations into one store: every template copied from the
 /// nodes `written` finds where it was written, else from its runs, and its nodes marked with the
@@ -348,6 +349,7 @@ export fn generated_spliced(sources: List<Node>, here: string?, written: Written
         lang: avra(),
         store: new_node_store(),
         refused: refused,
+        unplaced: list_cell(),
         spliced: map_cell(),
         binders: list_cell(),
         written: written,
@@ -356,7 +358,12 @@ export fn generated_spliced(sources: List<Node>, here: string?, written: Written
     let stmts = flatten([sp.stmts(n) for n in sources])
     lambdas_apart(sp.store)
     binders_apart(sp.store, sp.spliced.get(), sp.binders.get(), here)
-    SplicedDecls { store: sp.store, stmts: stmts, refused: sp.refused.get() }
+    SplicedDecls {
+        store: sp.store,
+        stmts: stmts,
+        refused: sp.refused.get(),
+        unplaced: sp.unplaced.get(),
+    }
 }
 
 /// What a splice copies: a generator's declarations, whose holes are values and whose nodes keep
@@ -382,6 +389,9 @@ type Splice = {
     lang: Language,
     store: SyntaxArena,
     refused: Cell<List<string>>,
+    /// The words for each fill no seat could hold, among `refused`: the template's own refusal,
+    /// where the rest are this compiler's reading.
+    unplaced: Cell<List<string>>,
     spliced: Cell<Map<string, bool>>,
     binders: Cell<List<PatId>>,
     /// Where each template copied was written, parsed.
@@ -436,7 +446,10 @@ impl Splice {
             for s in copy.stmts { self.store.stmts.place(s.index, site) }
         }
         // LICENSED loops.push_loop: a `Cell` takes one element per write, and no bulk write exists
-        for w in copy.refused { self.refused.push(w) }
+        for w in copy.refused {
+            self.refused.push(w)
+            self.unplaced.push(w)
+        }
         // LICENSED loops.push_loop: a `Cell` takes one element per write, and no bulk write exists
         for b in copy.binders { self.binders.push(b) }
         copy

@@ -515,13 +515,17 @@ fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem 
         return held_read(made_key(file, at, tape), () -> PlacedTape { start: 0, tape: tape })
     }
     let item = item_under(engine, file, at)
-    held_read(written_key(file, at, item.start, item.text), () -> placed_item(engine, file, item))
+    held_read(
+        printed_key(file, at, item.start, item.print ?? fp_str(item.text)),
+        () -> placed_item(engine, file, item),
+    )
 }
 
 /// What a written item read back is held under: its file, its place, and its text's print.
-export fn written_key(file: SourceFileAddress, at: int, start: int, text: string) -> string {
-    "${spelled_file(file)}#${at}#${start}#${fp_str(text)}"
-}
+export fn written_key(file: SourceFileAddress, at: int, start: int, text: string) -> string { printed_key(file, at, start, fp_str(text)) }
+
+/// What a written item whose text prints as `print` read back is held under.
+fn printed_key(file: SourceFileAddress, at: int, start: int, print: int) -> string { "${spelled_file(file)}#${at}#${start}#${print}" }
 
 /// What a made item read back is held under: its file, its place, and its whole tape's print —
 /// places included, so a template that moves makes another key.

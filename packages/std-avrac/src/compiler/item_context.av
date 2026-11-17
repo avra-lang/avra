@@ -14,6 +14,7 @@ use core.{
     SyntaxArena,
     distinct,
     flatten,
+    fp_str,
     module_path,
 }
 use compiler.host.{read_manifest}
@@ -70,9 +71,10 @@ impl WordShapes {
     }
 }
 
-/// One item of a file, and the context it reads under: its file's words it could name.
+/// One item of a file, and the context it reads under: its file's words it could name; and its
+/// text's print where it was made with its file's items.
 @derive(Saved)
-export type ItemUnder = { start: int, text: string, context: Bytes }
+export type ItemUnder = { start: int, text: string, context: Bytes, print: int? = null }
 
 /// A file's items, each with the context it reads under.
 export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<ItemUnder> {
@@ -88,11 +90,12 @@ export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { file
 @query
 export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnder {
     let items = file_items(engine, file)
-    let item = if at < items.length { items[at] } else { ItemText { start: 0, text: "" } }
+    let item = if at < items.length { items[at] } else { ItemText { start: 0, text: "", print: fp_str("") } }
     ItemUnder {
         start: item.start,
         text: item.text,
         context: WordShapes.from_saved_bytes(file_context(engine, file)).named_in(item.text),
+        print: item.print,
     }
 }
 
@@ -223,16 +226,16 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
 
 fn every_expr(store: SyntaxArena) -> List<ExprId> { [ExprId { index: at } for at in 0..store.exprs.count()] }
 
-/// One item of a file: where its text starts, and the text.
+/// One item of a file: where its text starts, the text, and the text's print.
 @derive(Saved)
-export type ItemText = { start: int, text: string }
+export type ItemText = { start: int, text: string, print: int }
 
 /// A file's items (`item_spans`), each as its text; a file with no text has none. Its text is
 /// lexed here alone.
 @query
 export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemText> {
     let text? = source_text(engine, file) else { return [] }
-    [ItemText { start: span.start, text: text.substring(span.start, span.end) } for span in item_spans(avra_columns(text), text.length)]
+    [ItemText { start: span.start, text: t, print: fp_str(t) } for span in item_spans(avra_columns(text), text.length) for t in [text.substring(span.start, span.end)]]
 }
 
 /// What each item of a file keeps for its words, read with no words of its own.

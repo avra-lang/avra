@@ -11,6 +11,8 @@
 # `check` of the cli says, on both paths, what the build says and its rules find, held alike. Empties every
 # `.avra-cache` under packages/ and its own machine stores.
 #   sh tools/witness_program_warnings.sh [compiler]   (default build/avra-try)
+#   WITNESS_ONLY names its parts, each alone or several: `builds` (the cli cold, no-op and edited, on
+#   both paths), `check` (the cli's check on both), `cases` (tools/program-warnings/).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -68,23 +70,28 @@ excused() {
     done | sort -u
 }
 
+# a part named by WITNESS_ONLY, or every part when it names none
+wanted() { [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " $1 "; }
+
 cold
-held cold
-old cold
-[ -s "$tmp/cold.new" ] || { echo "witness_program_warnings: the program layer said no warning" >&2; exit 1; }
-alike cold "cold"
-echo "witness_program_warnings: no law on the program layer yet:"
-sed 's/\].*//; s/^warning\[//' "$tmp/cold.old" | sort | uniq -c | while read -r n k; do
-    grep -q "^warning\[$k\]" "$tmp/cold.new" || echo "  $k $n"
-done
-held noop
-cmp -s "$tmp/noop.new" "$tmp/cold.new" || { echo "witness_program_warnings: a no-op build warns otherwise than the cold one" >&2; exit 1; }
-echo "witness_program_warnings: no-op — the cold build's warnings"
-awk -v a="$line" -v b="$becomes" '$0 == a { print b; next } { print }' "$tmp/orig.av" > "$file"
-held edit
-old edit
-[ "$(wc -l < "$tmp/edit.new")" -gt "$(wc -l < "$tmp/cold.new")" ] || { echo "witness_program_warnings: the edit's warning is not said" >&2; exit 1; }
-alike edit "warm edit adding a warning"
+if wanted builds; then
+    held cold
+    old cold
+    [ -s "$tmp/cold.new" ] || { echo "witness_program_warnings: the program layer said no warning" >&2; exit 1; }
+    alike cold "cold"
+    echo "witness_program_warnings: no law on the program layer yet:"
+    sed 's/\].*//; s/^warning\[//' "$tmp/cold.old" | sort | uniq -c | while read -r n k; do
+        grep -q "^warning\[$k\]" "$tmp/cold.new" || echo "  $k $n"
+    done
+    held noop
+    cmp -s "$tmp/noop.new" "$tmp/cold.new" || { echo "witness_program_warnings: a no-op build warns otherwise than the cold one" >&2; exit 1; }
+    echo "witness_program_warnings: no-op — the cold build's warnings"
+    awk -v a="$line" -v b="$becomes" '$0 == a { print b; next } { print }' "$tmp/orig.av" > "$file"
+    held edit
+    old edit
+    [ "$(wc -l < "$tmp/edit.new")" -gt "$(wc -l < "$tmp/cold.new")" ] || { echo "witness_program_warnings: the edit's warning is not said" >&2; exit 1; }
+    alike edit "warm edit adding a warning"
+fi
 # `check` of the cli says what its build says and what its rules find, on both paths alike.
 checked() {
     if ! env $1 AVRA_CACHE_DIR="$tmp/$2-store" "$avra" check packages/cli >"$tmp/out" 2>"$tmp/err"; then
@@ -93,31 +100,35 @@ checked() {
     warnings "$tmp/out" > "$tmp/check.$2"
 }
 cp "$tmp/orig.av" "$file"
-checked AVRA_PROGRAM=1 new
-checked AVRA_PROGRAM=0 old
-alike check "check"
+if wanted check; then
+    checked AVRA_PROGRAM=1 new
+    checked AVRA_PROGRAM=0 old
+    alike check "check"
+fi
 
 # Each case under tools/program-warnings/ is a package of its own, built cold on both paths in a
 # copy of its own: the program layer's warnings must be the old path's, word for word, and there
 # must be some.
 cp "$tmp/orig.av" "$file"
-for d in tools/program-warnings/*/; do
-    name=$(basename "$d")
-    c="$tmp/case-$name"
-    cp -R "$d" "$c"
-    for side in old new; do
-        mkdir -p "$c-$side-store"
-        if [ "$side" = new ]; then run="env AVRA_PROGRAM=1"; else run="env AVRA_PROGRAM=0"; fi
-        $run AVRA_CACHE_DIR="$c-$side-store" "$avra" build "$c" >/dev/null 2>"$c.$side.err" || {
-            echo "witness_program_warnings: case $name does not build on the $side path:" >&2; tail -5 "$c.$side.err" >&2; exit 1
-        }
-        warnings "$c.$side.err" | sed "s|$c|<case>|g" > "$c.$side"
+if wanted cases; then
+    for d in tools/program-warnings/*/; do
+        name=$(basename "$d")
+        c="$tmp/case-$name"
+        cp -R "$d" "$c"
+        for side in old new; do
+            mkdir -p "$c-$side-store"
+            if [ "$side" = new ]; then run="env AVRA_PROGRAM=1"; else run="env AVRA_PROGRAM=0"; fi
+            $run AVRA_CACHE_DIR="$c-$side-store" "$avra" build "$c" >/dev/null 2>"$c.$side.err" || {
+                echo "witness_program_warnings: case $name does not build on the $side path:" >&2; tail -5 "$c.$side.err" >&2; exit 1
+            }
+            warnings "$c.$side.err" | sed "s|$c|<case>|g" > "$c.$side"
+        done
+        [ -s "$c.old" ] || { echo "witness_program_warnings: case $name warns of nothing on the old path" >&2; exit 1; }
+        if ! cmp -s "$c.old" "$c.new"; then
+            echo "witness_program_warnings: case $name — the program layer's warnings are not the old path's" >&2
+            diff "$c.old" "$c.new" | tr '\037' '\n' | head -30 >&2
+            exit 1
+        fi
+        echo "witness_program_warnings: case $name — $(wc -l < "$c.new" | tr -d ' ') warning(s) as the old path says them"
     done
-    [ -s "$c.old" ] || { echo "witness_program_warnings: case $name warns of nothing on the old path" >&2; exit 1; }
-    if ! cmp -s "$c.old" "$c.new"; then
-        echo "witness_program_warnings: case $name — the program layer's warnings are not the old path's" >&2
-        diff "$c.old" "$c.new" | tr '\037' '\n' | head -30 >&2
-        exit 1
-    fi
-    echo "witness_program_warnings: case $name — $(wc -l < "$c.new" | tr -d ' ') warning(s) as the old path says them"
-done
+fi

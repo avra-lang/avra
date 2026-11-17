@@ -380,9 +380,20 @@ compiler_hash() {
     (
         cd "$1"
         compiler_paths "$1" | while IFS= read -r p; do
-            find "$p" -type f ! -path '*/build/*' ! -path '*/.avra-cache/*' ! -path '*/.claude/*' ! -path '*/tests/*' 2>/dev/null
-        done | LC_ALL=C sort -u | xargs shasum -a 256
+            sources_under "$p"
+        done | grep -v -e '/build/' -e '/\.avra-cache/' -e '/\.claude/' -e '/tests/' | LC_ALL=C sort -u | xargs shasum -a 256
     ) | shasum -a 256 | cut -d' ' -f1
+}
+
+# THE SOURCE FILES UNDER `$1` that git tracks, as they stand in the tree — so nothing a build or a run
+# leaves beside the source (a linked `src/main`, a print, a store), ignored or not, moves the hash: two
+# clean trees at one commit hash alike, and a run never moves it. Outside a git tree, every file there.
+sources_under() {
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git ls-files -- "$1" | while IFS= read -r f; do [ ! -f "$f" ] || echo "$f"; done
+    else
+        find "$1" -type f
+    fi
 }
 
 # ONE COMMAND STRING, from either ONE command arg (a shell string, run as

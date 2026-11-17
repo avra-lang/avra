@@ -449,31 +449,27 @@ fn a_kind(kind: DeclKind?) -> string {
 }
 
 /// A `@derive` argument that names something other than a trait.
-fn not_a_trait(mut cx: TypeCx, a: Annotation, e: ExprId, name: string) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.derive",
-                cx.loc_of(e),
-                derive_law_words,
-                "`${name}` is not a trait",
-                "`@${a.name}` names a trait — `trait ${name} { static fn derive(t: Type) -> List<Directive> }`",
-            ),
-        )
+fn not_a_trait(mut cx: TypeCx, a: Annotation, e: ExprId, name: string) { let _ = cx.spoken(said_as("annotation.derive", cx.loc_of(e), derives_no_trait(a.name, name))) }
+
+/// `@${annotation}` handed `name`, which is no trait.
+export fn derives_no_trait(annotation: string, name: string) -> Voice {
+    Voice {
+        message: derive_law_words,
+        label: "`${name}` is not a trait",
+        help: "`@${annotation}` names a trait — `trait ${name} { static fn derive(t: Type) -> List<Directive> }`",
+    }
 }
 
 /// A trait named by `@derive` that ships no associated `derive`.
-fn no_derive(mut cx: TypeCx, e: ExprId, name: string) {
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.derive",
-                cx.loc_of(e),
-                derive_law_words,
-                "`${name}` declares no `derive`",
-                "add `static fn derive(t: Type) -> List<Directive>` to the trait",
-            ),
-        )
+fn no_derive(mut cx: TypeCx, e: ExprId, name: string) { let _ = cx.spoken(said_as("annotation.derive", cx.loc_of(e), derives_nothing(name))) }
+
+/// A trait `name` a `@derive` names, which declares no `derive`.
+export fn derives_nothing(name: string) -> Voice {
+    Voice {
+        message: derive_law_words,
+        label: "`${name}` declares no `derive`",
+        help: "add `static fn derive(t: Type) -> List<Directive>` to the trait",
+    }
 }
 
 /// A `@derive` trait's associated `derive` must stand in another
@@ -530,8 +526,20 @@ fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Diagnosti
     if x.kind != null && !is_kind_word(x.kind!) { return bad_kind(cx, a, x) }
     let here: Loc? = x.at ?? cx.view.stmt_loc(s)
     let kind = user_kind(cx.view.decls.package_of(d), x.kind) ?? "annotation.said"
-    let _ = cx
-        .spoken(refusal(kind, here, x.message, "refused by `@${a.name}`", x.help ?? said_help))
+    let _ = cx.spoken(said_as(kind, here, annotation_said(x.message, a.name, x.help)))
+}
+
+/// What the annotation `@${name}` said refusing the declaration: its words, and its help or the
+/// annotation's own way out.
+export fn annotation_said(message: string, name: string, help: string?) -> Voice { Voice { message: message, label: "refused by `@${name}`", help: help ?? said_help } }
+
+/// The annotation `@${name}` naming the kind `kind`, which is no word, saying `message`.
+export fn kind_unworded(name: string, kind: string, message: string) -> Voice {
+    Voice {
+        message: "an annotation's kind is a word",
+        label: "`@${name}` named `${kind}`, saying: ${message}",
+        help: "spell the kind `[A-Za-z0-9_-]+`, like `E1`",
+    }
 }
 
 /// A kind that is not a word is the ANNOTATION's mistake, spoken in
@@ -539,12 +547,10 @@ fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Diagnosti
 fn bad_kind(mut cx: TypeCx, a: Annotation, x: Diagnostic) {
     let _ = cx
         .spoken(
-            refusal(
+            said_as(
                 "annotation.kind",
                 at_annotation(cx, a),
-                "an annotation's kind is a word",
-                "`@${a.name}` named `${x.kind!}`, saying: ${x.message}",
-                "spell the kind `[A-Za-z0-9_-]+`, like `E1`",
+                kind_unworded(a.name, x.kind!, x.message),
             ),
         )
 }
@@ -569,16 +575,16 @@ fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) {
 fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
     let label = unsettled_label(a.name, why)
     if label.is_empty() { return }
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.unsettled",
-                at_annotation(cx, a),
-                "an annotation could not run",
-                label,
-                "an annotation runs at compile time from pure computation alone",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.unsettled", at_annotation(cx, a), could_not_run(label)))
+}
+
+/// An annotation that ran and stopped before it answered, `label` saying why.
+export fn could_not_run(label: string) -> Voice {
+    Voice {
+        message: "an annotation could not run",
+        label: label,
+        help: "an annotation runs at compile time from pure computation alone",
+    }
 }
 
 /// What a refusal says when the annotation gave no way out.

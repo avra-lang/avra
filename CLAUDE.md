@@ -342,8 +342,8 @@ registry is the idiom engine's spec, written by dogfooding.
   only from a failed write keeps serving a departed peer, holding the
   connection, the stream and the count that names it. When the RST
   happens to land first the write does fail, which is what makes the
-  defect read as a flake: `crud_feed`'s count answered 3, 5 and 0
-  across schedules while the evaluator always answered 0, and the
+  defect read as a flake: std-crud/src/tests/crud_feed's count answered
+  3, 5 and 0 across schedules while the evaluator always answered 0, and the
   native leg's own reap could not clear the leftovers in twenty
   seconds of writes. The same shape hides in any socket loop whose
   only failure signal is the write: the read side's EOF is the fact,

@@ -1,11 +1,13 @@
 //! WHERE AN ANNOTATION NAMES NO FN OVER A DECLARATION: an annotation a declaration wears names a fn,
 //! and that fn takes the declaration as its first seat. Read off the item's annotations and what
 //! their names resolve to where they're written.
-use core.{Annotation, SignedType, Span, StmtId, SyntaxArena}
+use core.{Annotation, ExprId, SignedType, Span, StmtId, SyntaxArena}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.{example_marks}
 use features.annotations.{
+    derives_no_trait,
+    derives_nothing,
     answers_no_effect,
     foreign_diagnostics,
     miscounted,
@@ -165,3 +167,50 @@ export law annotation_answers_an_effect {
 fn miscounted_words(a: List<string>) -> Voice { miscounted(a[0], a[1], a[2], a[3]) }
 
 fn effectless_words(a: List<string>) -> Voice { answers_no_effect(a[0], a[1]) }
+
+/// The fn `@std/meta` runs a trait's own `derive` through.
+const DERIVING: string = "derive"
+
+/// Every argument of a `@derive` the written item `at` of `file` wears that names a declaration no
+/// trait is, or a trait that writes no `derive`: the annotation's name, what it names, and whether
+/// it's a trait.
+fn derives_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [f! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) && derives_by_meta(engine, file, a.name) for e in a.args for f in [derive_arg(engine, file, item.store, a, e)] if f != null]
+}
+
+/// Whether the annotation `name` names `@std/meta`'s `derive`.
+fn derives_by_meta(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    d.file.package_name == META && d.name == DERIVING && d.kind == ItemKind.Fn
+}
+
+/// The argument `e` of the `@derive` `a`, refused where it names no trait or a trait with no
+/// `derive`; absent where it names one that has one, or names nothing — another law's.
+fn derive_arg(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    a: Annotation,
+    e: ExprId,
+) -> Found? {
+    let n? = store.ident_name(e) else { return null }
+    let d? = resolved(engine, file, Space.Type, n).named() else { return null }
+    if d.kind != ItemKind.Trait { return Found { at: store.expr_span(e), args: [a.name, d.name, "decl"] } }
+    let held? = declaring_item(engine, d.file, d.name, ItemKind.Trait) else { return null }
+    if trait_fns(held)
+        .any((f: StmtId) -> held.store.fn_parts(f)?.name == DERIVING && held.store.is_static(f)) { return null }
+    Found { at: store.expr_span(e), args: [a.name, d.name, "trait"] }
+}
+
+/// a `@derive` names traits that declare `derive`
+export law derive_names_a_deriving_trait {
+    kind: "annotation.derive"
+    reads: derives_refused
+    voice: derive_words
+    witness: "use @std.meta.{derive}\ntype X = { a: int }\n@derive(X)\ntype T = { x: int }\n0\n"
+}
+
+fn derive_words(a: List<string>) -> Voice { if a[2] == "decl" { derives_no_trait(a[0], a[1]) } else { derives_nothing(a[1]) } }

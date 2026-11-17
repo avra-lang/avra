@@ -2,7 +2,7 @@
 # THE GATE, IN SLICES: every receipt a landing is held to, cut into slices that each run alone in a
 # tree of their own, so N machines run N slices at once and the gate takes as long as its longest
 # slice. A slice builds the compiler of HEAD itself when build/avra was built from anything else,
-# runs every row under no env — the program layer, the net on — unless the row names one, empties the
+# runs every row on the program layer, the net off but where a row's claim is the net, empties the
 # stores a cold row reads, bounds every command, keeps each row's words under build/gate/<slice>/, and
 # ends with ONE line:
 #   GATE <slice> <sha8> PASS|FAIL rows=<n> failed=<n> <seconds>s
@@ -10,8 +10,10 @@
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
-#   sh tools/gate.sh pack               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler and every object a
-#                                       tree links with, built here first where they are not HEAD's
+#   sh tools/gate.sh seed               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler — ONE generation, built
+#                                       here first where none of HEAD's stands — and every object a tree
+#                                       links with; `pack` is its other name. Run it once; every slice
+#                                       then starts from `unpack` and builds nothing.
 #   sh tools/gate.sh unpack <file>      seeds this tree from a pack, and holds its stamp to HEAD's: a
 #                                       seeded slice builds no compiler
 #
@@ -22,8 +24,15 @@
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_PROGRAM_MODE
+unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
+# THE NET IS OFF unless a row's claim is the net: the old path's check before every program-layer
+# compile doubles what each row costs and proves nothing a row here asks of it. The rows that keep it
+# (AVRA_PROGRAM_NET=1) are the ones that count what it says: the build slice's net-on cli builds and
+# their "program-layer false refusal" count, the findings slices' build of every package, held to that
+# same count, and the cli's suite, which holds the words a user meets through a child build/avra (at
+# slice_cli). `tapes --findings` passes no door, so the net never stood in it.
+export AVRA_PROGRAM_NET=0
 
 OLD_PATH=${GATE_OLD_PATH:-1}
 # the bound of one row, and of a compiler build
@@ -39,7 +48,9 @@ build      make try; make avra twice, the second cold, the two binaries one; cli
 avrac-a    test packages/std-avrac — src/compiler
 avrac-b    test packages/std-avrac — src/features/[a-e]*
 avrac-c    test packages/std-avrac — src/features/[f-m]*
-avrac-d    test packages/std-avrac — src/features/[n-z]*, its own files, and every other dir of src/
+avrac-d    test packages/std-avrac — src/features/[n-r]*
+avrac-e    test packages/std-avrac — src/features/[s-z]*
+avrac-f    test packages/std-avrac — src/features' own files, and every dir of src/ but compiler and features
 cli        test packages/cli, its failing names held to tools/gate/cli.names
 program    test packages/std-program and std-relation; make runtime-tests
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
@@ -49,11 +60,22 @@ sound      AVRA_SOUND_CHECK=1 check packages/cli (old path), 0 `defect: in` line
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http
 findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
-findings-b the same on every other package, each built
-witness-a  witness_program_refusal; witness_program_doors
+findings-b the same on a third of every other package, dealt in turn
+findings-c the next third
+findings-d the last third
+refusal-a  witness_program_refusal over a third of its cases, dealt in turn
+refusal-b  the next third
+refusal-c  the last third
+doors      witness_program_doors
 witness-b  witness_program_runs, _ledger, _suites; witness_program_differential
-warnings   witness_program_warnings
-edit       witness_program_edit, WITNESS_ONLY="embed infer composed 1 5 10 rename"
+warnings-a witness_program_warnings — the cli built cold, no-op and edited, on both paths
+warnings-b witness_program_warnings — the cli's check on both paths
+warnings-c witness_program_warnings — the cases under tools/program-warnings/
+edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed"
+edit-b     witness_program_edit, WITNESS_ONLY=1
+edit-c     witness_program_edit, WITNESS_ONLY=5
+edit-d     witness_program_edit, WITNESS_ONLY=10
+edit-e     witness_program_edit, WITNESS_ONLY=rename
 EOF
 }
 
@@ -70,20 +92,34 @@ packed() {
     find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.sha' -o -name '*.d' \) | sort
 }
 
-# a tree seeded from the pack `$1`: its files laid down and touched, so make finds every object newer
-# than the source a checkout just wrote — the content stamps decide what moved — and its stamp HEAD's
+# a tree seeded from the pack `$1`, or left as it was: a pack is proved whole first — gzip's own check,
+# a listing to its end, the compiler and its stamp in it — and refused when its stamp is not this
+# tree's compiler source; then laid down in a staging directory and moved into build/ only once every
+# file is out, so a truncated pack never seeds half a tree. Every file moved is touched to one instant,
+# so make finds no object older than its own stamp — the content stamps decide what moved.
 unpacked() {
     [ -f "${1:-}" ] || { echo "gate: unpack names a pack — sh tools/gate.sh unpack <file>" >&2; exit 2; }
     pack=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-    tar -xzf "$pack" || exit 1
-    # one instant for every file, so no object is older than its own stamp
+    refused() { echo "gate: $(basename "$pack") $1 — not seeded" >&2; exit 1; }
+    gzip -t "$pack" 2>/dev/null || refused "is not whole (gzip -t)"
+    list=$(tar -tzf "$pack" 2>/dev/null) || refused "does not list to its end"
+    for f in build/avra build/.avra-built-from; do printf '%s\n' "$list" | grep -qx "$f" || refused "holds no $f"; done
+    packed_hash=$(tar -xzOf "$pack" build/.avra-built-from | cut -d' ' -f1)
+    tree_hash=$(sh tools/work built-from . | cut -d' ' -f1)
+    [ "$packed_hash" = "$tree_hash" ] || refused "was built from compiler source $packed_hash, this tree's is $tree_hash"
+    stage=build/gate/unpacking
     mkdir -p build/gate
+    [ ! -e "$stage" ] || find "$stage" -delete
+    mkdir -p "$stage"
+    if ! tar -xzf "$pack" -C "$stage"; then find "$stage" -delete; refused "did not extract"; fi
     touch build/gate/.unpacked
-    tar -tzf "$pack" | xargs touch -r build/gate/.unpacked
-    if ! compiler_stands; then
-        echo "gate: the pack's compiler was built from $(cut -d' ' -f1 build/.avra-built-from), this tree's source is $(sh tools/work built-from . | cut -d' ' -f1) — not seeded" >&2
-        exit 1
-    fi
+    printf '%s\n' "$list" | while IFS= read -r f; do
+        [ -f "$stage/$f" ] || continue
+        touch -r build/gate/.unpacked "$stage/$f"
+        mv -f "$stage/$f" "$f"
+    done
+    find "$stage" -delete
+    compiler_stands || { echo "gate: build/avra does not stand as HEAD's compiler after the unpack" >&2; exit 1; }
     echo "gate: seeded from $(basename "$pack") — build/avra stands as HEAD's compiler"
     exit 0
 }
@@ -93,6 +129,7 @@ slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
+[ "$slice" = seed ] && slice=pack
 [ "$slice" = pack ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
 
 sha8=$(git rev-parse --short=8 HEAD)
@@ -138,17 +175,16 @@ old_row() { [ "$OLD_PATH" = 1 ] || return 0; row "$@"; }
 # rows after read them cold
 cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec find {} -delete \; ; done; return 0; }
 
-# build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made —
-# from the seed where none stands, else two generations from the one that does
+# build/avra as HEAD's compiler: kept when it was built from this tree's compiler source, else made in
+# ONE generation — from the committed seed's link where no compiler stands, else from the one that does
+# — with the package libraries beside it, built without building the compiler again. A gate's
+# compiler makes no claim of the net, so it is built without it; the two-generation fixed point is the
+# build slice's.
 compiler() {
     if compiler_stands; then return 0; fi
-    if [ ! -x build/avra ]; then
-        row compiler-bootstrap make bootstrap || return 1
-    else
-        row compiler-gen1 make avra || return 1
-        row compiler-gen2 make avra || return 1
-    fi
-    row compiler-libs make libs
+    if [ ! -x build/avra ]; then row compiler-recover make recover || return 1; fi
+    row compiler-gen1 env AVRA_PROGRAM_NET=0 make avra || return 1
+    row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
 }
 
 # what `$1`'s cold build of packages/cli took, in seconds, net on or off by `$2`
@@ -180,14 +216,20 @@ avrac() {
 slice_avrac_a() { avrac packages/std-avrac/src/compiler; }
 slice_avrac_b() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[a-e]*' | sort); }
 slice_avrac_c() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[f-m]*' | sort); }
-slice_avrac_d() {
+slice_avrac_d() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[n-r]*' | sort); }
+slice_avrac_e() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[s-z]*' | sort); }
+slice_avrac_f() {
     avrac $(
         {
-            find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 \( -name '*.av' -o -type d -name '[n-z]*' \)
+            find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -name '*.av'
             find packages/std-avrac/src -mindepth 1 -maxdepth 1 ! -name compiler ! -name features ! -name '.*'
         } | sort
     )
 }
+
+# the words on its lines that `dealt k n` keeps: every n-th, starting at the k-th (from 0), so a
+# list's parts share its weight in turn
+dealt() { awk -v k="$1" -v n="$2" '(NR - 1) % n == k'; }
 
 # `test` over `$2…` as the row `$1`, judged by the NAMES that fail: each must be one
 # tools/gate/<package>.names pins (a case a sandbox's environment fails — root writes any directory, no
@@ -205,9 +247,15 @@ tested() {
     judged "$name" "$(wc -l <"$out/$name.unpinned" | tr -d ' ')"
 }
 
+# THE CLI'S SUITE RUNS WITH THE NET: its cases run build/avra as a user does and hold the words a user
+# meets, refusals among them, and where the program layer accepts a program the old path refuses, those
+# words are the net's — so the suite holds the shipped default, the net on. The one suite that runs the
+# compiler as a child; every other test row holds what it runs in-process.
 slice_cli() {
     cold cli
+    export AVRA_PROGRAM_NET=1
     tested cli-suite packages/cli
+    export AVRA_PROGRAM_NET=0
 }
 
 slice_program() {
@@ -248,19 +296,20 @@ findings_on() {
         row "findings-$p" build/avra tapes "$root/packages/$p" --findings
         judged "refusals-$p" "$(grep -c '^error\[' "$out/findings-$p.log")"
         [ "$p" != cli ] || continue
-        sh tools/bounded.sh "$ROW_SECS" build/avra build "packages/$p" >"$out/build-$p.log" 2>&1
+        sh tools/bounded.sh "$ROW_SECS" env AVRA_PROGRAM_NET=1 build/avra build "packages/$p" >"$out/build-$p.log" 2>&1
         judged "false-refusals-$p" "$(grep -c 'program-layer false refusal' "$out/build-$p.log")"
     done
 }
 HEAVY_FINDINGS="std-avrac cli"
 slice_findings_a() { findings_on $HEAVY_FINDINGS; }
-slice_findings_b() {
-    findings_on $(for d in packages/*/src; do basename "$(dirname "$d")"; done | grep -vxE "$(echo $HEAVY_FINDINGS | tr ' ' '|')")
+# a third of every other package, the `$1`-th (from 0)
+findings_third() {
+    findings_on $(for d in packages/*/src; do basename "$(dirname "$d")"; done | grep -vxE "$(echo $HEAVY_FINDINGS | tr ' ' '|')" | dealt "$1" 3)
 }
 
-slice_witness_a() {
-    old_row refusal-witness sh tools/witness_program_refusal.sh build/avra
-    old_row doors-witness sh tools/witness_program_doors.sh build/avra
+# the refusal witness over a third of its cases — its directories, each a case — the `$1`-th (from 0)
+refusal_third() {
+    old_row refusal-witness sh tools/witness_program_refusal.sh build/avra $(find tools/program-refusals -mindepth 1 -maxdepth 1 -type d | sed 's#.*/##' | sort | dealt "$1" 3)
 }
 
 slice_witness_b() {
@@ -270,9 +319,11 @@ slice_witness_b() {
     old_row differential-witness sh tools/witness_program_differential.sh build/avra
 }
 
-slice_warnings() { old_row warnings-witness sh tools/witness_program_warnings.sh build/avra; }
+# the warnings witness's part `$1`
+warnings_part() { old_row warnings-witness env WITNESS_ONLY="$1" sh tools/witness_program_warnings.sh build/avra; }
 
-slice_edit() { row edit-witness env WITNESS_ONLY="embed infer composed 1 5 10 rename" sh tools/witness_program_edit.sh build/avra; }
+# the edit witness's edits `$1`
+edit_part() { row edit-witness env WITNESS_ONLY="$1" sh tools/witness_program_edit.sh build/avra; }
 
 if compiler; then
     case $slice in
@@ -286,6 +337,8 @@ if compiler; then
         avrac-b) slice_avrac_b ;;
         avrac-c) slice_avrac_c ;;
         avrac-d) slice_avrac_d ;;
+        avrac-e) slice_avrac_e ;;
+        avrac-f) slice_avrac_f ;;
         cli) slice_cli ;;
         program) slice_program ;;
         idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
@@ -295,11 +348,22 @@ if compiler; then
         doors-a) slice_doors_a ;;
         doors-b) slice_doors_b ;;
         findings-a) slice_findings_a ;;
-        findings-b) slice_findings_b ;;
-        witness-a) slice_witness_a ;;
+        findings-b) findings_third 0 ;;
+        findings-c) findings_third 1 ;;
+        findings-d) findings_third 2 ;;
+        refusal-a) refusal_third 0 ;;
+        refusal-b) refusal_third 1 ;;
+        refusal-c) refusal_third 2 ;;
+        doors) old_row doors-witness sh tools/witness_program_doors.sh build/avra ;;
         witness-b) slice_witness_b ;;
-        warnings) slice_warnings ;;
-        edit) slice_edit ;;
+        warnings-a) warnings_part builds ;;
+        warnings-b) warnings_part check ;;
+        warnings-c) warnings_part cases ;;
+        edit-a) edit_part "embed infer composed" ;;
+        edit-b) edit_part 1 ;;
+        edit-c) edit_part 5 ;;
+        edit-d) edit_part 10 ;;
+        edit-e) edit_part rename ;;
     esac
 fi
 

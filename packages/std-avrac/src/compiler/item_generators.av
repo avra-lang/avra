@@ -2,6 +2,7 @@
 //! annotation's own fn, lowered with every body it reaches into a program the evaluator runs over a
 //! declaration's meta value: a `Type` for a derive, a `Fn` for an annotation.
 use core.{
+    OwnType,
     Annotation,
     ExprId,
     Literal,
@@ -263,7 +264,10 @@ fn print_key(print: ContentHash) -> string { "${print.high_word}:${print.low_wor
 /// the declaration, or why it didn't run.
 export enum GeneratorRun {
     Ran(made: List<Directive>, problems: List<Diagnostic>)
+    /// It didn't run: the program layer couldn't hand it what it takes.
     Stopped(why: string)
+    /// It ran, and stopped before it answered: a trap, a budget spent.
+    Trapped(why: string)
 }
 
 /// The made generator `l` of `g` run under `budgets` over the declaration `file` writes as `name`,
@@ -293,12 +297,13 @@ export fn generator_run(
         plan,
         late: late_door(task_survey(engine), TaskChecks.Tested),
     ) {
-        .Ok(lifted) -> if answers_declared(engine, g) {
-            GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems())
-        } else {
-            GeneratorRun.Ran(lifted.directives(), [])
+        .Ok(lifted) -> match answer_shape(engine, g) {
+            .Declared -> GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems()),
+            .Directives -> GeneratorRun.Ran(lifted.directives(), []),
+            .Diagnostics -> GeneratorRun.Ran([], lifted.saids()),
+            .Nothing -> GeneratorRun.Ran([], []),
         },
-        .Err(why) -> GeneratorRun.Stopped(unsettled_label(g.name, why)),
+        .Err(why) -> GeneratorRun.Trapped(unsettled_label(annotation_named(g), why)),
     }
 }
 
@@ -331,11 +336,22 @@ export fn handed_values(
 
 fn unhanded(why: string) -> HandedValues { HandedValues { args: [], heap: new_meta_heap(), stopped: why } }
 
-/// Whether the generator `g` is declared to answer `@std/meta`'s `Declared`, its directives beside
-/// what it says, rather than its directives alone.
-fn answers_declared(engine: QueryEngine, g: GeneratorAt) -> bool {
-    let answer? = generator_body(engine, g)?.signature?.answer else { return false }
-    meta_named(answer, DECLARED)
+/// What a generator answers: `@std/meta`'s `Declared`, its directives beside what it says; its
+/// directives alone; what it says alone — a validating annotation's diagnostics; or nothing — an
+/// annotation that records.
+enum AnswerShape {
+    Declared
+    Directives
+    Diagnostics
+    Nothing
+}
+
+/// What the generator `g` is declared to answer.
+fn answer_shape(engine: QueryEngine, g: GeneratorAt) -> AnswerShape {
+    let answer? = generator_body(engine, g)?.signature?.answer else { return AnswerShape.Directives }
+    if meta_named(answer, DECLARED) { return AnswerShape.Declared }
+    if diagnostics_listed(answer) { return AnswerShape.Diagnostics }
+    if answer.owns(OwnType.Void) { AnswerShape.Nothing } else { AnswerShape.Directives }
 }
 
 /// The declaration `file` writes as `name`, as the meta value `seat` takes, laid out in `heap`;
@@ -761,6 +777,10 @@ fn space_taking(seat: DeclSeat) -> Space {
 export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratorKind? {
     let sig? = fn_signature(engine, file, name) else { return null }
     let first? = sig.params.first()?.ty else { return null }
+    // A VALIDATING annotation (answering diagnostics, or nothing) isn't run here yet: what it reads
+    // of a declaration — its doc, its place, its fields' and seats' spelling — doesn't cross whole on
+    // the program layer, and a validator reading what doesn't cross would refuse a program the old
+    // path builds. Its answer's shape is read all the same (`answer_shape`), for when it does.
     if !meta_named(sig.answer, DECLARED) && !directives_listed(sig.answer) { return null }
     let seat? = meta_seat_of(first) else { return null }
     match seat {
@@ -784,6 +804,15 @@ export fn takes_a_declaration(ty: SignedType?) -> bool {
     let t? = ty else { return false }
     meta_seat_of(t) != null || meta_named(t, META_NAMED)
 }
+
+/// Whether `ty` is a list of `@std/meta`'s `Diagnostic`s: what a validating annotation answers.
+fn diagnostics_listed(ty: SignedType) -> bool {
+    let element? = ty.listed() else { return false }
+    meta_named(element, DIAGNOSTIC)
+}
+
+/// What a validating annotation answers a list of.
+const DIAGNOSTIC: string = "Diagnostic"
 
 /// Whether `ty` is a list of `@std/meta`'s `Directive`s.
 fn directives_listed(ty: SignedType) -> bool {
