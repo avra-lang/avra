@@ -1779,11 +1779,13 @@ const char* avra_guard_words(void) { return str_owned(g_guard_text, strlen(g_gua
 
 // THE CASE IN FLIGHT. A suite runs in one process, so a trap kills
 // every case after it — this is how the wreck names which one it
-// was running when it died.
+// was running when it died. Every process a case starts is told it
+// too (`AVRA_CASE`), so what a child leaves is filed under its case.
 static const char* g_case = NULL;
 
 void avra_case_begin(const char* label) {
     g_case = label;
+    if (label) setenv("AVRA_CASE", label, 1);
 }
 
 const char* avra_case_now(void) {

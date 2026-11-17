@@ -50,7 +50,9 @@ println("${primed(3)} ${point()} ${scaled(1)} ${chained()}")
 EOF
 
 fail() { echo "witness_body_consts: $1" >&2; exit 1; }
-new() { (cd "$pkg" && AVRA_PROGRAM=1 "$@" "$avra" build . >"$tmp/log" 2>&1) || { tail -5 "$tmp/log" >&2; fail "the program layer refused it"; }; }
+# A product compared byte for byte is the release one: a dev build's binary is an overlay linked beside
+# the world it last linked, so a warm dev product never holds a cold one's bytes.
+new() { (cd "$pkg" && AVRA_PROGRAM=1 AVRA_PROGRAM_MODE=release "$@" "$avra" build . >"$tmp/log" 2>&1) || { tail -5 "$tmp/log" >&2; fail "the program layer refused it"; }; }
 
 (cd "$pkg" && AVRA_PROGRAM=0 "$avra" run src/main.av >"$tmp/old.out" 2>&1) || fail "the old path refused it"
 new env

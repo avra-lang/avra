@@ -14,6 +14,9 @@ avra=${1:-build/avra-try}
 tmp=$(mktemp -d)
 export AVRA_CACHE_DIR="$tmp/machine"
 export AVRA_PROGRAM=1
+# A PRODUCT COMPARED BYTE FOR BYTE IS THE RELEASE ONE: a dev build's binary is an overlay linked
+# beside the world it last linked, so a warm dev product never holds a cold one's bytes.
+export AVRA_PROGRAM_MODE=release
 mkdir -p "$AVRA_CACHE_DIR"
 file=packages/cli/src/commands/cache.av
 cp "$file" "$tmp/orig.av"

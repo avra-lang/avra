@@ -76,6 +76,7 @@ edit-b     witness_program_edit, WITNESS_ONLY=1
 edit-c     witness_program_edit, WITNESS_ONLY=5
 edit-d     witness_program_edit, WITNESS_ONLY=10
 edit-e     witness_program_edit, WITNESS_ONLY=rename
+edit-f     witness_program_edit, WITNESS_ONLY=modes
 EOF
 }
 
@@ -269,8 +270,27 @@ tested() {
 slice_cli() {
     cold cli
     export AVRA_PROGRAM_NET=1
-    tested cli-suite packages/cli
+    children_kept tested cli-suite packages/cli
     export AVRA_PROGRAM_NET=0
+    children_of_failed cli-suite
+}
+
+# A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: `$@` with every child
+# `<tree>/avra` filed under $out/children/<case> by tools/gate/child_kept.sh — its arguments, its
+# streams and its exit — so a red row has the words its children said.
+children_kept() {
+    find "$out/children" -delete 2>/dev/null || :
+    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$out/children"
+    "$@"
+    unset AVRA_BIN AVRA_CHILD_BIN AVRA_CHILDREN
+}
+
+# the children of the cases row `$1` failed, kept; every other case's dropped
+children_of_failed() {
+    for d in "$out"/children/*/; do
+        [ -f "$d/case" ] || continue
+        grep -qxF "$(sed 's/ @ .*//' "$d/case")" "$out/$1.failed" || find "$d" -delete
+    done
 }
 
 slice_program() {
@@ -380,6 +400,7 @@ if compiler; then
         edit-c) edit_part 5 ;;
         edit-d) edit_part 10 ;;
         edit-e) edit_part rename ;;
+        edit-f) edit_part modes ;;
     esac
 fi
 

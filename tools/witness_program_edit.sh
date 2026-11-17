@@ -29,7 +29,8 @@
 #   WITNESS_ONLY=embed runs the embedded file's edit alone; WITNESS_ONLY=rename the seat renamed
 #   twice; WITNESS_ONLY=infer the inferred error's alone; WITNESS_ONLY=check the instance check's edits;
 #   WITNESS_ONLY=derived one of three derived records' alone.
-#   WITNESS_ONLY=lawed a law's edit alone.
+#   WITNESS_ONLY=lawed a law's edit alone; WITNESS_ONLY=modes the cli built in each mode over a store
+#   the other left, working ahead and alone.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -378,4 +379,36 @@ if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " renam
     cp "$tmp/orig/rename.1.av" "$f"
     cmp -s "$tmp/renamed.warm" "$tmp/renamed.cold" || { echo "witness_program_edit: after a defaulted seat renamed twice the warm product is not the cold one" >&2; exit 1; }
     echo "witness_program_edit: a method's defaulted seat added, then renamed twice — each build links, warm == cold"
+fi
+
+# A STORE IS ONE STORE WHICHEVER BUILD FILLED IT: the cli built cold whole and cold layered, the
+# products each mode must make; then each mode built over the store a build of the other mode left,
+# that build working ahead on the cores or in one process alone (`AVRA_WORK_AHEAD_OFF`), and the
+# second build the other way about. Each product must be its mode's cold one: an answer one mode's
+# build saved is the answer the other's would work out.
+if [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " modes "; then
+    asked_mode=${AVRA_PROGRAM_MODE-}
+    # The cli built as `$1` (whole or layered), alone in one process where `$2` is `alone`.
+    built_as() {
+        case $1 in whole) AVRA_PROGRAM_MODE=release ;; layered) AVRA_PROGRAM_MODE=dev ;; esac
+        export AVRA_PROGRAM_MODE
+        if [ "$2" = alone ]; then build env AVRA_WORK_AHEAD_OFF=1; else build env; fi
+    }
+    # The cli's product as `$1` builds it, into `$2`.
+    product_as() { case $1 in whole) AVRA_PROGRAM_MODE=release ;; layered) AVRA_PROGRAM_MODE=dev ;; esac; export AVRA_PROGRAM_MODE; unsigned "$2"; }
+    for m in whole layered; do
+        cold
+        built_as $m ahead
+        product_as $m "$tmp/modes.$m"
+    done
+    for case in "layered alone whole ahead" "whole alone layered ahead" "layered ahead whole alone" "whole ahead layered alone"; do
+        set -- $case
+        cold
+        built_as "$1" "$2"
+        built_as "$3" "$4"
+        product_as "$3" "$tmp/modes.after"
+        cmp -s "$tmp/modes.after" "$tmp/modes.$3" || { echo "witness_program_edit: built $3 ($4) over the store a $1 build ($2) left, the product is not the cold one" >&2; exit 1; }
+        echo "witness_program_edit: $3 ($4) over a $1 build's store ($2) — == cold"
+    done
+    if [ -n "$asked_mode" ]; then AVRA_PROGRAM_MODE=$asked_mode; export AVRA_PROGRAM_MODE; else unset AVRA_PROGRAM_MODE; fi
 fi
