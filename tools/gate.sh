@@ -45,7 +45,8 @@ DOORS_B="std-ui std-http"
 slices() {
     cat <<'EOF'
 build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm, net on and off, 0 false refusals
-avrac-a    test packages/std-avrac — src/compiler
+avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
+avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
 avrac-b    test packages/std-avrac — src/features/[a-e]*
 avrac-c    test packages/std-avrac — src/features/[f-m]*
 avrac-d    test packages/std-avrac — src/features/[n-r]*
@@ -66,11 +67,10 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-doors      witness_program_doors
-witness-b  witness_program_runs, _ledger, _suites; witness_program_differential
-warnings-a witness_program_warnings — the cli built cold, no-op and edited, on both paths
-warnings-b witness_program_warnings — the cli's check on both paths
-warnings-c witness_program_warnings — the cases under tools/program-warnings/
+witness-b  witness_program_runs, _ledger, _suites, _doors; witness_program_differential
+warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
+warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
+warnings-c witness_program_warnings — the cli edited, built warm on the program layer
 edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed"
 edit-b     witness_program_edit, WITNESS_ONLY=1
 edit-c     witness_program_edit, WITNESS_ONLY=5
@@ -208,12 +208,27 @@ slice_build() {
     judged cli-build-false-refusals "$(cat "$out"/cli-build-*.log | grep -c 'program-layer false refusal')"
 }
 
-# the std-avrac suite over `$@`, its paths under the package
+# the std-avrac suite over `$@`, its paths under the package: one row for every path of std-avrac's
+# own, and a row each for a path that is a package of its own nested in it, which `test` proves apart
 avrac() {
     cold std-avrac
-    tested std-avrac "$@"
+    own=""
+    for p in "$@"; do
+        if [ -f "$p/avra.toml" ]; then tested "std-avrac-$(basename "$p")" "$p"; else own="$own $p"; fi
+    done
+    [ -z "$own" ] || tested std-avrac $own
 }
-slice_avrac_a() { avrac packages/std-avrac/src/compiler; }
+# half of std-avrac's src/compiler/tests, the `$1`-th (from 0), dealt in turn
+compiler_tests_half() { find packages/std-avrac/src/compiler/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt "$1" 2; }
+slice_avrac_a() {
+    avrac $(
+        {
+            compiler_tests_half 0
+            find packages/std-avrac/src/compiler -mindepth 1 -maxdepth 1 ! -name tests ! -name soundness ! -name '.*'
+        } | sort
+    )
+}
+slice_avrac_g() { avrac $({ compiler_tests_half 1; echo packages/std-avrac/src/compiler/soundness; } | sort); }
 slice_avrac_b() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[a-e]*' | sort); }
 slice_avrac_c() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[f-m]*' | sort); }
 slice_avrac_d() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[n-r]*' | sort); }
@@ -316,6 +331,7 @@ slice_witness_b() {
     row runs-witness sh tools/witness_program_runs.sh build/avra
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
+    old_row doors-witness sh tools/witness_program_doors.sh build/avra
     old_row differential-witness sh tools/witness_program_differential.sh build/avra
 }
 
@@ -336,6 +352,7 @@ if compiler; then
         avrac-a) slice_avrac_a ;;
         avrac-b) slice_avrac_b ;;
         avrac-c) slice_avrac_c ;;
+        avrac-g) slice_avrac_g ;;
         avrac-d) slice_avrac_d ;;
         avrac-e) slice_avrac_e ;;
         avrac-f) slice_avrac_f ;;
@@ -354,11 +371,10 @@ if compiler; then
         refusal-a) refusal_third 0 ;;
         refusal-b) refusal_third 1 ;;
         refusal-c) refusal_third 2 ;;
-        doors) old_row doors-witness sh tools/witness_program_doors.sh build/avra ;;
         witness-b) slice_witness_b ;;
-        warnings-a) warnings_part builds ;;
-        warnings-b) warnings_part check ;;
-        warnings-c) warnings_part cases ;;
+        warnings-a) warnings_part cold ;;
+        warnings-b) warnings_part "check cases" ;;
+        warnings-c) warnings_part edit ;;
         edit-a) edit_part "embed infer composed" ;;
         edit-b) edit_part 1 ;;
         edit-c) edit_part 5 ;;

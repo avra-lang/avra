@@ -508,7 +508,9 @@ avra: $(COMPILER_OBJS)
 	@mkdir -p build
 	@# the log is BOUNDED: only its last 200 KB is ever read, and a build failing in a
 	@# loop filled the volume twice (tools/capped.sh, which also carries the status).
-	@sh tools/capped.sh build/avra-build.out 200000 ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
+	@# THE COMPILER IS THE OPTIMISED BUILD: `avra build` makes a dev binary, and every compiler a ladder
+	@# climbs with reads this spelling, where only today's knows `--release`.
+	@sh tools/capped.sh build/avra-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
@@ -574,7 +576,7 @@ compiler:
 # change the compiler must READ to build itself (codegen, the front end, a
 # refusal about its own source) reaches the product only through `make avra`.
 try: $(COMPILER_OBJS)
-	@sh tools/capped.sh build/avra-try-build.out 200000 ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
+	@sh tools/capped.sh build/avra-try-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
 	@grep '^time: ast' build/avra-try-build.out | grep -oE 'held [0-9]+/[0-9]+' || true
 	@cp packages/cli/src/main build/avra-try
 	@codesign -f -s - build/avra-try 2>/dev/null || true
@@ -1632,14 +1634,14 @@ census-types:
 REACH := hello limits plain unreached tls sign
 # not a keeper — a report: what each reach program carries
 sizes:
-	@build/avra build tools/bench/request/src/main.av >/dev/null
+	@AVRA_PROGRAM_MODE=release build/avra build tools/bench/request/src/main.av >/dev/null
 	@python3 tools/symsize.py build/avra $(BEFORE)
 	@echo
 	@python3 tools/symsize.py tools/bench/request/src/main $(REQUEST_BEFORE)
 	@echo
 	@echo '| reach probe | bytes |'
 	@echo '|---|---:|'
-	@for p in $(REACH); do build/avra build tools/bench/reach/$$p >/dev/null && \
+	@for p in $(REACH); do AVRA_PROGRAM_MODE=release build/avra build tools/bench/reach/$$p >/dev/null && \
 	    echo "| $$p | $$(wc -c < tools/bench/reach/$$p/src/main | tr -d ' ') |"; done
 
 # Mutated program tests through `avra check`: diagnose, never crash.

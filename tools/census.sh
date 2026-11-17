@@ -57,7 +57,7 @@ rm -rf "$stores"
 # built without the census, so an inlined retain would count nothing.
 # THE MINTED BOXES ARE NAMED: each box a runtime row makes is counted by
 # its type (AVRA_CENSUS_TYPES), the `type:` table.
-AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 "$builder" build packages/cli > build/census-build.out 2>&1 || {
+AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 AVRA_PROGRAM_MODE=release "$builder" build packages/cli > build/census-build.out 2>&1 || {
     tail -20 build/census-build.out; echo "census: the census compiler did not build"; exit 1; }
 mv packages/cli/src/main "$census"
 # A C symbol wears a leading underscore on macOS and none on Linux.

@@ -191,13 +191,21 @@ lawed_edit() {
     echo "witness_program_edit: an item's edit a law refuses, taken back — warm == cold"
 }
 # THE PRODUCT AS COMPARED: the binary `$1` into the file `$2`. A whole binary: its
-# unsigned bytes. A layered one (AVRA_PROGRAM_MODE naming `dev` or
-# `link=layered`), whose bytes name the directories its layers stand in: the
+# unsigned bytes. A layered one (the dev build, `avra build`'s own unless
+# AVRA_PROGRAM_MODE says `release` or `link=whole`), whose bytes name the
+# directories its layers stand in, which a warm build keeps and a cold one makes
+# afresh: the
 # content digest of every object its package's layers link, in order, then what
 # it prints and exits with for each of the remaining words (each a command line;
 # empty runs it bare) — run now, while its layers stand.
 digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; }
-layered() { case ",${AVRA_PROGRAM_MODE:-}," in *,dev,*|*,link=layered,*) return 0 ;; esac; return 1; }
+layered() {
+    l=1
+    for w in $(printf '%s' "${AVRA_PROGRAM_MODE:-}" | tr ',' ' '); do
+        case $w in dev | link=layered) l=1 ;; release | link=whole) l=0 ;; esac
+    done
+    [ "$l" = 1 ]
+}
 unsigned_at() {
     bin=$1; out=$2; shift 2
     if layered; then

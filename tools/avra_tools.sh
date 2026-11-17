@@ -29,7 +29,7 @@ if [ "${1:-}" = --path ]; then want_path=1; shift; else want_path=0; fi
 build_tools() {
     cp "$1" build/avra-tools-compiler
     make -s build/libavra_runtime.a $(sh tools/manifest_objects.sh --closure tools) >&2 || { echo "avra_tools: the runtime library or a std object did not build" >&2; return 1; }
-    if out=$(build/avra-tools-compiler build tools 2>&1); then
+    if out=$(AVRA_PROGRAM_MODE=release build/avra-tools-compiler build tools 2>&1); then
         cp "$(printf '%s\n' "$out" | tail -n 1)" "$bin" && chmod +x "$bin"
     else
         printf '%s\n' "$out" | tail -n 20 >&2

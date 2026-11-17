@@ -70,7 +70,7 @@ trap 'exit 1' INT TERM
 
 set_audit_build true || exit 1
 cold
-sh "$memcap" 4000 build/avra build packages/cli > "$logs/build.log" 2>&1 || { echo "dep_audit: the audit compiler did not build ($logs/build.log)"; exit 1; }
+sh "$memcap" 4000 env AVRA_PROGRAM_MODE=release build/avra build packages/cli > "$logs/build.log" 2>&1 || { echo "dep_audit: the audit compiler did not build ($logs/build.log)"; exit 1; }
 cp packages/cli/src/main build/avra.audit
 codesign -s - -f build/avra.audit > /dev/null 2>&1
 

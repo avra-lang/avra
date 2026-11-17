@@ -11,8 +11,9 @@
 # `check` of the cli says, on both paths, what the build says and its rules find, held alike. Empties every
 # `.avra-cache` under packages/ and its own machine stores.
 #   sh tools/witness_program_warnings.sh [compiler]   (default build/avra-try)
-#   WITNESS_ONLY names its parts, each alone or several: `builds` (the cli cold, no-op and edited, on
-#   both paths), `check` (the cli's check on both), `cases` (tools/program-warnings/).
+#   WITNESS_ONLY names its parts, each alone or several: `cold` (the cli built cold and again with no
+#   change, on both paths), `edit` (the cli edited, built warm on the program layer over its cold
+#   build), `builds` (both), `check` (the cli's check on both), `cases` (tools/program-warnings/).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -74,10 +75,12 @@ excused() {
 wanted() { [ -z "${WITNESS_ONLY:-}" ] || printf ' %s ' "$WITNESS_ONLY" | grep -q " $1 "; }
 
 cold
-if wanted builds; then
+if wanted builds || wanted cold || wanted edit; then
     held cold
-    old cold
     [ -s "$tmp/cold.new" ] || { echo "witness_program_warnings: the program layer said no warning" >&2; exit 1; }
+fi
+if wanted builds || wanted cold; then
+    old cold
     alike cold "cold"
     echo "witness_program_warnings: no law on the program layer yet:"
     sed 's/\].*//; s/^warning\[//' "$tmp/cold.old" | sort | uniq -c | while read -r n k; do
@@ -86,6 +89,10 @@ if wanted builds; then
     held noop
     cmp -s "$tmp/noop.new" "$tmp/cold.new" || { echo "witness_program_warnings: a no-op build warns otherwise than the cold one" >&2; exit 1; }
     echo "witness_program_warnings: no-op — the cold build's warnings"
+fi
+# the edit: the program layer's build of it warm over its cold store; the old path's, warm too where its
+# cold build ran here, else cold — the old path's words are the same either way
+if wanted builds || wanted edit; then
     awk -v a="$line" -v b="$becomes" '$0 == a { print b; next } { print }' "$tmp/orig.av" > "$file"
     held edit
     old edit

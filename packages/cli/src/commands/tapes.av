@@ -379,12 +379,13 @@ export fn program_built(
     timed: bool = false,
     tools: Toolchain? = null,
     net: bool = false,
+    release: bool = false,
 ) -> Result<string, int> {
     let bin? = entry_written(root) else {
         eprintln("avra: ${root_workspace(root).root} declares no entry point")
         return .Err(1)
     }
-    program_built_at(root, bin, timed, tools, net)
+    program_built_at(root, bin, timed, tools, net, release)
 }
 
 /// `avra build` of the source file at `path` on the program layer: the program it runs, built as its
@@ -395,6 +396,7 @@ export fn program_file_built(
     timed: bool = false,
     tools: Toolchain? = null,
     net: bool = false,
+    release: bool = false,
 ) -> Result<string, int> {
     let at = rooted(path)
     let home? = sourced_home(at) else {
@@ -406,9 +408,10 @@ export fn program_file_built(
             timed,
             tools,
             net,
+            release,
         )
     }
-    program_built_at(home, at.substring(home.length + 1, at.length), timed, tools, net)
+    program_built_at(home, at.substring(home.length + 1, at.length), timed, tools, net, release)
 }
 
 /// The package the file at `at` belongs to, where that package keeps a `src/`.
@@ -420,12 +423,16 @@ fn sourced_home(at: string) -> string? {
 
 /// The program whose entry is `bin`, under the package at `root`, built on the program layer: its
 /// entry and every body it reaches made and linked beside the entry, the binary's path.
-fn program_built_at(root: string, bin: string, timed: bool, tools: Toolchain?, net: bool) -> Result<
-    string,
-    int,
-> {
+fn program_built_at(
+    root: string,
+    bin: string,
+    timed: bool,
+    tools: Toolchain?,
+    net: bool,
+    release: bool,
+) -> Result<string, int> {
     let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
-    disk_built(disk, bin, binary_stem(root, bin), timed, tools, net)
+    disk_built(disk, bin, binary_stem(root, bin), timed, tools, net, release)
 }
 
 /// The program whose entry is `bin` in the package on `disk`, built on the program layer and placed
@@ -440,9 +447,10 @@ fn disk_built(
     timed: bool,
     tools: Toolchain?,
     net: bool,
+    release: bool,
 ) -> Result<string, int> {
     let stem = if tools == null { native_stem } else { "${native_stem}.wasm" }
-    let mode = match build_mode(env("AVRA_PROGRAM_MODE") ?? "", tools?.target ?? "") {
+    let mode = match build_mode(env("AVRA_PROGRAM_MODE") ?? "", tools?.target ?? "", release) {
         .Ok(m) -> m,
         .Err(why) -> {
             eprintln("avra: ${why}")
@@ -590,22 +598,20 @@ fn binary_asked(
 /// named for the target, so a native build and a wasm one never share an object or a binary.
 const BUILD_DIR: string = ".avra-cache/tapes-build"
 
-/// What a native build of the program `bin` on `disk`, placed at `stem`, asks in `mode`.
+/// What a native build of the program `bin` on `disk`, placed at `stem`, asks in `mode`. A program
+/// that defines a host fn links whole whatever its mode: a host calls it by the bare symbol in the
+/// binary it loads, and a layered binary holds none of the program's code.
 fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode: BuildMode) -> BinaryAsked {
     let words = phased(engine, "link words", () -> linked_words(engine, disk, mode.shared))
+    let hosted = program_host_symbols(engine, disk.file_at(bin), "")
     BinaryAsked {
         entry: disk.file_at(bin),
-        head: native_link_head(
-            names_its_symbols(engine, disk),
-            fast_linker(),
-            program_host_symbols(engine, disk.file_at(bin), ""),
-            stem,
-        ),
+        head: native_link_head(names_its_symbols(engine, disk), fast_linker(), hosted, stem),
         words: words,
         linked: linked_digests(words),
         dir: joined_path(disk.root, BUILD_DIR),
         opt: mode.opt,
-        layered: mode.layered,
+        layered: mode.layered && hosted.is_empty(),
     }
 }
 
@@ -686,18 +692,29 @@ type BinaryAsked = {
 /// LLVM as its one shared library where it stands; and the program as two shared objects — the
 /// world, and the overlay of what moved since the world was linked — under a small executable, so
 /// an edit relinks the overlay alone.
-type BuildMode = { opt: string, shared: bool, layered: bool }
+export type BuildMode = { opt: string, shared: bool, layered: bool }
 
-/// THE MODE `AVRA_PROGRAM_MODE` SPELLS: a comma list of a preset — `dev` (`-O0`, shared and layered)
-/// or `release` (`-O1`, one static binary) — then fields overriding it: `opt=-O<n>`,
-/// `llvm=shared|static` and `link=layered|whole`. Empty is the level both paths emit `target` at
-/// (`default_opt`) and one static binary. A word it doesn't know is refused.
-fn build_mode(spelled: string, target: string) -> Result<BuildMode, string> {
-    mut mode = BuildMode { opt: default_opt(target), shared: false, layered: false }
+/// The mode a build makes its binary in by default: unoptimised, LLVM shared, linked in layers.
+fn dev_mode() -> BuildMode { BuildMode { opt: "-O0", shared: true, layered: true } }
+
+/// The mode `--release` makes its binary in: `-O1`, one static binary.
+fn release_mode() -> BuildMode { BuildMode { opt: "-O1", shared: false, layered: false } }
+
+/// THE MODE A BUILD MAKES ITS BINARY IN: for the host, `dev` (`-O0`, shared and layered) unless
+/// `release` (`--release`: `-O1`, one static binary); for another `target`, the level both paths
+/// emit it at (`default_opt`) and one static binary. Then `AVRA_PROGRAM_MODE`, as `spelled`, overrides
+/// it: a comma list of a preset — `dev` or `release` — then fields: `opt=-O<n>`,
+/// `llvm=shared|static` and `link=layered|whole`. A word it doesn't know is refused.
+export fn build_mode(spelled: string, target: string, release: bool) -> Result<BuildMode, string> {
+    mut mode = when {
+        target != "" -> BuildMode { opt: default_opt(target), shared: false, layered: false }
+        release -> release_mode()
+        _ -> dev_mode()
+    }
     for word in [w.trim() for w in spelled.split(",") if !w.trim().is_empty()] {
         mode = match word {
-            "release" -> BuildMode { opt: "-O1", shared: false, layered: false },
-            "dev" -> BuildMode { opt: "-O0", shared: true, layered: true },
+            "release" -> release_mode(),
+            "dev" -> dev_mode(),
             "opt=-O0" or "opt=-O1" or "opt=-O2" or "opt=-O3" or "opt=-Oz" -> mode with { opt: word.substring(4, word.length) },
             "llvm=shared" -> mode with { shared: true },
             "llvm=static" -> mode with { shared: false },
