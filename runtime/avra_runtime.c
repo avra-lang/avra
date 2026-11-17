@@ -2293,6 +2293,29 @@ static void array_reclaim(void* p) {
 // machine for the memory.
 #define CELL_CEILING ((int64_t)1 << 31)
 
+__attribute__((noinline, cold, noreturn))
+static void avra_wrote_static(void);
+
+// THE BINARY'S OWN DATA: a box the backend laid out, its flags byte all
+// ones (runtime/avra_box.h), or the one empty list below, laid out the
+// same way — never a box minted here, made immortal later. Nothing
+// grows one or writes one in place: every write opens its box first,
+// and an open copies it.
+static int box_is_static(const Header* h) {
+    return IS_IMMORTAL(avra_kind(h)) && ((const uint8_t*)h)[AVRA_FLAGS_AT] == 0xFF;
+}
+
+// THE EMPTY LIST an answer that holds nothing is: the box the backend
+// lays out for `[]`, laid out once here — its header immortal with the
+// static flags, its no cells right after it — so a concat or a slice
+// that comes out empty allocates nothing.
+static struct { Header h; AvraArray a; } g_empty_list __attribute__((aligned(16))) = {
+    { AVRA_TAG, KIND_IMMORTAL(KIND_ARRAY), 0, (uint32_t)sizeof(AvraArray) },
+    { 0, 0, (int64_t*)(&g_empty_list.a + 1), (uint8_t*)(&g_empty_list.a + 1), NULL },
+};
+
+static void* empty_list(void) { return &g_empty_list.a; }
+
 // Doubles the capacity: a classed buffer moves to the next class, a
 // big one grows in place; the marks follow the cells to their new
 // place, the new marks zero.
@@ -2306,6 +2329,7 @@ static int laid_out(AvraArray* a) {
 }
 
 static void array_grow(AvraArray* a, void* pusher) {
+    if (box_is_static((Header*)a - 1)) avra_wrote_static();
     int64_t old_cap = a->cap;
     CENSUS(if (old_cap == 0) note_empty(g_empty_grown_sites, &g_empty_grown_slots, pusher, &g_empty_grown));
     int64_t cap = old_cap < ARRAY_FIRST ? ARRAY_FIRST : old_cap * 2;
@@ -2333,22 +2357,6 @@ static void array_grow(AvraArray* a, void* pusher) {
     if (g_acc_on > 0) note_wide(a, cap, pusher);
 }
 
-__attribute__((noinline, cold, noreturn))
-static void avra_wrote_static(void);
-
-// THE BINARY'S OWN DATA: a box the backend laid out, its flags byte all
-// ones (runtime/avra_box.h) — never a box minted here, made immortal later.
-static int box_is_static(const Header* h) {
-    return IS_IMMORTAL(avra_kind(h)) && ((const uint8_t*)h)[AVRA_FLAGS_AT] == 0xFF;
-}
-
-// A full list whose kind is below zero: the binary's own data refused;
-// a box made immortal later grows as any other.
-__attribute__((noinline, cold))
-static void uncounted_grown(AvraArray* a) {
-    if (box_is_static((Header*)a - 1)) avra_wrote_static();
-}
-
 // A FULL LIST'S WRITE, whole and out of line, so the common write
 // TAIL-calls it and keeps no frame of its own. The binary's own data is
 // laid out full (its length its capacity), so every push into it comes
@@ -2357,7 +2365,6 @@ static void uncounted_grown(AvraArray* a) {
 // is inlined into the caller that calls here.
 __attribute__((noinline))
 static void push_grown(AvraArray* a, int64_t v, uint8_t mark, void* pusher) {
-    if (__builtin_expect(avra_kind((const Header*)a - 1) < 0, 0)) uncounted_grown(a);
     if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
     array_grow(a, pusher);
     a->data[a->len] = v;
@@ -2795,9 +2802,12 @@ void avra_cell_release(void* slot) {
 // ── Places: copy-on-write ───────────────────────────────────────
 
 // A shallow clone that takes its own reference to every owned
-// slot — exactly what reclaim would release. A fresh box, rc 1.
+// slot — exactly what reclaim would release. A fresh box, rc 1. The
+// only write that changes an empty list is a push, so an empty one is
+// laid out with a first push's cells: the open and the push are one
+// allocation.
 static void* array_clone(AvraArray* a) {
-    AvraArray* c = (AvraArray*)avra_array_sized(a->len);
+    AvraArray* c = (AvraArray*)avra_array_sized(a->len > 0 ? a->len : ARRAY_FIRST);
     for (int64_t i = 0; i < a->len; i++) {
         avra_array_push(c, a->data[i]);
         c->marks[i] = a->marks[i];
@@ -3779,8 +3789,9 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
     }
 }
 
-// A fresh list: `a`'s slots, then `b`'s. Owned.
+// `a`'s slots, then `b`'s: a fresh list, or the empty list when both are empty. Owned.
 void* avra_array_concat(void* a, void* b) {
+    if (((AvraArray*)a)->len + ((AvraArray*)b)->len == 0) return empty_list();
     CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     CENSUS(note_copy(AVRA_CALLER()));
     void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
@@ -3792,15 +3803,16 @@ void* avra_array_concat(void* a, void* b) {
     return out;
 }
 
-// A fresh list of the slots from lo up to hi, clamped to the list;
-// nothing when lo is not below hi. Owned.
+// The slots from lo up to hi, clamped to the list: a fresh list, or
+// the empty list when lo is not below hi. Owned.
 void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
     CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
-    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : AVRA_CALLER());
-    if (lo < hi) array_append(out, a, lo, hi);
+    if (lo >= hi) return empty_list();
+    void* out = array_made(hi - lo, g_clone_site ? g_clone_site : AVRA_CALLER());
+    array_append(out, a, lo, hi);
     return out;
 }
 

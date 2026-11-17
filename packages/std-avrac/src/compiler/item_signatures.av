@@ -43,6 +43,7 @@ use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.io.{env}
+use @std.text.{parse_int}
 use @std.program.source_facts.{PlacedTape}
 use @std.program.syntax_tape.{SyntaxTape}
 
@@ -558,9 +559,12 @@ fn item_whole(placed: PlacedTape) -> ReadItem {
 /// The items read back this process, by their file, place and text, weighed by the bytes each took
 /// to read back: a reader asks the queries the item stands on as any read does, and an item is read
 /// back again only once it's been let go, the least recently read first.
-once fn held_items() -> BoundedCache<ReadItem> { bounded_cache<ReadItem>(HELD_BYTES) }
+once fn held_items() -> BoundedCache<ReadItem> {
+    bounded_cache<ReadItem>(parse_int(env("AVRA_HELD_BYTES") ?? "") ?? HELD_BYTES)
+}
 
-/// How many bytes the read-back items held may take together.
+/// How many bytes the read-back items held may take together, unless `AVRA_HELD_BYTES` sets another
+/// bound: a tiny one lets each item go as soon as another is read — the same items, read again.
 const HELD_BYTES: int = 320000000
 
 /// The bytes the process holds live now: what bounds the held items, and no answer reads it.
