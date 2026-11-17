@@ -204,20 +204,12 @@ impl Workspace {
     /// Every hole inside a longer `[link]` word whose variable is unset,
     /// refused by name.
     fn unset_link_holes(pkg: Package) -> List<Diag> {
-        flatten(
-            [self.unset_in(pkg, row, w) for row in link_rows(self.manifest(pkg.ordinal), pkg.ordinal == 0) for w in row.words],
+        unset_link_holes_of(
+            () -> self.manifest_source(pkg),
+            self.manifest(pkg.ordinal),
+            pkg.ordinal == 0,
+            (n: string) -> self.env(n),
         )
-    }
-
-    /// One word's unset holes; none for a word that is only its hole.
-    fn unset_in(pkg: Package, row: LinkRow, word: string) -> List<Diag> {
-        if whole_hole(word) { return [] }
-        [unset_link_variable(
-            row_at(self.manifest_source(pkg), row.section, row.key),
-            row.key,
-            word,
-            name,
-        ) for name in holes(word) if self.env(name) == null]
     }
 
     /// A dependency asking for raw linker options: `[link.raw]` is the
@@ -375,4 +367,17 @@ export fn undeclared_dependency(key: string, manifest: string) -> Voice {
         label: "in this use",
         help: "declare it under `[dependencies]` in `${manifest}` — `\"${key}\" = { path = \"…\" }`",
     }
+}
+
+/// Every hole inside a longer `[link]` word of the manifest `m`, read from `src`, whose variable `env`
+/// doesn't set — the program's own `[link.raw]` among its words where `own` — refused by name. The
+/// manifest's source is read only where a hole refuses: a package whose manifest isn't on disk, or a
+/// host handed nothing to read, is asked nothing.
+export fn unset_link_holes_of(
+    src: fn() -> SourceFile,
+    m: Manifest,
+    own: bool,
+    env: fn(string) -> string?,
+) -> List<Diag> {
+    [unset_link_variable(row_at(src(), row.section, row.key), row.key, w, name) for row in link_rows(m, own) for w in row.words if !whole_hole(w) for name in holes(w) if env(name) == null]
 }

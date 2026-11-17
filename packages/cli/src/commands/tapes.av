@@ -7,6 +7,8 @@ use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
 use @std.avrac.compiler.{
     default_opt,
+    raw_borrowed,
+    unset_link_holes_of,
     Admitting,
     FileWarned,
     RefusesCall,
@@ -1246,8 +1248,12 @@ fn package_entered(
     mut admitted: AdmittedSaid,
 ) {
     dirs.set(key, at)
-    let said = entering(key, at, row, read_manifest(manifest_source(at)))
-    admitted.voices = admitted.voices.concat(said.voices)
+    let m = read_manifest(manifest_source(at))
+    let said = entering(key, at, row, m)
+    admitted.voices = admitted
+        .voices
+        .concat(said.voices)
+        .concat(if m.raw.is_empty() { [] } else { [raw_borrowed(row, key)] })
     if said.admits { rows_admitted(at, false, chain.concat([key]), home, dirs, admitted) }
 }
 
@@ -4081,7 +4087,18 @@ fn manifest_diags(h: ProgramFile) -> List<Diag> { manifest_voices(h.full, text_a
 /// manifest it stands on says, warnings and refusals, then what its package graph says, as the old
 /// path says them before anything else; the exit where one refuses, and nothing is read past it.
 fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
-    let graph = graph_said(engine, disk)
+    let reached = graph_said(engine, disk)
+    let unset = flatten(
+        [unset_link_holes_of(
+            () -> manifest_source(disk.package_root(p)),
+            read_manifest(manifest_source(disk.package_root(p))),
+            p == disk.name,
+            (n: string) -> env(n),
+        ) for p in reached_packages(engine, disk)],
+    )
+    let graph = reached with { voices: reached.voices.concat(unset), sources: reached
+        .sources
+        .concat([manifest_source(disk.package_root(p)) for p in reached_packages(engine, disk)]) }
     let said = [manifest_said(program_file(disk, f)) for f in manifests_voiced(engine, disk.name)]
         .concat(if graph.voices.is_empty() { [] } else { [rendered_among(graph.voices, graph.sources)] })
     if !said.is_empty() { eprintln(said.join("\n\n")) }
