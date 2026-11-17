@@ -18,7 +18,15 @@ use @std.ui.realize.tests.support.{
 }
 use @std.ui.style.box.{Box}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{default_theme, dark_theme}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.realize.dom.patch.{Patch}
+
+/// The sheet a paint sends, if it sends one.
+fn sheet_sent(patches: List<Patch>) -> string { [css for p in patches for css in sheet_of(p)].join("") }
+
+fn sheet_of(p: Patch) -> List<string> {
+    match p { .Style(css) -> [css], rest -> [] }
+}
 
 /// What turns a page showing `from` into one showing `to`.
 fn between(from: Node, to: Node) -> string {
@@ -300,11 +308,17 @@ spec "std/ui dom — the sheet" {
     given "a class the page has never worn" {
         then "sends the sheet again" { between(text_node("a"), muted(text_node("a"))).starts_with("style\n") }
     }
-    given "another theme" {
+    given "a first paint" {
+        then "carries the stronger colours under the reader's contrast setting" {
+            sheet_sent(live().patches(text_node("a"), default_theme))
+                .contains("\n@media (prefers-contrast: more){:root{--ink-muted:light-dark(#2E2E2E,#D9D9D9);")
+        }
+    }
+    given "a held mode" {
         then "sends the sheet and moves no element" {
             let page = live()
             let _ = page.patches(text_node("a"), default_theme)
-            spoken(page, text_node("a"), dark_theme) == "style"
+            spoken(page, text_node("a"), default_theme with { mode: .Dark }) == "style"
         }
     }
 }

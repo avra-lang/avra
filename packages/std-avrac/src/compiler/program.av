@@ -33,7 +33,7 @@ use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use compiler.lower.{Unit}
 use diagnostics.{no_voices, Diag, DiagCode, has_errors, is_note, rendered_among, user_code}
-use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
+use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, kind_word}
 use @std.grammar.{
     Captured,
     RunOutcome,
@@ -243,17 +243,6 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     type_ref_at([o.result!], 0)
 }
 
-impl Decls {
-    /// A declared STRUCT's own TypeId, by name — null when no declared
-    /// struct wears it (a fn, an enum and a named alias all answer null
-    /// here too; each has its own signature shape, not a struct's).
-    fn struct_type_ref(name: string) -> TypeId? {
-        let decl? = self.named_rows(name).first() else { return null }
-        let _sig? = self.sig(decl.id)?.record_sig() else { return null }
-        self.record_type(decl.id)
-    }
-}
-
 /// Attach each source-ordered doc group to the declaration its
 /// prefix run opens — the nearest statement beginning after the
 /// group's anchor, but only where nothing besides that run (an
@@ -416,55 +405,6 @@ impl Program {
         let sig? = decls.sig(d.id)?.fn_sig() else { return "${kind_word(d.kind)} ${d.name}" }
         let holes = [decls.types.name_of(pt) for pt in sig.params]
         "fn ${d.name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
-    }
-
-    /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s
-    /// words (features/values.av) — `avra repr <type>` (P7: a
-    /// representation the compiler chose is inspectable wherever a
-    /// tool exists to ask). Resolves a built-in scalar, `List<…>` or
-    /// `Map<…>` from the registry alone, or a declared STRUCT by
-    /// name; null for text the type grammar refuses, or a name this
-    /// door does not resolve (an enum or a named alias needs a wider
-    /// door than `int?`/`string?`/a flat record's `Id?` have needed
-    /// yet).
-    fn explain_repr(type_text: string) -> string? {
-        let ann? = parse_type_ref(avra(), type_text) else { return null }
-        let decls = self.ws.decls
-        let base? = spelled_type(decls.types, ann with { optional: false }) ?? decls
-            .struct_type_ref(ann.name) else {
-            return null
-        }
-        let ty = if ann.optional { decls.types.type(base?) } else { base }
-        repr_word(decls.types, ty)
-    }
-
-    /// The JSON of a const the entered file declares, as the compiler settled
-    /// it (`avra settled`).
-    fn const_json(name: string) -> Result<string, string> {
-        let a? = self.entry_file() else { return .Err("the program is empty") }
-        self.ws.const_json(a, name)
-    }
-
-    /// A fn's seat-0 WRITE-FLOW CHAIN — a method's receiver, a free
-    /// fn's first parameter — from `write_chain` (compiler/
-    /// receivers.av). `avra writes <fn>`. Null when no
-    /// declared fn wears the name, its seat 0 is not written, or it
-    /// has no seat 0 at all (a fn with no receiver and no parameters).
-    /// A `mut` parameter PAST seat 0 is the pass's data too, not yet
-    /// this door's — F2047, this door's motivation, is a receiver
-    /// diagnostic. THE LOOKUP IS BY BARE NAME, the same door
-    /// `explain_annotation` already opens this way: two types
-    /// declaring a same-named method answer for whichever one
-    /// the name's bucket holds first — a name, not a binding, the same
-    /// sharp edge `explain @name` already carries.
-    fn explain_writes(fn_name: string) -> string? {
-        let decls = self.ws.decls
-        let decl? = decls.named_rows(fn_name).find((d: Decl) -> decls.fn_name(d.id) != null) else {
-            return null
-        }
-        if decls.seat_count(decl.id) == 0 { return null }
-        let chain? = self.ws.write_chain(decl.id, 0, []) else { return null }
-        chain.join(" -> ")
     }
 
     /// A file's generated declarations, each in canonical source

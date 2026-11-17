@@ -169,7 +169,7 @@ claim("All shows every task", (await keys()).join() === [k1, k2, k4, k5].join(),
 const light = await sheet();
 await press(named("Dark mode"));
 await shot("dark");
-claim("the dark mode swaps the sheet and the page wears it", await sheet() !== light && await styled("document.body", "backgroundColor") === "rgb(18, 18, 18)");
+claim("the dark mode swaps the sheet and the page wears it", await sheet() !== light && await styled("document.body", "backgroundColor") === "rgb(10, 10, 10)");
 claim("the browser's own controls wear the dark scheme", await styled("document.documentElement", "colorScheme") === "dark");
 claim("the chosen filter is told from the others in the dark mode too", await fill(named("All")) !== await fill(named("Active")), await fill(named("All")));
 claim("every button's words stand out from its fill", (await faint()).length === 0, await faint());
@@ -181,7 +181,7 @@ await shot("dialog");
 const box = await read(`(() => { const r = ${dialog}.getBoundingClientRect(); return { top: r.top, left: r.left, bottom: r.bottom, right: r.right, wide: innerWidth, high: innerHeight }; })()`);
 claim("About opens a real dialog, drawn whole inside the window", await read(`${dialog}.open`) && box.top >= 0 && box.left >= 0 && box.bottom <= box.high && box.right <= box.wide, box);
 claim("it is modal, and the focus has moved inside it", await read(`${dialog}.matches(":modal")`) && await read(`${dialog}.contains(document.activeElement)`));
-claim("an open dialog wears the theme's surface", await styled(dialog, "backgroundColor") === "rgb(18, 18, 18)");
+claim("an open dialog wears the theme's surface", await styled(dialog, "backgroundColor") === "rgb(10, 10, 10)");
 await read(`${named("About")}.focus(), 1`);
 claim("nothing behind it takes the focus", await read(`${dialog}.contains(document.activeElement)`), await focused());
 await press(named("Close"));
@@ -379,7 +379,7 @@ if (hydrated) {
   const kept = await asked(`[...document.querySelectorAll("#app *")].filter((el) => el.__served === true).length`);
   claim("the module took the server's elements over and built none", kept === total, `${kept} of ${total}`);
   const held = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`);
-  claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.querySelector("label").textContent)`)).join() === "Draft the spec,Write the tour" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(18, 18, 18)");
+  claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.querySelector("label").textContent)`)).join() === "Draft the spec,Write the tour" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(10, 10, 10)");
   // The server's list is answered only now: the page stood on the server's paint until it came.
   await fetch(hydrated + "__release");
   const answered = await (async () => { for (let i = 0; i < 100; i++) { const now = await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`); if (now.join() !== held.join()) return now; await pause(50); } return held; })();

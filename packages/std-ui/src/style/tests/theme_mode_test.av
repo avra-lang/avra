@@ -1,19 +1,39 @@
-//! The theme modes, by their law: a mode is a whole theme — its scales
-//! kept, every colour replaced — never a patch.
-use @std.ui.style.tokens.{Tone, Size}
-use @std.ui.style.theme.{Mode, default_theme, dark_theme, high_contrast_theme}
+//! The theme's modes, by their law: light and dark are one theme, each
+//! colour a dial with a value per scheme, and a mode only says whether the
+//! page follows the reader's settings or holds one scheme.
+use @std.ui.style.tokens.{Tone, Ink, Size}
+use @std.ui.style.theme.{Mode, Dial, default_theme}
+
+/// A colour written as six hex digits in both schemes.
+fn whole(d: Dial) -> bool { [d.light, d.dark].all(it.length == 7 && it.starts_with("#")) }
 
 spec "std/ui theme — modes" {
     given "the default theme" {
-        then "is light" { default_theme.mode == Mode.Light }
+        then "follows the reader's settings" { default_theme.mode == Mode.System }
+        then "gives every surface and every ink a colour in each scheme" {
+            Tone
+                    .every()
+                    .all(
+                        (t) -> whole(default_theme.tone.at(t).fill) &&
+                            whole(default_theme.tone.at(t).on),
+                    ) &&
+                Ink.every().all((i) -> whole(default_theme.ink.at(i)))
+        }
+        then "carries the light and the dark text colour" {
+            default_theme.ink.at(Ink.Text).light == "#0A0A0A" &&
+                default_theme.ink.at(Ink.Text).dark == "#FAFAFA"
+        }
+        then "carries each surface's fill and what sits on it in both schemes" {
+            default_theme.tone.at(Tone.Danger).fill.dark == "#FF6B5E" &&
+                default_theme.tone.at(Tone.Danger).on.dark == "#1F0502"
+        }
     }
-    given "the dark theme" {
-        then "is dark" { dark_theme.mode == Mode.Dark }
-        then "keeps the light theme's scale" { dark_theme.space_of(Size.M) == 16 }
-        then "replaces the text colour" { dark_theme.color_of(Tone.Text) == "#eeeeee" }
-    }
-    given "the high-contrast theme" {
-        then "is high contrast" { high_contrast_theme.mode == Mode.HighContrast }
-        then "flattens the raised surface" { high_contrast_theme.color_of(Tone.SurfaceRaised) == "#ffffff" }
+    given "the default theme held dark" {
+        then "is the same theme, only held" {
+            let held = default_theme with { mode: .Dark }
+            held.mode == Mode.Dark &&
+                held.ink.at(Ink.Text).light == "#0A0A0A" &&
+                held.space.at(Size.M) == 16
+        }
     }
 }

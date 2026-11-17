@@ -13,6 +13,15 @@ fn avra_ran(args: List<string>) -> Result<Outcome, ProcessError> {
     (cmd(tool(avra_bin())?, args) with { env: inherited(), timeout: hang_bound() }).outcome()
 }
 
+/// `avra` over `args`, standing in `dir`: what a package-scoped command says there, its stdout
+/// trimmed where it ended clean, absent where it refused.
+fn avra_said_in(dir: string, args: List<string>) -> string? {
+    let t = match tool(avra_bin()) { .Ok(t) -> t, .Err(_) -> { return null } }
+    clean_stdout(
+        (cmd(t, args) with { cwd: dir, env: inherited(), timeout: hang_bound() }).outcome(),
+    )?.trim()
+}
+
 /// A built program, run with no arguments.
 fn binary_ran(binary: string) -> Result<Outcome, ProcessError> {
     (cmd(tool(binary)?, []) with { timeout: hang_bound() }).outcome()

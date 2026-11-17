@@ -305,31 +305,35 @@ const offered = () => cleared().attrs["disabled"] === undefined;
   spent();
 }
 
-// A MODE IS A WHOLE SHEET: the theme's variables move and no element does.
+// A HELD MODE IS ONE WORD: every colour carries its light and its dark value,
+// the page follows the reader's settings until a mode is held, and holding
+// one rewrites the scheme and moves no colour and no element.
 const theme = named("Dark mode")[0];
 const sheet = style.textContent;
 fire(theme);
-claim("the dark mode rewrites the sheet and renames its button", style.textContent !== sheet && named("Light mode").length === 1);
+claim("the dark mode holds the dark scheme and renames its button", sheet.includes("color-scheme:light dark;") && style.textContent === sheet.replace("color-scheme:light dark;", "color-scheme:dark;") && named("Light mode").length === 1);
 
-// EVERY INK READS ON EVERY FILL: the tones each mode's sheet names, as WCAG
-// contrast — the least a reader with ordinary sight needs is 4.5 to 1.
-const tones = (css) => Object.fromEntries([...css.matchAll(/--tone-([a-z-]+):(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+// EVERY WORD READS ON EVERY SURFACE, AND EVERY PAIR ON ITSELF: the colours
+// the sheet names, in each scheme, as WCAG contrast — the least a reader
+// with ordinary sight needs is 4.5 to 1.
+const dials = (css) => Object.fromEntries([...css.split("}")[0].matchAll(/--((?:tone|on|ink)-[a-z-]+):light-dark\((#[0-9A-Fa-f]{6}),(#[0-9A-Fa-f]{6})\)/g)].map((m) => [m[1], [m[2], m[3]]]));
 const light = (hex) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 };
-const faint = (css) => {
-  const named = tones(css);
-  const fills = Object.keys(named).filter((tone) => tone.startsWith("surface"));
-  const inks = Object.keys(named).filter((tone) => !tone.startsWith("surface"));
-  return inks.flatMap((ink) => fills.map((fill) => {
-    const [a, b] = [light(named[ink]), light(named[fill])].sort((x, y) => y - x);
-    return { pair: `${ink} on ${fill}`, ratio: (a + 0.05) / (b + 0.05) };
-  })).filter((seen) => seen.ratio < 4.5).map((seen) => `${seen.pair} ${seen.ratio.toFixed(2)}`);
+const ratio = (x, y) => { const [a, b] = [light(x), light(y)].sort((p, q) => q - p); return (a + 0.05) / (b + 0.05); };
+const words = ["text", "muted", "danger", "success", "warning", "link"];
+const grounds = ["canvas", "surface", "surface-raised", "surface-sunk"];
+const faint = (css, scheme) => {
+  const named = dials(css);
+  const at = (key) => named[key][scheme];
+  const over = words.flatMap((ink) => grounds.map((ground) => [`${ink} on ${ground}`, at(`ink-${ink}`), at(`tone-${ground}`)]));
+  const pairs = Object.keys(named).filter((key) => key.startsWith("on-")).map((key) => [`${key} on its fill`, at(key), at(`tone-${key.slice(3)}`)]);
+  return over.concat(pairs).map(([pair, x, y]) => ({ pair, ratio: ratio(x, y) })).filter((seen) => seen.ratio < 4.5).map((seen) => `${seen.pair} ${seen.ratio.toFixed(2)}`);
 };
-claim("each mode's sheet names its inks and its fills", Object.keys(tones(sheet)).length >= 4 && Object.keys(tones(style.textContent)).length >= 4);
-claim("every ink reads on every fill in the light mode", faint(sheet).length === 0, faint(sheet).join(", "));
-claim("every ink reads on every fill in the dark mode", faint(style.textContent).length === 0, faint(style.textContent).join(", "));
+claim("each colour the sheet names carries its light and its dark value, and the stronger ones wait on the reader's contrast setting", Object.keys(dials(sheet)).length >= 20 && (sheet.split("}")[0].match(/light-dark\(/g) ?? []).length === Object.keys(dials(sheet)).length && sheet.includes("@media (prefers-contrast: more){:root{"));
+claim("every word reads on every surface, and every pair on its fill, in the light scheme", faint(sheet, 0).length === 0, faint(sheet, 0).join(", "));
+claim("every word reads on every surface, and every pair on its fill, in the dark scheme", faint(sheet, 1).length === 0, faint(sheet, 1).join(", "));
 
 // A SOURCE IS THE HOST'S TIMER: a press asks, the page arms a timer, its
 // firing is a turn, and the footer says so.

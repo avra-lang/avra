@@ -1181,9 +1181,7 @@ enum Repr {
 }
 
 /// A nullable's inner LAYOUT, decided from the type registry alone —
-/// no lowering context needed. `LowerCx.inner_repr` (inside a
-/// lowering pass) and `repr_word` below (outside one, for `avra
-/// explain repr`) are its two callers; both ask the SAME question.
+/// no lowering context needed.
 fn inner_repr_of(types: TypeRegistry, inner: TypeId) -> Repr {
     // a nullable over a nullable: the null pointer is the inner one's
     // absence already, and an encoding never spends one value twice
@@ -1200,21 +1198,3 @@ fn inner_repr_of(types: TypeRegistry, inner: TypeId) -> Repr {
 /// A value enum's absence: a tag no variant has.
 export const absent_tag: int = -1
 
-/// A `Repr`'s own word — the answer's LAST mile, once the layout is decided.
-fn nullable_word(r: Repr) -> string {
-    match r { .Niche -> "niche", .Boxed -> "one-slot box", .Pair -> "pair", .Tagged -> "tag -1" }
-}
-
-/// A declared type's runtime REPRESENTATION, in this file's own
-/// words — `avra repr`'s one door in, reachable with no
-/// lowering context (P7: a representation the compiler chose is
-/// inspectable wherever a tool exists to ask). A nullable answers by
-/// what it carries (niche, a one-slot box, or a register pair beside
-/// a presence flag); anything else answers by whether it rides a
-/// pointer at all (flat, or boxed).
-export fn repr_word(types: TypeRegistry, ty: TypeId) -> string {
-    match types.seen_shape(ty) {
-        .Opt(inner) -> nullable_word(inner_repr_of(types, inner)),
-        _ -> if types.rides_pointer(ty) { "boxed" } else { "flat" },
-    }
-}

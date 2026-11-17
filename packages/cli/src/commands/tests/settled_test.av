@@ -1,15 +1,24 @@
-// A settled const read as JSON text: records by field name, lists, nullables,
-// maps and enums, each from the program's own source.
-use @std.avrac.compiler.{analyze_source}
+//! `avra settled <file> <name>` — a settled const read as JSON text: records by
+//! field name, lists, nullables, maps and enums, each from the program's own
+//! source, through the command as a shell runs it. `avra_ran` and
+//! `scratch_dir` are the neighbouring tests' own: this module shares one
+//! namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
 
+/// What `avra settled` prints for the const `name` of a one-file program of `source`: its JSON, or
+/// its refusal behind `refused: `.
 fn json_of(source: string, name: string) -> string {
-    match analyze_source(source).program().const_json(name) {
-        .Ok(text) -> text,
-        .Err(why) -> "refused: ${why}",
+    let dir = "${scratch_dir()}/settled_${stamp()}"
+    let _ = make_dirs(dir)
+    let _ = write_text("${dir}/p.av", source)
+    match avra_ran(["settled", "${dir}/p.av", name]) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout.trim() } else { "refused: ${o.out.stdout.trim()}" },
+        .Err(_) -> "the command did not run",
     }
 }
 
-spec "compiler/const_json — what the compiler settled, as JSON" {
+spec "avra settled — what the compiler settled, as JSON" {
     given "scalars and lists" {
         then "a list of ints is an array" { json_of("const xs: List<int> = [1, 2, 3]\n", "xs") == "[1,2,3]" }
         then "text is quoted and escaped" { json_of("const s: string = \"a\\\"b\"\n", "s") == "\"a\\\"b\"" }
@@ -21,6 +30,9 @@ spec "compiler/const_json — what the compiler settled, as JSON" {
                 "type P = { x: int, name: string, on: bool }\nconst p: P = P { x: 3, name: \"n\", on: false }\n",
                 "p",
             ) == "{\"x\":3,\"name\":\"n\",\"on\":false}"
+        }
+        then "a flat record of one field is an object too" {
+            json_of("type Id = { n: int }\nconst i: Id = Id { n: 7 }\n", "i") == "{\"n\":7}"
         }
         then "a nullable field is its value or null" {
             json_of(

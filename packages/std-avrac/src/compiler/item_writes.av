@@ -85,6 +85,51 @@ export fn receiver_use(
     ReceiverUse.Unproved(unproved)
 }
 
+/// THE WRITE-FLOW CHAIN OF A METHOD'S RECEIVER: the methods, in call order, from `start` to the
+/// first one whose own declaration or body writes its receiver, each reached through the one before
+/// it on a place rooted in its receiver — the evidence `receiver_use` answers from, as a witness.
+/// Absent where no method it reaches writes: a reader, or a cycle no member of which writes.
+fn chain_from(engine: QueryEngine, start: MethodAt) -> List<string>? {
+    mut reached = [start]
+    mut came_by: List<int> = [-1]
+    mut at = 0
+    while at < reached.length {
+        let found = surveyed(engine, reached[at])
+        if found.writes() { return hops_to(reached, came_by, at) }
+        for m in found.reached {
+            if reached.any((r) -> same_method(r, m)) { continue }
+            reached.push(m)
+            came_by.push(at)
+        }
+        at = at + 1
+    }
+    null
+}
+
+/// The names from the walk's start to the method at `end`, each reached by the one `came_by` names.
+fn hops_to(reached: List<MethodAt>, came_by: List<int>, end: int) -> List<string> {
+    if end < 0 { return [] }
+    hops_to(reached, came_by, came_by[end]).concat([reached[end].name])
+}
+
+/// THE WRITE-FLOW CHAIN OF THE FN `name` DECLARED IN `file`, for its seat 0: a method some type of
+/// `file` gives — its receiver's chain (`chain_from`), the first such type's that has one — or a
+/// free fn whose first parameter is `mut`, itself. Absent where `file` declares no such fn, or its
+/// seat 0 is never written.
+export fn write_chain(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string>? {
+    let owners = [d.name for d in file_declares(engine, file).names if !impls_with(engine, file, d.name, name, false).is_empty()]
+    let chained = owners
+        .find_map(
+            (owner) -> chain_from(
+                engine,
+                MethodAt { file: file, owner: owner, name: name, reader: file.package_name },
+            ),
+        )
+    if chained != null || !owners.is_empty() { return chained }
+    let signed? = fn_signature(engine, file, name) else { return null }
+    if signed.params.first()?.mutable ?? false { [name] } else { null }
+}
+
 /// One method's own evidence: whether it's marked `mut`, whether its body writes its receiver itself,
 /// the first thing that couldn't be read to say, and the methods it calls on places rooted in its
 /// receiver.

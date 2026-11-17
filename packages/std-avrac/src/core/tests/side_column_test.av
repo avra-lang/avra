@@ -1,0 +1,90 @@
+// A side column — a fact few nodes have, held only for those nodes. Attacked where its table is
+// made, where it grows past its slots, where nodes land on one slot, and where a fork and the store
+// it was forked from each write after the fork.
+use @std.avrac.core.{SideColumn, side_column}
+
+/// Nodes `from` up to `to`, each read, comma-joined.
+fn read(c: SideColumn<int>, from: int, to: int) -> string { ["${c.at(i)}" for i in from..to].join(",") }
+
+spec "core/side_column" {
+    given "a column nothing was set in" {
+        then "every node reads absent" { read(side_column(7), 0, 4) == "7,7,7,7" }
+        then "it holds no node" { side_column(7).indexes().is_empty() }
+    }
+    given "values set" {
+        then "a node reads what it was set to, its neighbours absent" {
+            let c = side_column(0)
+            c.set_at(5, 50)
+            read(c, 3, 8) == "0,0,50,0,0"
+        }
+        then "a node set again reads the last value, and is held once" {
+            let c = side_column(0)
+            c.set_at(2, 1)
+            c.set_at(2, 9)
+            c.at(2) == 9 && c.indexes().length == 1
+        }
+        then "past many growths every node reads its own value" {
+            let c = side_column(0 - 1)
+            for i in 0..5000 { c.set_at(i * 3, i) }
+            [i for i in 0..5000 if c.at(i * 3) != i].is_empty() &&
+                c.at(1) == 0 - 1 &&
+                c.at(15001) == 0 - 1
+        }
+        then "nodes a slot count apart share a home slot and each keeps its own value" {
+            let c = side_column(0)
+            for k in 0..6 { c.set_at(k * 1024, k + 1) }
+            read(c, 0, 1) == "1" && c.at(5 * 1024) == 6 && c.at(2048) == 3 && c.at(512) == 0
+        }
+        then "the held nodes are listed ascending, whatever order they were set in" {
+            let c = side_column(0)
+            for i in [9, 2, 7, 0, 4] { c.set_at(i, 1) }
+            c.indexes().map((i) -> "${i}").join(",") == "0,2,4,7,9"
+        }
+        then "a cleared column reads absent everywhere and holds nothing" {
+            let c = side_column(0)
+            c.set_at(3, 3)
+            c.clear()
+            c.at(3) == 0 && c.indexes().is_empty()
+        }
+        then "remade replaces each held value and nothing else" {
+            let c = side_column(0)
+            c.set_at(1, 10)
+            c.set_at(4, 40)
+            c.remade((v) -> v + 1)
+            read(c, 0, 6) == "0,11,0,0,41,0"
+        }
+    }
+    given "a fork" {
+        then "the fork reads what the column held when it was forked" {
+            let c = side_column(0)
+            c.set_at(1, 1)
+            read(c.forked(), 0, 3) == "0,1,0"
+        }
+        then "a write to the fork, old node or new, never reaches the column" {
+            let c = side_column(0)
+            c.set_at(1, 1)
+            let f = c.forked()
+            f.set_at(1, 5)
+            f.set_at(2, 6)
+            for i in 100..200 { f.set_at(i, i) }
+            read(c, 0, 3) == "0,1,0" &&
+                c.at(150) == 0 &&
+                f.at(150) == 150 &&
+                read(f, 0, 3) == "0,5,6"
+        }
+        then "a write to the column after the fork never reaches the fork" {
+            let c = side_column(0)
+            c.set_at(1, 1)
+            let f = c.forked()
+            c.set_at(1, 7)
+            c.set_at(2, 8)
+            read(f, 0, 3) == "0,1,0" && read(c, 0, 3) == "0,7,8"
+        }
+        then "a fork of a column nothing was set in gets a table of its own on its first value" {
+            let c = side_column(0)
+            let f = c.forked()
+            f.set_at(3, 3)
+            c.at(3) == 0 && f.at(3) == 3
+        }
+    }
+}
