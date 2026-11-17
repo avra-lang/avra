@@ -100,10 +100,8 @@ use diagnostics.{
     Diag,
     Voices,
     error_at,
-    render_among,
     refusal,
     by_position,
-    has_errors,
     is_error,
 }
 use @std.errors.{Loc}
@@ -115,7 +113,6 @@ use features.{keys_spelled_from}
 use compiler.lower.{Unit, FieldPlan, CodeFacts}
 use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
-use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 use @std.relation.{query, lasting, recursive, codec, cycled_by, scoped_by}
 use @std.relation.stable.{Scope}
@@ -1365,104 +1362,6 @@ impl Workspace {
     fn file_name(path: string) -> string {
         let pkg = self.packages()[self.holder_of_path(path)]
         "${pkg.key}:${relative_path(pkg.root, path)}"
-    }
-
-    /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
-    /// an analysis.
-    ///
-    /// FORMATTING MOVES NO TOKEN THAT TYPING DECIDES, so a formatter
-    /// that waits for a package to type is paying for an answer it
-    /// never reads: one file cost 2.5 MINUTES through the analyzed
-    /// path (`entry_file` forces the whole package) and milliseconds
-    /// through this one. It is also what makes the tree-wide receipt
-    /// possible at all — `fmt(x) == x` over every file is minutes, not
-    /// days.
-    ///
-    /// It renders the file AS WRITTEN and never the EXPANDED source: a
-    /// generated declaration is the COMPILER's, and writing one back
-    /// would make it the author's, to be expanded again next build.
-    ///
-    /// AND IT REFUSES A FILE WITH PARSE ERRORS. The parser is
-    /// error-tolerant, so a broken file still answers a tree with
-    /// HOLES, and rendering it puts those regions back as nothing —
-    /// deleting exactly what the author most wants kept. TYPE errors
-    /// are no bar: a formatter is most wanted on code that does not
-    /// check yet.
-    fn formatted_source(f: FileId) -> Result<string, string> {
-        let parsed = self.parsed(f)
-        if !has_errors(parsed.voices.list) { return .Ok(self.clocked_print(parsed, f)) }
-        .Err(joined([render_among(d, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
-    }
-
-    fn clocked_print(parsed: Parsed, f: FileId) -> string {
-        let t0 = self.clock()
-        let text = render_source_of(parsed.store, parsed.stmts, self.source(f).text)
-        self.timed("print", t0)
-        text
-    }
-
-    /// `formatted_source`, gated for `--write`: the LOSSLESS RECEIPT
-    /// must hold — the same significant tokens, remarks and doc
-    /// groups the input carried, in order (compiler/format/
-    /// receipt.av) — OR the CANON receipt must (`canon_defect`,
-    /// below): the same MEANING, remarks and doc groups, tokens free
-    /// to move. Errs with the parse report OR with what the strict
-    /// receipt found moved (the canon door only widens what a
-    /// byte-identical rewrite already proves, so its own refusal
-    /// never reads as the primary reason); this fn writes nothing
-    /// itself, it only answers the safe text.
-    fn write_checked_source(f: FileId) -> Result<string, string> {
-        self.write_checked_from(f, self.formatted_source(f))
-    }
-
-    fn write_checked_from(f: FileId, formatted: Result<string, string>) -> Result<string, string> {
-        let text = formatted?
-        // THE RECEIPT COMPARES WHAT REACHES DISK, not `render_source_of`'s
-        // own return value: the CLI's write path (and `println`'s SAID
-        // path alike) appends the file's own trailing newline AFTER this
-        // fn answers, so a text ending in a Blank remark (a trailing
-        // blank line before EOF) needs that same newline here too, or
-        // the comparison lexes one fewer break than the disk file will
-        // ever have and reads the blank line as lost.
-        let disk = "${text}\n"
-        let bad? = lossless_defect(self.source(f).text, disk) else { return .Ok(text) }
-        let canon? = self.canon_defect(f, disk) else { return .Ok(text) }
-        .Err("avra fmt: refusing to write — ${bad} (canon: ${canon})")
-    }
-
-    /// `write_checked_source`'s SECOND door: a rewrite the strict
-    /// receipt refuses may still be safe when it is CANON, not
-    /// LOSSY — a trailing comma, a dropped redundant paren, the
-    /// `void` arrow, a `MatchOpt` arm's order all move tokens
-    /// without moving meaning. Safe here means every top-level
-    /// statement's `stmt_fingerprint` (core's, span-blind —
-    /// structural identity, never position) agrees in order and
-    /// count, AND the remarks and doc groups the strict receipt
-    /// already requires still hold whole — a parse error on either
-    /// side, or one mismatched fingerprint anywhere, refuses.
-    fn canon_defect(f: FileId, after: string) -> string? {
-        let rd = remarks_and_docs_defect(self.source(f).text, after)
-        if rd != null { return rd }
-        let before = self.parsed(f)
-        if has_errors(before.voices.list) { return "the source has parse errors" }
-        // THE SAME BLOCK WORDS `before` READ UNDER: `parse_program`'s
-        // own `words` parameter defaults to none, and a file that
-        // imports a component or a named grammar (every `rule`
-        // declaration in this very file is one) parses its own blocks
-        // as ordinary statements without them — a rewrite that moved
-        // not one byte of that block would still fail to reparse.
-        let words = self.block_words(f, before)
-        let reparsed = parse_program(
-            self.lang,
-            new_source_file(self.decls.file(f).path, after),
-            words,
-        )
-        if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
-        if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
-        for i, s in before.stmts {
-            if before.store.stmt_fingerprint(s) != reparsed.store.stmt_fingerprint(reparsed.stmts[i]) { return "statement ${i}'s meaning moved" }
-        }
-        null
     }
 
     /// A file's text as a source.

@@ -10,11 +10,13 @@ use compiler.{
     avra,
     new_workspace,
     one_shot_let_go,
+    formatted_under,
+    write_checked_under,
 }
 use compiler.host.{Host, memory_host}
 use testing.std_sources.{StdFile, StdPkg, std_sources}
 use @std.avrac.diagnostics.{Diag}
-use @std.avrac.core.{flatten}
+use @std.avrac.core.{FileId, flatten}
 use @std.meta.{embed}
 use compiler.lower.{Lowered}
 use compiler.format.{render_source}
@@ -167,6 +169,16 @@ export fn provided_workspace(main: string, provider: string, modules: List<Modul
     let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"]
         .concat([m.path() for m in modules])
     test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
+}
+
+/// A workspace's file as the formatter prints it, read under the words the workspace gives it.
+export fn formatted_in(ws: Workspace, f: FileId) -> Result<string, string> {
+    formatted_under(ws.source(f), ws.block_words(f, ws.parsed(f)))
+}
+
+/// A workspace's file as the formatter would write it, its receipts held.
+export fn write_checked_in(ws: Workspace, f: FileId) -> Result<string, string> {
+    write_checked_under(ws.source(f), ws.block_words(f, ws.parsed(f)))
 }
 
 /// A workspace a test makes — ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME,

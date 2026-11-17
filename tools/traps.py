@@ -37,9 +37,11 @@ LICENSE = re.compile(r"LICENSED\s+traps\.(process_limit|defect)\b")
 KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__builtin_expect",
             "__builtin_unreachable", "__builtin_offsetof", "_Static_assert", "typeof", "__typeof__"}
 # Callees that run no Avra code and raise no language trap: the C library, the
-# compiler's builtins, the runtime's own macros, and the two C function-pointer
-# params (`text`, `source`) that only ever name C fns. A callee not here and not
-# defined in the runtime is a call out, which may trap.
+# compiler's builtins, the runtime's own macros, the two C function-pointer
+# params (`text`, `source`) that only ever name C fns, and the core's hooks the
+# scheduler names (`avra_unwind_running`, `avra_shield_entered`, `avra_shield_left`),
+# which only ever name its own bookkeeping. A callee not here and not defined in
+# the runtime is a call out, which may trap.
 SAFE = set("""
 __atomic_add_fetch __atomic_load_n __atomic_store_n __builtin_add_overflow __builtin_ctzll __builtin_memcpy
 __builtin_mul_overflow __builtin_return_address __builtin_sub_overflow _dyld_get_image_header
@@ -53,7 +55,7 @@ strcmp strerror strlen strtod strtoll sysconf sysctlbyname utimes va_arg va_end 
 write
 AVRA_CALLER CENSUS CPU_COUNT IS_IMMORTAL KIND_IMMORTAL KIND_SHAPE MB S_ISDIR S_ISLNK S_ISREG
 WEXITSTATUS WIFEXITED WIFSIGNALED WTERMSIG volatile
-text source
+text source avra_unwind_running avra_shield_entered avra_shield_left
 """.split())
 
 

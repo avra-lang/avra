@@ -1,5 +1,5 @@
 """THE SCHEDULER'S TESTS, TESTED: each entry breaks one line of
-runtime/avra_fiber.c — or, for the clock, of runtime/avra_runtime.c —
+runtime/avra_fiber.c — or, for the clock and the frames an unwind passed, of runtime/avra_runtime.c —
 and some runtime test must fail for it. A break
 every test survives is a law nothing holds; a pattern that no longer
 matches the source is a break nobody is checking. Either fails the run.
@@ -69,7 +69,7 @@ MUTATIONS = [
     ("the evaluator's set does not raise the bit", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { (void)t; (void)v; }"),
     ("a task handle that is not the last joins the task", "    if (((const Header*)task - 1)->rc != 2) return;\n", ""),
     ("a list that is not released by its last handle joins its members", "    if (!list || ((const Header*)list - 1)->rc != 1) return;\n", "    if (!list) return;\n"),
-    ("the shield's enter is its leave", "void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }", "void avra_fiber_shield_enter(void) { shield_left(g_current, &avra_unwinding); }"),
+    ("the shield's enter is its leave", "static void running_shield_entered(void) { shield_entered(g_current, &avra_unwinding); }", "static void running_shield_entered(void) { shield_left(g_current, &avra_unwinding); }"),
     ("a join answers a cancelled task", "        cancel_met();\n        return NULL;\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];", "        cancel_met();\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];"),
     ("an unwinding caller's join is handed an answer, or another's request", "    if (avra_unwinding) return NULL;\n    if (cells[TASK_END] == END_CANCELLED) {", "    if (cells[TASK_END] == END_CANCELLED) {"),
     ("a shielded join of a cancelled task passes its cancel on", "        if (g_current->shield_depth) join_refused();\n", ""),
@@ -150,13 +150,8 @@ MUTATIONS = [
     ("a descriptor park keeps the last park's interrupt", "    f->timed_out = 0;\n    f->interrupted = 0;", "    f->timed_out = 0;"),
     ("a child does not inherit its spawner's deadline", "    scope_inherited(f, g_current);\n", ""),
     ("a virtual child does not inherit its spawner's deadline", "void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }", "void avra_vtask_inherits(int64_t t, int64_t from) { (void)t; (void)from; }"),
-    ("a spawned task shares the program's own frames", "    if (g_current->task) return (Unwind*)(task_cells(g_current->task) + TASK_FRAMES);\n    return &g_main_unwind;\n}", "    return &g_main_unwind;\n}"),
+    ("a spawned task shares the program's own frames", "    if (g_current->task) return (AvraUnwind*)(task_cells(g_current->task) + TASK_FRAMES);\n    return avra_unwind_main();\n}", "    return avra_unwind_main();\n}"),
     ("a task's record begins with frames, not nothing", "    for (int i = TASK_SITE; i < TASK_CELLS; i++) avra_array_push(task, 0);", "    for (int i = TASK_SITE; i < TASK_CELLS; i++) avra_array_push(task, 1);"),
-    ("a pushed frame does not raise the count", "        held->frames[held->n++] = (int64_t)(uintptr_t)frame;", "        held->frames[held->n] = (int64_t)(uintptr_t)frame;"),
-    ("a full list drops nothing, overwriting the newest", "    memmove(\n        &held->frames[UNWIND_CAP / 2],\n        &held->frames[UNWIND_CAP / 2 + 1],\n        (UNWIND_CAP / 2 - 1) * sizeof(int64_t));\n    held->frames[UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;", "    held->frames[UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;"),
-    ("a full list does not count its drops", "    held->dropped = held->dropped + 1;\n", ""),
-    ("a frame read past the list answers a frame", "    if (i < 0 || i >= held->n) return NULL;\n", ""),
-    ("a cancel point leaves the frames it passed", "static void unwind_cleared(void) { memset(running_unwind(), 0, sizeof(Unwind)); }", "static void unwind_cleared(void) { }"),
     ("a second cancel point clears the unwind's own frames", "static void cancel_met(void) {\n    if (avra_unwinding) return;\n    avra_unwinding = 1;", "static void cancel_met(void) {\n    avra_unwinding = 1;"),
     ("a child inherits the owner over the standing request", "from->scope_by != 0 ? scope_at(from, from->armed) :", "from->scope_by != 0 ? scope_at(from, from->owner) :"),
     ("a child inherits a copy of its spawner's id", "    child->scope[0] = (Scope){ .id = s->id, .at = s->at, .first = 0, .shield = 0 };", "    child->scope[0] = (Scope){ .id = s->id + 1, .at = s->at, .first = 0, .shield = 0 };"),
@@ -388,6 +383,15 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
+# THE FRAMES AN UNWIND PASSED: the core's list (runtime/avra_runtime.c), which a task's record lays out
+# and the scheduler answers for a running task.
+UNWIND_MUTATIONS = [
+    ("a pushed frame does not raise the count", "        held->frames[held->n++] = (int64_t)(uintptr_t)frame;", "        held->frames[held->n] = (int64_t)(uintptr_t)frame;"),
+    ("a full list drops nothing, overwriting the newest", "    memmove(\n        &held->frames[AVRA_UNWIND_CAP / 2],\n        &held->frames[AVRA_UNWIND_CAP / 2 + 1],\n        (AVRA_UNWIND_CAP / 2 - 1) * sizeof(int64_t));\n    held->frames[AVRA_UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;", "    held->frames[AVRA_UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;"),
+    ("a full list does not count its drops", "    held->dropped = held->dropped + 1;\n", ""),
+    ("a frame read past the list answers a frame", "    if (i < 0 || i >= held->n) return NULL;\n", ""),
+    ("a cancel point leaves the frames it passed", "void avra_unwind_clear(void) { memset(running_unwind(), 0, sizeof(AvraUnwind)); }", "void avra_unwind_clear(void) { }"),
+]
 # THE HOST'S OWN THREAD: each line the tick's contract stands on, broken
 # in the object outside the runtime glob.
 HOST_MUTATIONS = [
@@ -434,7 +438,7 @@ for test in TESTS:
 
 # What a break of one file links beside it: every other object, and for
 # the clock's the scheduler built whole.
-ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS] + [(DOOR, m) for m in DOOR_MUTATIONS] + [(HOST, m) for m in HOST_MUTATIONS]
+ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS] + [(CLOCK, m) for m in UNWIND_MUTATIONS] + [(DOOR, m) for m in DOOR_MUTATIONS] + [(HOST, m) for m in HOST_MUTATIONS]
 subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{out}/{FIBER}.o", f"runtime/{FIBER}.c"], check=True)
 rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.o")] + [f"{out}/{FIBER}.o"], DOOR: objects,
         HOST: [o for o in objects if not o.endswith(f"/{HOST}.o")] + [f"{out}/{FIBER}.o"]}

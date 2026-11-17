@@ -1,7 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.testing.{test_workspace}
+use @std.avrac.testing.{test_workspace, write_checked_in}
 use compiler.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
 use @std.relation.stable.{indexed_scope}
@@ -748,18 +748,18 @@ spec "the unit table" {
 
 spec "avra fmt --write's own receipt" {
     given "a file already in canonical form" {
-        then "write_checked_source answers it byte-identical, the CLI's own trailing newline included" {
+        then "the checked write answers it byte-identical, the CLI's own trailing newline included" {
             let ws = ws_of()
             let f = ws.file_id("/w/src/helper.av")
-            match ws.write_checked_source(f) {
+            match write_checked_in(ws, f) {
                 .Ok(text) -> "${text}\n" == "fn helper(n: int) -> int {\n    n\n}\n",
                 .Err(_) -> false,
             }
         }
-        then "a trailing blank line before EOF is not read as an empty tail — write_checked_source's own receipt over the exact hazard render_with's fix closed" {
+        then "a trailing blank line before EOF is not read as an empty tail — the checked write's own receipt over the exact hazard render_with's fix closed" {
             let ws = with_main("let x = 1\n\n")
             let f = ws.file_id("/w/src/main.av")
-            match ws.write_checked_source(f) {
+            match write_checked_in(ws, f) {
                 .Ok(text) -> "${text}\n" == "let x = 1\n\n",
                 .Err(_) -> false,
             }
@@ -770,18 +770,18 @@ spec "avra fmt --write's own receipt" {
             let src = "fn f(c: int) -> bool {\n    c == 61 || c == 124\n    // the bitwise three\n}\n"
             let ws = with_main(src)
             let f = ws.file_id("/w/src/main.av")
-            match ws.write_checked_source(f) { .Ok(text) -> "${text}\n" == src, .Err(_) -> false }
+            match write_checked_in(ws, f) { .Ok(text) -> "${text}\n" == src, .Err(_) -> false }
         }
         then "the same comment, mid-chain in the author's own wrapping, lands inside the brace and stays there on a second write" {
             let ws1 = with_main(
                 "fn f(c: int) -> bool {\n    c == 61 ||\n    // the bitwise three\n    c == 124\n}\n",
             )
             let f1 = ws1.file_id("/w/src/main.av")
-            match ws1.write_checked_source(f1) {
+            match write_checked_in(ws1, f1) {
                 .Ok(first) -> {
                     let ws2 = with_main("${first}\n")
                     let f2 = ws2.file_id("/w/src/main.av")
-                    match ws2.write_checked_source(f2) {
+                    match write_checked_in(ws2, f2) {
                         .Ok(second) -> "${second}\n" == "${first}\n",
                         .Err(_) -> false,
                     }
@@ -794,7 +794,7 @@ spec "avra fmt --write's own receipt" {
         then "writes back exactly as spelled — escapes, their case and a raw byte kept" {
             let src = "let a = b\"PA\\x00TH\\xFe\\n\\\"é\"\nlet e = b\"\"\n"
             let ws = with_main(src)
-            match ws.write_checked_source(ws.file_id("/w/src/main.av")) {
+            match write_checked_in(ws, ws.file_id("/w/src/main.av")) {
                 .Ok(text) -> "${text}\n" == src,
                 .Err(_) -> false,
             }
@@ -808,7 +808,7 @@ spec "avra fmt --write's own receipt" {
             }
             let ws = test_workspace(memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]), "/w")
             let f = ws.file_id("/w/src/main.av")
-            match ws.write_checked_source(f) {
+            match write_checked_in(ws, f) {
                 .Ok(text) -> text.contains("ccccccccccccccccccccccccccccccc\",\n    ]"),
                 .Err(_) -> false,
             }

@@ -50,8 +50,8 @@ edits='packages/cli/src/commands/cache.av|        "avra cache clean: shared stor
 packages/std-avrac/src/compiler/item_program.av|fn runs_nothing() -> string { "a file that runs no statement" }|fn runs_nothing() -> string { "a file that runs no statements" }
 packages/cli/src/commands/cache.av|    let root = build_cache_root(root_workspace(here()))|    let root = build_cache_root(root_workspace(here()))\n    let _ = store_dir_of(root).length
 packages/std-time/src/time.av|    avra_fiber_sleep(d.ms())|    avra_fiber_sleep(d.ms())\n    parked_until(avra_now_ns())
-packages/cli/src/commands/fmt.av|enum Outcome { Canonical, Differs, Refused }|enum Outcome { Canonical, Differs, Refused, Skipped }
-packages/cli/src/commands/fmt.av|type Checked1 = { outcome: Outcome, phases: List<Phase> }|type Checked1 = { outcome: Outcome, phases: List<Phase>, skipped: int = 0 }
+packages/cli/src/commands/fmt.av|enum Walk { Check, Write }|enum Walk { Check, Write, Listed }
+packages/cli/src/commands/fmt.av|type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }|type Tally = { examined: int, differing: int, refused: int, diffs: List<string>, skipped: int = 0 }
 packages/cli/src/commands/idiom_baseline.av|    fn news(findings: List<Finding>) -> List<Finding> {|    fn news(findings: List<Finding>, most: int = 0) -> List<Finding> {
 packages/cli/src/commands/idiom_baseline.av|    fn news(findings: List<Finding>) -> List<Finding> {|    fn news(findings: List<Finding>, most: int) -> List<Finding> { ;; packages/cli/src/commands/check.av|        let bad = loaded_baseline(baseline).news(c.findings)|        let bad = loaded_baseline(baseline).news(c.findings, 0) ;; packages/cli/src/commands/check_program.av|        let bad = loaded_baseline(baseline).news([s.finding for s in sites])|        let bad = loaded_baseline(baseline).news([s.finding for s in sites], 0)
 packages/std-avrac/src/core/checking.av|        binder: BindSite? = null,|        binder: BindSite? = null,\n        kept: bool = false,

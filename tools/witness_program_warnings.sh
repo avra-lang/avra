@@ -23,8 +23,8 @@ avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_program_warnings: no compiler at $avra" >&2; exit 1; }
 tmp=$(mktemp -d)
 file=packages/cli/src/commands/fmt.av
-line='enum Outcome { Canonical, Differs, Refused }'
-becomes='enum Outcome { Canonical, Differs, Refused }\nenum Quarter { North, East, South, West }\nfn quartered(q: Quarter) -> int { match q { .North -> 1, .East -> 2, _ -> 0 } }'
+line='type FmtCmd = {}'
+becomes='type FmtCmd = {}\nenum Quarter { North, East, South, West }\nfn quartered(q: Quarter) -> int { match q { .North -> 1, .East -> 2, _ -> 0 } }'
 cp "$file" "$tmp/orig.av"
 restore() { cp "$tmp/orig.av" "$file"; find "$tmp" -delete; }
 trap restore EXIT

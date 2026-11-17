@@ -38,7 +38,7 @@ use core.{
     CollectScope,
     Projection,
     quoted_text,
-    spelled,
+    written_type,
     op_symbol,
     joined,
     flatten,
@@ -720,12 +720,12 @@ impl SourceText {
     /// generics is rare enough that one broken level is where this
     /// stops).
     fn type_ref_wrapped(t: TypeRef, depth: int, col: int = -1) -> string {
-        if t.arrow || t.applied.is_empty() || !t.alternatives.is_empty() { return spelled(t) }
+        if t.arrow || t.applied.is_empty() || !t.alternatives.is_empty() { return written_type(t) }
         let head = "${if t.dynamic { "dyn " } else { "" }}${t.name}"
         let body = self
             .wrapped_list(
                 "<",
-                [spelled(a) for a in t.applied],
+                [written_type(a) for a in t.applied],
                 ">",
                 false,
                 depth,
@@ -775,7 +775,7 @@ impl SourceText {
     }
 
     fn bound(ty: TypeRef?) -> string {
-        if ty == null { "" } else { ": ${spelled(ty!)}" }
+        if ty == null { "" } else { ": ${written_type(ty!)}" }
     }
 
     mut fn params(params: List<Param>, depth: int) -> string {
@@ -785,7 +785,7 @@ impl SourceText {
     /// A record's field entries as written: each `..R` ahead of the
     /// field it was written before, every entry with where it began.
     mut fn entries(fields: List<Param>, spreads: List<Spread>, depth: int) -> List<FieldEntry> {
-        let spread_at = (k: int) -> [FieldEntry { lo: x.lo, text: "..${spelled(x.of)}" } for x in spreads if x.at == k]
+        let spread_at = (k: int) -> [FieldEntry { lo: x.lo, text: "..${written_type(x.of)}" } for x in spreads if x.at == k]
         flatten(
             [spread_at(j)
                 .concat(
@@ -814,7 +814,7 @@ impl SourceText {
     mut fn field(p: Param, depth: int) -> string {
         let dots = if p.spread != null { ".." } else { "" }
         let name = if p.name.is_empty() { "" } else { "${dots}${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
-        let ty = if p.ty == null { "" } else { spelled(p.ty!) }
+        let ty = if p.ty == null { "" } else { written_type(p.ty!) }
         let word = if p.state { "state " } else { "" }
         "${self.marks(p.marks, depth)}${word}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
     }
@@ -1182,7 +1182,7 @@ impl SourceText {
     ) -> string {
         let fields = joined([self.collect_field(f.field.of, f.path) for f in proj.fields], ", ")
         let by = self.collect_order_text(order, dense)
-        "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
+        "${exported}collect ${source_name(name)}: ${written_type(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
     }
 
     /// The `by …` tail a collect prints, `dense` included — the same
@@ -1394,7 +1394,7 @@ impl SourceText {
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
                 grouped(
-                    "${head}${self.call_tail(args, depth, col_after(head, c))}",
+                    "${head}${self.call_tail(id, args, depth, col_after(head, c))}",
                     atom_tier,
                     parent,
                 )
@@ -1454,7 +1454,7 @@ impl SourceText {
             .CallValue(subject, args) -> {
                 let head = "(${self.expression(subject, loosest_tier, depth, c + 1)})"
                 grouped(
-                    "${head}${self.call_tail(args, depth, col_after(head, c))}",
+                    "${head}${self.call_tail(id, args, depth, col_after(head, c))}",
                     postfix_tier,
                     parent,
                 )
@@ -1504,7 +1504,7 @@ impl SourceText {
                 parent,
             ),
             .MethodCall(_, _, _) -> self.chain_rendered(id, parent, depth, c),
-            .Env(tr) -> grouped("env ${spelled(tr)}", atom_tier, parent),
+            .Env(tr) -> grouped("env ${written_type(tr)}", atom_tier, parent),
             .Error -> grouped("__error", atom_tier, parent),
         }
     }
@@ -2340,7 +2340,7 @@ impl SourceText {
     }
 
     fn pins(pins: List<TypeRef>) -> string {
-        if pins.is_empty() { "" } else { "<${joined([spelled(p) for p in pins], ", ")}>" }
+        if pins.is_empty() { "" } else { "<${joined([written_type(p) for p in pins], ", ")}>" }
     }
 
     mut fn args(args: List<ExprId>, depth: int) -> string {
@@ -2352,12 +2352,24 @@ impl SourceText {
     /// one call, its last argument spelled outside the parens). Two
     /// trailing blocks are the head and its `else` (features/
     /// builder.av's `trailed`).
-    mut fn call_tail(args: List<ExprId>, depth: int, col: int = -1) -> string {
+    mut fn call_tail(call: ExprId, args: List<ExprId>, depth: int, col: int = -1) -> string {
         let regular = [a for a in args if !self.store.is_trailing(a)]
         let blocks = [a for a in args if self.store.is_trailing(a)]
+        let trail = joined([self.trailing_block(b, depth) for b in blocks], " else ")
+        if self.bare_headed(call) { return " ${trail}" }
         let head = self.args_wrapped(regular, depth, col)
         if blocks.is_empty() { return head }
-        "${head} ${joined([self.trailing_block(b, depth) for b in blocks], " else ")}"
+        "${head} ${trail}"
+    }
+
+    /// Whether the call `call` was written with no parentheses: a name or a field read, a call by
+    /// the blocks that trail it alone. It prints as written — the parentheses are the author's.
+    fn bare_headed(call: ExprId) -> bool {
+        let sugar? = self.store.minted_for(call) else { return false }
+        match self.store.expr(sugar) {
+            .Trailed(subject, _) -> match self.store.expr(subject) { .Ident(_) or .Prop(_, _) -> true, rest -> false },
+            rest -> false,
+        }
     }
 
     /// One trailing block's braces. It rides a `Lambda` (`trailed`'s
@@ -2409,11 +2421,11 @@ impl SourceText {
     /// One `.` chain LINK's own text, no receiver: `.name(args)`. Rendered at the fallback column —
     /// a link, like a comma list's item, is pre-rendered before the
     /// chain it belongs to decides flat or broken.
-    mut fn method_link_text(name: Plain, args: List<ExprId>, depth: int) -> string {
+    mut fn method_link_text(call: ExprId, name: Plain, args: List<ExprId>, depth: int) -> string {
         // A link lands at `depth + 1` once the chain breaks (postfix_chain_doc's
         // own `nest(4, ...)`), so its OWN call — if IT also wraps — must
         // nest from THAT column, never from the chain's.
-        ".${source_name(name.of)}${self.call_tail(args, depth + 1)}"
+        ".${source_name(name.of)}${self.call_tail(call, args, depth + 1)}"
     }
 
     /// A postfix `.` chain's root and its links, walked from the
@@ -2435,7 +2447,7 @@ impl SourceText {
                 let inner = self.chain_walk(subject, depth)
                 ChainWalk {
                     root: inner.root,
-                    links: inner.links.concat([self.method_link_text(name, args, depth)]),
+                    links: inner.links.concat([self.method_link_text(e, name, args, depth)]),
                 }
             },
             .TypeLiteral(subject, ty) -> {
@@ -2770,7 +2782,7 @@ fn braced(text: string) -> string {
 
 fn hole_source(h: Hole) -> string {
     let ty: TypeRef? = h.ty
-    "{${h.name}${if h.greedy { "..." } else { "" }}${if ty == null { "" } else { ": ${spelled(ty!)}" }}}"
+    "{${h.name}${if h.greedy { "..." } else { "" }}${if ty == null { "" } else { ": ${written_type(ty!)}" }}}"
 }
 
 /// One printed entry of a field list and the offset it began at.

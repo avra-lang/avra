@@ -757,22 +757,31 @@ impl TypeRef {
     fn text() -> string { spelled(self) }
 }
 
-/// A written type, spelled back — what a diagnostic quotes.
-export fn spelled(t: TypeRef) -> string {
-    if !t.alternatives.is_empty() { return joined([spelled(a) for a in t.alternatives], " or ") }
+/// A written type, spelled back — what a diagnostic quotes: a fn type's answer said, `void` where
+/// it writes none.
+export fn spelled(t: TypeRef) -> string { type_text(t, true) }
+
+/// A written type AS ITS AUTHOR WROTE IT — what the formatter prints: a fn type that writes no
+/// answer writes no arrow.
+export fn written_type(t: TypeRef) -> string { type_text(t, false) }
+
+fn type_text(t: TypeRef, answered: bool) -> string {
+    if !t.alternatives.is_empty() { return joined([type_text(a, answered) for a in t.alternatives], " or ") }
     let base = when {
-        t.arrow -> spelled_arrow(t)
+        t.arrow -> arrow_text(t, answered)
         t.applied.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
-        _ -> "${t.name}<${joined([spelled(a) for a in t.applied], ", ")}>"
+        _ -> "${t.name}<${joined([type_text(a, answered) for a in t.applied], ", ")}>"
     }
     if t.optional { return "${base}?" }
     base
 }
 
-/// A fn type: its seats, each with its promise, then its answer.
-fn spelled_arrow(t: TypeRef) -> string {
-    let seats = [mark_prefixed(s.mark(), spelled(s.ty)) for s in t.seats]
-    "fn(${joined(seats, ", ")}) -> ${spelled(t.answered())}"
+/// A fn type: its seats, each with its promise, then its answer — the one it writes, or with
+/// `answered`, `void` for none.
+fn arrow_text(t: TypeRef, answered: bool) -> string {
+    let seats = [mark_prefixed(s.mark(), type_text(s.ty, answered)) for s in t.seats]
+    let answer = if answered { t.answered() } else { t.answer }
+    "fn(${joined(seats, ", ")})${if answer == null { "" } else { " -> ${type_text(answer!, answered)}" }}"
 }
 
 /// A MARK IS DATA; AN ANNOTATION IS A CALL. `@word` or

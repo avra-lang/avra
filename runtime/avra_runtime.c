@@ -5982,6 +5982,54 @@ void avra_descriptors_forgotten(void) {
 // the width its row names and takes the seats it names — the bodies
 // above, and the other objects' through their headers, which their
 // own definitions must match. Included LAST, so all are declared.
+#include "avra_unwind.h"
 #include "avra_fiber.h"
 #include "avra_cores.h"
 #include "avra_rt.h"
+
+// ── The frames an unwind passed ──────────────────────────────────
+
+static AvraUnwind g_main_unwind;
+AvraUnwind* (*avra_unwind_running)(void) = 0;
+
+AvraUnwind* avra_unwind_main(void) { return &g_main_unwind; }
+
+static AvraUnwind* running_unwind(void) { return avra_unwind_running ? avra_unwind_running() : &g_main_unwind; }
+
+void avra_unwind_clear(void) { memset(running_unwind(), 0, sizeof(AvraUnwind)); }
+
+// One frame the unwind passed: appended, or — full — the middle dropped
+// and counted, the newest kept in the last slot.
+void avra_unwind_push(void* frame) {
+    AvraUnwind* held = running_unwind();
+    if (held->n < AVRA_UNWIND_CAP) {
+        held->frames[held->n++] = (int64_t)(uintptr_t)frame;
+        return;
+    }
+    memmove(
+        &held->frames[AVRA_UNWIND_CAP / 2],
+        &held->frames[AVRA_UNWIND_CAP / 2 + 1],
+        (AVRA_UNWIND_CAP / 2 - 1) * sizeof(int64_t));
+    held->frames[AVRA_UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;
+    held->dropped = held->dropped + 1;
+}
+
+int64_t avra_unwind_count(void) { return running_unwind()->n; }
+
+void* avra_unwind_at(int64_t i) {
+    AvraUnwind* held = running_unwind();
+    if (i < 0 || i >= held->n) return NULL;
+    return (void*)(uintptr_t)held->frames[i];
+}
+
+// How many frames a full list has dropped; the landing says so.
+int64_t avra_unwind_dropped(void) { return running_unwind()->dropped; }
+
+// ── The shield a cold exit raises ─────────────────────────────────
+
+void (*avra_shield_entered)(void) = 0;
+void (*avra_shield_left)(void) = 0;
+
+void avra_fiber_shield_enter(void) { if (avra_shield_entered) avra_shield_entered(); }
+
+void avra_fiber_shield_leave(void) { if (avra_shield_left) avra_shield_left(); }
