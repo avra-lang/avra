@@ -18,6 +18,7 @@ use @std.avrac.compiler.{
     in_scope,
     proofs_said,
     made_suite,
+    program_externs,
     writes_specs,
     SuiteProgram,
     Workspace,
@@ -3527,7 +3528,7 @@ fn bucket_kept(
             )
         },
     )
-    if linked != null { return BuiltBinary.Unlinked(linked!) }
+    if linked != null { return BuiltBinary.Unlinked(externs_unlinked(engine, asked.entry, linked!)) }
     let ships = shipped(staged, shipping_tools(asked))
     if ships.said != "" { eprintln(ships.said) }
     let ready = ships.path ?? staged
@@ -3703,6 +3704,34 @@ fn shipping_tools(asked: BinaryAsked) -> Toolchain {
     }
 }
 
+/// A LINK THAT REFUSED AN EXTERN SAYS THE EXTERN'S CONTRACT: each extern the program at `entry` calls
+/// that the linker `said` names undefined is refused by name — nothing the program links carries it,
+/// and where a package other than the program's own declares it, that package is named. A refusal
+/// naming none of them is the linker's words.
+fn externs_unlinked(engine: QueryEngine, entry: SourceFileAddress, said: string) -> string {
+    let missing = [c for c in program_externs(engine, entry) if names_undefined(said, c.symbol)]
+    if missing.is_empty() { return said }
+    distinct([extern_uncarried(c, entry.package_name) for c in missing]).join("\n")
+}
+
+/// Whether the linker's words `said` name `symbol` undefined, in any linker's spelling: a line of lld's
+/// ending with it, GNU ld's quoting it, or ld64's naming its underscored symbol.
+fn names_undefined(said: string, symbol: string) -> bool {
+    said.split("\n").any(undefined_names(it, symbol))
+}
+
+/// Whether one line of a linker's refusal names `symbol` as the symbol it couldn't answer.
+fn undefined_names(line: string, symbol: string) -> bool {
+    line.contains("ndefined") && (line.ends_with(": ${symbol}") || line.contains("`${symbol}'")) ||
+        line.contains("\"_${symbol}\", referenced from")
+}
+
+/// The refusal of the extern `c`, which nothing the program of package `own` links carries.
+fn extern_uncarried(c: CalledFn, own: string) -> string {
+    let owner = if c.file.package_name == own { "" } else { ", and ${c.file.package_name} declares it but nothing its `[link]` names carries it" }
+    "`${c.symbol}` is extern and nothing this program links carries it${owner} — link a library that defines it, or answer it here with `extern fn ${c.name}(…) { … }`"
+}
+
 /// The word a layered link adds to its binary's key.
 const LAYERED: string = "link=layered"
 
@@ -3739,14 +3768,21 @@ fn layered_refused(asked: BinaryAsked, made: List<Made>, stem: string) -> string
     let _ = make_dirs(overlay_dir)
     let overlay_lib = joined_path(overlay_dir, words.lib("avra_overlay"))
     let overlay_keys = [o.key for o in overlay].join("\n")
-    if !exists_at(overlay_lib) || text_at(joined_path(overlay_dir, LAYER_KEYS)) != overlay_keys {
+    let overlay_moved = !exists_at(overlay_lib) ||
+        text_at(joined_path(overlay_dir, LAYER_KEYS)) != overlay_keys
+    if overlay_moved {
         let refused = overlay_refused(asked.head, [o.obj for o in overlay], overlay_lib)
         if refused != null { return refused }
         let _ = write_text(joined_path(overlay_dir, LAYER_KEYS), overlay_keys)
     }
     let exe = joined_path(world_dir, LAYERED_EXE)
-    if !exists_at(exe) {
-        let refused = layers_linked(asked.head, [overlay_dir, world_dir], exe)
+    if overlay_moved || !exists_at(exe) {
+        let refused = layers_linked(
+            asked.head,
+            [overlay_dir, world_dir],
+            exe,
+            words.shared_libraries(asked.words),
+        )
         if refused != null { return refused }
     }
     layers_pruned(layers, [overlay_dir, world_dir])
@@ -3757,7 +3793,8 @@ fn layered_refused(asked: BinaryAsked, made: List<Made>, stem: string) -> string
 /// it is linked once a world.
 const OVERLAY: string = "overlay"
 
-/// The executable a world's directory holds: the overlay, then the world, loaded.
+/// The executable a world's directory holds: the overlay, then the world, loaded. It is linked again
+/// whenever the overlay is, for its link is where a symbol no layer answers is refused.
 const LAYERED_EXE: string = "avra-layered"
 
 /// Why `objects` didn't become the overlay at `out`: on ELF with `ld.lld` standing, linked by it alone
@@ -3826,6 +3863,14 @@ impl LayerWords {
         }
     }
 
+    /// The shared libraries a world links with, named again where the layers are loaded: `-lm`, and
+    /// every library and search directory of `words`. A linker judges a layer's unanswered symbols
+    /// only when every library the layer needs is named in the link.
+    fn shared_libraries(words: List<string>) -> List<string> {
+        [w for w in words if w.starts_with("-l") || w.starts_with("-L") || w.ends_with(".so") || w.ends_with(".dylib")]
+            .concat(["-lm"])
+    }
+
     /// The words an executable loading layers adds: every named layer kept, and no symbol left that
     /// none answers — ld64 keeps what it is told and refuses an executable's own unanswered symbols
     /// already.
@@ -3867,13 +3912,14 @@ fn shared_refused(
 
 /// Why the executable `stem`, loading the shared objects in `dirs` in order, didn't link; absent when it
 /// did.
-fn layers_linked(head: List<string>, dirs: List<string>, stem: string) -> string? {
+fn layers_linked(head: List<string>, dirs: List<string>, stem: string, shared: List<string>) -> string? {
     let libs = [if file_name(d) == OVERLAY { "-lavra_overlay" } else { "-lavra_world" } for d in dirs]
     clang_refused(
         head
             .concat(flatten([["-L${d}", "-Wl,-rpath,${d}"] for d in dirs]))
             .concat(layer_words().loading())
             .concat(libs)
+            .concat(shared)
             .concat(["-o", stem]),
         stem,
         link_bytes([], ""),
