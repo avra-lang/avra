@@ -15,6 +15,8 @@
 #   change, on both paths), `edit` (the cli edited, built warm on the program layer over its cold
 #   build), `builds` (both), `check` (the cli's check on both), `cases` (tools/program-warnings/).
 set -eu
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 avra=${1:-build/avra-try}

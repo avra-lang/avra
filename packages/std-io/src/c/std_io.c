@@ -132,6 +132,24 @@ int64_t avra_fd_try_lock(int64_t fd) {
 #endif
 }
 
+/* A shared advisory lock on the descriptor's open file, held until the descriptor closes: taken
+   while no other open file holds an exclusive one. With `waiting` it waits for that; without, it
+   answers at once: 0 held, 1 another open file holds the exclusive lock, -errno otherwise. */
+int64_t avra_fd_lock_shared(int64_t fd, int64_t waiting) {
+#if defined(__wasm32__)
+    (void)fd; (void)waiting;
+    return -ENOTSUP;
+#else
+    int held;
+    if (waiting) avra_clock_hold(1);
+    while ((held = flock((int)fd, waiting ? LOCK_SH : LOCK_SH | LOCK_NB)) != 0 && errno == EINTR) {}
+    int err = held != 0 ? errno : 0;
+    if (waiting) avra_clock_hold(-1);
+    if (err == EWOULDBLOCK && !waiting) return 1;
+    return err ? -err : 0;
+#endif
+}
+
 /* The file cut back to exactly `len` bytes. A caller trims a TORN
    TAIL — bytes past the last frame it could verify, left by a writer
    that crashed mid-append — to this before appending past it, so a
@@ -192,10 +210,17 @@ typedef struct {
 static IoTemp g_io_temps[IO_TEMPS];
 static int g_io_temps_armed = 0;
 
+/* A PROCESS MAY LEAVE ITS TEMPS TO AN HEIR it forks to finish them: while `g_io_temps_left_by`
+   names it, a child keeps every temp and knows whose it holds; the process that left them
+   forgets each without removing it. */
+static pid_t g_io_temps_left_by = 0;
+static pid_t g_io_temps_heir_of = 0;
+
 /* A forked child's temps are its parent's to publish or drop: each is
    forgotten while its number is still that temp's, so a child that closes
    what it was not given never writes a reused number through one. */
 static void temps_forgotten(void) {
+    if (g_io_temps_left_by) { g_io_temps_heir_of = g_io_temps_left_by; return; }
     for (int i = 0; i < IO_TEMPS; i++) {
         if (g_io_temps[i].fd >= 0) close(g_io_temps[i].fd);
         g_io_temps[i].fd = -1;
@@ -261,6 +286,30 @@ int64_t avra_io_serial(void) {
     static int64_t next = 0;
     return next++;
 }
+
+/* Every temp this process holds goes to the processes it forks from here on, until
+   `avra_io_temps_left`. */
+int64_t avra_io_temps_leaving(void) {
+    temps_armed();
+    g_io_temps_left_by = getpid();
+    return 0;
+}
+
+/* The leaving ended. With `gone`, a forked process holds this one's temps now: each is forgotten
+   here, its file left where it lies. */
+int64_t avra_io_temps_left(int64_t gone) {
+    if (gone) {
+        for (int i = 0; i < IO_TEMPS; i++) {
+            if (g_io_temps[i].fd >= 0) close(g_io_temps[i].fd);
+            g_io_temps[i].fd = -1;
+        }
+    }
+    g_io_temps_left_by = 0;
+    return 0;
+}
+
+/* The process whose temps this one was left, or 0. */
+int64_t avra_io_heir_of(void) { return (int64_t)g_io_temps_heir_of; }
 
 /* The temp's descriptor, for the runtime's write row. */
 int64_t avra_io_temp_fd(int64_t h) {

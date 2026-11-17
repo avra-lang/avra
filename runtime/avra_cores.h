@@ -54,5 +54,7 @@ void avra_cores_stop(int64_t g);
 int64_t avra_cores_result(int64_t g);
 int64_t avra_cores_finished(int64_t g);
 int64_t avra_cores_stderr_to(const char* path);
+int64_t avra_cores_heir(int64_t quiet);
+int64_t avra_cores_heir_gone(void);
 
 #endif

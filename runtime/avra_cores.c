@@ -344,6 +344,45 @@ int64_t avra_cores_finished(int64_t g) {
     return finished;
 }
 
+// AN HEIR: a process forked to finish what this one leaves, which outlives it. It keeps every
+// descriptor and mapping this process holds, leads a session of its own, is no child of this
+// process once the call answers, and reads nothing of the standard three; with `quiet` it writes
+// nothing to them either. `AVRA_HEIR_LINGERS_MS` holds it back that long before it answers. Answers 0 in the heir, 1 in the process that forked it, or -errno where
+// none was forked.
+int64_t avra_cores_heir(int64_t quiet) {
+    int refused = fork_prepared();
+    if (refused != 0) return refused;
+    fflush(NULL);
+    pid_t between = fork();
+    if (between < 0) return -errno;
+    if (between > 0) {
+        int status = 0;
+        avra_clock_hold(1);
+        while (waitpid(between, &status, 0) < 0 && errno == EINTR) {}
+        avra_clock_hold(-1);
+        return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 1 : -ECHILD;
+    }
+    setsid();
+    pid_t heir = fork();
+    if (heir != 0) _exit(heir < 0);
+    avra_pool_forked();
+    avra_descriptors_forgotten();
+    avra_fiber_forked();
+    int null = open("/dev/null", O_RDWR);
+    if (null >= 0) {
+        dup2(null, 0);
+        if (quiet) { dup2(null, 1); dup2(null, 2); }
+        if (null > 2) close(null);
+    }
+    // the test hook that holds an heir back, so a witness meets its work unfinished
+    const char* lingers = getenv("AVRA_HEIR_LINGERS_MS");
+    if (lingers && *lingers) usleep((useconds_t)atoll(lingers) * 1000);
+    return 0;
+}
+
+// The heir ends, its work done. Never returns.
+int64_t avra_cores_heir_gone(void) { exit(0); }
+
 // A forked process's own words, written to `path` in place of the stderr it shares with the process
 // that forked it: 0, or -1 where the file would not open or take fd 2.
 int64_t avra_cores_stderr_to(const char* path) {

@@ -269,15 +269,9 @@ build/llvm_wrapper.o: build/avra_hot.inc
 
 # The library is REBUILT WHOLE from its objects, never updated in
 # place: a member dropped from runtime/ must not linger in it.
-$(RUNTIME_LIB): $(RUNTIME_OBJS) | build/avra_task_stack.o
+$(RUNTIME_LIB): $(RUNTIME_OBJS)
 	@rm -f $@
 	@ar rcs $@ $^
-
-# AN UNOPTIMISED BINARY'S TASK STACK, beside the archive and never in it: a
-# link of a binary emitted at -O0 names it, and nothing else does.
-build/avra_task_stack.o: runtime/unoptimised/avra_task_stack.c
-	@mkdir -p build
-	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) -Wall -Werror -o $@ $<
 
 # THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the one that has no
 # wasm body: a core forks, and wasm cannot. The scheduler is IN, hosted: its
@@ -602,7 +596,6 @@ install: avra
 	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
 	@cp build/avra $(PREFIX)/bin/avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
-	@cp build/avra_task_stack.o $(PREFIX)/lib/avra/avra_task_stack.o
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
@@ -801,6 +794,11 @@ ahead-edit-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # a typing kept from one its elaborations grew. Both pass, with the same binary and words.
 held-store-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/held_store_attack.sh
+
+# A BUILD ANSWERS BEFORE ITS STORE IS SAVED, AND THE NEXT BUILD READS THE SAVE WHOLE: an heir held
+# back, waited for, killed, its store emptied under it, and the save kept in the build.
+heir-save-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/heir_save_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
@@ -1276,7 +1274,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack heir-save-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,

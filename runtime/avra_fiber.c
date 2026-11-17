@@ -1470,7 +1470,7 @@ static void scope_inherited(Fiber* child, const Fiber* from) {
 #define STACK_DEFAULT ((size_t)256 << 10)
 
 // The task stack a binary asks for, weak: an unoptimised binary links a
-// definition of its own (runtime/unoptimised/avra_task_stack.c).
+// definition of its own (runtime/avra_task_stack_unoptimised.c).
 __attribute__((weak)) const int64_t avra_task_stack_bytes = (int64_t)STACK_DEFAULT;
 
 // A stack and the page whose fault is its overflow: its own, directly

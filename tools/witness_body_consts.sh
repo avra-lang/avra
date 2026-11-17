@@ -19,6 +19,8 @@ trap 'find "$tmp" -delete' EXIT
 pkg="$tmp/consts"
 mkdir -p "$pkg/src"
 export AVRA_CACHE_DIR="$tmp/machine"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 mkdir -p "$AVRA_CACHE_DIR"
 printf '[package]\nname = "consts"\nversion = "0.0.1"\n' >"$pkg/avra.toml"
 cat >"$pkg/src/main.av" <<'EOF'

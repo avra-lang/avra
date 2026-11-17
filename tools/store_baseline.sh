@@ -7,6 +7,8 @@
 # and the `obj/` and `bin/` files beside it — count, total, median, p95, max.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 export AVRA_MEM_CEILING_MB=5000 AVRA_WATCH_HELD=1
 : "${LLVM_PREFIX:=/usr/lib/llvm-22}"
 export LLVM_PREFIX

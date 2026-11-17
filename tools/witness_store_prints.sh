@@ -7,6 +7,8 @@
 # it holding the two segments.
 #   sh tools/witness_store_prints.sh <compiler A> <compiler B>   (Linux: reads /proc)
 set -eu
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 a=${1:?usage: witness_store_prints.sh <compiler A> <compiler B>}

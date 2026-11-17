@@ -67,7 +67,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, _ledger, _suites, _doors; witness_program_differential
+witness-b  witness_program_runs, heir_save_attack, _ledger, _suites, _doors; witness_program_differential
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -139,6 +139,9 @@ out="$root/build/gate/$slice"
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
 export AVRA_CACHE_DIR="$out/machine"
+# a slice copies, counts and empties stores between builds, so each build saves its own before it
+# answers; the build slice's timing rows alone leave the save to an heir, as a user's build does
+export AVRA_STORE_KEPT_HERE=1
 mkdir -p "$AVRA_CACHE_DIR"
 began=$(date +%s)
 rows=0
@@ -194,10 +197,12 @@ cli_built() {
     cold cli
     find "$AVRA_CACHE_DIR" -mindepth 1 -delete
     c0=$(date +%s)
-    row "cli-build-$1-cold" env AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
+    row "cli-build-$1-cold" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
     c1=$(date +%s)
-    row "cli-build-$1-warm" env AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
+    row "cli-build-$1-warm" env -u AVRA_STORE_KEPT_HERE AVRA_PROGRAM_NET="$2" build/avra build packages/cli || return 1
     echo "cli build net $1: cold $((c1 - c0))s, warm $(( $(date +%s) - c1 ))s" >>"$out/seconds"
+    # the warm build's heir waited out, before a row after empties the store it saves
+    env AVRA_PROGRAM_NET="$2" build/avra build packages/cli >/dev/null 2>&1 || :
 }
 
 slice_build() {
@@ -350,6 +355,7 @@ refusal_third() {
 
 slice_witness_b() {
     row runs-witness sh tools/witness_program_runs.sh build/avra
+    row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

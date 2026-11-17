@@ -5,7 +5,7 @@
 //! differs and how many it read.
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
-use @std.avrac.compiler.backend.{inlines_runtime}
+use @std.avrac.compiler.backend.{host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
     default_opt,
     raw_borrowed,
@@ -222,6 +222,7 @@ use @std.io.{
     read_text,
     remove,
     stamp,
+    this_process,
     write_bytes,
     write_text,
 }
@@ -253,7 +254,7 @@ use @std.program.query_engine.{QueryEngine, key_reader, query_engine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.answer_record.{Question}
 use @std.program.saved_derive.{Saved}
-use @std.program.worked_ahead.{Apart, answered_apart, cores_online}
+use @std.program.worked_ahead.{Apart, answered_apart, cores_online, saved_by_heir}
 use @std.meta.{derive, guarded}
 use @std.program.sorted.{sorted_by}
 use @std.program.source_facts.{FileOctets, WorldPlaces, use_source_world}
@@ -482,13 +483,13 @@ fn disk_built(
     )
     if !refusing.is_empty() {
         let said = refusals_said(engine, disk, refusing, asked.entry, net)
-        store_kept(engine, store)
+        store_left_kept(engine, store)
         return .Err(said)
     }
     let owed = phased(engine, "the host fns", () -> program_hosts_owed(engine, disk.name).rows)
     if !owed.is_empty() {
         let said = hosts_owed_said(disk, owed)
-        store_kept(engine, store)
+        store_left_kept(engine, store)
         return .Err(said)
     }
     if tools != null {
@@ -498,7 +499,7 @@ fn disk_built(
         )
         if !missing.is_empty() {
             eprintln(build_report(BuildError.UnsupportedOnWasm(missing)))
-            store_kept(engine, store)
+            store_left_kept(engine, store)
             return .Err(1)
         }
     }
@@ -510,7 +511,7 @@ fn disk_built(
     if reasons != null { eprintln(reasons!) }
     let refused = binary_refused(disk, built, disk.on_disk(disk.name, bin))
     if refused != null {
-        store_kept(engine, store)
+        store_left_kept(engine, store)
         times_said(engine)
         eprintln(refused!)
         return .Err(1)
@@ -524,7 +525,7 @@ fn disk_built(
         () -> binary_placed(kept_of(built), stem) ?? fallback_placed(kept_of(built), stem),
     )
     if place_kill_hook() == "1" { exit(.Code(137)) }
-    store_kept(engine, store)
+    store_left_kept(engine, store)
     times_said(engine)
     if placed != null {
         eprintln("avra: ${placed!}")
@@ -658,12 +659,10 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
     }
 }
 
-/// The objects a native binary emitted at `opt` links beside its own for its task stack: at `-O0`, whose
-/// frames keep every value in a slot of their own, the deeper stack such frames need
-/// (runtime/unoptimised/avra_task_stack.c); none at any other level.
-fn stack_words(opt: string) -> List<string> {
-    if opt == "-O0" { [joined_path(dir_of(runtime_library()), "avra_task_stack.o")] } else { [] }
-}
+/// The words a native binary emitted at `opt` links with for its task stack: at `-O0`, whose frames
+/// keep every value in a slot of their own, the runtime's member holding the deeper stack such frames
+/// need, pulled by its marker (runtime/avra_task_stack_unoptimised.c); none at any other level.
+fn stack_words(opt: string) -> List<string> { if opt == "-O0" { host_kept_words(["avra_task_stack_unoptimised"]) } else { [] } }
 
 /// The linker the link's `clang` is told to run: `ld.lld` beside that `clang`, else on the PATH; the
 /// driver's own choice, empty, where none stands or the host links with ld64.
@@ -695,6 +694,30 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
         asked.wasm_opt,
         asked.fallback,
     )
+}
+
+/// The engine's frontier and its store kept for the next build to read, by an heir that outlives
+/// this process where one can be forked, so the build answers before its store is saved; kept
+/// here under `AVRA_STORE_KEPT_HERE`, in a process nothing outlives, and where no heir forks.
+fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
+    if kept_here() != null ||
+        this_process() == 1 ||
+        !saved_by_heir(store, env("AVRA_QUERY_TIMES") != "1", () -> kept_and_said(engine, store)) { store_kept(engine, store) }
+}
+
+/// The store kept by an heir, and with `AVRA_QUERY_TIMES` where the keeping's time went: why it
+/// kept nothing, absent where it kept all.
+fn kept_and_said(engine: QueryEngine, store: LayeredStore) -> string? {
+    phased(engine, "the frontier kept", () -> engine.frontier_kept())
+    let saved = phased(engine, "the store saved", () -> store.saved())
+    if env("AVRA_QUERY_TIMES") == "1" { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
+    match saved { .Ok(_) -> null, .Err(e) -> e.describe().message }
+}
+
+/// `AVRA_STORE_KEPT_HERE`: a build keeps its store before it answers.
+once fn kept_here() -> string? {
+    // LICENSED input.debug_flag: where the store is saved moves no answer
+    env("AVRA_STORE_KEPT_HERE")
 }
 
 /// The engine's frontier and its store, kept for the next build to read.
@@ -3064,7 +3087,7 @@ fn agreement_kept(proof: string, reads: string?, heard: List<Ran>) {
 /// run at or under them, made there and run in both engines, each said as the suite says it, then
 /// how many proved. What the layer can't prove yet — a suite's spec cases, a test run as a child —
 /// refuses the whole run, named, before anything runs.
-export fn program_tested(paths: List<string>) -> int {
+export fn program_tested(paths: List<string>, timed: bool = false) -> int {
     let first = rooted(paths[0])
     let root = if is_a_dir(first) { package_root(first) ?? first } else { file_home(first) ?? dir_of(first) }
     let scope = if paths.length == 1 && rooted(paths[0]) == root { [] } else { [p for p in paths] }
@@ -3121,7 +3144,7 @@ export fn program_tested(paths: List<string>) -> int {
         let status = if s.specs.is_empty() {
             0
         } else {
-            match suite_ran(s.engine, s.disk, s.specs, binary) {
+            match suite_ran(s.engine, s.disk, s.specs, binary, timed) {
                 .Ok(status) -> status,
                 .Err(code) -> { return code },
             }
@@ -3256,10 +3279,44 @@ export fn program_refuse_evaluated(root: string, path: string, live: bool = fals
 
 /// The suite of every case `files` write, made on the program layer, built at `binary` and run at
 /// the terminal: the status it left by, or the exit its refusal spoke.
-fn suite_ran(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, binary: string) -> Result<
-    int,
-    int,
-> {
+fn suite_ran(
+    engine: QueryEngine,
+    disk: Disk,
+    files: List<SourceFileAddress>,
+    binary: string,
+    timed: bool,
+) -> Result<int, int> {
+    let packaged = linking(engine, disk)
+    let kept = joined_path(
+        disk.root,
+        "${SUITE_KEPT}/suite-${suite_key(engine, disk, files, packaged)}.bin",
+    )
+    let stood = exists_at(kept)
+    if !stood {
+        let refused = suite_made(engine, disk, files, kept, packaged)
+        if refused != null { return .Err(refused!) }
+    }
+    if timed { eprintln(hit_line(stood)) }
+    let _ = make_dirs(dir_of(binary))
+    if !file_placed(kept, binary) {
+        eprintln("avra: the suite couldn't be placed: ${binary}")
+        return .Err(1)
+    }
+    match run_binary(binary) {
+        .Ok(exit) -> .Ok(match exit { .Clean -> 0, .Code(n) -> n, .Signal(_, _) -> 2 }),
+        .Err(e) -> .Err(refused_by_host(e)),
+    }
+}
+
+/// The suite of every case `files` write, made on the program layer and linked at `kept`, the one
+/// suite binary its directory keeps; absent when it was, else the exit its refusal spoke.
+fn suite_made(
+    engine: QueryEngine,
+    disk: Disk,
+    files: List<SourceFileAddress>,
+    kept: string,
+    packaged: Linking,
+) -> int? {
     let made = match made_suite(
         engine,
         files,
@@ -3267,23 +3324,44 @@ fn suite_ran(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, bi
     ) {
         .Ok(m) -> m,
         .Err(why) -> {
-            return .Err(
-                program_door_refused(
-                    "test",
-                    "a suite whose cases reach a body not made yet: ${why}",
-                ),
+            return program_door_refused(
+                "test",
+                "a suite whose cases reach a body not made yet: ${why}",
             )
         },
     }
-    let refused = unbuilt(made.lowered, binary, linking(engine, disk))
+    let staged = staged_beside(kept)
+    let refused = unbuilt(made.lowered, staged, packaged)
     if refused != null {
+        for f in [staged, "${staged}.o"] { let _ = remove(f) }
         eprintln("avra: the suite did not build: ${refused!}")
-        return .Err(1)
+        return 1
     }
-    match run_binary(binary) {
-        .Ok(exit) -> .Ok(match exit { .Clean -> 0, .Code(n) -> n, .Signal(_, _) -> 2 }),
-        .Err(e) -> .Err(refused_by_host(e)),
+    if !file_placed(staged, kept) {
+        eprintln("avra: the suite couldn't be kept: ${kept}")
+        return 1
     }
+    for name in names_at(dir_of(kept)) ?? [] {
+        if joined_path(dir_of(kept), name) != kept { let _ = remove(joined_path(dir_of(kept), name)) }
+    }
+    null
+}
+
+/// Where a package keeps its suite binary, under its root.
+const SUITE_KEPT: string = ".avra-cache/tapes-build/suite"
+
+/// WHAT A SUITE BINARY IS MADE OF, as one key: this compiler, by its own binary's digest; the spec
+/// files it runs; the text of every file the package reads; whether the runtime's hot leaves are
+/// inlined; and every file its link reads, by digest. A suite whose key stands is the binary kept.
+fn suite_key(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, packaged: Linking) -> string {
+    let reads = [disk.on_disk(f.package_name, f.path_in_package) for f in program_files(engine, disk.name)]
+    digest_of(
+        [compiler_agreeing(), if inlines_runtime() { "inlined" } else { "calls" }]
+            .concat([spelled_file(f) for f in files])
+            .concat(["${r}\n${text_at(r) ?? ""}" for r in reads])
+            .concat(linked_digests(packaged.words))
+            .join("\n\n"),
+    )
 }
 
 /// The test hook that kills a build between placing its binary and saving its store, read once a

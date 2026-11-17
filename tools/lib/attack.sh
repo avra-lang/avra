@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
 export AVRA_CACHE_DIR="$PWD/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 export AVRA_MAX_COMPILES=0
 fails=0
 steps=0

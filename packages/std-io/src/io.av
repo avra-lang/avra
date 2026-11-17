@@ -40,6 +40,10 @@ extern fn avra_io_env_set(name: string) -> int
 extern fn avra_io_open_append(path: string) -> int
 extern fn avra_fd_sync(fd: int) -> int
 extern fn avra_fd_try_lock(fd: int) -> int
+extern fn avra_fd_lock_shared(fd: int, waiting: int) -> int
+extern fn avra_io_temps_leaving() -> int
+extern fn avra_io_temps_left(gone: int) -> int
+extern fn avra_io_heir_of() -> int
 extern fn avra_io_truncate(path: string, len: int) -> int
 extern fn avra_io_open_beneath(root: string, rel: string) -> int
 extern fn avra_io_fd_kind(fd: int) -> int
@@ -439,6 +443,14 @@ impl AppendFile {
     /// Never waits. The lock ends at `closed`, or when the process dies.
     fn locked() -> Result<bool, IoError> { done(self.path, avra_fd_try_lock(self.fd))? == 0 }
 
+    /// Whether no other open file is the file's one writer now: held against one until `closed`
+    /// where so. Never waits.
+    fn free() -> Result<bool, IoError> { done(self.path, avra_fd_lock_shared(self.fd, 0))? == 0 }
+
+    /// Waits until no other open file is the file's one writer, and holds it against one until
+    /// `closed`.
+    fn awaited() -> Result<int, IoError> { done(self.path, avra_fd_lock_shared(self.fd, 1)) }
+
     fn closed() -> Result<int, IoError> { done(self.path, avra_io_close(self.fd)) }
 }
 
@@ -459,8 +471,8 @@ export fn drafted(near: string) -> Result<Draft, IoError> {
 }
 
 impl Draft {
-    /// Whether this process opened the draft.
-    fn is_mine() -> bool { self.process == avra_io_pid() }
+    /// Whether this process opened the draft, or was left it by the process that did.
+    fn is_mine() -> bool { self.process == avra_io_pid() || self.process == avra_io_heir_of() }
 
     /// OCTETS appended after what's written so far.
     fn write(bytes: Bytes) -> Result<int, IoError> { poured(self.path, self.fd, bytes) }
@@ -475,6 +487,14 @@ impl Draft {
     /// The draft removed, unpublished.
     fn dropped() { let _ = avra_io_drop(self.handle) }
 }
+
+/// Every draft this process holds is left to the processes it forks from here on, each its heir,
+/// until `drafts_left`.
+export fn drafts_leaving() { let _ = avra_io_temps_leaving() }
+
+/// The leaving ended. Where an heir is `gone` with them, this process holds none of its drafts
+/// any more, and each file stays where it lies, the heir's to publish or drop.
+export fn drafts_left(gone: bool) { let _ = avra_io_temps_left(if gone { 1 } else { 0 }) }
 
 /// The drafts in `directory` whose process is gone, so nothing will publish them.
 export fn abandoned_drafts(directory: string) -> List<string> {

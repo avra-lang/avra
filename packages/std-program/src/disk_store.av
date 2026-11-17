@@ -12,7 +12,21 @@
 //! within it when it opens, and each span where it's read: a pack that lies is foreign, a span that
 //! lies is a miss, and a compaction drops both. Beside the packs lies each binary's frontier, a base
 //! and the deltas over it, every file named by the hash of its octets.
-use @std.io.{Draft, IoError, abandoned_drafts, drafted, list_dir, make_dirs, remove, stamp}
+use @std.io.{
+    AppendFile,
+    Draft,
+    IoError,
+    abandoned_drafts,
+    drafted,
+    exists,
+    list_dir,
+    make_dirs,
+    opened_for_append,
+    read_text,
+    remove,
+    stamp,
+    write_text,
+}
 use @std.meta.{derive}
 use @std.text.{parse_int}
 use answer_record.{
@@ -390,6 +404,7 @@ fn octets_in(path: string) -> int {
 /// The store at `directory`. A directory that isn't there yet is an empty store. A draft whose
 /// process died is removed.
 export fn disk_store_at(directory: string) -> DiskStore {
+    saves_awaited(directory)
     for name in abandoned_drafts(directory) { let _ = remove("${directory}/${name}") }
     let print: Cell<string?> = Cell.new(null)
     let packs: Cell<List<MappedPack>> = Cell.new([])
@@ -410,6 +425,79 @@ export fn disk_store_at(directory: string) -> DiskStore {
         generation: Cell.new(1 + pack_names_in(directory).fold(0, (newest, p) -> max_of(newest, p.generation))),
     }
 }
+
+/// The file whose one writer is the process saving the store at `directory` after the process
+/// that learned what it saves has gone.
+const SAVING_FILE: string = "saving.lock"
+
+/// The file that stands in a store while a save left to an heir is unfinished, holding what the
+/// next process to open the store says of it.
+const UNFINISHED_FILE: string = "saving.unfinished"
+
+/// Whether this process is one left to save a store: it waits for no save, its own least of all.
+export once fn saving_apart() -> Cell<bool> { Cell.new(false) }
+
+/// Whether this process has said it waits for a save.
+once fn wait_said() -> Cell<bool> { Cell.new(false) }
+
+/// Waits out a save of the store at `directory` a process left behind is still writing, so what
+/// the store is read as holds everything the process before it learned; a wait is said, once a
+/// process. A save that never finished is said by the first process to find it so, once.
+fn saves_awaited(directory: string) {
+    if saving_apart().get() || !exists("${directory}/${SAVING_FILE}") { return }
+    let lock? = match opened_for_append("${directory}/${SAVING_FILE}") {
+        .Ok(l) -> l,
+        .Err(_) -> null,
+    } else { return }
+    if !(lock.free() catch true) {
+        if !wait_said().get() { eprintln(waiting_for_save()) }
+        wait_said().set(true)
+        let _ = lock.awaited() catch 0
+    }
+    let unfinished = read_text("${directory}/${UNFINISHED_FILE}") catch ""
+    if !unfinished.is_empty() {
+        let _ = remove("${directory}/${UNFINISHED_FILE}")
+        eprintln(unfinished)
+    }
+    let _ = lock.closed() catch 0
+}
+
+/// The store at `directory` held as its one saver: the open file that holds it until it closes
+/// or its last holder dies; absent where another process is saving, or it can't be held.
+export fn save_held(directory: string) -> AppendFile? {
+    let _ = make_dirs(directory) catch ""
+    let lock? = match opened_for_append("${directory}/${SAVING_FILE}") {
+        .Ok(l) -> l,
+        .Err(_) -> null,
+    } else { return null }
+    if lock.locked() catch false { return lock }
+    let _ = lock.closed() catch 0
+    null
+}
+
+/// The save of the store at `directory` left to an heir, unfinished until `save_finished`.
+export fn save_left(directory: string) { let _ = write_text("${directory}/${UNFINISHED_FILE}", save_unfinished(directory)) catch "" }
+
+/// The save of the store at `directory` finished: nothing is left to say of it, or `failed`, why it
+/// kept nothing, is.
+export fn save_finished(directory: string, failed: string?) {
+    let why? = failed else {
+        let _ = remove("${directory}/${UNFINISHED_FILE}")
+        return
+    }
+    let _ = write_text("${directory}/${UNFINISHED_FILE}", save_failed(directory, why)) catch ""
+}
+
+// ── The voices ──
+
+/// A process waits for the save a build before it left to its heir.
+fn waiting_for_save() -> string { "avra: waiting for the last build's save" }
+
+/// A save left to an heir ended before it finished.
+fn save_unfinished(directory: string) -> string { "avra: the last build's save of ${directory} did not finish; what it learned is worked out again" }
+
+/// A save left to an heir failed.
+fn save_failed(directory: string, why: string) -> string { "avra: the last build's save of ${directory} failed: ${why}; what it learned is worked out again" }
 
 /// What every pack's file name begins with.
 const PACK_PREFIX: string = "pack-"

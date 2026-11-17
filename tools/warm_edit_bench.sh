@@ -29,6 +29,8 @@
 # number, and a worktree with no Sprite refuses rather than passing.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"

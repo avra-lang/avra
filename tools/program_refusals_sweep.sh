@@ -9,6 +9,8 @@
 # (default: the tree's build/avra-try). Each package's `.avra-cache` is emptied after its row, since a
 # store per package fills the disk.
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${AVRA:-$root/build/avra-try}
 [ $# -gt 0 ] || set -- "$root"/packages/* "$root/tools/ui-board"

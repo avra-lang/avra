@@ -16,6 +16,8 @@
 #
 #   sh tools/witness_machine_store.sh [compiler]     (default build/avra-try)
 set -eu
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra-try}")" && pwd)/$(basename "${1:-$root/build/avra-try}")
 w=$(mktemp -d "${TMPDIR:-/tmp}/avra-machine-store.XXXXXX")

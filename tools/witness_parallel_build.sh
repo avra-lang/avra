@@ -25,6 +25,8 @@
 # 0 skips claims 2 and 3) name the small package they run.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 set -u
 
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"

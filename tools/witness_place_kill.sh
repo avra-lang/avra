@@ -14,6 +14,8 @@ avra=${1:-build/avra-try}
 tmp=$(mktemp -d)
 export AVRA_CACHE_DIR="$tmp/machine"
 export AVRA_PROGRAM=1
+# the stores are copied, emptied and read between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 # A PRODUCT COMPARED BYTE FOR BYTE IS THE RELEASE ONE: a dev build's binary is an overlay linked
 # beside the world it last linked, so a warm dev product never holds a cold one's bytes.
 export AVRA_PROGRAM_MODE=release

@@ -20,6 +20,8 @@
 # census, and the run exits 1 saying so.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 set -eu
 cd "$(dirname "$0")/.."
 : "${LLVM_PREFIX:=/opt/homebrew/opt/llvm}"

@@ -14,6 +14,8 @@ case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 tmp=$(mktemp -d)
 trap 'find "$tmp" -delete' EXIT
 export AVRA_CACHE_DIR="$tmp/machine"
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 mkdir -p "$AVRA_CACHE_DIR"
 home="$tmp/home"
 

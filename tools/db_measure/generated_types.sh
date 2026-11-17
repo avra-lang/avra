@@ -15,6 +15,8 @@
 # `time:` line where it printed one. `AVRA_BIN` names the binary (default
 # ./avra, so the shim's lock and watchdog apply).
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 N=${1:-1000}
 R=${2:-3}
 A=${AVRA_BIN:-./avra}

@@ -6,6 +6,8 @@
 # tree's cache, as the attacks beside it do.
 #   AVRA=build/avra-try sh tools/object_gone_attack.sh
 set -eu
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 cd "$(dirname "$0")/.."
 : "${LLVM_PREFIX:=/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX

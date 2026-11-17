@@ -202,13 +202,13 @@ export type SyntaxArena = {
     @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") expr_prints: Stamped,
     stmts: Arena<Stmt>,
     @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") stmt_prints: Stamped,
-    @copied(stmt, wear) marks: Cell<List<StmtMarks>>,
+    @copied(stmt, wear) marks: SideColumn<StmtMarks>,
     // the format a `grammar` declaration read, by its statement
-    @copied(stmt, wear_grammar) grammars: Cell<List<GrammarSpec?>>,
+    @copied(stmt, wear_grammar) grammars: SideColumn<GrammarSpec?>,
     // a named instance's component, by its statement — the record it
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
-    @copied(stmt, wear_component_inst) component_insts: Cell<List<string?>>,
+    @copied(stmt, wear_component_inst) component_insts: SideColumn<string?>,
     // a trait's own type parameters beside `Self`, by its statement
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
@@ -217,10 +217,10 @@ export type SyntaxArena = {
     // parsed, set once at construction — "" for a fragment
     file: string,
     // `@name(args)` marks per statement, in written order
-    @copied_by_hand("minted_stmt: each annotation is annotated anew") @taped(stmt, annotations_read) annotations: Cell<List<List<Annotation>>>,
+    @copied_by_hand("minted_stmt: each annotation is annotated anew") @taped(stmt, annotations_read) annotations: SideColumn<List<Annotation>>,
     // declaration-leading `///` lines and where the group began; absent on
     // synthesized nodes
-    @copied_by_hand("minted_stmt: document, with the doc position") @taped(stmt, docs_read) docs: Cell<List<DocGroup?>>,
+    @copied_by_hand("minted_stmt: document, with the doc position") @taped(stmt, docs_read) docs: SideColumn<DocGroup?>,
     // the file's own `//!` header — a leading run before anything
     // else, absent when the file opens with something other than
     // one. Not folded into any statement's fingerprint yet: an
@@ -242,38 +242,38 @@ export type SyntaxArena = {
     @not_copied("a copy files where its seats came from as it makes them") @taped_with_nodes("a seat's place says whether it's in the item's file") param_elsewhere: Cell<List<bool>>,
     // the forms an expression was written in, by id — one record, so a
     // template copy carries them all through `wear_expr`
-    @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
+    @copied(expr, wear_expr) expr_marks: SideColumn<ExprMarks>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
     // a record's `..R` entries, by its statement
     // a collect's `dense` mark, by its statement: its order is data,
     // unique and gap-free from 0
-    @copied(stmt, wear_collect_dense) collect_dense: Cell<List<bool>>,
+    @copied(stmt, wear_collect_dense) collect_dense: SideColumn<bool>,
     // a Match a trailing-block ARM sugar synthesized — never one a
     // program wrote — so a missing arm under a nullable seat answers
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
-    @copied(expr, wear_sugar_match) sugar_matches: Cell<List<bool>>,
+    @copied(expr, wear_sugar_match) sugar_matches: SideColumn<bool>,
     // the SUGAR node whose meaning minted each node — null for a node
     // the author wrote; what lets a refusal about a minted node speak
     // at the sugar the author did write
-    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @remade("mints_read: a minted node answers for the first sugar that minted it") minted_by: Cell<List<ExprId?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @remade("mints_read: a minted node answers for the first sugar that minted it") minted_by: SideColumn<ExprId?>,
     // every node a sugar minted, by the sugar, in the order it minted them —
     // what `minted_by` indexes the other way
-    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, mints_read) mints: Cell<List<List<ExprId>>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, mints_read) mints: SideColumn<List<ExprId>>,
     // the root of what a sugar means, by the sugar — the node a walk
     // descends into in its place; null for every other node
-    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, meaning_read) meaning: Cell<List<ExprId?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, meaning_read) meaning: SideColumn<ExprId?>,
     // the statements a statement means, by the statement — few, so kept
     // by key; none for a statement no meaning rewrote
     @not_copied("a statement's meaning is made by elaboration, never by a copy") @remade("elaborated: elaboration makes a statement's meaning again once a tape is read") stmt_meanings: Cell<Map<string, List<StmtId>>>,
     // what a sugar node says its meaning is, by the sugar — the one
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
-    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, means_note_read) means_notes: Cell<List<string?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, means_note_read) means_notes: SideColumn<string?>,
     // the nodes a node is EXTENDED by, beside its own kids — a walk reaches
     // them, so names resolve and types settle in them as anywhere
-    @copied_by_hand("minted_expr: `extended` copies the roots beside the copy") @taped(expr, extensions_read) extensions: Cell<List<List<ExprId>>>,
+    @copied_by_hand("minted_expr: `extended` copies the roots beside the copy") @taped(expr, extensions_read) extensions: SideColumn<List<ExprId>>,
     // the variant pattern an `if` that binds desugared into a Match
     // (`.V(p, q)`) — the binder list a match arm would take, kept
     // beside the node so the printer can spell the `if` back
@@ -281,21 +281,21 @@ export type SyntaxArena = {
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
     // instance that binds no statement of its own (a nested child)
-    @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") @remade("owned_instance_read: an instance answers for the statement that owns it") instance_owners: Cell<List<StmtId?>>,
+    @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") @remade("owned_instance_read: an instance answers for the statement that owns it") instance_owners: SideColumn<StmtId?>,
     // the instance a statement wraps, by the statement: the owner's side of
     // `instance_owners`, which a tape holds since it points into the statement
-    @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") @taped(stmt, owned_instance_read) owned_instances: Cell<List<ExprId?>>,
+    @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") @taped(stmt, owned_instance_read) owned_instances: SideColumn<ExprId?>,
     // what an instance stands on, by the instance: its component as the
     // file read it, then the literal its meaning minted
-    @copied(expr, wear_provided) @remade("an expansion hands it again from its component's declaration") provided: Cell<List<Provided?>>,
+    @copied(expr, wear_provided) @remade("an expansion hands it again from its component's declaration") provided: SideColumn<Provided?>,
     // the literal an instance's meaning minted and the `check` over it, by
     // the instance
-    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, expansion_read) expansions: Cell<List<Expansion?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, expansion_read) expansions: SideColumn<Expansion?>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
     // the WRITTEN types rather than inferred from the fields
-    @copied_by_hand("minted_expr: its TypeRefs are rebuilt through tref") @taped(expr, struct_targs_read) struct_targs: Cell<List<List<TypeRef>>>,
+    @copied_by_hand("minted_expr: its TypeRefs are rebuilt through tref") @taped(expr, struct_targs_read) struct_targs: SideColumn<List<TypeRef>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
     @copied_by_hand("minted_expr: a quote is named by its new offset") @remade("remade_expr: a quote is named where it stands") quotes_at: DenseWindow,
@@ -303,20 +303,20 @@ export type SyntaxArena = {
     // offset in the source; what their grammars refused; the node
     // runs their actions minted, with the library each names
     @copied_by_hand("minted_expr: a block is named by its new offset") @remade("body_start_read: a block is filed with its body's start") sublangs: Cell<List<ExprId>>,
-    @copied_by_hand("minted_expr: a block is named by its new offset") @taped(expr, body_start_read) @offset body_starts: Cell<List<int?>>,
+    @copied_by_hand("minted_expr: a block is named by its new offset") @taped(expr, body_start_read) @offset body_starts: SideColumn<int?>,
     // a block's body as its lexer read it, while its grammar hasn't run on it
-    @copied(expr, wear_block_text) @taped(expr, block_text_read) block_texts: Cell<List<string?>>,
+    @copied(expr, wear_block_text) @taped(expr, block_text_read) block_texts: SideColumn<string?>,
     @not_copied("the file's own parse refusals") @taped_with_item(refusals_read) refusals: Cell<List<ParseRefusal>>,
     // where each node minted from another file's text was written, by the
     // node; null for a node written here
-    @not_copied("a copy files where its nodes came from as it makes them") @taped(expr, expr_origin_read) expr_origins: Cell<List<ForeignOrigin?>>,
-    @not_copied("a copy files where its nodes came from as it makes them") @taped(stmt, stmt_origin_read) stmt_origins: Cell<List<ForeignOrigin?>>,
-    @not_copied("a copy files where its nodes came from as it makes them") @taped(pat, pat_origin_read) pat_origins: Cell<List<ForeignOrigin?>>,
+    @not_copied("a copy files where its nodes came from as it makes them") @taped(expr, expr_origin_read) expr_origins: SideColumn<ForeignOrigin?>,
+    @not_copied("a copy files where its nodes came from as it makes them") @taped(stmt, stmt_origin_read) stmt_origins: SideColumn<ForeignOrigin?>,
+    @not_copied("a copy files where its nodes came from as it makes them") @taped(pat, pat_origin_read) pat_origins: SideColumn<ForeignOrigin?>,
     // an `on <kind> { … }` handler's KIND, by the nullary lambda the
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
     // setting and closure it lowers to
-    @copied(expr, wear_handler) on_handlers: Cell<List<OnHandler?>>,
+    @copied(expr, wear_handler) on_handlers: SideColumn<OnHandler?>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -327,12 +327,12 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         expr_prints: no_prints(),
         stmts: new_arena(),
         stmt_prints: no_prints(),
-        marks: list_cell(),
-        grammars: list_cell(),
-        component_insts: list_cell(),
+        marks: side_column(unmarked_stmt()),
+        grammars: side_column<GrammarSpec?>(null),
+        component_insts: side_column<string?>(null),
         hoisted: list_cell(),
-        annotations: list_cell(),
-        docs: list_cell(),
+        annotations: side_column(no_annotations()),
+        docs: side_column<DocGroup?>(null),
         file_doc: Cell.new(no_file_doc),
         remarks: list_cell(),
         pats: list_cell(),
@@ -341,29 +341,29 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_prints: no_prints(),
         param_spans: list_cell(),
         param_elsewhere: list_cell(),
-        expr_marks: list_cell(),
-        collect_dense: list_cell(),
-        sugar_matches: list_cell(),
-        minted_by: list_cell(),
-        mints: list_cell(),
-        meaning: list_cell(),
+        expr_marks: side_column(unmarked_expr()),
+        collect_dense: side_column(false),
+        sugar_matches: side_column(false),
+        minted_by: side_column<ExprId?>(null),
+        mints: side_column(no_expr_ids()),
+        meaning: side_column<ExprId?>(null),
         stmt_meanings: map_cell(),
-        means_notes: list_cell(),
-        extensions: list_cell(),
-        instance_owners: list_cell(),
-        owned_instances: list_cell(),
-        provided: list_cell(),
-        expansions: list_cell(),
-        struct_targs: list_cell(),
+        means_notes: side_column<string?>(null),
+        extensions: side_column(no_expr_ids()),
+        instance_owners: side_column<StmtId?>(null),
+        owned_instances: side_column<ExprId?>(null),
+        provided: side_column<Provided?>(null),
+        expansions: side_column<Expansion?>(null),
+        struct_targs: side_column(no_type_refs()),
         quotes_at: dense_window(),
         sublangs: list_cell(),
-        body_starts: list_cell(),
-        block_texts: list_cell(),
+        body_starts: side_column<int?>(null),
+        block_texts: side_column<string?>(null),
         refusals: list_cell(),
-        expr_origins: list_cell(),
-        stmt_origins: list_cell(),
-        pat_origins: list_cell(),
-        on_handlers: list_cell(),
+        expr_origins: side_column<ForeignOrigin?>(null),
+        stmt_origins: side_column<ForeignOrigin?>(null),
+        pat_origins: side_column<ForeignOrigin?>(null),
+        on_handlers: side_column<OnHandler?>(null),
     }
 }
 
@@ -378,12 +378,12 @@ impl SyntaxArena {
             expr_prints: self.expr_prints.forked(),
             stmts: self.stmts.forked(),
             stmt_prints: self.stmt_prints.forked(),
-            marks: Cell.new(self.marks.get()),
-            grammars: Cell.new(self.grammars.get()),
-            component_insts: Cell.new(self.component_insts.get()),
+            marks: self.marks.forked(),
+            grammars: self.grammars.forked(),
+            component_insts: self.component_insts.forked(),
             hoisted: Cell.new(self.hoisted.get()),
-            annotations: Cell.new(self.annotations.get()),
-            docs: Cell.new(self.docs.get()),
+            annotations: self.annotations.forked(),
+            docs: self.docs.forked(),
             file_doc: Cell.new(self.file_doc.get()),
             remarks: Cell.new(self.remarks.get()),
             pats: Cell.new(self.pats.get()),
@@ -392,32 +392,32 @@ impl SyntaxArena {
             pat_prints: self.pat_prints.forked(),
             param_spans: Cell.new(self.param_spans.get()),
             param_elsewhere: Cell.new(self.param_elsewhere.get()),
-            expr_marks: Cell.new(self.expr_marks.get()),
-            collect_dense: Cell.new(self.collect_dense.get()),
-            sugar_matches: Cell.new(self.sugar_matches.get()),
-            minted_by: Cell.new(self.minted_by.get()),
-            mints: Cell.new(self.mints.get()),
-            meaning: Cell.new(self.meaning.get()),
+            expr_marks: self.expr_marks.forked(),
+            collect_dense: self.collect_dense.forked(),
+            sugar_matches: self.sugar_matches.forked(),
+            minted_by: self.minted_by.forked(),
+            mints: self.mints.forked(),
+            meaning: self.meaning.forked(),
             stmt_meanings: Cell.new(self.stmt_meanings.get()),
-            means_notes: Cell.new(self.means_notes.get()),
-            extensions: Cell.new(self.extensions.get()),
-            instance_owners: Cell.new(self.instance_owners.get()),
-            owned_instances: Cell.new(self.owned_instances.get()),
-            provided: Cell.new(self.provided.get()),
-            expansions: Cell.new(self.expansions.get()),
-            struct_targs: Cell.new(self.struct_targs.get()),
+            means_notes: self.means_notes.forked(),
+            extensions: self.extensions.forked(),
+            instance_owners: self.instance_owners.forked(),
+            owned_instances: self.owned_instances.forked(),
+            provided: self.provided.forked(),
+            expansions: self.expansions.forked(),
+            struct_targs: self.struct_targs.forked(),
             quotes_at: DenseWindow {
                 lowest: Cell.new(self.quotes_at.lowest.get()),
                 slots: Cell.new(self.quotes_at.slots.get()),
             },
             sublangs: Cell.new(self.sublangs.get()),
-            body_starts: Cell.new(self.body_starts.get()),
-            block_texts: Cell.new(self.block_texts.get()),
+            body_starts: self.body_starts.forked(),
+            block_texts: self.block_texts.forked(),
             refusals: Cell.new(self.refusals.get()),
-            expr_origins: Cell.new(self.expr_origins.get()),
-            stmt_origins: Cell.new(self.stmt_origins.get()),
-            pat_origins: Cell.new(self.pat_origins.get()),
-            on_handlers: Cell.new(self.on_handlers.get()),
+            expr_origins: self.expr_origins.forked(),
+            stmt_origins: self.stmt_origins.forked(),
+            pat_origins: self.pat_origins.forked(),
+            on_handlers: self.on_handlers.forked(),
         }
     }
 }
@@ -500,21 +500,6 @@ impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_prints.added(e.identity(self))
-        self.expr_marks.push(unmarked_expr())
-        self.sugar_matches.push(false)
-        self.minted_by.push(null)
-        self.mints.push(no_expr_ids())
-        self.meaning.push(null)
-        self.means_notes.push(null)
-        self.extensions.push(no_expr_ids())
-        self.instance_owners.push(null)
-        self.provided.push(null)
-        self.expansions.push(null)
-        self.struct_targs.push(no_type_refs())
-        self.on_handlers.push(null)
-        self.body_starts.push(null)
-        self.block_texts.push(null)
-        self.expr_origins.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -658,7 +643,7 @@ impl SyntaxArena {
         }
     }
 
-    fn is_collect_dense(s: StmtId) -> bool { self.collect_dense.get()[s.index] }
+    fn is_collect_dense(s: StmtId) -> bool { self.collect_dense.at(s.index) }
 
     fn is_run_hole(e: ExprId) -> bool {
         self.expr_marks_at(e).is_run_hole
@@ -685,14 +670,14 @@ impl SyntaxArena {
     /// `nodes` minted by `sugar`: each answers for the first sugar that minted it.
     fn note_minted(sugar: ExprId, nodes: List<ExprId>) {
         for n in nodes {
-            if self.minted_by.get()[n.index] == null { self.minted_by.set_at(n.index, sugar) }
+            if self.minted_by.at(n.index) == null { self.minted_by.set_at(n.index, sugar) }
         }
-        self.mints.set_at(sugar.index, self.mints.get()[sugar.index].concat(nodes))
+        self.mints.set_at(sugar.index, self.mints.at(sugar.index).concat(nodes))
     }
 
     /// What `sugar` says it means; null for a node that is no sugar.
     fn means_note(sugar: ExprId) -> string? {
-        self.means_notes.get()[sugar.index]
+        self.means_notes.at(sugar.index)
     }
 
     /// `stmts` as a scope answering with its tail: the block a statement list is.
@@ -702,7 +687,7 @@ impl SyntaxArena {
 
     /// Every sugar node, in allocation order.
     fn sugars() -> List<ExprId> {
-        [ExprId { index: i } for i, n in self.means_notes.get() if n != null && !n!.is_empty()]
+        [ExprId { index: i } for i in self.means_notes.indexes() for n in [self.means_notes.at(i)] if n != null && !n!.is_empty()]
     }
 
     /// Every node allocated since `before`, the root last.
@@ -747,7 +732,7 @@ impl SyntaxArena {
 
     /// The nodes `e` is extended by; none for a node that is not.
     fn extended_by(e: ExprId) -> List<ExprId> {
-        self.extensions.get()[e.index]
+        self.extensions.at(e.index)
     }
 
     /// Gives the statement `sugar` the statements it means.
@@ -758,7 +743,7 @@ impl SyntaxArena {
 
     /// The root of what `sugar` means; null for any other node.
     fn meant(e: ExprId) -> ExprId? {
-        self.meaning.get()[e.index]
+        self.meaning.at(e.index)
     }
 
     /// The node a value read judges: what a sugar means, any other node
@@ -782,7 +767,7 @@ impl SyntaxArena {
 
     /// The sugar a minted node stands in for; null for any other.
     fn minted_for(e: ExprId) -> ExprId? {
-        self.minted_by.get()[e.index]
+        self.minted_by.at(e.index)
     }
 
     /// Whether `e` is part of what a `?.` link means.
@@ -820,7 +805,7 @@ impl SyntaxArena {
     }
 
     fn is_sugar_match(e: ExprId) -> bool {
-        self.sugar_matches.get()[e.index]
+        self.sugar_matches.at(e.index)
     }
 
     /// `x is .V(p, q)` — the pattern that binds, or null for a bare
@@ -862,7 +847,7 @@ impl SyntaxArena {
     }
 
     fn instance_owner(e: ExprId) -> StmtId? {
-        self.instance_owners.get()[e.index]
+        self.instance_owners.at(e.index)
     }
 
     /// The type arguments a literal writes after its name — part of
@@ -876,7 +861,7 @@ impl SyntaxArena {
     }
 
     /// The written type arguments a literal carries, in written order.
-    fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get()[e.index] }
+    fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.at(e.index) }
 
     /// The type arguments a literal OR instance writes. An instance's are its
     /// payload's alone: its expansion's literal is marked from them when it is
@@ -916,7 +901,7 @@ impl SyntaxArena {
     /// The event a handler the SUGAR wrote names — what the printer
     /// spells back as `on <event>`.
     fn on_handler_kind(e: ExprId) -> string? {
-        let held? = self.on_handlers.get()[e.index] else { return null }
+        let held? = self.on_handlers.at(e.index) else { return null }
         if held.sugar { held.event } else { null }
     }
 
@@ -929,7 +914,7 @@ impl SyntaxArena {
     /// Why the instance's component cannot hear the handler at `e` —
     /// what the instance's refusal says. Part of its identity.
     fn mark_unheard(e: ExprId, why: Unheard) {
-        let held? = self.on_handlers.get()[e.index] else { return }
+        let held? = self.on_handlers.at(e.index) else { return }
         self.on_handlers.set_at(e.index, held with { unheard: why })
         self.expr_prints.stamp(e.index, 190, unheard_fp(why))
     }
@@ -937,10 +922,10 @@ impl SyntaxArena {
     /// Whether the value at `e` fills a field another law already refused
     /// by name — a handler for an event its component does not declare.
     /// The record's own field law then types the value and says nothing.
-    fn refused_elsewhere(e: ExprId) -> bool { self.on_handlers.get()[e.index]?.unheard != null }
+    fn refused_elsewhere(e: ExprId) -> bool { self.on_handlers.at(e.index)?.unheard != null }
 
     /// The handler at `e`, when the sugar wrote it.
-    fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.get()[e.index] }
+    fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.at(e.index) }
 
     /// The writers a template copy reaches, one per `@copied` table: each takes
     /// the table's own element for the node and does nothing for the empty one.
@@ -986,14 +971,14 @@ impl SyntaxArena {
         self.body_starts.set_at(e.index, body_at)
     }
 
-    fn body_start(e: ExprId) -> int { self.body_starts.get()[e.index] ?? 0 }
+    fn body_start(e: ExprId) -> int { self.body_starts.at(e.index) ?? 0 }
 
     /// A block whose grammar is still to run on it, as its lexer read it: a parse that knew its
     /// word alone.
     fn defer_block(e: ExprId, text: string) { self.block_texts.set_at(e.index, text) }
 
     /// The body a block waits to be read by, absent once it's read or for any other node.
-    fn deferred_block(e: ExprId) -> string? { self.block_texts.get()[e.index] }
+    fn deferred_block(e: ExprId) -> string? { self.block_texts.at(e.index) }
 
     fn wear_block_text(e: ExprId, text: string?) { if text != null { self.defer_block(e, text!) } }
 
@@ -1022,7 +1007,7 @@ impl SyntaxArena {
     }
 
     /// Where an expression minted from another file's text was written; null for one written here.
-    fn foreign_of(e: ExprId) -> ForeignOrigin? { self.expr_origins.get()[e.index] }
+    fn foreign_of(e: ExprId) -> ForeignOrigin? { self.expr_origins.at(e.index) }
 
     /// Where the names an expression minted elsewhere reads are read: the file whose template wrote
     /// it, or the module it was written in; null for one written here.
@@ -1034,14 +1019,14 @@ impl SyntaxArena {
     /// Where the names a pattern minted elsewhere reads are read: the file whose template wrote it, or
     /// the module it was written in; null for one written here.
     fn pat_home(p: PatId) -> string? {
-        let o? = self.pat_origins.get()[p.index] else { return null }
+        let o? = self.pat_origins.at(p.index) else { return null }
         o.home_at(LandedSeat.Names)
     }
 
     /// Where the name in `seat` of the statement `s` reads: its template's home, or where it lands
     /// when it was written here or a hole filled it.
     fn seat_home(s: StmtId, seat: LandedSeat) -> string? {
-        let o? = self.stmt_origins.get()[s.index] else { return null }
+        let o? = self.stmt_origins.at(s.index) else { return null }
         o.home_at(seat)
     }
 
@@ -1058,7 +1043,7 @@ impl SyntaxArena {
     /// Whether a statement's span is this file's: it has one, and no
     /// template copied it here from its origin's offsets.
     fn spanned_here(s: StmtId) -> bool {
-        self.stmt_span(s) != null && !(self.stmt_origins.get()[s.index]?.spanned_home ?? false)
+        self.stmt_span(s) != null && !(self.stmt_origins.at(s.index)?.spanned_home ?? false)
     }
 
     /// Every node minted since `since` was written in the file at
@@ -1071,18 +1056,18 @@ impl SyntaxArena {
     /// The nodes a copy made were written at `origin`: their names read there, and their spans the
     /// origin's file's where it says they keep them.
     fn note_made(copied: CopiedNodes, origin: ForeignOrigin) {
-        for e in copied.exprs { if self.expr_origins.get()[e.index] == null { self.expr_origins.set_at(e.index, origin) } }
+        for e in copied.exprs { if self.expr_origins.at(e.index) == null { self.expr_origins.set_at(e.index, origin) } }
         for e in copied.holed_exprs {
-            if self.expr_origins.get()[e.index] == null { self.expr_origins.set_at(e.index, origin with { landed: [LandedSeat.Names] }) }
+            if self.expr_origins.at(e.index) == null { self.expr_origins.set_at(e.index, origin with { landed: [LandedSeat.Names] }) }
         }
         for s in copied.stmts {
-            if self.stmt_origins.get()[s.index] == null {
+            if self.stmt_origins.at(s.index) == null {
                 self
                     .stmt_origins
                     .set_at(s.index, origin with { landed: copied.landed.find(it.stmt == s)?.seats ?? [] })
             }
         }
-        for p in copied.pats { if self.pat_origins.get()[p.index] == null { self.pat_origins.set_at(p.index, origin) } }
+        for p in copied.pats { if self.pat_origins.at(p.index) == null { self.pat_origins.set_at(p.index, origin) } }
         for p in copied.params { self.param_elsewhere.set_at(p.index, true) }
     }
 
@@ -1097,26 +1082,26 @@ impl SyntaxArena {
     fn originated(since: ArenaMarks, origin: ForeignOrigin) {
         let now = self.marks()
         for at in since.exprs..now.exprs {
-            if self.expr_origins.get()[at] == null { self.expr_origins.set_at(at, origin) }
+            if self.expr_origins.at(at) == null { self.expr_origins.set_at(at, origin) }
         }
         for at in since.stmts..now.stmts {
-            if self.stmt_origins.get()[at] == null { self.stmt_origins.set_at(at, origin) }
+            if self.stmt_origins.at(at) == null { self.stmt_origins.set_at(at, origin) }
         }
         for at in since.pats..now.pats {
-            if self.pat_origins.get()[at] == null { self.pat_origins.set_at(at, origin) }
+            if self.pat_origins.at(at) == null { self.pat_origins.set_at(at, origin) }
         }
     }
 
     /// The nodes minted from each other file's text, grouped by where, in the order each was met.
     fn foreign_nodes() -> List<ForeignNodes> {
         let origins: List<ForeignOrigin> = distinct_origins(
-            [o! for o in self.expr_origins.get().concat(self.stmt_origins.get()).concat(self.pat_origins.get()) if o != null],
+            [o! for c in [self.expr_origins, self.stmt_origins, self.pat_origins] for i in c.indexes() for o in [c.at(i)] if o != null],
         )
         [ForeignNodes {
             origin: o,
-            exprs: [ExprId { index: at } for at, held in self.expr_origins.get() if same_origin(held, o)],
-            stmts: [StmtId { index: at } for at, held in self.stmt_origins.get() if same_origin(held, o)],
-            pats: [PatId { index: at } for at, held in self.pat_origins.get() if same_origin(held, o)],
+            exprs: [ExprId { index: at } for at in self.expr_origins.indexes() if same_origin(self.expr_origins.at(at), o)],
+            stmts: [StmtId { index: at } for at in self.stmt_origins.indexes() if same_origin(self.stmt_origins.at(at), o)],
+            pats: [PatId { index: at } for at in self.pat_origins.indexes() if same_origin(self.pat_origins.at(at), o)],
         } for o in origins]
     }
 
@@ -1128,13 +1113,13 @@ impl SyntaxArena {
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
             .Body(_, _, _, view) -> view.expansion(),
-            .Component(_, _, _, _, _, _) -> self.expansions.get()[e.index]?.literal,
+            .Component(_, _, _, _, _, _) -> self.expansions.at(e.index)?.literal,
             _ -> null,
         }
     }
 
     /// The component an instance's word names, as its file read it.
-    fn provided_of(e: ExprId) -> Provided? { self.provided.get()[e.index] }
+    fn provided_of(e: ExprId) -> Provided? { self.provided.at(e.index) }
 
     /// `provided` as what the instance `e` stands on.
     fn provide(e: ExprId, provided: Provided) { self.provided.set_at(e.index, provided) }
@@ -1148,11 +1133,11 @@ impl SyntaxArena {
 
     /// The literal an instance's meaning minted, which is its value; null
     /// for any other node.
-    fn instance_value(e: ExprId) -> ExprId? { self.expansions.get()[e.index]?.literal }
+    fn instance_value(e: ExprId) -> ExprId? { self.expansions.at(e.index)?.literal }
 
     /// The `check` call an instance's component judges it by; null for a
     /// component that declares none.
-    fn checked_by(e: ExprId) -> ExprId? { self.expansions.get()[e.index]?.check }
+    fn checked_by(e: ExprId) -> ExprId? { self.expansions.at(e.index)?.check }
 
     /// Gives `e` the component `worn` names — the door a copy uses, so an
     /// instance's meaning is minted again from what it stood on.
@@ -1340,7 +1325,6 @@ impl SyntaxArena {
         self.pat_prints.added(self.fingerprint_pat(p))
         self.pat_spans.push(span)
         self.pat_reads.push(self.read_of(p, span))
-        self.pat_origins.push(null)
         self.pats.push(p)
         PatId { index: self.pats.get().length - 1 }
     }
@@ -1485,14 +1469,6 @@ impl SyntaxArena {
     /// The one statement-allocation seam.
     fn alloc_stmt(s: Stmt, span: Span? = null) -> StmtId {
         self.stmt_prints.added(s.identity(self))
-        self.marks.push(unmarked_stmt())
-        self.grammars.push(null)
-        self.component_insts.push(null)
-        self.annotations.push(no_annotations())
-        self.docs.push(null)
-        self.collect_dense.push(false)
-        self.stmt_origins.push(null)
-        self.owned_instances.push(null)
         StmtId { index: self.stmts.add(s, span) }
     }
 
@@ -1524,10 +1500,10 @@ impl SyntaxArena {
         self.stamp(s, 115, fp_str(lines.join("\n")))
     }
 
-    fn doc_comment(s: StmtId) -> List<string>? { self.docs.get()[s.index]?.lines }
+    fn doc_comment(s: StmtId) -> List<string>? { self.docs.at(s.index)?.lines }
 
     /// A statement's doc group, absent when it has none.
-    fn doc_group(s: StmtId) -> DocGroup? { self.docs.get()[s.index] }
+    fn doc_group(s: StmtId) -> DocGroup? { self.docs.at(s.index) }
 
     /// The file's own `//!` header — set once, at most, per file.
     fn document_file(lines: List<string>) {
@@ -1541,7 +1517,7 @@ impl SyntaxArena {
     }
 
     /// Where a declaration's doc group began, absent when it has none.
-    fn doc_at(s: StmtId) -> int? { self.docs.get()[s.index]?.at }
+    fn doc_at(s: StmtId) -> int? { self.docs.at(s.index)?.at }
 
     /// A `///` group whose anchor opened a MARK, not a declaration —
     /// no statement claims it, so it survives as one remark per line,
@@ -1601,7 +1577,7 @@ impl SyntaxArena {
     }
 
     fn annotations_of(s: StmtId) -> List<Annotation> {
-        self.annotations.get()[s.index]
+        self.annotations.at(s.index)
     }
 
     /// A statement's marks, replaced by what `upd` computes from what it
@@ -1617,7 +1593,7 @@ impl SyntaxArena {
         self.expr_marks.set_at(e.index, upd(self.expr_marks_at(e)))
     }
 
-    fn expr_marks_at(e: ExprId) -> ExprMarks { self.expr_marks.get()[e.index] }
+    fn expr_marks_at(e: ExprId) -> ExprMarks { self.expr_marks.at(e.index) }
 
     /// Gives `e` every form `worn` records, each through its own verb so
     /// the fingerprint follows — the one door a copy uses, so a new form
@@ -1630,7 +1606,7 @@ impl SyntaxArena {
     }
 
     /// The marks a statement wears.
-    fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
+    fn marks_at(s: StmtId) -> StmtMarks { self.marks.at(s.index) }
 
     /// Gives `s` every mark `worn` records, each through its own verb so
     /// the fingerprint follows — the one door a copy and a tape use, so a
@@ -1676,7 +1652,7 @@ impl SyntaxArena {
         self.restamp(s, 195)
     }
 
-    fn is_host_fn(s: StmtId) -> bool { s.index < self.marks.get().length && self.marks_at(s).is_host }
+    fn is_host_fn(s: StmtId) -> bool { self.marks_at(s).is_host }
 
     /// `static fn` crossed this declaration — it lives under an impl
     /// and takes NO receiver, which is the third value of the same
@@ -1686,7 +1662,7 @@ impl SyntaxArena {
         self.restamp(s, 110)
     }
 
-    fn is_static(s: StmtId) -> bool { s.index < self.marks.get().length && self.marks_at(s).is_static }
+    fn is_static(s: StmtId) -> bool { self.marks_at(s).is_static }
 
     /// `state n: T = v` — the binding is a PLACE with identity: it holds a
     /// `Cell<T>` a read answers as `T` and a write assigns.
@@ -1703,11 +1679,11 @@ impl SyntaxArena {
     }
 
     fn is_asset_stmt(s: StmtId) -> bool {
-        if s.index < self.marks.get().length { self.marks_at(s).is_asset } else { false }
+        self.marks_at(s).is_asset
     }
 
     fn is_state_stmt(s: StmtId) -> bool {
-        if s.index < self.marks.get().length { self.marks_at(s).is_state } else { false }
+        self.marks_at(s).is_state
     }
 
     /// A `state` at the top level of a file: a DECLARATION whose one
@@ -1719,7 +1695,7 @@ impl SyntaxArena {
     }
 
     fn is_module_state(s: StmtId) -> bool {
-        if s.index < self.marks.get().length { self.marks_at(s).is_module_state } else { false }
+        self.marks_at(s).is_module_state
     }
 
     /// `grammar Name = "…"` declared this record — the format it
@@ -1733,7 +1709,7 @@ impl SyntaxArena {
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
-        if s.index < self.grammars.get().length { self.grammars.get()[s.index] } else { null }
+        self.grammars.at(s.index)
     }
 
     /// A named instance (`grid report { … }`) of the component
@@ -1800,7 +1776,7 @@ impl SyntaxArena {
     fn is_component_inst(s: StmtId) -> bool { self.instance_of(s) != null }
 
     /// The component a named instance's statement instances.
-    fn instance_of(s: StmtId) -> string? { self.component_insts.get()[s.index] }
+    fn instance_of(s: StmtId) -> string? { self.component_insts.at(s.index) }
 
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,
     /// `once fn f()`, `static fn f()` and `export fn f()` declare

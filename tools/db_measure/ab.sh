@@ -12,6 +12,8 @@
 # a warm check after one body edit.
 # Last, the candidate's first and second generations trace the same check.
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 base=$1
 R=${2:-3}
 here=$(cd "$(dirname "$0")" && pwd)

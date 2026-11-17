@@ -21,6 +21,8 @@
 #   sh tools/witness_program_differential.sh [compiler] [--bar N] [--jobs J] [code…]
 #   (default build/avra-try; J defaults to 3; naming codes judges only those)
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=build/avra-try
 case "${1:-}" in --*|"") ;; *) avra=$1; shift ;; esac

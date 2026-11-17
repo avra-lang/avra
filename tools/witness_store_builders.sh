@@ -8,6 +8,8 @@
 # Empties the cli's store first; restores the edited file on every exit.
 #   sh tools/witness_store_builders.sh <compiler A> <compiler B> <compiler C>   (Linux: reads /proc)
 set -eu
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 [ $# = 3 ] || { echo "usage: witness_store_builders.sh <compiler A> <compiler B> <compiler C>"; exit 1; }

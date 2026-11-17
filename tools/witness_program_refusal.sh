@@ -18,6 +18,8 @@
 #   sh tools/witness_program_refusal.sh [compiler] [case…]   (default build/avra-try, every case)
 #   sh tools/witness_program_refusal.sh --known   (each case known to differ, and why; runs nothing)
 set -u
+# a store is copied, counted or emptied here between builds, so each build saves its own before it answers
+export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 cases_dir="$root/tools/program-refusals"
 # the node a wasm case's module runs under: NODE, else /opt/node24's, else the PATH's

@@ -4,8 +4,12 @@
 //! there's no runtime or lock to reason about. Nothing here changes an answer: a process that
 //! didn't work ahead reaches the same ones by itself.
 use layered_store.{LayeredStore, program_store_at}
+use disk_store.{save_finished, save_held, save_left, saving_apart}
 use @std.io.{
+    AppendFile,
     drafted,
+    drafts_leaving,
+    drafts_left,
     env,
     list_dir,
     make_dirs,
@@ -32,6 +36,8 @@ extern fn avra_cores_heard(group: int, core: int) -> int
 extern fn avra_cores_killed(group: int, core: int) -> int
 extern fn avra_cores_finished(group: int) -> int
 extern fn avra_cores_stderr_to(path: string) -> int
+extern fn avra_cores_heir(quiet: int) -> int
+extern fn avra_cores_heir_gone() -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 
 /// Below this many unanswered items a fork costs more than it saves.
@@ -198,6 +204,41 @@ export fn answered_apart(run: fn() -> string, kept: string, within_ms: int) -> A
     }
     if avra_cores_finished(group) != 1 { return Apart.Ended }
     match read_text(kept) { .Ok(t) -> Apart.Answered(t), .Err(_) -> Apart.Ended }
+}
+
+/// `save` RUN BY AN HEIR, a forked process that outlives this one, so this one answers without
+/// waiting for it: whether one took it; where none did, nothing has run. `save` answers why it
+/// kept nothing, absent where it kept all, which the next process to open the store says. The heir holds what this
+/// process learned and every draft it wrote, and is the one saver of each of `store`'s layers
+/// until it ends, so a process that opens the store after this one answers waits and reads the
+/// save whole. With `quiet` the heir says nothing. A layer another process is saving, or a fork
+/// refused, leaves the save to the caller.
+export fn saved_by_heir(store: LayeredStore, quiet: bool, save: fn() -> string?) -> bool {
+    let layers = store.directories()
+    let held = [l! for d in layers for l in [save_held(d)] if l != null]
+    if held.length != layers.length {
+        let_go(held)
+        return false
+    }
+    save_left(layers[0])
+    drafts_leaving()
+    let forked = avra_cores_heir(if quiet { 1 } else { 0 })
+    if forked == 0 {
+        drafts_left(false)
+        saving_apart().set(true)
+        let failed = save()
+        save_finished(layers[0], failed)
+        let _ = avra_cores_heir_gone()
+    }
+    drafts_left(forked > 0)
+    let_go(held)
+    if forked < 0 { save_finished(layers[0], null) }
+    forked > 0
+}
+
+/// Each of `held` closed by this process.
+fn let_go(held: List<AppendFile>) {
+    for l in held { let _ = l.closed() catch 0 }
 }
 
 /// This process's own words written to `path` from here on, in place of the stderr it shares with the

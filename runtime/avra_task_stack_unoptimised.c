@@ -2,8 +2,10 @@
 // values in slots of their own, about two and a half times an optimised
 // frame, so the same recursion needs a stack that much deeper: 640 KiB
 // here against the runtime's 256 KiB. The link of a binary emitted at -O0
-// names this object, whose definition overrides the runtime's weak one;
-// AVRA_FIBER_STACK overrides either.
+// names `avra_task_stack_unoptimised` undefined, which pulls this member
+// from the runtime archive, and its definition overrides the runtime's
+// weak one; no other link pulls it. AVRA_FIBER_STACK overrides either.
 #include <stdint.h>
 
 const int64_t avra_task_stack_bytes = (int64_t)640 << 10;
+const char avra_task_stack_unoptimised = 1;

@@ -1,7 +1,8 @@
 //! Append-only typed storage with a parallel span side table — the
 //! shape every node arena shares. Callers wrap the raw index in their
 //! typed id.
-use @std.meta.{identity}
+use @std.meta.{identity, plain_field}
+use @std.program.hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use @std.relation.engine.{list_cell, map_cell}
 
 /// ONE IDENTITY: every table is a `Cell`, so a copy of the arena
@@ -92,4 +93,49 @@ fn lower_bound(xs: List<int>, target: int) -> int {
         if xs[mid] < target { lo = mid + 1 } else { hi = mid }
     }
     lo
+}
+
+/// A FACT FEW NODES HAVE, by node: only the nodes whose value isn't `absent` are held, keyed by the
+/// node's index, so a column costs what it holds and a copy of it copies that, never one word per
+/// node. A node it holds nothing for reads `absent`; a column nothing was set in holds no table at
+/// all. An identity: every holder sees one column.
+@identity
+@plain_field("absent")
+export type SideColumn<V> = { held: Cell<HashKeyedTable<V>?>, absent: V }
+
+/// A column holding nothing, every node reading `absent`.
+export fn side_column<V>(absent: V) -> SideColumn<V> {
+    let none: HashKeyedTable<V>? = null
+    SideColumn { held: Cell.new(none), absent: absent }
+}
+
+impl SideColumn {
+    /// Node `i`'s value.
+    fn at(i: int) -> V { self.held.get()?.get_at(0, i) ?? self.absent }
+
+    /// Node `i`'s value is `v` now; the column's table is made on its first value.
+    fn set_at(i: int, v: V) {
+        let held? = self.held.get() else {
+            let made = hash_keyed_table<V>()
+            made.put_at(0, i, v)
+            return self.held.set(made)
+        }
+        held.put_at(0, i, v)
+    }
+
+    /// The column as it stands, in a table of its own: it starts as this one's and is copied out on
+    /// its first write.
+    fn forked() -> SideColumn<V> { SideColumn { held: Cell.new(self.held.get()?.forked()), absent: self.absent } }
+
+    /// Every node a value was set for, ascending.
+    fn indexes() -> List<int> { sorted_by(self.held.get()?.low_words_put() ?? [], (a, b) -> a < b) }
+
+    /// Every node reads `absent` again.
+    fn clear() {
+        let none: HashKeyedTable<V>? = null
+        self.held.set(none)
+    }
+
+    /// Each held value replaced by what `remade` makes of it.
+    fn remade(remade: fn(V) -> V) { for i in self.held.get()?.low_words_put() ?? [] { self.set_at(i, remade(self.at(i))) } }
 }
