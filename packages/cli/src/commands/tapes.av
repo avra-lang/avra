@@ -644,6 +644,7 @@ const BUILD_DIR: string = ".avra-cache/tapes-build"
 /// binary it loads, and a layered binary holds none of the program's code.
 fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode: BuildMode) -> BinaryAsked {
     let words = phased(engine, "link words", () -> linked_words(engine, disk, mode.shared))
+        .concat(stack_words(mode.opt))
     let hosted = program_host_symbols(engine, disk.file_at(bin), "")
     BinaryAsked {
         entry: disk.file_at(bin),
@@ -655,6 +656,13 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
         layered: mode.layered && hosted.is_empty(),
         inlined: inlines_runtime(),
     }
+}
+
+/// The objects a native binary emitted at `opt` links beside its own for its task stack: at `-O0`, whose
+/// frames keep every value in a slot of their own, the deeper stack such frames need
+/// (runtime/unoptimised/avra_task_stack.c); none at any other level.
+fn stack_words(opt: string) -> List<string> {
+    if opt == "-O0" { [joined_path(dir_of(runtime_library()), "avra_task_stack.o")] } else { [] }
 }
 
 /// The linker the link's `clang` is told to run: `ld.lld` beside that `clang`, else on the PATH; the
@@ -3389,9 +3397,13 @@ fn externs_of(engine: QueryEngine, entry: SourceFileAddress?, package: string) -
 /// the image stands in its dynamic table, as it must where a package it reaches names them.
 type Linking = { words: List<string>, names_symbols: bool }
 
-/// How the program on `disk` is linked.
+/// How the program on `disk` is linked, as a binary emitted unoptimised is: a suite and a child-run
+/// program test are.
 fn linking(engine: QueryEngine, disk: Disk) -> Linking {
-    Linking { words: linked_words(engine, disk), names_symbols: names_its_symbols(engine, disk) }
+    Linking {
+        words: linked_words(engine, disk).concat(stack_words("-O0")),
+        names_symbols: names_its_symbols(engine, disk),
+    }
 }
 
 /// Whether a package the program on `disk` reaches resolves the program's own symbols by name.

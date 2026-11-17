@@ -1469,6 +1469,10 @@ static void scope_inherited(Fiber* child, const Fiber* from) {
 // another share the stack the last one left warm.
 #define STACK_DEFAULT ((size_t)256 << 10)
 
+// The task stack a binary asks for, weak: an unoptimised binary links a
+// definition of its own (runtime/unoptimised/avra_task_stack.c).
+__attribute__((weak)) const int64_t avra_task_stack_bytes = (int64_t)STACK_DEFAULT;
+
 // A stack and the page whose fault is its overflow: its own, directly
 // under it, or the one at the foot of its slab.
 typedef struct { char* base; char* guard; } Stack;
@@ -1585,7 +1589,7 @@ static void guards_settle(void) {
 static void stacks_settle(void) {
     if (g_page) return;
     g_page = (size_t)sysconf(_SC_PAGESIZE);
-    size_t want = STACK_DEFAULT;
+    size_t want = (size_t)avra_task_stack_bytes;
     const char* env = getenv("AVRA_FIBER_STACK");
     if (env) {
         long long v = atoll(env);

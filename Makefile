@@ -269,9 +269,15 @@ build/llvm_wrapper.o: build/avra_hot.inc
 
 # The library is REBUILT WHOLE from its objects, never updated in
 # place: a member dropped from runtime/ must not linger in it.
-$(RUNTIME_LIB): $(RUNTIME_OBJS)
+$(RUNTIME_LIB): $(RUNTIME_OBJS) | build/avra_task_stack.o
 	@rm -f $@
 	@ar rcs $@ $^
+
+# AN UNOPTIMISED BINARY'S TASK STACK, beside the archive and never in it: a
+# link of a binary emitted at -O0 names it, and nothing else does.
+build/avra_task_stack.o: runtime/unoptimised/avra_task_stack.c
+	@mkdir -p build
+	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) -Wall -Werror -o $@ $<
 
 # THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the one that has no
 # wasm body: a core forks, and wasm cannot. The scheduler is IN, hosted: its
@@ -596,6 +602,7 @@ install: avra
 	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
 	@cp build/avra $(PREFIX)/bin/avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
+	@cp build/avra_task_stack.o $(PREFIX)/lib/avra/avra_task_stack.o
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"

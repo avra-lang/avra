@@ -71,7 +71,7 @@ witness-b  witness_program_runs, _ledger, _suites, _doors; witness_program_diffe
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
-edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed"
+edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered"
 edit-b     witness_program_edit, WITNESS_ONLY=1
 edit-c     witness_program_edit, WITNESS_ONLY=5
 edit-d     witness_program_edit, WITNESS_ONLY=10
@@ -396,7 +396,7 @@ if compiler; then
         warnings-a) warnings_part cold ;;
         warnings-b) warnings_part "check cases" ;;
         warnings-c) warnings_part edit ;;
-        edit-a) edit_part "embed infer composed" ;;
+        edit-a) edit_part "embed infer composed gathered" ;;
         edit-b) edit_part 1 ;;
         edit-c) edit_part 5 ;;
         edit-d) edit_part 10 ;;
