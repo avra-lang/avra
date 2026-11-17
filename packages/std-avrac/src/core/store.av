@@ -142,6 +142,18 @@ impl Stamped {
     /// Node `at` is being derived in this settle; asked again inside it, it answers what it held.
     fn settling(at: int) { self.settled_in.set_at(at, self.pass.get()) }
 
+    /// The prints as they stand, in tables of their own.
+    fn forked() -> Stamped {
+        Stamped {
+            identities: Cell.new(self.identities.get()),
+            stamps: Cell.new(self.stamps.get()),
+            prints: Cell.new(self.prints.get()),
+            settled_in: Cell.new(self.settled_in.get()),
+            pass: Cell.new(self.pass.get()),
+            passes: Cell.new(self.passes.get()),
+        }
+    }
+
     /// Node `at` is what `identity` says, wearing the stamps it wore.
     fn reidentified(at: int, identity: int) {
         self.identities.set_at(at, identity)
@@ -352,6 +364,61 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         stmt_origins: list_cell(),
         pat_origins: list_cell(),
         on_handlers: list_cell(),
+    }
+}
+
+/// A STORE OF ITS OWN OVER ANOTHER: every node and mark `self` holds now, in tables of its own, so
+/// what a body's elaboration mints and marks lands here and never in the store it was read into.
+/// Each table starts as the one it copies and is copied out on its first write.
+impl SyntaxArena {
+    fn forked() -> SyntaxArena {
+        SyntaxArena {
+            file: self.file,
+            exprs: self.exprs.forked(),
+            expr_prints: self.expr_prints.forked(),
+            stmts: self.stmts.forked(),
+            stmt_prints: self.stmt_prints.forked(),
+            marks: Cell.new(self.marks.get()),
+            grammars: Cell.new(self.grammars.get()),
+            component_insts: Cell.new(self.component_insts.get()),
+            hoisted: Cell.new(self.hoisted.get()),
+            annotations: Cell.new(self.annotations.get()),
+            docs: Cell.new(self.docs.get()),
+            file_doc: Cell.new(self.file_doc.get()),
+            remarks: Cell.new(self.remarks.get()),
+            pats: Cell.new(self.pats.get()),
+            pat_spans: Cell.new(self.pat_spans.get()),
+            pat_reads: Cell.new(self.pat_reads.get()),
+            pat_prints: self.pat_prints.forked(),
+            param_spans: Cell.new(self.param_spans.get()),
+            param_elsewhere: Cell.new(self.param_elsewhere.get()),
+            expr_marks: Cell.new(self.expr_marks.get()),
+            collect_dense: Cell.new(self.collect_dense.get()),
+            sugar_matches: Cell.new(self.sugar_matches.get()),
+            minted_by: Cell.new(self.minted_by.get()),
+            mints: Cell.new(self.mints.get()),
+            meaning: Cell.new(self.meaning.get()),
+            stmt_meanings: Cell.new(self.stmt_meanings.get()),
+            means_notes: Cell.new(self.means_notes.get()),
+            extensions: Cell.new(self.extensions.get()),
+            instance_owners: Cell.new(self.instance_owners.get()),
+            owned_instances: Cell.new(self.owned_instances.get()),
+            provided: Cell.new(self.provided.get()),
+            expansions: Cell.new(self.expansions.get()),
+            struct_targs: Cell.new(self.struct_targs.get()),
+            quotes_at: DenseWindow {
+                lowest: Cell.new(self.quotes_at.lowest.get()),
+                slots: Cell.new(self.quotes_at.slots.get()),
+            },
+            sublangs: Cell.new(self.sublangs.get()),
+            body_starts: Cell.new(self.body_starts.get()),
+            block_texts: Cell.new(self.block_texts.get()),
+            refusals: Cell.new(self.refusals.get()),
+            expr_origins: Cell.new(self.expr_origins.get()),
+            stmt_origins: Cell.new(self.stmt_origins.get()),
+            pat_origins: Cell.new(self.pat_origins.get()),
+            on_handlers: Cell.new(self.on_handlers.get()),
+        }
     }
 }
 

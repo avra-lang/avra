@@ -38,9 +38,8 @@ fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: int)
     let declared = [b for d in file_declares(engine, file).names if d.item == at && built_instance(engine, d) for b in declared_body(engine, d)]
     let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item)).concat(declared)
     let entry = if runs_in(engine, file, at) { entry_read(engine, file) } else { null }
-    let ran = [Judged { store: entry!.store, typed: meant_typed(engine, file, s!), owner: s!.stmt, only: at } for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
-    let judged = [Judged { store: b.item.store, typed: meant_typed(engine, file, b), owner: b.stmt, only: -1 } for b in bodies]
-        .concat(ran)
+    let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
+    let judged = [judged_in(engine, file, b, -1) for b in bodies].concat(ran)
     ItemChecked { rows: flatten([instances_said(engine, file, entry, j) for j in judged]) }
 }
 
@@ -117,6 +116,18 @@ fn instance_checked(engine: QueryEngine, file: SourceFileAddress, j: Judged, e: 
 /// The body the instance `d` declares its value by; none where it has none.
 fn declared_body(engine: QueryEngine, d: DeclaredName) -> List<SignedBody> {
     match const_body(engine, d) { .Ok(b) -> [b], .Err(_) -> [] }
+}
+
+/// The body `b` judged in a store of its own, typed through each node's meaning there; `only` the
+/// item whose instances it judges, -1 for every one.
+fn judged_in(engine: QueryEngine, file: SourceFileAddress, b: SignedBody, only: int) -> Judged {
+    let own = own_store(b)
+    Judged {
+        store: own.item.store,
+        typed: meant_typed(engine, file, own),
+        owner: own.stmt,
+        only: only,
+    }
 }
 
 /// The body `b` typed through each node's meaning, as it's lowered: an instance's `check` call typed.

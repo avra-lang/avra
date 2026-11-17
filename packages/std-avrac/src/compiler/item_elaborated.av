@@ -60,8 +60,11 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
     elaborated(engine, file, signed)
 }
 
-/// A signed body, elaborated.
-fn elaborated(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> ElaboratedBody {
+/// A signed body, elaborated in a store of its own over the one it was read into, which keeps every
+/// node and mark the elaboration makes: the item's store stays as it was read, its indices and
+/// sites the source's alone, whichever bodies of it were elaborated before.
+fn elaborated(engine: QueryEngine, file: SourceFileAddress, read: SignedBody) -> ElaboratedBody {
+    let signed = own_store(read)
     let store = signed.item.store
     let surface = signed.typed ?? kept_body(body_checked(engine, file, signed, false))
     let typed = TypedItem { view: TypedView { store: store }, types: surface.types }
@@ -82,6 +85,10 @@ fn elaborated(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) 
         reads: reads_kept(core),
     }
 }
+
+/// `signed` over a store of its own, forked from the one it stands in: what a check through meanings
+/// mints lands there.
+fn own_store(signed: SignedBody) -> SignedBody { signed with { item: signed.item with { store: signed.item.store.forked() } } }
 
 /// Whether `e` is an instance whose wrapping statement fills fields of its record (fills.av's law),
 /// its value then the literal it built `with` each: a doc as its text, each annotation as one

@@ -76,7 +76,8 @@ edit-b     witness_program_edit, WITNESS_ONLY=1
 edit-c     witness_program_edit, WITNESS_ONLY=5
 edit-d     witness_program_edit, WITNESS_ONLY=10
 edit-e     witness_program_edit, WITNESS_ONLY=rename
-edit-f     witness_program_edit, WITNESS_ONLY=modes
+edit-f     witness_program_edit, WITNESS_ONLY=modes-whole
+edit-g     witness_program_edit, WITNESS_ONLY=modes-layered
 EOF
 }
 
@@ -400,7 +401,8 @@ if compiler; then
         edit-c) edit_part 5 ;;
         edit-d) edit_part 10 ;;
         edit-e) edit_part rename ;;
-        edit-f) edit_part modes ;;
+        edit-f) edit_part modes-whole ;;
+        edit-g) edit_part modes-layered ;;
     esac
 fi
 
