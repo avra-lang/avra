@@ -68,6 +68,8 @@ use core.{
 use features.collects.{collected_list}
 use features.specs.{case_lowered}
 use @std.program.address.{SourceFileAddress}
+use @std.program.source_facts.{source_text}
+use diagnostics.{new_source_file}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 
 /// A fn's body as IR: its seats' layouts and its answer's, its instructions, each register's layout
@@ -273,6 +275,17 @@ fn bound_fills(parameters: List<ParameterLayout>) -> Map<string, SignedType> {
 /// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
 /// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
 /// in it.
+/// Where the node `e` of `store` was written in `file`, as the old path names a task's site: the file
+/// under its package's name, its path inside its sources, and the line; absent for a node a template
+/// wrote, which no line of this file holds.
+fn written_site(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> string? {
+    if store.spanned_elsewhere(e) { return null }
+    let at? = store.expr_span(e) else { return null }
+    let text? = source_text(engine, file) else { return null }
+    let path = if file.path_in_package.starts_with("src/") { file.path_in_package.substring(4, file.path_in_package.length) } else { file.path_in_package }
+    "${file.package_name}/${path}:${new_source_file(file.path_in_package, text).linecol(at.lo).line}"
+}
+
 fn lowered_program(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -328,6 +341,7 @@ fn lowered_program(
         defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         roles: (ty: SignedType, field: string) -> field_role(engine, ty, field),
         site: (e: ExprId) -> literal_site(engine, file, store, e),
+        written_at: (e: ExprId) -> written_site(engine, writer ?? file, store, e),
         states: (asked: StatesAsked) -> states_read(engine, file, asked),
         toolchain_fn: (module: string, n: string) -> toolchain_callee(engine, module, n),
         home: template_home(file),

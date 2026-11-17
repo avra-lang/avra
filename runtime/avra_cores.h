@@ -53,5 +53,6 @@ void avra_cores_stop(int64_t g);
 // here, naming it. The group is gone after.
 int64_t avra_cores_result(int64_t g);
 int64_t avra_cores_finished(int64_t g);
+int64_t avra_cores_stderr_to(const char* path);
 
 #endif

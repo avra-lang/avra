@@ -343,3 +343,13 @@ int64_t avra_cores_finished(int64_t g) {
     group_free(gr);
     return finished;
 }
+
+// A forked process's own words, written to `path` in place of the stderr it shares with the process
+// that forked it: 0, or -1 where the file would not open or take fd 2.
+int64_t avra_cores_stderr_to(const char* path) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return -1;
+    int moved = dup2(fd, 2);
+    close(fd);
+    return moved < 0 ? -1 : 0;
+}

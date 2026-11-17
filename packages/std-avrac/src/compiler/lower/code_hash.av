@@ -428,6 +428,32 @@ export fn code_graph(facts: List<CodeFacts>, known: List<string>, asked: List<st
 @codec
 export type CodeFacts = { nodes: List<FactNode>, addressed: List<string>, asked: List<string> }
 
+/// A NAME AS A CODE HASH BINDS IT: `sym` with the build's root package `root` left unnamed, so one
+/// package's code hashes alike whatever its build calls it — the root's name is the build's, never its
+/// code's, as the old path names the root's symbols by none. Another package's name is its own words.
+export fn rooted_name(root: string, sym: string) -> string {
+    let parts = sym.split("${root}/")
+    parts
+        .slice(1, parts.length)
+        .fold(parts[0], (out, p) -> out + if names_on(out) { "${root}/" } else { "/" } + p)
+}
+
+/// Whether `text` ends inside a name a package could carry, so a package name written next is part of it.
+fn names_on(text: string) -> bool { !text.is_empty() && PACKAGE_NAME_CHARS.contains(text.substring(text.length - 1, text.length)) }
+
+/// What a package's name may be spelled with.
+const PACKAGE_NAME_CHARS: string = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_@/"
+
+/// `facts` with every name as a code hash binds it (`rooted_name`).
+export fn facts_rooted(root: string, facts: CodeFacts) -> CodeFacts {
+    let spelled = (sym: string) -> rooted_name(root, sym)
+    CodeFacts {
+        nodes: [FactNode { name: spelled(n.name), own: n.own, refs: [spelled(r) for r in n.refs] } for n in facts.nodes],
+        addressed: [spelled(a) for a in facts.addressed],
+        asked: [spelled(a) for a in facts.asked],
+    }
+}
+
 /// One node of a file's code: its name, what it is made of, what it
 /// reaches.
 @codec

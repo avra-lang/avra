@@ -331,9 +331,21 @@ impl Segment {
     fn saved_in(kind: DraftTable, key: ContentHash) -> SavedBytes? {
         let span? = kind.spans.get(key) else { return null }
         let end = span.at + span.length
-        let view? = self.views.get().find(it.length >= end) else { return saved_bytes_in_memory(kind.unviewed.get(key)!) }
+        let view? = oldest_reaching(self.views.get(), end) else { return saved_bytes_in_memory(kind.unviewed.get(key)!) }
         SavedBytes { source: view.source, from: span.at, to: end }
     }
+}
+
+/// The oldest of `views` that reaches `end`, absent where none does: each view reaches further than
+/// the one before, so the first that reaches it is found by halving.
+fn oldest_reaching(views: List<DraftView>, end: int) -> DraftView? {
+    mut lo = 0
+    mut hi = views.length
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if views[mid].length >= end { hi = mid } else { lo = mid + 1 }
+    }
+    if lo < views.length { views[lo] } else { null }
 }
 
 /// A store over a directory, plus what this process has learned and hasn't published yet. An

@@ -4,7 +4,7 @@
 use core.{ExprId, OwnType, SignedType, Span, StmtId, SyntaxArena, flatten}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.nullable.{bound_absent, bound_present, else_stays}
+use features.nullable.{asked_absent, bound_absent, bound_present, else_stays}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -83,3 +83,39 @@ export law let_else_asks {
 fn stays_words(a: List<string>) -> Voice { else_stays(a[0]) }
 
 fn unasked_words(a: List<string>) -> Voice { if a.length > 1 { bound_present(a[0], a[1]) } else { bound_absent(a[0]) } }
+
+/// Every `match … { b? -> …, null -> … }` of the written item `at` of `file` — no `?.` chain, whose
+/// own law speaks — whose subject is never absent, or always is: the bind's name, then the subject's
+/// type spelled, or none where it is always absent.
+fn unasked_matches(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    flatten([unasked_matched(t) for t in item_typed_nodes(engine, file, at, item)])
+}
+
+/// Every asking match among the nodes `t` reads whose subject is never absent, or always.
+fn unasked_matched(t: TypedNodes) -> List<Found> {
+    [Found { at: t.store.expr_span(m.subject), args: [m.bind].concat(present_words(ty!)) } for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null && !t.store.chained_by(e) for m in asking(t.store, e) for ty in [(t.type_at)(m.subject.index)] if ty != null && unasked(ty!)]
+}
+
+/// An asking match's subject and the name its present arm binds.
+type Asking = { subject: ExprId, bind: string }
+
+/// The asking match `e` is; none for any other node.
+fn asking(store: SyntaxArena, e: ExprId) -> List<Asking> {
+    match store.expr(e) {
+        .MatchOpt(subject, bind, _, _) -> [Asking { subject: subject, bind: bind.of }],
+        rest -> [],
+    }
+}
+
+/// a `match … { b? -> … }` asks of a value that may be absent
+export law match_opt_asks {
+    kind: "type.match_opt"
+    reads: unasked_matches
+    voice: asked_words
+    witness: "match null {\n    v? -> 1\n    null -> 2\n}\n"
+}
+
+fn asked_words(a: List<string>) -> Voice { if a.length > 1 { bound_present(a[0], a[1]) } else { asked_absent(a[0]) } }

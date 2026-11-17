@@ -783,6 +783,12 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_clean_attack.sh
 	@sh tools/package_swap_attack.sh
 
+# AN EDIT BETWEEN A WAVE AND ITS MERGE IS CAUGHT: the asking process takes what its cores learned
+# without walking it only where every input a core read is the one it reads now. It builds in a
+# store of its own.
+ahead-edit-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/ahead_edit_attack.sh
+
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
 # CLEARS the store it builds through, as the attacks above do.
@@ -1257,7 +1263,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,

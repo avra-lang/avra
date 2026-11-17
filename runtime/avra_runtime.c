@@ -4906,6 +4906,32 @@ int64_t avra_str_char_code(const char* s, int64_t i) {
     return (unsigned char)s[i];
 }
 
+// A WHOLE VALUE FOLDED INTO ONE LANE OF A KEY, in one call: its bytes eight to a
+// big-endian word, the tail a byte to a word, then its length, each word folded as
+// `KeyLane.word` folds it (`h ^ w * prime`, rotated left 29, times `prime`). A text
+// and a `Bytes` value share the header, so one loop serves both rows.
+static int64_t lane_folded(int64_t h, int64_t prime, const char* s, size_t n) {
+    uint64_t x = (uint64_t)h, p = (uint64_t)prime;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, s + i, 8);
+        w = __builtin_bswap64(w);
+        uint64_t m = x ^ (w * p);
+        x = ((m << 29) | (m >> 35)) * p;
+    }
+    for (; i < n; i++) {
+        uint64_t m = x ^ ((uint64_t)(unsigned char)s[i] * p);
+        x = ((m << 29) | (m >> 35)) * p;
+    }
+    uint64_t m = x ^ ((uint64_t)n * p);
+    return (int64_t)(((m << 29) | (m >> 35)) * p);
+}
+
+int64_t avra_lane_text(int64_t h, int64_t prime, const char* s) { return lane_folded(h, prime, s, str_len(s)); }
+
+int64_t avra_lane_octets(int64_t h, int64_t prime, const char* b) { return lane_folded(h, prime, b, bytes_len(b)); }
+
 // EIGHT BYTES AS ONE BIG-ENDIAN WORD — the eight `avra_str_char_code` calls a
 // digest word costs, made one. It reads the SAME bytes through the SAME header,
 // so a fold that gathers its words here answers the same digest it always did.

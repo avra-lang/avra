@@ -467,7 +467,7 @@ fn disk_built(
     )
     let store = worked.store
     let engine = worked.engine
-    if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
+    if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return .Err(refused!) }
     let asked = binary_asked(engine, disk, bin, stem, mode, tools)
@@ -530,8 +530,44 @@ fn disk_built(
     if timed {
         for line in program_host_fn_lines(engine, asked.entry, asked.target) { eprintln("host fn: ${line}") }
         eprintln(hit_line(stood))
+        eprintln(time_rows_said(engine, BUILD_ROWS))
     }
     .Ok(stem)
+}
+
+/// THE ROWS `--time` SPEAKS, by the names the old path's derivation gave its phases, each the wall time
+/// of the program layer's own phases that do that work (none of them runs inside another):
+///   analyze — what refuses the program and what it warns of: the refusals, the host fns, the warnings
+///   lower   — the program's bodies made: the shape reached, the code hashes, the keys, the buckets
+///             asked
+///   emit    — the objects emitted
+///   link    — the link's words, the link, the binary placed
+///   keep    — the store: the frontier opened and kept, the store saved or compacted
+/// A row whose phases did not run is 0 ms: a check lowers nothing, a build that stood emits nothing.
+type TimeRow = { name: string, phases: List<string> }
+
+const TIME_ROWS: List<TimeRow> = [
+    TimeRow { name: "analyze", phases: ["the refusals", "the host fns", "the warnings"] },
+    TimeRow {
+        name: "lower",
+        phases: ["the shape", "the code hashes", "the keys", "the buckets asked"],
+    },
+    TimeRow { name: "emit", phases: ["emit"] },
+    TimeRow { name: "link", phases: ["link words", "link", "place"] },
+    TimeRow {
+        name: "keep",
+        phases: ["the frontier opened", "the frontier kept", "the store saved", "the store compacted"],
+    },
+]
+
+/// The rows a build speaks, and a check's.
+const BUILD_ROWS: List<string> = ["analyze", "lower", "emit", "link", "keep"]
+const CHECK_ROWS: List<string> = ["analyze", "lower", "keep"]
+
+/// The `time:` line of the rows named, read off the phases `engine` timed.
+fn time_rows_said(engine: QueryEngine, rows: List<string>) -> string {
+    let times? = engine.kept_times() else { return "time: no phase timed" }
+    "time: ${["${r.name} ${times.phases_wall_ms(r.phases)}ms" for r in TIME_ROWS if rows.contains(r.name)].join(", ")}"
 }
 
 /// The warnings `warned` holds, rendered as a build says them: file by file in the order of their
@@ -987,6 +1023,7 @@ collect listed_build_facts: List<ListedQuery> = @query_definition in self as Lis
 /// Where `engine`'s process spent its time, when it timed its asks: the families with the most time
 /// of their own, then the whole split by side.
 fn times_said(engine: QueryEngine) {
+    if env("AVRA_QUERY_TIMES") != "1" { return }
     let times? = engine.kept_times() else { return }
     eprintln("time: ${times.spoken(15)}")
     eprintln("phases: ${times.phases_spoken()}")

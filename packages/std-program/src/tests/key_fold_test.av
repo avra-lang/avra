@@ -11,6 +11,24 @@ fn key_of_texts(a: string, b: string) -> string { "${two_texts(HIGH_LANE, a, b)}
 /// Every split of `whole` into two texts, as keys.
 fn splits(whole: string) -> List<string> { [key_of_texts(whole.substring(0, at), whole.substring(at, whole.length)) for at in 0..whole.length + 1] }
 
+/// `text` folded a word at a time as `KeyLane.text` says it folds: eight bytes to a big-endian word,
+/// the tail a byte to a word, then the length.
+fn by_words(lane: KeyLane, h: int, text: string) -> int {
+    mut out = h
+    mut i = 0
+    while i + 8 <= text.length {
+        mut w = 0
+        for j in 0..8 { w = w.wrapping_shl(8) | text.char_code(i + j) }
+        out = lane.word(out, w)
+        i = i + 8
+    }
+    while i < text.length {
+        out = lane.word(out, text.char_code(i))
+        i = i + 1
+    }
+    lane.word(out, text.length)
+}
+
 /// Whether no two of `keys` are equal.
 fn all_apart(keys: List<string>) -> bool { (0..keys.length).all((i) -> (i + 1..keys.length).all(keys[i] != keys[it])) }
 
@@ -48,6 +66,29 @@ spec "program/key_fold — values folded into a key" {
                     key_of_texts("abcdefghy", ""),
                 ],
             )
+        }
+    }
+    given "a whole value folded in one call" {
+        then "a text folds as its words fold, one at a time, at every length across two words" {
+            let whole = "abcdefghijklmnopq\\u{e9}"
+            (0..whole.length + 1)
+                .all(
+                    (n) -> [HIGH_LANE, LOW_LANE]
+                        .all(
+                            (lane) -> lane.text(lane.seed, whole.substring(0, n)) == by_words(lane, lane.seed, whole.substring(0, n)),
+                        ),
+                )
+        }
+        then "octets fold alike where equal and apart where one byte or the length differs" {
+            let lane = LOW_LANE
+            let keys = ["", "a", "b", "abcdefgh", "abcdefgi", "abcdefghx", "abcdefgh\\u{0}"]
+                .map((t) -> "${lane.finished(lane.octets(lane.seed, t.bytes()))}")
+            all_apart(keys) &&
+                lane.octets(lane.seed, "abc".bytes()) == lane.octets(lane.seed, "abc".bytes())
+        }
+        then "octets and a text of the same bytes fold apart" {
+            let lane = HIGH_LANE
+            lane.finished(lane.octets(lane.seed, "abc".bytes())) != lane.finished(lane.tagged_text(lane.seed, "abc"))
         }
     }
     given "many keys" {

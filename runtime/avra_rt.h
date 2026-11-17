@@ -180,6 +180,8 @@ extern const char avra_rt_held_avra_str_split __asm__(AVRA_RT_LABEL(avra_str_spl
 extern const char avra_rt_held_avra_str_replace __asm__(AVRA_RT_LABEL(avra_str_replace));
 extern const char avra_rt_held_avra_str_char_code __asm__(AVRA_RT_LABEL(avra_str_char_code));
 extern const char avra_rt_held_avra_str_word_at __asm__(AVRA_RT_LABEL(avra_str_word_at));
+extern const char avra_rt_held_avra_lane_text __asm__(AVRA_RT_LABEL(avra_lane_text));
+extern const char avra_rt_held_avra_lane_octets __asm__(AVRA_RT_LABEL(avra_lane_octets));
 extern const char avra_rt_held_avra_str_trim __asm__(AVRA_RT_LABEL(avra_str_trim));
 extern const char avra_rt_held_avra_str_parses_int __asm__(AVRA_RT_LABEL(avra_str_parses_int));
 extern const char avra_rt_held_avra_str_parsed_int __asm__(AVRA_RT_LABEL(avra_str_parsed_int));
@@ -426,6 +428,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_str_replace,
     &avra_rt_held_avra_str_char_code,
     &avra_rt_held_avra_str_word_at,
+    &avra_rt_held_avra_lane_text,
+    &avra_rt_held_avra_lane_octets,
     &avra_rt_held_avra_str_trim,
     &avra_rt_held_avra_str_parses_int,
     &avra_rt_held_avra_str_parsed_int,
@@ -791,6 +795,10 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_str_char_code(AVRA_R
     "avra_str_char_code: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_str_word_at(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
     "avra_str_word_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_lane_text(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_lane_text: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_lane_octets(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_lane_octets: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_str_trim(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_str_trim: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_str_parses_int(AVRA_RT_PTR)), int64_t),

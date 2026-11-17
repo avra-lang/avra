@@ -197,27 +197,19 @@ export const LOW_LANE: KeyLane = KeyLane {
 }
 
 extern fn avra_str_word_at(s: string, at: int) -> int
+extern fn avra_lane_text(h: int, prime: int, s: string) -> int
+extern fn avra_lane_octets(h: int, prime: int, b: Bytes) -> int
 
 impl KeyLane {
     /// `word` folded into the lane's running `h`.
     fn word(h: int, word: int) -> int { rotated(h ^ word.wrapping_mul(self.prime), 29).wrapping_mul(self.prime) }
 
-    /// `text`'s bytes folded in eight to a word, the tail byte by byte, then its length: `"ab"` then
-    /// `"c"` never folds as `"a"` then `"bc"`.
-    fn text(h: int, text: string) -> int {
-        mut out = h
-        let n = text.length
-        mut i = 0
-        while i + 8 <= n {
-            out = self.word(out, avra_str_word_at(text, i))
-            i = i + 8
-        }
-        while i < n {
-            out = self.word(out, text.char_code(i))
-            i = i + 1
-        }
-        self.word(out, n)
-    }
+    /// `text`'s bytes folded in eight to a big-endian word, the tail byte by byte, then its length,
+    /// each as `word` folds it, in one call: `"ab"` then `"c"` never folds as `"a"` then `"bc"`.
+    fn text(h: int, text: string) -> int { avra_lane_text(h, self.prime, text) }
+
+    /// Octets folded as `text` folds its bytes, in one call.
+    fn bytes(h: int, octets: Bytes) -> int { avra_lane_octets(h, self.prime, octets) }
 
     /// A finished lane, its bits spread so its low ones pick a table's slot.
     fn finished(h: int) -> int {

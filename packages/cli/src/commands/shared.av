@@ -22,8 +22,8 @@ use @std.avrac.core.{joined, distinct, some_list}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, stem_of}
 use @std.process.{Tool, tool_at, cmd, Command, Exit, Streams, inherited, ProcessError, exit}
 use @std.time.{now_ns}
-use @std.program.worked_ahead.{Apart, answered_apart}
-use @std.io.{env, exists, make_dirs, compile_slot, Entry}
+use @std.program.worked_ahead.{Apart, answered_apart, words_to}
+use @std.io.{env, exists, make_dirs, compile_slot, Entry, append_bytes}
 use @std.avrac.compiler.backend.{emit_ll, links_with_ld64}
 use @std.avrac.compiler.host.{no_target, Stamp, Host}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
@@ -483,19 +483,27 @@ export fn net_refused(paths: List<string>, judge: NetJudge) -> int? {
 
 /// What the old path refuses `path` with, judged in a process of its own so the memory it takes
 /// leaves with it and never stands under the program layer's; absent where it accepts it, or ends
-/// with no verdict, which is said.
+/// with no verdict. What that process says, and a judgement that ended with none, are the net's own
+/// record (`.avra-cache/net-verdict.err`), never the program's words: a net that could not judge
+/// leaves the program layer to judge alone, which is what it would say.
 fn net_report(path: string, judge: NetJudge) -> string? {
     let at = if is_a_dir(path) { path } else { dir_of(rooted(path)) }
     let _ = make_dirs(joined_path(at, ".avra-cache"))
+    let words = joined_path(at, ".avra-cache/net-verdict.err")
     match answered_apart(
-        () -> net_verdict(path, judge),
+        () -> {
+            let _ = words_to(words)
+            net_verdict(path, judge)
+        },
         joined_path(at, ".avra-cache/net-verdict"),
         NET_WITHIN_MS,
     ) {
         .Answered(said) -> if said.starts_with(NET_REFUSED) { said.substring(NET_REFUSED.length, said.length) } else { null },
         .Ended or .Outlasted -> {
-            eprintln(
-                "avra: the old path's judgement of ${path} ended with no verdict; the program layer judges it alone",
+            let _ = append_bytes(
+                words,
+                "avra: the old path's judgement of ${path} ended with no verdict; the program layer judges it alone\n"
+                    .bytes(),
             )
             null
         },

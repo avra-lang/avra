@@ -916,6 +916,42 @@ impl QueryEngine {
         answer
     }
 
+    /// Every answer this process learned, as the frontier keeps it.
+    fn learned_entries() -> List<HeldEntry> {
+        [e! for s in self.settled_answers.values() for e in [learned_of(s)] if e != null]
+    }
+
+    /// Every answer that stood in this process as its frontier held it, with no reads: what an
+    /// answer it learned may have read beside its inputs.
+    fn stood_answers() -> List<HeldEntry> {
+        [e! for s in self.settled_answers.values() for e in [stood_of(s)] if e != null]
+    }
+
+    /// THE ANSWERS ANOTHER PROCESS OF THIS BUILD LEARNED, taken as this one's where everything
+    /// they read beside each other is what this process reads: each input the other process
+    /// settled, settled here once and its answer compared, and each answer that stood in its
+    /// frontier compared with what this process says; then every entry settled as it stands, none
+    /// of its reads walked. Absent where they were taken, else why not: none is taken where one
+    /// differs. `proved` false takes them unproven, for a witness that the proof is what catches an
+    /// input that moved.
+    fn took_learned(entries: List<HeldEntry>, stood: List<HeldEntry>, proved: bool) -> string? {
+        if proved {
+            for e in entries {
+                if !e.input { continue }
+                let here? = self.settled_now(e.question) else { return "an input it read is not one this process can read" }
+                if !here.answer().same_as(e.answer) { return "an input it read moved" }
+            }
+            for e in stood {
+                let here? = self.settled_now(e.question) else { return "an answer that stood in its frontier is not one this process knows" }
+                if !here.answer().same_as(e.answer) { return "an answer that stood in its frontier answers otherwise here" }
+            }
+        }
+        for e in entries {
+            if self.settled_answers.get(e.question) == null { self.settled_answers.put(e.question, SettledAnswer.Learned(e with { root: false })) }
+        }
+        null
+    }
+
     /// How a question's query runs. Asking a query nobody defined is the caller's defect.
     fn definition_of(asked: Question) -> QueryDefinition { self.definitions.get().get(asked.query_name)! }
 }
@@ -928,6 +964,21 @@ export fn read_stamped<T>(engine: QueryEngine, path: string, read: fn() -> T) ->
     let answer = read()
     engine.read_under(path, before)
     answer
+}
+
+/// The entry a settled answer is as this process learned it; absent for one that stood in the
+/// frontier.
+fn learned_of(s: SettledAnswer) -> HeldEntry? {
+    match s { .Learned(entry) -> entry, .Standing(_, _, _, _) -> null }
+}
+
+/// The entry a settled answer is as it stood in the frontier, with no reads; absent for one this
+/// process learned.
+fn stood_of(s: SettledAnswer) -> HeldEntry? {
+    match s {
+        .Learned(_) -> null,
+        .Standing(question, answer, _, _) -> HeldEntry { question: question, answer: answer, reads: [], input: false, root: false },
+    }
 }
 
 /// The answer an input's stamp names until its question settles.

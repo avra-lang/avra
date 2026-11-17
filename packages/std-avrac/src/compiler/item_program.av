@@ -55,6 +55,7 @@ use compiler.lower.code_hash.{
     code_facts_from_wire,
     code_facts_wire,
     code_graph,
+    facts_rooted,
     graph_refs,
     guards_of,
     hashes_read,
@@ -62,6 +63,7 @@ use compiler.lower.code_hash.{
     summed_hash,
     with_digest,
     read_code_facts,
+    rooted_name,
     value_node_of,
     values_node,
 }
@@ -1065,6 +1067,7 @@ export fn program_code_hashes(engine: QueryEngine, file: SourceFileAddress) -> C
     }
     let root? = shaped_root(engine, file, shape) else { return none }
     let saved = [code_facts_from_wire(placed_code(engine, u.called, u.kept)) for u in shape.units]
+    let root_name = file.package_name
     let own = read_code_facts(
         [b for b in [entry_body(root)]
             .concat(lifted_bodies(root, ENTRY))
@@ -1076,18 +1079,21 @@ export fn program_code_hashes(engine: QueryEngine, file: SourceFileAddress) -> C
     )
     let targets = distinct([h.target for h in shape.hashed])
     let g = code_graph(
-        [f! for f in saved if f != null].concat([own]),
+        [facts_rooted(root_name, f!) for f in saved if f != null]
+            .concat([facts_rooted(root_name, own)]),
         [row.name for row in rt_sigs().concat(extern_rows(engine, shape.externs))],
-        targets,
+        [rooted_name(root_name, t) for t in targets],
     )
-    let hashes = [HashAnswer { target: t, hash: g.hash(t) } for t in targets]
+    let hashes = [HashAnswer { target: t, hash: g.hash(rooted_name(root_name, t)) } for t in targets]
     let names = sorted_by(
         [NamedNode { name: n, hash: content_hash(n.bytes()) } for n in g.node_names()],
         (a: NamedNode, b: NamedNode) -> a.hash.comes_before(b.hash),
     )
     CodeHashes {
         hashes: hashes,
-        owns: flatten([if h.hash == null { [0, 0, 0, 0] } else { g.digest_of(h.target) } for h in hashes]),
+        owns: flatten(
+            [if h.hash == null { [0, 0, 0, 0] } else { g.digest_of(rooted_name(root_name, h.target)) } for h in hashes],
+        ),
         sums: g.answered.sums,
         nodes: flatten([[n.hash.high_word, n.hash.low_word] for n in names]),
         reaching: flatten([g.reaching_of(n.name) for n in names]),
@@ -1113,16 +1119,18 @@ fn program_code_hashes_again(
     let rows? = program_row_names(engine, file) else { return null }
     let fold = HashFold {
         engine: engine,
+        root: file.package_name,
         last: last,
-        guarded: guards_of([h.target for h in last.hashes]),
+        guarded: guards_of([rooted_name(file.package_name, h.target) for h in last.hashes]),
         known: names_wanted(rows),
     }
     let moves = [fold.node_moves(m) for m in moved]
     if moves.any(it == null) { return null }
     let node_moves = flatten([ms! for ms in moves])
     let sums = [moved_sum(last.sum_at(t), node_moves, t) for t in 0..last.hashes.length]
-    let owns = [node_moves.find(it.name == h.target)?.now ?? last.own_at(t) for t, h in last.hashes]
-    last with { hashes: [if h.hash == null { h } else { h with { hash: summed_hash(h.target, owns[t], sums[t]) } } for t, h in last.hashes], owns: flatten(owns), sums: flatten(sums) }
+    let named = [rooted_name(file.package_name, h.target) for h in last.hashes]
+    let owns = [node_moves.find(it.name == named[t])?.now ?? last.own_at(t) for t, _h in last.hashes]
+    last with { hashes: [if h.hash == null { h } else { h with { hash: summed_hash(named[t], owns[t], sums[t]) } } for t, h in last.hashes], owns: flatten(owns), sums: flatten(sums) }
 }
 
 /// The sum `sum` of target `t` with each of `moves` that `t` reaches made.
@@ -1133,9 +1141,9 @@ fn moved_sum(sum: List<int>, moves: List<NodeMove>, t: int) -> List<int> {
 /// One node's move under a fold: its name, which targets reach it, and its digest before and now.
 type NodeMove = { name: string, reaching: List<int>, was: List<int>, now: List<int> }
 
-/// What folding the code hashes forward reads: the engine, the last hashes, the targets a reference
-/// stops at, and every name a row answers.
-type HashFold = { engine: QueryEngine, last: CodeHashes, guarded: Map<string, bool>, known: Map<string, bool> }
+/// What folding the code hashes forward reads: the engine, the root package the hashes leave unnamed,
+/// the last hashes, the targets a reference stops at, and every name a row answers.
+type HashFold = { engine: QueryEngine, root: string, last: CodeHashes, guarded: Map<string, bool>, known: Map<string, bool> }
 
 impl HashFold {
     /// The moves of each node of the body whose code `m` read, absent where its change moves more
@@ -1144,8 +1152,8 @@ impl HashFold {
         let c = placed_code_c_in(m.question)!
         let kept? = placed_code_kept_in(m.question) else { return null }
         let was_wire? = placed_code_was(self.engine, m) else { return null }
-        let before? = wire_facts(was_wire) else { return null }
-        let now? = wire_facts(placed_code(self.engine, c, kept)) else { return null }
+        let before? = wire_facts(self.root, was_wire) else { return null }
+        let now? = wire_facts(self.root, placed_code(self.engine, c, kept)) else { return null }
         if fact_names(before) != fact_names(now) ||
             before.addressed.join("\n") != now.addressed.join("\n") ||
             before.asked.join("\n") != now.asked.join("\n") { return null }
@@ -1179,10 +1187,12 @@ impl HashFold {
     }
 }
 
-/// A body's code facts as its wire spells them: none for no body.
-fn wire_facts(wire: string) -> CodeFacts? {
+/// A body's code facts as its wire spells them, each name as a hash binds it with `root` unnamed:
+/// none for no body.
+fn wire_facts(root: string, wire: string) -> CodeFacts? {
     if wire.is_empty() { return CodeFacts { nodes: [], addressed: [], asked: [] } }
-    code_facts_from_wire(wire)
+    let facts? = code_facts_from_wire(wire) else { return null }
+    facts_rooted(root, facts)
 }
 
 /// The names of `facts`' nodes, in order, as one text.
@@ -2009,7 +2019,7 @@ fn every_callee_of(f: LoweredFn) -> List<CalledFn> { f.callees.concat(flatten([l
 
 /// The lambdas and shims a lowered body lifts, each a body of its own; a shared one weak.
 fn lifted_bodies(f: LoweredFn, home: string? = null) -> List<Body> {
-    [unit_body(l.symbol, l.params, l.answer, l.ins, l.layouts, home) with { boxed: l.boxed, weak: l.shared } for l in f.lifts]
+    [unit_body(l.symbol, l.params, l.answer, l.ins, l.layouts, home) with { boxed: l.boxed, weak: l.shared, site: l.site } for l in f.lifts]
 }
 
 /// A unit as a body: its seats the first registers, read by their layouts.

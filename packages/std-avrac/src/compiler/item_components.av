@@ -1,0 +1,131 @@
+//! WHERE A COMPONENT'S SHAPE BREAKS ITS CONTRACT WITH THE COMPILER: its `check` answering other than
+//! `@std/meta`'s `List<Diagnostic>`, or taking a seat; a head spelled `Format` that names another type
+//! than `@std/meta`'s pattern. Read off the component's signature and its `check`'s.
+use core.{ExprId, SignedType, StmtId, SyntaxArena, flatten}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.components.{check_unshaped, format_foreign, formats_of}
+use features.{row_unkeyed}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The fn a component writes that the compiler speaks at each instance.
+const CHECK: string = "check"
+
+/// What `@std/meta` names the type a component's `check` answers a list of, and a `Format` head is.
+const CHECK_ANSWERS: string = "Diagnostic"
+
+const FORMAT: string = "Format"
+
+/// Every component of the written item `at` of `file` whose `check` isn't shaped as one: where the
+/// `check` stands, and what it answers.
+fn checks_unshaped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [f! for a in impls_at(engine, file, at) for c in [impl_component_at(item, a)] if c != null for f in [check_found(engine, item.store, a, c!.fns)] if f != null]
+}
+
+/// The `check` among a component's `fns`, refused where it isn't shaped as one.
+fn check_found(engine: QueryEngine, store: SyntaxArena, a: ImplAt, fns: List<StmtId>) -> Found? {
+    let m? = fns.find((f: StmtId) -> store.fn_parts(f)?.name == CHECK) else { return null }
+    let sig? = method_signature(engine, a, CHECK) else { return null }
+    if sig.params.length <= 1 && diagnostics_answered(sig.answer) { return null }
+    if sig.answer.inferred() || sig.answer.generic() || sig.answer.head is .Unnamed { return null }
+    Found { at: store.stmt_span(m), args: [sig.answer.spelled()] }
+}
+
+/// Whether `ty` is a list of `@std/meta`'s `Diagnostic`s.
+fn diagnostics_answered(ty: SignedType) -> bool {
+    let element? = ty.listed() else { return false }
+    meta_named(element, CHECK_ANSWERS)
+}
+
+/// Every head spelled `Format` of a component the written item `at` of `file` declares that names
+/// another type than `@std/meta`'s: where the component stands, and the head.
+fn formats_foreign(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [Found { at: item.store.stmt_span(s), args: [n] } for s in item.stmts for c in [item.store.component_parts(s)] if c != null for sig in [record_signature(engine, file, c!.name)] if sig != null for n in formats_of(c!) for seat in sig!.fields if seat.name == n &&
+        seat.ty != null &&
+        !(seat.ty!.head is .Unnamed) &&
+        !meta_named(seat.ty!, FORMAT)]
+}
+
+/// a component's `check` answers `List<Diagnostic>` and takes nothing
+export law component_check_shaped {
+    kind: "type.component_check"
+    reads: checks_unshaped
+    voice: unshaped_words
+    witness: "use @std.meta.{Diagnostic}\ncomponent box {\n    a: int\n    fn check() -> int { 1 }\n}\n0\n"
+}
+
+/// a component's `Format` head is `@std/meta`'s pattern type
+export law component_format_is_meta {
+    kind: "type.component_format"
+    reads: formats_foreign
+    voice: foreign_words
+    witness: "use @std.meta.{Code}\ntype Format = { n: int }\ncomponent loose(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n0\n"
+}
+
+fn unshaped_words(a: List<string>) -> Voice { check_unshaped(a[0]) }
+
+fn foreign_words(a: List<string>) -> Voice { format_foreign(a[0]) }
+
+/// Every unkeyed instance of a component that keeps state, made once a turn by a repetition the
+/// written item `at` of `file` writes — a comprehension's element, a loop's body — once each: where
+/// it stands, and its word.
+fn rows_unkeyed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    let store = item.store
+    if !store.refusals().is_empty() { return [] }
+    let made = flatten([turn_made(store, ExprId { index: i }) for i in 0..store.expr_count()])
+        .concat(
+            flatten(
+                [store.stmts_exprs(body_of_loop(store, StmtId { index: i })) for i in 0..store.stmts.count()],
+            ),
+        )
+    let all = [r.index for x in made for r in rows_under(store, x)]
+    let rows = [i for j, i in all if !all.take(j).contains(i)]
+    [Found { at: store.expr_span(e), args: [w] } for i in rows for e in [ExprId { index: i }] if store.home_of(e) == null for w in [store.instance_parts(e)?.word ?? ""] if keeps_state(engine, file, w)]
+}
+
+/// What one turn of the comprehension `e` makes: its element; none for any other node.
+fn turn_made(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    match store.expr(e) { .Comp(elem, _) -> [elem], rest -> [] }
+}
+
+/// The body a loop statement runs each turn; none for any other statement.
+fn body_of_loop(store: SyntaxArena, s: StmtId) -> List<StmtId> {
+    match store.stmt(s) { .While(_, stmts) or .ForEach(_, _, _, stmts) -> stmts, rest -> [] }
+}
+
+/// The unkeyed instances one turn makes at and under `e`: never into a fn it hands on, a nested
+/// comprehension — its own turn — or a keyed instance, whose key tells what is under it apart.
+fn rows_under(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    if store.lambda_parts(e) != null || store.repeats(e) { return [] }
+    if store.instance_parts(e) == null { return flatten([rows_under(store, k) for k in store.reached(e)]) }
+    let made = store.walked(e)
+    if made.any((x: ExprId) -> store.struct_lit_parts(x)?.fields?.contains("key") ?? false) { return [] }
+    [e].concat(flatten([rows_under(store, k) for k in made]))
+}
+
+/// Whether the component `word` names from `file` keeps state of its own.
+fn keeps_state(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
+    let d? = resolved(engine, file, Space.Type, word).named() else { return false }
+    if d.kind != ItemKind.Component { return false }
+    let sig? = record_signature(engine, d.file, d.name) else { return false }
+    sig.fields.any(it.state)
+}
+
+/// a repeated component that keeps state wears a key
+export law repeated_row_keyed {
+    kind: "type.component_row"
+    reads: rows_unkeyed
+    voice: row_words
+    witness: "component tick(label: string) {\n    key: string? = null\n    state n: int = 0\n}\nlet rs = [\"a\", \"b\"]\n[tick r for r in rs].length\n"
+}
+
+fn row_words(a: List<string>) -> Voice { row_unkeyed(a[0]) }

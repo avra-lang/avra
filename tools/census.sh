@@ -27,6 +27,9 @@ export LLVM_PREFIX
 
 # THE BUILDER IS build/avra unless CENSUS_BUILDER names another: a layout rule is the BUILDING
 # compiler's, so a census of a rule builds the census compiler with a compiler that has it.
+# THE CENSUS COUNTS THE COMPILER'S OWN WORK, under a memory cap: the old path's check the net runs
+# before the program layer's is not that work, and its memory with the layer's passes the cap.
+export AVRA_PROGRAM_NET=0
 builder=${CENSUS_BUILDER:-build/avra}
 [ -x "$builder" ] || { echo "census: no $builder to build the census compiler with — run \`make avra\` first"; exit 1; }
 census=build/avra.census
@@ -59,6 +62,9 @@ rm -rf "$stores"
 # its type (AVRA_CENSUS_TYPES), the `type:` table.
 AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 AVRA_PROGRAM_MODE=release "$builder" build packages/cli > build/census-build.out 2>&1 || {
     tail -20 build/census-build.out; echo "census: the census compiler did not build"; exit 1; }
+# A BINARY THE PROGRAM LAYER PLACES IS ITS KEPT BINARY, LINKED: a census compiler left from an earlier
+# run can be that same file, which `mv` will not move onto itself — the old one goes first.
+[ ! -e "$census" ] || find "$census" -delete
 mv packages/cli/src/main "$census"
 # A C symbol wears a leading underscore on macOS and none on Linux.
 nm "$census" | grep -Eq '[ _]note_retain$' || { echo "census: $census carries no census — refusing to report"; exit 1; }

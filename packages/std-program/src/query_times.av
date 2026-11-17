@@ -1,6 +1,7 @@
 //! WHERE A PROCESS'S TIME GOES: each family of asks, its CPU time inside them with and without the
 //! asks it makes in turn. A family is a query's name, or a phase a caller names outside every query.
 use sorted.{sorted_by}
+use @std.time.{now_ns}
 
 // LICENSED input.clock: a timing reads the clock, never an input of what is built
 extern fn avra_cpu_ns() -> int
@@ -17,13 +18,14 @@ export enum TimedSide {
     Outside
 }
 
-/// An ask being timed: its family as spoken, its side, when it began, and the time its nested asks
-/// took.
-type OpenAsk = { family: string, side: TimedSide, began: int, nested: int }
+/// An ask being timed: its family as spoken, its side, when it began and the time its nested asks
+/// took, on the process's CPU clock and on the wall's.
+type OpenAsk = { family: string, side: TimedSide, began: int, nested: int, began_wall: int = 0 }
 
 /// One family's time, summed over its asks: inside them less their nested asks, and inside them
-/// whole, counted once while it stands open under itself.
-export type FamilyTime = { family: string, side: TimedSide, own: int, whole: int, asks: int }
+/// whole, counted once while it stands open under itself — on the process's CPU clock; and inside them
+/// whole on the wall's, which counts the work they wait on in other processes too.
+export type FamilyTime = { family: string, side: TimedSide, own: int, whole: int, asks: int, whole_wall: int = 0 }
 
 /// The time of each family this process timed, from the process's start: what it spent before the
 /// clock was made is the family `START_UP`. An identity: every holder times through one.
@@ -65,6 +67,8 @@ impl QueryTimes {
                     side: side,
                     began: avra_cpu_ns(),
                     nested: 0,
+                    // LICENSED input.clock: a timing reads the clock, never an input of what is built
+                    began_wall: now_ns(),
                 },
             )
     }
@@ -74,6 +78,8 @@ impl QueryTimes {
         let open = self.open.get()
         let ask? = open.last() else { return }
         let whole = avra_cpu_ns() - ask.began
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
+        let wall = now_ns() - ask.began_wall
         let outer = open.take(open.length - 1)
         self.open.set(outer)
         let under_itself = outer.any(it.family == ask.family)
@@ -88,10 +94,18 @@ impl QueryTimes {
             .families
             .put(
                 ask.family,
-                was with { own: was.own + whole - ask.nested, whole: was.whole + if under_itself { 0 } else { whole }, asks: was.asks + 1 },
+                was with { own: was.own + whole - ask.nested, whole: was.whole + if under_itself { 0 } else { whole }, asks: was.asks + 1, whole_wall: was.whole_wall + if under_itself { 0 } else { wall } },
             )
         let asker? = outer.last() else { return }
         self.open.set_at(outer.length - 1, asker with { nested: asker.nested + whole })
+    }
+
+    /// The wall time, in ms, the phases named took, each whole, summed — the work they waited on in
+    /// other processes included; 0 where none of them ran. Names no one of which runs inside another.
+    fn phases_wall_ms(names: List<string>) -> int {
+        let all = self.families.get().values()
+        [f for f in all if outside_side(f.side) && names.any(f.family == it + side_word(TimedSide.Outside))]
+            .fold(0, (sum, f) -> sum + f.whole_wall) / 1000000
     }
 
     /// Each family timed, the most time of its own first.
