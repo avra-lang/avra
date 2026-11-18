@@ -3,22 +3,29 @@
 //! a sublanguage it imports or a component another module declares. `w {` reads as the block, so the
 //! word is the file's alone. A read is no binder; a template's binders are judged where it was written,
 //! and left out here.
-use core.{At, ExprId, Span, StmtId, SyntaxArena}
+use core.{At, ExprId, NodeKind, Span, StmtId, SyntaxArena}
 use compiler.laws.{Found, law}
 use compiler.resolve.{block_word_worn}
 use diagnostics.{Voice}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// Every name the written item `at` of `file` binds or declares that is a block word there.
-fn worn_block_words(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
-    let shapes = word_shapes(engine, file)
-    let words = [c.word for c in shapes.components if !c.own]
+/// Whether a word opens a block in the file of `view`'s item.
+fn words_open_blocks(view: ItemView) -> bool { !block_words(view.engine, view.file).is_empty() }
+
+/// Every name the node `at` of `view`'s item binds or declares that is a block word there.
+fn worn_block_words(view: ItemView, at: At) -> List<Found> {
+    let binders = binders_at(view.item.store, at)
+    if binders.is_empty() { return [] }
+    let words = block_words(view.engine, view.file)
+    [Found { at: b.at, args: [b.word] } for b in binders if words.contains(b.word)]
+}
+
+/// The words that open a block in `file`: a component another module declares, and a sublanguage
+/// it imports.
+fn block_words(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
+    [c.word for c in word_shapes(engine, file).components if !c.own]
         .concat([g.word for g in file_grammars(engine, file)])
-    if words.is_empty() { return [] }
-    let item = read_item(engine, file, at)
-    [Found { at: b.at, args: [b.word] } for s in item.stmts for k in under(item.store, At.Stmt(s)) for b in binders_at(item.store, k) if words.contains(b.word)]
 }
 
 /// A name a node binds or declares, and where its refusal points.
@@ -59,7 +66,25 @@ fn expr_binders(store: SyntaxArena, e: ExprId) -> List<Binder> {
 /// a block word is the file's alone — no declaration or binder wears it
 export law block_word_unworn {
     kind: "resolve.block_word"
-    reads: worn_block_words
+    on: [
+        NodeKind.StmtFnDecl,
+        NodeKind.StmtStructDecl,
+        NodeKind.StmtNamedType,
+        NodeKind.StmtAlias,
+        NodeKind.StmtEnumDecl,
+        NodeKind.StmtComponentDecl,
+        NodeKind.StmtCollectEnum,
+        NodeKind.StmtLet,
+        NodeKind.StmtMutLet,
+        NodeKind.StmtConstDecl,
+        NodeKind.StmtForEach,
+        NodeKind.StmtLetElse,
+        NodeKind.StmtCollect,
+        NodeKind.ExprLambda,
+        NodeKind.ExprMatch,
+    ]
+    judge: worn_block_words
+    judged_if: words_open_blocks
     voice: worn_words
     witness: "use @x.c.{work}\nlet work = 1\n0\n"
 }

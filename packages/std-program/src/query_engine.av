@@ -8,7 +8,7 @@ use @std.io.{env, exists, stamp}
 use @std.path.{dir_of}
 use @std.time.{now_ms}
 use sorted.{sorted_by}
-use @std.text.{from_codepoints, parse_int}
+use @std.text.{from_codepoints, parse_int, text_before}
 use address.{SourceFileAddress}
 use frontier.{CUT_MOVED, CUT_STANDS, EntryAt, Frontier, FrontierLearned, HeldEntry, NOT_CUT}
 use package_sets.{NO_NAMES, NameSets, name_sets}
@@ -16,7 +16,7 @@ use input_stamps.{InputStamp, places_now}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use query_times.{QueryTimes, TimedSide, query_times}
-use saved_layout.{SavedBytes, SavedList, SavedSlots}
+use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
 use answer_record.{
     AnswerRecord,
     ContentHash,
@@ -187,6 +187,22 @@ impl SettledAnswer {
         match self { .Learned(entry) -> entry.answer, .Standing(_, answer, _, _) -> answer }
     }
 }
+
+/// The question a settled answer answers.
+fn settled_question(s: SettledAnswer) -> ContentHash {
+    match s { .Learned(entry) -> entry.question, .Standing(question, _, _, _) -> question }
+}
+
+/// How many questions a settled answer read.
+fn settled_read_count(s: SettledAnswer) -> int {
+    match s {
+        .Learned(entry) -> entry.read_count(),
+        .Standing(_, _, f, place) -> f.entry_at(place).read_count(),
+    }
+}
+
+/// One query's read lists over the answers a process settled: how many, and the longest.
+export type QueryReadList = { query: string, answers: int, longest: int }
 
 /// What this process knows of its binary's frontier.
 enum FrontierState {
@@ -767,6 +783,31 @@ impl QueryEngine {
     /// The query of each question this process computed, in the order they ran.
     fn computed_queries() -> List<string> { self.computed.get() }
 
+    /// HOW LONG THE READ LISTS ARE that the answers this process settled stand on, by query: how many
+    /// answers, and the most questions any one of them read — what asking whether it stands costs.
+    fn read_lists() -> List<QueryReadList> {
+        mut by_query: Map<string, QueryReadList> = {}
+        for s in self.settled_answers.values() {
+            let name = self.store.question_known_as(settled_question(s))?.query_name ?? "?"
+            let read = settled_read_count(s)
+            let held = by_query.get(name) ?? QueryReadList { query: name, answers: 0, longest: 0 }
+            by_query
+                .set(
+                    name,
+                    QueryReadList {
+                        query: name,
+                        answers: held.answers + 1,
+                        longest: if read > held.longest { read } else { held.longest },
+                    },
+                )
+        }
+        sorted_by(
+            by_query.values(),
+            (a, b) -> a.longest > b.longest ||
+                a.longest == b.longest && text_before(a.query, b.query),
+        )
+    }
+
     /// Runs the query, keeps what came out, and answers its hash, timed when asks are. Where
     /// another process working beside this one is working the question out, it is waited for and
     /// its answer taken where its record stands here.
@@ -1127,7 +1168,12 @@ impl QueryEngine {
         if why != null { return why }
         self
             .lent_places
-            .set(self.lent_places.get().with_table(self.lent.get().length, lent.high_words))
+            .set(
+                self
+                    .lent_places
+                    .get()
+                    .with_table(self.lent.get().length, lent.source, lent.high_words),
+            )
         self.lent.push(lent)
         null
     }
@@ -1208,8 +1254,8 @@ fn no_lent_places() -> LentPlaces { LentPlaces { high_words: [], tables: [], pla
 
 impl LentPlaces {
     /// These places and those of the table numbered `lender`, whose keys' high words are `added`
-    /// in order: the two merged, a table's own keys keeping their order.
-    fn with_table(lender: int, added: SavedList) -> LentPlaces {
+    /// in order, lying in `source`: the two merged, a table's own keys keeping their order.
+    fn with_table(lender: int, source: SavedSource, added: SavedList) -> LentPlaces {
         mut high_words: List<int> = []
         mut tables: List<int> = []
         mut places: List<int> = []
@@ -1217,14 +1263,15 @@ impl LentPlaces {
         mut theirs = 0
         while mine < self.high_words.length || theirs < added.length {
             let takes_mine = theirs >= added.length ||
-                mine < self.high_words.length && self.high_words[mine] <= added.number_at(theirs)
+                mine < self.high_words.length &&
+                    self.high_words[mine] <= added.number_at(source, theirs)
             if takes_mine {
                 high_words.push(self.high_words[mine])
                 tables.push(self.tables[mine])
                 places.push(self.places[mine])
                 mine = mine + 1
             } else {
-                high_words.push(added.number_at(theirs))
+                high_words.push(added.number_at(source, theirs))
                 tables.push(lender)
                 places.push(theirs)
                 theirs = theirs + 1
@@ -1266,7 +1313,7 @@ export fn waits_said() -> string {
 /// ANSWERS LENT WHERE THEY LIE: a table sorted by question, its keys' high words in `high_words`;
 /// `low_word_at` reads the low word of the key at a place and `entry_at` the entry there, each
 /// absent where it can't be read.
-export type LentAnswers = { high_words: SavedList, low_word_at: fn(int) -> int?, entry_at: fn(int) -> HeldEntry? }
+export type LentAnswers = { source: SavedSource, high_words: SavedList, low_word_at: fn(int) -> int?, entry_at: fn(int) -> HeldEntry? }
 
 /// The entry a settled answer is as this process learned it; absent for one that stood in the
 /// frontier.

@@ -60,13 +60,15 @@ impl StmtLowers for ForEach {
     }
 }
 
-/// `for x in xs` or `for i, x in xs`: the list read once, each turn binding its place and its element.
+/// `for x in xs` or `for i, x in xs`: the list read once — a text's `chars` view the text itself, each
+/// code point decoded where it stands — each turn binding its place and its element.
 fn listed_each(mut cx: Lowering, f: ForEach, elem: SignedType) {
     cx.reshaped()
-    let w = cx.walk_list(cx.lower(f.subject), elem)
+    let text = cx.chars_viewed(f.subject)
+    let w = if text != null { cx.walk_chars(cx.lower(text!)) } else { cx.walk_list(cx.lower(f.subject), elem) }
     let here = cx.walk_turn(w)
-    if f.index != null { cx.bind(f.index!.of, Bound.Value(here, owned_type("int"))) }
-    turned_body(cx, f, cx.element_at(w.elem_layout, w.list!, here), elem)
+    if f.index != null { cx.bind(f.index!.of, Bound.Value(cx.walk_place(w, here), owned_type("int"))) }
+    turned_body(cx, f, cx.walked_element(w, here), elem)
 }
 
 /// `for k, v in m`: its keys and its values read once, side by side, each turn binding a key, then its

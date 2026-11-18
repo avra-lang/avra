@@ -27,13 +27,15 @@ export fn file_cases(engine: QueryEngine, file: SourceFileAddress) -> FileCases 
     let text = source_text(engine, file) ?? ""
     FileCases {
         cases: flatten(
-            [item_cases(read_item(engine, file, at), at, text) for at in 0..item_count(engine, file)],
+            [item_cases(engine, file, read_item(engine, file, at), at, text) for at in 0..item_count(engine, file)],
         ),
     }
 }
 
-/// The cases the item `at` of a file whose text is `text` writes in its spec.
-fn item_cases(item: ReadItem, at: int, text: string) -> List<CaseAt> {
+/// The cases the item `at` of `file`, whose text is `text`, writes in its spec.
+fn item_cases(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, at: int, text: string) -> List<
+    CaseAt,
+> {
     flatten(
         [[CaseAt {
             item: at,
@@ -41,7 +43,16 @@ fn item_cases(item: ReadItem, at: int, text: string) -> List<CaseAt> {
             suite: parts!.name,
             group: c.group,
             name: c.name,
-            line: line_at(text, c.span?.lo ?? 0),
+            line: line_at(
+                text,
+                file_placed(
+                    engine,
+                    file,
+                    at,
+                    FindingAt { lo: c.span?.lo ?? 0, hi: c.span?.lo ?? 0 },
+                )
+                    .lo,
+            ),
         } for k, c in parts!.cases] for s in item.stmts for parts in [item.store.spec_parts(s)] if parts != null],
     )
 }
@@ -52,8 +63,8 @@ fn line_at(text: string, at: int) -> int { text.substring(0, if at < text.length
 /// The symbol a case's unit is known by: its file's and its place among the file's cases.
 export fn case_symbol(file: SourceFileAddress, k: int) -> string { "case\$${file.package_name}/${file.path_in_package}\$${k}" }
 
-/// A case's own source: its body's text, the place in its file the case's item reading of it starts
-/// at, and the words its spec's item reads under.
+/// A case's own source: its body's text, the place in its spec's item the case's reading of it
+/// starts at, and the words its spec's item reads under.
 @derive(Saved)
 type CaseSource = { start: int, text: string, context: Bytes }
 
@@ -72,7 +83,7 @@ fn case_source(engine: QueryEngine, file: SourceFileAddress, at: int, index: int
     let under = item_under(engine, file, at)
     CaseSource {
         start: span.lo - CASE_HEAD.length,
-        text: CASE_HEAD + under.text.substring(span.lo - under.start, span.hi - under.start),
+        text: CASE_HEAD + under.text.substring(span.lo, span.hi),
         context: under.context,
     }
 }
@@ -81,10 +92,11 @@ fn case_source(engine: QueryEngine, file: SourceFileAddress, at: int, index: int
 /// its body signed: no seats, a bool answered.
 fn case_signed(engine: QueryEngine, file: SourceFileAddress, at: int, index: int) -> SignedBody? {
     let src? = case_source(engine, file, at, index) else { return null }
-    let under = ItemUnder { start: src.start, text: src.text, context: src.context }
+    let under = ItemUnder { text: src.text, context: src.context }
     let item = held_read(
         written_key(file, at, src.start, src.text),
-        () -> placed_item(engine, file, under),
+        () -> placed_item(engine, file, under, src.start),
+        at,
     )
     let stmt? = item.stmts.find((s) -> item.store.fn_parts(s) != null) else { return null }
     SignedBody {

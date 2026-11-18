@@ -85,7 +85,7 @@ use @std.program.sorted.{order_by_words}
 use @std.meta.{derive}
 use @std.program.query_times.{TimedSide}
 use @std.program.answer_record.{ContentHash, Question, content_hash}
-use @std.program.saved_layout.{SavedRecord, SavedSlots}
+use @std.program.saved_layout.{SavedBytes, SavedList, SavedRecord, SavedSlots, SavedSource}
 use @std.text.{text_before}
 use @std.io.{env}
 
@@ -141,18 +141,18 @@ export fn program_reached(engine: QueryEngine, file: SourceFileAddress) -> Progr
     let kept = walked.entry_kept
     let root = entry.placed_keeping(kept)
     let walk = Walked {
-        met: [Met { called: u.called, facts: unit_facts(engine, u.called)!, kept: u.kept } for u in walked.units],
+        met: [Met { called: u.called, facts: unit_facts_lying(engine, u.called)!, kept: u.kept } for u in walked.units],
         externs: walked.externs,
         unlowered: walked.unlowered,
     }
     let wrappers = distinct_wrappers(
-        root.wrappers.concat(flatten([m.facts.wrappers for m in walk.met])),
+        root.wrappers.concat(flatten([m.facts.wrappers() for m in walk.met])),
     )
     let rows = flatten([some_list(declared_row(engine, c)) for c in walk.externs])
     let named = [placed_names(engine, m.called, m.kept) for m in walk.met]
     let root_named = lowered_names(root)
     let wrapped = [wrapper_body(w) for w in wrappers]
-    let bodies = flatten([m.facts.declared for m in walk.met])
+    let bodies = flatten([m.facts.declared() for m in walk.met])
         .concat([lifted_seen(l) for l in root.lifts])
         .concat(
             [BodySeen { name: w.name, seats: w.seats, answer: w.answer ?? Layout.Void } for w in wrapped],
@@ -260,7 +260,7 @@ export fn program_walked(engine: QueryEngine, file: SourceFileAddress) -> Progra
                     facts_high: questions[i].high_word,
                     facts_low: questions[i].low_word,
                     callees: flatten(
-                        [[questions[at!].high_word, questions[at!].low_word] for c in m.facts.callees for at in [at_symbol.get(c.symbol)] if at != null],
+                        [[questions[at!].high_word, questions[at!].low_word] for symbol in m.facts.called_symbols() for at in [at_symbol.get(symbol)] if at != null],
                     ),
                     reaches: survey.reaches(m.called),
                     links: survey.links(body_at(m.called)),
@@ -328,11 +328,12 @@ export fn program_refused(engine: QueryEngine, file: SourceFileAddress, package:
 @cut_query
 fn strays_in(engine: QueryEngine, file: SourceFileAddress) -> bool { !strays_of(engine, file).is_empty() }
 
-/// Where each statement `file` runs at its top stands: what a file other than its program's entry
-/// may not hold, since only the entry runs statements. Only an item that runs one is read back.
-export fn strays_of(engine: QueryEngine, file: SourceFileAddress) -> List<Span> {
+/// Where each statement `file` runs at its top stands in the file: what a file other than its
+/// program's entry may not hold, since only the entry runs statements. Only an item that runs one is
+/// read back.
+export fn strays_of(engine: QueryEngine, file: SourceFileAddress) -> List<FindingAt> {
     flatten(
-        [[sp! for s in item.stmts if !item.store.is_declaration(s) for sp in [item.store.stmt_span(s)] if sp != null] for at in 0..item_count(engine, file) if runs_in(engine, file, at) for item in [read_item(engine, file, at)]],
+        [[file_placed(engine, file, at, FindingAt { lo: sp!.lo, hi: sp!.hi }) for s in item.stmts if !item.store.is_declaration(s) for sp in [item.store.stmt_span(s)] if sp != null] for at in 0..item_count(engine, file) if runs_in(engine, file, at) for item in [read_item(engine, file, at)]],
     )
 }
 
@@ -446,7 +447,7 @@ export fn file_refused(
     units: List<CalledFn>,
     unlowered: List<Missed>,
 ) -> FileRefusal {
-    let facts = [unit_facts(engine, c) for c in units]
+    let facts = [unit_facts_lying(engine, c) for c in units]
     let faceted = [i for i, f in facts if f != null]
     let reached = entry || !faceted.is_empty() || !unlowered.is_empty()
     FileRefusal {
@@ -470,9 +471,9 @@ export fn file_refused(
 }
 
 /// Whether a body of `file` with `facts` refuses a build; none for a body with none.
-fn facts_refuse(engine: QueryEngine, file: SourceFileAddress, facts: UnitFacts?) -> bool {
+fn facts_refuse(engine: QueryEngine, file: SourceFileAddress, facts: FactsAt?) -> bool {
     let held? = facts else { return false }
-    body_refuses(engine, file, held.refused, held.unread)
+    body_refuses(engine, file, held.refused(), held.unread())
 }
 
 /// Whether a body of `file` is no program: a seat refused `refused` of its nodes, or a name among
@@ -658,7 +659,7 @@ impl ShapeFold {
             .find((m) -> unit_facts_c_in(m.question)?.symbol == u.called.symbol)
         let before? = (if facts_moved == null { facts } else { unit_facts_was(self.engine, facts_moved!) }) else { return null }
         let kept = self.kept_of(u.called.symbol, facts)
-        if unit_unmade(facts, kept) != null { return null }
+        if facts_unmade(facts.missing, facts.tests, kept) != null { return null }
         if !self.calls_alike(before, facts) { return null }
         if seen_text(before.declared) != seen_text(facts.declared) ||
             wrapped_text(before.wrappers) != wrapped_text(facts.wrappers) {
@@ -1092,7 +1093,7 @@ fn unit_home(u: ReachedUnit) -> int { home_bucket(spelled_file(u.called.file)) }
 
 /// A PROGRAM'S SHAPE READ WHERE ITS ANSWER LIES: each part decoded when it's asked for, and a body
 /// only where one is wanted, so a build that remakes one bucket decodes that bucket's bodies alone.
-export type ShapeAt = { shape: SavedRecord }
+export type ShapeAt = { source: SavedSource, shape: SavedRecord }
 
 /// What a program reaches: its shape where it lies, or why it isn't made yet.
 export enum ShapeReached {
@@ -1103,9 +1104,10 @@ export enum ShapeReached {
 /// `program_reached`'s answer for `file`, read where it lies.
 export fn shape_reached(engine: QueryEngine, file: SourceFileAddress) -> ShapeReached {
     let reach = program_reached_saved(engine, file)
-    match reach.variant_within(2) {
-        0 -> ShapeReached.At(ShapeAt { shape: reach.record_at(0)! }),
-        _ -> match ProgramReach.read_from(reach) {
+    match reach.node.variant_within(2) {
+        0 -> ShapeReached
+            .At(ShapeAt { source: reach.source, shape: reach.node.record_in(reach.source, 0) }),
+        _ -> match ProgramReach.read_from(reach.source, reach.node) {
             .Unmade(why, at) -> ShapeReached.Unmade(why, at),
             .Program(_s) -> ShapeReached.Unmade(runs_nothing(), spelled_file(file)),
         },
@@ -1113,30 +1115,34 @@ export fn shape_reached(engine: QueryEngine, file: SourceFileAddress) -> ShapeRe
 }
 
 impl ShapeAt {
-    fn unit_count() -> int { ReachedProgram.units_in_place(self.shape).length }
+    fn unit_count() -> int { ReachedProgram.units_in_place(self.source, self.shape).length }
 
     /// The `at`th body it reaches.
-    fn unit(at: int) -> ReachedUnit { ReachedUnit.read_from(ReachedProgram.units_in_place(self.shape).record_at(at)!) }
+    fn unit(at: int) -> ReachedUnit { ReachedUnit
+            .read_from(
+                self.source,
+                ReachedProgram.units_in_place(self.source, self.shape).record_in(self.source, at),
+            ) }
 
-    fn homes() -> List<int> { ReachedProgram.homes_in(self.shape) }
+    fn homes() -> List<int> { ReachedProgram.homes_in(self.source, self.shape) }
 
-    fn unit_keys() -> List<int> { ReachedProgram.unit_keys_in(self.shape) }
+    fn unit_keys() -> List<int> { ReachedProgram.unit_keys_in(self.source, self.shape) }
 
-    fn entry_kept() -> TestsKept { ReachedProgram.entry_kept_in(self.shape) }
+    fn entry_kept() -> TestsKept { ReachedProgram.entry_kept_in(self.source, self.shape) }
 
-    fn entry_sees() -> string { ReachedProgram.entry_sees_in(self.shape) }
+    fn entry_sees() -> string { ReachedProgram.entry_sees_in(self.source, self.shape) }
 
-    fn externs() -> List<CalledFn> { ReachedProgram.externs_in(self.shape) }
+    fn externs() -> List<CalledFn> { ReachedProgram.externs_in(self.source, self.shape) }
 
-    fn unlowered() -> List<Missed> { ReachedProgram.unlowered_in(self.shape) }
+    fn unlowered() -> List<Missed> { ReachedProgram.unlowered_in(self.source, self.shape) }
 
-    fn wrappers() -> List<FnWrapper> { ReachedProgram.wrappers_in(self.shape) }
+    fn wrappers() -> List<FnWrapper> { ReachedProgram.wrappers_in(self.source, self.shape) }
 
-    fn stand_ins() -> List<StandIn> { ReachedProgram.stand_ins_in(self.shape) }
+    fn stand_ins() -> List<StandIn> { ReachedProgram.stand_ins_in(self.source, self.shape) }
 
-    fn hashed() -> List<HashCall> { ReachedProgram.hashed_in(self.shape) }
+    fn hashed() -> List<HashCall> { ReachedProgram.hashed_in(self.source, self.shape) }
 
-    fn declared() -> List<BodySeen> { ReachedProgram.declared_in(self.shape) }
+    fn declared() -> List<BodySeen> { ReachedProgram.declared_in(self.source, self.shape) }
 
     /// The `at`th body as its bucket's key holds it, `keys` its words: its lowering's answer hash,
     /// then the hash of its symbol, the tests it keeps and what it sees.
@@ -1243,8 +1249,8 @@ export fn program_code_shape(engine: QueryEngine, file: SourceFileAddress) -> Pr
 /// answers; none where the program isn't made.
 export fn program_externs(engine: QueryEngine, file: SourceFileAddress) -> List<CalledFn> {
     let reach = program_code_shape_saved(engine, file)
-    if reach.variant_within(2) != 0 { return [] }
-    ReachedProgram.externs_in(reach.record_at(0)!)
+    if reach.node.variant_within(2) != 0 { return [] }
+    ReachedProgram.externs_in(reach.source, reach.node.record_in(reach.source, 0))
 }
 
 /// The name of every row a body of `file`'s program may name: the runtime's, then each its externs
@@ -1253,8 +1259,8 @@ export fn program_externs(engine: QueryEngine, file: SourceFileAddress) -> List<
 @query
 fn program_row_names(engine: QueryEngine, file: SourceFileAddress) -> List<string>? {
     let reach = program_code_shape_saved(engine, file)
-    if reach.variant_within(2) != 0 { return null }
-    let externs = ReachedProgram.externs_in(reach.record_at(0)!)
+    if reach.node.variant_within(2) != 0 { return null }
+    let externs = ReachedProgram.externs_in(reach.source, reach.node.record_in(reach.source, 0))
     [row.name for row in rt_sigs().concat(extern_rows(engine, externs))]
 }
 
@@ -1584,7 +1590,7 @@ export fn made_reaching(
         home,
     ) { .Met(w) -> w, .Stopped(why, at) -> { return MadeProgram.Unmade(why, at) } }
     let refusing = distinct_files(
-        refused_in.concat([m.called.file for m in walked.met if m.facts.refused > 0]),
+        refused_in.concat([m.called.file for m in walked.met if m.facts.refused() > 0]),
     )
     if !refusing.is_empty() { return MadeProgram.Refused(refusing) }
     made_walked(
@@ -1598,8 +1604,78 @@ export fn made_reaching(
     )
 }
 
-/// A body a walk took: the call it was met by, its facts, and which of its tests it keeps.
-type Met = { called: CalledFn, facts: UnitFacts, kept: TestsKept }
+/// A body a walk took: the call it was met by, its facts where they lie, and which of its tests it
+/// keeps.
+type Met = { called: CalledFn, facts: FactsAt, kept: TestsKept }
+
+/// A BODY'S FACTS, READ WHERE THEY LIE: a walk reads of each body only what it asks, and of each
+/// body it calls only the symbol until it is one not met before. `named` is the symbol a call
+/// names its own declaration by, where the facts lie unnamed.
+export type FactsAt = { source: SavedSource, lies: SavedRecord, named: string? }
+
+impl FactsAt {
+    fn missing() -> List<string> { if self.whole() { [] } else { UnitFacts.missing_in(self.source, self.lies) } }
+
+    /// Whether it carries no note of what wasn't lowered.
+    fn whole() -> bool { UnitFacts.missing_in_place(self.source, self.lies).length == 0 }
+
+    fn tests() -> List<TestHeld> { if UnitFacts.tests_in_place(self.source, self.lies).length == 0 { [] } else { UnitFacts.tests_in(self.source, self.lies) } }
+
+    /// Every site a test of the body, `tests`, or of its lambdas stands at.
+    fn sites_with(tests: List<TestHeld>) -> List<TestSite> {
+        let own = [t.site for t in tests]
+        if UnitFacts.lift_sites_in_place(self.source, self.lies).length == 0 { return own }
+        own.concat(flatten(UnitFacts.lift_sites_in(self.source, self.lies)))
+    }
+
+    fn cancels() -> BodyCancels { UnitFacts.cancels_in(self.source, self.lies) }
+
+    fn wrappers() -> List<FnWrapper> { UnitFacts.wrappers_in(self.source, self.lies) }
+
+    fn refused() -> int { UnitFacts.refused_in(self.source, self.lies) }
+
+    fn unread() -> List<UnreadAt> { if UnitFacts.unread_in_place(self.source, self.lies).length == 0 { [] } else { UnitFacts.unread_in(self.source, self.lies) } }
+
+    /// The calls it and its lambdas make, each where it lies.
+    fn calls() -> SavedList { UnitFacts.callees_in_place(self.source, self.lies) }
+
+    /// The symbol of each call it and its lambdas make.
+    fn called_symbols() -> List<string> {
+        let calls = self.calls()
+        [CalledFn.symbol_in(self.source, calls.record_in(self.source, i)) for i in 0..calls.length]
+    }
+
+    /// How a module declares it and its lambdas, its own declaration by the name a call gives it.
+    fn declared() -> List<BodySeen> {
+        let seen = UnitFacts.declared_in(self.source, self.lies)
+        let named? = self.named else { return seen }
+        [seen[0] with { name: named }].concat(seen.drop(1))
+    }
+}
+
+/// The facts of the body a call of `c` runs, where `body_facts` keeps them; absent where its
+/// declaration gives none.
+export fn facts_lying(engine: QueryEngine, c: CalledFn) -> FactsAt? {
+    facts_in(engine.answer_to(body_facts_question(engine, body_asked(engine, c))), c.symbol)
+}
+
+/// The facts of the body a call of `c` runs, where `unit_facts` keeps them, named as `c` names it.
+fn unit_facts_lying(engine: QueryEngine, c: CalledFn) -> FactsAt? {
+    facts_in(engine.answer_to(unit_facts_question(engine, c)), null)
+}
+
+/// The facts the answer `saved` keeps, where they lie, named `named`; absent where it keeps none.
+fn facts_in(saved: SavedBytes, named: string?) -> FactsAt? {
+    let root = saved.root()
+    if !root.holds_child_at(saved.source, 0) { return null }
+    FactsAt { source: saved.source, lies: root.record_in(saved.source, 0), named: named }
+}
+
+/// A stretch of a walk's worklist: calls in hand, or the calls of a met body where its facts lie.
+enum Calls {
+    Held(calls: List<CalledFn>)
+    Lying(source: SavedSource, calls: SavedList)
+}
 
 /// One walk of what a program reaches, in the order it met each, read from the bodies' facts: the
 /// bodies it took, the externs it met, and each body it went past, why it isn't lowered yet.
@@ -1621,9 +1697,10 @@ enum Walking {
 
 /// Why a body whose saved facts are `facts`, with the tests `kept` placed, isn't lowered: no body
 /// here, or the first note it carries; absent where it is.
-fn unit_unmade(facts: UnitFacts?, kept: TestsKept) -> string? {
-    let f? = facts else { return no_body_here() }
-    notes_kept(f.missing, [t.noted for t in f.tests], [kept.keeps(t.site) for t in f.tests]).first()
+/// The first note a body with the notes `missing` and the tests `tests` carries where `kept` are
+/// placed; absent where it is lowered.
+fn facts_unmade(missing: List<string>, tests: List<TestHeld>, kept: TestsKept) -> string? {
+    notes_kept(missing, [t.noted for t in tests], [kept.keeps(t.site) for t in tests]).first()
 }
 
 /// The bodies `root` reaches, read from their saved facts with the tests `checks` names kept, each
@@ -1676,7 +1753,7 @@ fn walked(
     home: SourceFileAddress? = null,
 ) -> Walking {
     let engine = survey.engine
-    mut queue = start
+    mut queue: List<Calls> = [Calls.Held(start)]
     mut met: List<Met> = []
     mut externs: List<CalledFn> = []
     mut unlowered: List<Missed> = []
@@ -1686,52 +1763,65 @@ fn walked(
     mut read: Map<string, bool> = {}
     if home != null { read.set(spelled_file(home!), true) }
     mut bodiless: Map<string, bool> = {}
-    mut at = 0
+    mut stretch = 0
     engine.kept_times()?.opened("the walk", TimedSide.Outside)
-    while at < queue.length {
-        let c = met_for(queue[at], program)
-        at = at + 1
-        if seen.has(c.symbol) { continue }
-        if !read.has(spelled_file(c.file)) {
-            read.set(spelled_file(c.file), true)
-            // LICENSED loops.push_loop: the walk's own worklist grows while it is walked; a `concat` copies it per body
-            for h in hosted_in(engine, c.file, program) { queue.push(h) }
-        }
-        if c.external {
-            if !bodiless.has(c.symbol) {
-                bodiless.set(c.symbol, true)
-                externs.push(c)
+    while stretch < queue.length {
+        let calls = queue[stretch]
+        stretch = stretch + 1
+        let count = match calls { .Held(held) -> held.length, .Lying(_, lying) -> lying.length }
+        for i in 0..count {
+            let c = match calls {
+                .Held(held) -> met_for(held[i], program),
+                .Lying(source, lying) -> {
+                    let call = lying.record_in(source, i)
+                    if seen.has(CalledFn.symbol_in(source, call)) { continue }
+                    met_for(CalledFn.read_from(source, call), program)
+                },
             }
-            continue
-        }
-        seen.set(c.symbol, true)
-        if c.hosted { externs.push(c) }
-        if lazy && held_as_value.has(c.symbol) {
-            deferred.push(c)
-            continue
-        }
-        let facts = facts_read(engine, c)
-        let kept = survey.kept_where(facts, checks)
-        let why = unit_unmade(facts, kept)
-        if why != null {
-            let gone = Missed {
-                symbol: c.symbol,
-                why: why!,
-                file: c.file,
-                refused: facts?.refused ?? 0,
-                unread: facts?.unread ?? [],
+            if seen.has(c.symbol) { continue }
+            if !read.has(spelled_file(c.file)) {
+                read.set(spelled_file(c.file), true)
+                let hosted = hosted_in(engine, c.file, program)
+                // LICENSED loops.push_loop: the walk's own worklist grows while it is walked
+                if !hosted.is_empty() { queue.push(Calls.Held(hosted)) }
             }
-            if missed != null { missed!.push(gone) }
-            if !going_past && missed == null { return Walking.Stopped(gone.why, c.symbol) }
-            unlowered.push(gone)
-            continue
+            if c.external {
+                if !bodiless.has(c.symbol) {
+                    bodiless.set(c.symbol, true)
+                    externs.push(c)
+                }
+                continue
+            }
+            seen.set(c.symbol, true)
+            if c.hosted { externs.push(c) }
+            if lazy && held_as_value.has(c.symbol) {
+                deferred.push(c)
+                continue
+            }
+            let facts = facts_lying(engine, c)
+            let tests = facts?.tests() ?? []
+            let kept = survey.kept_at(facts?.sites_with(tests) ?? [], checks)
+            let why = if facts == null { no_body_here() } else { facts_unmade(facts!.missing(), tests, kept) }
+            if why != null {
+                let gone = Missed {
+                    symbol: c.symbol,
+                    why: why!,
+                    file: c.file,
+                    refused: facts?.refused() ?? 0,
+                    unread: facts?.unread() ?? [],
+                }
+                if missed != null { missed!.push(gone) }
+                if !going_past && missed == null { return Walking.Stopped(gone.why, c.symbol) }
+                unlowered.push(gone)
+                continue
+            }
+            let held = facts!
+            met.push(Met { called: c, facts: held, kept: kept })
+            // LICENSED loops.push_loop: the walk's lists grow in place, where a concat copies each whole every turn
+            for w in held.wrappers() { held_as_value.set(w.target, true) }
+            // LICENSED loops.push_loop: the walk's own worklist grows while it is walked
+            queue.push(Calls.Lying(held.source, held.calls()))
         }
-        let held = facts!
-        met.push(Met { called: c, facts: held, kept: kept })
-        // LICENSED loops.push_loop: the walk's lists grow in place, where a concat copies each whole every turn
-        for w in held.wrappers { held_as_value.set(w.target, true) }
-        // LICENSED loops.push_loop: the walk's lists grow in place, where a concat copies each whole every turn
-        for x in held.callees { queue.push(x) }
     }
     engine.kept_times()?.closed()
     let filed = missed?.get() ?? []

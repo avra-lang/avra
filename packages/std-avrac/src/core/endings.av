@@ -10,9 +10,9 @@
 export enum Ending {
     /// A task, or each in a list of them, joined.
     Joined(h: TaskHeld)
-    /// A deferred body's box called, its answer laid out as `answer`; where `on_error`, only where the
-    /// fn fails. `cleanup` names the region a trap unwinding past it lands in.
-    Deferred(box: Reg, answer: Layout, on_error: bool, cleanup: int)
+    /// A deferred body run as `run` says, its answer laid out as `answer`; where `on_error`, only where
+    /// the fn fails. `cleanup` names the region a trap unwinding past it lands in.
+    Deferred(run: DeferredRun, answer: Layout, on_error: bool, cleanup: int)
     /// A `within`'s deadline scope `scope` ended, whether an unwind it asked for ended there kept in
     /// the cell `cell`.
     Landed(scope: Reg, cell: Reg)
@@ -20,6 +20,16 @@ export enum Ending {
     /// then joined.
     Owned(owner: Reg, ty: SignedType)
 }
+
+/// How a deferred body runs: its box's code called through, handed the box; or the body, one call,
+/// lowered where it runs, each name it reads holding what it held where the `defer` stands.
+export enum DeferredRun {
+    Boxed(box: Reg)
+    InPlace(body: ExprId, held: List<HeldName>)
+}
+
+/// A name and what it holds.
+export type HeldName = { name: string, b: Bound }
 
 /// A `within` open around what's being lowered: the loop an unwind it catches leaves, by its place
 /// among the open loops, and the first scope its turn opened.
@@ -132,14 +142,14 @@ impl Lowering {
     /// Whether a value of `ty` holds tasks a scope joins.
     fn holds_tasks(ty: SignedType) -> bool { tasks_held(ty) != null }
 
-    /// The deferred body `box`, answering a value laid out as `answer`, called where the innermost
-    /// scope ends; where `on_error`, only where the fn fails. Its cleanup region opens here.
-    mut fn deferred(box: Reg, answer: Layout, on_error: bool) {
+    /// The deferred body `run`, answering a value laid out as `answer`, run where the innermost scope
+    /// ends; where `on_error`, only where the fn fails. Its cleanup region opens here.
+    mut fn deferred(run: DeferredRun, answer: Layout, on_error: bool) {
         let cleanup = self.cleanups.get()
         self.cleanups.set(cleanup + 1)
-        self.ends_with(Ending.Deferred(box, answer, on_error, cleanup))
+        self.ends_with(Ending.Deferred(run, answer, on_error, cleanup))
         self.emit(Ins.Cleanup(cleanup))
-        self.deferred_called(box, answer)
+        self.deferred_called(run, answer)
         self.scope_exit(null)
     }
 
@@ -165,28 +175,28 @@ impl Lowering {
     mut fn ending(x: Ending, leaving: Leaving) {
         match x {
             .Joined(h) -> self.settled(h),
-            .Deferred(box, answer, on_error, cleanup) -> if on_error { self.failed_ran(leaving, box, answer, cleanup) } else { self.deferred_ran(box, answer, cleanup) },
+            .Deferred(run, answer, on_error, cleanup) -> if on_error { self.failed_ran(leaving, run, answer, cleanup) } else { self.deferred_ran(run, answer, cleanup) },
             .Landed(scope, cell) -> self
                 .stored(cell, self.call_row(Layout.Word, rt_sig_of("avra_fiber_within_end")!, [scope])),
             .Owned(owner, ty) -> self.owner_settled(owner, ty),
         }
     }
 
-    /// The `errdefer` `box` run as `leaving` says: always by a failure, by an answer behind its tag,
+    /// The `errdefer` `run` run as `leaving` says: always by a failure, by an answer behind its tag,
     /// and by an end that decides nothing never.
-    mut fn failed_ran(leaving: Leaving, box: Reg, answer: Layout, cleanup: int) {
+    mut fn failed_ran(leaving: Leaving, run: DeferredRun, answer: Layout, cleanup: int) {
         match leaving {
-            .Failing -> self.deferred_ran(box, answer, cleanup),
-            .Answering(r) -> self.answered_ran(r, box, answer, cleanup),
+            .Failing -> self.deferred_ran(run, answer, cleanup),
+            .Answering(r) -> self.answered_ran(r, run, answer, cleanup),
             .Plain -> nothing_ended(),
         }
     }
 
-    /// The `errdefer` `box` run where the fn's answer `r` says by its tag that it failed.
-    mut fn answered_ran(r: Reg, box: Reg, answer: Layout, cleanup: int) {
+    /// The `errdefer` `run` run where the fn's answer `r` says by its tag that it failed.
+    mut fn answered_ran(r: Reg, run: DeferredRun, answer: Layout, cleanup: int) {
         if !self.fails_by_tag(r) { return }
         let failed = self.bin(Layout.Truth, BinOp.Ne, self.tag_of(r), self.const_int(0))
-        self.void_region(failed) { cx -> cx.deferred_ran(box, answer, cleanup) }
+        self.void_region(failed) { cx -> cx.deferred_ran(run, answer, cleanup) }
     }
 
     /// Whether the fn's answer `r` tells by its tag whether it failed: a `Result` laid out as the
@@ -197,19 +207,34 @@ impl Lowering {
         self.layout_of(r).spelled() == own.spelled()
     }
 
-    /// The deferred body `box` run by an exit: its cleanup region closed first, then the call.
-    mut fn deferred_ran(box: Reg, answer: Layout, cleanup: int) {
+    /// The deferred body `run` run by an exit: its cleanup region closed first, then the call.
+    mut fn deferred_ran(run: DeferredRun, answer: Layout, cleanup: int) {
         self.emit(Ins.Cleanup(cleanup))
         self.scope_exit(null)
-        self.deferred_called(box, answer)
+        self.deferred_called(run, answer)
     }
 
-    /// The code the deferred body `box` holds called, handed the box, its answer nothing reads.
-    mut fn deferred_called(box: Reg, answer: Layout) {
-        let code = self.code_of(box)
-        let dst = self.mint(answer)
-        self.box_seated(box, 0)
-        self.emit(Ins.CallPtr(dst, code, [box]))
+    /// The deferred body `run` called, its answer nothing reads: a box's code handed the box, or the
+    /// body lowered in a scope of its own binding each name it reads to what it held at the `defer`.
+    /// Neither is followed by a test: an unwind the call leaves for stands for the fn's own exit.
+    mut fn deferred_called(run: DeferredRun, answer: Layout) {
+        match run {
+            .Boxed(box) -> {
+                let code = self.code_of(box)
+                let dst = self.mint(answer)
+                self.box_seated(box, 0)
+                self.emit(Ins.CallPtr(dst, code, [box]))
+            },
+            .InPlace(body, held) -> {
+                self.opened()
+                for h in held { self.bind(h.name, h.b) }
+                let tested = self.untested
+                self.untested = true
+                let _ = self.dropped(body)
+                self.untested = tested
+                self.closed()
+            },
+        }
     }
 
     /// The task `h` names joined, or each in its list.

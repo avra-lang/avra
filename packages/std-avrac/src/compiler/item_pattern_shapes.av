@@ -3,7 +3,7 @@
 //! itself, so it always answers with its right; and, as the program layer types the subject a
 //! `match` reads, a format pattern matching a value that is no text, or a hole reading its span as
 //! a type text doesn't read as.
-use core.{At, ExprId, FormatPart, PatId, SyntaxArena, flatten}
+use core.{At, ExprId, FormatPart, NodeKind, PatId, SyntaxArena, flatten}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.enums.{fraction_unmatched, fraction_written}
@@ -18,17 +18,10 @@ use features.formats.{
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// Every node the written item `at` of `file` holds.
-fn item_nodes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<At> {
-    if at >= item_count(engine, file) { return [] }
-    let item = read_item(engine, file, at)
-    flatten([under(item.store, At.Stmt(top)) for top in item.stmts])
-}
-
-/// Every number pattern the written item `at` of `file` writes as a fraction; handed the fraction.
-fn fraction_patterns(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let store = read_item(engine, file, at).store
-    [Found { at: store.pat_span(p!), args: [fraction_written(b!)] } for k in item_nodes(engine, file, at) for p in [pat_at(k)] if p != null for b in [fraction_bits(store, p!)] if b != null]
+/// The number pattern `at` of `view`'s item where it writes a fraction; handed the fraction.
+fn fraction_patterns(view: ItemView, at: At) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.pat_span(p!), args: [fraction_written(b!)] } for p in [pat_at(at)] if p != null for b in [fraction_bits(store, p!)] if b != null]
 }
 
 /// The pattern the node `k` is, if it is one.
@@ -41,10 +34,10 @@ fn fraction_bits(store: SyntaxArena, p: PatId) -> int? {
     match store.pat(p) { .Lit(v) -> store.expr(v).bits_of(), rest -> null }
 }
 
-/// Every `??` the written item `at` of `file` writes whose left side is `null`, found at that side.
-fn coalesced_nulls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let store = read_item(engine, file, at).store
-    [Found { at: store.expr_span(sides[0]), args: [] } for k in item_nodes(engine, file, at) for sides in [coalesce_sides(store, k)] if sides.length == 2 && store.null_literal(sides[0])]
+/// The `??` `at` of `view`'s item where its left side is `null`, found at that side.
+fn coalesced_nulls(view: ItemView, at: At) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.expr_span(sides[0]), args: [] } for sides in [coalesce_sides(store, at)] if sides.length == 2 && store.null_literal(sides[0])]
 }
 
 /// The two sides of the `??` the node `k` is; none for any other node.
@@ -121,7 +114,8 @@ export law hole_read_as_text {
 /// a number pattern matches an `int`
 export law fraction_pattern {
     kind: "type.fraction_pattern"
-    reads: fraction_patterns
+    on: [NodeKind.PatLit]
+    judge: fraction_patterns
     voice: fraction_words
     witness: "fn f(x: int) -> int {\n    match x {\n        1.5 -> 1\n        _ -> 0\n    }\n}\n"
 }
@@ -129,7 +123,8 @@ export law fraction_pattern {
 /// `??` answers a nullable
 export law coalesce_on_null {
     kind: "type.coalesce"
-    reads: coalesced_nulls
+    on: [NodeKind.ExprCoalesce]
+    judge: coalesced_nulls
     voice: coalesce_words
     witness: "fn f() -> int { null ?? 1 }\n"
 }

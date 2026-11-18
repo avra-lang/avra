@@ -45,6 +45,13 @@ const WRITER_NAME: string = "writer"
 /// The writer, in generated code.
 fn writer_code() -> Code { name(WRITER_NAME) }
 
+/// What generated code calls the bytes a saved record is read from: every read hands it beside the
+/// record it reads.
+export const SOURCE_NAME: string = "source"
+
+/// The bytes a saved record is read from, in generated code.
+export fn source_code() -> Code { name(SOURCE_NAME) }
+
 /// A slot's number, in generated code.
 export fn slot_number(slot: int) -> Code { as_code(int_node(slot)) }
 
@@ -100,7 +107,8 @@ fn saved_methods(t: MetaType) -> Decls {
         }
 
         static fn from_saved_bytes(bytes: Bytes) -> ${t} {
-            ${name(t.name)}.read_from(saved_fields(bytes))
+            let ${SOURCE_NAME} = SavedSource.InMemory(bytes)
+            ${name(t.name)}.read_from(${source_code()}, saved_root_record(${source_code()}, bytes.length))
         }
 
         fn written_into(${WRITER_NAME}: SavedLayoutWriter) -> int { ${written_body(t)} }
@@ -111,36 +119,37 @@ fn saved_methods(t: MetaType) -> Decls {
             ${name(FOLDED)}
         }
 
-        static fn read_from(record: SavedRecord) -> ${t} { ${read_body(t)} }
+        static fn read_from(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> ${t} { ${read_body(t)} }
 
         ${[field_door(f, slot) for slot, f in t.fields]}
     }
 }
 
-/// `<field>_in(record)` reads one field of a saved record without the others, and a field holding a
-/// list, a record or octets also has `<field>_in_place(record)`, which copies nothing. A list's or a
-/// record's has `<field>_within(record, end)` too, absent unless it lies wholly before `end`: the
-/// door for octets another process wrote.
+/// `<field>_in(${source_code()}, record)` reads one field of a saved record without the others, and a field
+/// holding a list, a record or octets also has `<field>_in_place(${source_code()}, record)`, which copies
+/// nothing. A list's or a record's has `<field>_within(${source_code()}, record, end)` too, absent unless it
+/// lies wholly before `end`: the door for octets another process wrote. `source` is where the
+/// record's bytes are.
 fn field_door(f: Field, slot: int) -> Decls {
     let number = slot_number(slot)
     let shape = shape_of_field(f)
     let read = quote {
-        static fn ${"${f.name}_in"}(record: SavedRecord) -> ${f.ty} { ${slot_read(shape, quote { record }, number)} }
+        static fn ${"${f.name}_in"}(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> ${f.ty} { ${slot_read(shape, quote { record }, number)} }
     }
     match shape {
         .Listed(_) -> quote {
             ${read}
-            static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedList { record.list_at(${number})! }
-            static fn ${"${f.name}_within"}(record: SavedRecord, end: int) -> SavedList? { record.list_within_at(${number}, end) }
+            static fn ${"${f.name}_in_place"}(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> SavedList { record.list_in(${source_code()}, ${number}) }
+            static fn ${"${f.name}_within"}(${SOURCE_NAME}: SavedSource, record: SavedRecord, end: int) -> SavedList? { record.list_within_at(${source_code()}, ${number}, end) }
         },
         .Declared(_, _) -> quote {
             ${read}
-            static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedRecord { record.record_at(${number})! }
-            static fn ${"${f.name}_within"}(record: SavedRecord, end: int) -> SavedRecord? { record.record_within_at(${number}, end) }
+            static fn ${"${f.name}_in_place"}(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> SavedRecord { record.record_in(${source_code()}, ${number}) }
+            static fn ${"${f.name}_within"}(${SOURCE_NAME}: SavedSource, record: SavedRecord, end: int) -> SavedRecord? { record.record_within_at(${source_code()}, ${number}, end) }
         },
         .Octets -> quote {
             ${read}
-            static fn ${"${f.name}_in_place"}(record: SavedRecord) -> SavedBytes { record.octets_in_place_at(${number})! }
+            static fn ${"${f.name}_in_place"}(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> SavedBytes { record.octets_in_place_at(${source_code()}, ${number})! }
         },
         .Int or .Offset or .Float or .Bool or .Text or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Id(_, _, _) or .Placed(_, _) or .Tags(_, _, _) -> read,
     }
@@ -225,12 +234,12 @@ fn saved_form(shape: ValueShape) -> SavedForm {
     match shape {
         .Int or .Offset -> SavedForm {
             written: (value: Code) -> number_slot(shape, value),
-            read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) },
+            read: (node: Code, slot: Code) -> quote { ${node}.number_at(${source_code()}, ${slot}) },
             folded: (value: Code) -> number_folded(shape, value),
         },
         .Float -> SavedForm {
             written: (value: Code) -> number_slot(shape, value),
-            read: (node: Code, slot: Code) -> quote { ${node}.float_at(${slot}) },
+            read: (node: Code, slot: Code) -> quote { ${node}.float_at(${source_code()}, ${slot}) },
             folded: (value: Code) -> number_folded(shape, value),
         },
         .Tags(type_name, _, variants) -> SavedForm {
@@ -238,30 +247,30 @@ fn saved_form(shape: ValueShape) -> SavedForm {
             read: (node: Code, slot: Code) -> tag_made(
                 type_name,
                 variants,
-                quote { ${node}.number_at(${slot}) },
+                quote { ${node}.number_at(${source_code()}, ${slot}) },
             ),
             folded: (value: Code) -> number_folded(shape, value),
         },
         .Bool -> SavedForm {
             written: (value: Code) -> number_slot(shape, value),
-            read: (node: Code, slot: Code) -> quote { ${node}.number_at(${slot}) == 1 },
+            read: (node: Code, slot: Code) -> quote { ${node}.number_at(${source_code()}, ${slot}) == 1 },
             folded: (value: Code) -> number_folded(shape, value),
         },
         .Text -> SavedForm {
             written: (value: Code) -> quote { ${writer_code()}.child(${writer_code()}.write_text(${value})) },
-            read: (node: Code, slot: Code) -> quote { ${node}.text_at(${slot})! },
+            read: (node: Code, slot: Code) -> quote { ${node}.text_at(${source_code()}, ${slot})! },
             folded: (value: Code) -> quote { ${name(FOLDED)} = ${name(FOLD_LANE)}.tagged_text(${name(FOLDED)}, ${value}) },
         },
         .Octets -> SavedForm {
             written: (value: Code) -> quote { ${writer_code()}.child(${writer_code()}.write_octets(${value})) },
-            read: (node: Code, slot: Code) -> quote { ${node}.octets_at(${slot})! },
+            read: (node: Code, slot: Code) -> quote { ${node}.octets_at(${source_code()}, ${slot})! },
             folded: (value: Code) -> quote { ${name(FOLDED)} = ${name(FOLD_LANE)}.octets(${name(FOLDED)}, ${value}) },
         },
         .Listed(element) -> SavedForm {
             written: (value: Code) -> listed_written(element, value),
             read: (node: Code, slot: Code) -> {
                 let item_read = slot_read(element, quote { items }, quote { position })
-                quote { read_saved_list(${node}.list_at(${slot})!, (items, position) -> ${item_read}) }
+                quote { read_saved_list(${node}.list_in(${source_code()}, ${slot}), (items, position) -> ${item_read}) }
             },
             folded: (value: Code) -> {
                 let item_folded = slot_folded(element, quote { item })
@@ -277,7 +286,7 @@ fn saved_form(shape: ValueShape) -> SavedForm {
         .Optional(inner) -> if rides_a_record(inner) { optional_record_form(inner) } else { optional_child_form(inner) },
         .Declared(type_name, _) -> SavedForm {
             written: (value: Code) -> quote { ${writer_code()}.child(${value}.written_into(${writer_code()})) },
-            read: (node: Code, slot: Code) -> quote { ${name(type_name)}.read_from(${node}.record_at(${slot})!) },
+            read: (node: Code, slot: Code) -> quote { ${name(type_name)}.read_from(${source_code()}, ${node}.record_in(${source_code()}, ${slot})) },
             folded: (value: Code) -> quote { ${name(FOLDED)} = ${value}.folded_into(${name(FOLD_LANE)}, ${name(FOLDED)}) },
         },
         .Id(_, _, _) or .Placed(_, _) -> no_form_for_an_id(),
@@ -360,7 +369,7 @@ fn entries_form(key: ValueShape, held: ValueShape) -> SavedForm {
             record_slot(0, [keys_written, values_written])
         },
         read: (node: Code, slot: Code) -> {
-            let held_record = quote { ${node}.record_at(${slot})! }
+            let held_record = quote { ${node}.record_in(${source_code()}, ${slot}) }
             let keys_read = slot_read(keys, held_record, slot_number(0))
             let values_read = slot_read(values, held_record, slot_number(1))
             quote { saved_map(${keys_read}, ${values_read}) }
@@ -390,7 +399,7 @@ fn sides_form(ok: ValueShape, err: ValueShape) -> SavedForm {
             }
         },
         read: (node: Code, slot: Code) -> {
-            let held = quote { ${node}.record_at(${slot})! }
+            let held = quote { ${node}.record_in(${source_code()}, ${slot}) }
             let ok_read = slot_read(ok, held, slot_number(0))
             let err_read = slot_read(err, held, slot_number(0))
             quote { if ${held}.variant_within(2) == 0 { .Ok(${ok_read}) } else { .Err(${err_read}) } }
@@ -421,8 +430,12 @@ fn optional_record_form(inner: ValueShape) -> SavedForm {
             quote { if ${value} == null { ${writer_code()}.no_child() } else { ${present} } }
         },
         read: (node: Code, slot: Code) -> {
-            let present = slot_read(inner, quote { ${node}.record_at(${slot})! }, slot_number(0))
-            quote { if ${node}.holds_child_at(${slot}) { ${present} } else { null } }
+            let present = slot_read(
+                inner,
+                quote { ${node}.record_in(${source_code()}, ${slot}) },
+                slot_number(0),
+            )
+            quote { if ${node}.holds_child_at(${source_code()}, ${slot}) { ${present} } else { null } }
         },
         folded: (value: Code) -> optional_folded(inner, value),
     }
@@ -436,7 +449,7 @@ fn optional_child_form(inner: ValueShape) -> SavedForm {
         },
         read: (node: Code, slot: Code) -> {
             let present = slot_read(inner, node, slot)
-            quote { if ${node}.holds_child_at(${slot}) { ${present} } else { null } }
+            quote { if ${node}.holds_child_at(${source_code()}, ${slot}) { ${present} } else { null } }
         },
         folded: (value: Code) -> optional_folded(inner, value),
     }
@@ -497,9 +510,6 @@ fn read_variant(t: MetaType, v: MetaVariant, at: int) -> Arms {
     if at == t.variants.length - 1 { return quote { _ -> ${value} } }
     quote { ${at} -> ${value} }
 }
-
-/// The root record of saved bytes.
-export fn saved_fields(bytes: Bytes) -> SavedRecord { saved_root_record(SavedSource.InMemory(bytes), bytes.length) }
 
 /// A saved list read back, item by item.
 export fn read_saved_list<T>(items: SavedList, read: fn(SavedList, int) -> T) -> List<T> {

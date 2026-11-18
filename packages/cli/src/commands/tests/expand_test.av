@@ -20,7 +20,11 @@ fn expanded(source: string) -> string {
 
 /// What `avra expand` prints for the entry `main` of a package beside the provider package
 /// `@x/<dep>`, whose one file is `provider`.
-fn expanded_beside(main: string, dep: string, provider: string) -> string {
+fn expanded_beside(main: string, dep: string, provider: string) -> string { expanded_at(beside(main, dep, provider)) }
+
+/// A package whose entry is `main`, beside the provider package `@x/<dep>`, whose one file is
+/// `provider`: its root.
+fn beside(main: string, dep: string, provider: string) -> string {
     let root = "${scratch_dir()}/expand_${dep}_${stamp()}"
     let _ = make_dirs("${root}/src")
     let _ = make_dirs("${root}/vendor/${dep}/src")
@@ -34,10 +38,25 @@ fn expanded_beside(main: string, dep: string, provider: string) -> string {
     )
     let _ = write_text("${root}/vendor/${dep}/src/${dep}.av", provider)
     let _ = write_text("${root}/src/main.av", main)
+    root
+}
+
+/// What `avra expand` prints for the entry of the package at `root`.
+fn expanded_at(root: string) -> string {
     match avra_ran(["expand", "${root}/src/main.av"]) {
         .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { "refused: ${o.out.stdout}${o.out.stderr}" },
         .Err(_) -> "the command did not run",
     }
+}
+
+/// The provider with its first fn, above the template, written over three lines rather than one:
+/// every item below it moved, the template's two lines further down.
+fn provider_grown() -> string {
+    quote_provider()
+        .replace(
+            "fn shout(s: string) -> string { \"\${s}!\" }",
+            "fn shout(s: string) -> string {\n    \"\${s}!!\"\n}",
+        )
 }
 
 /// A component library's file: its components, with the `Code` they are written over.
@@ -194,6 +213,14 @@ spec "avra expand — the file as compiled" {
         then "the template is named beside the annotation that asked" {
             expanded_beside(loud_program() + "\n", "prov", quote_provider())
                 .contains("// from @derive on Point — template @x/prov/src/prov.av:7")
+        }
+        then "after an edit above the template, the same store names the template's new line" {
+            let root = beside(loud_program() + "\n", "prov", quote_provider())
+            let before = expanded_at(root)
+            let _ = write_text("${root}/vendor/prov/src/prov.av", provider_grown())
+            before.contains("// from @derive on Point — template @x/prov/src/prov.av:7\n") &&
+                expanded_at(root)
+                    .contains("// from @derive on Point — template @x/prov/src/prov.av:9\n")
         }
         then "the user's code is spliced as written, the template's own binder kept apart from it" {
             expanded_beside(wrapped_program() + "\n", "prov", quote_provider())

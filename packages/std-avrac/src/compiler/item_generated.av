@@ -148,21 +148,23 @@ fn gathered_items(made: List<GeneratedItems>) -> GeneratedItems {
     }
 }
 
-/// The quote the file `home` names holds at the offset `at`, as the written item holding it reads
-/// back: the store holding it and the quote; absent where none does.
+/// The quote the file `home` names holds at the offset `at` of its text, as the written item holding
+/// it reads back: the store holding it and the quote; absent where none does.
 fn written_quote(engine: QueryEngine, home: string, at: int) -> Scratch? {
     let file? = template_file(home) else { return null }
     let i? = quote_item(engine, file, at).first() else { return null }
     let store = read_item(engine, file, i).store
-    let q? = store.quote_at(at) else { return null }
+    let q? = store.quote_at(at - item_start(engine, file, i)) else { return null }
     Scratch { store: store, body: q }
 }
 
-/// The written item of `file` holding the quote at the offset `at`, none where none does: an answer
-/// an edit of another item leaves as it was.
+/// The written item of `file` holding the quote at the offset `at` of its text, none where none
+/// does: the item whose text holds the offset, where a quote stands there in it.
 @query
 fn quote_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<int> {
-    [i for i in 0..item_count(engine, file) if read_item(engine, file, i).store.quote_at(at) != null]
+    [i for i in 0..item_count(engine, file) for start in [item_start(engine, file, i)] if start <= at &&
+        at < start + item_under(engine, file, i).text.length &&
+        read_item(engine, file, i).store.quote_at(at - start) != null]
         .take(1)
 }
 
@@ -280,7 +282,13 @@ type MovedMethod = { moved: StmtId, held: StmtId }
 /// The method `name` the impl `m` writes, read into `store` under the name a wrap moves its body to,
 /// marked as it's written, in an impl of its own for the type the written one is for.
 fn moved_method(engine: QueryEngine, m: MethodSite, name: string, store: SyntaxArena) -> MovedMethod? {
-    let stmts = read_into(engine, m.at.file, store, m.at.item)
+    let stmts = read_into(
+        engine,
+        m.at.file,
+        store,
+        m.at.item,
+        item_start(engine, m.at.file, m.at.item),
+    )
     let read = ReadItem { store: store, stmts: stmts, written: store.expr_count() }
     let held? = impl_stmt_at(read, m.at) else { return null }
     let s? = store.impl_parts(held)!
@@ -327,7 +335,8 @@ fn signature_spelled(store: SyntaxArena, s: StmtId) -> string {
 /// place it's written; absent when it writes none.
 fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store: SyntaxArena) -> StmtId? {
     let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return null }
-    let s? = read_into(engine, file, store, d.item).find((x) -> store.fn_parts(x)?.name == name) else { return null }
+    let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
+        .find((x) -> store.fn_parts(x)?.name == name) else { return null }
     let parts = store.fn_parts(s)!
     store
         .alloc_stmt(
@@ -348,7 +357,8 @@ fn twin_of(
     store: SyntaxArena,
 ) -> StmtId? {
     let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return null }
-    let s? = read_into(engine, file, store, d.item).find((x) -> store.fn_parts(x)?.name == name) else { return null }
+    let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
+        .find((x) -> store.fn_parts(x)?.name == name) else { return null }
     let parts = store.fn_parts(s)!
     let at = store.stmt_span(s)
     let call = store

@@ -43,7 +43,7 @@ fn entry_signed(read: EntryRead) -> SignedBody? {
 /// exit, which answers the process's status. The names they bind stand in a scope of their own inside
 /// the entry's seats, of which it has none. A file that runs none has an entry that only exits.
 export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
-    let read = entry_read(engine, file)
+    let read = entry_read(engine, file, true)
     let signed? = entry_signed(read) else { return idle_entry(engine, file, read) }
     let body = elaborated(engine, file, signed)
     mut cx = lowering(
@@ -116,8 +116,9 @@ type EntryRead = {
     body: ExprId?,
 }
 
-/// An item of the file, by its place, and the index its first node has in the entry's store.
-type ItemBase = { at: int, base: int }
+/// An item of the file, by its place, the index its first node has in the entry's store, and the
+/// statements of it that run.
+type ItemBase = { at: int, base: int, stmts: List<StmtId> }
 
 impl ItemBase {
     /// The node `e` of the entry's store as the item's own store numbers it.
@@ -126,7 +127,14 @@ impl ItemBase {
 
     /// The name the literal at `e` of the entry's store is laid out under where the item stands alone.
     fn sourced(engine: QueryEngine, file: SourceFileAddress, e: ExprId, ty: SignedType) -> string? {
-        sourced_symbol(engine, file, read_item(engine, file, self.at).store, self.own(e), ty)
+        sourced_symbol(
+            engine,
+            file,
+            read_item(engine, file, self.at).store,
+            self.own(e),
+            ty,
+            self.at,
+        )
     }
 }
 
@@ -146,9 +154,9 @@ impl EntryRead {
     }
 }
 
-/// A file's entry read back for one engine, the engine reads that reading made, and each reader
-/// they have reached.
-type EntryHeld = { engine: int, file: SourceFileAddress, read: EntryRead, reads: List<RecordedRead>, reached: Cell<List<int>> }
+/// A file's entry read back for one engine, at its file's places or each item's own, the engine
+/// reads that reading made, and each reader they have reached.
+type EntryHeld = { engine: int, file: SourceFileAddress, placed: bool, read: EntryRead, reads: List<RecordedRead>, reached: Cell<List<int>> }
 
 /// The entry read back last: a file's laws each read its entry, one after another.
 once fn entry_held() -> Cell<EntryHeld?> {
@@ -159,8 +167,10 @@ once fn entry_held() -> Cell<EntryHeld?> {
 /// Every item of `file` that runs a statement, read back into one store, and the statements among
 /// them that run: the reading held for `file`, its reads made again by a reader they haven't
 /// reached, else read and held. The store is read, never written: a body that elaborates forks it.
-fn entry_read(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
-    let held? = entry_held_for(engine, file) else { return entry_read_held(engine, file) }
+/// Each item's places are counted from its own start, as its own reading counts them, unless
+/// `placed`, which counts them from the file's: what a lowering writes into the binary.
+fn entry_read(engine: QueryEngine, file: SourceFileAddress, placed: bool = false) -> EntryRead {
+    let held? = entry_held_for(engine, file, placed) else { return entry_read_held(engine, file, placed) }
     let reader = engine.reader()
     if !held.reached.get().contains(reader) {
         engine.reads_made_again(held.reads)
@@ -169,24 +179,27 @@ fn entry_read(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
     held.read
 }
 
-/// The reading held for `file` in `engine`, absent where the one held is another's or none is.
-fn entry_held_for(engine: QueryEngine, file: SourceFileAddress) -> EntryHeld? {
+/// The reading held for `file` in `engine`, at its file's places or each item's own as `placed`
+/// says, absent where the one held is another's or none is.
+fn entry_held_for(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryHeld? {
     let held? = entry_held().get() else { return null }
     if held.engine == engine.serial &&
+        held.placed == placed &&
         held.file.path_in_package == file.path_in_package &&
         held.file.package_name == file.package_name { held } else { null }
 }
 
 /// `file`'s entry read back and held with the reads its reading made, in place of the one held.
-fn entry_read_held(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
+fn entry_read_held(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryRead {
     engine.reads_begun()
-    let read = entry_read_back(engine, file)
+    let read = entry_read_back(engine, file, placed)
     let reads = engine.reads_gathered()
     entry_held()
         .set(
             EntryHeld {
                 engine: engine.serial,
                 file: file,
+                placed: placed,
                 read: read,
                 reads: reads,
                 reached: Cell.new([engine.reader()]),
@@ -197,15 +210,24 @@ fn entry_read_held(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
 
 /// Every item of `file` that runs a statement, read back into one store, each query it stands on
 /// asked.
-fn entry_read_back(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
+fn entry_read_back(engine: QueryEngine, file: SourceFileAddress, placed: bool) -> EntryRead {
     let declaring = [d.item for d in file_declares(engine, file).names]
     let store = new_node_store()
     mut items: List<ItemBase> = []
     mut stmts: List<StmtId> = []
     for at in 0..item_count(engine, file) {
         if declaring.contains(at) && !runs_in(engine, file, at) { continue }
-        items.push(ItemBase { at: at, base: store.exprs.count() })
-        stmts = stmts.concat(read_into(engine, file, store, at).filter((s) -> runs(store, s)))
+        let base = store.exprs.count()
+        let running = read_into(
+            engine,
+            file,
+            store,
+            at,
+            if placed { item_start(engine, file, at) } else { 0 },
+        )
+            .filter((s) -> runs(store, s))
+        items.push(ItemBase { at: at, base: base, stmts: running })
+        stmts = stmts.concat(running)
     }
     EntryRead {
         store: store,

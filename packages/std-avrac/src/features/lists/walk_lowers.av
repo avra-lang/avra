@@ -155,10 +155,11 @@ fn walk_lowered(mut cx: Lowering, verb: WalkVerb, m: MethodCall, e: ExprId) -> R
 /// before the verb reads it, in the order written.
 type Chain = { from: Source, elem: SignedType, stages: List<Stage> }
 
-/// What a walk starts from: a list, a range's integers, or a map's keys beside its values, each turn
-/// the entry of one.
+/// What a walk starts from: a list, a range's integers, a map's keys beside its values, each turn the
+/// entry of one, or a text's code points.
 enum Source {
     Listed(list: Reg)
+    Chars(text: Reg)
     Counted(range: Reg)
     Entries(keys: Reg, values: Reg, entry: SignedType)
 }
@@ -179,6 +180,8 @@ fn entry_of(cx: Lowering, ty: SignedType) -> SignedType? {
 
 /// What the receiver `e` starts a walk from, read once: a map's keys and values each once.
 fn source_of(mut cx: Lowering, e: ExprId) -> Source {
+    let text = cx.chars_viewed(e)
+    if text != null { return Source.Chars(cx.lower(text!)) }
     let v = cx.lower(e)
     let ty = cx.type_at(e)!
     let entry = entry_of(cx, cx.named_over(ty) ?? ty)
@@ -261,18 +264,19 @@ fn walked_list(cx: Lowering, e: ExprId) -> SignedType { cx.type_at(e)!.listed()!
 fn turned(mut cx: Lowering, c: Chain, body: fn(mut Lowering, Reg, Reg) -> void) {
     let arrived = if c.stages.is_empty() { null } else { cx.seeded_cell(Layout.Word, cx.const_int(0)) }
     let start = match c.from {
-        .Listed(_) or .Entries(_, _, _) -> null,
+        .Listed(_) or .Chars(_) or .Entries(_, _, _) -> null,
         .Counted(range) -> cx.range_start(range),
     }
     let w = match c.from {
         .Listed(list) -> cx.walk_list(list, c.elem),
+        .Chars(text) -> cx.walk_chars(text),
         .Counted(range) -> cx.walk_count(start!, cx.range_end(range)),
         .Entries(keys, _, entry) -> cx.walk_list(keys, entry.args[0]),
     }
     let here = cx.walk_turn(w)
     cx.labelled([WALK_LOOP])
     let v = match c.from {
-        .Listed(list) -> cx.element_at(w.elem_layout, list, here),
+        .Listed(_) or .Chars(_) -> cx.walked_element(w, here),
         .Counted(_) -> here,
         .Entries(keys, values, entry) -> cx
             .record_packed(
@@ -283,7 +287,7 @@ fn turned(mut cx: Lowering, c: Chain, body: fn(mut Lowering, Reg, Reg) -> void) 
                 ],
             ),
     }
-    let place = if start == null { here } else { cx.bin(Layout.Word, BinOp.Sub, here, start!) }
+    let place = if start == null { cx.walk_place(w, here) } else { cx.bin(Layout.Word, BinOp.Sub, here, start!) }
     passed(cx, c.stages, 0, v, place, arrived, body)
     cx.loop_end()
 }

@@ -829,16 +829,16 @@ export fn name_uncallable(callee: string, held: string) -> Voice {
 fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) { cx.emit(said_as("type.mismatch", cx.loc_of(e), pins_refused(callee, 0, 1))) }
 
 fn unpinned_by_arguments(mut cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`${tparam}` is not pinned by the arguments",
-                "in this call",
-                "write the type explicitly — `${callee}<...>(...)`",
-            ),
-        )
+    cx.spoken(said_as("type.mismatch", cx.loc_of(e), param_unpinned(tparam, callee)))
+}
+
+/// A call of `callee` that leaves its type parameter `tparam` filled by nothing.
+export fn param_unpinned(tparam: string, callee: string) -> Voice {
+    Voice {
+        message: "`${tparam}` is not pinned by the arguments",
+        label: "in this call",
+        help: "write the type explicitly — `${callee}<...>(...)`",
+    }
 }
 
 fn side_unholdable(mut cx: TypeCx, e: ExprId, offender: TypeId) {
@@ -886,14 +886,22 @@ export fn pins_refused(callee: string, want: int, found: int) -> Voice {
 fn null_cannot_pin(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.mismatch",
                 cx.loc_of(a),
-                "argument ${j + 1} of `${callee}` wants `${cx.view.types.name_of(param)}`, found `null`",
-                "always absent",
-                "a bare `null` cannot pin `T` — write `${callee}<...>(...)`",
+                null_unpinning(callee, j + 1, cx.view.types.name_of(param)),
             ),
         )
+}
+
+/// A bare `null` handed argument `place` of `callee`, a seat of `want` naming a type parameter
+/// nothing fills.
+export fn null_unpinning(callee: string, place: int, want: string) -> Voice {
+    Voice {
+        message: "argument ${place} of `${callee}` wants `${want}`, found `null`",
+        label: "always absent",
+        help: "a bare `null` cannot pin `T` — write `${callee}<...>(...)`",
+    }
 }
 
 fn no_fn_to_answer(mut cx: TypeCx, s: StmtId) { cx.emit(said_as("type.return", cx.stmt_loc(s), return_fnless())) }

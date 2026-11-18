@@ -17,11 +17,16 @@ use @std.time.{now_ns}
 export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
 
 /// Every rule hit under these statements — each walked from its own
-/// root, expressions and nested statements alike (`every_at`), the
+/// root, expressions and nested statements alike (`places_under`), the
 /// table's rules tried at every node whose root-kind index admits
 /// it.
 export fn rule_candidates(a: Analysed, stmts: List<StmtId>) -> List<Candidate> {
-    candidates_by(syntax_of(a), stmts, (r: RuleEntry, at: At) -> r.run.applied(code_at(a, at)))
+    candidates_by(
+        syntax_of(a),
+        stmts,
+        (r: RuleEntry, at: At) -> r.run.applied(code_at(a, at)),
+        every_rule,
+    )
 }
 
 /// What every fact rule the program layer runs finds under these statements of `file`, as `check`
@@ -42,6 +47,7 @@ export fn placed_fact_findings(file: RuleFile, stmts: List<StmtId>) -> List<Plac
         syntax,
         stmts,
         (r: RuleEntry, at: At) -> fact_fix(r, held_code(file, at)),
+        reads_facts,
     )
     flatten([fact_placed(file, syntax, c) for c in found])
 }
@@ -86,11 +92,21 @@ fn stmt_of(at: At) -> StmtId? {
     match at { .Stmt(id) -> id, .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null }
 }
 
-/// What every rule that reads syntax alone finds under these statements of `file`, each beside the
-/// node it fired at.
-export fn placed_syntax_findings(file: SyntaxFile, stmts: List<StmtId>) -> List<PlacedDiag> {
-    flatten([placed_diags(file, c) for c in syntax_candidates(file, stmts)])
+/// What each rule `which` takes that reads syntax alone finds under these statements of `file`,
+/// each beside the node it fired at.
+export fn placed_syntax_findings(
+    file: SyntaxFile,
+    stmts: List<StmtId>,
+    which: fn(RuleEntry) -> bool,
+) -> List<PlacedDiag> {
+    flatten([placed_diags(file, c) for c in syntax_candidates(file, stmts, which)])
 }
+
+/// Every rule, for a walk that tries them all.
+export fn every_rule(_r: RuleEntry) -> bool { true }
+
+/// Whether a rule reads facts beyond syntax: the rules a walk over the facts tries.
+fn reads_facts(r: RuleEntry) -> bool { !r.run.reads_syntax() }
 
 /// A candidate's findings beside the node it fired at; a node with no span stands where its finding
 /// points.
@@ -105,40 +121,46 @@ fn fact_fix(r: RuleEntry, c: Code) -> Fix? {
     r.run.applied(c)
 }
 
-/// Every hit of a rule that reads syntax alone under these statements of `file`.
-export fn syntax_candidates(file: SyntaxFile, stmts: List<StmtId>) -> List<Candidate> {
-    candidates_by(file, stmts, (r: RuleEntry, at: At) -> r.run.on_syntax(syntax_at(file, at)))
-}
-
-/// Every hit under these statements of `file`, each rule at a node answering as `run` says.
-fn candidates_by(file: SyntaxFile, stmts: List<StmtId>, run: fn(RuleEntry, At) -> Fix?) -> List<
+/// Every hit of a rule `which` takes that reads syntax alone under these statements of `file`; a
+/// rule that reads facts is never tried there.
+export fn syntax_candidates(file: SyntaxFile, stmts: List<StmtId>, which: fn(RuleEntry) -> bool) -> List<
     Candidate,
 > {
-    let index = rule_index()
-    stale_rules_spoken(file.view.store)
-    flatten(
-        [node_candidates(file, index, at, run) for s in stmts for at in every_at(file.view.store, At.Stmt(s))],
+    candidates_by(
+        file,
+        stmts,
+        (r: RuleEntry, at: At) -> r.run.on_syntax(syntax_at(file, at)),
+        (r) -> r.run.reads_syntax() && which(r),
     )
 }
 
-/// Every node under (and including) `root`, children before owner —
-/// `core.every_expr`'s shape, generalized to every `At` kind, so a
-/// rule rooted at a statement reaches it too. A `Pat.Quote`'s own
-/// BODY never descends: it is the pattern's TEXT, mirrored into an
-/// expr tree so a `quote{ ... }` pattern can be WRITTEN as code —
-/// never code a rule should fire ON. Without this guard, a rule's
-/// own declaration matches ITSELF: `if_start_raw`'s pattern spells
-/// `Ins.IfStart(${c})`, and that reads as a real `Ins.IfStart` call
-/// to every rule walking compiler/idioms.av (or any feature's own
-/// idioms.av) — a PRECISION bug, not debt to license away.
-fn every_at(store: SyntaxArena, root: At) -> List<At> {
-    if quote_pattern(store, root) { return [root] }
-    flatten([every_at(store, k) for k in store.kids_at(root)]).concat([root])
+/// Every hit under these statements of `file` of each rule `which` takes, each rule at a node
+/// answering as `run` says: every node under a statement, the statement among them, children
+/// before owner.
+fn candidates_by(
+    file: SyntaxFile,
+    stmts: List<StmtId>,
+    run: fn(RuleEntry, At) -> Fix?,
+    which: fn(RuleEntry) -> bool,
+) -> List<Candidate> {
+    let index = rule_index()
+    stale_rules_spoken(file.view.store)
+    flatten(
+        [node_candidates(file, index, at, run, which) for s in stmts for at in file.view.store.places_under(At.Stmt(s), .Post, (at) -> quote_pattern(file.view.store, at))],
+    )
 }
 
-/// Whether `at` is a `Pat.Quote` — the PATTERN position. A rewrite's
-/// own `-> quote { ... }` is an ordinary `Expr`, ANSWER position,
-/// real code the walk still reaches and rules may still fire on.
+/// Whether `at` is a `Pat.Quote` — the PATTERN position, where a
+/// rule's walk stops: listed, its own BODY never descended. That body
+/// is the pattern's TEXT, mirrored into an expr tree so a `quote{ ... }`
+/// pattern can be WRITTEN as code — never code a rule should fire ON.
+/// Without this stop, a rule's own declaration matches ITSELF:
+/// `if_start_raw`'s pattern spells `Ins.IfStart(${c})`, and that reads
+/// as a real `Ins.IfStart` call to every rule walking
+/// compiler/idioms.av (or any feature's own idioms.av) — a PRECISION
+/// bug, not debt to license away. A rewrite's own `-> quote { ... }`
+/// is an ordinary `Expr`, ANSWER position, real code the walk still
+/// reaches and rules may still fire on.
 fn quote_pattern(store: SyntaxArena, at: At) -> bool {
     match at { .Pat(id) -> store.pat(id) is .Quote, _ -> false }
 }
@@ -148,11 +170,12 @@ fn node_candidates(
     index: RootIndex<RuleEntry>,
     at: At,
     run: fn(RuleEntry, At) -> Fix?,
+    which: fn(RuleEntry) -> bool,
 ) -> List<Candidate> {
     work_rule_node()
     let store = file.view.store
     flatten(
-        [one_candidate(file, at, r, run) for r in index.at_node(store.shallow_at(at), store.kind_at(at))],
+        [one_candidate(file, at, r, run) for r in index.at_node(store.shallow_at(at), store.kind_at(at)) if which(r)],
     )
 }
 
@@ -223,7 +246,7 @@ fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
 /// What every rule that reads syntax alone finds under these statements of `file`, as `check`
 /// says it; a delete names declarations, which syntax alone never holds.
 export fn syntax_findings(file: SyntaxFile, stmts: List<StmtId>) -> List<Diag> {
-    flatten([syntax_diags(file, c) for c in syntax_candidates(file, stmts)])
+    flatten([syntax_diags(file, c) for c in syntax_candidates(file, stmts, every_rule)])
 }
 
 fn syntax_diags(file: SyntaxFile, c: Candidate) -> List<Diag> {

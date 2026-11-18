@@ -2,6 +2,7 @@
 use answer_record.{
     AnswerRecord,
     ContentHash,
+    KeptRecord,
     PartSeen,
     Question,
     RecordedRead,
@@ -13,6 +14,12 @@ use answer_record.{
     words_of,
 }
 use saved_layout.{saved_bytes_in_memory}
+
+/// The record `bytes` saves, read where it lies.
+fn kept_at(bytes: Bytes) -> KeptRecord {
+    let at = saved_bytes_in_memory(bytes).root_at()
+    kept_in_place(at.source, at.node)
+}
 
 fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
 
@@ -152,9 +159,9 @@ spec "answer_record — what's remembered about an answer" {
             }
             let empty = record_reading([])
             let full = record_reading([read])
-            kept_in_place(saved_bytes_in_memory(empty.saved_bytes()).root()).same_as(empty) &&
-                kept_in_place(saved_bytes_in_memory(full.saved_bytes()).root()).same_as(full) &&
-                !kept_in_place(saved_bytes_in_memory(full.saved_bytes()).root()).same_as(empty)
+            kept_at(empty.saved_bytes()).same_as(empty) &&
+                kept_at(full.saved_bytes()).same_as(full) &&
+                !kept_at(full.saved_bytes()).same_as(empty)
         }
     }
 }

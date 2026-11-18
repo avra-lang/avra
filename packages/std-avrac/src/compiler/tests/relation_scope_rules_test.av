@@ -2,9 +2,8 @@
 //! file_id_across_relation (a per-file id matched across a whole
 //! store) and compiler.one_body_arms (a join only where both arms
 //! bind alike). The fixture texts write the shapes under test.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{analyze_source, findings_of, fix_applied}
-use compiler.host.{memory_host}
+use @std.avrac.testing.held.{held_at}
+use compiler.{analyze_source, fix_applied}
 
 /// A relation over the store `@std/relation` declares, its ids the compiler's own package's.
 const relation_prelude: string = "use @std.relation.{Db}\ntype ExprId = { index: int }\ntype DeclId = { index: int }\ntype FileView = { db: Db }\ntype Site = { owner: DeclId, holder: ExprId? }\nimpl Site {\n    static fn all(db: Db) -> List<Site> { [] }\n    static fn by_owner(db: Db, owner: DeclId) -> List<Site> { [] }\n}\nfn holder_is(w: ExprId?, c: ExprId) -> bool { (w?.index ?? -1) == c.index }\n"
@@ -22,8 +21,8 @@ fn relation_fires(body: string) -> bool {
     files.set(main, relation_prelude + body + "0\n")
     files.set("/w/std-relation/avra.toml", relation_manifest)
     files.set("/w/std-relation/src/relation.av", "export type Db = { n: int }\n")
-    let ws = test_workspace(memory_host(files, files.keys()), "/w/std-avrac")
-    findings_of(ws.program(main)).any(it.rule == "compiler.file_id_across_relation")
+    let ws = held_at(files, "/w/std-avrac")
+    ws.judged_at(main).findings().any(it.rule == "compiler.file_id_across_relation")
 }
 
 /// A `Block` whose two variants carry payloads of the named types.

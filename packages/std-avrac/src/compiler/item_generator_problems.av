@@ -20,13 +20,20 @@ fn problems_said(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     let mine = [p for p in file_generated(engine, file).problems if p.item == at && !p.warning]
     if mine.is_empty() { return [] }
     let item = read_item(engine, file, at)
-    [problem_found(item.store, item.stmts, file, p) for p in mine]
+    [problem_found(engine, item.store, item.stmts, file, p) for p in mine]
 }
 
-/// The problem `p` as its law finds it: its place, its kind, and its words carried whole.
-fn problem_found(store: SyntaxArena, stmts: List<StmtId>, file: SourceFileAddress, p: KeptProblem) -> Found {
+/// The problem `p` as its law finds it: its place, its kind, and its words carried whole. Where it
+/// points, it points at a place of its file as the file counts it — in whichever item stands there.
+fn problem_found(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+    file: SourceFileAddress,
+    p: KeptProblem,
+) -> Found {
     let declared = declaring_span(store, stmts, p.owner)
-    let pointed = if p.at != null && p.home == spelled_file(file) { span_of(p.at) } else { null }
+    let pointed = if p.at != null && p.home == spelled_file(file) { placed_in_item(engine, file, p.at!) } else { null }
     if p.unplaced {
         return carried(
             annotation_span(store, stmts, p.by) ?? declared,
@@ -42,8 +49,9 @@ fn problem_found(store: SyntaxArena, stmts: List<StmtId>, file: SourceFileAddres
         )
     }
     if p.by == DELEGATING {
-        return carried(
-            pointed ?? declared,
+        return pointed_or(
+            pointed,
+            declared,
             "collect_enum.self",
             delegation_refused(p.message, p.owner, p.help),
         )
@@ -55,11 +63,19 @@ fn problem_found(store: SyntaxArena, stmts: List<StmtId>, file: SourceFileAddres
             kind_unworded(p.by, p.kind!, p.message),
         )
     }
-    carried(
-        pointed ?? declared,
+    pointed_or(
+        pointed,
+        declared,
         user_kind(p.from, p.kind) ?? "annotation.said",
         annotation_said(p.message, p.by, p.help),
     )
+}
+
+/// A finding in `kind` where a problem points, in the item standing there, else at `declared` in its
+/// own item; its voice's words carried whole.
+fn pointed_or(pointed: PlaceInItem?, declared: Span?, kind: string, v: Voice) -> Found {
+    let there? = pointed else { return carried(declared, kind, v) }
+    carried(span_of(there.at), kind, v) with { item: there.item }
 }
 
 /// The statement among `stmts` declaring `name`, where it stands.

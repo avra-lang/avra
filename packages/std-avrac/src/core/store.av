@@ -202,6 +202,12 @@ export type SyntaxArena = {
     @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") expr_prints: Stamped,
     stmts: Arena<Stmt>,
     @not_copied("folded at allocation and by each mark's verb") @remade("folded at allocation and by each mark's verb") stmt_prints: Stamped,
+    // the expression a statement holds at its own position (`stmt_value`), none for a statement
+    // holding none — filed as the statement is made or written again, so asking reads no node
+    stmt_values: TailColumn<ExprId?>,
+    // a fn declaration's pieces (`fn_parts`), by its statement — filed as the statement is made or
+    // written again, so asking reads no node and builds no record
+    @not_copied("filed as its statement is made") @remade("alloc_stmt files a fn's pieces as it makes its statement") fn_parts_filed: SideColumn<FnParts?>,
     @copied(stmt, wear) marks: SideColumn<StmtMarks>,
     // the format a `grammar` declaration read, by its statement
     @copied(stmt, wear_grammar) grammars: SideColumn<GrammarSpec?>,
@@ -327,6 +333,8 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         expr_prints: no_prints(),
         stmts: new_arena(),
         stmt_prints: no_prints(),
+        stmt_values: tail_column(),
+        fn_parts_filed: side_column<FnParts?>(null),
         marks: side_column(unmarked_stmt()),
         grammars: side_column<GrammarSpec?>(null),
         component_insts: side_column<string?>(null),
@@ -378,6 +386,8 @@ impl SyntaxArena {
             expr_prints: self.expr_prints.forked(),
             stmts: self.stmts.forked(),
             stmt_prints: self.stmt_prints.forked(),
+            stmt_values: self.stmt_values.forked(),
+            fn_parts_filed: self.fn_parts_filed.forked(),
             marks: self.marks.forked(),
             grammars: self.grammars.forked(),
             component_insts: self.component_insts.forked(),
@@ -1469,7 +1479,18 @@ impl SyntaxArena {
     /// The one statement-allocation seam.
     fn alloc_stmt(s: Stmt, span: Span? = null) -> StmtId {
         self.stmt_prints.added(s.identity(self))
-        StmtId { index: self.stmts.add(s, span) }
+        self.stmt_values.push(s.value())
+        let id = StmtId { index: self.stmts.add(s, span) }
+        let parts? = s.fn_parts() else { return id }
+        self.fn_parts_filed.set_at(id.index, parts)
+        id
+    }
+
+    /// Statement `s` is `n` now, a statement of its own kind.
+    fn stmt_replaced(s: StmtId, n: Stmt) {
+        self.stmts.replaced(s.index, n)
+        self.stmt_values.set_at(s.index, n.value())
+        self.fn_parts_filed.set_at(s.index, n.fn_parts())
     }
 
     /// Store the declaration-leading documentation as part of the

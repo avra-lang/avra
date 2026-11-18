@@ -5,7 +5,7 @@
 use @std.hash.{blake3, hasher}
 use @std.meta.{derive}
 use saved_derive.{Saved}
-use saved_layout.{SavedList, SavedRecord, SavedSlots, word_in}
+use saved_layout.{SavedList, SavedRecord, SavedSlots, SavedSource, word_in}
 use sorted.{order_by_words}
 
 /// The first sixteen octets of a BLAKE3 hash, as two numbers: what a question or an answer's bytes
@@ -57,9 +57,10 @@ fn hash_of_digest(digest: Bytes) -> ContentHash { ContentHash { high_word: word_
 /// Where the key `wanted` stands in a table sorted by hash, its keys' high words held in
 /// `high_words`: `low_word_at` reads the low word of the key at a place, absent when it can't be
 /// read. A search touches the list of numbers, and reads a key only where it might have found it.
-export fn place_keyed_by(high_words: SavedList, wanted: ContentHash, low_word_at: fn(int) -> int?) -> int? {
-    mut position = high_words.first_at_or_after(wanted.high_word)
-    while position < high_words.length && high_words.number_at(position) == wanted.high_word {
+/// The lists lie in `source`.
+export fn place_keyed_by(source: SavedSource, high_words: SavedList, wanted: ContentHash, low_word_at: fn(int) -> int?) -> int? {
+    mut position = high_words.first_at_or_after(source, wanted.high_word)
+    while position < high_words.length && high_words.number_at(source, position) == wanted.high_word {
         let low? = low_word_at(position) else { return null }
         if low == wanted.low_word { return position }
         position = position + 1
@@ -69,18 +70,19 @@ export fn place_keyed_by(high_words: SavedList, wanted: ContentHash, low_word_at
 
 /// Where the entry keyed by `wanted` stands in a table held in place: a list of the keys' high words
 /// beside a list of entries, each entry's first field its key.
-export fn place_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> int? {
+export fn place_keyed(source: SavedSource, high_words: SavedList, entries: SavedList, wanted: ContentHash) -> int? {
     place_keyed_by(
+        source,
         high_words,
         wanted,
-        (at) -> ContentHash.low_word_in(entries.record_at(at)!.record_at(0)!),
+        (at) -> ContentHash.low_word_in(source, entries.record_in(source, at).record_in(source, 0)),
     )
 }
 
 /// The entry keyed by `wanted` in such a table.
-export fn entry_keyed(high_words: SavedList, entries: SavedList, wanted: ContentHash) -> SavedRecord? {
-    let at? = place_keyed(high_words, entries, wanted) else { return null }
-    entries.record_at(at)
+export fn entry_keyed(source: SavedSource, high_words: SavedList, entries: SavedList, wanted: ContentHash) -> SavedRecord? {
+    let at? = place_keyed(source, high_words, entries, wanted) else { return null }
+    entries.record_at(source, at)
 }
 
 /// A question: which query, a hash of its code, its arguments as bytes, what it's known by, and
@@ -167,19 +169,19 @@ impl AnswerRecord {
     fn same_as(other: AnswerRecord) -> bool { self.kept().same_as(other) }
 }
 
-/// A record's words, held in memory or read where they lie.
+/// A record's words, held in memory or read where they lie, in the bytes beside them.
 export enum RecordWords {
     Held(List<int>)
-    Laid(SavedList)
+    Laid(source: SavedSource, words: SavedList)
 }
 
 impl RecordWords {
     fn length() -> int {
-        match self { .Held(words) -> words.length, .Laid(words) -> words.length }
+        match self { .Held(words) -> words.length, .Laid(_, words) -> words.length }
     }
 
     fn at(position: int) -> int {
-        match self { .Held(words) -> words[position], .Laid(words) -> words.number_at(position) }
+        match self { .Held(words) -> words[position], .Laid(source, words) -> words.number_at(source, position) }
     }
 
     /// The hash whose words start at `position`.
@@ -191,7 +193,7 @@ impl RecordWords {
     fn words() -> List<int> {
         match self {
             .Held(words) -> words,
-            .Laid(words) -> [words.number_at(i) for i in 0..words.length],
+            .Laid(source, words) -> [words.number_at(source, i) for i in 0..words.length],
         }
     }
 }
@@ -199,12 +201,12 @@ impl RecordWords {
 /// A record as the engine checks it, its reads never decoded.
 export type KeptRecord = { answer: ContentHash, whole_reads: RecordWords, part_reads: RecordWords }
 
-/// The record saved at `record`, read where it lies.
-export fn kept_in_place(record: SavedRecord) -> KeptRecord {
+/// The record saved at `record` in `source`, read where it lies.
+export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord {
     KeptRecord {
-        answer: ContentHash.read_from(AnswerRecord.answer_in_place(record)),
-        whole_reads: RecordWords.Laid(AnswerRecord.whole_reads_in_place(record)),
-        part_reads: RecordWords.Laid(AnswerRecord.part_reads_in_place(record)),
+        answer: ContentHash.read_from(source, AnswerRecord.answer_in_place(source, record)),
+        whole_reads: RecordWords.Laid(source, AnswerRecord.whole_reads_in_place(source, record)),
+        part_reads: RecordWords.Laid(source, AnswerRecord.part_reads_in_place(source, record)),
     }
 }
 

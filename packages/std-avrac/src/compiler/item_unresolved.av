@@ -18,7 +18,8 @@ use compiler.resolve.{
     value_unbound,
 }
 use @std.program.address.{SourceFileAddress}
-use @std.program.query_engine.{QueryEngine}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query_definition}
 
 /// Every name the written item `at` of `file` reads that nothing answers, read as `read`: a word that
 /// can be no name aside, which the naming laws refuse, a name its module's files keep apart, and one
@@ -43,7 +44,9 @@ fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs
 }
 
 /// Whether a statement of `file` failed to build what it read: a builder refused its shape, so the
-/// names it would make are unknown. A statement the grammar refused is read past.
+/// names it would make are unknown. A statement the grammar refused is read past. One answer a file,
+/// cut off where it comes out the same, so an item's laws read it and none of the file's other items.
+@cut_query
 fn read_refused(engine: QueryEngine, file: SourceFileAddress) -> bool {
     (0..item_count(engine, file))
         .any((i: int) -> read_item(engine, file, i).store.refusals().any(builder_refused(it)))
@@ -87,13 +90,14 @@ fn top_level_reads(engine: QueryEngine, file: SourceFileAddress, at: int, declar
 fn runtime_reads(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { top_level_reads(engine, file, at, true) }
 
 fn early_reads(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [f with { aside: Aside { label: "defined here", at: defined_at(engine, file, f.args[0]) } } for f in top_level_reads(engine, file, at, false)]
+    [f with { aside: defined_at(engine, file, f.args[0]) } for f in top_level_reads(engine, file, at, false)]
 }
 
-/// Where the statement of `file`'s top level that binds `name` stands.
-fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Span? {
-    [sp! for i in 0..item_count(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.let_name(s) == name for sp in [item.store.stmt_span(s)] if sp != null]
-        .first()
+/// Where the statement of `file`'s top level that binds `name` stands, said beside a read of it: in
+/// its own item.
+fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Aside {
+    let found = [Aside { label: "defined here", at: sp!, item: i } for i in 0..item_count(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.let_name(s) == name for sp in [item.store.stmt_span(s)] if sp != null]
+    found.first() ?? Aside { label: "defined here", at: null }
 }
 
 /// Every `self` read in the written item `at` of `file` where no method's receiver stands, beside
@@ -316,3 +320,8 @@ fn receiver_words(a: List<string>) -> Voice {
 }
 
 fn member_words(a: List<string>) -> Voice { member_unbound(a[0]) }
+
+collect listed_unresolved_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unresolved-name laws are read through, for a process to hand its engine.
+export fn unresolved_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unresolved_facts) }

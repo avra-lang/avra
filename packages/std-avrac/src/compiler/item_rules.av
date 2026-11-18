@@ -1,8 +1,11 @@
-//! THE RULES THAT READ SYNTAX ALONE, over a file as the program layer reads it back: every written
-//! item's tree in one store, beside the file's text — the whole file, since a rule may read every
-//! node in it (`fingerprint_siblings`, `file_callees`).
+//! THE RULES THAT READ SYNTAX ALONE, over a file as the program layer reads it back. A rule that
+//! reads its item alone runs over that item's tree and text by themselves, wherever the item stands,
+//! so what it finds is kept per item and an edit walks only the items it changed; a rule that reads
+//! the file (`reads_the_file`: `fingerprint_siblings`, `file_callees`) runs over every written item's
+//! tree in one store, beside the whole file's text.
 use core.{
     Annotation,
+    NamesRead,
     ExprId,
     StmtId,
     SyntaxArena,
@@ -33,15 +36,16 @@ use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use @std.program.source_facts.{source_text}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
+use @std.program.source_facts.{PlacedTape, source_text}
+use @std.program.syntax_tape.{SyntaxTape}
 
 /// What every rule that reads syntax alone finds in the written items of `file`, whose text is
 /// `source`, as `check` says it.
 export fn file_rule_findings(engine: QueryEngine, file: SourceFileAddress, source: SourceFile) -> List<
     Diag,
 > {
-    [p.diag for p in file_syntax_findings(engine, file, source)]
+    [p.diag for p in walked(file_syntax_findings(engine, file, source), [])]
 }
 
 /// One rule's finding in a file: the rule, the line it stands on, and that line's own text, trimmed.
@@ -99,24 +103,88 @@ export fn file_rule_rows(engine: QueryEngine, program: string, file: SourceFileA
     let facts = flatten(
         [item_fact_findings(engine, program, file, at, src) for at in 0..item_count(engine, file)],
     )
-        .concat([found_placed(f, src) for f in entry_fact_found(engine, file).found])
+        .concat(
+            [found_placed(found_in_file(engine, file, i.at, f), src) for i in entry_fact_found(engine, file).items for f in i.found],
+        )
     let found = [p.diag for p in walked(file_syntax_findings(engine, file, src), facts)]
     FileRuleRows { rows: rule_rows(src, found), said: [kept_diag(d) for d in found] }
 }
 
 /// What every rule that reads syntax alone finds in the written items of `file`, whose text is
-/// `source`, each beside the node it fired at.
+/// `source`, each beside the node it fired at: those that read the file over all of it, and each
+/// item's own read back from what was kept of it.
 fn file_syntax_findings(engine: QueryEngine, file: SourceFileAddress, source: SourceFile) -> List<
     PlacedDiag,
 > {
     let back = read_back(
         source.file,
-        [placed_item(engine, file, i) for i in items_under(engine, file)],
+        [placed_item(engine, file, item_under(engine, file, at), item_start(engine, file, at)) for at in 0..item_count(engine, file)],
     )
     placed_syntax_findings(
         SyntaxFile { view: SyntaxView { store: back.store, source: source } },
         back.stmts,
+        reads_the_file,
     )
+        .concat(
+            flatten(
+                [item_syntax_findings(engine, file, at, source) for at in 0..item_count(engine, file)],
+            ),
+        )
+}
+
+/// Whether a rule reads the item its node stands in alone.
+fn reads_its_item(r: RuleEntry) -> bool { !reads_the_file(r) }
+
+/// What the rules that read their item alone find in the item `at` of `file`, placed where the item
+/// stands in the file `src`.
+fn item_syntax_findings(engine: QueryEngine, file: SourceFileAddress, at: int, src: SourceFile) -> List<
+    PlacedDiag,
+> {
+    [found_placed(found_in_file(engine, file, at, f), src) for f in item_syntax_found(engine, file, at).found]
+}
+
+/// One written item as a rule that reads it alone sees it, wherever it stands in its file: its text
+/// and its meant tree. An item an edit only moved answers the same.
+@derive(Saved)
+type ItemAlone = { text: string, tape: SyntaxTape }
+
+/// The item `at` of `file` as the rules that read it alone see it.
+@cut_query
+fn item_alone(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemAlone {
+    let item = item_under(engine, file, at)
+    ItemAlone { text: item.text, tape: placed_item(engine, file, item, 0).tape }
+}
+
+/// What every rule that reads its item alone finds in the item `at` of `file`, each beside the node
+/// it fired at — every place counted from the item's own start.
+@query
+export fn item_syntax_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFound {
+    let alone = item_alone(engine, file, at)
+    let source = new_source_file(rule_named(file), alone.text)
+    let back = read_back(source.file, [PlacedTape { start: 0, tape: alone.tape }])
+    found_kept(
+        placed_syntax_findings(
+            SyntaxFile { view: SyntaxView { store: back.store, source: source, whole: false } },
+            back.stmts,
+            reads_its_item,
+        ),
+    )
+}
+
+/// A finding the item `at` of `file` kept, each of its places counted from the item's start, with
+/// each counted from the file's instead (`file_placed`).
+fn found_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: KeptFound) -> KeptFound {
+    let placed = (p: KeptPlace) -> kept_place_in_file(engine, file, at, p)
+    KeptFound {
+        node: placed(f.node),
+        diag: f.diag with { primary: f.diag.primary with { place: if f.diag.primary.place == null { null } else { placed(f.diag.primary.place!) } }, secondary: [x with { place: if x.place == null { null } else { placed(x.place!) } } for x in f.diag.secondary], fixes: [x with { edits: [e with { place: placed(e.place) } for e in x.edits] } for x in f.diag.fixes] },
+    }
+}
+
+/// A kept place of the item `at` of `file`, counted from the file's start.
+fn kept_place_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, p: KeptPlace) -> KeptPlace {
+    let placed = file_placed(engine, file, at, FindingAt { lo: p.lo, hi: p.hi })
+    KeptPlace { lo: placed.lo, hi: placed.hi }
 }
 
 /// Two walks' findings over one file as one walk finds them: a node after the nodes under it, and
@@ -137,22 +205,60 @@ fn item_fact_findings(
     at: int,
     src: SourceFile,
 ) -> List<PlacedDiag> {
-    [found_placed(f, src) for f in item_fact_found(engine, program, file, at).found]
+    [found_placed(found_in_file(engine, file, at, f), src) for f in item_fact_found(engine, program, file, at).found]
 }
 
 /// A finding read back from its saved answer, beside the node it fired at, in the file `src`.
 fn found_placed(f: KeptFound, src: SourceFile) -> PlacedDiag { PlacedDiag { lo: f.node.lo, hi: f.node.hi, diag: said_diag(f.diag, src.file) } }
 
+/// What every fact rule finds in the statements one item of a file runs as its entry: the item, and
+/// each finding beside the node it fired at, counted from the item's start.
+@derive(Saved)
+export type ItemRanFound = { at: int, found: List<KeptFound> }
+
+/// What every fact rule finds in the statements a file runs, item by item.
+@derive(Saved)
+export type EntryRanFound = { items: List<ItemRanFound> }
+
 /// What every fact rule finds in the statements `file` runs, typed as one body — its entry — once for
-/// all of its items: each local such a statement binds read through the entry's own reads.
+/// all of its items: each local such a statement binds read through the entry's own reads; each
+/// item's statements walked over that item's own text.
 @query
-export fn entry_fact_found(engine: QueryEngine, file: SourceFileAddress) -> ItemFound {
+export fn entry_fact_found(engine: QueryEngine, file: SourceFileAddress) -> EntryRanFound {
     let read = entry_read(engine, file)
-    let signed? = entry_signed(read) else { return ItemFound { found: [] } }
-    if !read.store.refusals().is_empty() { return ItemFound { found: [] } }
+    let signed? = entry_signed(read) else { return EntryRanFound { items: [] } }
+    if !read.store.refusals().is_empty() { return EntryRanFound { items: [] } }
     let typed = kept_body(body_checked(engine, file, signed, false))
-    let facts = RuleFile {
-        view: SyntaxView { store: read.store, source: rule_source(engine, file) },
+    let entry = written_reads(engine, file, read.store, typed)
+    EntryRanFound {
+        items: [ItemRanFound {
+            at: b.at,
+            found: found_kept(
+                placed_fact_findings(
+                    entry_item_facts(engine, file, read, typed, entry, b.at),
+                    b.stmts,
+                ),
+            )
+                .found,
+        } for b in read.items],
+    }
+}
+
+/// The facts the rules read over the item `at` of the entry `read` of `file`: the entry's store and
+/// types beside the item's own text.
+fn entry_item_facts(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    read: EntryRead,
+    typed: TypedBody,
+    entry: NamesRead,
+    at: int,
+) -> RuleFile {
+    RuleFile {
+        view: SyntaxView {
+            store: read.store,
+            source: new_source_file(rule_named(file), item_under(engine, file, at).text),
+        },
         facts: RuleFacts
             .Typed(
                 TypedFacts {
@@ -164,11 +270,10 @@ export fn entry_fact_found(engine: QueryEngine, file: SourceFileAddress) -> Item
                     unused: [],
                     brackets: [],
                     bodies: [],
-                    entry: written_reads(engine, file, read.store, typed),
+                    entry: entry,
                 },
             ),
     }
-    found_kept(placed_fact_findings(facts, read.stmts))
 }
 
 /// Findings as a saved answer keeps them, each beside the node it fired at.
@@ -257,7 +362,7 @@ export fn item_fact_found(engine: QueryEngine, program: string, file: SourceFile
     let stated = item_stated_bodies(engine, file, at, item)
     let bodies = [b.typed.types for b in stated]
     let reach = bodies.map(it.length).fold(0, (a, b) -> if a > b { a } else { b })
-    let src = rule_source(engine, file)
+    let src = new_source_file(rule_named(file), item_under(engine, file, at).text)
     let facts = RuleFile {
         view: SyntaxView { store: item.store, source: src },
         facts: RuleFacts
@@ -488,8 +593,11 @@ fn names_meta_bracket(
 
 /// The text of `file`, under the name the program gives it.
 fn rule_source(engine: QueryEngine, file: SourceFileAddress) -> SourceFile {
-    new_source_file("${file.package_name}/${file.path_in_package}", source_text(engine, file) ?? "")
+    new_source_file(rule_named(file), source_text(engine, file) ?? "")
 }
+
+/// The name the program gives `file`, which its findings stand in.
+fn rule_named(file: SourceFileAddress) -> string { "${file.package_name}/${file.path_in_package}" }
 
 /// Each finding as a row, its line read from `src`.
 fn rule_rows(src: SourceFile, found: List<Diag>) -> List<RuleRow> {

@@ -2,11 +2,12 @@
 use core.{At, Stmt, SyntaxArena}
 use features.{TypedCode, meaning}
 
-/// `for x in xs { … }` over a list walks its positions up to its length, read once; `for i in lo..hi
-/// { … }` counts from `lo` up to `hi`, each read once. Each turn binds the element or the count, and
+/// `for x in xs { … }` over a list walks its positions up to its length, read once — a text's `chars`
+/// view, which is no list until one is asked for, is walked by the statement's own rule; `for i in
+/// lo..hi { … }` counts from `lo` up to `hi`, each read once. Each turn binds the element or the count, and
 /// counts past it before the body runs, so a `continue` never turns forever.
 export meaning for_each {
-    quote { for ${x} in ${xs} { ${..body} } } if walks_a_list(xs) && !breaks_by_label(body) -> quote {
+    quote { for ${x} in ${xs} { ${..body} } } if walks_a_list(xs) && !views_chars(xs) && !breaks_by_label(body) -> quote {
         let items = ${xs}
         let count = items.length
         mut at = 0
@@ -29,6 +30,17 @@ export meaning for_each {
 
 /// Whether the subject is a list, as typing found it.
 fn walks_a_list(xs: TypedCode) -> bool { xs.type()?.listed() != null }
+
+/// Whether the subject is a `chars()` view.
+fn views_chars(xs: TypedCode) -> bool {
+    match xs.at {
+        .Expr(e) -> match xs.of.view.store.expr(e) {
+            .MethodCall(_, name, args) -> name.of == "chars" && args.is_empty(),
+            rest -> false,
+        },
+        rest -> false,
+    }
+}
 
 /// Whether any statement of the body leaves a loop by a label, which names the loop itself.
 fn breaks_by_label(body: List<TypedCode>) -> bool { body.any((s) -> labelled_within(s.of.view.store, s.at)) }

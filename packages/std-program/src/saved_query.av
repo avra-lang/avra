@@ -66,20 +66,24 @@ use saved_derive.{
     slot_folded,
     word_folded,
     read_saved_list,
-    saved_fields,
+    SOURCE_NAME,
     saved_record_statements,
+    source_code,
     saved_shape,
     slot_number,
     slot_read,
     slot_written,
 }
 use saved_layout.{
+    SavedAt,
     SavedBytes,
     SavedList,
     SavedRecord,
     SavedSlots,
+    SavedSource,
     saved_bytes_in_memory,
     saved_layout_writer,
+    saved_root_record,
 }
 
 /// Marks a generated fn answering a query's definition, for a `collect` to list.
@@ -132,6 +136,7 @@ fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool, cu
                 declares(arguments_door(f), f.at, arguments_writer(f)),
                 declares(compute_door(f), f.at, computing_door(f)),
                 declares(encoded_door(f), f.at, encoding_door(f)),
+                declares(answer_read_door(f), f.at, answer_reader(f)),
                 declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts)),
                 declares(known_door(f), f.at, known_answer_door(f)),
                 declares(question_door(f), f.at, asked_question_door(f)),
@@ -275,8 +280,7 @@ fn asking_wrapper(f: Fn) -> Decls {
                 ${held_door(f)}().put(answer, HeldAnswer { value: fresh!.value })
                 return fresh!.value
             }
-            let record = ${engine_of(f)}.answer_bytes_of(asked, answer).root()
-            let value = ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
+            let value = ${answer_read_door(f)}(${engine_of(f)}.answer_bytes_of(asked, answer))
             if answers_held() { ${held_door(f)}().put(answer, HeldAnswer { value: value }) }
             value
         }
@@ -287,8 +291,7 @@ fn asking_wrapper(f: Fn) -> Decls {
 fn decoding_wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats_of(f)}) -> ${f.answer} {
-            let record = ${engine_of(f)}.answer_to(${asked_of(f)}.question).root()
-            ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
+            ${answer_read_door(f)}(${engine_of(f)}.answer_to(${asked_of(f)}.question))
         }
     }
 }
@@ -337,6 +340,20 @@ fn encoding_door(f: Fn) -> Decls {
 
 fn encoded_door(f: Fn) -> string { "${f.name}_encoded" }
 
+/// `<name>_answer_read(saved)`: the answer the saved bytes `saved` hold, read back where they lie.
+fn answer_read_door(f: Fn) -> string { "${f.name}_answer_read" }
+
+/// The one reader of a saved answer of `f`: its bytes' source bound, its root read.
+fn answer_reader(f: Fn) -> Decls {
+    quote {
+        fn ${answer_read_door(f)}(saved: SavedBytes) -> ${f.answer} {
+            let ${SOURCE_NAME} = saved.source
+            let record = saved.root()
+            ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
+        }
+    }
+}
+
 /// Under `AVRA_HELD_ROUNDTRIP`, a held-at-computation answer read back from the bytes it was saved
 /// as and saved again: different bytes trap naming the query, since the value held and the value
 /// read back would differ.
@@ -344,8 +361,7 @@ fn round_trip_checked(f: Fn) -> Stmts {
     if !answer_held(f) { return quote { } }
     quote {
         if round_trips_checked() {
-            let back_record = saved_bytes_in_memory(saved).root()
-            let back = ${slot_read(saved_shape(f.answers)!, quote { back_record }, slot_number(0))}
+            let back = ${answer_read_door(f)}(saved_bytes_in_memory(saved))
             if ${encoded_door(f)}(back) != saved { round_trip_broken(${literal(f.name)}) }
         }
     }
@@ -355,7 +371,10 @@ fn round_trip_checked(f: Fn) -> Stmts {
 /// else as saved fields.
 fn arguments_opened(f: Fn, bytes: Code) -> Stmts {
     if argument_keys(f) != null { return quote { let keys = key_reader(${bytes}) } }
-    quote { let record = saved_fields(${bytes}) }
+    quote {
+        let ${SOURCE_NAME} = SavedSource.InMemory(${bytes})
+        let record = saved_root_record(${source_code()}, ${bytes}.length)
+    }
 }
 
 /// Each argument of `f` read back, in order, from what `arguments_opened` opened.
@@ -373,8 +392,7 @@ fn folding_door(f: Fn, step: Fn) -> Decls {
     quote {
         fn ${fold_door(f)}(engine: QueryEngine, arguments: Bytes, last: SavedBytes, moved: List<MovedRead>) -> Bytes? {
             ${arguments_opened(f, quote { arguments })}
-            let prior = last.root()
-            let was = ${slot_read(saved_shape(f.answers)!, quote { prior }, slot_number(0))}
+            let was = ${answer_read_door(f)}(last)
             let answer? = ${step.name}(..${call_arguments}) else { return null }
             ${fold_kept(f)}
             let saved = ${encoded_door(f)}(answer)
@@ -402,8 +420,7 @@ fn was_source(f: Fn) -> Decls {
         export fn ${was_door(f)}(engine: QueryEngine, m: MovedRead) -> ${answer} {
             if m.question.query_name != ${literal(f.name)} { return null }
             let kept? = engine.store.answer_bytes(m.was) else { return null }
-            let record = kept.root()
-            ${slot_read(saved_shape(f.answers)!, quote { record }, slot_number(0))}
+            ${answer_read_door(f)}(kept)
         }
     }
 }
@@ -477,24 +494,26 @@ fn known_answer_door(f: Fn) -> Decls {
     }
 }
 
-/// `<name>_saved(engine, …)`: an answer that's a record or a list, where it lies, so a reader of
-/// some of it reads that alone (a record's `<field>_in`, a list's `length` or one item) and decodes
-/// nothing else.
+/// `<name>_saved(engine, …)`: an answer that's a record or a list, where it lies, beside where its
+/// bytes are, so a reader of some of it reads that alone (a record's `<field>_in`, a list's `length`
+/// or one item) and decodes nothing else.
 fn in_place_door(f: Fn) -> List<Directive> {
     let door = "${f.name}_saved"
     match saved_shape(f.answers)! {
         .Declared(_, _) -> {
             let source = quote {
-                export fn ${door}(..${seats_of(f)}) -> SavedRecord {
-                    ${engine_of(f)}.answer_to(${question_of(f)}).root().record_at(0)!
+                export fn ${door}(..${seats_of(f)}) -> SavedAt<SavedRecord> {
+                    let saved = ${engine_of(f)}.answer_to(${question_of(f)})
+                    SavedAt { source: saved.source, node: saved.root().record_in(saved.source, 0) }
                 }
             }
             [declares(door, f.at, source)]
         },
         .Listed(_) -> {
             let source = quote {
-                export fn ${door}(..${seats_of(f)}) -> SavedList {
-                    ${engine_of(f)}.answer_to(${question_of(f)}).root().list_at(0)!
+                export fn ${door}(..${seats_of(f)}) -> SavedAt<SavedList> {
+                    let saved = ${engine_of(f)}.answer_to(${question_of(f)})
+                    SavedAt { source: saved.source, node: saved.root().list_in(saved.source, 0) }
                 }
             }
             [declares(door, f.at, source)]

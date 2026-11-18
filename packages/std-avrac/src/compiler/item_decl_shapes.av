@@ -18,8 +18,10 @@ use core.{
     Type,
     some_list,
     ExprId,
+    same_expr,
     distinct,
     NamedParts,
+    NodeKind,
     Param,
     SignedType,
     StmtId,
@@ -667,17 +669,11 @@ fn shadowing(store: SyntaxArena, s: StmtId, target: string, variants: List<strin
 /// and how many it writes.
 type TargsAt = { at: ExprId, name: string, takes: List<string>, written: int }
 
-/// Every literal the written item `at` of `file` writes with type arguments, against its record.
-fn literals_with_targs(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<TargsAt> {
-    if at >= item_count(engine, file) { return [] }
-    let item = read_item(engine, file, at)
-    let lits = [e for top in item.stmts for k in under(item.store, At.Stmt(top)) for e in literal_at(item.store, k) if !item.store.struct_targs_of(e).is_empty()]
-    [TargsAt {
-        at: e,
-        name: n,
-        takes: sig!.type_params,
-        written: item.store.struct_targs_of(e).length,
-    } for e in lits for n in [item.store.struct_lit_parts(e)!.name] for d in [resolved(engine, file, Space.Type, n).named()] if d != null for sig in [record_signature(engine, d!.file, d!.name)] if sig != null]
+/// The literal `k` of `view`'s item where it writes type arguments, against its record.
+fn literals_with_targs(view: ItemView, k: At) -> List<TargsAt> {
+    let store = view.item.store
+    let lits = [e for e in literal_at(store, k) if !store.struct_targs_of(e).is_empty()]
+    [TargsAt { at: e, name: n, takes: sig!.type_params, written: store.struct_targs_of(e).length } for e in lits for n in [store.struct_lit_parts(e)!.name] for d in [resolved(view.engine, view.file, Space.Type, n).named()] if d != null for sig in [record_signature(view.engine, d!.file, d!.name)] if sig != null]
 }
 
 /// The literal the node `k` is, if it is one.
@@ -685,18 +681,15 @@ fn literal_at(store: SyntaxArena, k: At) -> List<ExprId> {
     match k { .Expr(e) -> if store.struct_lit_parts(e) != null { [e] } else { [] }, rest -> [] }
 }
 
-/// Every literal of the written item `at` of `file` writing as many type arguments as its record
-/// does not take; handed the record, how many it writes, and its parameters.
-fn targs_miscounted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let store = read_item(engine, file, at).store
-    [Found { at: store.expr_span(l.at), args: [l.name, "${l.written}"].concat(l.takes) } for l in literals_with_targs(engine, file, at) if !l.takes.is_empty() && l.takes.length != l.written]
+/// The literal `at` of `view`'s item where it writes as many type arguments as its record does not
+/// take; handed the record, how many it writes, and its parameters.
+fn targs_miscounted(view: ItemView, at: At) -> List<Found> {
+    [Found { at: view.item.store.expr_span(l.at), args: [l.name, "${l.written}"].concat(l.takes) } for l in literals_with_targs(view, at) if !l.takes.is_empty() && l.takes.length != l.written]
 }
 
-/// Every literal of the written item `at` of `file` writing type arguments on a record that takes
-/// none.
-fn targs_ungeneric(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let store = read_item(engine, file, at).store
-    [Found { at: store.expr_span(l.at), args: [l.name, "${l.written}"] } for l in literals_with_targs(engine, file, at) if l.takes.is_empty()]
+/// The literal `at` of `view`'s item where it writes type arguments on a record that takes none.
+fn targs_ungeneric(view: ItemView, at: At) -> List<Found> {
+    [Found { at: view.item.store.expr_span(l.at), args: [l.name, "${l.written}"] } for l in literals_with_targs(view, at) if l.takes.is_empty()]
 }
 
 /// Every alias a statement of the written item `at` of `file` applies to `void`, where the
@@ -747,34 +740,31 @@ enum Nested {
     Uses
 }
 
-/// A declaration written inside a block, and what it declares.
-type NestedAt = { stmt: StmtId, nested: Nested }
-
-/// Every declaration the written item `at` of `file` writes inside a block, an outer one's own
-/// inside it aside: it is no declaration until the outer one is moved out.
-fn nested_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<NestedAt> {
-    if at >= item_count(engine, file) { return [] }
-    let item = read_item(engine, file, at)
-    flatten([nested_under(item.store, At.Stmt(top)) for top in item.stmts])
+/// What the statement `s` of `view`'s item declares where it stands under a node that holds it as no
+/// member; absent for a top-level statement, a member, and any other statement.
+fn written_nested(view: ItemView, s: StmtId) -> Nested? {
+    let over? = view.under(At.Stmt(s)) else { return null }
+    if block_members(view.item.store, over).any((m) -> same_stmt(m, s)) { return null }
+    nesting(view.item.store, s)
 }
 
-/// The declarations written inside a block under the node `at`, its own members aside, a quote's
-/// code left out.
-fn nested_under(store: SyntaxArena, at: At) -> List<NestedAt> {
-    let members = block_members(store, at)
-    flatten([nested_node(store, k, members) for k in store.kids_at(at)])
+/// Whether the node `at` stands under a declaration written inside a block, or in a spec's case: an
+/// outer declaration's own are no declarations until it is moved out.
+fn under_nested(view: ItemView, at: At) -> bool {
+    let over? = view.under(at) else { return false }
+    if case_of(view.item.store, over, at) { return true }
+    let nested = match over { .Stmt(s) -> written_nested(view, s) != null, rest -> false }
+    nested || under_nested(view, over)
 }
 
-/// The node `k` as a declaration written inside a block, unless it's one of `members`; else what
-/// it holds.
-fn nested_node(store: SyntaxArena, k: At, members: List<StmtId>) -> List<NestedAt> {
-    match k {
-        .Stmt(s) -> {
-            let n = if members.any((m) -> same_stmt(m, s)) { null } else { nesting(store, s) }
-            if n == null { nested_under(store, k) } else { [NestedAt { stmt: s, nested: n! }] }
+/// Whether `at` is the body of a case of the spec `over`.
+fn case_of(store: SyntaxArena, over: At, at: At) -> bool {
+    match over {
+        .Stmt(s) -> match at {
+            .Expr(e) -> (store.spec_parts(s)?.cases ?? []).any(same_expr(it.body, e)),
+            rest -> false,
         },
-        .Expr(e) -> if quoted(store, e) { [] } else { nested_under(store, k) },
-        rest -> nested_under(store, k),
+        rest -> false,
     }
 }
 
@@ -796,26 +786,22 @@ fn nesting(store: SyntaxArena, s: StmtId) -> Nested? {
     null
 }
 
-/// Every declaration of the written item `at` of `file` written inside a block that declares
-/// what `nested` names.
-fn nested_found(engine: QueryEngine, file: SourceFileAddress, at: int, nested: Nested) -> List<
-    Found,
-> {
-    let store = read_item(engine, file, at).store
-    [Found { at: store.stmt_span(n.stmt), args: [] } for n in nested_decls(engine, file, at) if n.nested == nested]
+/// The statement `at` of `view`'s item where it declares what `nested` names inside a block.
+fn nested_found(view: ItemView, at: At, nested: Nested) -> List<Found> {
+    let s? = match at { .Stmt(s) -> s, rest -> null } else { return [] }
+    if written_nested(view, s) != nested || under_nested(view, at) { return [] }
+    [Found { at: view.item.store.stmt_span(s), args: [] }]
 }
 
-fn nested_fn_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { nested_found(engine, file, at, Nested.Fns) }
+fn nested_fn_decls(view: ItemView, at: At) -> List<Found> { nested_found(view, at, Nested.Fns) }
 
-fn nested_type_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { nested_found(engine, file, at, Nested.Types) }
+fn nested_type_decls(view: ItemView, at: At) -> List<Found> { nested_found(view, at, Nested.Types) }
 
-fn nested_spec_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { nested_found(engine, file, at, Nested.Specs) }
+fn nested_spec_decls(view: ItemView, at: At) -> List<Found> { nested_found(view, at, Nested.Specs) }
 
-fn nested_use_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { nested_found(engine, file, at, Nested.Uses) }
+fn nested_use_decls(view: ItemView, at: At) -> List<Found> { nested_found(view, at, Nested.Uses) }
 
-fn nested_block_decls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    nested_found(engine, file, at, Nested.Blocks)
-}
+fn nested_block_decls(view: ItemView, at: At) -> List<Found> { nested_found(view, at, Nested.Blocks) }
 
 /// The first statement each impl or trait of the written item `at` of `file` writes among its
 /// methods that is none: no member, and no line the parse could not read.
@@ -850,17 +836,16 @@ fn head_paired_alike(c: CompClause) -> List<string> {
     }
 }
 
-/// Every comprehension head the written item `at` of `file` writes naming an index over a range, at
-/// the range's low bound.
-fn ranges_indexed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
-    let item = read_item(engine, file, at)
-    [Found { at: item.store.expr_span(lo), args: [] } for top in item.stmts for e in exprs_under(item.store, At.Stmt(top)) for lo in indexed_ranges(item.store, e)]
+/// Each head of the comprehension `at` of `view`'s item naming an index over a range, at the range's
+/// low bound.
+fn ranges_indexed(view: ItemView, at: At) -> List<Found> {
+    [Found { at: view.item.store.expr_span(lo), args: [] } for lo in indexed_ranges(view.item.store, at)]
 }
 
-/// The low bound of each head of the comprehension `e` that names an index over a range; none for any
-/// other node.
-fn indexed_ranges(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+/// The low bound of each head of the comprehension `at` that names an index over a range; none for
+/// any other node.
+fn indexed_ranges(store: SyntaxArena, at: At) -> List<ExprId> {
+    let e? = match at { .Expr(e) -> e, rest -> null } else { return [] }
     match store.expr(e) {
         .Comp(_, clauses) -> flatten([indexed_range(c) for c in clauses]),
         rest -> [],
@@ -913,7 +898,9 @@ export law spread_of_no_record {
 /// a range's counter is its position
 export law range_indexed {
     kind: "type.list"
-    reads: ranges_indexed
+    on: [NodeKind.ExprComp]
+    judge: ranges_indexed
+    quotes: false
     voice: range_unindexed_words
     witness: "[i for j, i in 0..3]\n"
 }
@@ -1183,7 +1170,8 @@ export law static_named_as_variant {
 /// a literal writes as many type arguments as its record takes
 export law literal_targs_miscounted {
     kind: "type.struct_targs"
-    reads: targs_miscounted
+    on: [NodeKind.ExprStructLit]
+    judge: targs_miscounted
     voice: targs_counted_words
     witness: "type G<T> = { v: T }\n\nfn g() -> int { G<int, string> { v: 1 }.v }\n"
 }
@@ -1191,7 +1179,8 @@ export law literal_targs_miscounted {
 /// a literal of a record that takes no type arguments writes none
 export law literal_targs_on_plain {
     kind: "type.struct_targs"
-    reads: targs_ungeneric
+    on: [NodeKind.ExprStructLit]
+    judge: targs_ungeneric
     voice: targs_plain_words
     witness: "type P = { v: int }\n\nfn g() -> int { P<int> { v: 1 }.v }\n"
 }
@@ -1215,7 +1204,9 @@ export law alias_applied_to_void {
 /// fn declarations live at the top level
 export law fn_in_block {
     kind: "resolve.nested_fn"
-    reads: nested_fn_decls
+    on: [NodeKind.StmtFnDecl, NodeKind.StmtExternFn]
+    judge: nested_fn_decls
+    quotes: false
     voice: nested_fn_words
     witness: "fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\n"
 }
@@ -1223,7 +1214,16 @@ export law fn_in_block {
 /// type declarations live at the top level
 export law type_in_block {
     kind: "resolve.nested_type"
-    reads: nested_type_decls
+    on: [
+        NodeKind.StmtStructDecl,
+        NodeKind.StmtNamedType,
+        NodeKind.StmtAlias,
+        NodeKind.StmtEnumDecl,
+        NodeKind.StmtComponentDecl,
+        NodeKind.StmtCollectEnum,
+    ]
+    judge: nested_type_decls
+    quotes: false
     voice: nested_type_words
     witness: "fn f() -> int {\n    type P = { n: int }\n    1\n}\n"
 }
@@ -1231,7 +1231,9 @@ export law type_in_block {
 /// spec blocks live at the top level
 export law spec_in_block {
     kind: "resolve.nested_spec"
-    reads: nested_spec_decls
+    on: [NodeKind.StmtSpec]
+    judge: nested_spec_decls
+    quotes: false
     voice: nested_spec_words
     witness: "fn f() -> int {\n    spec \"s\" { }\n    1\n}\n"
 }
@@ -1239,7 +1241,9 @@ export law spec_in_block {
 /// impl and trait blocks live at the top level
 export law impl_in_block {
     kind: "resolve.nested_impl"
-    reads: nested_block_decls
+    on: [NodeKind.StmtImplDecl, NodeKind.StmtTraitDecl]
+    judge: nested_block_decls
+    quotes: false
     voice: nested_block_words
     witness: "type C = { n: int }\n\nfn f() -> int {\n    impl C {\n        fn g() -> int { 1 }\n    }\n    1\n}\n"
 }
@@ -1247,7 +1251,9 @@ export law impl_in_block {
 /// use lines live at the top level
 export law use_in_block {
     kind: "resolve.nested_use"
-    reads: nested_use_decls
+    on: [NodeKind.StmtUse]
+    judge: nested_use_decls
+    quotes: false
     voice: nested_use_words
     witness: "fn f() -> int {\n    use @std.text.{parse_int}\n    1\n}\n"
 }

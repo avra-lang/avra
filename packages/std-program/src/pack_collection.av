@@ -9,7 +9,7 @@ use @std.meta.{derive}
 use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question, content_hash, kept_in_place}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use saved_derive.{Saved}
-use saved_layout.{SavedRecord, SavedSlots}
+use saved_layout.{SavedAt, SavedRecord, SavedSlots}
 use sorted.{sorted_by}
 
 /// The most records a question keeps, newest first.
@@ -21,13 +21,13 @@ const KEPT_RECORDS: int = 3
 export type QuestionRecords = { question: ContentHash, asked: Question, records: List<AnswerRecord>, written_in: int = 0 }
 
 /// The records of the question saved at `entry`, oldest first, read where they lie.
-export fn records_in(entry: SavedRecord) -> List<KeptRecord> {
-    let records = QuestionRecords.records_in_place(entry)
-    [kept_in_place(records.record_at(i)!) for i in 0..records.length]
+export fn records_in(entry: SavedAt<SavedRecord>) -> List<KeptRecord> {
+    let records = QuestionRecords.records_in_place(entry.source, entry.node)
+    [kept_in_place(entry.source, records.record_in(entry.source, i)) for i in 0..records.length]
 }
 
 /// How many records the question saved at `entry` holds, none of them read.
-export fn record_count(entry: SavedRecord) -> int { QuestionRecords.records_in_place(entry).length }
+export fn record_count(entry: SavedAt<SavedRecord>) -> int { QuestionRecords.records_in_place(entry.source, entry.node).length }
 
 /// Whether a question of `count` records keeps every one through a compaction.
 export fn keeps_every_record(count: int) -> bool { count <= KEPT_RECORDS }

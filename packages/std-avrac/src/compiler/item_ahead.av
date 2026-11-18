@@ -58,10 +58,10 @@ export fn program_worked(
     let parsed = files_parsed(at, package)
     clock.closed()
     clock.opened("generators run", TimedSide.Outside)
-    let _ = parsed.store.saved()
+    let _ = parsed.worked.store.saved()
     let generated = ahead(
         at,
-        (engine: QueryEngine) -> reached_files(engine, package),
+        (_engine: QueryEngine) -> parsed.reached,
         file_generated_is_known,
         generators_run,
     )
@@ -73,7 +73,7 @@ export fn program_worked(
     clock.opened("bodies lowered", TimedSide.Outside)
     let lowered = ahead(
         at,
-        (engine: QueryEngine) -> widest_first(engine, program_files(engine, package)),
+        (_engine: QueryEngine) -> parsed.program,
         file_worked_is_known,
         file_worked,
     )
@@ -176,9 +176,15 @@ fn ahead<T>(
     )
 }
 
+/// What parsing a program's files leaves for the waves after it: the store and engine it ended
+/// with, every source file of each package the program reaches, and the files the program reads,
+/// the longest first. The engine that worked the listings out names them once; an engine opened
+/// after would prove each standing again, read by read.
+type FilesParsed = { worked: Worked, reached: List<SourceFileAddress>, program: List<SourceFileAddress> }
+
 /// The store `at` names with every file a program rooted at `package` reads parsed: the
 /// package's own sources first, then each wave of files the last one's imports reach.
-fn files_parsed(at: AheadAt, package: string) -> Worked {
+fn files_parsed(at: AheadAt, package: string) -> FilesParsed {
     mut worked = ahead(
         at,
         (engine: QueryEngine) -> own_sources(engine, package),
@@ -205,15 +211,21 @@ fn files_parsed(at: AheadAt, package: string) -> Worked {
         worked = ahead(at, (_engine: QueryEngine) -> next, file_words_is_known, file_parsed)
         wave = next
     }
-    worked
+    every_file_parsed(at, package, worked, seen)
 }
 
 /// The store `at` names with every file of each package a program rooted at `package` reaches
 /// parsed, beyond the `seen` files its imports reach: a package's impls are filed from all of them.
-fn every_file_parsed(at: AheadAt, package: string, worked: Worked, seen: Map<string, bool>) -> Worked {
-    let rest = reached_files(worked.engine, package).filter((f) -> !seen.has(spelled_file(f)))
+fn every_file_parsed(at: AheadAt, package: string, worked: Worked, seen: Map<string, bool>) -> FilesParsed {
+    let reached = reached_files(worked.engine, package)
+    let program = widest_first(worked.engine, program_files(worked.engine, package))
+    let rest = reached.filter((f) -> !seen.has(spelled_file(f)))
     let _ = worked.store.saved()
-    ahead(at, (_engine: QueryEngine) -> rest, file_words_is_known, file_parsed)
+    FilesParsed {
+        worked: ahead(at, (_engine: QueryEngine) -> rest, file_words_is_known, file_parsed),
+        reached: reached,
+        program: program,
+    }
 }
 
 /// Every source file of each package a program rooted at `package` reaches.

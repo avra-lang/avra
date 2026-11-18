@@ -148,18 +148,18 @@ fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId) -> TypeId {
 fn not_a_list(mut cx: TypeCx, k: ExprId) {
     let n = cx.name_at(k)
     if cx.shape_at(k) is .Opt {
-        return cx
-            .emit(
-                refusal(
-                    "type.spread_nullable",
-                    cx.loc_of(k),
-                    "`..` spreads `${n}`, which may be null",
-                    "spread here",
-                    "unwrap it first — `..(xs ?? [])`",
-                ),
-            )
+        return cx.emit(said_as("type.spread_nullable", cx.loc_of(k), list_spreads_absent(n)))
     }
     cx.emit(said_as("type.spread_list", cx.loc_of(k), list_spread_unlisted(n)))
+}
+
+/// A spread in a list literal of a value of `found`, which may be null.
+export fn list_spreads_absent(found: string) -> Voice {
+    Voice {
+        message: "`..` spreads `${found}`, which may be null",
+        label: "spread here",
+        help: "unwrap it first — `..(xs ?? [])`",
+    }
 }
 
 /// A spread in a list literal of a value of `found`, which is no list.
@@ -374,8 +374,8 @@ fn keyed_types(mut cx: TypeCx, index: string?, source: ExprId, value: TypeId) ->
 /// bounds are ints, and an index has nothing to name — it wears the
 /// refusal's type while the count still types.
 fn counted_types(mut cx: TypeCx, index: string?, lo: ExprId, hi: ExprId) -> List<TypeId> {
-    cx.require_int(lo, "a range's low bound", "this is where counting starts")
-    cx.require_int(hi, "a range's high bound", "this is where counting stops")
+    cx.require_bound(lo, false)
+    cx.require_bound(hi, true)
     let int = cx.type(int)
     if index == null { return [int] }
     [range_has_no_index(cx, lo), int]
@@ -426,24 +426,30 @@ export fn range_unindexed() -> Voice {
     }
 }
 
-fn unnarrowed(at: Loc?, relation: string) -> Diag {
-    refusal(
-        "type.plan_residual",
-        at,
-        "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
-        "called on every row",
-        "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
-    )
+fn unnarrowed(at: Loc?, relation: string) -> Diag { said_as("type.plan_residual", at, rows_unnarrowed(relation)) }
+
+/// A filter handing the rows of `relation`, scanned whole, to a call no index narrows.
+export fn rows_unnarrowed(relation: string) -> Voice {
+    Voice {
+        message: "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
+        label: "called on every row",
+        help: "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
+    }
 }
 
 fn scanned_whole(at: Loc?, relation: string, field: string, rows: int) -> Diag {
-    warning(
-        "type.plan_scan",
-        at,
-        "this filter scans all of `${relation}`, which a census counts at ${rows} rows, and no index answers `${field}`",
-        "compared on every row",
-        "add `@index ${field}` to `${relation}` — a `@plans(\"${field}\")` lookup — and the scan reads it instead",
-    )
+    let said = relation_scanned(relation, field, rows)
+    warning("type.plan_scan", at, said.message, said.label ?? "", said.help ?? "")
+}
+
+/// A filter scanning all of `relation`, which a census counts at `rows` rows, for a compare of
+/// `field` no index answers.
+export fn relation_scanned(relation: string, field: string, rows: int) -> Voice {
+    Voice {
+        message: "this filter scans all of `${relation}`, which a census counts at ${rows} rows, and no index answers `${field}`",
+        label: "compared on every row",
+        help: "add `@index ${field}` to `${relation}` — a `@plans(\"${field}\")` lookup — and the scan reads it instead",
+    }
 }
 
 fn plan_mismatch(at: Loc?, lookup: string, field: string) -> Diag {

@@ -6,6 +6,7 @@
 //! file's words never needs another file's words.
 use core.{
     template_home,
+    Span,
     ComponentWord,
     ExprId,
     Instancing,
@@ -28,7 +29,7 @@ use @std.path.{dir_of, under_dir}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.saved_derive.{Saved}
 use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
-use @std.program.syntax_tape.{SyntaxTape}
+use @std.program.syntax_tape.{SyntaxTape, tape_about}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 
@@ -72,9 +73,11 @@ impl WordShapes {
 }
 
 /// One item of a file, and the context it reads under: its file's words it could name; and its
-/// text's print where it was made with its file's items.
+/// text's print where it was made with its file's items. Where it stands in its file is no part of
+/// it (`item_start`): an item an edit above only moved reads as it did, and so does every answer
+/// worked out of it, each place it holds counted from the item's own start.
 @derive(Saved)
-export type ItemUnder = { start: int, text: string, context: Bytes, print: int? = null }
+export type ItemUnder = { text: string, context: Bytes, print: int? = null }
 
 /// A file's items, each with the context it reads under.
 export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<ItemUnder> {
@@ -92,7 +95,6 @@ export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: int) -> I
     let items = file_items(engine, file)
     let item = if at < items.length { items[at] } else { ItemText { start: 0, text: "", print: fp_str("") } }
     ItemUnder {
-        start: item.start,
         text: item.text,
         context: WordShapes.from_saved_bytes(file_context(engine, file)).named_in(item.text),
         print: item.print,
@@ -270,6 +272,47 @@ fn every_expr(store: SyntaxArena) -> List<ExprId> { [ExprId { index: at } for at
 @derive(Saved)
 export type ItemText = { start: int, text: string, print: int }
 
+/// Where the item `at` of `file` starts in the file's text; past the file's items, at its start.
+@cut_query
+export fn item_start(engine: QueryEngine, file: SourceFileAddress, at: int) -> int {
+    let items = file_items(engine, file)
+    if at < items.length { items[at].start } else { 0 }
+}
+
+/// THE ONE PLACE AN ITEM'S OWN PLACE BECOMES ITS FILE'S: `place`, counted from the start of the
+/// item `at` of `file`, counted from the file's start instead. Every answer worked out of an item
+/// holds its places counted from the item's start; whatever says one in its file says it through
+/// here.
+export fn file_placed(engine: QueryEngine, file: SourceFileAddress, at: int, place: FindingAt) -> FindingAt {
+    let start = item_start(engine, file, at)
+    FindingAt { lo: place.lo + start, hi: place.hi + start }
+}
+
+/// A place counted from `file`'s start as the item holding it counts it — `file_placed` undone: that
+/// item, and the place counted from its start; absent where no item of the file holds it.
+export fn placed_in_item(engine: QueryEngine, file: SourceFileAddress, place: FindingAt) -> PlaceInItem? {
+    let held? = (0..item_count(engine, file)).find((i: int) -> holds(engine, file, i, place.lo)) else { return null }
+    let start = item_start(engine, file, held)
+    PlaceInItem { item: held, at: FindingAt { lo: place.lo - start, hi: place.hi - start } }
+}
+
+/// A place in a file as an item counts it: the item, and the place from its start.
+export type PlaceInItem = { item: int, at: FindingAt }
+
+/// Whether the text of the item `i` of `file` holds the offset `lo` of the file.
+fn holds(engine: QueryEngine, file: SourceFileAddress, i: int, lo: int) -> bool {
+    let start = item_start(engine, file, i)
+    start <= lo && lo < start + item_under(engine, file, i).text.length
+}
+
+/// A span of `item`, read from `file`, counted from the file's start: through `file_placed` where
+/// the item counts its places from its own start.
+export fn span_in_file(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, span: Span) -> Span {
+    let at? = item.at else { return span }
+    let placed = file_placed(engine, file, at, FindingAt { lo: span.lo, hi: span.hi })
+    Span { lo: placed.lo, hi: placed.hi }
+}
+
 /// A file's items (`item_spans`), each as its text; a file with no text has none. Its text is
 /// lexed here alone.
 @cut_query
@@ -282,13 +325,13 @@ export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemT
 /// a body leaves as it was.
 @cut_query
 fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
-    [about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, no_context()))) for item in file_items(engine, file)]
+    [about_of(tape_about(item_tape_saved(engine, item.text, no_context()))) for item in file_items(engine, file)]
 }
 
 /// What the written item `at` of `file` keeps for its file as its meaning's tape says it, read
 /// where the tape lies: nothing of the item is read back.
 fn item_tape_about(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemAbout {
-    about_of(SyntaxTape.about_in(meant_tape(engine, file, item_under(engine, file, at))))
+    about_of(tape_about(meant_tape(engine, file, item_under(engine, file, at))))
 }
 
 /// What a written item's tape says of it that a reader would else read the item back to learn:
@@ -327,8 +370,7 @@ export fn file_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<
 /// The impls the written item `at` of `file` holds, read off its own header alone.
 fn item_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
     about_of(
-        SyntaxTape
-            .about_in(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
+        tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
     )
         .impls
 }
@@ -341,8 +383,7 @@ fn written_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<Item
 fn item_written_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
     if at < 0 || at >= item_count(engine, file) { return [] }
     about_of(
-        SyntaxTape
-            .about_in(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
+        tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
     )
         .impls
 }
@@ -435,7 +476,7 @@ fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> Line
 /// tokens against its words, then those each `use` line imports.
 @cut_query
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
-    let own = [i.listed() for item in items_under(engine, file) for i in about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, item.context))).instances]
+    let own = [i.listed() for item in items_under(engine, file) for i in about_of(tape_about(item_tape_saved(engine, item.text, item.context))).instances]
     own
         .concat([i for u in file_words(engine, file).uses for i in line_shapes(engine, file, u).instances])
 }

@@ -40,18 +40,18 @@ const taped_word = "taped"
 const with_nodes_word = "taped_with_nodes"
 const with_item_word = "taped_with_item"
 const remade_word = "remade"
-const expr_kind = "expr"
-const stmt_kind = "stmt"
+const expr_family = "expr"
+const stmt_family = "stmt"
 
-/// Each kind of node a table may be indexed by, the id naming one, and whether reading one back
+/// Each family of node a table may be indexed by, the id naming one, and whether reading one back
 /// makes something again (`remade_<kind>`).
-type NodeKind = { word: string, id: string, remade: bool }
+type NodeFamily = { word: string, id: string, remade: bool }
 
-fn node_kinds() -> List<NodeKind> {
+fn node_families() -> List<NodeFamily> {
     [
-        NodeKind { word: expr_kind, id: "ExprId", remade: true },
-        NodeKind { word: stmt_kind, id: "StmtId", remade: false },
-        NodeKind { word: "pat", id: "PatId", remade: false },
+        NodeFamily { word: expr_family, id: "ExprId", remade: true },
+        NodeFamily { word: stmt_family, id: "StmtId", remade: false },
+        NodeFamily { word: "pat", id: "PatId", remade: false },
     ]
 }
 
@@ -79,16 +79,16 @@ export trait Copied {
                     quote {
                         impl ${t} {
                             fn copy_expr_tables(e: ExprId, dst: ${t}, id: ExprId) {
-                                ${[expr_call(f) for f in tables if kind_of(f) == expr_kind]}
+                                ${[expr_call(f) for f in tables if kind_of(f) == expr_family]}
                                 let _ = id
                             }
 
                             fn copy_stmt_tables(s: StmtId, dst: ${t}, id: StmtId) {
-                                ${[stmt_call(f) for f in tables if kind_of(f) == stmt_kind]}
+                                ${[stmt_call(f) for f in tables if kind_of(f) == stmt_family]}
                                 let _ = id
                             }
 
-                            ${[taped_tables(t, tables, k) for k in node_kinds()]}
+                            ${[taped_tables(t, tables, k) for k in node_families()]}
 
                             ${item_tables(t, tables)}
                         }
@@ -163,7 +163,7 @@ fn mark_args(f: Field, word: string) -> List<string> { f.marks.find(it.name == w
 
 /// A node's tables on its tape, in declared order, and read back onto the id the node was made as;
 /// then what reading one makes again.
-fn taped_tables(t: MetaType, tables: List<Field>, kind: NodeKind) -> Decls {
+fn taped_tables(t: MetaType, tables: List<Field>, kind: NodeFamily) -> Decls {
     let own = [f for f in tables if taped_kind(f) == kind.word && taped_shape(f) != null]
     let tree = name(TREE_NAME)
     let tape = name(TAPE_NAME)

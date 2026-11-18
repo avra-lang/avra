@@ -407,7 +407,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: pool-check ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: compiler-key pool-check ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -698,6 +698,10 @@ runtime-tests: $(RUNTIME_TESTS)
 runtime-mutations: $(RUNTIME_OBJS)
 	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
 
+# A KEPT OBJECT OR BINARY IS ITS COMPILER'S: one compiler's build is never taken by another.
+compiler-key: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/witness_compiler_key.sh
+
 # A TRACE HAS ONE SHAPE IN BOTH ENGINES: one program traced compiled
 # and evaluated, the reader's shape of each held to a committed text.
 flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS) build/runtime-tests/tasks_door_test
@@ -971,18 +975,11 @@ rule-examples:
 families-left:
 	@sh tools/avra_tools.sh families
 
-# NO ANSWER STANDS ON A LONG READ LIST: a cold derivation of the cli, each family's longest
-# read list held under 3,000, and the families still over it only shorten (tools/read_lists.py).
+# NO ANSWER STANDS ON A LONG READ LIST: a cold check of the cli on the program layer, each query's
+# longest read list held under 3,000, and the queries still over it only shorten (tools/read_lists.py).
 read-lists:
 	@python3 tools/read_lists.py --self-test
 	@python3 tools/read_lists.py
-
-# THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
-# read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
-# family, the answers a read of which cannot be named, and the baseline only falls.
-# keeper: nightly (orders) — two cold whole-compiler checks, over 220 s warm for the cli alone, too long for every pull request
-leaves:
-	@sh tools/leaves.sh --check
 
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
 # `@std/relation` — the engine below them all — never names the compiler.

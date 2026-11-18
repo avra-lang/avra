@@ -1,16 +1,14 @@
 //! `compiler.direct_test_workspace`: a workspace a test makes through
 //! `new_workspace` is refused; the same call outside a test stands.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{findings_of}
-use compiler.host.{memory_host}
+use @std.avrac.testing.held.{held_at}
 
 const MAKERS = "fn avra() -> int { 0 }\nfn new_workspace(host: int, root: string, lang: int) -> int { host + lang + root.length }\n"
 
 /// Findings of the rule over one file at `rel` under `/w/src`.
 fn made_at(rel: string, body: string) -> int {
     let path = "/w/src/${rel}"
-    let ws = test_workspace(memory_host({"${path}": "${MAKERS}${body}"}, [path]), "/w")
-    [f for f in findings_of(ws.program(path)) if f.rule == "compiler.direct_test_workspace"].length
+    let ws = held_at({"${path}": "${MAKERS}${body}"}, "/w")
+    [f for f in ws.judged_at(path).findings() if f.rule == "compiler.direct_test_workspace"].length
 }
 
 fn made() -> string { "fn f() -> int { new_workspace(1, \"/w\", avra()) }\n" }

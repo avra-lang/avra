@@ -1,6 +1,6 @@
 //! THE LAWS, gathered: every `law` the compiler declares, and what they find in an item, saved per
 //! item and cut off early; a finding is worded by its law's voice only as it's said.
-use core.{Span, some_list}
+use core.{At, NodeKind, Span, flatten, some_list}
 use compiler.laws.{Aside, Found, law}
 use @std.errors.{Confidence, Edit, Frame, Suggestion}
 use diagnostics.{Diag, Guess, Severity, Voice, guess_fix, loc_at, said_as}
@@ -17,6 +17,10 @@ export type LawEntry = {
     name: string,
     kind: string,
     reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found>,
+    on: List<NodeKind>,
+    judge: fn(ItemView, At) -> List<Found>,
+    quotes: bool,
+    judged_if: fn(ItemView) -> bool,
     voice: fn(List<string>) -> Voice,
     warns: bool,
     witness: string,
@@ -25,12 +29,13 @@ export type LawEntry = {
 }
 
 /// EVERY LAW, by name — gathered, never listed by hand.
-export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
+export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, on: it.on, judge: it.judge, quotes: it.quotes, judged_if: it.judged_if, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
 
 /// Every law, gathered once a process.
 once fn held_laws() -> List<LawEntry> { laws }
 
-/// Where a finding stands in its file.
+/// Where a finding stands: in its item, counted from the item's start, until its file's findings
+/// are said, each counted from the file's (`file_placed`).
 @derive(Saved)
 export type FindingAt = { lo: int, hi: int }
 
@@ -46,24 +51,29 @@ export type LawFinding = {
     named: FindingAt? = null,
     fixes: List<FixAt> = [],
     local: List<int> = [],
+    /// The item of the file its places are counted from the start of, where it stands in another
+    /// than the one it was found in.
+    item: int? = null,
 }
 
 /// An edit a finding offers, where it writes.
 @derive(Saved)
 export type FixAt = { description: string, at: FindingAt?, replacement: string, sure: bool = false }
 
-/// A sentence said beside a finding, where it names.
+/// A sentence said beside a finding, where it names: in the finding's item, or the item `item`.
 @derive(Saved)
-export type AsideAt = { label: string, at: FindingAt? }
+export type AsideAt = { label: string, at: FindingAt?, item: int? = null }
 
 /// What every law finds in one item.
 @derive(Saved)
 export type ItemFindings = { findings: List<LawFinding> }
 
 /// What every law finds in the item `at` of `file`, in the order the file says them: by where each
-/// stands, then law by law; one with no place last.
+/// stands, then law by law; one with no place last. A law that judges kinds of node is handed each
+/// node of them the item's one view holds; one that judges none reads the item whole.
 @query
 export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFindings {
+    let view = if at < item_count(engine, file) { item_view(engine, file, at) } else { null }
     ItemFindings {
         findings: sorted_by(
             [LawFinding {
@@ -80,10 +90,23 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) ->
                     sure: x.sure,
                 } for x in s.fixes],
                 local: s.local,
-            } for l in held_laws() for s in (l.reads)(engine, file, at)],
+                item: s.item,
+            } for l in held_laws() for s in law_found(engine, file, at, view, l)],
             stands_before,
         ),
     }
+}
+
+/// What the law `l` finds in the item `at` of `file`: where it judges kinds of node, at each node of
+/// them `view` holds where it judges the item, and none where the file holds no item `at`; else in
+/// the item read whole.
+fn law_found(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemView?, l: LawEntry) -> List<
+    Found,
+> {
+    if l.on.is_empty() { return (l.reads)(engine, file, at) }
+    let v? = view else { return [] }
+    if !(l.judged_if)(v) { return [] }
+    flatten([(l.judge)(v, k) for k in v.nodes_on(l.on, l.quotes)])
 }
 
 /// Whether the finding `a` stands before `b` in its file: a placed one before an unplaced one.
@@ -141,7 +164,7 @@ export type FileWarned = { file: SourceFileAddress, findings: List<LawFinding> }
 /// What every law that warns finds in the written items of `file`, each site of one kind once.
 @query
 export fn file_warned(engine: QueryEngine, file: SourceFileAddress) -> FileWarned {
-    let found = [f for at in 0..item_count(engine, file) for f in law_findings(engine, file, at).findings if !fails_build(f)]
+    let found = [f for at in 0..item_count(engine, file) for f in findings_in_file(engine, file, at) if !fails_build(f)]
     FileWarned {
         file: file,
         findings: [f for i, f in found if !found.take(i).any((g) -> same_site(g, f))],
@@ -166,7 +189,30 @@ export fn program_warned(engine: QueryEngine, package: string) -> List<FileWarne
 /// An aside as a finding keeps it.
 fn kept_aside(a: Aside?) -> AsideAt? {
     let held? = a else { return null }
-    AsideAt { label: held.label, at: kept_at(held.at) }
+    AsideAt { label: held.label, at: kept_at(held.at), item: held.item }
+}
+
+/// What every law finds in the item `at` of `file`, each place counted from the file's start.
+export fn findings_in_file(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
+    LawFinding,
+> {
+    [finding_in_file(engine, file, at, f) for f in law_findings(engine, file, at).findings]
+}
+
+/// A finding the item `at` of `file` holds, each place counted from the file's start: from its own
+/// item's where it stands in another.
+fn finding_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, f: LawFinding) -> LawFinding {
+    let home = f.item ?? at
+    let placed = (p: FindingAt?) -> if p == null { null } else { file_placed(engine, file, home, p!) }
+    f with { at: placed(f.at), named: placed(f.named), fixes: [x with { at: placed(x.at) } for x in f.fixes], aside: aside_in_file(engine, file, at, f.aside), item: null }
+}
+
+/// An aside of a finding the item `at` of `file` holds, counted from the file's start: one in another
+/// item from that item's.
+fn aside_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, aside: AsideAt?) -> AsideAt? {
+    let a? = aside else { return null }
+    let place? = a.at else { return a }
+    a with { at: file_placed(engine, file, a.item ?? at, place), item: null }
 }
 
 /// A span as a finding keeps it.

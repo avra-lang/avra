@@ -206,16 +206,14 @@ fn body_checked(
             .bind_seat(p.name, p.ty, p.mutable || p.state, p.settled, BindSite.Seat(j), p.state, p.unshared)
     }
     for c in signed.consts { cx.bind(c.name, c.ty) }
-    let _ = if signed.want != null {
-        cx.check(signed.body, signed.want!)
-    } else {
-        cx
-            .check_seated(
-                signed.body,
-                signed.signature.answer,
-                signed.seat ?? Seating.Body(signed.item.store.fn_parts(signed.stmt)?.name ?? ""),
-            )
+    if signed.want != null {
+        let _ = cx.check(signed.body, signed.want!)
+        return cx
     }
+    let seat = signed.seat ?? Seating.Body(signed.item.store.fn_parts(signed.stmt)?.name ?? "")
+    let before = cx.refused.get().length
+    let answered = cx.check_seated(signed.body, signed.signature.answer, seat)
+    if signed.seat == null && cx.refused.get().length == before { cx.answers_nothing(signed.body, signed.signature.answer, answered, seat) }
     cx
 }
 
@@ -412,11 +410,11 @@ fn fn_bounds(engine: QueryEngine, file: SourceFileAddress, name: string) -> List
     declared_signature_of(engine, d)?.bounds
 }
 
-/// How many type parameters the fn `file` reads as `name` declares; absent where it reads no fn so.
-fn fn_type_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> int? {
+/// The type parameters the fn `file` reads as `name` declares; absent where it reads no fn so.
+fn fn_type_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string>? {
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
     if d.kind != ItemKind.Fn { return null }
-    declared_signature_of(engine, d)?.type_params?.length
+    declared_signature_of(engine, d)?.type_params
 }
 
 /// Whether a value of `ty` meets the bound `bound` in a body signed by `signing`, read from

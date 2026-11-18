@@ -177,8 +177,9 @@ fn body_const_value(
     s: StmtId,
     ty: SignedType,
     seeds: List<ConstSeed>,
+    frame: int? = null,
 ) -> NamedValue {
-    let settled = body_const_settlement(engine, file, store, unit, s, ty, seeds)
+    let settled = body_const_settlement(engine, file, store, unit, s, ty, seeds, frame)
     let why = settled.unsettled
     if why != null { return NamedValue.Unsettled(why!) }
     NamedValue.Settled(settled.words, settled.data!)
@@ -194,12 +195,13 @@ fn body_const_settlement(
     s: StmtId,
     ty: SignedType,
     seeds: List<ConstSeed>,
+    frame: int? = null,
 ) -> ConstSettlement {
     let value? = store.const_value(s) else { return unsettled_as(valueless()) }
     let name = store.let_name(s) ?? "const"
     let body = SignedBody {
         signature: value_signature(ty),
-        item: ReadItem { store: store, stmts: [s], written: store.expr_count() },
+        item: ReadItem { store: store, stmts: [s], written: store.expr_count(), at: frame },
         body: value,
         stmt: s,
         seat: Seating.Binding(name),

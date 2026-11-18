@@ -1,8 +1,7 @@
 //! `compiler.host_asked_directly`: a `Host` question asked in the
 //! compiler or its CLI outside the door's own file is refused.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{findings_of, Finding}
-use compiler.host.{memory_host}
+use @std.avrac.testing.held.{held_at}
+use compiler.{Finding}
 
 const HOST = "export type Host = { exists: fn(string) -> bool, peek: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }\nimpl Host {\n    fn read(p: string) -> string { p }\n    fn there(p: string) -> bool { p.is_empty() }\n    fn listing(p: string) -> List<string> { [p] }\n    fn spared_text(p: string) -> string { p }\n}\nexport type Ws = { host: Host }\n"
 
@@ -29,8 +28,8 @@ fn asked_at(root: string, name: string, rel: string, body: string) -> int {
         files.set("${AVRAC}/avra.toml", manifest_of("@std/avrac"))
         files.set(door, HOST)
     }
-    let ws = test_workspace(memory_host(files, files.keys()), root)
-    [f for f in findings_of(ws.program(path)) if f.rule == "compiler.host_asked_directly"].length
+    let ws = held_at(files, root)
+    [f for f in ws.judged_at(path).findings() if f.rule == "compiler.host_asked_directly"].length
 }
 
 fn in_compiler(body: string) -> int { asked_at(AVRAC, "@std/avrac", "compiler/x.av", body) }

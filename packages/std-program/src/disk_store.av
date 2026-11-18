@@ -64,6 +64,7 @@ use query_engine.{AnswerStore}
 use saved_derive.{Saved}
 use saved_layout.{
     SavedBytes,
+    SavedAt,
     SavedList,
     SavedRecord,
     SavedSlots,
@@ -172,10 +173,10 @@ once fn packs_mapped() -> Cell<Map<string, StampedPack>> {
 fn pack_in(path: string, source: SavedSource, length: int) -> MappedPack? {
     let index? = sealed_root_record(source, length, PACK_SEAL) else { return null }
     let end = sealed_end(length, PACK_SEAL)
-    let answer_high_words? = PackIndex.answer_high_words_within(index, end) else { return null }
-    let answers? = PackIndex.answers_within(index, end) else { return null }
-    let question_high_words? = PackIndex.question_high_words_within(index, end) else { return null }
-    let questions? = PackIndex.questions_within(index, end) else { return null }
+    let answer_high_words? = PackIndex.answer_high_words_within(source, index, end) else { return null }
+    let answers? = PackIndex.answers_within(source, index, end) else { return null }
+    let question_high_words? = PackIndex.question_high_words_within(source, index, end) else { return null }
+    let questions? = PackIndex.questions_within(source, index, end) else { return null }
     if answer_high_words.length != answers.length || question_high_words.length != questions.length { return null }
     MappedPack {
         path: path,
@@ -186,20 +187,20 @@ fn pack_in(path: string, source: SavedSource, length: int) -> MappedPack? {
         answers: answers,
         question_high_words: question_high_words,
         questions: questions,
-        generation: PackIndex.generation_in(index),
-        kept_octets: PackIndex.kept_octets_in(index),
-        answers_from: least_of(answer_high_words),
-        answers_to: greatest_of(answer_high_words),
-        questions_from: least_of(question_high_words),
-        questions_to: greatest_of(question_high_words),
+        generation: PackIndex.generation_in(source, index),
+        kept_octets: PackIndex.kept_octets_in(source, index),
+        answers_from: least_of(source, answer_high_words),
+        answers_to: greatest_of(source, answer_high_words),
+        questions_from: least_of(source, question_high_words),
+        questions_to: greatest_of(source, question_high_words),
     }
 }
 
 /// The first number of a list sorted ascending; one where it holds none.
-fn least_of(numbers: SavedList) -> int { if numbers.length == 0 { 1 } else { numbers.number_at(0) } }
+fn least_of(source: SavedSource, numbers: SavedList) -> int { if numbers.length == 0 { 1 } else { numbers.number_at(source, 0) } }
 
 /// The last number of a list sorted ascending; zero where it holds none.
-fn greatest_of(numbers: SavedList) -> int { if numbers.length == 0 { 0 } else { numbers.number_at(numbers.length - 1) } }
+fn greatest_of(source: SavedSource, numbers: SavedList) -> int { if numbers.length == 0 { 0 } else { numbers.number_at(source, numbers.length - 1) } }
 
 /// A SHARE OF THE KEYS: every hash whose high word is at least `from` and, where there is a `to`,
 /// below it. A table sorted by hash holds a share's keys in one run.
@@ -220,9 +221,9 @@ const LEAST_WORD: int = -9223372036854775807 - 1
 impl KeyShare {
     /// The places of a table's entries this share holds, its keys' high words in `high_words`:
     /// the first, and one past the last.
-    fn run_in(high_words: SavedList) -> List<int> {
-        let to? = self.to else { return [high_words.first_at_or_after(self.from), high_words.length] }
-        [high_words.first_at_or_after(self.from), high_words.first_at_or_after(to)]
+    fn run_in(source: SavedSource, high_words: SavedList) -> List<int> {
+        let to? = self.to else { return [high_words.first_at_or_after(source, self.from), high_words.length] }
+        [high_words.first_at_or_after(source, self.from), high_words.first_at_or_after(source, to)]
     }
 }
 
@@ -230,12 +231,12 @@ impl MappedPack {
     /// The span at `at` of `spans`, absent unless it lies within the pack: its record, its key, and
     /// the octets it names.
     fn span_at(spans: SavedList, at: int) -> KeptSpan? {
-        let record? = spans.record_within_at(at, self.end) else { return null }
-        let key? = KeptSpan.key_within(record, self.end) else { return null }
+        let record? = spans.record_within_at(self.source, at, self.end) else { return null }
+        let key? = KeptSpan.key_within(self.source, record, self.end) else { return null }
         let span = KeptSpan {
-            key: ContentHash.read_from(key),
-            at: KeptSpan.at_in(record),
-            length: KeptSpan.length_in(record),
+            key: ContentHash.read_from(self.source, key),
+            at: KeptSpan.at_in(self.source, record),
+            length: KeptSpan.length_in(self.source, record),
         }
         if span.at >= 0 && span.length >= 0 && span.at + span.length <= self.end { span } else { null }
     }
@@ -243,15 +244,20 @@ impl MappedPack {
     /// The span keyed by `key` among `spans`, beside their keys' high words, absent when there's none
     /// that lies within the pack.
     fn span_keyed(high_words: SavedList, spans: SavedList, key: ContentHash) -> KeptSpan? {
-        let at? = place_keyed_by(high_words, key, (p) -> self.span_at(spans, p)?.key?.low_word) else { return null }
+        let at? = place_keyed_by(
+            self.source,
+            high_words,
+            key,
+            (p) -> self.span_at(spans, p)?.key?.low_word,
+        ) else { return null }
         self.span_at(spans, at)
     }
 
     /// The records `question` has here, where they lie.
-    fn question_entry(question: ContentHash) -> SavedRecord? {
+    fn question_entry(question: ContentHash) -> SavedAt<SavedRecord>? {
         if question.high_word < self.questions_from || question.high_word > self.questions_to { return null }
         let span? = self.span_keyed(self.question_high_words, self.questions, question) else { return null }
-        self.saved_at(span).root()
+        self.saved_at(span).root_at()
     }
 
     fn records_of(question: ContentHash) -> List<KeptRecord> {
@@ -261,7 +267,7 @@ impl MappedPack {
 
     fn question_known_as(question: ContentHash) -> Question? {
         let entry? = self.question_entry(question) else { return null }
-        QuestionRecords.asked_in(entry)
+        QuestionRecords.asked_in(entry.source, entry.node)
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
@@ -278,14 +284,14 @@ impl MappedPack {
 
     /// Every answer the pack keeps that lies within it, in its order; with a `share`, those it holds.
     fn answer_spans(share: KeyShare?) -> List<KeptSpan> {
-        let run = share?.run_in(self.answer_high_words) ?? [0, self.answers.length]
+        let run = share?.run_in(self.source, self.answer_high_words) ?? [0, self.answers.length]
         [span! for i in run[0]..run[1] for span in [self.span_at(self.answers, i)] if span != null]
     }
 
     /// Every question the pack keeps that lies within it, in its order; with a `share`, those it
     /// holds.
     fn question_spans(share: KeyShare?) -> List<KeptSpan> {
-        let run = share?.run_in(self.question_high_words) ?? [0, self.questions.length]
+        let run = share?.run_in(self.source, self.question_high_words) ?? [0, self.questions.length]
         [span! for i in run[0]..run[1] for span in [self.span_at(self.questions, i)] if span != null]
     }
 }
@@ -484,13 +490,14 @@ fn wave_found(kind: int, key: ContentHash) -> SavedBytes? {
 /// The records another process of the wave kept of `question`.
 export fn wave_records(question: ContentHash) -> List<KeptRecord> {
     let found? = wave_found(WAVE_RECORDS, question) else { return [] }
-    records_in(found.root())
+    records_in(found.root_at())
 }
 
 /// `question` as another process of the wave asked it.
 export fn wave_question(question: ContentHash) -> Question? {
     let found? = wave_found(WAVE_RECORDS, question) else { return null }
-    QuestionRecords.asked_in(found.root())
+    let entry = found.root_at()
+    QuestionRecords.asked_in(entry.source, entry.node)
 }
 
 /// The octets another process of the wave kept of `answer`.
@@ -842,7 +849,7 @@ impl AnswerStore for DiskStore {
         let learned? = self.learned_entry(question) else {
             return first_answering(self.packs.get(), (pack) -> pack.question_known_as(question))
         }
-        QuestionRecords.asked_in(learned)
+        QuestionRecords.asked_in(learned.source, learned.node)
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
@@ -977,12 +984,12 @@ impl DiskStore {
     }
 
     /// The records this process learned of `question`, where they lie, absent when it learned none.
-    fn learned_entry(question: ContentHash) -> SavedRecord? {
+    fn learned_entry(question: ContentHash) -> SavedAt<SavedRecord>? {
         let held? = self.held_questions.get(question) else {
             let segment? = self.segment.get().first() else { return null }
-            return segment.saved_in(segment.questions, question)?.root()
+            return segment.saved_in(segment.questions, question)?.root_at()
         }
-        saved_bytes_in_memory(held).root()
+        saved_bytes_in_memory(held).root_at()
     }
 
     fn learned_records(question: ContentHash) -> List<KeptRecord> {
@@ -1236,22 +1243,29 @@ fn question_written(segment: Segment, packs: List<MappedPack>, run: List<Placed>
     let newest = entries.last()!
     let bytes = QuestionRecords {
         question: run[0].span.key,
-        asked: QuestionRecords.asked_in(newest),
+        asked: QuestionRecords.asked_in(newest.source, newest.node),
         records: [r.held() for r in kept],
-        written_in: entries.fold(0, (most, entry) -> max_of(most, QuestionRecords.written_in_in(entry))),
+        written_in: entries
+            .fold(
+                0,
+                (most, entry) -> max_of(
+                    most,
+                    QuestionRecords.written_in_in(entry.source, entry.node),
+                ),
+            ),
     }
         .saved_bytes()
     KeptSpan { key: run[0].span.key, at: segment.appended(bytes), length: bytes.length }
 }
 
 /// A question's records as one placed span holds them, where they lie.
-fn entry_placed(segment: Segment, packs: List<MappedPack>, p: Placed) -> SavedRecord {
-    if p.rank < packs.length { return packs[p.rank].saved_at(p.span).root() }
-    segment.saved_in(segment.questions, p.span.key)!.root()
+fn entry_placed(segment: Segment, packs: List<MappedPack>, p: Placed) -> SavedAt<SavedRecord> {
+    if p.rank < packs.length { return packs[p.rank].saved_at(p.span).root_at() }
+    segment.saved_in(segment.questions, p.span.key)!.root_at()
 }
 
 /// Several sources' records of one question, oldest first, each record once.
-fn merged_records(entries: List<SavedRecord>) -> List<KeptRecord> {
+fn merged_records(entries: List<SavedAt<SavedRecord>>) -> List<KeptRecord> {
     mut merged: List<KeptRecord> = []
     for entry in entries {
         let earlier = merged
@@ -1288,7 +1302,7 @@ fn live_over(packs: List<MappedPack>, segment: Segment, seeds: List<ContentHash>
         (question) -> merged_records(
             [entry! for pack in packs for entry in [pack.question_entry(question)] if entry != null]
                 .concat(
-                    [entry! for entry in [segment.saved_in(segment.questions, question)?.root()] if entry != null],
+                    [entry! for entry in [segment.saved_in(segment.questions, question)?.root_at()] if entry != null],
                 ),
         ),
     )

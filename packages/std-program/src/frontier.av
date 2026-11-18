@@ -136,8 +136,9 @@ type FrontierDelta = {
     generation: int,
 }
 
-/// A file's columns where they lie.
+/// A file's columns where they lie, and the bytes they lie in.
 type LaidColumns = {
+    source: SavedSource,
     question_highs: SavedList,
     question_lows: SavedList,
     answer_highs: SavedList,
@@ -154,31 +155,31 @@ impl LaidColumns {
     fn length() -> int { self.question_highs.length }
 
     /// Where `question` stands among them, absent when they don't hold it.
-    fn index_of(question: ContentHash) -> int? { place_keyed_by(self.question_highs, question, (at) -> self.question_lows.number_at(at)) }
+    fn index_of(question: ContentHash) -> int? { place_keyed_by(self.source, self.question_highs, question, (at) -> self.question_lows.number_at(self.source, at)) }
 
     fn question_at(index: int) -> ContentHash {
         ContentHash {
-            high_word: self.question_highs.number_at(index),
-            low_word: self.question_lows.number_at(index),
+            high_word: self.question_highs.number_at(self.source, index),
+            low_word: self.question_lows.number_at(self.source, index),
         }
     }
 
     fn answer_at(index: int) -> ContentHash {
         ContentHash {
-            high_word: self.answer_highs.number_at(index),
-            low_word: self.answer_lows.number_at(index),
+            high_word: self.answer_highs.number_at(self.source, index),
+            low_word: self.answer_lows.number_at(self.source, index),
         }
     }
 
-    fn input_at(index: int) -> bool { self.inputs.number_at(index) == 1 }
+    fn input_at(index: int) -> bool { self.inputs.number_at(self.source, index) == 1 }
 
-    fn root_at(index: int) -> bool { self.roots.number_at(index) == 1 }
+    fn root_at(index: int) -> bool { self.roots.number_at(self.source, index) == 1 }
 
     /// Where the run of places the answer at `index` read starts among the reads.
-    fn reads_from(index: int) -> int { self.read_starts.number_at(index) }
+    fn reads_from(index: int) -> int { self.read_starts.number_at(self.source, index) }
 
     /// Where the run of places the answer at `index` read ends among the reads.
-    fn reads_to(index: int) -> int { if index + 1 < self.length() { self.read_starts.number_at(index + 1) } else { self.reads.length } }
+    fn reads_to(index: int) -> int { if index + 1 < self.length() { self.read_starts.number_at(self.source, index + 1) } else { self.reads.length } }
 
     /// How many places the answer at `index` read.
     fn read_count_at(index: int) -> int { self.reads_to(index) - self.reads_from(index) }
@@ -189,15 +190,15 @@ impl LaidColumns {
         let from = self.reads_from(index)
         let to = self.reads_to(index)
         if from < 0 || to < from || to > self.reads.length { return null }
-        let places = [self.reads.number_at(at) for at in from..to]
+        let places = [self.reads.number_at(self.source, at) for at in from..to]
         if places.all((place) -> place_below(place, extent)) { places } else { null }
     }
 
     /// The places that read the place at `index`, as the base turned its reads round.
     fn readers_at(index: int) -> List<int> {
-        let from = self.reader_starts.number_at(index)
-        let to = if index + 1 < self.length() { self.reader_starts.number_at(index + 1) } else { self.readers.length }
-        [self.readers.number_at(at) for at in from..to]
+        let from = self.reader_starts.number_at(self.source, index)
+        let to = if index + 1 < self.length() { self.reader_starts.number_at(self.source, index + 1) } else { self.readers.length }
+        [self.readers.number_at(self.source, at) for at in from..to]
     }
 
     /// Whether it holds each place's readers.
@@ -219,18 +220,19 @@ impl LaidColumns {
 
 /// The columns of the record `held`, absent unless each lies before `end` and holds an item for
 /// each question; the run of reads may hold any number.
-fn laid_columns(held: SavedRecord, end: int) -> LaidColumns? {
-    let question_highs? = FrontierColumns.question_highs_within(held, end) else { return null }
-    let question_lows? = FrontierColumns.question_lows_within(held, end) else { return null }
-    let answer_highs? = FrontierColumns.answer_highs_within(held, end) else { return null }
-    let answer_lows? = FrontierColumns.answer_lows_within(held, end) else { return null }
-    let inputs? = FrontierColumns.inputs_within(held, end) else { return null }
-    let roots? = FrontierColumns.roots_within(held, end) else { return null }
-    let read_starts? = FrontierColumns.read_starts_within(held, end) else { return null }
-    let reads? = FrontierColumns.reads_within(held, end) else { return null }
-    let reader_starts? = FrontierColumns.reader_starts_within(held, end) else { return null }
-    let readers? = FrontierColumns.readers_within(held, end) else { return null }
+fn laid_columns(source: SavedSource, held: SavedRecord, end: int) -> LaidColumns? {
+    let question_highs? = FrontierColumns.question_highs_within(source, held, end) else { return null }
+    let question_lows? = FrontierColumns.question_lows_within(source, held, end) else { return null }
+    let answer_highs? = FrontierColumns.answer_highs_within(source, held, end) else { return null }
+    let answer_lows? = FrontierColumns.answer_lows_within(source, held, end) else { return null }
+    let inputs? = FrontierColumns.inputs_within(source, held, end) else { return null }
+    let roots? = FrontierColumns.roots_within(source, held, end) else { return null }
+    let read_starts? = FrontierColumns.read_starts_within(source, held, end) else { return null }
+    let reads? = FrontierColumns.reads_within(source, held, end) else { return null }
+    let reader_starts? = FrontierColumns.reader_starts_within(source, held, end) else { return null }
+    let readers? = FrontierColumns.readers_within(source, held, end) else { return null }
     let columns = LaidColumns {
+        source: source,
         question_highs: question_highs,
         question_lows: question_lows,
         answer_highs: answer_highs,
@@ -246,7 +248,7 @@ fn laid_columns(held: SavedRecord, end: int) -> LaidColumns? {
 }
 
 /// Whether every number `list` holds is a place below `extent`.
-fn places_below(list: SavedList, extent: int) -> bool { (0..list.length).all((at) -> place_below(list.number_at(at), extent)) }
+fn places_below(source: SavedSource, list: SavedList, extent: int) -> bool { (0..list.length).all((at) -> place_below(list.number_at(source, at), extent)) }
 
 fn place_below(place: int, extent: int) -> bool { place >= 0 && place < extent }
 
@@ -273,15 +275,15 @@ fn holds_base(kind: FrontierKind) -> bool {
 fn base_read(file: FrontierFile) -> BaseLayer? {
     let root? = sealed_root_record(file.source, file.length, FRONTIER_SEAL) else { return null }
     let end = sealed_end(file.length, FRONTIER_SEAL)
-    let held? = FrontierBase.columns_within(root, end) else { return null }
-    let columns? = laid_columns(held, end) else { return null }
-    let stale? = FrontierBase.stale_within(root, end) else { return null }
-    if !places_below(stale, columns.length()) || !columns.turned_round() { return null }
+    let held? = FrontierBase.columns_within(file.source, root, end) else { return null }
+    let columns? = laid_columns(file.source, held, end) else { return null }
+    let stale? = FrontierBase.stale_within(file.source, root, end) else { return null }
+    if !places_below(file.source, stale, columns.length()) || !columns.turned_round() { return null }
     BaseLayer {
         id: file.id,
         columns: columns,
         stale: stale,
-        generation: FrontierBase.generation_in(root),
+        generation: FrontierBase.generation_in(file.source, root),
     }
 }
 
@@ -289,23 +291,23 @@ fn base_read(file: FrontierFile) -> BaseLayer? {
 fn delta_read(file: FrontierFile) -> DeltaLayer? {
     let root? = sealed_root_record(file.source, file.length, FRONTIER_SEAL) else { return null }
     let end = sealed_end(file.length, FRONTIER_SEAL)
-    let parent? = FrontierDelta.parent_within(root, end) else { return null }
-    let held? = FrontierDelta.columns_within(root, end) else { return null }
-    let columns? = laid_columns(held, end) else { return null }
-    let places? = FrontierDelta.places_within(root, end) else { return null }
-    let stale? = FrontierDelta.stale_within(root, end) else { return null }
-    let extent = FrontierDelta.extent_in(root)
+    let parent? = FrontierDelta.parent_within(file.source, root, end) else { return null }
+    let held? = FrontierDelta.columns_within(file.source, root, end) else { return null }
+    let columns? = laid_columns(file.source, held, end) else { return null }
+    let places? = FrontierDelta.places_within(file.source, root, end) else { return null }
+    let stale? = FrontierDelta.stale_within(file.source, root, end) else { return null }
+    let extent = FrontierDelta.extent_in(file.source, root)
     if places.length != columns.length() ||
-        !places_below(places, extent) ||
-        !places_below(stale, extent) { return null }
+        !places_below(file.source, places, extent) ||
+        !places_below(file.source, stale, extent) { return null }
     DeltaLayer {
         id: file.id,
-        parent: ContentHash.read_from(parent),
+        parent: ContentHash.read_from(file.source, parent),
         columns: columns,
         places: places,
         stale: stale,
         extent: extent,
-        generation: FrontierDelta.generation_in(root),
+        generation: FrontierDelta.generation_in(file.source, root),
     }
 }
 
@@ -528,11 +530,11 @@ impl Frontier {
         if d.extent < self.extent { return false }
         let written: HashKeyedTable<bool> = hash_keyed_table()
         for at in 0..d.places.length {
-            let place = d.places.number_at(at)
+            let place = d.places.number_at(d.columns.source, at)
             if written.get(place_key(place)) != null { return false }
             written.put(place_key(place), true)
         }
-        [at for at in 0..d.places.length if d.places.number_at(at) >= self.extent].length == d.extent - self.extent
+        [at for at in 0..d.places.length if d.places.number_at(d.columns.source, at) >= self.extent].length == d.extent - self.extent
     }
 }
 
@@ -557,7 +559,7 @@ fn newer_base(a: BaseLayer, b: BaseLayer) -> bool { a.generation > b.generation 
 fn based_on(base: BaseLayer) -> Frontier {
     let overlaid: HashKeyedTable<Overlaid> = hash_keyed_table()
     for at in 0..base.stale.length {
-        let place = base.stale.number_at(at)
+        let place = base.stale.number_at(base.columns.source, at)
         overlaid
             .put(place_key(place), Overlaid { place: place, delta: null, index: place, stale: true })
     }
@@ -587,14 +589,14 @@ fn chained(f: Frontier, deltas: List<DeltaLayer>, links: int) -> Frontier {
 /// found stale.
 fn overlay(f: Frontier, d: DeltaLayer, at: int) {
     for index in 0..d.places.length {
-        let place = d.places.number_at(index)
+        let place = d.places.number_at(d.columns.source, index)
         f
             .overlaid
             .put(place_key(place), Overlaid { place: place, delta: at, index: index, stale: false })
         f.placed.put(d.columns.question_at(index), place)
     }
     for index in 0..d.stale.length {
-        let place = d.stale.number_at(index)
+        let place = d.stale.number_at(d.columns.source, index)
         let o = f.overlaid.get(place_key(place)) ?? Overlaid {
             place: place,
             delta: null,

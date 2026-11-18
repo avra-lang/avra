@@ -61,9 +61,9 @@ fn walked(mut cx: Lowering, c: Comp, at: int, built: Reg) {
             let v = when {
                 w.list == null -> here
                 octets -> cx.octet_at(w.list!, here)
-                _ -> cx.element_at(w.elem_layout, w.list!, here)
+                _ -> cx.walked_element(w, here)
             }
-            if index != null { cx.bind(index!.of, Bound.Value(here, owned_type("int"))) }
+            if index != null { cx.bind(index!.of, Bound.Value(cx.walk_place(w, here), owned_type("int"))) }
             cx.bind(name.of, Bound.Value(v, w.elem))
             walked(cx, c, at + 1, built)
             cx.loop_end()
@@ -92,9 +92,11 @@ fn mapped_head(
     cx.loop_end()
 }
 
-/// A walk over the list the head at `at` reads, from its start to its length: the lookup the planner
-/// narrows its `source` to, else the source itself.
+/// A walk over the list the head at `at` reads, from its start to its length: the text a `chars` view
+/// reads, the lookup the planner narrows its `source` to, else the source itself.
 fn headed_walk(mut cx: Lowering, c: Comp, at: int, source: ExprId) -> ListWalk {
+    let text = cx.chars_viewed(source)
+    if text != null { return cx.walk_chars(cx.lower(text!)) }
     let elem = cx.seen_at(source)!.listed()!
     let narrowed? = narrowed_source(cx, c, at, source) else { return cx.walk_list(cx.lower(source), elem) }
     cx.walk_list(narrowed, elem)

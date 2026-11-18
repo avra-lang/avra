@@ -80,8 +80,9 @@ impl Checks for Comp {
 fn clause_checked(mut cx: Checking, c: CompClause) {
     match c {
         .Head(index, name, source, hi) -> {
-            let from = cx.check(source, Expected.Free)
-            if hi != null { let _ = cx.check(hi!, Expected.Exactly(owned_type("int"))) }
+            let from = if hi == null { cx.check(source, Expected.Free) } else { cx.check_seated(source, owned_type("int"), Seating.CompBound(false)) }
+            if hi != null { let _ = cx.check_seated(hi!, owned_type("int"), Seating.CompBound(true)) }
+            if hi == null && index == null { cx.comp_unpaired(source, from) }
             let walk = if hi != null { walk_binds(owned_type("Range")) } else { walk_binds(cx.seen(from)) }
             if hi == null && walk.element == null { cx.comp_unwalked(source, from) }
             if index != null { cx.bind(index!.of, walk.index) }

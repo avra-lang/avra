@@ -1,6 +1,9 @@
 //! A PROGRAM HELD IN MEMORY, asked of the program layer: its files, where each package it names
 //! stands, and what a build of it says, runs and lowers to.
 use compiler.{
+    Finding,
+    file_rule_rows,
+    program_files,
     Program,
     avra,
     new_workspace,
@@ -348,6 +351,12 @@ impl Judged {
     fn warnings() -> string {
         let said = [d for d in self.diagnostics if d.severity is .Warning]
         if said.is_empty() { "" } else { self.rendered(said) }
+    }
+
+    /// Every rule finding across the files the program reads, each on the line it stands on.
+    fn findings() -> List<Finding> {
+        self.held.entered()
+        [Finding { rule: r.rule, file: self.held.named(f).full, text: r.text } for f in program_files(self.engine, self.entry.package_name) for r in file_rule_rows(self.engine, self.entry.package_name, f).rows]
     }
 
     /// What the build says in the file standing at `path`.

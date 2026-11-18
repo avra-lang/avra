@@ -22,6 +22,7 @@ use core.{
     flatten,
     some_list,
     spread_entry,
+    map_spreads,
 }
 use compiler.laws.{Aside, Found, FoundFix, law}
 use diagnostics.{Voice}
@@ -51,6 +52,8 @@ use features.{
     uncalled_method,
     variadic_short_of,
 }
+use features.lists.{list_spreads_absent}
+use features.maps.{map_spreads_absent}
 use features.structs.{
     carried_into,
     field_overwritten,
@@ -71,7 +74,6 @@ use features.bytes.{unoctetted}
 use features.lists.{unjoined}
 use @std.meta.{derive}
 use @std.text.{parse_int}
-use @std.program.source_facts.{source_text}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
@@ -135,6 +137,8 @@ enum Miss {
     WhenTotalTwice
     /// `..` over a value that may be null.
     SpreadAbsent(found: string)
+    /// A list's or a map's literal spreading a value that may be absent: which literal, and the value's type.
+    LiteralSpreadAbsent(of: string, found: string)
     /// `..` over a value with no fields.
     SpreadFieldless(found: string)
     /// A literal of a generic record that spreads.
@@ -191,8 +195,9 @@ type MissAt = { at: FindingAt?, miss: Miss }
 type ItemMisses = { rows: List<MissAt> }
 
 /// Nodes of a store, typed: the store, the type each node has, the nodes to read, `lo` up to `hi`,
-/// and the file and package that read them.
-type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int, hi: int, file: SourceFileAddress, reader: string, entry: bool = false }
+/// the file and package that read them, and the text of the item they stand in, which their places
+/// index.
+type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int, hi: int, file: SourceFileAddress, reader: string, entry: bool = false, text: string }
 
 /// Every miss in the written item `at` of `file`, in node order. An item that didn't parse misses
 /// nothing.
@@ -219,6 +224,7 @@ fn typed_nodes_read(engine: QueryEngine, file: SourceFileAddress, at: int, item:
         hi: item.store.expr_count(),
         file: file,
         reader: file.package_name,
+        text: item_under(engine, file, at).text,
     }
     [entry_nodes(engine, file, at) ?? own]
 }
@@ -260,6 +266,7 @@ fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: int) -> TypedNo
         entry: true,
         file: file,
         reader: file.package_name,
+        text: item_under(engine, file, at).text,
     }
 }
 
@@ -395,8 +402,12 @@ fn shape_misses(engine: QueryEngine, t: TypedNodes, e: ExprId, values: Map<strin
             t.store.expr_span(e),
         ),
         .When(_, _, defaults) -> when_miss(t.store, e, defaults),
-        .ChainApply(subject, _) -> chain_call_miss(engine, t, e, subject).concat(chain_applied_miss(engine, t, e, subject)),
-        .ChainCall(subject, _, _) -> chain_call_miss(engine, t, e, subject),
+        .ListLit(elems) -> flatten(
+            [literal_spread_miss(t, "list", v, v) for v in elems if t.store.spread_operand(v) != null],
+        ),
+        .MapLit(entries) -> flatten([literal_spread_miss(t, "map", v, v) for v in map_spreads(entries)]),
+        .ChainApply(subject, _) -> chain_call_miss(t, e, subject).concat(chain_applied_miss(engine, t, e, subject)),
+        .ChainCall(subject, _, _) -> chain_call_miss(t, e, subject),
         .Ident(name) -> param_value_miss(t.store, e, name.of)
             .concat(
                 if values.has("${e.index}") && read_as_type(t, e) { type_value_miss(engine, t, name.of, t.store.expr_span(e)) } else { [] },
@@ -424,8 +435,7 @@ fn chain_applied_miss(engine: QueryEngine, t: TypedNodes, e: ExprId, subject: Ex
     let s? = (t.type_at)(subject.index) else { return [] }
     if !s.nullable() || uncallable_miss(engine, s.unwrapped(), null).is_empty() { return [] }
     let at? = t.store.expr_span(e) else { return [] }
-    let text? = source_text(engine, t.file) else { return [] }
-    let means? = t.store.expr(e).says(text.substring(at.lo, at.hi)) else { return [] }
+    let means? = t.store.expr(e).says(t.text.substring(at.lo, at.hi)) else { return [] }
     [
         MissPlaced {
             at: at,
@@ -436,14 +446,11 @@ fn chain_applied_miss(engine: QueryEngine, t: TypedNodes, e: ExprId, subject: Ex
 
 /// A `?.` call `e` over a value of `subject`, known whole and never absent, beside what the call
 /// means as its text spells it.
-fn chain_call_miss(engine: QueryEngine, t: TypedNodes, e: ExprId, subject: ExprId) -> List<
-    MissPlaced,
-> {
+fn chain_call_miss(t: TypedNodes, e: ExprId, subject: ExprId) -> List<MissPlaced> {
     let s? = (t.type_at)(subject.index) else { return [] }
     if !plain_known(s) || s.head is .Parameter { return [] }
     let at? = t.store.expr_span(e) else { return [] }
-    let text? = source_text(engine, t.file) else { return [] }
-    let means? = t.store.expr(e).says(text.substring(at.lo, at.hi)) else { return [] }
+    let means? = t.store.expr(e).says(t.text.substring(at.lo, at.hi)) else { return [] }
     [
         MissPlaced {
             at: t.store.expr_span(subject),
@@ -612,6 +619,13 @@ fn spread_misses(engine: QueryEngine, t: TypedNodes, name: string, spreads: List
         d?.kind == ItemKind.Record &&
         !(record_signature(engine, d!.file, d!.name)?.type_params ?? []).is_empty()
     own.concat(if generic { [MissPlaced { at: at, miss: Miss.SpreadGeneric(name) }] } else { [] })
+}
+
+/// The spread `v` in a literal of `of`, a list or a map, said at `at`, of a value that may be absent.
+fn literal_spread_miss(t: TypedNodes, of: string, v: ExprId, at: ExprId) -> List<MissPlaced> {
+    let o? = (t.type_at)((t.store.spread_operand(v) ?? v).index) ?? (t.type_at)(v.index) else { return [] }
+    if !o.nullable() || o.absence() || o.dynamic || o.generic() || o.inferred() { return [] }
+    [MissPlaced { at: t.store.expr_span(at), miss: Miss.LiteralSpreadAbsent(of, o.spelled()) }]
 }
 
 /// A spread of a value of `operand` that spreads no record.
@@ -1438,6 +1452,15 @@ fn params_as_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
     misses_of(engine, file, at, (m: Miss) -> match m { .ParamAsValue(name) -> [name], rest -> [] })
 }
 
+fn literal_spreads_absent(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    misses_of(
+        engine,
+        file,
+        at,
+        (m: Miss) -> match m { .LiteralSpreadAbsent(of, found) -> [of, found], rest -> [] },
+    )
+}
+
 fn types_as_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     misses_of(engine, file, at, (m: Miss) -> match m { .TypeAsValue(name) -> [name], rest -> [] })
 }
@@ -1846,6 +1869,14 @@ export law type_param_no_value {
     witness: "fn g<T>(x: int) -> int {\n    let y = T\n    x\n}\n"
 }
 
+/// a list's or a map's spread source is never null
+export law literal_spread_present {
+    kind: "type.spread_nullable"
+    reads: literal_spreads_absent
+    voice: literal_absent_words
+    witness: "fn f(xs: List<int>?) -> int {\n    let a = [..xs]\n    a.length\n}\n"
+}
+
 /// a type is no value
 export law type_no_value {
     kind: "type.type_value"
@@ -1956,6 +1987,8 @@ fn untotal_words(_a: List<string>) -> Voice { when_untotal() }
 fn twice_words(_a: List<string>) -> Voice { when_total_twice() }
 
 fn absent_words(a: List<string>) -> Voice { spread_absent(a[0]) }
+
+fn literal_absent_words(a: List<string>) -> Voice { if a[0] == "map" { map_spreads_absent(a[1]) } else { list_spreads_absent(a[1]) } }
 
 fn fieldless_words(a: List<string>) -> Voice { spread_fieldless(a[0]) }
 

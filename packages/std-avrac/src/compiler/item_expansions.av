@@ -28,9 +28,9 @@ use @std.program.answer_record.{ContentHash, content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use @std.program.saved_layout.{SavedRecord}
+use @std.program.saved_layout.{SavedAt, SavedRecord}
 use @std.program.source_facts.{PlacedTape, item_tape, item_tape_saved}
-use @std.program.syntax_tape.{SyntaxTape, tape_writer}
+use @std.program.syntax_tape.{SyntaxTape, tape_about, tape_read, tape_writer}
 
 /// What an item means by besides its text: the components its instances name, as its file's
 /// words give them, and the words its blocks wait to be read by, each once in the order met.
@@ -42,8 +42,8 @@ fn item_needs(engine: QueryEngine, item_text: string, context: Bytes) -> ItemNee
 }
 
 /// The needs the tape saved at `tape` keeps, of an item read under `context`, read where they lie.
-fn needs_on(tape: SavedRecord, context: Bytes) -> ItemNeeds {
-    let about = about_of(SyntaxTape.about_in(tape))
+fn needs_on(tape: SavedAt<SavedRecord>, context: Bytes) -> ItemNeeds {
+    let about = about_of(tape_about(tape))
     let shapes = WordShapes.from_saved_bytes(context).components
     ItemNeeds {
         components: [s! for w in about.instance_words for s in [shapes.find(it.word == w)] if s != null],
@@ -75,6 +75,8 @@ impl NamedInstance {
 /// template's instances name.
 @derive(Saved)
 type ComponentContent = {
+    /// Where its declaring item starts in its file: a copy's nodes point home there.
+    start: int,
     item_text: string,
     context: Bytes,
     declares: List<string>,
@@ -94,6 +96,7 @@ type ComponentClosure = { contents: List<ComponentContent> }
 fn component_content(engine: QueryEngine, home: SourceFileAddress, declared: string) -> ComponentContent {
     let held? = declaration(engine, home, declared) else {
         return ComponentContent {
+            start: 0,
             item_text: "",
             context: no_context(),
             declares: [],
@@ -103,6 +106,7 @@ fn component_content(engine: QueryEngine, home: SourceFileAddress, declared: str
     }
     let needs = item_needs(engine, held.item_text, held.context)
     ComponentContent {
+        start: held.start,
         item_text: held.item_text,
         context: held.context,
         declares: [w.shape.declared for w in file_words(engine, home).components],
@@ -139,14 +143,19 @@ fn readied_all(grammars: List<GrammarWord>) -> List<BlockGrammar> { [g! for g in
 
 fn component_name(c: ComponentAt) -> string { "${spelled_file(c.home)}#${c.declared}" }
 
-/// A component's declaring item: its text, where it starts in its file, and the context it reads
-/// under.
-type Declaration = { item_text: string, start: int, context: Bytes }
+/// A component's declaring item: where its text starts in its file, its text, and the context it
+/// reads under. It is read at its file's places, as a template is: a copy of it points home where
+/// the home's file says.
+type Declaration = { start: int, item_text: string, context: Bytes }
 
 fn declaration(engine: QueryEngine, home: SourceFileAddress, declared: string) -> Declaration? {
     let word? = file_words(engine, home).components.find(it.shape.declared == declared) else { return null }
     let item = item_under(engine, home, word.item)
-    Declaration { item_text: item.text, start: item.start, context: item.context }
+    Declaration {
+        start: item_start(engine, home, word.item),
+        item_text: item.text,
+        context: item.context,
+    }
 }
 
 /// A component handed whole: its declaring item read back as its file reads it, each instance it
@@ -299,12 +308,15 @@ fn distinct_components(cs: List<ComponentWord>) -> List<ComponentWord> { [c for 
 /// written tape elsewhere.
 @query
 export fn file_meant(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
-    [PlacedTape { start: item.start, tape: SyntaxTape.read_from(meant_tape(engine, file, item)) } for item in items_under(engine, file)]
+    [PlacedTape {
+        start: item_start(engine, file, at),
+        tape: tape_read(meant_tape(engine, file, item_under(engine, file, at))),
+    } for at in 0..item_count(engine, file)]
 }
 
 /// An item's tape for what it means, where it lies: expanded where it names a component or a block
 /// word, written elsewhere.
-fn meant_tape(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder) -> SavedRecord {
+fn meant_tape(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder) -> SavedAt<SavedRecord> {
     let written = item_tape_saved(engine, item.text, item.context)
     let needs = needs_on(written, item.context)
     if needs.components.is_empty() && needs.blocks.is_empty() { return written }

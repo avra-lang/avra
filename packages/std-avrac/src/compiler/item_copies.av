@@ -100,16 +100,19 @@ type EntryCopies = { items: List<int>, found: List<EntryCopy> }
 
 /// Every write the statements `file` runs make through a `mut` local that stays in it, each with the
 /// written item it stands in: the statements read and typed once, as one body, so a local and the
-/// write through it need not share an item.
+/// write through it need not share an item. The writes are walked where the statements stand in the
+/// file, where one item's place orders against another's; each is kept where its node stands in its
+/// own item, read as each item reads it.
 @query
 fn entry_copies(engine: QueryEngine, file: SourceFileAddress) -> EntryCopies {
     let read = entry_read(engine, file)
+    let placed = entry_read(engine, file, true)
     let items = [i.at for i in read.items]
     if !read.store.stmt_ids().any((s) -> read.store.stmt(s) is .MutLet) { return EntryCopies { items: items, found: [] } }
     let types = entry_types(engine, file).types
     let package = file.package_name
     let cx = Copies {
-        store: read.store,
+        store: placed.store,
         type_at: (k: int) -> node_type(types, k),
         writes_receiver: (ty: SignedType, name: string) -> receiver_written(engine, ty, name, package),
         method_marks: (ty: SignedType, name: string) -> [s.mutable for s in (method_type(engine, ty, name, package)?.seats ?? []).drop(1)],
@@ -117,7 +120,10 @@ fn entry_copies(engine: QueryEngine, file: SourceFileAddress) -> EntryCopies {
     }
     EntryCopies {
         items: items,
-        found: [EntryCopy { item: item_holding(read, w.node), write: w.write } for w in cx.stayed()],
+        found: [EntryCopy {
+            item: item_holding(read, w.node),
+            write: w.write with { at: kept_at(read.store.expr_span(ExprId { index: w.node })) },
+        } for w in cx.stayed()],
     }
 }
 

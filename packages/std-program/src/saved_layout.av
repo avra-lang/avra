@@ -264,6 +264,9 @@ impl SavedBytes {
     /// The root of the answer these bytes hold.
     fn root() -> SavedRecord { saved_root_record(self.source, self.to) }
 
+    /// The root of the answer these bytes hold, beside where they are.
+    fn root_at() -> SavedAt<SavedRecord> { SavedAt { source: self.source, node: self.root() } }
+
     /// These bytes, copied out.
     fn copied() -> Bytes { self.source.octets_at(self.from, self.to) }
 }
@@ -273,82 +276,99 @@ export fn saved_bytes_in_memory(octets: Bytes) -> SavedBytes {
     SavedBytes { source: SavedSource.InMemory(octets), from: 0, to: octets.length }
 }
 
-/// A node's slots, read in place.
-export trait SavedSlots {
-    /// Where this node's bytes are.
-    fn source() -> SavedSource
+/// A node of saved bytes beside where its bytes are: what a reader holding nothing else reads it from.
+export type SavedAt<N> = { source: SavedSource, node: N }
 
+/// A node of saved bytes where they lie, in memory or in a mapped file: where it starts and how
+/// many slots it holds. A node holds only numbers, so it travels in registers; the bytes it reads,
+/// its `source`, are handed beside it. Nothing is copied until it's asked for.
+export trait SavedSlots {
     /// Where this node starts.
     fn start() -> int
 
-    /// What slot `slot` stores.
-    fn stored_at(slot: int) -> int
+    /// What slot `slot` stores, read in `source`.
+    fn stored_at(source: SavedSource, slot: int) -> int
 
     /// How many slots it holds.
     fn slot_count() -> int
 
     /// Slot `slot` as a number.
-    fn number_at(slot: int) -> int {
-        let stored = self.stored_at(slot)
+    fn number_at(source: SavedSource, slot: int) -> int {
+        let stored = self.stored_at(source, slot)
         without_low_bits(stored, 1) ^ 0 - (stored & 1)
     }
 
     /// Slot `slot` as a float, from its bits.
-    fn float_at(slot: int) -> float { float_of_bits(self.number_at(slot)) }
+    fn float_at(source: SavedSource, slot: int) -> float { float_of_bits(self.number_at(source, slot)) }
 
     /// Whether slot `slot` holds a child.
-    fn holds_child_at(slot: int) -> bool { self.stored_at(slot) != 0 }
+    fn holds_child_at(source: SavedSource, slot: int) -> bool { self.stored_at(source, slot) != 0 }
 
     /// Slot `slot` as a record, absent when it holds no child.
-    fn record_at(slot: int) -> SavedRecord? {
-        let child? = self.child_start_at(slot) else { return null }
-        record_starting_at(self.source(), child)
+    fn record_at(source: SavedSource, slot: int) -> SavedRecord? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        record_starting_at(source, child)
     }
+
+    /// Slot `slot` as a record: a defect where it holds no child.
+    fn record_in(source: SavedSource, slot: int) -> SavedRecord { record_starting_at(source, self.child_in(source, slot)) }
 
     /// Slot `slot` as a list, absent when it holds no child.
-    fn list_at(slot: int) -> SavedList? {
-        let child? = self.child_start_at(slot) else { return null }
-        list_starting_at(self.source(), child)
+    fn list_at(source: SavedSource, slot: int) -> SavedList? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        list_starting_at(source, child)
     }
 
-    /// Slot `slot` as octets, absent when it holds no child.
-    fn octets_at(slot: int) -> Bytes? { self.octets_in_place_at(slot)?.copied() }
+    /// Slot `slot` as a list: a defect where it holds no child.
+    fn list_in(source: SavedSource, slot: int) -> SavedList { list_starting_at(source, self.child_in(source, slot)) }
+
+    /// Slot `slot` as octets, copied out of `source`, absent when it holds no child.
+    fn octets_at(source: SavedSource, slot: int) -> Bytes? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        let label = label_at(source, child)
+        source.octets_at(label.contents_at, label.contents_at + label.length)
+    }
 
     /// Slot `slot` as octets where they lie, absent when it holds no child.
-    fn octets_in_place_at(slot: int) -> SavedBytes? {
-        let child? = self.child_start_at(slot) else { return null }
-        let label = label_at(self.source(), child)
-        SavedBytes {
-            source: self.source(),
-            from: label.contents_at,
-            to: label.contents_at + label.length,
-        }
+    fn octets_in_place_at(source: SavedSource, slot: int) -> SavedBytes? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        let label = label_at(source, child)
+        SavedBytes { source: source, from: label.contents_at, to: label.contents_at + label.length }
     }
 
     /// Slot `slot` as text, absent when it holds no child or its octets aren't text.
-    fn text_at(slot: int) -> string? { self.octets_at(slot)?.text() }
+    fn text_at(source: SavedSource, slot: int) -> string? { self.octets_at(source, slot)?.text() }
 
     /// Where slot `slot`'s child starts, absent when it holds none. A real child is never zero back.
-    fn child_start_at(slot: int) -> int? {
-        let stored = self.stored_at(slot)
+    fn child_start_at(source: SavedSource, slot: int) -> int? {
+        let stored = self.stored_at(source, slot)
         if stored == 0 { null } else { self.start() - stored }
+    }
+
+    /// Where slot `slot`'s child starts: a defect where it holds none.
+    fn child_in(source: SavedSource, slot: int) -> int {
+        let stored = self.stored_at(source, slot)
+        if stored == 0 { defect(no_child(slot)) }
+        self.start() - stored
     }
 
     /// Slot `slot` as a record lying wholly before `end`, absent when it holds none or the record
     /// doesn't.
-    fn record_within_at(slot: int, end: int) -> SavedRecord? {
+    fn record_within_at(source: SavedSource, slot: int, end: int) -> SavedRecord? {
         if slot >= self.slot_count() { return null }
-        let child? = self.child_start_at(slot) else { return null }
-        record_within(self.source(), child, end)
+        let child? = self.child_start_at(source, slot) else { return null }
+        record_within(source, child, end)
     }
 
     /// Slot `slot` as a list lying wholly before `end`, absent when it holds none or the list doesn't.
-    fn list_within_at(slot: int, end: int) -> SavedList? {
+    fn list_within_at(source: SavedSource, slot: int, end: int) -> SavedList? {
         if slot >= self.slot_count() { return null }
-        let child? = self.child_start_at(slot) else { return null }
-        list_within(self.source(), child, end)
+        let child? = self.child_start_at(source, slot) else { return null }
+        list_within(source, child, end)
     }
 }
+
+fn no_child(slot: int) -> string { "a saved node's slot ${slot} holds no child where one was read" }
 
 /// A node's label, read: what it says, where the node's contents begin, and what the one load
 /// brought with it from there on, with how many octets of that it holds.
@@ -386,7 +406,6 @@ fn label_at(source: SavedSource, start: int) -> NodeLabel {
 /// A record of a saved answer, read in place. Its label and its first size codes are read once,
 /// when it's reached, and nearly always by one load.
 export type SavedRecord = {
-    source: SavedSource,
     start: int,
     variant: int,
     field_count: int,
@@ -403,14 +422,13 @@ export fn record_within(source: SavedSource, start: int, end: int) -> SavedRecor
     let label = label_at(source, start)
     if label.contents_at + size_code_octets(label.length) > end { return null }
     let record = record_labelled(source, start, label)
-    if record.slots_end() > end { null } else { record }
+    if record.slots_end(source) > end { null } else { record }
 }
 
 /// The record a label read at `start` begins.
 fn record_labelled(source: SavedSource, start: int, label: NodeLabel) -> SavedRecord {
     let codes_arrived = label.contents_octets >= size_code_octets(label.length)
     SavedRecord {
-        source: source,
         start: start,
         variant: label.variant,
         field_count: label.length,
@@ -420,44 +438,42 @@ fn record_labelled(source: SavedSource, start: int, label: NodeLabel) -> SavedRe
 }
 
 impl SavedSlots for SavedRecord {
-    fn source() -> SavedSource { self.source }
-
     fn start() -> int { self.start }
 
     fn slot_count() -> int { self.field_count }
 
     /// Finds the slot past the widths before it, then loads it.
-    fn stored_at(slot: int) -> int {
+    fn stored_at(source: SavedSource, slot: int) -> int {
         let slots_at = self.size_codes_at + size_code_octets(self.field_count)
         high_octets(
-            self.source.word_at(slots_at + self.octets_before(slot)),
-            self.width_of_slot(slot),
+            source.word_at(slots_at + self.octets_before(source, slot)),
+            self.width_of_slot(source, slot),
         )
     }
 }
 
 impl SavedRecord {
     /// Where the record's last slot ends.
-    fn slots_end() -> int {
+    fn slots_end(source: SavedSource) -> int {
         self.size_codes_at +
             size_code_octets(self.field_count) +
-            self.octets_before(self.field_count)
+            self.octets_before(source, self.field_count)
     }
 
     /// The width of one slot, from the size codes in hand when it's among the first thirty-two.
-    fn width_of_slot(slot: int) -> int {
-        let codes = if slot < CODES_PER_WORD { self.first_size_codes } else { self.source.word_at(self.size_codes_at + slot / 4) }
+    fn width_of_slot(source: SavedSource, slot: int) -> int {
+        let codes = if slot < CODES_PER_WORD { self.first_size_codes } else { source.word_at(self.size_codes_at + slot / 4) }
         width_of_code(
             without_low_bits(codes, 62 - 2 * if slot < CODES_PER_WORD { slot } else { slot % 4 }) & 3,
         )
     }
 
     /// How many octets the slots before `slot` take, with one load per thirty-two past the first.
-    fn octets_before(slot: int) -> int {
+    fn octets_before(source: SavedSource, slot: int) -> int {
         mut octets = 0
         mut counted = 0
         while counted < slot {
-            let codes = if counted == 0 { self.first_size_codes } else { self.source.word_at(self.size_codes_at + counted / 4) }
+            let codes = if counted == 0 { self.first_size_codes } else { source.word_at(self.size_codes_at + counted / 4) }
             let taken = if slot - counted < CODES_PER_WORD { slot - counted } else { CODES_PER_WORD }
             for k in 0..taken { octets = octets + width_of_code(without_low_bits(codes, 62 - 2 * k) & 3) }
             counted = counted + taken
@@ -474,12 +490,11 @@ impl SavedRecord {
 }
 
 /// A list of a saved answer, read in place. Its label is read once, when it's reached.
-export type SavedList = { source: SavedSource, start: int, length: int, width: int, items_at: int }
+export type SavedList = { start: int, length: int, width: int, items_at: int }
 
 fn list_starting_at(source: SavedSource, start: int) -> SavedList {
     let label = label_at(source, start)
     SavedList {
-        source: source,
         start: start,
         length: label.length,
         width: label.width,
@@ -496,27 +511,25 @@ export fn list_within(source: SavedSource, start: int, end: int) -> SavedList? {
 
 impl SavedList {
     /// Where the first number at or after `wanted` sits, in a list of numbers sorted ascending.
-    fn first_at_or_after(wanted: int) -> int {
+    fn first_at_or_after(source: SavedSource, wanted: int) -> int {
         mut low = 0
         mut high = self.length
         while low < high {
             let middle = (low + high) / 2
-            if self.number_at(middle) < wanted { low = middle + 1 } else { high = middle }
+            if self.number_at(source, middle) < wanted { low = middle + 1 } else { high = middle }
         }
         low
     }
 }
 
 impl SavedSlots for SavedList {
-    fn source() -> SavedSource { self.source }
-
     fn start() -> int { self.start }
 
     fn slot_count() -> int { self.length }
 
     /// Every item has one width, so an item is one multiplication away.
-    fn stored_at(slot: int) -> int {
-        high_octets(self.source.word_at(self.items_at + slot * self.width), self.width)
+    fn stored_at(source: SavedSource, slot: int) -> int {
+        high_octets(source.word_at(self.items_at + slot * self.width), self.width)
     }
 }
 

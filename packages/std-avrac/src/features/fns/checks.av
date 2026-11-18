@@ -6,6 +6,7 @@ use core.{
     LambdaFault,
     Checking,
     Checks,
+    CalleeNamed,
     ExprId,
     Expected,
     FilledByName,
@@ -51,7 +52,7 @@ impl Checks for Call {
         if !(written.head is .Function) { return cx.unfilled(self.args) }
         let declares = (cx.program.type_params_named)(self.callee.of, cx.home_of(e))
         if declares != null &&
-            cx.pins_refused(e, self.callee.of, declares!, self.pins.length, self.args) { return null }
+            cx.pins_refused(e, self.callee.of, declares!.length, self.pins.length, self.args) { return null }
         mut pinned: Map<string, SignedType> = {}
         for at, pin in self.pins { pinned.set("${at}", cx.written(pin)) }
         if cx.seats_named(e, written, self.args, 0, self.callee.of) { return null }
@@ -63,6 +64,7 @@ impl Checks for Call {
                 seat_of,
                 pinned,
                 (cx.program.bounds_named)(self.callee.of, cx.home_of(e)),
+                if declares == null { null } else { CalleeNamed { name: self.callee.of, type_params: declares! } },
             )
         if !named_into_extern(cx, e, self) { seats_written(cx, e, self, written) }
         answer

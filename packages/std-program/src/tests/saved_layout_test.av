@@ -5,10 +5,12 @@ use @std.hash.{blake3_hex}
 use @std.io.{make_dirs, write_bytes}
 use @std.time.{stamp}
 use saved_layout.{
+    SavedAt,
     SavedRecord,
     SavedSlot,
     SavedSlots,
     SavedSource,
+    saved_bytes_in_memory,
     saved_layout_writer,
     saved_root_record,
 }
@@ -49,17 +51,17 @@ fn sample_answer() -> Bytes {
 /// Everything `sample_answer` holds, read back from `source`.
 fn read_back(source: SavedSource, end: int) -> string {
     let root = saved_root_record(source, end)
-    let numbers = root.list_at(2)!
-    let mixed = root.record_at(3)!
-    let texts = "[${root.text_at(0) ?? "none"}] ${root.text_at(1) ?? "none"}"
-    let list_read = "${numbers.length} ${numbers.number_at(0)} ${numbers.number_at(1)} ${numbers.number_at(2)}"
-    let record_read = "${mixed.variant} ${mixed.number_at(0)} ${mixed.number_at(1)} ${mixed.record_at(2) == null} ${mixed.number_at(3)}"
-    "${root.variant} ${root.field_count} ${texts} | ${list_read} | ${record_read} | ${root.number_at(4)}"
+    let numbers = root.list_at(source, 2)!
+    let mixed = root.record_at(source, 3)!
+    let texts = "[${root.text_at(source, 0) ?? "none"}] ${root.text_at(source, 1) ?? "none"}"
+    let list_read = "${numbers.length} ${numbers.number_at(source, 0)} ${numbers.number_at(source, 1)} ${numbers.number_at(source, 2)}"
+    let record_read = "${mixed.variant} ${mixed.number_at(source, 0)} ${mixed.number_at(source, 1)} ${mixed.record_at(source, 2) == null} ${mixed.number_at(source, 3)}"
+    "${root.variant} ${root.field_count} ${texts} | ${list_read} | ${record_read} | ${root.number_at(source, 4)}"
 }
 
 const SAMPLE_READ_BACK: string = "2 5 [] a text longer than the thirty-two octets kept whole | 3 -1 0 5000000000 | 3 1 5000000000 true -3 | 1000"
 
-fn record_of(answer: Bytes) -> SavedRecord { saved_root_record(SavedSource.InMemory(answer), answer.length) }
+fn record_of(answer: Bytes) -> SavedAt<SavedRecord> { saved_bytes_in_memory(answer).root_at() }
 
 fn one_record(slots: List<SavedSlot>) -> Bytes {
     let w = saved_layout_writer()
@@ -88,9 +90,10 @@ fn numbers_as_slots(numbers: List<int>) -> bool {
 /// Whether searching for every number, and each number's neighbours, agrees with walking the list.
 fn search_agrees_with_a_walk(numbers: List<int>) -> bool {
     let answer = one_list([SavedSlot.Number(n) for n in numbers])
-    let read = saved_root_record(SavedSource.InMemory(answer), answer.length).list_at(0)!
+    let source = SavedSource.InMemory(answer)
+    let read = saved_root_record(source, answer.length).list_at(source, 0)!
     let wanted = flat_neighbours(numbers).concat([-9223372036854775807, 0, 9223372036854775807])
-    wanted.all((word) -> read.first_at_or_after(word) == walked_to(numbers, word))
+    wanted.all((word) -> read.first_at_or_after(source, word) == walked_to(numbers, word))
 }
 
 fn flat_neighbours(numbers: List<int>) -> List<int> {
@@ -126,16 +129,16 @@ spec "program/saved_layout — an answer read where it lies" {
                     ],
                 )
             let read = record_of(w.finished(root))
-            read.text_at(0) == "" &&
-                read.record_at(1)!.field_count == 0 &&
-                read.list_at(2)!.length == 0
+            read.node.text_at(read.source, 0) == "" &&
+                read.node.record_at(read.source, 1)!.field_count == 0 &&
+                read.node.list_at(read.source, 2)!.length == 0
         }
         then "no child is absent, and a zero number is a number" {
             let read = record_of(one_record([SavedSlot.NoChild, SavedSlot.Number(0)]))
-            read.record_at(0) == null &&
-                read.list_at(0) == null &&
-                read.text_at(0) == null &&
-                read.number_at(1) == 0
+            read.node.record_at(read.source, 0) == null &&
+                read.node.list_at(read.source, 0) == null &&
+                read.node.text_at(read.source, 0) == null &&
+                read.node.number_at(read.source, 1) == 0
         }
     }
     given "numbers at every width" {
@@ -158,7 +161,7 @@ spec "program/saved_layout — an answer read where it lies" {
             ]
             let slots = [SavedSlot.Number(v) for v in values.concat(values).concat(values)]
             let read = record_of(one_record(slots))
-            (0..slots.length).all((i) -> read.number_at(i) == values[i % values.length])
+            (0..slots.length).all((i) -> read.node.number_at(read.source, i) == values[i % values.length])
         }
         then "a list's extremes read back in place" {
             let values = [
@@ -172,8 +175,9 @@ spec "program/saved_layout — an answer read where it lies" {
                 -9223372036854775807,
             ]
             let answer = one_list([SavedSlot.Number(v) for v in values])
-            let read = saved_root_record(SavedSource.InMemory(answer), answer.length).list_at(0)!
-            (0..values.length).all((i) -> read.number_at(i) == values[i])
+            let source = SavedSource.InMemory(answer)
+            let read = saved_root_record(source, answer.length).list_at(source, 0)!
+            (0..values.length).all((i) -> read.number_at(source, i) == values[i])
         }
     }
     given "a list of numbers written as numbers" {
@@ -222,7 +226,7 @@ spec "program/saved_layout — an answer read where it lies" {
             let read = record_of(
                 w.finished(w.write_record(0, [SavedSlot.Number(i * i * i) for i in 0..100])),
             )
-            (0..100).all((i) -> read.number_at(i) == i * i * i)
+            (0..100).all((i) -> read.node.number_at(read.source, i) == i * i * i)
         }
     }
     given "records around the size codes a label's load brings" {
@@ -235,8 +239,8 @@ spec "program/saved_layout — an answer read where it lies" {
                             w
                                 .finished(w.write_record(0, [SavedSlot.Number(i * 300) for i in 0..count])),
                         )
-                        (0..count).all((i) -> read.number_at(i) == i * 300) &&
-                            read.field_count == count
+                        (0..count).all((i) -> read.node.number_at(read.source, i) == i * 300) &&
+                            read.node.field_count == count
                     },
                 )
         }
@@ -247,9 +251,9 @@ spec "program/saved_layout — an answer read where it lies" {
             let long_list = w.write_list([SavedSlot.Number(i) for i in 0..1000])
             let root = w.write_record(5000, [SavedSlot.Child(long_list)])
             let read = record_of(w.finished(root))
-            read.variant == 5000 &&
-                read.list_at(0)!.length == 1000 &&
-                read.list_at(0)!.number_at(999) == 999
+            read.node.variant == 5000 &&
+                read.node.list_at(read.source, 0)!.length == 1000 &&
+                read.node.list_at(read.source, 0)!.number_at(read.source, 999) == 999
         }
         then "a tiny record costs one octet of label" {
             one_record([SavedSlot.Number(1)]).length == 1 + 1 + 1 + 8

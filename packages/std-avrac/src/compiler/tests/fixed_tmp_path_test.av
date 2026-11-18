@@ -1,20 +1,16 @@
 //! `compiler.fixed_tmp_path`: a test file's `/tmp/…` literal is
 //! refused unless the file names a per-run base.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{findings_of, Finding}
-use compiler.host.{memory_host}
+use @std.avrac.testing.held.{held_at}
+use compiler.{Finding}
 
 fn tmp_hits_in_test(main: string) -> int {
-    let ws = test_workspace(
-        memory_host({"/w/src/tests/t_test.av": main}, ["/w/src/tests/t_test.av"]),
-        "/w",
-    )
-    tmp_hits(findings_of(ws.program("/w/src/tests/t_test.av")))
+    let ws = held_at({"/w/src/tests/t_test.av": main}, "/w")
+    tmp_hits(ws.judged_at("/w/src/tests/t_test.av").findings())
 }
 
 fn tmp_hits_in_product(main: string) -> int {
-    let ws = test_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w")
-    tmp_hits(findings_of(ws.program("/w/src/main.av")))
+    let ws = held_at({"/w/src/main.av": main}, "/w")
+    tmp_hits(ws.judged_at("/w/src/main.av").findings())
 }
 
 fn tmp_hits(fs: List<Finding>) -> int { [f for f in fs if f.rule == "compiler.fixed_tmp_path"].length }

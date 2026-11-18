@@ -72,7 +72,7 @@ export fn meta_of_fn_decl(engine: QueryEngine, file: SourceFileAddress, name: st
     let item = read_item(engine, file, d.item)
     let s? = item.stmts.find((x) -> item.store.fn_parts(x)?.name == name) else { return null }
     let sig? = fn_signature(engine, file, name) else { return null }
-    fn_meta(engine, file, item.store, s, sig)
+    fn_meta(engine, file, item, s, sig)
 }
 
 /// The method `name` the impl `m` writes, as `@std/meta`'s `Fn`, as a fn is read, its owner the type
@@ -85,7 +85,7 @@ export fn meta_of_method(engine: QueryEngine, m: MethodSite, name: string) -> Me
         .fns
         .find((x) -> item.store.fn_parts(x)?.name == name && item.store.is_static(x) == m.statics) else { return null }
     let sig? = method_signature(engine, m.at, name) else { return null }
-    fn_meta(engine, m.at.file, item.store, s, sig) with { owner: parts.target }
+    fn_meta(engine, m.at.file, item, s, sig) with { owner: parts.target }
 }
 
 /// The trait `file` declares as `name`, as `@std/meta`'s `Trait`: each method it declares, as a fn
@@ -95,16 +95,17 @@ export fn meta_of_trait_decl(engine: QueryEngine, file: SourceFileAddress, name:
     let held = TraitAt { file: file, name: name }
     let receiver = headed_type(TypeHead.Declared(file, name))
     let methods = [f for f in trait_fns(item) if !item.store.is_static(f) && item.store.fn_parts(f) != null]
-    let fns = [fn_meta(engine, file, item.store, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
+    let fns = [fn_meta(engine, file, item, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
     if fns.length != methods.length { return null }
-    MetaTrait { name: name, at: trait_place(file, item, name), fns: fns }
+    MetaTrait { name: name, at: trait_place(engine, file, item, name), fns: fns }
 }
 
 /// Where the trait `name` stands, as `@std/meta` hands a place: its file spelled by package and path
 /// — never a path on disk — and its statement's span.
-fn trait_place(file: SourceFileAddress, item: ReadItem, name: string) -> Loc? {
+fn trait_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> Loc? {
     let s? = item.stmts.find((x: StmtId) -> item.store.trait_parts(x)?.name == name) else { return null }
-    let span? = item.store.stmt_span(s) else { return null }
+    let written? = item.store.stmt_span(s) else { return null }
+    let span = span_in_file(engine, file, item, written)
     Loc { file: spelled_file(file), lo: span.lo, hi: span.hi }
 }
 
@@ -112,10 +113,11 @@ fn trait_place(file: SourceFileAddress, item: ReadItem, name: string) -> Loc? {
 fn fn_meta(
     engine: QueryEngine,
     file: SourceFileAddress,
-    store: SyntaxArena,
+    item: ReadItem,
     s: StmtId,
     sig: FnSignature,
 ) -> MetaFn {
+    let store = item.store
     let parts = store.fn_parts(s)!
     MetaFn {
         name: parts.name,
@@ -123,7 +125,7 @@ fn fn_meta(
         answer: spelled(parts.ret),
         at: null,
         answers: signed_kind(sig.answer),
-        annotations: [annotation_meta(engine, file, store, a) for a in store.annotations_of(s)],
+        annotations: [annotation_meta(engine, file, item, a) for a in store.annotations_of(s)],
     }
 }
 
@@ -160,7 +162,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         fields: [],
         variants: [],
         at: null,
-        annotations: [annotation_meta(engine, d.file, item.store, a) for a in item.store.annotations_of(s)],
+        annotations: [annotation_meta(engine, d.file, item, a) for a in item.store.annotations_of(s)],
         module: dotted_module(d.file),
         impls: written_traits(engine, d.file, d.name),
     }
@@ -171,16 +173,17 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
             base with { fields: [field_meta(
                 engine,
                 d.file,
+                item,
                 p,
                 field_kind(signed, p.name.of),
-                written_default(engine, d.file, item.store, p),
+                written_default(engine, d.file, item, p),
                 field_cell(engine, signed, p),
-            ) for p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(d.file, item.store, s) }
+            ) for p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
         },
         .Enum -> {
             let parts? = item.store.enum_parts(s) else { return null }
             let signed = enum_signature(engine, d.file, d.name)?.variants ?? []
-            base with { variants: [variant_meta(engine, d.file, v, signed.find(it.name == v.name.of)?.payloads ?? []) for v in parts.variants] }
+            base with { variants: [variant_meta(engine, d.file, item, v, signed.find(it.name == v.name.of)?.payloads ?? []) for v in parts.variants] }
         },
         .Named -> {
             let parts? = item.store.named_parts(s) else { return null }
@@ -442,21 +445,22 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
         fields: [field_meta(
             engine,
             m.file,
+            item,
             p,
             field_kind(signed, p.name.of),
-            written_default(engine, m.file, item.store, p),
+            written_default(engine, m.file, item, p),
             field_cell(engine, signed, p),
         ) for p in fields],
-        marks: [annotated_mark(engine, m.file, item.store, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
-        annotations: [annotation_meta(engine, m.file, item.store, a) for s in declaring for a in item.store.annotations_of(s)],
+        marks: [annotated_mark(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
+        annotations: [annotation_meta(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s)],
         impls: distinct(written_traits(engine, m.file, m.name).concat(derived)),
     }
 }
 
 /// An annotation a member wears that is a mark, as a `Mark`: its arguments as the literals they
 /// write.
-fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, a: Annotation) -> MetaMark {
-    let written = annotation_meta(engine, file, store, a)
+fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaMark {
+    let written = annotation_meta(engine, file, item, a)
     MetaMark { name: written.name, args: written.args, at: null, named: written.named }
 }
 
@@ -485,6 +489,7 @@ fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
 fn field_meta(
     engine: QueryEngine,
     file: SourceFileAddress,
+    item: ReadItem,
     p: Param,
     kind: Kind,
     default: MetaCode?,
@@ -496,7 +501,7 @@ fn field_meta(
         at: null,
         kind: if cell { Kind.Cell(kind) } else { kind },
         marks: [mark_meta(m) for m in p.marks],
-        annotations: [mark_as_annotation(engine, file, m) for m in p.marks],
+        annotations: [mark_as_annotation(engine, file, item, m) for m in p.marks],
         defaulted: p.default != null,
         says: says_meta(p, kind),
         default: default,
@@ -536,9 +541,11 @@ const BY_VALUE: List<string> = ["int", "float", "bool", "string"]
 
 /// A component's body as the statements it writes: its quote, a template of `file` at its offset;
 /// absent for a declaration that writes none.
-fn body_meta(file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> MetaStmts? {
+fn body_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, s: StmtId) -> MetaStmts? {
+    let store = item.store
     let q? = store.component_body(s) else { return null }
-    let at? = store.expr_span(q) else { return null }
+    let held? = store.expr_span(q) else { return null }
+    let at = span_in_file(engine, file, item, held)
     let body? = store.expr(q).body_of() else { return null }
     MetaStmts { node: MetaNode.Template(template_home(file), at.lo, body.parts, []) }
 }
@@ -546,11 +553,13 @@ fn body_meta(file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> MetaStmt
 /// A field's default as the code that writes it: the source the declaration wrote, a template of
 /// `file` at its offset; absent where it writes none, where it's a quote, which holds its offset
 /// already, or where its node was copied from another file.
-fn written_default(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, p: Param) -> MetaCode? {
+fn written_default(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, p: Param) -> MetaCode? {
+    let store = item.store
     let e? = p.default else { return null }
     if store.foreign_of(e) != null { return null }
-    let at? = store.expr_span(e) else { return null }
-    if store.quote_at(at.lo) != null { return null }
+    let held? = store.expr_span(e) else { return null }
+    if store.quote_at(held.lo) != null { return null }
+    let at = span_in_file(engine, file, item, held)
     let text? = source_text(engine, file) else { return null }
     MetaCode {
         node: MetaNode.Template(template_home(file), at.lo, [text.substring(at.lo, at.hi)], []),
@@ -561,6 +570,7 @@ fn written_default(engine: QueryEngine, file: SourceFileAddress, store: SyntaxAr
 fn variant_meta(
     engine: QueryEngine,
     file: SourceFileAddress,
+    item: ReadItem,
     v: VariantDecl,
     signed: List<FieldSeat>,
 ) -> MetaVariant {
@@ -568,7 +578,7 @@ fn variant_meta(
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
         at: null,
-        fields: [field_meta(engine, file, p, field_kind(signed, p.name.of), null, false) for p in v.payloads],
+        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.of), null, false) for p in v.payloads],
         marks: [mark_meta(m) for m in v.marks],
     }
 }
@@ -588,22 +598,23 @@ fn mark_meta(m: Mark) -> MetaMark {
 fn named_args(m: Mark) -> List<MetaMarkArg> { [MetaMarkArg { label: n.label, value: n.value } for n in m.named] }
 
 /// A member's mark `file` writes as its own `Annotation`, with the call a rule splices.
-fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, m: Mark) -> MetaAnnotation {
+fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaAnnotation {
     MetaAnnotation {
         name: m.name,
         args: m.args,
         at: null,
-        call: call_written(engine, file, m.name, m.span),
+        call: call_written(engine, file, item, m.name, m.span),
         named: named_args(m),
     }
 }
 
 /// An annotation a statement of `file` wears as an `Annotation`: each argument as the literal it
 /// writes, and the call a rule splices where it is one.
-fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, a: Annotation) -> MetaAnnotation {
+fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaAnnotation {
+    let store = item.store
     MetaAnnotation {
         name: a.name,
-        call: if rule_named(engine, file, a.name) { call_written(engine, file, a.name, a.span) } else { null },
+        call: if rule_named(engine, file, a.name) { call_written(engine, file, item, a.name, a.span) } else { null },
         args: [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null],
         at: null,
         named: [MetaMarkArg { label: store.arg_label(e)!, value: arg_lit(store, store.unnamed(e)).text } for e in a.args if store.arg_label(e) != null],
@@ -621,8 +632,15 @@ fn rule_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> boo
 
 /// The annotation `name` written in `file` at `at` as the template of its call: `name(`, the value
 /// a rule splices, then the arguments the annotation writes, `)`.
-fn call_written(engine: QueryEngine, file: SourceFileAddress, name: string, at: Span?) -> MetaCode? {
-    let written? = at else { return null }
+fn call_written(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    name: string,
+    at: Span?,
+) -> MetaCode? {
+    let held? = at else { return null }
+    let written = span_in_file(engine, file, item, held)
     let args = written_args(
         source_text(engine, file)?.substring(written.lo, written.hi) ?? "",
         name,

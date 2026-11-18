@@ -95,7 +95,7 @@ fn entry_loads_ride_pointers(l: Lowered) -> bool {
 /// A non-load passes; a load passes when its register is a pointer.
 fn load_rides_pointer(l: Lowered, i: Ins) -> bool {
     let d: Reg? = match i { .Load(dst, _) -> dst, _ -> null }
-    d == null || l.types.rides_pointer(l.entry.reg_types[d!.index])
+    d == null || d!.index < l.entry.layouts.length && l.entry.layouts[d!.index] is .Boxed
 }
 
 /// No CallPtr seat in ANY lowered body carries a defensive retain: THE
@@ -314,7 +314,7 @@ spec "compiler/lower" {
     given "the dyn box and its indirect call (T3)" {
         then "boxing writes one address per trait method, qualified" {
             let syms = addr_syms(ir_of(dyn_read()))
-            syms.length == 1 && syms[0] == "P.show"
+            syms.length == 1 && syms[0] == "alone/src/main.av.P.show"
         }
         then "the call goes through the pointer, not a name" {
             call_ptrs(ir_of(dyn_read())) == 1
@@ -376,7 +376,7 @@ ret 0"""
             // capture-free — its box is static data, never `Ins.FnAddr`
             addr_syms(l).length == 0 &&
                 static_addr_syms(l).length == 1 &&
-                names.any(it.contains("\$l")) &&
+                names.any(it.contains(".lambda")) &&
                 names.join(",") == [b.name for b in ir_of("let f = (x: int) -> x + 1\nf(2)").fns].join(",")
         }
         then "a named fn boxes behind its wrapper" {
@@ -388,8 +388,8 @@ ret 0"""
             let syms = static_addr_syms(l)
             addr_syms(l).length == 0 &&
                 syms.length == 1 &&
-                syms[0] == "double\$w" &&
-                names.contains("double\$w")
+                syms[0] == "alone/src/main.av.double\$w" &&
+                names.contains("alone/src/main.av.double\$w")
         }
     }
     given "the program is the entry's closure" {
@@ -398,24 +398,26 @@ ret 0"""
                 "fn helper(n: int) -> int {\n    n + 1\n}\nfn unused(n: int) -> int {\n    n\n}\nlet f = (n: int) -> helper(n)\nf(1)",
             )
             let names = [b.name for b in l.fns]
-            names.contains("helper") && !names.contains("unused")
+            names.contains("alone/src/main.av.helper") &&
+                !names.contains("alone/src/main.av.unused")
         }
         then "a struct literal calls its omitted field's default — one body, named for the field as a default" {
             let l = ir_of("type P = { x: int, y: int = 7 }\nP { x: 1 }.y")
-            [b.name for b in l.fns].contains("P.y\$default")
+            [b.name for b in l.fns].contains("alone/src/main.av.P.y\$default")
         }
         then "a method reached only through a dyn box's vtable lowers; its uncalled sibling stays out" {
             let l = ir_of(
                 "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nimpl P {\n    fn unused() -> int {\n        0\n    }\n}\nlet d: dyn Show = P { x: 3 }\nd.show()",
             )
             let names = [b.name for b in l.fns]
-            names.contains("P.show") && !names.contains("P.unused")
+            names.contains("alone/src/main.av.P.show") &&
+                !names.contains("alone/src/main.av.P.unused")
         }
         then "a fn reached only through a fn value in a struct field lowers" {
             let l = ir_of(
                 "type H = { f: fn(int) -> int }\nfn inc(n: int) -> int {\n    n + 1\n}\nlet h = H { f: inc }\nh.f(1)",
             )
-            [b.name for b in l.fns].contains("inc")
+            [b.name for b in l.fns].contains("alone/src/main.av.inc")
         }
     }
     given "the loop's condition settles every turn" {
@@ -863,7 +865,7 @@ scope application {
     }
     given "one head and a filter" {
         then "the filter guards the push" {
-            let expected = """fn f(r0: List<int>) -> List<int>
+            let expected = """fn alone/src/main.av.f(r0: box list) -> box list
 scope application {
   r1 = int 0
   r2 = call avra_array_sized(r1)
@@ -896,7 +898,7 @@ scope application {
   }
   yield r2
 }"""
-            body_of(render_ir(ir_of(filtered())), "f") == expected
+            body_of(render_ir(ir_of(filtered())), "alone/src/main.av.f") == expected
         }
     }
     given "a relation head the planner narrows" {

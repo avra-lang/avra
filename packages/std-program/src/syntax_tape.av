@@ -14,7 +14,7 @@ use defect.{defect}
 use dense_window.{DenseWindow, dense_window}
 use @std.meta.{derive}
 use saved_derive.{Saved}
-use saved_layout.{SavedList, SavedRecord, SavedSlots, float_bits, float_of_bits}
+use saved_layout.{SavedAt, SavedList, SavedRecord, SavedSlots, SavedSource, float_bits, float_of_bits}
 use sorted.{sorted_by}
 
 /// The flags one number holds.
@@ -62,6 +62,15 @@ export type SyntaxTape = {
     declares: List<TapeName>,
     about: Bytes?,
 }
+
+/// The tape saved at `tape`, read back whole.
+export fn tape_read(tape: SavedAt<SavedRecord>) -> SyntaxTape { SyntaxTape.read_from(tape.source, tape.node) }
+
+/// What the tape saved at `tape` says about its item, read where it lies.
+export fn tape_about(tape: SavedAt<SavedRecord>) -> Bytes? { SyntaxTape.about_in(tape.source, tape.node) }
+
+/// The names the tape saved at `tape` declares, read where they lie.
+export fn tape_declares(tape: SavedAt<SavedRecord>) -> List<TapeName> { SyntaxTape.declares_in(tape.source, tape.node) }
 
 /// One fact, waiting to be put in order.
 type PendingFact = { column: int, node: int, words: List<int> }
@@ -523,13 +532,14 @@ fn texts_of(octets: Bytes) -> List<string> {
     texts
 }
 
-/// A saved section, read where it lies.
-export type SectionView = { columns: SavedList, texts: SavedList }
+/// A saved section, read where it lies in `source`.
+export type SectionView = { source: SavedSource, columns: SavedList, texts: SavedList }
 
-fn section_view(record: SavedRecord) -> SectionView {
+fn section_view(source: SavedSource, record: SavedRecord) -> SectionView {
     SectionView {
-        columns: TapeSection.columns_in_place(record),
-        texts: TapeSection.texts_in_place(record),
+        source: source,
+        columns: TapeSection.columns_in_place(source, record),
+        texts: TapeSection.texts_in_place(source, record),
     }
 }
 
@@ -537,42 +547,42 @@ impl SectionView {
     /// The nodes with a fact in `column`, ascending.
     fn nodes_in(column: int) -> List<int> {
         let found? = self.column_record(column) else { return [] }
-        let nodes = TapeColumn.nodes_in_place(found)
-        [nodes.number_at(at) for at in 0..nodes.length]
+        let nodes = TapeColumn.nodes_in_place(self.source, found)
+        [nodes.number_at(self.source, at) for at in 0..nodes.length]
     }
 
     /// The words of `node`'s fact in `column`, absent when it has none. A fact may have no words.
     fn words_of(column: int, node: int) -> List<int>? {
         let found? = self.column_record(column) else { return null }
-        let nodes = TapeColumn.nodes_in_place(found)
-        let at = nodes.first_at_or_after(node)
-        if at == nodes.length || nodes.number_at(at) != node { return null }
-        let ends = TapeColumn.word_ends_in_place(found)
-        let words = TapeColumn.words_in_place(found)
-        let start = if at == 0 { 0 } else { ends.number_at(at - 1) }
-        [words.number_at(word) for word in start..ends.number_at(at)]
+        let nodes = TapeColumn.nodes_in_place(self.source, found)
+        let at = nodes.first_at_or_after(self.source, node)
+        if at == nodes.length || nodes.number_at(self.source, at) != node { return null }
+        let ends = TapeColumn.word_ends_in_place(self.source, found)
+        let words = TapeColumn.words_in_place(self.source, found)
+        let start = if at == 0 { 0 } else { ends.number_at(self.source, at - 1) }
+        [words.number_at(self.source, word) for word in start..ends.number_at(self.source, at)]
     }
 
     /// The text a word numbers.
-    fn text_numbered(number: int) -> string { self.texts.text_at(number)! }
+    fn text_numbered(number: int) -> string { self.texts.text_at(self.source, number)! }
 
     fn column_record(column: int) -> SavedRecord? {
         let at? = (0..self.columns.length)
-            .find((at) -> TapeColumn.column_in(self.columns.record_at(at)!) == column) else {
+            .find((at) -> TapeColumn.column_in(self.source, self.columns.record_in(self.source, at)) == column) else {
             return null
         }
-        self.columns.record_at(at)
+        self.columns.record_at(self.source, at)
     }
 }
 
 /// The sections of a saved tape, read where they lie.
 export type SectionsView = { facts: SectionView, above: SectionView, places: SectionView }
 
-/// The sections of the tape saved in `record`.
-export fn sections_view(record: SavedRecord) -> SectionsView {
+/// The sections of the tape saved in `record`, in `source`.
+export fn sections_view(source: SavedSource, record: SavedRecord) -> SectionsView {
     SectionsView {
-        facts: section_view(TapeMeaning.facts_in_place(SyntaxTape.meaning_in_place(record))),
-        above: section_view(SyntaxTape.above_in_place(record)),
-        places: section_view(TapePlaces.facts_in_place(SyntaxTape.places_in_place(record))),
+        facts: section_view(source, TapeMeaning.facts_in_place(source, SyntaxTape.meaning_in_place(source, record))),
+        above: section_view(source, SyntaxTape.above_in_place(source, record)),
+        places: section_view(source, TapePlaces.facts_in_place(source, SyntaxTape.places_in_place(source, record))),
     }
 }

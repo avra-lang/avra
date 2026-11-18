@@ -149,6 +149,38 @@ impl SyntaxArena {
         }
     }
 
+    /// `root` and every place under it, each once, in one list: in `.Pre` a place comes before its
+    /// kids, in `.Post` after them; kids in `kids_at` order. A place `stops` holds for is listed,
+    /// but nothing under it is walked. One stack and one list, whatever the depth.
+    fn places_under(root: At, order: WalkOrder, stops: fn(At) -> bool = no_stop) -> List<At> {
+        mut out: List<At> = []
+        mut pending: List<At> = [root]
+        mut entered: List<bool> = [false]
+        while !pending.is_empty() {
+            let at = pending.pop()
+            let was_entered = entered.pop()
+            if was_entered {
+                out.push(at)
+                continue
+            }
+            if order is .Pre {
+                out.push(at)
+            } else {
+                pending.push(at)
+                entered.push(true)
+            }
+            if stops(at) { continue }
+            let kids = self.kids_at(at)
+            mut k = kids.length
+            while k > 0 {
+                k = k - 1
+                pending.push(kids[k])
+                entered.push(false)
+            }
+        }
+        out
+    }
+
     /// A node's own content fingerprint, span-blind — what a
     /// binder's repeated occurrence is checked against.
     fn subtree_fp(at: At) -> int {
@@ -823,3 +855,12 @@ impl SyntaxArena {
             .concat([self.kind_key(3, 0), self.kind_key(4, 0)])
     }
 }
+
+/// Where a walk lists a place: before the places under it, or after them.
+export enum WalkOrder {
+    Pre
+    Post
+}
+
+/// A walk that stops nowhere.
+export fn no_stop(_at: At) -> bool { false }

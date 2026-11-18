@@ -71,7 +71,7 @@ export type CheckedProgram = {
     implements: fn(SignedType, SignedType) -> bool?,
     /// How many type parameters the fn a name reads as declares, read from its home before where the
     /// body stands; absent where it reads no declared fn so.
-    type_params_named: fn(string, string?) -> int?,
+    type_params_named: fn(string, string?) -> List<string>?,
     /// The bounds the fn a name reads as declares for its type parameters, one for each, read where
     /// the template that wrote the name stands (its home) before where the body stands.
     bounds_named: fn(string, string?) -> List<SignedType?>,
@@ -314,6 +314,17 @@ type SeatWant = { seat: Seating, want: string }
 /// A node its seat refused: the node, what the seat wants, what the node is, and the seat.
 /// A refusal of a pattern stands at the node that holds it, and is said at the pattern `pat`.
 export type Refused = { at: ExprId, want: SignedType, found: SignedType, seat: Seating, pat: PatId? = null }
+
+impl Seating {
+    /// Whether the seat is written under its declaration's own type parameters, which nothing fills
+    /// there: a field's or a fn seat's default, a binding, a list's element under one.
+    fn declared_under() -> bool {
+        match self {
+            .FieldDefault(_) or .SeatDefault(_) or .Binding(_) or .Element -> true,
+            rest -> false,
+        }
+    }
+}
 
 impl Refused {
     /// Whether this refuses one of `arms` whole by the seat their `match` stands in.
@@ -666,6 +677,12 @@ export enum Seating {
     Folded(fault: FoldFault)
     /// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
     Pinned(callee: string, want: int, found: int)
+    /// A bare `null` handed seat `at` of `callee`, which names a type parameter nothing fills.
+    NullPin(callee: string, at: int)
+    /// A comprehension's range bound, the high one where `high`, that is no `int`.
+    CompBound(high: bool)
+    /// A call of `callee` that leaves its type parameter `param` filled by nothing.
+    Unpinned(param: string, callee: string)
     /// A seat no refusal names yet.
     Unnamed
 }
@@ -677,6 +694,8 @@ export enum FoldFault {
     Count(found: int)
     /// Its seed, of `acc`, names no type to accumulate.
     Seedless(acc: string)
+    /// Its receiver is the empty literal, which names no element to walk.
+    Walkless
     /// Its lambda takes `seats` params, where it is handed the accumulator and the element.
     Seats(seats: int)
     /// Its fn is a `found`, where it takes `wanted`.
@@ -900,12 +919,30 @@ impl Checking {
         self.type_of(value!)
     }
 
+    /// The body `body` of a fn declaring that it answers nothing, read as `answered`: refused in the
+    /// seat's words where it answers a value, which a seat answering nothing would drop unsaid.
+    mut fn answers_nothing(body: ExprId, declared: SignedType, answered: SignedType?, seat: Seating) {
+        let found? = answered else { return }
+        if self.meanings || !declared.owns(OwnType.Void) || declared.nullable() { return }
+        if (found with { nulls: 0 }).owns(OwnType.Void) ||
+            found.head is .Never && !found.nullable() ||
+            found.inferred() ||
+            found.unknown() { return }
+        let at = match self.store.expr(body) {
+            .Block(stmts) -> self.store.tail_value(stmts) ?? body,
+            rest -> body,
+        }
+        self.refused.push(Refused { at: at, want: declared, found: found, seat: seat })
+    }
+
     /// What `e` is, held to what its seat wants: a value that can't stand there is refused. A type
-    /// that stands over a parameter or one the body decides is the seat law's under what fills it, not
-    /// here; a seat answering nothing drops what it holds.
+    /// that stands over a parameter a call fills, or one the body decides, is the seat law's under
+    /// what fills it, not here — a seat written under its declaration's own parameters is judged, a
+    /// concrete value never standing as a parameter; a seat answering nothing drops what it holds.
     mut fn agreed(e: ExprId, expected: Expected, found: SignedType) {
         let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
-        if want.generic() || found.generic() || want.inferred() || found.inferred() { return }
+        if found.generic() || want.inferred() || found.inferred() { return }
+        if want.generic() && !self.seat_wanting(want).declared_under() { return }
         if want.unknown() || found.unknown() || self.misapplied(want) { return }
         if found.head is .Meta && self.seat_wanting(want) is .Binding { return }
         if want.owns(OwnType.Void) && !want.nullable() { return }
@@ -2761,6 +2798,23 @@ impl Checking {
         true
     }
 
+    /// The comprehension source `source`, a map read as `from`, walked under a head naming one
+    /// binder: refused, a map walking as key and value.
+    mut fn comp_unpaired(source: ExprId, from: SignedType?) {
+        let s? = self.seen(from) else { return }
+        if self.meanings || s.mapped() == null || s.nullable() { return }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: source,
+                    want: s,
+                    found: s,
+                    seat: Seating.ForUnwalked(WalkFault.Unpaired),
+                },
+            )
+    }
+
     /// The comprehension source `source`, a value of `from`, holding no element to walk: refused, where
     /// its type is known.
     mut fn comp_unwalked(source: ExprId, from: SignedType?) {
@@ -2988,7 +3042,7 @@ impl Checking {
                     )
             }
         }
-        self.checked_unseated(values)
+        self.checked_free(values)
         true
     }
 
@@ -3125,6 +3179,56 @@ impl Checking {
         read
     }
 
+    /// Whether a bare `null` among `values` stands in a seat naming a type parameter nothing before it
+    /// fills, neither a pin nor an earlier seat: absence says no type, so the argument is refused in
+    /// its seat's words, the rest checked against nothing.
+    mut fn null_pins(
+        seats: List<SignedType>,
+        values: List<ExprId>,
+        pinned: Map<string, SignedType>,
+        seat_of: fn(int) -> Seating,
+    ) -> bool {
+        if self.meanings { return false }
+        let at? = [j for j, v in values if self.store.null_literal(self.store.unnamed(v)) &&
+            seats[j]
+                .parameters()
+                .any((p) -> !pinned.has("${p}") && !seats.take(j).any(it.parameters().contains(p)))]
+            .first() else { return false }
+        self
+            .refused
+            .push(Refused { at: values[at], want: seats[at], found: null_type(), seat: seat_of(at) })
+        self.checked_free(values)
+        true
+    }
+
+    /// Whether the call of the fn `declared` names leaves one of its type parameters filled by
+    /// nothing: refused at the first that none of `fillers` names — the seats, whose arguments say
+    /// their own refusals, and the answer where a seat may yet take it.
+    mut fn left_unpinned(
+        declared: CalleeNamed?,
+        found: Map<string, SignedType>,
+        fillers: List<SignedType>,
+    ) -> bool {
+        let d? = declared else { return false }
+        if self.meanings { return false }
+        let at? = self.site_node() else { return false }
+        let named = flatten([t.parameters() for t in fillers])
+        let left? = [j for j, _p in d.type_params if !found.has("${j}") && !named.contains(j)]
+            .first() else { return false }
+        let none = owned_type("void")
+        self
+            .refused
+            .push(
+                Refused {
+                    at: at,
+                    want: none,
+                    found: none,
+                    seat: Seating.Unpinned(d.type_params[left], d.name),
+                },
+            )
+        true
+    }
+
     /// Each type parameter `found` fills held to the bound `bounds` declares for it, the bound
     /// applied as the call fills it: whether each holds, the call refused at the first whose type
     /// the program's impls say doesn't implement it.
@@ -3150,9 +3254,10 @@ impl Checking {
     /// seed and fn, a seed that is the empty list where no seat says what the fold answers — it
     /// names no type, and takes the seat's where one does —, a lambda taking other than
     /// the accumulator and the element. Its arguments are then checked under a seat they can't see.
-    mut fn fold_refused(e: ExprId, args: List<ExprId>, expected: Expected) -> bool {
+    mut fn fold_refused(e: ExprId, subject: SignedType, args: List<ExprId>, expected: Expected) -> bool {
         if self.meanings { return false }
-        let fault = self.fold_fault(args, expected is .Free || expected is .Dropped)
+        let walkless = subject.listed()?.bottom() ?? false
+        let fault = if walkless { FoldRefused { fault: FoldFault.Walkless, at: 0 - 1 } } else { self.fold_fault(args, expected is .Free || expected is .Dropped) }
         let at? = fault?.at else { return false }
         let none = owned_type("void")
         self
@@ -3233,10 +3338,6 @@ impl Checking {
         let all = self.refused.get()
         self.refused.set(all.take(before).concat(all.drop(before).filter(!(it.seat is .Unenumed))))
     }
-
-    /// Each value of a literal refused whole, checked under a seat nothing knows: what it says of
-    /// itself stands, and nothing it fills is asked of it.
-    mut fn checked_unseated(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Unknown) } }
 
     /// What a call answers when `args` fill no seat: each checked free, and nothing claimed.
     mut fn unfilled(args: List<ExprId>) -> SignedType? {
@@ -3508,10 +3609,20 @@ impl Checking {
         seat_of: fn(int) -> Seating,
         pinned: Map<string, SignedType> = {},
         bounds: List<SignedType?> = [],
+        declared: CalleeNamed? = null,
     ) -> SignedType? {
+        let before = self.refused.get().length
         if self.spreads_records(f, args) { return self.spread_called(f, args, 0, {}, expected, seat_of) }
         let fill? = self.filling(f, args, 0) else { return self.miscounted(f, args, 0, seat_of(0), true) }
         let seats? = self.seats_filled(fill.f, args.length) else { return self.miscounted(f, args, 0, seat_of(0), true) }
+        if declared != null &&
+            self
+                .null_pins(
+                    [s.ty for s in seats],
+                    fill.values,
+                    pinned,
+                    (at: int) -> Seating.NullPin(declared!.name, fill.seats[at]),
+                ) { return null }
         let filled = self
             .fills(
                 [s.ty for s in seats],
@@ -3528,6 +3639,14 @@ impl Checking {
             .seats_isolated(seats, fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         let found? = filled else { return null }
         if !self.bounds_held(bounds, found) { return null }
+        if self.refused.get().length == before &&
+            self
+                .left_unpinned(
+                    declared,
+                    found,
+                    [s.ty for s in seats]
+                        .concat(if expected is .Dropped || f.answer == null { [] } else { [f.answer!] }),
+                ) { return null }
         let answer? = f.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -3722,6 +3841,9 @@ export const NAMED_FIELD: string = "of"
 
 /// The package that holds the language's compile-time shapes.
 const META_PACKAGE: string = "@std.meta"
+
+/// A fn a call names, and the type parameters it declares.
+export type CalleeNamed = { name: string, type_params: List<string> }
 
 /// The static a grammar reads text with, and the one it reads octets with.
 export const GRAMMAR_PARSE: string = "parse"

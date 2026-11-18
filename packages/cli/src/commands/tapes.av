@@ -5,7 +5,7 @@
 //! differs and how many it read.
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
-use @std.avrac.compiler.backend.{host_kept_words, inlines_runtime}
+use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
     default_opt,
     unset_link_holes_of,
@@ -33,7 +33,7 @@ use @std.avrac.compiler.{
     held_kinds,
     finding_line,
     item_count,
-    law_findings,
+    findings_in_file,
     manifest_voices,
     manifests_refused,
     manifests_voiced,
@@ -117,6 +117,7 @@ use @std.avrac.compiler.{
     program_refused,
     entry_files,
     digest_of_binary,
+    unnamed_print,
     written_across,
     opt_level,
     published,
@@ -301,7 +302,7 @@ fn machine_layer() -> MachineLayer? {
     // LICENSED input.debug_flag: whether answers are shared across packages decides where they're kept, never what they are
     if env("AVRA_MACHINE_STORE") != "1" { return null }
     let directory? = machine_store_dir() else { return null }
-    let print? = compiler_print() else { return null }
+    let print? = own_print() else { return null }
     MachineLayer { directory: directory, print: print }
 }
 
@@ -312,14 +313,6 @@ fn machine_store_dir() -> string? {
     if placed != null { return placed }
     let cache? = machine_cache() else { return null }
     joined_path(cache, "tapes")
-}
-
-/// What tells this compiler binary from any other: its file's stamp, which a binary written anew
-/// never keeps; absent where it can't be taken.
-fn compiler_print() -> string? {
-    let self_at? = own_binary() else { return null }
-    let taken? = stamp(self_at) else { return null }
-    "b${taken}".replace("-", "n")
 }
 
 /// The lone source file at `path`, standing in no package, as the program layer reads it: a package
@@ -616,6 +609,7 @@ fn binary_asked(
     let words = phased(engine, "link words", () -> linked_words(engine, disk, false, t.target))
     BinaryAsked {
         entry: disk.file_at(bin),
+        compiler: compiler_identity(),
         head: wasm_link_head(t.target, t.reactor, t.debug),
         words: words,
         linked: linked_digests(words.concat([t.runtime])),
@@ -644,6 +638,7 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
     let hosted = program_host_symbols(engine, disk.file_at(bin), "")
     BinaryAsked {
         entry: disk.file_at(bin),
+        compiler: compiler_identity(),
         head: native_link_head(names_its_symbols(engine, disk), fast_linker(), hosted, stem),
         words: words,
         linked: linked_digests(words),
@@ -676,6 +671,7 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
     program_binary_question(
         engine,
         asked.entry,
+        asked.compiler,
         asked.head,
         asked.words,
         asked.linked,
@@ -758,6 +754,9 @@ const MOST_AHEAD: int = 4
 /// and whether it links in layers.
 type BinaryAsked = {
     entry: SourceFileAddress,
+    /// The compiler that makes it (`compiler_identity`): a binary, and each object in it, are another
+    /// compiler's only where their bytes are one.
+    compiler: string,
     head: List<string>,
     words: List<string>,
     linked: List<string>,
@@ -832,14 +831,15 @@ enum BuiltBinary {
     Unlinked(why: string)
 }
 
-/// THE BUILD AS ONE ANSWER: the program at `entry` made, its buckets' objects emitted at `opt` and
-/// its binary kept in `dir`, linked with `head` and `words`. A build nothing it reads has moved is
+/// THE BUILD AS ONE ANSWER: the program at `entry` made by the compiler `compiler`, its buckets'
+/// objects emitted at `opt` and its binary kept in `dir`, linked with `head` and `words`. A build nothing it reads has moved is
 /// this answer standing, so nothing is walked, emitted or linked; one an edit reaches is worked out
 /// again.
 @query
 fn program_binary(
     engine: QueryEngine,
     entry: SourceFileAddress,
+    compiler: string,
     head: List<string>,
     words: List<string>,
     linked: List<string>,
@@ -857,6 +857,7 @@ fn program_binary(
         engine,
         BinaryAsked {
             entry: entry,
+            compiler: compiler,
             head: head,
             words: words,
             linked: linked,
@@ -942,11 +943,13 @@ fn binary_made(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
     bucket_kept(engine, asked, shape, hashes, made)
 }
 
-/// What makes a program's objects besides its own answers: the backend's code, as the build's own
-/// code hash, the level they are emitted at, whether the runtime's hot leaves are inlined, and the
-/// runtime and archives it links.
+/// What makes a program's objects besides its own answers: the compiler that emits them,
+/// the backend's code, as the build's own code hash, the level they are emitted at, whether the
+/// runtime's hot leaves are inlined, and the runtime and archives it links. Every key a build's
+/// objects make — each object's, its link's, a layered link's — holds it.
 fn objects_salt(engine: QueryEngine, asked: BinaryAsked) -> List<string> {
     [
+        asked.compiler,
         binary_question(engine, asked).code_hash,
         asked.opt,
         if asked.inlined { "inlined" } else { "calls" },
@@ -962,6 +965,7 @@ fn standing_binary(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
     let answer = program_binary(
         engine,
         asked.entry,
+        asked.compiler,
         asked.head,
         asked.words,
         asked.linked,
@@ -1618,7 +1622,7 @@ fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {
 /// compiler doesn't hold.
 fn file_findings(engine: QueryEngine, h: ProgramFile) -> List<string?> {
     let src = new_source_file(h.full, text_at(h.full) ?? "")
-    [rendered_finding(finding_diag(f, h.full), src) for at in 0..item_count(engine, h.file) for f in law_findings(engine, h.file, at).findings]
+    [rendered_finding(finding_diag(f, h.full), src) for at in 0..item_count(engine, h.file) for f in findings_in_file(engine, h.file, at)]
         .concat([render(d, src) for d in file_rule_findings(engine, h.file, src)])
 }
 
@@ -3085,7 +3089,7 @@ export fn program_tested(paths: List<string>, timed: bool = false) -> int {
             printing,
             false,
             RanTally {},
-            compiler_agreeing(),
+            compiler_identity(),
         )
         if !stands { eprintln(proofs_said(tally.owed, printing.length, tally.owed_ns / 1000000)) }
         s.engine.frontier_kept()
@@ -3115,7 +3119,7 @@ fn suite_stands(s: SuiteRead, printing: List<ProgramTest>) -> bool {
     let reads = [s.disk.on_disk(f.package_name, f.path_in_package) for f in program_files(s.engine, s.disk.name)]
         .concat(["${p.path.substring(0, p.path.length - 3)}.expected" for p in printing])
     let print = digest_of(
-        [compiler_agreeing()].concat(["${r}\n${text_at(r) ?? ""}" for r in reads]).join("\n\n"),
+        [compiler_identity()].concat(["${r}\n${text_at(r) ?? ""}" for r in reads]).join("\n\n"),
     )
     if text_at(at) == print { return true }
     let _ = make_dirs(dir_of(at))
@@ -3123,8 +3127,11 @@ fn suite_stands(s: SuiteRead, printing: List<ProgramTest>) -> bool {
     false
 }
 
-/// The compiler an agreement is kept under: its own binary, by digest, asked once a process.
-once fn compiler_agreeing() -> string { digest_of_binary(own_binary() ?? "") ?? "" }
+/// The compiler a kept artifact was made by, as it emits: its own binary, by digest (`own_print`), and
+/// the ways its environment has it emit (`emit_modes`) — each another object of the same code. Where
+/// the binary can't be read, a name this process mints once (`unnamed_print`), so nothing it keeps is
+/// another's and nothing another kept is its.
+once fn compiler_identity() -> string { "${own_print() ?? unnamed_print()} emits ${emit_modes()}" }
 
 /// One suite a test run proves: its package as the program layer reads it, the store and engine it
 /// is read through, the files whose specs it holds and its program tests.
@@ -3286,7 +3293,7 @@ const SUITE_KEPT: string = ".avra-cache/tapes-build/suite"
 fn suite_key(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, packaged: Linking) -> string {
     let reads = [disk.on_disk(f.package_name, f.path_in_package) for f in program_files(engine, disk.name)]
     digest_of(
-        [compiler_agreeing(), if inlines_runtime() { "inlined" } else { "calls" }]
+        [compiler_identity(), if inlines_runtime() { "inlined" } else { "calls" }]
             .concat([spelled_file(f) for f in files])
             .concat(["${r}\n${text_at(r) ?? ""}" for r in reads])
             .concat(linked_digests(packaged.words))

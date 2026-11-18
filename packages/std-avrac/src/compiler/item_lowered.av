@@ -239,11 +239,12 @@ fn signed_lowered(
             parameters,
             written_by(signed.item.store, signed.stmt),
             signed.item.store.expr_span(signed.body)?.lo ?? 0,
+            signed.item.at,
         ),
         [t?.filled(fills) for t in body.core],
         seats,
         signature.answer,
-    ) with { written_seats: [p.name for p in signature.params if p.mutable], frame: unwind_frame(file, name, unit_name(name, parameters), signed.item.store.expr_span(signed.body)), names: NamesRead { reads: body.reads }, roots: [body.body] }
+    ) with { written_seats: [p.name for p in signature.params if p.mutable], frame: unwind_frame(file, name, unit_name(name, parameters), body_written_at(engine, file, signed)), names: NamesRead { reads: body.reads }, roots: [body.body] }
     if signed.receiver != null { cx.seated_written(RECEIVER, signed.receiver!.filled(fills), signed.receiver_written) }
     for c in signed.consts { cx.seeded(c) }
     for p in signature.params {
@@ -275,12 +276,33 @@ fn bound_fills(parameters: List<ParameterLayout>) -> Map<string, SignedType> {
 /// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
 /// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
 /// in it.
+/// Where the body `signed` writes stands in `file`; absent for one no source spans.
+fn body_written_at(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> Span? {
+    let written? = signed.item.store.expr_span(signed.body) else { return null }
+    span_in_file(engine, file, signed.item, written)
+}
+
+/// `span`, counted from the start of the item `frame` of `file`, counted from the file's start; as it
+/// is where `frame` is absent, a span of a store read at its file's places.
+fn in_file(engine: QueryEngine, file: SourceFileAddress, frame: int?, span: Span) -> Span {
+    let at? = frame else { return span }
+    let placed = file_placed(engine, file, at, FindingAt { lo: span.lo, hi: span.hi })
+    Span { lo: placed.lo, hi: placed.hi }
+}
+
 /// Where the node `e` of `store` was written in `file`, as the old path names a task's site: the file
 /// under its package's name, its path inside its sources, and the line; absent for a node a template
 /// wrote, which no line of this file holds.
-fn written_site(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> string? {
+fn written_site(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    frame: int?,
+) -> string? {
     if store.spanned_elsewhere(e) { return null }
-    let at? = store.expr_span(e) else { return null }
+    let written? = store.expr_span(e) else { return null }
+    let at = in_file(engine, file, frame, written)
     let text? = source_text(engine, file) else { return null }
     let path = if file.path_in_package.starts_with("src/") { file.path_in_package.substring(4, file.path_in_package.length) } else { file.path_in_package }
     "${file.package_name}/${path}:${new_source_file(file.path_in_package, text).linecol(at.lo).line}"
@@ -295,6 +317,7 @@ fn lowered_program(
     parameters: List<ParameterLayout>?,
     writer: SourceFileAddress? = null,
     from: int = 0,
+    frame: int? = null,
 ) -> LoweredProgram {
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
     let data: Cell<List<Static>> = Cell.new([])
@@ -332,7 +355,7 @@ fn lowered_program(
         lifts: lifts,
         lift_symbol: (lo: int) -> declared_symbol(file, "${unit}.lambda${lo - from}"),
         data: data,
-        literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, unit, e, ty),
+        literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, unit, e, ty, frame),
         traits: (ty: SignedType) -> trait_members(engine, ty),
         type_symbol: (ty: SignedType) -> type_symbol(ty),
         tagged: tagged,
@@ -340,11 +363,18 @@ fn lowered_program(
         reshaped: Cell.new(0),
         defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
         roles: (ty: SignedType, field: string) -> field_role(engine, ty, field),
-        site: (e: ExprId) -> literal_site(engine, file, store, e),
-        written_at: (e: ExprId) -> written_site(engine, writer ?? file, store, e),
+        site: (e: ExprId) -> literal_site(engine, file, store, e, frame),
+        written_at: (e: ExprId) -> written_site(
+            engine,
+            writer ?? file,
+            store,
+            e,
+            if writer == null { frame } else { null },
+        ),
         states: (asked: StatesAsked) -> states_read(engine, file, asked),
         toolchain_fn: (module: string, n: string) -> toolchain_callee(engine, module, n),
         home: template_home(file),
+        home_at: (lo: int) -> in_file(engine, file, frame, Span { lo: lo, hi: lo }).lo,
         body_const: (s: StmtId, ty: SignedType, seeds: List<ConstSeed>) -> body_const_value(
             engine,
             file,
@@ -353,6 +383,7 @@ fn lowered_program(
             s,
             ty,
             seeds,
+            frame,
         ),
         spins: Cell.new(false),
         compared: (n: string, home: string?) -> compared_value(engine, home_file(engine, home) ?? file, n),
@@ -509,7 +540,7 @@ fn lowered_state(engine: QueryEngine, file: SourceFileAddress, name: string) -> 
     let body = elaborated(engine, file, signed)
     mut cx = lowering(
         body.store,
-        lowered_program(engine, file, body.store, name, [], null),
+        lowered_program(engine, file, body.store, name, [], null, null, 0, signed.item.at),
         body.core,
         body.seats,
         held,

@@ -229,11 +229,13 @@ impl Lowering {
         }
     }
 
-    /// The value the map `subject` holds under `key`, present where the map's probe finds it.
+    /// The value the map `subject` holds under `key`, present where the map's probe finds it: the
+    /// probe a write of this place under this key lent the read, where it lent one.
     mut fn got(e: ExprId, subject: ExprId, key: ExprId) -> Reg {
         let held? = self.held_of(e) else { return self.unlowered(e) }
-        let m = self.lower(subject)
-        let probe = self.call_row(Layout.Word, rt_sig_of("avra_map_slot")!, [m, self.lower(key)])
+        let lent = self.lent_to(e, subject, key)
+        let m = if lent != null { lent!.map } else { self.lower(subject) }
+        let probe = if lent != null { lent!.probe } else { self.call_row(Layout.Word, rt_sig_of("avra_map_slot")!, [m, self.lower(key)]) }
         let l = self.layout_at(e)
         let cell = self.seeded_cell(l, self.absent_of(held.opt, l))
         self
@@ -305,12 +307,111 @@ impl Lowering {
 
     // ── Writes ──────────────────────────────────────────────────────
 
-    /// `m.set(k, x)`: the place opened, then the key and the value, then the write.
+    /// `m.set(k, x)`: the place opened, then the key and the value, then the write. Where the value
+    /// reads `get` of this place under this key, the probe is taken before the value, lent to that
+    /// read, and the write stores at the word it found.
     mut fn put(subject: ExprId, key: ExprId, value: ExprId) -> Reg {
         let map = self.opened_place(subject)
         let k = self.lower(key)
-        self.map_written(map, k, self.stored_value(OwnVerb.Put, subject, value))
+        let read = self.own_read(subject, key, value)
+        if read == null {
+            self.map_written(map, k, self.stored_value(OwnVerb.Put, subject, value))
+            return self.nothing()
+        }
+        let probe = self.call_row(Layout.Word, rt_sig_of("avra_map_slot")!, [map, k])
+        let lent = LentProbe {
+            read: read!,
+            map: map,
+            probe: probe,
+            root: self.place_root_reg(subject)!,
+            key: self.key_reg(key),
+            taken: Cell.new(false),
+        }
+        let outer = self.lent
+        self.lent = lent
+        let x = self.stored_value(OwnVerb.Put, subject, value)
+        self.lent = outer
+        if lent.taken.get() { self.map_written_at(map, k, probe, x) } else { self.map_written(map, k, x) }
         self.nothing()
+    }
+
+    /// `x` written into the map `map` under the key `k` at the word `probe` its probe found.
+    mut fn map_written_at(map: Reg, k: Reg, probe: Reg, x: Reg) {
+        match self.layout_of(x) {
+            .Maybe(carried) -> self
+                .run_row(
+                    rt_sig_of("avra_map_set_at_maybe")!,
+                    [
+                        map,
+                        k,
+                        probe,
+                        self.extracted(Layout.Truth, x, 0),
+                        self.extracted(carried, x, 1),
+                    ],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) -> self.run_crossed(rt_sig_of("avra_map_set_at")!, [map, k, probe, x]),
+        }
+    }
+
+    /// The `get` the value `value` of a write of the map place `subject` under `key` reads of that place
+    /// under that key, where nothing under the value can move either before the write: the place is
+    /// a path of fields from a name the body binds, none a `state` field, and that name and a key
+    /// that is a name are each named once under the value, by the read. Absent for any other value.
+    fn own_read(subject: ExprId, key: ExprId, value: ExprId) -> ExprId? {
+        if self.place_root_reg(subject) == null { return null }
+        let root = rooted_name(self.store, subject)!
+        let under = self.store.every_expr(value)
+        let read? = under.find((e) -> self.reads_place_at(e, subject, key)) else { return null }
+        if named_under(self.store, under, root) != 1 { return null }
+        let k = self.store.ident_name(key)
+        if k != null && (self.key_reg(key) == null || named_under(self.store, under, k!) != 1) { return null }
+        read
+    }
+
+    /// Whether `e` is `get` of the place `subject` under `key`, spelled alike.
+    fn reads_place_at(e: ExprId, subject: ExprId, key: ExprId) -> bool {
+        let mc? = self.store.method_parts(e) else { return false }
+        mc.name == "get" &&
+            mc.args.length == 1 &&
+            same_path(self.store, mc.subject, subject) &&
+            same_key(self.store, mc.args[0], key)
+    }
+
+    /// The register the name a map place's path starts from is bound to: a value, a `mut` binding's
+    /// cell, or a written seat's box; absent for a path through an index or an unwrap, a `state` field
+    /// on the way, a capture, a `state` local, or a name the body doesn't bind.
+    fn place_root_reg(e: ExprId) -> int? {
+        let step? = self.store.place_step(e) else { return null }
+        match step {
+            .Root(name) -> held_reg(self.bound(name.of)),
+            .Field(subject, name) -> if self.state_field(subject, name.of) { null } else { self.place_root_reg(subject) },
+            .At(_, _) or .Unwrap(_) -> null,
+        }
+    }
+
+    /// The register a key that is a name is bound to, as `place_root_reg` reads a name.
+    fn key_reg(key: ExprId) -> int? {
+        let name? = self.store.ident_name(key) else { return null }
+        held_reg(self.bound(name))
+    }
+
+    /// Whether the field `name` of `subject`'s record is a `state` field, whose cell code that never
+    /// names it can write.
+    fn state_field(subject: ExprId, name: string) -> bool {
+        let ty? = self.type_at(subject) else { return true }
+        let fields? = self.fields_of(ty) else { return true }
+        fields.find(it.name == name)?.state ?? true
+    }
+
+    /// The probe a write lent the read `e` of `subject` under `key`, taken by it: the read the write
+    /// found, its place's root and its key, if a name, still bound where the write found them.
+    fn lent_to(e: ExprId, subject: ExprId, key: ExprId) -> LentProbe? {
+        let lent? = self.lent else { return null }
+        if lent.read != e ||
+            self.place_root_reg(subject) != lent.root ||
+            self.key_reg(key) != lent.key { return null }
+        lent.taken.set(true)
+        lent
     }
 
     /// `x` written into the map `map` under the key `k`: a nullable scalar beside its presence, else
@@ -400,4 +501,61 @@ fn written_in_place(l: Layout) -> bool {
         },
         .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
     }
+}
+
+/// A map write's probe, taken before its value and lent to the read `read` of its value: the map
+/// opened, the probe's word, the register its place's root name is bound to and its key's if a name,
+/// and whether the read took it.
+export type LentProbe = { read: ExprId, map: Reg, probe: Reg, root: int, key: int?, taken: Cell<bool> }
+
+/// The register `b` binds a name to, read in place: a value's, a `mut` binding's cell, a written
+/// seat's box; absent for no binding, a `const`, a capture or a `state` local.
+fn held_reg(bound: Bound?) -> int? {
+    let b? = bound else { return null }
+    match b {
+        .Value(r, _) -> r.index,
+        .Slot(cell, _) -> cell.index,
+        .Held(box, _) -> box.index,
+        .Const(_, _) or .Outer(_, _, _) or .Shared(_, _) or .OuterShared(_, _, _) -> null,
+    }
+}
+
+/// Two places spelled alike: one name, then the same fields.
+fn same_path(store: SyntaxArena, a: ExprId, b: ExprId) -> bool {
+    let sa? = store.place_step(a) else { return false }
+    let sb? = store.place_step(b) else { return false }
+    match sa {
+        .Root(na) -> match sb { .Root(nb) -> na.of == nb.of, rest -> false },
+        .Field(pa, na) -> match sb { .Field(pb, nb) -> na.of == nb.of && same_path(store, pa, pb), rest -> false },
+        .At(_, _) or .Unwrap(_) -> false,
+    }
+}
+
+/// Two keys that are one: the same text written twice, or one name.
+fn same_key(store: SyntaxArena, a: ExprId, b: ExprId) -> bool {
+    let ta: string? = store.expr(a).text_of()
+    let tb: string? = store.expr(b).text_of()
+    if ta != null || tb != null { return ta != null && tb != null && ta! == tb! }
+    let na? = store.ident_name(a) else { return false }
+    na == store.ident_name(b)
+}
+
+/// The name the place `e`'s path starts from, `self` included; absent where `e` is no place.
+fn rooted_name(store: SyntaxArena, e: ExprId) -> string? {
+    let step? = store.place_step(e) else { return null }
+    match step {
+        .Root(name) -> name.of,
+        .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> rooted_name(store, subject),
+    }
+}
+
+/// The name `e` reads, `self` included; absent where it reads none.
+fn read_name(store: SyntaxArena, e: ExprId) -> string? {
+    let step? = store.place_step(e) else { return null }
+    match step { .Root(name) -> name.of, .Field(_, _) or .At(_, _) or .Unwrap(_) -> null }
+}
+
+/// How many of `under` read the name `name`, `self` included.
+fn named_under(store: SyntaxArena, under: List<ExprId>, name: string) -> int {
+    under.filter((e) -> read_name(store, e) == name).count()
 }

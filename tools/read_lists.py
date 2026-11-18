@@ -3,13 +3,14 @@
 
 A saved answer is valid while every read it made still holds, so its read list is the
 cost of asking whether it stands: an answer over 3,000 reads is a whole-program pass
-wearing one cell, and an edit anywhere re-verifies it. `avra explain <package> --stats`
-prints, for a cold derivation, each family's longest read list; this keeper runs it over
-the compiler's own cli and holds each family under LIMIT.
+wearing one cell, and an edit anywhere re-verifies it. `avra check <package> --read-lists`
+says, after a check on the program layer, each query's answers and the longest read list
+one stands on; this keeper runs it cold over the compiler's own cli and holds each query
+under LIMIT.
 
-A family still over LIMIT is DEBT, listed in tools/read_lists.ceiling as `Family ceiling`,
-one per line. The file only shrinks: a listed family may not read more than its line says,
-a family not listed may not pass LIMIT, and a line whose family fell under LIMIT is stale
+A query still over LIMIT is DEBT, listed in tools/read_lists.ceiling as `query ceiling`,
+one per line. The file only shrinks: a listed query may not read more than its line says,
+a query not listed may not pass LIMIT, and a line whose query fell under LIMIT is stale
 and refused until pruned. A ceiling stands a tenth above the count it was set from, since a
 list's length follows the sources it reads and a new file moves it a little; a pass that
 cut the list moves the ceiling down with `--accept`.
@@ -28,16 +29,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CEILING = os.path.join(ROOT, "tools", "read_lists.ceiling")
 PACKAGE = "packages/cli"
 LIMIT = 3000
-ROW = re.compile(r"^(\w+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
+ROW = re.compile(r"^read-list (\S+) (\d+) (\d+)$")
 
 
 def longest_by_family(text):
-    """The `longest` column of a `--stats` table, by family."""
+    """The longest read list of each query, from `check --read-lists`'s `read-list <query> <answers> <longest>` lines."""
     found = {}
     for line in text.splitlines():
         m = ROW.match(line)
         if m:
-            found[m.group(1)] = int(m.group(8))
+            found[m.group(1)] = int(m.group(3))
     return found
 
 
@@ -66,7 +67,7 @@ def judged(longest, ceil):
             out.append(f"{name}: its longest read list is {at}, over {LIMIT} — split the answer, never list it")
     for name in sorted(ceil):
         if name not in longest:
-            out.append(f"{name}: listed in tools/read_lists.ceiling but no family answers it")
+            out.append(f"{name}: listed in tools/read_lists.ceiling but no query answers it")
     return out
 
 
@@ -81,17 +82,21 @@ def accepted(longest, ceil):
 
 
 def stats():
-    """`explain --stats` over a cold store, the tree's own store set aside meanwhile."""
-    store = os.path.join(ROOT, ".avra-cache")
+    """`check --read-lists` over a cold store, the package's own store set aside meanwhile."""
+    store = os.path.join(ROOT, PACKAGE, ".avra-cache")
     aside = store + ".read-lists"
     moved = os.path.isdir(store)
     if os.path.isdir(aside):
-        sys.exit("read_lists: .avra-cache.read-lists stands from a run that did not finish — move it back first")
+        sys.exit(f"read_lists: {aside} stands from a run that did not finish — move it back first")
     if moved:
         os.rename(store, aside)
     try:
         run = subprocess.run(
-            ["./avra", "explain", PACKAGE, "--stats"], cwd=ROOT, capture_output=True, text=True
+            ["./avra", "check", PACKAGE, "--read-lists"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env=dict(os.environ, AVRA_PROGRAM_NET="0", AVRA_STORE_KEPT_HERE="1"),
         )
     finally:
         if os.path.isdir(store):
@@ -103,10 +108,10 @@ def stats():
 
 def self_test():
     table = (
-        "family          cells   served  computed    edges    p50    p99  longest\n"
-        "Analysis          542    19003       542    36136     31    435      859\n"
-        "Receivers           1    13616         1    55710  55710  55710    55710\n"
-        "total           193830  6093490    177988  9586337\n"
+        "time: check · checked — 818 files in 9000 ms\n"
+        "read-list Receivers 1 55710\n"
+        "read-list Analysis 542 859\n"
+        "read-listing that is no row\n"
     )
     got = longest_by_family(table)
     assert got == {"Analysis": 859, "Receivers": 55710}, got
@@ -115,7 +120,7 @@ def self_test():
     assert judged(got, {"Receivers": 50000}) == ["Receivers: its longest read list is 55710, over its ceiling 50000"]
     assert judged(got, {}) == ["Receivers: its longest read list is 55710, over 3000 — split the answer, never list it"]
     assert "drop its line" in judged(got, {"Receivers": 55710, "Analysis": 900})[0]
-    assert "no family answers it" in judged(got, {"Receivers": 55710, "Ghost": 4000})[0]
+    assert "no query answers it" in judged(got, {"Receivers": 55710, "Ghost": 4000})[0]
     assert accepted(got, {"Receivers": 70000, "Analysis": 900}) == {"Receivers": 61281}
     assert accepted(got, {"Receivers": 58000}) == {"Receivers": 58000}
     print("read_lists: self-test passed")
@@ -128,17 +133,17 @@ def main():
     longest = longest_by_family(text)
     if not longest:
         print(text[-600:])
-        sys.exit("read_lists: the derivation printed no read lists — nothing was examined")
+        sys.exit("read_lists: the check printed no read lists — nothing was examined")
     ceil = read_ceiling(open(CEILING).read()) if os.path.exists(CEILING) else {}
     if "--accept" in sys.argv:
         kept = accepted(longest, ceil)
         head = "".join(l for l in open(CEILING).read().splitlines(True) if l.startswith("#")) if os.path.exists(CEILING) else ""
         open(CEILING, "w").write(head + "".join(f"{n} {v}\n" for n, v in kept.items()))
-        print(f"read_lists: {len(kept)} famil(ies) still over {LIMIT}")
+        print(f"read_lists: {len(kept)} quer(ies) still over {LIMIT}")
         return
     refusals = judged(longest, ceil)
     debt = sum(1 for n, v in longest.items() if v > LIMIT)
-    print(f"read_lists: {len(longest)} families examined over {PACKAGE}, {debt} over {LIMIT} (debt), {len(refusals)} refused")
+    print(f"read_lists: {len(longest)} queries examined over {PACKAGE}, {debt} over {LIMIT} (debt), {len(refusals)} refused")
     for r in refusals:
         print(f"  {r}")
     sys.exit(1 if refusals else 0)

@@ -16,9 +16,13 @@ use core.{
 use diagnostics.{SourceFile, loc_at}
 use @std.errors.{Loc}
 use @std.meta.{Subject}
+use @std.program.defect.{defect}
 
 /// What a syntax rule reads of its file: the tree and the text.
-export type SyntaxView = { store: SyntaxArena, source: SourceFile }
+///
+/// `whole` where the store holds every item of the file, beside the file's whole text; else one item
+/// alone, beside its own text, which no read of the rest of the file may be asked of.
+export type SyntaxView = { store: SyntaxArena, source: SourceFile, whole: bool = true }
 
 /// A file as its syntax handles share it.
 export type SyntaxFile = { view: SyntaxView }
@@ -124,6 +128,7 @@ impl Syntax {
     /// node minted with none is compiler-generated, invisible in the
     /// source a reader would dedupe, so nothing here is written twice.
     fn fingerprint_siblings() -> List<Syntax> {
+        self.file_read()
         match self.at {
             .Expr(id) -> {
                 let want = self.of.view.store.expr_fingerprint(id)
@@ -230,8 +235,17 @@ impl Syntax {
         }
     }
 
+    /// A read of this node's whole file: a defect where the view holds one item alone, since a rule
+    /// that reads the file is walked over all of it (`compiler.rules_table`'s `reads_the_file`).
+    fn file_read() {
+        if !self.of.view.whole { defect(
+                "a rule that reads its item alone read the rest of its file — name it in `reads_the_file`",
+            ) }
+    }
+
     /// Every name this node's FILE calls a fn by, once per call.
     fn file_callees() -> List<string> {
+        self.file_read()
         flatten(
             [some_list(self.of.view.store.callee_name(e)) for e in self.of.view.store.expr_ids()],
         )

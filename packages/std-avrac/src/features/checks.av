@@ -131,6 +131,12 @@ impl TypeCx {
         self.emit(self.wanted_voice(e, subject, "int", label, counting_help))
     }
 
+    /// A comprehension's range bound, the high one where `high`, held to an `int`.
+    mut fn require_bound(e: ExprId, high: bool) {
+        if self.shape_at(e) is .Int || self.errored(e) { return }
+        self.emit(said_as("type.mismatch", self.loc_of(e), comp_bound(high, self.name_at(e))))
+    }
+
     fn wanted_voice(e: ExprId, subject: string, wanted: string, label: string, help: string) -> Diag {
         refusal(
             "type.mismatch",
@@ -2314,6 +2320,15 @@ export const slot_help: string = "a slot holds a value — `void` and a type nam
 
 /// What a declaration's warning says when it gave no way out.
 const warned_help: string = "stop using it, or ask the declaration's owner what replaces it"
+
+/// A comprehension's range bound, the high one where `high`, that is a `found`, no `int`.
+export fn comp_bound(high: bool, found: string) -> Voice {
+    Voice {
+        message: "a range's ${if high { "high" } else { "low" }} bound is a `int`, found `${found}`",
+        label: if high { "this is where counting stops" } else { "this is where counting starts" },
+        help: counting_help,
+    }
+}
 
 const counting_help: string = "a count or a position is an `int` — `xs.length` and `s.length` measure, and an `int` written as a digit run is one"
 

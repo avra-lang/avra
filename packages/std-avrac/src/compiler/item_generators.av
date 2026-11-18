@@ -3,6 +3,7 @@
 //! declaration's meta value: a `Type` for a derive, a `Fn` for an annotation.
 use core.{
     OwnType,
+    Span,
     Annotation,
     ExprId,
     Literal,
@@ -501,7 +502,7 @@ fn impl_method_sites(engine: QueryEngine, scope: FileScope, a: ImplAt) -> List<G
             item.store.fn_parts(s)!.name,
             a.item,
             ItemKind.Fn,
-            item.store,
+            item,
             x,
         )] for s in impl_fns(item, a) for x in item.store.annotations_of(s)],
     )
@@ -532,7 +533,7 @@ fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress
     let item = read_item(engine, file, d.item)
     let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
     let annotated = flatten(
-        [annotation_sites(engine, scope, file, d.name, d.item, d.kind, item.store, a) for a in item.store.annotations_of(s)],
+        [annotation_sites(engine, scope, file, d.name, d.item, d.kind, item, a) for a in item.store.annotations_of(s)],
     )
     annotated
         .concat(delegated_sites(engine, d))
@@ -652,9 +653,10 @@ fn annotation_sites(
     name: string,
     item: int,
     kind: ItemKind,
-    store: SyntaxArena,
+    read: ReadItem,
     a: Annotation,
 ) -> List<GeneratorSite> {
+    let store = read.store
     let named? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return [] }
     if named.file.package_name == META && named.name == DERIVE {
         return [derive_site(name, item, t!) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
@@ -667,7 +669,7 @@ fn annotation_sites(
             name: name,
             item: item,
             generator: GeneratorAt { file: named.file, name: named.name, kind: made_as },
-            handed: handed_args(engine, scope, file, store, a, named),
+            handed: handed_args(engine, scope, file, read, a, named),
         },
     ]
 }
@@ -678,14 +680,15 @@ fn handed_args(
     engine: QueryEngine,
     scope: FileScope,
     file: SourceFileAddress,
-    store: SyntaxArena,
+    read: ReadItem,
     a: Annotation,
     named: DeclaredName,
 ) -> List<HandedArg> {
+    let store = read.store
     let seats = (fn_signature(engine, named.file, named.name)?.params ?? []).drop(1)
     let args = [e for e in a.args if store.arg_label(e) == null]
     [if j < args.length {
-        handed_arg(engine, scope, file, store, p.ty, args[j])
+        handed_arg(engine, scope, file, read, p.ty, args[j])
     } else {
         defaulted_arg(engine, named, j + 1)
     } for j, p in seats]
@@ -697,11 +700,12 @@ fn handed_arg(
     engine: QueryEngine,
     scope: FileScope,
     file: SourceFileAddress,
-    store: SyntaxArena,
+    read: ReadItem,
     ty: SignedType?,
     e: ExprId,
 ) -> HandedArg {
-    let seat? = meta_seat_of(ty) else { return spelled_arg(engine, scope, file, store, e, 0) }
+    let store = read.store
+    let seat? = meta_seat_of(ty) else { return spelled_arg(engine, scope, file, read, e, 0) }
     let name? = store.ident_name(e) else { return HandedArg.Uncrossed(unnamed_decl()) }
     let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Uncrossed(unnamed_decl()) }
     if seat.takes(d.kind) { HandedArg.Decl(HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat }) } else { HandedArg.Uncrossed(unnamed_decl()) }
@@ -713,15 +717,20 @@ fn spelled_arg(
     engine: QueryEngine,
     scope: FileScope,
     file: SourceFileAddress,
-    store: SyntaxArena,
+    read: ReadItem,
     e: ExprId,
     depth: int,
 ) -> HandedArg {
+    let store = read.store
     let x = store.valued(e)
     let l = literal_of(x)
     if l != null { return HandedArg.Value(l!) }
     let body = x.body_of()
-    if body != null && body!.holes.is_empty() { return HandedArg.Code(template_home(file), store.expr_span(e)?.lo ?? 0, body!.parts) }
+    if body != null && body!.holes.is_empty() {
+        let written = store.expr_span(e) ?? Span { lo: 0, hi: 0 }
+        return HandedArg
+            .Code(template_home(file), span_in_file(engine, file, read, written).lo, body!.parts)
+    }
     let name? = store.ident_name(e) else { return HandedArg.Uncrossed(unspelled_arg()) }
     if depth >= CONST_CHAIN { return HandedArg.Uncrossed(unspelled_arg()) }
     let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return HandedArg.Uncrossed(unspelled_arg()) }
@@ -730,7 +739,7 @@ fn spelled_arg(
     let s? = item.stmts.find((x) -> item.store.let_name(x) == d.name) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let v? = item.store.const_value(s) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let there? = file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
-    spelled_arg(engine, there, d.file, item.store, v, depth + 1)
+    spelled_arg(engine, there, d.file, item, v, depth + 1)
 }
 
 /// What the seat `at` of the annotation fn `named` takes where nothing is written there: the value
@@ -742,7 +751,7 @@ fn defaulted_arg(engine: QueryEngine, named: DeclaredName, at: int) -> HandedArg
     if at >= params.length { return HandedArg.Uncrossed(unspelled_arg()) }
     let e? = params[at].default else { return HandedArg.Uncrossed(unspelled_arg()) }
     let scope? = file_scope(engine, named.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
-    let spelled = spelled_arg(engine, scope, named.file, item.store, e, 0)
+    let spelled = spelled_arg(engine, scope, named.file, item, e, 0)
     if !(spelled is .Uncrossed) { return spelled }
     settled_default(engine, named, params[at].name.of)
 }

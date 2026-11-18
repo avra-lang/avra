@@ -66,13 +66,14 @@ fn twice_at(engine: QueryEngine, r: ReadFn, first: ReadFn) -> HostOwedAt {
     }
 }
 
-/// Where the host fn `r` is declared.
+/// Where the host fn `r` is declared in its file.
 fn host_stmt_at(engine: QueryEngine, r: ReadFn) -> FindingAt? {
     let item = read_item(engine, r.declared.file, r.declared.item)
     let s = item
         .stmts
         .find((s) -> item.store.is_host_fn(s) && item.store.fn_parts(s)?.name == r.called.name)
-    kept_at(if s == null { null } else { item.store.stmt_span(s!) })
+    let at? = kept_at(if s == null { null } else { item.store.stmt_span(s!) }) else { return null }
+    file_placed(engine, r.declared.file, r.declared.item, at)
 }
 
 /// What the host fn `r` owes the program of `package`, whose own sources import `asked`, among the
@@ -95,12 +96,9 @@ fn owed_at(
         theirs?.declared?.file?.package_name,
         asked.contains(from),
     ) else { return null }
-    let s = item
-        .stmts
-        .find((s) -> item.store.is_host_fn(s) && item.store.fn_parts(s)?.name == r.called.name)
     HostOwedAt {
         file: r.declared.file,
-        at: kept_at(if s == null { null } else { item.store.stmt_span(s!) }),
+        at: host_stmt_at(engine, r),
         name: r.called.name,
         from: from,
         owed: owed,

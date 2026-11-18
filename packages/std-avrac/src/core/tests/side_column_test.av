@@ -1,7 +1,7 @@
-// A side column — a fact few nodes have, held only for those nodes. Attacked where its table is
+// A side column — a fact few nodes have — and a tail column — a fact every node has, held only for those nodes. Attacked where its table is
 // made, where it grows past its slots, where nodes land on one slot, and where a fork and the store
 // it was forked from each write after the fork.
-use @std.avrac.core.{SideColumn, side_column}
+use @std.avrac.core.{SideColumn, TailColumn, side_column, tail_column, tail_column_of}
 
 /// Nodes `from` up to `to`, each read, comma-joined.
 fn read(c: SideColumn<int>, from: int, to: int) -> string { ["${c.at(i)}" for i in from..to].join(",") }
@@ -85,6 +85,62 @@ spec "core/side_column" {
             let f = c.forked()
             f.set_at(3, 3)
             c.at(3) == 0 && f.at(3) == 3
+        }
+    }
+}
+
+/// Every node's value in a tail column, comma-joined.
+fn values(c: TailColumn<int>) -> string { ["${c.at(i)}" for i in 0..c.count()].join(",") }
+
+/// A tail column holding 0 up to `n`.
+fn counted(n: int) -> TailColumn<int> { tail_column_of([i for i in 0..n]) }
+
+spec "core/tail_column" {
+    given "a column" {
+        then "each node reads what it was pushed" { values(counted(4)) == "0,1,2,3" }
+        then "a node of a nullable column written again to none reads none, its neighbours as they were" {
+            let c: TailColumn<int?> = tail_column()
+            for i in 0..3 { c.push(i) }
+            let f = c.forked()
+            f.set_at(1, null)
+            "${f.at(0) ?? 9},${f.at(1) ?? 9},${f.at(2) ?? 9} ${c.at(1) ?? 9}" == "0,9,2 1"
+        }
+        then "a node written again reads its new value" {
+            let c = counted(4)
+            c.set_at(2, 9)
+            values(c) == "0,1,9,3"
+        }
+    }
+    given "a fork" {
+        then "reads what the column held, and its own nodes after them" {
+            let f = counted(3).forked()
+            f.push(7)
+            values(f) == "0,1,2,7"
+        }
+        then "a fork's write, to an old node or its own, never reaches the column" {
+            let c = counted(3)
+            let f = c.forked()
+            f.set_at(1, 5)
+            f.push(8)
+            f.set_at(3, 9)
+            values(c) == "0,1,2" && values(f) == "0,5,2,9"
+        }
+        then "the column's writes after the fork never reach the fork" {
+            let c = counted(3)
+            let f = c.forked()
+            c.set_at(0, 4)
+            c.push(6)
+            values(f) == "0,1,2" && values(c) == "4,1,2,6"
+        }
+        then "a fork of a fork reads every write the first fork made, and neither sees the other's after" {
+            let c = counted(2)
+            let f = c.forked()
+            f.set_at(0, 3)
+            f.push(4)
+            let g = f.forked()
+            g.set_at(1, 5)
+            f.set_at(2, 6)
+            values(g) == "3,5,4" && values(f) == "3,1,6" && values(c) == "0,1"
         }
     }
 }

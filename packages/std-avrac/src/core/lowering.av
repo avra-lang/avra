@@ -64,6 +64,9 @@ export type LoweredProgram = {
     toolchain_fn: fn(string, string) -> CalledFn?,
     /// The name the body's file is known by where a template it writes points home.
     home: string,
+    /// The offset of the body's file that a place `lo` of the body's store stands at, where a template
+    /// it writes points home: the store counts its places from its item's start.
+    home_at: fn(int) -> int,
     /// What a const the body declares at a statement settles to at compile time, its value of a type
     /// reading, of what the body binds, only the consts before it that settled: each handed in.
     body_const: fn(StmtId, SignedType, List<ConstSeed>) -> NamedValue = unsettled_in_body,
@@ -359,6 +362,11 @@ export type Lowering = {
     /// The `once` bodies lowered, each with the held tests that stand inside it.
     /// Whether a task test is being lowered: one met inside it stands in it.
     holding: bool = false,
+    /// Whether a call being lowered stands where no task test follows it: a deferred body's call.
+    untested: bool = false,
+    /// The probe a map write being lowered took before its value, lent to the one read of its value
+    /// that reads the place and the key the write does.
+    lent: LentProbe? = null,
     /// The body's seats past a receiver that a write reaches the caller through: its `mut` ones.
     written_seats: List<string> = [],
     /// The `collect`s open around what's being lowered, innermost last.
@@ -399,8 +407,10 @@ const UNWRITTEN_LOOP: string = " unwritten"
 const LOOPLESS_JUMP: string = "a jump outside a loop"
 
 /// A walk over a list's places, or a count's: the list it reads, absent for a count; how far it goes;
-/// the cell holding where it stands; and what each turn binds, with its layout.
-export type ListWalk = { list: Reg?, len: Reg, at: Reg, elem: SignedType, elem_layout: Layout }
+/// the cell holding where it stands; and what each turn binds, with its layout. A walk over a text's
+/// code points reads the text, stands at byte offsets, and counts the code points before it in
+/// `ordinal`.
+export type ListWalk = { list: Reg?, len: Reg, at: Reg, elem: SignedType, elem_layout: Layout, ordinal: Reg? = null }
 
 /// A walk over a map: its keys walked as a list, its values read once beside them.
 export type MapWalk = { keys: ListWalk, values: Reg }
@@ -977,6 +987,7 @@ impl Lowering {
     /// A task test at `site`, lowered by `body` with its own instructions and notes, its registers
     /// minted in place, then held: every placement keeping it splices it back where it stood.
     mut fn task_test(site: TestSite, body: fn(mut Lowering) -> void) {
+        if self.untested { return }
         if self.holding {
             body(self)
             return
@@ -1260,13 +1271,30 @@ impl Lowering {
     mut fn range_end(r: Reg) -> Reg { self.extracted(Layout.Word, r, 1) }
 
     /// A turn of the walk opened: the loop, its test that the walk stands short of its length, the
-    /// turn's scope, then the step past this place. Answers the place.
+    /// turn's scope, then the step past this place — one, or a code point's sequence. Answers where it
+    /// stands.
     mut fn walk_turn(w: ListWalk) -> Reg {
         self.loop_start()
         let here = self.loaded(Layout.Word, w.at)
         self.loop_cond(self.bin(Layout.Truth, BinOp.Lt, here, w.len))
-        self.stored(w.at, self.bin(Layout.Word, BinOp.Add, here, self.const_int(1)))
+        let step = if w.ordinal == null { self.const_int(1) } else { self.sequence_width(w.list!, here, w.len) }
+        self.stored(w.at, self.bin(Layout.Word, BinOp.Add, here, step))
         here
+    }
+
+    /// The place of the turn standing at `here` among the walk's elements: where it stands, or how
+    /// many code points came before it, asked once a turn.
+    mut fn walk_place(w: ListWalk, here: Reg) -> Reg {
+        let ordinal? = w.ordinal else { return here }
+        let seen = self.loaded(Layout.Word, ordinal)
+        self.stored(ordinal, self.bin(Layout.Word, BinOp.Add, seen, self.const_int(1)))
+        seen
+    }
+
+    /// The element the turn standing at `here` reads off the list `w` walks: a code point of a text's.
+    mut fn walked_element(w: ListWalk, here: Reg) -> Reg {
+        if w.ordinal != null { return self.code_point_at(w, here) }
+        self.element_at(w.elem_layout, w.list!, here)
     }
 
     // ── Cells ───────────────────────────────────────────────────────

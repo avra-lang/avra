@@ -484,6 +484,15 @@ int64_t avra_llvm_census_types(void) {
     return v && *v && strcmp(v, "0") != 0;
 }
 
+static int stores_tracked(void) { return getenv("FORGE_TRACK_STORES") != NULL; }
+
+// THE WAYS THIS PROCESS EMITS THAT ITS ENVIRONMENT CHOOSES, one bit each: frame pointers kept, boxes
+// counted by type, stores tracked. Each makes another object of the same code, so an object's key
+// holds them all (the build's `objects_salt`); read where each is read, so the key and the code agree.
+int64_t avra_llvm_emit_modes(void) {
+    return (int64_t)frame_pointers_wanted() | (avra_llvm_census_types() << 1) | ((int64_t)stores_tracked() << 2);
+}
+
 // A call to the census's box counter naming what was minted; `label`
 // becomes a private C string in `m`, read only by that counter.
 void avra_llvm_build_census_box(LLVMBuilderRef b, LLVMModuleRef m, const char* label) {
@@ -805,7 +814,7 @@ LLVMValueRef avra_llvm_build_load_atomic(LLVMBuilderRef b, LLVMTypeRef ty, LLVMV
 // Emit a CALL to avra_track_store_i64/ptr that logs and performs the store.
 // Falls back to raw store if the tracking function isn't available.
 static LLVMValueRef tracked_store_or_raw(LLVMBuilderRef b, LLVMValueRef val, LLVMValueRef ptr_val) {
-    if (!getenv("FORGE_TRACK_STORES")) {
+    if (!stores_tracked()) {
         LLVMValueRef store = LLVMBuildStore(b, val, ptr_val);
         LLVMSetAlignment(store, 8);
         return store;

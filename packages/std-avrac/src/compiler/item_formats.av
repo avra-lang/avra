@@ -3,7 +3,7 @@
 //! written as an `impl` of the record and made an item of its file as a generator's are. The scan is
 //! the prelude's `format_spans`; each hole's value is its span cut from the text, an `int` hole's
 //! read by `format_int`.
-use core.{FormatPart, GrammarSpec, binds, flatten, template_home}
+use core.{FormatPart, GrammarSpec, Span, binds, flatten, template_home}
 use features.formats.{Reads as HoleReads, pattern_text, reads_of as hole_reads}
 use @std.meta.{Decls as MetaDecls, Directive, Node as MetaNode}
 use @std.program.address.{SourceFileAddress}
@@ -27,7 +27,12 @@ fn format_record(engine: QueryEngine, d: DeclaredName) -> FormatRecord? {
     let item = read_item(engine, d.file, d.item)
     let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return null }
     let format? = item.store.grammar_of(s) else { return null }
-    FormatRecord { name: d.name, format: format, at: item.store.stmt_span(s)?.lo ?? 0 }
+    let written = item.store.stmt_span(s) ?? Span { lo: 0, hi: 0 }
+    FormatRecord {
+        name: d.name,
+        format: format,
+        at: span_in_file(engine, d.file, item, written).lo,
+    }
 }
 
 /// The `impl` a format gives its record, as a template of `file` at the record.

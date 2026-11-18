@@ -137,12 +137,6 @@ impl TaskSurvey {
     /// Which of the tests a body's `facts` hold `checks` names are placed.
     fn kept_in(facts: UnitFacts, checks: TaskChecks) -> TestsKept { self.kept_at([t.site for t in facts.tests].concat(flatten(facts.lift_sites)), checks) }
 
-    /// Which of the tests a body's `facts` hold `checks` names are placed; none where there are no facts.
-    fn kept_where(facts: UnitFacts?, checks: TaskChecks) -> TestsKept {
-        let f? = facts else { return kept_bare(checks) }
-        self.kept_in(f, checks)
-    }
-
     /// The rule placing tests at `sites` as `checks` names: each fn called there that may reach a
     /// cancel point, by its body's key, in name order.
     fn kept_at(sites: List<TestSite>, checks: TaskChecks) -> TestsKept {
@@ -237,9 +231,9 @@ impl TaskSurvey {
     fn evidence(at: BodyAt) -> BodyCancels {
         if at.external { return BodyCancels { own: row_fact(at.name), callees: [] } }
         let laid? = self.laid(at) else { return unseen() }
-        let facts? = facts_read(self.engine, at.called(laid)) else { return unseen() }
-        if !facts.missing.is_empty() { return unseen() }
-        facts.cancels
+        let facts? = facts_lying(self.engine, at.called(laid)) else { return unseen() }
+        if !facts.whole() { return unseen() }
+        facts.cancels()
     }
 }
 
