@@ -2695,7 +2695,7 @@ static void tasks_shed(AvraArray* a) {
             continue;
         }
         a->data[kept] = a->data[i];
-        a->marks[kept] = a->marks[i];
+        if (a->marks) a->marks[kept] = a->marks[i];
         kept++;
     }
     a->len = kept;

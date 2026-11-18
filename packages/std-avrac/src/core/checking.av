@@ -916,6 +916,17 @@ fn seat_fn(expected: Expected, arity: int) -> SignedType? {
     if wanted.head is .Function && wanted.seats.length == arity && !wanted.nullable() { wanted } else { null }
 }
 
+/// Whether `a` and `b`, the types one name is bound at twice, are both known whole and join in none.
+fn types_apart(a: SignedType?, b: SignedType?) -> bool {
+    let first? = a else { return false }
+    let second? = b else { return false }
+    !first.generic() &&
+        !second.generic() &&
+        !first.inferred() &&
+        !second.inferred() &&
+        first.joined_with(second) == null
+}
+
 /// A body of `store` to check against `program`, its fn answering `answer`.
 export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedType?) -> Checking {
     let unchecked: SignedType? = null
@@ -2359,10 +2370,18 @@ impl Checking {
             .Variant(name, _) -> if top || self.enum_of(s) != null { null } else { Seating.Misshapen("variant", name.of, found) },
             .Member(name, _) -> self.member_misshapen(name.of, s, top),
             .Fields(name, fields, rests) -> self.record_misshapen(p, name.of, [f.name.of for f in fields], rests, s),
-            .Seq(_, _, _) -> if seen.listed() != null || s.nullable() { null } else { Seating.Misshapen("list", "", found) },
+            .Seq(_, middles, _) -> self.list_misshapen(middles, seen, s),
             .Typed(_, _) -> self.narrow_misshapen(s),
             rest -> null,
         }
+    }
+
+    /// What refuses a list pattern, its `..`s `middles`, over a value of `s`, seen as `seen`: a second
+    /// `..`, then a value that is no list. Absent where it fits, and over a value that may be absent.
+    fn list_misshapen(middles: List<PatId>, seen: SignedType, s: SignedType) -> Seating? {
+        if middles.length > 1 { return Seating.Misshapen("list.rests", "", "") }
+        if seen.listed() != null || s.nullable() { return null }
+        Seating.Misshapen("list", "", s.spelled())
     }
 
     /// What refuses the record pattern `p` — `name { fields, .. }`, its `..`s `rests` — over a value of
@@ -2444,9 +2463,9 @@ impl Checking {
         record.fields.find(it.name == name)?.ty?.bound(ty.args)
     }
 
-    /// Each `or` arm of the match `e`'s `arms` whose alternative binds other names than its first,
-    /// refused at the arm's value.
-    mut fn alternatives_alike(arms: List<Arm>) {
+    /// Each `or` arm of the match's `arms`, over a value of `subject`, whose alternative binds other
+    /// names than its first, or one of them at another type, refused at the arm's value.
+    mut fn alternatives_alike(arms: List<Arm>, subject: SignedType?) {
         if self.meanings { return }
         let none = owned_type("void")
         for a in arms {
@@ -2454,20 +2473,24 @@ impl Checking {
             let names = self.pattern_names(a.pats[0])
             for k, p in a.pats {
                 let own = self.pattern_names(p)
-                if k > 0 && (own.length != names.length || own.any((n) -> !names.contains(n))) {
-                    self
-                        .refused
-                        .push(
-                            Refused {
-                                at: a.value,
-                                want: none,
-                                found: none,
-                                seat: Seating.OrBinds(names, k, own),
-                            },
-                        )
-                }
+                if k == 0 { continue }
+                let seat = if own.length != names.length || own.any((n) -> !names.contains(n)) { Seating.OrBinds(names, k, own) } else { self.bound_apart(a.pats[0], p, k, names, subject) }
+                if seat != null { self.refused.push(Refused { at: a.value, want: none, found: none, seat: seat! }) }
             }
         }
+    }
+
+    /// What refuses alternative `k`, the pattern `p`, of an `or` arm whose `first` binds `names`: the
+    /// first of them it binds at a type known whole that the first's doesn't join.
+    mut fn bound_apart(first: PatId, p: PatId, k: int, names: List<string>, subject: SignedType?) -> Seating? {
+        let before = self.refused.get()
+        let led = self.pattern_binds(first, subject)
+        let own = self.pattern_binds(p, subject)
+        self.refused.set(before)
+        let name? = names.find((n) -> types_apart(led.get(n)?.ty, own.get(n)?.ty)) else { return null }
+        let was? = led.get(name)?.ty else { return null }
+        let now? = own.get(name)?.ty else { return null }
+        Seating.Misshapen("or.types", name, "${was.spelled()}\n${now.spelled()}\n${k}")
     }
 
     /// The names the pattern `p` binds, in order: a bare name that compares binds nothing.
@@ -2482,29 +2505,35 @@ impl Checking {
         self.refused.push(Refused { at: e, want: none, found: none, seat: Seating.PayloadOutside })
     }
 
-    /// Each pattern of the match `e`'s `arms` that binds one name twice, refused once for each binder
-    /// of that name after the first: a name binds one value. A bare name that compares binds nothing.
+    /// Each pattern of the match `e`'s `arms` that binds one name twice, refused as `binds_once`
+    /// refuses it.
     mut fn arms_bind_once(e: ExprId, arms: List<Arm>) {
-        if self.meanings { return }
-        let none = owned_type("void")
         for a in arms {
             for p in a.pats {
-                let binders = [b for b in self.store.pattern_binds(p) if !self.compares_bare(b.pat)]
-                for b in binders {
-                    if binders.any(it.name == b.name && it.pat.index < b.pat.index) {
-                        self
-                            .refused
-                            .push(
-                                Refused {
-                                    at: e,
-                                    want: none,
-                                    found: none,
-                                    seat: Seating.BindsTwice(b.name),
-                                    pat: p,
-                                },
-                            )
-                    }
-                }
+                self.binds_once(e, p)
+            }
+        }
+    }
+
+    /// The pattern `p` of the node `e` refused where it binds one name twice, once for each binder
+    /// of that name after the first: a name binds one value. A bare name that compares binds nothing.
+    mut fn binds_once(e: ExprId, p: PatId) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        let binders = [b for b in self.store.pattern_binds(p) if !self.compares_bare(b.pat)]
+        for b in binders {
+            if binders.any(it.name == b.name && it.pat.index < b.pat.index) {
+                self
+                    .refused
+                    .push(
+                        Refused {
+                            at: e,
+                            want: none,
+                            found: none,
+                            seat: Seating.BindsTwice(b.name),
+                            pat: p,
+                        },
+                    )
             }
         }
     }

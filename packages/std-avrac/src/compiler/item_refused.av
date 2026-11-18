@@ -122,6 +122,7 @@ use features.lists.{
     comp_walks_list,
     elements_share,
     list_holds,
+    list_pattern_two_rests,
     list_pattern_unlisted,
     list_spread_unlisted,
     share_a_trait,
@@ -163,6 +164,7 @@ use features.enums.{
     pattern_unmatched,
     variants_unlistable,
     alternatives_bind_apart,
+    alternatives_typed_apart,
     catchless_match,
     member_unrecorded,
     payload_is_outside,
@@ -2662,6 +2664,18 @@ fn record_pattern_words(a: List<string>) -> Voice {
 /// A list pattern over a value that is no list: the name it names, then the value's type.
 fn pattern_list_unlisted_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { misshapen_found(engine, file, at, ["list"]) }
 
+fn pattern_list_rests_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { misshapen_found(engine, file, at, ["list.rests"]) }
+
+/// a list pattern writes one `..`
+export law pattern_list_one_rest {
+    kind: "type.list_pattern"
+    reads: pattern_list_rests_found
+    voice: pattern_list_rests_words
+    witness: "fn f(xs: List<int>) -> int {\n    match xs {\n        [..a, ..b] -> 1,\n        _ -> 0,\n    }\n}\n"
+}
+
+fn pattern_list_rests_words(_a: List<string>) -> Voice { list_pattern_two_rests() }
+
 /// a list pattern over a value that is no list
 export law pattern_list_unlisted {
     kind: "type.list_pattern"
@@ -2712,6 +2726,21 @@ fn apart_words(r: RefusedSeat) -> List<Found> {
         .OrBinds(names, k, own) -> found_saying(r, ["${k}", "${own.length}"].concat(own).concat(names)),
         rest -> [],
     }
+}
+
+fn alternatives_typed_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { misshapen_found(engine, file, at, ["or.types"]) }
+
+/// an `or` arm's alternatives bind each name at one type
+export law alternatives_typed_alike {
+    kind: "type.or_binds"
+    reads: alternatives_typed_found
+    voice: typed_apart_refused
+    witness: "enum Q {\n    A(v: int)\n    B(v: string)\n}\n\nfn f(q: Q) -> int {\n    match q {\n        .A(v) or .B(v) -> 1,\n    }\n}\n"
+}
+
+fn typed_apart_refused(a: List<string>) -> Voice {
+    let told = a[2].split("\n")
+    alternatives_typed_apart(a[1], told[0], parse_int(told[2]) ?? 0, told[1])
 }
 
 /// an `or` arm whose alternatives bind other names

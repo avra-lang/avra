@@ -910,6 +910,15 @@ fn or_names_differ(mut cx: TypeCx, value: ExprId, names: List<string>, k: int, o
     cx.emit(said_as("type.or_binds", cx.loc_of(value), alternatives_bind_apart(names, k, own)))
 }
 
+/// An `or` arm whose alternative `k` binds `name` at `own` where its first binds it at `first`.
+export fn alternatives_typed_apart(name: string, first: string, k: int, own: string) -> Voice {
+    Voice {
+        message: "`${name}` is `${first}` in the first alternative of this `or` arm and `${own}` in alternative ${k + 1} — a name binds at one type",
+        label: "this arm",
+        help: "split the arm, so each alternative binds its own name",
+    }
+}
+
 /// An `or` arm whose alternative `k` binds `own` where its first binds `names`.
 export fn alternatives_bind_apart(names: List<string>, k: int, own: List<string>) -> Voice {
     Voice {
@@ -922,12 +931,15 @@ export fn alternatives_bind_apart(names: List<string>, k: int, own: List<string>
 fn or_types_differ(mut cx: TypeCx, value: ExprId, name: string, first: TypeId, k: int, own: TypeId) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.or_binds",
                 cx.loc_of(value),
-                "`${name}` is `${cx.view.types.name_of(first)}` in the first alternative of this `or` arm and `${cx.view.types.name_of(own)}` in alternative ${k + 1} — a name binds at one type",
-                "this arm",
-                "split the arm, so each alternative binds its own name",
+                alternatives_typed_apart(
+                    name,
+                    cx.view.types.name_of(first),
+                    k,
+                    cx.view.types.name_of(own),
+                ),
             ),
         )
 }

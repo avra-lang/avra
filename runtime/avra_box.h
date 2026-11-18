@@ -101,6 +101,17 @@ typedef struct {
     void* site;
 } AvraArray;
 
+// A PACKED LIST holds its cells and no marks: `marks` is NULL. Only a
+// list of plain scalars is made packed (an int, a float, a bool, a word
+// enum), so none of its cells is ever owned or absent, and a reader
+// asking a packed list for a mark is answered zero.
+static inline int avra_packed(const AvraArray* a) { return a->marks == 0; }
+
+// Cell `i`'s mark: zero in a packed list.
+static inline uint8_t avra_mark_at(const AvraArray* a, int64_t i) {
+    return a->marks == 0 ? 0 : a->marks[i];
+}
+
 // A string-keyed, insertion-ordered map: keys and values as two
 // arrays, and an open-addressing index over key hashes. An index of
 // ZERO capacity is UNBUILT — static data arrives so, and the first

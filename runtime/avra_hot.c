@@ -116,10 +116,11 @@ void* avra_seat_opened(void* p) {
 }
 
 // THE WRITES. Each fast path is the write a unique, roomy box takes —
-// the word and its mark stored, the length bumped — and every other
-// case is the WHOLE row, out of line in avra_runtime.c and tail-called
-// with the leaf's own arguments: a full list's grow, a box a turn's
-// log must stamp first, a guarded run, a shared slot's clone.
+// the word and its mark stored, the length bumped; a packed list's word
+// alone — and every other case is the WHOLE row, out of line in
+// avra_runtime.c and tail-called with the leaf's own arguments: a full
+// list's grow, an owned push into a packed list (a defect), a box a
+// turn's log must stamp first, a guarded run, a shared slot's clone.
 
 // One word onto the list; a full list grows out of line.
 void avra_array_push(void* arr, int64_t v) {
@@ -128,7 +129,7 @@ void avra_array_push(void* arr, int64_t v) {
     AvraArray* a = (AvraArray*)arr;
     if (__builtin_expect(a->len == a->cap, 0)) { avra_push_grown(arr, v); return; }
     a->data[a->len] = v;
-    a->marks[a->len] = 0;
+    if (a->marks != 0) a->marks[a->len] = 0;
     a->len++;
 }
 
@@ -138,7 +139,7 @@ void avra_array_push_owned(void* arr, void* v) {
     CENSUS(g_list_pushes++);
     CENSUS(note_push(AVRA_CALLER()));
     AvraArray* a = (AvraArray*)arr;
-    if (__builtin_expect(a->len == a->cap, 0)) { avra_push_owned_grown(arr, v); return; }
+    if (__builtin_expect(a->len == a->cap || avra_packed(a), 0)) { avra_push_owned_grown(arr, v); return; }
     a->data[a->len] = (int64_t)(uintptr_t)v;
     a->marks[a->len] = MARK_OWNED;
     a->len++;
@@ -151,7 +152,7 @@ void avra_array_push_moved(void* arr, void* v) {
     CENSUS(g_list_pushes++);
     CENSUS(note_push(AVRA_CALLER()));
     AvraArray* a = (AvraArray*)arr;
-    if (__builtin_expect(a->len == a->cap, 0)) { avra_push_moved_grown(arr, v); return; }
+    if (__builtin_expect(a->len == a->cap || avra_packed(a), 0)) { avra_push_moved_grown(arr, v); return; }
     a->data[a->len] = (int64_t)(uintptr_t)v;
     a->marks[a->len] = MARK_OWNED;
     a->len++;
@@ -168,9 +169,9 @@ static inline void slot_written(void* arr, int64_t i, int64_t v) {
     if (__builtin_expect(avra_box_flags(arr) != 0, 0)) { avra_slot_put_flagged(arr, i, v); return; }
     AvraArray* a = (AvraArray*)arr;
     int64_t old = a->data[i];
-    uint8_t mark = a->marks[i];
+    uint8_t mark = avra_mark_at(a, i);
     a->data[i] = v;
-    a->marks[i] = 0;
+    if (mark != 0) a->marks[i] = 0;
     if (mark & MARK_OWNED) avra_rc_release((void*)(uintptr_t)old);
 }
 
