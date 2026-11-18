@@ -67,7 +67,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -370,6 +370,7 @@ slice_witness_b() {
     row runs-witness sh tools/witness_program_runs.sh build/avra
     row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
     row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
+    row beside-attack env BESIDE_ATTACK_AVRA="$root/build/avra" sh tools/beside_attack.sh
     row wave-share-attack env WAVE_ATTACK_AVRA="$root/build/avra" sh tools/wave_share_attack.sh
     row flow-trace make -s -o avra flow-trace
     row compiler-key sh tools/witness_compiler_key.sh build/avra

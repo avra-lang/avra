@@ -32,6 +32,7 @@ use features.closures.{uncallable_value}
 use features.enums.{variant_unbuilt, variant_unenumed, variant_unwanted}
 use features.let_stmt.{let_unblocked}
 use features.{
+    door_unknown,
     static_unknown,
     static_unvalued,
     variant_uncalled,
@@ -69,7 +70,13 @@ use features.structs.{
 use features.nullable.{chain_called_present, chained_present}
 use features.when_expr.{when_total_twice, when_untotal}
 use features.expr_spine.{record_not_enum, text_unindexable, unindexable}
-use features.impls.{method_arity_missed, methodless, no_method_on, static_arity_missed}
+use features.impls.{
+    keyword_called,
+    method_arity_missed,
+    methodless,
+    no_method_on,
+    static_arity_missed,
+}
 use features.bytes.{unoctetted}
 use features.lists.{unjoined}
 use @std.meta.{derive}
@@ -95,6 +102,8 @@ enum Miss {
     Method(owner: string, name: string)
     /// A method called on a value of a type the language owns, which gives it none of that name.
     OwnMethod(found: string, name: string)
+    /// A dot-call named by the keyword `name`: a grammar form that didn't match.
+    Keyword(name: string)
     /// The language's own verb `verb` called on a value of `found`, a list whose elements it reads
     /// none of: `elem` its element.
     VerbUnfit(verb: string, found: string, elem: string)
@@ -520,13 +529,27 @@ fn type_named_miss(
             variants!.contains(name) ||
             name == "all" { null } else { Miss.TypeNamed(owner, name, "variant_called", variants!) }
         d.kind == ItemKind.Record -> if called {
-            Miss.TypeNamed(owner, name, "static_called", statics)
+            Miss
+                .TypeNamed(
+                    owner,
+                    name,
+                    if declares_grammar(engine, d) { "door_called" } else { "static_called" },
+                    statics,
+                )
         } else {
             Miss.TypeNamed(owner, name, "record_read", [])
         }
         _ -> null
     } else { return [] }
     [MissPlaced { at: at, miss: miss }]
+}
+
+/// Whether the record `d` names is a grammar's, whose calls are its doors.
+fn declares_grammar(engine: QueryEngine, d: DeclaredName) -> bool {
+    let item = read_item(engine, d.file, d.item)
+    item
+        .stmts
+        .any((s) -> item.store.type_decl_name(s) == d.name && item.store.grammar_of(s) != null)
 }
 
 /// The lambda that calls the static fn `name` of `owner`, of type `f`, spelled from its own seats.
@@ -833,6 +856,14 @@ fn method_arity(
     ]
 }
 
+/// Whether `ty` names a declared enum, whose `all` lists its variants.
+fn declares_enum(engine: QueryEngine, ty: SignedType) -> bool {
+    match ty.head {
+        .Declared(file, declared) -> file_declares(engine, file).names.any(it.name == declared && it.kind == ItemKind.Enum),
+        rest -> false,
+    }
+}
+
 /// Whether every one of `args` is written by position: no label, no `..` spread.
 fn by_position(store: SyntaxArena, args: List<ExprId>) -> bool { args.all((a) -> store.arg_label(a) == null && store.spread_operand(a) == null) }
 
@@ -996,8 +1027,10 @@ fn method_miss(
     let none_of_its_own = [MissPlaced { at: value_at, miss: Miss.OwnMethod(s.spelled(), name) }]
     if absent_known(s) { return none_of_its_own }
     if !plain_known(s) || s.described() != null || member_answers(engine, s, name, reader) { return [] }
+    if avra().keywords.contains(name) { return [MissPlaced { at: at, miss: Miss.Keyword(name) }] }
     match s.head {
-        .Declared(_, _) -> if (fields_of_record(engine, s) ?? []).contains(name) { [] } else { [MissPlaced { at: at, miss: Miss.Method(s.spelled(), name) }] },
+        .Declared(_, owner) -> if (fields_of_record(engine, s) ?? []).contains(name) ||
+            name == "all" && declares_enum(engine, s) { [] } else { [MissPlaced { at: at, miss: Miss.Method(owner, name) }] },
         .Owned(word) -> if VERBED.contains(word) { [verb_unfit(engine, s, word, name, value_at) ?? none_of_its_own[0]] } else { [] },
         rest -> [],
     }
@@ -1446,6 +1479,8 @@ fn records_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
 
 fn statics_uncalled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "static_called") }
 
+fn doors_uncalled(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "door_called") }
+
 fn statics_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { types_named(engine, file, at, "static_read") }
 
 fn params_as_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
@@ -1576,6 +1611,21 @@ export law own_method_unknown {
     voice: own_method_words
     witness: "fn g(s: string) -> int { s.nope() }\n"
 }
+
+/// A dot-call named by a keyword.
+fn keywords_called(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    misses_of(engine, file, at, (m: Miss) -> match m { .Keyword(name) -> [name], rest -> [] })
+}
+
+/// a dot-call names a method, never a keyword
+export law keyword_call {
+    kind: "type.method"
+    reads: keywords_called
+    voice: keyword_words
+    witness: "fn g(n: int) -> int { n.type() }\n"
+}
+
+fn keyword_words(a: List<string>) -> Voice { keyword_called(a[0]) }
 
 /// a call writes as many arguments as its fn's seats take
 export law arity_mismatch {
@@ -1844,6 +1894,16 @@ export law record_calls_its_static {
     voice: static_unknown_words
     witness: "type P = { x: int }\n\nfn g() -> int { P.nope().x }\n"
 }
+
+/// a grammar's name calls a door it declares
+export law grammar_calls_its_door {
+    kind: "type.unknown_prop"
+    reads: doors_uncalled
+    voice: door_unknown_words
+    witness: "grammar G = \"{a}-{b}\"\n\nfn g() -> int {\n    let x = G.sample(\"x\")\n    1\n}\n"
+}
+
+fn door_unknown_words(a: List<string>) -> Voice { door_unknown(a[0], a[1]) }
 
 fn variant_uncalled_words(a: List<string>) -> Voice { variant_uncalled(a[0], a[1], a.drop(2)) }
 

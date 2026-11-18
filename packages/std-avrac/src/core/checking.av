@@ -39,6 +39,8 @@ export type CheckedProgram = {
     named_next: fn(SignedType) -> SignedType?,
     enum_of: fn(SignedType) -> EnumShape?,
     method_of: fn(SignedType, string) -> SignedType?,
+    /// The trait a type parameter of the body is bound by; absent for any other type.
+    bound_of: fn(SignedType) -> SignedType?,
     /// Whether a pattern's bare name names a top-level value it compares with; absent where only a
     /// generator gives such a value.
     compared: fn(string) -> bool?,
@@ -69,6 +71,9 @@ export type CheckedProgram = {
     /// Whether a value of a type implements the trait a bound names, as the whole program's impls
     /// say; absent where nothing says.
     implements: fn(SignedType, SignedType) -> bool?,
+    /// What the one generic trait whose own body gives a value of a type the method of a name says
+    /// of its seats; absent where no one such trait gives it.
+    default_seats: fn(SignedType, string) -> DefaultSeats? = no_default_seats,
     /// How many type parameters the fn a name reads as declares, read from its home before where the
     /// body stands; absent where it reads no declared fn so.
     type_params_named: fn(string, string?) -> List<string>?,
@@ -85,6 +90,14 @@ export type CheckedProgram = {
     /// The answers the engine keeps per type.
     memos: TypeMemos,
 }
+
+/// What the one generic trait whose own body gives a type a method says of it: the trait, applied to
+/// what the type's impl applies it to, and for each of the method's seats the place among the trait's
+/// parameters of the one its type names, -1 where it names none.
+export type DefaultSeats = { held: SignedType, takes: List<int> }
+
+/// A program that reads no trait's own body.
+fn no_default_seats(_t: SignedType, _name: string) -> DefaultSeats? { null }
 
 /// Whether a lambda answering `own` fills a fn seat answering `want` by boxing: `want` is a `dyn`
 /// that a value of `own` stands in.
@@ -616,6 +629,17 @@ export enum Seating {
     Fnless(stmt: int)
     /// The bare `return` statement `stmt` in a fn that answers a value.
     Bare(stmt: int)
+    /// A type literal's hole naming the binding `name`, which holds no id.
+    TypeHole(name: string)
+    /// `find_map`'s fn answering `answer`, which is never absent.
+    Unprojected(answer: string)
+    /// The walk `name` on `[]`, whose elements nothing knows.
+    Unknowable(name: string)
+    /// The value a new cell holds, which its seat says.
+    CellHolds
+    /// A trait's own body called on a value of a type that doesn't implement the trait at the
+    /// arguments the call fills it with: the trait so applied.
+    DefaultUnimplemented(applied: string)
     /// A call of `name` — a method or, where `statics`, a static of `owner`, a fn where `owner` is
     /// empty — writing `found` arguments by position, `blocks` of them trailing blocks, where its
     /// seats take `least` to `most`; `piped` where a pipe writes its first.
@@ -957,7 +981,8 @@ impl Checking {
                     at: e,
                     want: want,
                     found: found,
-                    seat: self.block_named(e, named_for(self.seat_wanting(want), want, found), want),
+                    seat: self.hole_seat(e) ?? self
+                        .block_named(e, named_for(self.seat_wanting(want), want, found), want),
                 },
             )
     }
@@ -1025,6 +1050,13 @@ impl Checking {
         self.refused.push(Refused { at: h, want: found, found: found, seat: Seating.Hole(kind) })
     }
 
+    /// The seat `e` fills where it's a type literal's hole: the binding it names.
+    fn hole_seat(e: ExprId) -> Seating? {
+        if !self.store.is_hole(e) { return null }
+        let name? = self.store.ident_name(e) else { return null }
+        Seating.TypeHole(name)
+    }
+
     /// The innermost seat being checked in where it wants `want`; one no refusal names otherwise.
     fn seat_wanting(want: SignedType) -> Seating {
         let top? = self.seated.get().last() else { return Seating.Unnamed }
@@ -1036,8 +1068,7 @@ impl Checking {
     /// list it is and refused only where what it holds can't stand as `elem`.
     mut fn kept_checked(v: ExprId, elem: SignedType?) -> SignedType? {
         let before = self.refused.get().length
-        let read = self
-            .check(v, if elem == null { Expected.Unknown } else { Expected.Exactly(elem!) })
+        let read = if elem == null { self.check(v, Expected.Unknown) } else { self.check_seated(v, elem!, Seating.Element) }
         self.arms_kept(v, before)
         let wanted? = elem else { return read }
         let found? = read else { return read }
@@ -1047,18 +1078,115 @@ impl Checking {
         let all = self.refused.get()
         self.refused.set(all.take(before).concat([r for r in all.drop(before) if r.at != v]))
         if !self.stands_in(v, held, wanted) {
-            self
-                .refused
-                .push(
-                    Refused {
-                        at: v,
-                        want: owned_type("List") with { args: [wanted] },
-                        found: found,
-                        seat: Seating.Unnamed,
-                    },
-                )
+            self.refused.push(Refused { at: v, want: wanted, found: held, seat: Seating.Element })
         }
         read
+    }
+
+    /// The refusal since `before` of `v`, the element of the comprehension `e` a seat wants a list of
+    /// `want` from, that no seat of its own names: said once at `e`, the list it makes against the
+    /// list its seat wants, so the seat hears the comprehension whole.
+    mut fn element_heard_whole(e: ExprId, v: ExprId, before: int, want: SignedType) {
+        let all = self.refused.get()
+        let own? = all.drop(before).find(it.at == v && it.seat is .Unnamed) else { return }
+        let wanted = owned_type("List") with { args: [want] }
+        let made = owned_type("List") with { args: [own.found] }
+        let rest = [r for r in all.drop(before) if r.at != v || !(r.seat is .Unnamed)]
+        self
+            .refused
+            .set(
+                all
+                    .take(before)
+                    .concat(rest)
+                    .concat(
+                        [
+                            Refused {
+                                at: e,
+                                want: wanted,
+                                found: made,
+                                seat: named_for(self.seat_wanting(wanted), wanted, made),
+                            },
+                        ],
+                    ),
+            )
+    }
+
+    /// Each refusal since `before` of the list verb `name`, called at `e` on a list of `subject` with
+    /// `args`, said in the verb's own words: a walk on `[]`, which can't know its elements, once at the
+    /// call; `fold`'s fn, where it stands or where its answer does, as the fold's; `find_map`'s fn
+    /// answering what is never absent, at the call.
+    mut fn list_verb_seated(
+        e: ExprId,
+        name: string,
+        args: List<ExprId>,
+        subject: SignedType,
+        before: int,
+    ) {
+        let all = self.refused.get()
+        let since = all.drop(before)
+        if since.is_empty() { return }
+        let kept = all.take(before)
+        let elem = subject.listed()
+        if elem == null || elem!.bottom() {
+            return self
+                .refused
+                .set(
+                    kept
+                        .concat(
+                            [
+                                Refused {
+                                    at: e,
+                                    want: subject,
+                                    found: subject,
+                                    seat: Seating.Unknowable(name),
+                                },
+                            ],
+                        ),
+                )
+        }
+        if name == "find_map" && args.length == 1 { self.refused.set(kept.concat([projected(r, e, args[0]) for r in since])) }
+    }
+
+    /// Each refusal since `before` of an argument among `args` of the call `e` of the method `name` on
+    /// a value of `subject`, where a generic trait's own body gives the method: the trait at what those
+    /// arguments are, where `subject` doesn't implement it there, refused once at the call.
+    mut fn default_seated(
+        e: ExprId,
+        name: string,
+        args: List<ExprId>,
+        subject: SignedType,
+        before: int,
+    ) {
+        let all = self.refused.get()
+        let since = all.drop(before)
+        if since.is_empty() { return }
+        let seats? = (self.program.default_seats)(subject, name) else { return }
+        mut filled = seats.held.args
+        for j, a in args {
+            if j >= seats.takes.length || seats.takes[j] < 0 || seats.takes[j] >= filled.length { continue }
+            let r? = since.find(it.at == a) else { continue }
+            filled = filled
+                .take(seats.takes[j])
+                .concat([r.found])
+                .concat(filled.drop(seats.takes[j] + 1))
+        }
+        let applied = seats.held with { args: filled }
+        if applied.spelled() == seats.held.spelled() ||
+            (self.program.implements)(subject, applied) != false { return }
+        let refused = Refused {
+            at: e,
+            want: applied,
+            found: subject,
+            seat: Seating.DefaultUnimplemented(applied.spelled()),
+        }
+        self
+            .refused
+            .set(
+                all
+                    .take(before)
+                    .concat([r for r in since if !args.contains(r.at)])
+                    .concat([refused]),
+            )
     }
 
     /// Each refusal since `before` of an arm of `v`, a `match` a `collect` keeps, that answers a list:
@@ -1110,7 +1238,7 @@ impl Checking {
     /// else every node it holds checked against what isn't known, and itself left unchecked.
     mut fn unruled(e: ExprId, expected: Expected) -> SignedType? {
         let meant? = self.store.meant(e) else { return self.children_checked(e) }
-        self.check(meant, expected)
+        self.check(meant, self.store.expr(e).meaning_expected(expected))
     }
 
     /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked.
@@ -2817,6 +2945,7 @@ impl Checking {
 
     /// The comprehension source `source`, a value of `from`, holding no element to walk: refused, where
     /// its type is known.
+    /// The comprehension's walk over `source`, of `from`, which holds no element: refused.
     mut fn comp_unwalked(source: ExprId, from: SignedType?) {
         let f? = from else { return }
         if self.meanings || f.dynamic || f.generic() || f.inferred() || f.unknown() { return }
@@ -3977,6 +4106,18 @@ fn seat_takes(seat: SignedType, read: SignedType?) -> bool {
     t.reaches(seat) || seat.unifies(t, found)
 }
 
+/// `r`, a refusal of `f`, `find_map`'s fn, called at `e`: where the fn answers what is never absent,
+/// the call's.
+fn projected(r: Refused, e: ExprId, f: ExprId) -> Refused {
+    if r.at != f || !called_seat(r.seat) || !(r.found.head is .Function) { return r }
+    let answer? = r.found.answer else { return r }
+    if answer.nullable() { return r }
+    Refused { at: e, want: r.want, found: answer, seat: Seating.Unprojected(answer.spelled()) }
+}
+
+/// Whether `seat` is a call's argument: a fn's, a verb's or a method's.
+fn called_seat(seat: Seating) -> bool { seat is .Argument || seat is .Method }
+
 /// A `fold` refused before its seats are filled: why, and the argument it is said at.
 type FoldRefused = { fault: FoldFault, at: int }
 
@@ -3997,7 +4138,8 @@ fn miscounted_callee(seat: Seating) -> CountedCallee? {
 fn called_name(seat: Seating) -> string? {
     match seat {
         .Argument(callee, _) -> callee,
-        .Method(_, name, _) or .Walk(_, name, _, _) -> name,
+        .Method(owner, name, _) -> "${owner}.${name}",
+        .Walk(_, name, _, _) -> name,
         rest -> null,
     }
 }

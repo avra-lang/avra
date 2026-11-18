@@ -37,6 +37,7 @@ export type QueryTimes = {
 
 export fn query_times() -> QueryTimes {
     let open: Cell<List<OpenAsk>> = Cell.new([])
+    // LICENSED input.clock: a timing reads the clock, never an input of what is built
     let before = avra_cpu_ns()
     let families: Cell<Map<string, FamilyTime>> = Cell.new({})
     families
@@ -65,6 +66,7 @@ impl QueryTimes {
                 OpenAsk {
                     family: family + side_word(side),
                     side: side,
+                    // LICENSED input.clock: a timing reads the clock, never an input of what is built
                     began: avra_cpu_ns(),
                     nested: 0,
                     // LICENSED input.clock: a timing reads the clock, never an input of what is built
@@ -77,6 +79,7 @@ impl QueryTimes {
     fn closed() {
         let open = self.open.get()
         let ask? = open.last() else { return }
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
         let whole = avra_cpu_ns() - ask.began
         // LICENSED input.clock: a timing reads the clock, never an input of what is built
         let wall = now_ns() - ask.began_wall
@@ -126,6 +129,7 @@ impl QueryTimes {
     /// The process's time since these began to be kept, split between the program layer's asks, the
     /// phases timed outside it, and the rest: each by the time its asks spent as their own.
     fn split() -> string {
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
         let all = avra_cpu_ns() - self.began
         let families = self.families.get().values()
         let queries = families.filter(on_the_program_layer).fold(0, (sum, f) -> sum + f.own)

@@ -530,17 +530,15 @@ fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string, near:
 
 /// A dot-call named by a KEYWORD is a grammar form that did not match
 /// — no method can wear the name, so the remedy is the form's.
-fn keyword_form(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.method",
-                cx.loc_of(e),
-                "`.${name}(…)` names no method — `${name}` is a keyword, and the grammar's form did not match",
-                "written here",
-                "a type literal is `.type(T)` over a TYPE: `int?`, `List<T>`, `fn(int) -> bool`, or a name holding an id",
-            ),
-        )
+fn keyword_form(mut cx: TypeCx, e: ExprId, name: string) -> TypeId { cx.spoken(said_as("type.method", cx.loc_of(e), keyword_called(name))) }
+
+/// A dot-call named by the keyword `name`, which no method can wear.
+export fn keyword_called(name: string) -> Voice {
+    Voice {
+        message: "`.${name}(…)` names no method — `${name}` is a keyword, and the grammar's form did not match",
+        label: "written here",
+        help: "a type literal is `.type(T)` over a TYPE: `int?`, `List<T>`, `fn(int) -> bool`, or a name holding an id",
+    }
 }
 
 fn no_interned(mut cx: TypeCx, e: ExprId, target: string) -> TypeId {
@@ -1012,12 +1010,20 @@ fn default_unimplemented(
 ) {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.method",
                 cx.loc_of(e),
-                "`${recv}` does not implement `${trait_name}<${args.join(", ")}>`",
-                "called here",
-                "a default runs through the impl at its arguments — implement `${trait_name}<${args.join(", ")}>` for `${recv}`",
+                default_impl_missing(recv, "${trait_name}<${args.join(", ")}>"),
             ),
         )
+}
+
+/// A trait's own body called on a value of `recv` at `applied`, the trait at the arguments the call
+/// fills it with, which `recv` doesn't implement.
+export fn default_impl_missing(recv: string, applied: string) -> Voice {
+    Voice {
+        message: "`${recv}` does not implement `${applied}`",
+        label: "called here",
+        help: "a default runs through the impl at its arguments — implement `${applied}` for `${recv}`",
+    }
 }

@@ -131,6 +131,7 @@ use @std.avrac.compiler.{
     package_read,
     package_worked,
     program_placed,
+    program_shaped_beside,
     program_worked,
     share_replayed,
     package_sources,
@@ -265,6 +266,7 @@ impl Runnable for TapesCmd {
         if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
         let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
         let engine = query_engine(store, avra_fact_definitions())
+        // LICENSED input.timing: a phase timing is reported, never an input of what is found
         if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
         if args.option("share") != "" { return share_said(store, engine, disk, args.option("share")) }
         let code = held(engine, disk, args, root, argued)
@@ -436,6 +438,7 @@ fn disk_built(
     release: bool,
 ) -> Result<string, int> {
     let stem = if tools == null { native_stem } else { "${native_stem}.wasm" }
+    // LICENSED input.asked: the build's mode, carried in its question, so its answer is keyed by it
     let mode = match build_mode(env("AVRA_PROGRAM_MODE") ?? "", tools?.target ?? "", release) {
         .Ok(m) -> m,
         .Err(why) -> {
@@ -444,15 +447,18 @@ fn disk_built(
         },
     }
     let root = disk.root
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let asks_timed = env("AVRA_QUERY_TIMES") == "1"
     let worked = program_worked(
         joined_path(root, ".avra-cache/tapes"),
         disk.name,
         avra_fact_definitions().concat(definitions_of(listed_build_facts)),
         ahead_count(),
-        env("AVRA_QUERY_TIMES") == "1",
+        asks_timed,
     )
     let store = worked.store
     let engine = worked.engine
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
     if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return .Err(refused!) }
@@ -461,10 +467,27 @@ fn disk_built(
         joined_path(root, ".avra-cache/tapes"),
         disk.file_at(bin),
         ahead_count(),
-        env("AVRA_QUERY_TIMES") == "1",
+        asks_timed,
     )
     let asked = binary_asked(engine, disk, bin, stem, mode, tools)
-    let refusing = phased(
+    let found: Cell<List<SourceFileAddress>?> = Cell.new(null)
+    let _ = program_shaped_beside(
+        worked,
+        joined_path(root, ".avra-cache/tapes"),
+        asked.entry,
+        ahead_count(),
+        env("AVRA_QUERY_TIMES") == "1",
+        () -> {
+            let refusing = phased(
+                engine,
+                "the refusals",
+                () -> program_refused(engine, asked.entry, disk.name),
+            )
+            found.set(refusing)
+            refusing.is_empty()
+        },
+    )
+    let refusing = found.get() ?? phased(
         engine,
         "the refusals",
         () -> program_refused(engine, asked.entry, disk.name),
@@ -658,11 +681,13 @@ fn stack_words(opt: string) -> List<string> { if opt == "-O0" { host_kept_words(
 /// driver's own choice, empty, where none stands or the host links with ld64.
 fn fast_linker() -> string {
     if links_with_ld64() { return "" }
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
     let beside = match process_tool("clang") {
         .Ok(cc) -> joined_path(dir_of(cc.path), "ld.lld"),
         .Err(_) -> { return "" },
     }
     if exists_at(beside) { return beside }
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
     match process_tool("ld.lld") { .Ok(ld) -> ld.path, .Err(_) -> "" }
 }
 
@@ -691,9 +716,15 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
 /// this process where one can be forked, so the build answers before its store is saved; kept
 /// here under `AVRA_STORE_KEPT_HERE`, in a process nothing outlives, and where no heir forks.
 fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
+    // LICENSED input.live_process: whether this process is the first, which no heir outlives; no compile answer reads it
+    let first = this_process() == 1
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let quiet = env("AVRA_QUERY_TIMES") != "1"
     if kept_here() != null ||
-        this_process() == 1 ||
-        !saved_by_heir(store, env("AVRA_QUERY_TIMES") != "1", () -> kept_and_said(engine, store)) { store_kept(engine, store) }
+        first ||
+        !saved_by_heir(store, quiet, () -> kept_and_said(engine, store)) {
+        store_kept(engine, store)
+    }
 }
 
 /// The store kept by an heir, and with `AVRA_QUERY_TIMES` where the keeping's time went: why it
@@ -701,6 +732,7 @@ fn store_left_kept(engine: QueryEngine, store: LayeredStore) {
 fn kept_and_said(engine: QueryEngine, store: LayeredStore) -> string? {
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
     let saved = phased(engine, "the store saved", () -> store.saved())
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
     if env("AVRA_QUERY_TIMES") == "1" { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
     unsaved_cause(store, saved)
 }
@@ -741,7 +773,9 @@ fn unsaved_cause(store: LayeredStore, saved: Result<int, IoError>) -> string? {
 /// How many processes a build lowers its declared bodies across: `AVRA_WORK_AHEAD_CORES`, else at
 /// most four of the machine's cores; one under `AVRA_WORK_AHEAD_OFF`.
 fn ahead_count() -> int {
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     if env("AVRA_WORK_AHEAD_OFF") == "1" { return 1 }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let told? = parse_int(env("AVRA_WORK_AHEAD_CORES") ?? "") else { return if cores_online() < MOST_AHEAD { cores_online() } else { MOST_AHEAD } }
     told
 }
@@ -1068,6 +1102,7 @@ collect listed_build_facts: List<ListedQuery> = @query_definition in self as Lis
 /// Where `engine`'s process spent its time, when it timed its asks: the families with the most time
 /// of their own, then the whole split by side.
 fn times_said(engine: QueryEngine) {
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
     if env("AVRA_QUERY_TIMES") != "1" { return }
     let times? = engine.kept_times() else { return }
     eprintln("time: ${times.spoken(15)}")
@@ -1244,8 +1279,10 @@ fn on_disk() -> GraphHeld { GraphHeld { text_at: text_at, absolute: rooted } }
 /// The toolchain's packages, by the prefix their names wear.
 const STD: string = "@std/"
 
+// LICENSED input.door_world: what the program layer's input queries read through this world, held by its stamp
 fn text_at(path: string) -> string? { match read_text(path) { .Ok(text) -> text, .Err(_) -> null } }
 
+// LICENSED input.door_world: what the program layer's input queries read through this world, held by its stamp
 fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -> names, .Err(_) -> null } }
 
 /// How `path` read for what it means differs from the tree the workspace's parse makes of it,
@@ -2339,7 +2376,9 @@ fn wanted_layouts(ws: Workspace, w: Wanted) -> string? {
 /// how many files it named.
 fn workspace_settled(ws: Workspace) -> int {
     mut named = 0
+    // LICENSED whole.cold: the old path's Workspace, which no warm check on the program layer runs; it leaves at the switch
     while ws.decls.all_files().length > named {
+        // LICENSED whole.cold: the old path's Workspace, which no warm check on the program layer runs; it leaves at the switch
         let files = ws.decls.all_files()
         for x in files.drop(named) { if ws.reads_as_source(x.path) { let _ = ws.visible(x.id) } }
         named = files.length
@@ -2931,6 +2970,7 @@ fn ran_in(
         let reads = agreement(asking, disk, p, agreeing)
         let agreed = reads != null && text_at(proof) == reads
         if p.evaluated && !agreed { owed = owed + 1 }
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
         let began = now_ns()
         let heard = if p.evaluated && !agreed {
             [
@@ -2951,6 +2991,7 @@ fn ran_in(
         } else {
             []
         }
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
         owed_ns = owed_ns + now_ns() - began
         if p.evaluated && agreed { evaluated = evaluated + 1 }
         agreement_kept(proof, reads, heard)
@@ -3094,6 +3135,7 @@ export fn program_tested(paths: List<string>, timed: bool = false) -> int {
         if !stands { eprintln(proofs_said(tally.owed, printing.length, tally.owed_ns / 1000000)) }
         s.engine.frontier_kept()
         let _ = s.store.saved()
+        // LICENSED input.timing: a phase timing is reported, never an input of what is found
         if env("AVRA_QUERY_TIMES") == "1" {
             eprintln(
                 "worked: ${s.engine.worked_count()} answers here; ${worked_by_query(s.engine)}",
@@ -3350,8 +3392,9 @@ fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
         println("unbuilt: ${refused!}")
         return 1
     }
-    match (cmd(tool_at(stem, stem), [w for w in argv.split(" ") if !w.is_empty()]) with { timeout: secs(60) })
-        .outcome() {
+    let running = cmd(tool_at(stem, stem), [w for w in argv.split(" ") if !w.is_empty()]) with { timeout: secs(60) }
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
+    match running.outcome() {
         .Ok(o) -> {
             println("stdout: ${o.out.stdout}")
             println("stderr: ${o.out.stderr}")
@@ -3370,6 +3413,7 @@ fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
 fn linked_words(engine: QueryEngine, disk: Disk, shared: bool = false, target: string = "") -> List<
     string,
 > {
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
     let world = LinkWorld { env: (n: string) -> env(n), there: (p: string) -> exists_at(p) }
     if target != "" {
         return flatten(
@@ -3644,6 +3688,7 @@ fn kept_published(staged: string, kept: string) -> string? {
 /// holding it now, whose stamp — worn before and after that look — is then noted (`@std/io` `stamp`).
 fn binary_placed(kept: string, stem: string) -> string? {
     let note = joined_path(dir_of(kept), PLACED)
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
     let worn = stamp(stem)
     if worn != null && text_at(note) == placed_note(kept, worn!) { return null }
     if !holds_binary(stem, kept) && !file_placed(kept, stem) {
@@ -3651,6 +3696,7 @@ fn binary_placed(kept: string, stem: string) -> string? {
         if !copied(kept, staged) { return "the kept binary couldn't be placed: ${stem}" }
         if !published(staged, stem) { return "the kept binary couldn't be moved into place: ${stem}" }
     }
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
     let _ = write_text(note, placed_note(kept, if stamp(stem) == worn { worn ?? 0 } else { 0 }))
     null
 }
@@ -3663,6 +3709,7 @@ fn placed_note(kept: string, worn: int) -> string { "${kept}\n${worn}\n" }
 
 /// Whether the file at `stem` holds the bytes at `kept` and runs.
 fn holds_binary(stem: string, kept: string) -> bool {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
     let sh = match process_tool("sh") { .Ok(t) -> t, .Err(_) -> { return false } }
     ran_clean(cmd(sh, ["-c", "cmp -s \"\$1\" \"\$2\" && test -x \"\$2\"", "sh", kept, stem]))
 }
@@ -3670,12 +3717,14 @@ fn holds_binary(stem: string, kept: string) -> bool {
 /// Whether the file `from` is copied to the new path `to`, its mode kept: cloned where the file
 /// system shares blocks, its bytes copied where it doesn't.
 fn copied(from: string, to: string) -> bool {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
     let cp = match process_tool("cp") { .Ok(t) -> t, .Err(_) -> { return false } }
     [["-c", from, to], [from, to]].any((words) -> ran_clean(cmd(cp, words)))
 }
 
 /// Whether `c` ran and exited clean.
 fn ran_clean(c: Command) -> bool {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
     match c.outcome() { .Ok(o) -> clean(o.exit), .Err(_) -> false }
 }
 
@@ -3987,6 +4036,7 @@ fn layers_pruned(layers: string, kept: List<string>) {
 /// the reason, said before the link runs and again where a link that ran out of room failed.
 fn clang_refused(words: List<string>, out: string, needed: int, linker: string = "") -> string? {
     let cc = if linker == "" {
+        // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
         match process_tool("clang") { .Ok(t) -> t, .Err(_) -> { return "no `clang` on the PATH" } }
     } else {
         tool_at(linker, linker)
@@ -4001,6 +4051,7 @@ fn run_refused(tool: Tool, words: List<string>, out: string, needed: int) -> str
     let short = disk_short(out, needed)
     if short != null { return short }
     if link_traced() { eprintln("link: ${tool.path} ${words.join(" ")}") }
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
     match (cmd(tool, words) with { env: inherited() }).outcome() {
         .Ok(o) -> if clean(o.exit) { null } else { disk_short(out, needed) ?? "the link failed: ${o.out.stderr}" },
         .Err(e) -> "the link didn't run: ${e.describe().message}",
@@ -4038,6 +4089,7 @@ fn standing_layer(layers: string, prefix: string, lib: string) -> string {
 
 /// The case runner's binary at `stem` run: absent when it left by a green verdict, else what it said.
 fn ran_natively(stem: string) -> string? {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
     match (cmd(tool_at(stem, stem), []) with { timeout: secs(30), env: guarded_env() }).outcome() {
         .Ok(o) -> match o.exit {
             .Clean -> null,
@@ -4054,8 +4106,10 @@ const GUARD_WORDS: List<string> = ["AVRA_RC_GUARD", "AVRA_RC_LOG_BUDGET"]
 
 /// A program test's run's environment: the minimal one, with each guard word this process holds.
 fn guarded_env() -> Env {
+    // LICENSED input.live_process: a child the build runs, and no compile answer reads it
     mut out = minimal()
     for w in GUARD_WORDS {
+        // LICENSED input.live_process: a child the build runs, and no compile answer reads it
         let v? = env(w) else { continue }
         out = out.with_var(w, v)
     }
@@ -4098,11 +4152,8 @@ fn built_held(engine: QueryEngine, disk: Disk, seconds: int, shown: bool) -> int
     // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
     let t0 = now_ns()
     // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
-    let survey = reach_surveyed(
-        engine,
-        disk.file_at(bin),
-        () -> seconds > 0 && now_ns() - t0 > seconds * 1000000000,
-    )
+    let spent = () -> seconds > 0 && now_ns() - t0 > seconds * 1000000000
+    let survey = reach_surveyed(engine, disk.file_at(bin), spent)
     let bodies = survey.bodies
     let unmade = bodies.filter(it.why != null)
     // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
@@ -4196,12 +4247,14 @@ fn manifest_diags(h: ProgramFile) -> List<Diag> { manifest_voices(h.full, text_a
 /// path says them before anything else; the exit where one refuses, and nothing is read past it.
 fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
     let reached = graph_said(engine, disk)
+    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+    let from_env = (n: string) -> env(n)
     let unset = flatten(
         [unset_link_holes_of(
             () -> manifest_source(disk.package_root(p)),
             read_manifest(manifest_source(disk.package_root(p))),
             p == disk.name,
-            (n: string) -> env(n),
+            from_env,
         ) for p in reached_packages(engine, disk)],
     )
     let graph = reached with { voices: reached.voices.concat(unset), sources: reached

@@ -64,6 +64,7 @@ const WAIT_MS: int = 1000
 const NO_DESCRIPTOR: int = -1
 
 /// How many processes this machine runs at once.
+// LICENSED input.work_ahead: forked workers answer what this process would, never another answer
 export fn cores_online() -> int { avra_cores_online() }
 
 /// What to work out ahead: the items, asked of the engine that works them out, whether an item's
@@ -136,7 +137,9 @@ fn merge_begun(store: LayeredStore, process_count: int) -> int {
         let _ = store.merged()
         return NO_GROUP
     }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let group = avra_cores_group(process_count)
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let core = if group < 0 { -1 } else { avra_cores_fork(group, NO_DESCRIPTOR) }
     if core < 0 {
         let _ = store.merged()
@@ -165,13 +168,16 @@ fn merge_ended(store: LayeredStore, group: int, process_count: int) {
 fn worth_merging_apart() -> int { parse_int(merged_apart_from() ?? "") ?? WORTH_MERGING_APART }
 
 /// `AVRA_MERGED_APART_FROM`: how many answers and questions a witness has merged apart.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn merged_apart_from() -> string? { env("AVRA_MERGED_APART_FROM") }
 
 /// `AVRA_SHARE_UNMERGED`: the share of that number is left unmerged by its process, for a witness
 /// that a share nobody published costs time and no answer.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn share_unmerged() -> string? { env("AVRA_SHARE_UNMERGED") }
 
 /// `AVRA_MERGED_HERE`: the asking process merges its cores' packs itself.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn merged_here() -> string? { env("AVRA_MERGED_HERE") }
 
 /// Answers every unknown item across processes, each taking the next item no other has taken
@@ -194,9 +200,11 @@ fn forked_for<T, R>(
         eprintln(unpublished_before_fork())
         return false
     }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let group = avra_cores_group(work.process_count)
     if group < 0 { return false }
     let sharing = wave_sharing_begun()
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let core = avra_cores_fork(group, NO_DESCRIPTOR)
     if core < 0 {
         wave_sharing_ended(sharing)
@@ -253,7 +261,9 @@ export fn asked_across_while<T, R>(
     engine.kept_times()?.opened("the cores", TimedSide.Outside)
     let _ = store.saved()
     let wave = waves_forked().get()
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let group = if store.has_news() { -1 } else { avra_cores_group(work.process_count) }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let core = if group < 0 { -1 } else { avra_cores_fork(group, NO_DESCRIPTOR) }
     if core < 0 {
         engine.kept_times()?.closed()
@@ -283,6 +293,69 @@ export fn asked_across_while<T, R>(
     engine.kept_times()?.closed()
     if work.timed { eprintln("within: ${taken}") }
     true
+}
+
+/// ONE PROCESS ANSWERING `work`'s ITEMS BESIDE THE ASKING PROCESS, which does `meanwhile` with
+/// the same engine and then takes what the process learned: two stretches of a build that read
+/// nothing of each other, done at once. `meanwhile` answers whether the items are still wanted;
+/// where they are not, the process is ended and nothing of it is taken. Whether a process was
+/// forked, and so `meanwhile` done: where every item is known, or nothing can be forked, neither.
+export fn asked_beside<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    directory: string,
+    work: WorkAhead<T, R>,
+    meanwhile: fn() -> bool,
+) -> bool {
+    let known_by = work.is_known
+    let items = (work.items)(engine)
+    if !items.any((item) -> !known_by(engine, item)) { return false }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let _ = store.saved()
+    let wave = waves_forked().get()
+    let group = if store.has_news() { -1 } else { avra_cores_group(1) }
+    let core = if group < 0 { -1 } else { avra_cores_fork(group, NO_DESCRIPTOR) }
+    engine.kept_times()?.closed()
+    if core < 0 { return false }
+    let learned_at = "${learned_dir(directory)}/${wave}-0"
+    if core < 1 {
+        within_and_gone<T, R>(
+            store,
+            engine,
+            engine.settled_count(),
+            items,
+            work with { process_count: 1 },
+            group,
+            core,
+            learned_at,
+        )
+    }
+    if beside_hook() == "killed" { let _ = avra_cores_killed(group, 0) }
+    let wanted = meanwhile() && beside_hook() != "unwanted"
+    if !wanted { let _ = avra_cores_killed(group, 0) }
+    engine.kept_times()?.opened("the cores", TimedSide.Outside)
+    let finished = waited_for(group, 1)
+    engine.kept_times()?.closed()
+    waves_forked().set(wave + 1)
+    if !wanted {
+        let _ = remove(learned_at)
+        if work.timed { eprintln("beside: the process ended, nothing of it taken") }
+        return true
+    }
+    if finished < 1 { eprintln(cores_unfinished(1, 1)) }
+    store.packs_read_again()
+    engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside)
+    let taken = wave_taken(engine, learned_dir(directory), "${wave}-")
+    engine.kept_times()?.closed()
+    if work.timed { eprintln("beside: ${taken}") }
+    true
+}
+
+/// `AVRA_BESIDE`: a witness's way into a process answering beside the asking one — `killed` ends
+/// it before it is waited for, `unwanted` has the asking process want nothing of it.
+once fn beside_hook() -> string {
+    // LICENSED input.debug_flag: a test hook that ends a process early, so what it owed is witnessed answered without it
+    env("AVRA_BESIDE") ?? ""
 }
 
 /// A process forked within a build: takes turns at `items` with the engine it was forked holding,
@@ -323,8 +396,10 @@ fn within_and_gone<T, R>(
 fn wave_taken(engine: QueryEngine, dir: string, prefix: string) -> string {
     mut taken = 0
     mut said: List<string> = []
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     for name in list_dir(dir) catch [] {
         if name.contains(".") || !name.starts_with(prefix) { continue }
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
         let bytes = match read_bytes("${dir}/${name}") {
             .Ok(b) -> b,
             .Err(_) -> {
@@ -406,18 +481,24 @@ export enum Apart {
 /// answering nothing and running nothing more of its caller's.
 export fn answered_apart(run: fn() -> string, kept: string, within_ms: int) -> Apart {
     let _ = remove(kept)
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let group = avra_cores_group(1)
     if group < 0 { return Apart.Ended }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let core = avra_cores_fork(group, NO_DESCRIPTOR)
     if core < 0 { return Apart.Ended }
     if core == 0 {
+        // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
         let mine = this_process()
         let answer = run()
+        // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
         if this_process() == mine { let _ = write_text(kept, answer) }
         let _ = avra_cores_leave(group, core, 0, 0)
     }
+    // LICENSED input.clock: a timing reads the clock, never an input of what is built
     let deadline = now_ms() + within_ms
     while avra_cores_heard(group, 0) != 0 {
+        // LICENSED input.clock: a timing reads the clock, never an input of what is built
         let left = deadline - now_ms()
         if left <= 0 {
             let _ = avra_cores_killed(group, 0)
@@ -431,6 +512,7 @@ export fn answered_apart(run: fn() -> string, kept: string, within_ms: int) -> A
         )
     }
     if avra_cores_finished(group) != 1 { return Apart.Ended }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     match read_text(kept) { .Ok(t) -> Apart.Answered(t), .Err(_) -> Apart.Ended }
 }
 
@@ -450,6 +532,7 @@ export fn saved_by_heir(store: LayeredStore, quiet: bool, save: fn() -> string?)
     }
     save_left(layers[0])
     drafts_leaving()
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let forked = avra_cores_heir(if quiet { 1 } else { 0 })
     if forked == 0 {
         drafts_left(false)
@@ -625,6 +708,7 @@ once fn waves_forked() -> Cell<int> { Cell.new(0) }
 
 /// `dir` emptied, and there; what a build before left there names no core of this one.
 fn cleared(dir: string) {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
     let _ = make_dirs(dir)
 }
@@ -637,8 +721,10 @@ fn learned_taken(engine: QueryEngine, dir: string) -> string {
     let read = cores_read()
     if read.get().any(it.dir != dir) { read.set([]) }
     mut unread: List<string> = []
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     for name in list_dir(dir) catch [] {
         if name.contains(".") { continue }
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
         let bytes = match read_bytes("${dir}/${name}") {
             .Ok(b) -> b,
             .Err(_) -> {
@@ -687,9 +773,11 @@ fn edited_mid_build(wave: int) {
 }
 
 /// `AVRA_AHEAD_EDIT`: a witness's edit between a wave and its merge.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn ahead_edit() -> string? { env("AVRA_AHEAD_EDIT") }
 
 /// `AVRA_AHEAD_UNPROVEN`: the cores' answers taken with no input proved, for a witness that the
 /// proof is what catches an input that moved.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn unproven() -> string? { env("AVRA_AHEAD_UNPROVEN") }
 

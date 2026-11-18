@@ -300,15 +300,18 @@ extern fn avra_file_bytes(path: string) -> int
 extern fn avra_file_placed(from: string, to: string) -> int
 
 /// Whether the file `from` now also stands at `to`, linked and renamed onto it, no byte written.
+// LICENSED input.staged_output: the build's own output, written and read back by the build
 export fn file_placed(from: string, to: string) -> bool { avra_file_placed(from, to) == 0 }
 
 /// The bytes free on the file system holding `path`; absent where it can't be asked.
 export fn disk_free_at(path: string) -> int? {
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
     let free = avra_disk_free_bytes(path)
     if free < 0 { null } else { free }
 }
 
 /// The size of the file at `path`: none where none stands.
+// LICENSED input.staged_output: the build's own output, written and read back by the build
 export fn file_bytes(path: string) -> int { avra_file_bytes(path) }
 extern fn avra_cores_group(count: int) -> int
 extern fn avra_cores_fork(group: int, serving: int) -> int
@@ -332,8 +335,10 @@ export fn emit_cores() -> int {
 /// has taken until none is left, so none sits idle while another still holds turns: whether
 /// every process ran each turn it took clean; absent where none forked.
 export fn turns_across(processes: int, count: int, run: fn(int) -> bool) -> bool? {
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let group = avra_cores_group(processes)
     if group < 0 { return null }
+    // LICENSED input.work_ahead: forked workers answer what this process would, never another answer
     let core = avra_cores_fork(group, 0 - 1)
     if core < 0 { return null }
     if core < processes {

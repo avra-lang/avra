@@ -17,6 +17,7 @@ use @std.program.worked_ahead.{
     WorkAhead,
     Worked,
     asked_across,
+    asked_beside,
     engine_worked_ahead,
     has_worked_ahead,
 }
@@ -109,6 +110,39 @@ export fn program_placed(
             process_count: process_count,
             timed: timed,
         },
+    )
+}
+
+/// A PROGRAM'S CODE HASHES ANSWERED BY ONE PROCESS BESIDE THE ASKING ONE, which does `meanwhile`
+/// — what a build asks next that reads none of them — and takes them after; `meanwhile` answers
+/// whether the build goes on to want them. The program's shape, which both read, is answered
+/// before the fork. Only a build that worked ahead forks; whether `meanwhile` was done.
+export fn program_shaped_beside(
+    worked: Worked,
+    directory: string,
+    entry: SourceFileAddress,
+    process_count: int,
+    timed: bool,
+    meanwhile: fn() -> bool,
+) -> bool {
+    if process_count < 2 ||
+        !has_worked_ahead() ||
+        program_code_hashes_is_known(worked.engine, entry) { return false }
+    let _ = program_reached(worked.engine, entry)
+    asked_beside<SourceFileAddress, int>(
+        worked.store,
+        worked.engine,
+        directory,
+        WorkAhead {
+            items: (_engine: QueryEngine) -> [entry],
+            is_known: program_code_hashes_is_known,
+            ask: (engine: QueryEngine, file: SourceFileAddress) -> program_code_hashes(engine, file)
+                .hashes
+                .length,
+            process_count: 1,
+            timed: timed,
+        },
+        meanwhile,
     )
 }
 

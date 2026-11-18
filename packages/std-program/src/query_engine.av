@@ -714,6 +714,7 @@ impl QueryEngine {
     fn read_under(path: string, before: int?) {
         let asker? = self.open_questions.get().last() else { return }
         let held? = before else { return }
+        // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
         if stamp(path) != held { return }
         self
             .stamps_seen
@@ -733,9 +734,9 @@ impl QueryEngine {
     /// it was read under the places this process reads under, and its path wears that stamp now.
     fn stamp_holds(question: ContentHash, answer: ContentHash) -> bool {
         let kept? = self.kept_stamps().get(question) else { return false }
-        if !kept.answer.same_as(answer) ||
-            kept.places != places_now() ||
-            stamp(kept.path) != kept.stamp { return false }
+        if !kept.answer.same_as(answer) || kept.places != places_now() { return false }
+        // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+        if stamp(kept.path) != kept.stamp { return false }
         self.stamps_seen.put(question, kept)
         self.read_sets.put(question, self.set_at_path(kept.path))
         true
@@ -815,14 +816,14 @@ impl QueryEngine {
         if !self.definition_of(asked).is_input && !self.store.works_beside(asked.query_name) {
             mut holder = self.store.claimed(asked.known_as)
             while holder != 0 {
+                // LICENSED input.clock: a timing reads the clock, never an input of what is built
                 let from = now_ms()
                 self.store.claim_awaited(asked.known_as, holder)
+                // LICENSED input.clock: a timing reads the clock, never an input of what is built
+                let waited = now_ms() - from
                 if self.times.get() != null {
                     waits()
-                        .put(
-                            asked.query_name,
-                            (waits().get().get(asked.query_name) ?? 0) + now_ms() - from,
-                        )
+                        .put(asked.query_name, (waits().get().get(asked.query_name) ?? 0) + waited)
                 }
                 let reused = self.reused_answer(asked)
                 if reused != null { return reused! }
@@ -1226,8 +1227,10 @@ impl QueryEngine {
 export fn read_stamped<T>(engine: QueryEngine, path: string, read: fn() -> T) -> T {
     engine.input_read_at(path)
     let at = standing_at(path)
+    // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
     let before = stamp(at)
     let answer = read()
+    // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
     engine.read_under(at, if at == path || !exists(path) { before } else { null })
     answer
 }
@@ -1236,6 +1239,7 @@ export fn read_stamped<T>(engine: QueryEngine, path: string, read: fn() -> T) ->
 /// above it that stands, since anything coming to stand below it moves that directory's stamp.
 fn standing_at(path: string) -> string {
     mut at = path
+    // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
     while !exists(at) {
         let up = dir_of(at)
         if up.is_empty() { return path }
@@ -1362,8 +1366,10 @@ fn fold_forgot(asked: Question, read: string) -> string {
     "`${asked.query_name}` folded forward without a read of `${read}` its body makes: a fold reads all its body reads"
 }
 
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn folds_off() -> string? { env("AVRA_FOLD_OFF") }
 
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn folds_checked() -> string? { env("AVRA_FOLD_CHECK") }
 
 fn two_queries_named(definition: QueryDefinition) -> string {
@@ -1404,12 +1410,14 @@ export fn question_kept(held: HashKeyedTable<HeldQuestion>, high: int, low: int,
 
 fn key_folded_twice(query: string) -> string { "two questions of `${query}` fold to one key: a held question's key is folded from every argument, each after a tag of its kind" }
 
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn held_questions_checked() -> string? { env("AVRA_HELD_QUESTIONS_CHECK") }
 
 /// Whether a query's wrapper holds each question it asked by its arguments' values: on, unless
 /// `AVRA_HELD_QUESTIONS_OFF` is set, which writes and hashes the arguments at every ask.
 export fn questions_held() -> bool { held_questions_off() == null }
 
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn held_questions_off() -> string? { env("AVRA_HELD_QUESTIONS_OFF") }
 
 /// A text argument as a question's key spells it: its kind, its length, then itself, so no two run
@@ -1489,6 +1497,7 @@ export type HeldAnswer<T> = { value: T }
 /// `AVRA_HELD_ROUNDTRIP`.
 export fn round_trips_checked() -> bool { round_trip_flag() != null }
 
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn round_trip_flag() -> string? { env("AVRA_HELD_ROUNDTRIP") }
 
 /// An answer of `query` that read back as something else than it was saved from.
@@ -1503,6 +1512,7 @@ export type FreshAnswer<T> = { arguments: Bytes, value: T }
 /// is set, which reads every answer back at every ask — the same answers, decoded again.
 export fn answers_held() -> bool { held_answers_off() == null }
 
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
 
 fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }

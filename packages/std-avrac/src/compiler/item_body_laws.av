@@ -416,23 +416,25 @@ fn produced_body(store: SyntaxArena, e: ExprId) -> ExprId? {
     match store.expr(e) { .Produce(_, _, body) -> body, rest -> null }
 }
 
-/// Whether a law reads the written node `e` as typing typed it: a `!`, a `?`, a list literal, a `set`.
+/// Whether a law reads the written node `e` as typing typed it: a `!`, a `?`, a list literal or a
+/// comprehension, a `set`.
 fn typed_law_reads(store: SyntaxArena, e: ExprId) -> bool {
     if store.home_of(e) != null { return false }
     match store.expr(e) {
-        .Force(_) or .Propagate(_) or .ListLit(_) or .MapLit(_) -> true,
+        .Force(_) or .Propagate(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_) -> true,
         .MethodCall(_, name, _) -> name.of == SET_VERB,
         rest -> false,
     }
 }
 
 /// What the written node `e` breaks as typing typed it: a null check of a value never absent, a list
-/// literal whose elements give it no type, a `set` over a task.
+/// literal or a comprehension whose elements give it no type, a `set` over a task.
 fn typed_breach(store: SyntaxArena, typing: ItemTyping, e: ExprId) -> BreachAt? {
     match store.expr(e) {
         .Force(subject) -> checked_absence(store, typing, subject, false),
         .Propagate(subject) -> checked_absence(store, typing, subject, true),
         .ListLit(elems) -> untyped_list(store, typing, e, elems),
+        .Comp(elem, _) -> untyped_element(store, typing, e, elem),
         .MapLit(entries) -> untyped_map(store, typing, e, entries),
         .MethodCall(subject, _, _) -> overwritten_element(store, typing, e, subject),
         rest -> null,
@@ -495,6 +497,15 @@ fn untyped_list(store: SyntaxArena, typing: ItemTyping, e: ExprId, elems: List<E
     }
     if elem.owns(OwnType.Void) { return BreachAt { at: place, breach: Breach.ElementVoid } }
     null
+}
+
+/// What the comprehension `e`'s element `elem` breaks where it gives its list no type, no seat
+/// giving one: only absence.
+fn untyped_element(store: SyntaxArena, typing: ItemTyping, e: ExprId, elem: ExprId) -> BreachAt? {
+    if typing.type_at(e)?.listed() != null { return null }
+    let ty? = typing.type_at(elem) else { return null }
+    if !ty.absence() { return null }
+    BreachAt { at: kept_at(store.expr_span(elem)), breach: Breach.ElementUntyped(ty.spelled()) }
 }
 
 /// What the map literal `e` of `entries` breaks: values that leave it holding only absence, said at

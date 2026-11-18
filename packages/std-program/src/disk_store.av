@@ -147,11 +147,15 @@ type MappedPack = {
 /// stamp it wore when it was mapped holds what the mapping holds; one that wears another, or none, is
 /// mapped again.
 fn mapped_pack(path: string) -> MappedPack? {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let now = stamp(path)
     let held = packs_mapped().get().get(path)
     if held != null && now != null && held!.stamp == now! { return held!.pack }
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let mapping? = avra_mmap_open(path) else { return null }
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let pack? = pack_in(path, SavedSource.Mapped(mapping), avra_mmap_len(mapping)) else {
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
         avra_mmap_close(mapping)
         return null
     }
@@ -386,11 +390,13 @@ impl Segment {
     fn mapped_again() {
         self.written()
         if self.is_spoiled() { return }
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
         let mapping? = avra_mmap_open(self.draft.path) else { return }
-        if avra_mmap_len(mapping) != self.appended_octets.get() { return avra_mmap_close(mapping) }
-        self
-            .views
-            .push(DraftView { source: SavedSource.Mapped(mapping), length: avra_mmap_len(mapping) })
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
+        let length = avra_mmap_len(mapping)
+        // LICENSED input.store_io: the store's own files, never an input of what is answered
+        if length != self.appended_octets.get() { return avra_mmap_close(mapping) }
+        self.views.push(DraftView { source: SavedSource.Mapped(mapping), length: length })
         self.answers.unviewed.clear()
         self.questions.unviewed.clear()
         self.unviewed_octets.set(0)
@@ -467,6 +473,7 @@ export fn wave_sharing_ended(gone: bool) {
 }
 
 /// `AVRA_WAVE_ALONE`: a wave's processes share nothing while they work.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn wave_alone() -> string? { env("AVRA_WAVE_ALONE") }
 
 /// `bytes` kept under `key` in the wave's table, for every process of the wave to find.
@@ -571,8 +578,11 @@ type ForeignPack = { path: string, length: int }
 
 /// How many octets the file at `path` holds, zero when it can't be read.
 fn octets_in(path: string) -> int {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let mapping? = avra_mmap_open(path) else { return 0 }
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let length = avra_mmap_len(mapping)
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     avra_mmap_close(mapping)
     length
 }
@@ -581,6 +591,7 @@ fn octets_in(path: string) -> int {
 /// process died is removed.
 export fn disk_store_at(directory: string) -> DiskStore {
     saves_awaited(directory)
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     for name in abandoned_drafts(directory) { let _ = remove("${directory}/${name}") }
     let print: Cell<string?> = Cell.new(null)
     let packs: Cell<List<MappedPack>> = Cell.new([])
@@ -620,6 +631,7 @@ once fn wait_said() -> Cell<bool> { Cell.new(false) }
 /// the store is read as holds everything the process before it learned; a wait is said, once a
 /// process. A save that never finished is said by the first process to find it so, once.
 fn saves_awaited(directory: string) {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     if saving_apart().get() || !exists("${directory}/${SAVING_FILE}") { return }
     let lock? = match opened_for_append("${directory}/${SAVING_FILE}") {
         .Ok(l) -> l,
@@ -630,6 +642,7 @@ fn saves_awaited(directory: string) {
         wait_said().set(true)
         let _ = lock.awaited() catch 0
     }
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let unfinished = read_text("${directory}/${UNFINISHED_FILE}") catch ""
     if !unfinished.is_empty() {
         let _ = remove("${directory}/${UNFINISHED_FILE}")
@@ -747,16 +760,19 @@ type FrontierName = { path: string, print: string }
 
 /// Every frontier file in `directory`, of any binary, by its name alone.
 fn frontier_names_in(directory: string) -> List<FrontierName> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    let names = list_dir(directory) catch []
     [FrontierName {
         path: "${directory}/${name}",
         print: name.substring(FRONTIER_PREFIX.length, name.length).split(".")[0],
-    } for name in list_dir(directory) catch [] if name.starts_with(FRONTIER_PREFIX) &&
+    } for name in names if name.starts_with(FRONTIER_PREFIX) &&
         (name.ends_with(suffix_of(FrontierKind.Base)) ||
             name.ends_with(suffix_of(FrontierKind.Delta)))]
 }
 
 /// Every frontier file of the binary printed `print` in `directory` that can be mapped.
 fn frontiers_of(directory: string, print: string) -> List<FoundFrontier> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     [found! for name in list_dir(directory) catch [] if name.starts_with("${FRONTIER_PREFIX}${print}.") for found in [found_frontier(directory, name)] if found != null]
 }
 
@@ -772,16 +788,14 @@ fn found_frontier(directory: string, name: string) -> FoundFrontier? {
     if parts.length != 2 { return null }
     let id? = hash_named(parts[1]) else { return null }
     let path = "${directory}/${name}"
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     let mapping? = avra_mmap_open(path) else { return null }
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    let length = avra_mmap_len(mapping)
     FoundFrontier {
         path: path,
         print: parts[0],
-        file: FrontierFile {
-            kind: kind,
-            id: id,
-            source: SavedSource.Mapped(mapping),
-            length: avra_mmap_len(mapping),
-        },
+        file: FrontierFile { kind: kind, id: id, source: SavedSource.Mapped(mapping), length: length },
     }
 }
 
@@ -796,11 +810,13 @@ fn hash_named(spelled: string) -> ContentHash? {
 
 /// Every pack in `directory` a binary of this format wrote, as its name says.
 fn pack_names_in(directory: string) -> List<PackName> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     [p! for name in list_dir(directory) catch [] for p in [pack_named(name)] if p != null]
 }
 
 /// Every pack file in `directory` no binary of this format wrote.
 fn unnamed_packs_in(directory: string) -> List<string> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
     (list_dir(directory) catch [])
         .filter((name) -> name.ends_with(PACK_SUFFIX) && pack_named(name) == null)
 }

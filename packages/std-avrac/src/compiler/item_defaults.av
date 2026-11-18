@@ -1,7 +1,7 @@
 //! WHAT A TRAIT'S OWN BODY GIVES: a method a type never writes, answered by the one trait it
 //! implements that writes a body for it. That body is lowered once per type it answers for, `Self`
 //! and the receiver that type, its unit named for the trait, the method and the type.
-use core.{CalledFn, SignedType, StmtId, TypeHead, headed_type}
+use core.{CalledFn, DefaultSeats, SignedType, StmtId, TypeHead, TypeRef, headed_type}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
@@ -51,6 +51,28 @@ export fn given_signature(
     receiver: SignedType,
 ) -> FnSignature? {
     if g.args.is_empty() { trait_method_signature(engine, g.giver, method, receiver) } else { applied_trait_fn(engine, g.giver, method, false, receiver, g.args) }
+}
+
+/// What the one impl that makes the type `file` declares as `owner` implement a generic trait whose
+/// own body gives the method `method` says of its seats; absent where no such one impl gives it.
+export fn default_seats(engine: QueryEngine, file: SourceFileAddress, owner: string, method: string) -> DefaultSeats? {
+    let givers = default_givers(engine, file, owner, method)
+    if givers.length != 1 || givers[0].args.is_empty() { return null }
+    let g = givers[0]
+    let body? = given_body(engine, g.giver, method) else { return null }
+    let s? = body.item.stmts.find((x) -> body.item.store.trait_parts(x)?.name == g.giver.name) else { return null }
+    let names = body.item.store.decl_tparams(s)
+    DefaultSeats {
+        held: headed_type(TypeHead.Declared(g.giver.file, g.giver.name)) with { args: g.args },
+        takes: [parameter_place(names, p.ty) for p in body.item.store.fn_parts(body.stmt)!.params],
+    }
+}
+
+/// The place among `names` of the parameter the written type `ty` is, bare; -1 for any other type.
+fn parameter_place(names: List<string>, ty: TypeRef?) -> int {
+    let t? = ty else { return 0 - 1 }
+    if !t.applied.is_empty() || t.optional || t.dynamic || t.arrow { return 0 - 1 }
+    names.find_index(it == t.name) ?? 0 - 1
 }
 
 /// A trait's member fn with a body: the trait's item, and the statement.

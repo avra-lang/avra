@@ -1,7 +1,7 @@
 //! The typing rule of a method called through `?.` (`a?.m(x)`): the method on what the subject holds
 //! when present, its answer made optional. Its arguments ride the pronoun as the method's block, as
 //! the chain's meaning makes them one: `it` is bound there, the element it's handed not told here.
-use core.{Checking, Checks, ExprId, Expected, PRONOUN, Seating, SignedType}
+use core.{Checking, Checks, ExprId, Expected, OwnType, PRONOUN, Seating, SignedType}
 
 impl Checks for ChainCall {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
@@ -37,4 +37,15 @@ fn args_applied(mut cx: Checking, c: ChainCall, held: SignedType?) -> SignedType
 fn unapplied(mut cx: Checking, args: List<ExprId>) -> SignedType? {
     cx.checked_free(args)
     null
+}
+
+impl Checks for ChainApply {
+    /// The call of what the subject holds, or null: one value, typed as it stands, so a seat that wants
+    /// a value hears it whole; a seat answering nothing drops it.
+    fn meaning_expected(expected: Expected) -> Expected {
+        match expected {
+            .Exactly(want) -> if want.owns(OwnType.Void) { expected } else { Expected.Free },
+            rest -> expected,
+        }
+    }
 }
