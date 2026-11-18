@@ -403,6 +403,28 @@ export fn seat_worn_twice(params: List<Param>) -> string? {
     names.find((n) -> names.filter(it == n).length > 1)
 }
 
+/// What a `select`'s arms leave unsaid: a supply `name` waited on with no `.ended` arm of its own; a
+/// supply a call makes, which no `.ended` arm can name; a timer made anew each turn of the loop it
+/// waits in; a `Quiet` beside `else`, which is never taken.
+@derive(Saved)
+export enum SelectFault {
+    Unended(name: string)
+    Unkeyed
+    Fresh
+    Quiet
+}
+
+/// What a quote's holes break beyond their positions: a body of holes alone holding a value `found`
+/// that is no fill, or fills of kinds that disagree; text where an expression stands, which reads as
+/// a literal or a name; a rewrite's hole of `found`, no node of the tree it rewrites nor one name.
+@derive(Saved)
+export enum HoleFault {
+    Unfillable(found: string)
+    Mixed
+    Ambiguous
+    Unnoded(found: string)
+}
+
 /// Why a lambda, or a call of a value, is refused.
 @derive(Saved)
 export enum LambdaFault {
@@ -574,6 +596,10 @@ export enum Seating {
     ArmBinder(how: string, index: string, bind: string)
     /// A `select` arm waiting on a list of tasks inside a loop, which takes it once.
     SpentArm
+    /// A `select` whose arms leave something unsaid, as `fault` says.
+    SelectFault(fault: SelectFault)
+    /// A quote's hole, or the quote, refused as `fault` says.
+    HoleFault(fault: HoleFault)
     /// A component `word`'s handler that can fail, where the component names no fate.
     Fateless(word: string)
     /// A pattern of `kind` — a variant's, an `as` member's, a record's, a list's, a type pattern's, or
@@ -922,7 +948,7 @@ impl Checking {
         self.site = BindSite.Expr(e.index)
         let refused_before = self.refused.get().length
         let meant = if self.meanings { self.store.meant(e) } else { null }
-        if self.meanings { self.seat_kept(e, expected) }
+        self.seat_kept(e, expected)
         let made = if meant != null { self.meaning_checked(e, meant!, expected) } else { self.store.expr(e).checked(self, e, expected) }
         // a type the body decides is known only once typing infers it
         let ty = if made != null && made!.inferred() { null } else { made }
@@ -971,7 +997,7 @@ impl Checking {
         if found.head is .Meta && self.seat_wanting(want) is .Binding { return }
         if want.owns(OwnType.Void) && !want.nullable() { return }
         if self.stands_in(e, found, want) {
-            if !found.reaches(want) && self.store.expr(e).literal_form() { let _ = self.seals(e, want with { nulls: 0 }, "a literal fills it here") }
+            if !found.reaches(want) && self.store.expr(e).literal_form() { self.seals_filled(e, want) }
             return
         }
         self
@@ -2211,6 +2237,15 @@ impl Checking {
         }
     }
 
+    /// The literal `e` filling a seat of `want`, held to the seal of each named type it fills on the
+    /// way down: a name over a sealed type builds one.
+    mut fn seals_filled(e: ExprId, want: SignedType) {
+        let named = want with { nulls: 0 }
+        if self.seals(e, named, "a literal fills it here") { return }
+        let under? = self.named_next(named) else { return }
+        self.seals_filled(e, under)
+    }
+
     /// Whether building or rewriting a value of `ty` at `e` breaks its seal, refused where it does: a
     /// type its declaring module seals, built here in another. `how` is the site's own label.
     mut fn seals(e: ExprId, ty: SignedType?, how: string) -> bool {
@@ -2977,6 +3012,32 @@ impl Checking {
         self
             .refused
             .push(Refused { at: handler, want: none, found: none, seat: Seating.Fateless(word) })
+    }
+
+    /// The quote's hole, or the quote, at `at`, refused as `fault` says.
+    mut fn hole_faulted(at: ExprId, fault: HoleFault) {
+        let none = owned_type("void")
+        self
+            .refused
+            .push(Refused { at: at, want: none, found: none, seat: Seating.HoleFault(fault) })
+    }
+
+    /// The `select` arm head `head`, refused as `fault` says.
+    mut fn select_faulted(head: ExprId, fault: SelectFault) {
+        if self.meanings { return }
+        let none = owned_type("void")
+        self
+            .refused
+            .push(Refused { at: head, want: none, found: none, seat: Seating.SelectFault(fault) })
+    }
+
+    /// Whether the name `name` is bound inside the loop whose body is checked now, no lambda between.
+    fn bound_in_loop(name: string) -> bool {
+        for scope in reversed(self.scopes.get()) {
+            if scope.names.get(name) != null { return true }
+            if scope.looped || scope.fenced { return false }
+        }
+        false
     }
 
     /// The `select` arm at `arm`, waiting on a list of tasks, refused where a loop holds it.
@@ -3858,6 +3919,7 @@ impl Checking {
                 )
             return null
         }
+        if variant != null { let _ = self.seals(e, enum_type, "built here") }
         if variant != null && !self.meanings && self.payload_spread(args, enum_type, name) { return null }
         let miscounted = if variant == null { null } else { variant_miscounted(variant!, args.length, called, shape!.params) }
         if miscounted != null && !self.meanings {

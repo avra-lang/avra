@@ -11,21 +11,14 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
 /// Whether a word opens a block in the file of `view`'s item.
-fn words_open_blocks(view: ItemView) -> bool { !block_words(view.engine, view.file).is_empty() }
+fn words_open_blocks(view: ItemView) -> bool { !file_block_words(view.engine, view.file).is_empty() }
 
 /// Every name the node `at` of `view`'s item binds or declares that is a block word there.
 fn worn_block_words(view: ItemView, at: At) -> List<Found> {
     let binders = binders_at(view.item.store, at)
     if binders.is_empty() { return [] }
-    let words = block_words(view.engine, view.file)
+    let words = file_block_words(view.engine, view.file)
     [Found { at: b.at, args: [b.word] } for b in binders if words.contains(b.word)]
-}
-
-/// The words that open a block in `file`: a component another module declares, and a sublanguage
-/// it imports.
-fn block_words(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
-    [c.word for c in word_shapes(engine, file).components if !c.own]
-        .concat([g.word for g in file_grammars(engine, file)])
 }
 
 /// A name a node binds or declares, and where its refusal points.

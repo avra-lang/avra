@@ -1,19 +1,17 @@
 // "The subset today": each entry is a refusal the compiler speaks, pinned
 // by its words and its count. An entry the compiler starts accepting turns
 // its case red; delete the case and the entry together.
-use @std.avrac.testing.old_path.{refused_n}
-use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{refused_with}
+use @std.avrac.testing.{judged, refused_n, refused_with}
 
 /// A source that checks with no error — what a refused form's compiling
 /// sibling proves.
 fn accepted(source: string) -> bool {
-    analyze_source(source).program().check() is .Ok
+    judged(source).checked() is .Ok
 }
 
 /// A source refused with `n` messages, one of them `phrase`.
 fn refused(source: string, phrase: string, n: int) -> bool {
-    refused_n(analyze_source(source).program(), phrase, n)
+    refused_n(judged(source), phrase, n)
 }
 
 spec "compiler/subset — syntax the grammar lacks" {
@@ -50,13 +48,6 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "fn f(a: bool, b: bool) -> bool { a and b }\n",
                 "error[parse.expected]: expected BREAK while parsing `stmt`",
-                1,
-            )
-        }
-        then "destructuring `enumerate()` in a comprehension is refused" {
-            refused(
-                "fn f(xs: List<int>) -> List<int> { [i for (i, m) in xs.enumerate()] }\n",
-                "error[type.list_element]: `enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples",
                 1,
             )
         }
@@ -150,7 +141,7 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "fn f() -> int {\n    let g = (a: int = 1) -> a\n    g(1)\n}\n",
                 "error[parse.expected]: expected `)` to close the group",
-                2,
+                1,
             )
         }
         then "a fn value of a defaulted fn wears every seat" {
@@ -171,7 +162,7 @@ spec "compiler/subset — syntax the grammar lacks" {
             refused(
                 "fn ident<T>(x: T) -> T { x }\nfn f() -> int {\n    let g: fn(int) -> int = ident<int>\n    g(1)\n}\n",
                 "error[parse.expected]: expected BREAK while parsing `stmt`",
-                2,
+                1,
             )
         }
         then "a bare generic fn as a value is refused in words" {
@@ -276,13 +267,6 @@ spec "compiler/subset — syntax the grammar lacks" {
             )
         }
         then "`export const` compiles" { accepted("export const x: int = 1\n") }
-        then "`Result<void, E>` as an answer is refused" {
-            refused(
-                "fn f() -> Result<void, string> { }\n",
-                "error[type.applied]: a `Result` side cannot hold `void` yet",
-                1,
-            )
-        }
         then "a `mut` seat assigned whole is refused" {
             refused(
                 "fn f(mut a: int) {\n    a = a + 1\n}\n",
@@ -380,13 +364,6 @@ spec "compiler/subset — syntax the grammar lacks" {
                 1,
             )
         }
-        then "`m.entries()` in a lone file names the missing prelude" {
-            refused(
-                "fn f(m: Map<string, int>) -> int { m.entries().length }\n",
-                "error[type.map_entry]: a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
-                1,
-            )
-        }
         then "a `mut`-taking fn type accepts a callee that does not write" {
             accepted(
                 "fn a(f: fn(mut int) -> int) -> int { 1 }\nfn w(x: int) -> int { x }\nfn f() -> int { a(w) }\n",
@@ -433,20 +410,6 @@ spec "compiler/subset — syntax the grammar lacks" {
 
 spec "compiler/subset — wants the typer does not carry yet" {
     given "wants the typer does not carry yet" {
-        then "an unpinned generic call in a struct literal field is refused" {
-            refused(
-                "fn mk<N>() -> List<N> { [] }\ntype MC<N> = { xs: List<N> }\nfn f<N>() -> MC<N> { MC { xs: mk() } }\nfn g<N>() -> MC<N> { MC { xs: mk<N>() } }\n",
-                "error[type.mismatch]: `N` is not pinned by the arguments",
-                1,
-            )
-        }
-        then "a lambda in a field seat does not read the seat's answer" {
-            refused(
-                "enum E { Bad }\ntype Cx = { get: fn(int) -> Result<int, E> }\nfn f() -> Cx { Cx { get: (n: int) -> .Ok(n) } }\n",
-                "error[type.variant_lit]: `.Ok` needs a known enum — nothing here says which",
-                1,
-            )
-        }
         then "a generic method is refused" {
             refused(
                 "type Box<T> = { v: T }\nimpl Box<T> { fn m<U>(x: U) -> U { x } }\n",
@@ -517,7 +480,7 @@ spec "compiler/subset — wants the typer does not carry yet" {
             refused(
                 "type D = { n: int }\nfn d() -> Result<D, string> { .Ok(D { n: 1 }) }\nfn f() -> int {\n    let x? = d() catch null else { return 0 }\n    x.n\n}\n",
                 "error[type.catch]: a `catch` arm answers the ok side: `D`, this is `null`",
-                2,
+                1,
             )
         }
     }

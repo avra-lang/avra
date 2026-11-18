@@ -1,9 +1,11 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use compiler.{analyze_source, parse_source}
+use compiler.{analyze_source, one_shot_let_go, parse_source}
 use testing.held.{
+    Held,
     Judged,
+    OldSaid,
     differential,
     ir_differential,
     differing,
@@ -23,23 +25,26 @@ use compiler.format.{render_source}
 
 /// What the program layer says of one source standing in no package.
 export fn judged(source: string) -> Judged {
+    if !differential() { return held_alone(source).judged(entry_of("alone")) }
+    let old = old_said(source)
     let j = held_alone(source).judged(entry_of("alone"))
-    if differential() { differ(source, j) }
+    differing(source, old.said, said_sorted(j.diagnostics), old.run, run_said(j.run(), old.quiet))
     j
 }
 
-/// Where the old path and the program layer differ over `source`, printed as one block.
-fn differ(source: string, j: Judged) {
+/// What the old path says of `source`, read whole and its workspace let go before the program
+/// layer derives anything: one derivation is alive at a time.
+fn old_said(source: string) -> OldSaid {
     let a = analyze_source(source)
     let quiet = a.diagnostics.is_empty()
     let ran = a.run()
-    differing(
-        source,
-        if quiet { run_refusal(ran) } else { said_sorted(a.diagnostics) },
-        said_sorted(j.diagnostics),
-        run_said(ran, quiet),
-        run_said(j.run(), quiet),
-    )
+    let said = OldSaid {
+        said: if quiet { run_refusal(ran) } else { said_sorted(a.diagnostics) },
+        run: run_said(ran, quiet),
+        quiet: quiet,
+    }
+    one_shot_let_go()
+    said
 }
 
 /// What a run that refused says, as a diagnostic is said: the old path refuses at run what the layer
@@ -111,15 +116,22 @@ export fn refused_in(p: Judged, phrase: string) -> bool {
 
 /// The program as IR, memory strategy applied.
 export fn ir_of(source: string) -> Lowered {
-    if ir_differential() { ir_differ(source, analyze_source(source).lowered()) }
-    judged(source).lowered()
+    if !ir_differential() { return lowered_alone(source) }
+    let was = [unnamed(line) for line in render_ir(analyze_source(source).lowered()).split("\n")]
+    one_shot_let_go()
+    let j = held_alone(source).judged(entry_of("alone"))
+    ir_differ(source, was, j)
+    j.lowered()
 }
+
+/// One source's IR on the program layer, the program never run: a source a spec lowers may be
+/// one that never ends.
+fn lowered_alone(source: string) -> Lowered { held_alone(source).judged(entry_of("alone")).lowered() }
 
 /// Where the program layer's IR of `source` differs from the old path's, printed as one block:
 /// whether the layer makes it, and the first line the two render apart.
-fn ir_differ(source: string, old: Lowered) {
-    let was = [unnamed(l) for l in render_ir(old).split("\n")]
-    let now = match judged(source).made() {
+fn ir_differ(source: string, was: List<string>, j: Judged) {
+    let now = match j.made() {
         .Ok(l) -> [unnamed(line) for line in render_ir(l).split("\n")],
         .Err(why) -> ["<not made> ${why.split("\n").first() ?? ""}"],
     }
@@ -219,6 +231,11 @@ export fn vendored_meta_paths() -> List<string> {
 /// the program's own, a file under `src/<name>/`.
 export fn provided(main: string, provider: string, modules: List<Module> = []) -> Judged {
     held_at(provided_files(main, provider, modules), "/w").judged_at("/w/src/main.av")
+}
+
+/// The package `provided` judges, held: for an ask of its files that judges nothing.
+export fn provided_held(main: string, provider: string, modules: List<Module> = []) -> Held {
+    held_at(provided_files(main, provider, modules), "/w")
 }
 
 /// The files `provided` holds.

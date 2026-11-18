@@ -1,8 +1,8 @@
 //! WHERE A FORM ANSWERS A TYPE ITS PROGRAM DOES NOT LOAD: `produce` and `channel` answer
 //! `@std/task`'s types, `quote` `@std/meta`'s, so a package that reaches neither cannot write them.
 //! Read off the item's nodes and the packages its package reaches.
-use core.{ExprId, PatId, StmtId, SyntaxArena, body_behavior, some_list}
-use compiler.laws.{Found, law}
+use core.{At, ExprId, NodeKind, PatId, StmtId, SyntaxArena, body_behavior, some_list}
+use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.quote.{metaless}
 use features.tasks.{taskless}
@@ -19,26 +19,29 @@ enum Answering {
     Quote
 }
 
-/// Every node of the written item `at` of `file` that is `form`, where the package its file stands
-/// in reaches no `needs`: a component's body aside, which its composing trait reads, and a quote a
-/// pattern writes, which matches code rather than answering it.
-fn unloaded(engine: QueryEngine, file: SourceFileAddress, at: int, form: Answering, needs: string) -> List<
-    Found,
-> {
-    if at >= item_count(engine, file) { return [] }
-    let store = read_item(engine, file, at).store
-    if !store.refusals().is_empty() { return [] }
-    let composed = [x.index for s in 0..store.stmts.count() for b in some_list(store.component_body(StmtId { index: s })) for x in store.every_expr(b)]
+/// The node `at` of `view`'s item where it is `form` and the package its file stands in reaches no
+/// `needs`: a component's body aside, which its composing trait reads, and a quote a pattern writes,
+/// which matches code rather than answering it.
+fn unloaded(view: ItemView, at: At, form: Answering, needs: string) -> List<Found> {
+    let store = view.item.store
+    let e? = at.expr() else { return [] }
+    if store.home_of(e) != null || !is_form(store, e, form) || composed(store).contains(e.index) { return [] }
+    if written_by_mark(store, e, marked(store)) { return [] }
+    if package_reach(view.engine, view.file.package_name).packages.contains(needs) { return [] }
+    [Found { at: store.expr_span(e), args: [] }]
+}
+
+/// Every expression of `store` a component's body or a pattern's quote holds.
+fn composed(store: SyntaxArena) -> List<int> {
+    [x.index for s in 0..store.stmts.count() for b in some_list(store.component_body(StmtId { index: s })) for x in store.every_expr(b)]
         .concat(
             [x.index for i in 0..store.pats.get().length for b in pattern_quote(store, PatId { index: i }) for x in store.every_expr(b)],
         )
-    let marked = [m.span!.lo for s in 0..store.stmts.count() for m in store.marks_written(StmtId { index: s }) if m.span != null]
-    let nodes = [e for i in 0..store.expr_count() for e in [ExprId { index: i }] if store.home_of(e) == null &&
-        !composed.contains(i) &&
-        is_form(store, e, form) &&
-        !written_by_mark(store, e, marked)]
-    if nodes.is_empty() || package_reach(engine, file.package_name).packages.contains(needs) { return [] }
-    [Found { at: store.expr_span(e), args: [] } for e in nodes]
+}
+
+/// Where each mark a statement of `store` writes stands.
+fn marked(store: SyntaxArena) -> List<int> {
+    [m.span!.lo for s in 0..store.stmts.count() for m in store.marks_written(StmtId { index: s }) if m.span != null]
 }
 
 /// Whether the node `e` is what a mark writes, standing where the mark does: a mark is data a reader
@@ -63,16 +66,19 @@ fn is_form(store: SyntaxArena, e: ExprId, form: Answering) -> bool {
     }
 }
 
-fn produces(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unloaded(engine, file, at, Answering.Produce, TASK) }
+fn produces(view: ItemView, at: At) -> List<Found> { unloaded(view, at, Answering.Produce, TASK) }
 
-fn channels(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unloaded(engine, file, at, Answering.Channel, TASK) }
+fn channels(view: ItemView, at: At) -> List<Found> { unloaded(view, at, Answering.Channel, TASK) }
 
-fn quotes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { unloaded(engine, file, at, Answering.Quote, META) }
+fn quotes(view: ItemView, at: At) -> List<Found> { unloaded(view, at, Answering.Quote, META) }
 
 /// `produce` needs `@std/task`
 export law produce_needs_task {
     kind: "flow.produce"
-    reads: produces
+    on: [NodeKind.ExprProduce]
+    judge: produces
+    reach: Reach.Stored
+    judged_if: read_cleanly
     voice: produce_words
     witness: "let s = produce<int>(1) { yield 1 }\n"
 }
@@ -80,7 +86,10 @@ export law produce_needs_task {
 /// `channel` needs `@std/task`
 export law channel_needs_task {
     kind: "flow.channel"
-    reads: channels
+    on: [NodeKind.ExprChannel]
+    judge: channels
+    reach: Reach.Stored
+    judged_if: read_cleanly
     voice: channel_words
     witness: "channel<int>(2)\n"
 }
@@ -88,7 +97,10 @@ export law channel_needs_task {
 /// `quote` needs `@std/meta`
 export law quote_needs_meta {
     kind: "type.quote_meta"
-    reads: quotes
+    on: [NodeKind.ExprBody]
+    judge: quotes
+    reach: Reach.Stored
+    judged_if: read_cleanly
     voice: quote_words
     witness: "let q = quote { 1 }\n"
 }

@@ -4,6 +4,7 @@
 //! arguments; one its grammar didn't expand has only its holes, and what it is isn't named here.
 use core.{
     BodyBehavior,
+    HoleFault,
     Checking,
     Checks,
     ExprId,
@@ -19,6 +20,7 @@ use core.{
     signed_fill_class,
 }
 use core.expr.{Body}
+use features.quote.{rewrite_takes}
 
 impl Checks for Body {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
@@ -64,19 +66,31 @@ fn holes_quoted(cx: Checking, holes: List<SignedType?>) -> SignedType? {
     cx.meta_type(meta_name(kind))
 }
 
-/// The first hole of a quote whose position doesn't take its value, refused in that position's words:
-/// of a quote over code, where every hole's value is known. A body of holes alone takes the seat its
-/// kind makes, a rewrite's holes are nodes, and text where an expression stands is ambiguous, not
-/// refused here.
+/// The first hole of a quote that breaks its seat, refused in that seat's words, where every hole's
+/// value is known: a body of holes alone takes a fill of each, all of one kind; elsewhere text where an
+/// expression stands reads as a literal or a name, a rewrite's hole beside its nodes is one name, and
+/// every other hole's position takes its value.
 fn holes_judged(mut cx: Checking, e: ExprId, holes: List<ExprId>, types: List<SignedType?>) {
-    if quote_kind(cx.store, e) is .Holes ||
-        types.any(it == null) ||
-        types.any((t) -> names_a_node(t!)) { return }
+    if types.any(it == null) { return }
+    let classes = [signed_fill_class(t!, (m: string, n: string) -> cx.toolchain_type(m, n)) for t in types]
+    let whole = quote_kind(cx.store, e)
+    if whole is .Holes {
+        let unfilled = classes.find_index(it == null)
+        if unfilled != null {
+            return cx
+                .hole_faulted(holes[unfilled!], HoleFault.Unfillable(types[unfilled!]!.spelled()))
+        }
+        if holes_kind([c! for c in classes]) == null { cx.hole_faulted(e, HoleFault.Mixed) }
+        return
+    }
     let kinds = hole_kinds(cx.store, e)
+    let rewrites = (whole is .Expr || whole is .Stmts) && types.any((t) -> names_a_node(t!))
     for k, h in holes {
-        let class = signed_fill_class(types[k]!, (m: string, n: string) -> cx.toolchain_type(m, n))
-        if class != null && class! is .Text && (kinds[k] is .Expression || kinds[k] is .Tail) { return }
-        if class == null || !fits(class!, kinds[k]) { return cx.hole_refused(h, types[k]!, kinds[k]) }
+        if names_a_node(types[k]!) { continue }
+        let class? = classes[k] else { return cx.hole_refused(h, types[k]!, kinds[k]) }
+        if class is .Text && (kinds[k] is .Expression || kinds[k] is .Tail) { return cx.hole_faulted(h, HoleFault.Ambiguous) }
+        if rewrites && !rewrite_takes(class) { return cx.hole_faulted(h, HoleFault.Unnoded(types[k]!.spelled())) }
+        if !fits(class, kinds[k]) { return cx.hole_refused(h, types[k]!, kinds[k]) }
     }
 }
 

@@ -10,6 +10,7 @@ use core.{
     ExprId,
     Minting,
     NameRead,
+    NodeKind,
     Nominal,
     Plain,
     SignedType,
@@ -24,7 +25,10 @@ use core.{
 use @std.meta.{Rewrite}
 use features.{TypedCode, TypedItem, TypedView}
 use features.components.{StatementFill, element_fill, instance_fills}
+use @std.io.{env}
 use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{content_hash}
+use @std.program.defect.{defect}
 use @std.program.query_engine.{QueryEngine}
 
 /// A fn's body and what it means: the store holding both, each sugar given a meaning, each
@@ -68,9 +72,28 @@ fn elaborated(engine: QueryEngine, file: SourceFileAddress, read: SignedBody) ->
     let store = signed.item.store
     let surface = signed.typed ?? kept_body(body_checked(engine, file, signed, false))
     let typed = TypedItem { view: TypedView { store: store }, types: surface.types }
-    let _ = [e for e in store.every_expr(signed.body) if instance_filled(engine, typed, e, owner_of(signed, e))]
+    let filled = [e for e in store.every_expr(signed.body) if instance_filled(engine, typed, e, owner_of(signed, e))]
     let statements = [s for s in every_stmt(store, At.Expr(signed.body)) if stmt_meant_beside(typed, s)]
     let sugars = [e for e in store.every_expr(signed.body) if meant_beside(typed, e)]
+    let left = if filled.is_empty() &&
+        statements.is_empty() &&
+        sugars.is_empty() &&
+        means_itself(store, signed.body) { read.seats } else { null }
+    if left != null && core_from_surface() != "off" {
+        if core_from_surface() == "checked" { core_alike(engine, file, signed, surface, left!) }
+        return ElaboratedBody {
+            store: store,
+            body: signed.body,
+            sugars: sugars,
+            statements: statements,
+            surface: typed.types,
+            core: surface.types,
+            seats: left!,
+            refused: surface.refused.length,
+            unread: surface.unread,
+            reads: surface.reads,
+        }
+    }
     let core = body_checked(engine, file, signed, true)
     ElaboratedBody {
         store: store,
@@ -85,6 +108,56 @@ fn elaborated(engine: QueryEngine, file: SourceFileAddress, read: SignedBody) ->
         reads: reads_kept(core),
     }
 }
+
+/// Whether no node under `body` means anything but itself: no sugar's meaning stands for one, no
+/// statement's, and none is an instance its component judges. Such a body's core is its surface:
+/// the check through meanings walks the nodes the surface check walked, each under the same seat —
+/// but for a `fail`, whose value the surface holds to the failure its fn promises and the core
+/// reads as it is, so a body that fails is checked both ways.
+fn means_itself(store: SyntaxArena, body: ExprId) -> bool {
+    !store
+            .every_expr(body)
+            .any((e) -> store.meant(e) != null || store.instance_value(e) != null) &&
+        !every_stmt(store, At.Expr(body))
+            .any(
+                (s) -> store.stmt_meant(s) != null ||
+                    store.node_kind(At.Stmt(s)) == NodeKind.StmtFail,
+            )
+}
+
+/// `AVRA_CORE_FROM_SURFACE`: a witness's way into a body whose core is taken from its surface —
+/// `checked` holds each to the check through meanings it skips, `off` skips none.
+once fn core_from_surface() -> string {
+    // LICENSED input.debug_flag: a check of the compiler against itself, which no answer reads
+    env("AVRA_CORE_FROM_SURFACE") ?? ""
+}
+
+/// Stops the process where the check through meanings of `signed`'s body types a node, seats one
+/// or reads a name otherwise than its surface check did.
+fn core_alike(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    surface: TypedBody,
+    seats: Map<string, SignedType>,
+) {
+    let core = body_checked(engine, file, signed, true)
+    let types = core.types.get()
+    let typed_alike = types.length == surface.types.length &&
+        (0..types.length)
+            .all((i: int) -> types[i]?.spelled() ?? "" == surface.types[i]?.spelled() ?? "")
+    let core_seats = core.seats.get()
+    let seated_alike = core_seats.length == seats.length &&
+        core_seats.keys().all((k) -> seats.get(k)?.spelled() == core_seats.get(k)?.spelled())
+    let read_alike = [content_said(r.saved_bytes()) for r in reads_kept(core)].join(" ") == [content_said(r.saved_bytes()) for r in surface.reads].join(" ")
+    if typed_alike && seated_alike && read_alike { return }
+    defect(
+        "a body's core differs from its surface in ${spelled_file(file)} at statement ${signed.stmt.index}: types alike ${typed_alike}, seats alike ${seated_alike}, reads alike ${read_alike}",
+    )
+}
+
+/// Octets as the text of their hash.
+fn content_said(bytes: Bytes) -> string { hash_text(content_hash(bytes)) }
 
 /// `signed` over a store of its own, forked from the one it stands in: what a check through meanings
 /// mints lands there.

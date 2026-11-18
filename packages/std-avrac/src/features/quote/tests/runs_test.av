@@ -2,7 +2,6 @@
 // literal: `..${fs}` takes templates of `type _ = { … }` (or of a record
 // literal) and splices their fields flat, in order, with their marks
 // and defaults.
-use @std.avrac.testing.old_path.{program_of}
 use @std.avrac.testing.{refused_in}
 
 /// A provider whose derive builds field lists and literals from runs.
@@ -48,6 +47,11 @@ fn ran(tail: string) -> string? {
     match packaged(runs_program(tail), runs_provider()).run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
+/// The program's entry as compiled.
+fn expanded(tail: string) -> string {
+    packaged(runs_program(tail), runs_provider()).expanded_at("/w/src/main.av")
+}
+
 spec "features/quote — run holes in field lists" {
     given "the written form" {
         then "a spread in a type's fields prints back as written" {
@@ -64,8 +68,18 @@ spec "features/quote — run holes in field lists" {
         then "an empty run declares a type of no fields" {
             ran("let e = PEmpty {}\n1") == "1"
         }
+        then "a run beside written fields keeps every field's place" {
+            expanded("1")
+                .contains(
+                    "type PBeside = {\n    first: int,\n    x: int,\n    y: int,\n    z: int,\n    last: int,\n}",
+                )
+        }
         then "a trailing comma after a run is a trailing comma" {
             ran("let t = PTrail { x: 1, y: 2, z: 3 }\nt.z") == "3"
+        }
+        then "a spliced field keeps its marks" {
+            expanded("1")
+                .contains("type PKeys = {\n    @key x: int,\n    @key y: int,\n    @key z: int,\n}")
         }
         then "a spliced field keeps its default" {
             ran("let t = PTwo { z: 1 }\nt.x + t.y + t.mid + t.z") == "18"

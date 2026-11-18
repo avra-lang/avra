@@ -1,0 +1,136 @@
+//! WHERE A TASK IS JOINED WITH A CHANNEL OPEN: a bare `channel<T>(n)` ends only at `close()`, so a
+//! block that spawns a task reading a channel's `.source`, and closes no channel's sink, joins that
+//! task with the channel open — the reader parks for a close nobody writes. The block's own nodes
+//! are read, never a callee's body: the spawn spells the `.source` read. The statements an entry runs
+//! are one block, read once for the file; each fn's body is a block of its own.
+use core.{ExprId, Span, SyntaxArena, flatten, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.tasks.{channel_never_ends}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A spawn among the statements an entry runs whose task reads the channel `name` to its end: the
+/// written item it stands in, and where.
+@derive(Saved)
+type EntryNeverEnding = { item: int, at: FindingAt?, name: string }
+
+/// Every spawn among the statements an entry runs whose task reads a channel no close ends.
+@derive(Saved)
+type EntryNeverEnds = { rows: List<EntryNeverEnding> }
+
+/// A spawn `spawned` whose task reads the channel `name` to its end.
+type NeverEnding = { spawned: ExprId, name: string }
+
+/// Every spawn among the statements the entry `file` runs whose task reads a channel no close ends,
+/// each with the written item it stands in: the entry read once, as one block, for all its items.
+@query
+fn entry_never_ends(engine: QueryEngine, file: SourceFileAddress) -> EntryNeverEnds {
+    let read = entry_read(engine, file)
+    let exprs = [ExprId { index: i } for i in 0..read.store.expr_count()]
+    EntryNeverEnds {
+        rows: [EntryNeverEnding {
+            item: item_holding(read, n.spawned.index),
+            at: kept_at(read.store.expr_span(n.spawned)),
+            name: n.name,
+        } for n in never_ending(read.store, exprs)],
+    }
+}
+
+/// Every spawn of the written item `at` of `file` whose task reads a channel its block closes none
+/// of: in each fn the item declares, and among the statements of the entry it stands in.
+fn channels_left_open(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    let bodies = [b for s in read_item(engine, file, at).stmts for b in some_list(store.fn_parts(s)?.body)]
+    let in_fns = flatten([never_ending(store, store.every_expr(b)) for b in bodies])
+    [Found { at: store.expr_span(n.spawned), args: [n.name] } for n in in_fns]
+        .concat(
+            [Found { at: span_of(r.at), args: [r.name] } for r in entry_never_ends(engine, file).rows if r.item == at],
+        )
+}
+
+/// Each spawn among `exprs`, the nodes of one block of `store`, whose task reads a bare channel's
+/// `.source`, where the block closes no channel's sink.
+fn never_ending(store: SyntaxArena, exprs: List<ExprId>) -> List<NeverEnding> {
+    if exprs.any((e) -> closes_sink(store, e)) { return [] }
+    [NeverEnding { spawned: e, name: n! } for e in exprs if store.expr(e) is .Spawn for n in [read_inside(store, exprs, e)] if n != null]
+}
+
+/// The name of the channel the spawn `spawned` reads `.source` of, among `exprs`: its own span bounds
+/// the reads, so one beside it in the same block is not the task's.
+fn read_inside(store: SyntaxArena, exprs: List<ExprId>, spawned: ExprId) -> string? {
+    let at? = store.expr_span(spawned) else { return null }
+    let read? = exprs.find((e) -> stands_inside(store.expr_span(e), at) && source_read(store, e)) else { return null }
+    reader_name(store, read)
+}
+
+/// Whether `inner` stands inside `outer`; an unknown span stands nowhere.
+fn stands_inside(inner: Span?, outer: Span) -> bool {
+    let i? = inner else { return false }
+    outer.lo <= i.lo && i.hi <= outer.hi
+}
+
+/// Whether `e` reads `.source` off a bare channel the block binds.
+fn source_read(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Prop(subject, name) -> name.of == "source" && channel_bound(store, subject),
+        rest -> false,
+    }
+}
+
+/// Whether `e` closes a bare channel's sink: `ch.sink.close()`.
+fn closes_sink(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .MethodCall(subject, name, _) -> name.of == "close" && sink_read(store, subject),
+        rest -> false,
+    }
+}
+
+/// Whether `e` reads `.sink` off a bare channel the block binds.
+fn sink_read(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Prop(subject, name) -> name.of == "sink" && channel_bound(store, subject),
+        rest -> false,
+    }
+}
+
+/// Whether `e` names a binding of `store` whose value is a bare `channel<T>(n)`.
+fn channel_bound(store: SyntaxArena, e: ExprId) -> bool {
+    let name? = store.ident_name(e) else { return false }
+    store
+        .stmt_ids()
+        .any((s) -> store.let_name(s) == name && makes_channel(store, store.owned_value(s)))
+}
+
+/// Whether `v` is a bare `channel<T>(n)`.
+fn makes_channel(store: SyntaxArena, v: ExprId?) -> bool {
+    let value? = v else { return false }
+    store.expr(value) is .Channel
+}
+
+/// The name a `.source` read is written under, for the voice: its subject's, else `channel`.
+fn reader_name(store: SyntaxArena, read: ExprId) -> string {
+    match store.expr(read) {
+        .Prop(subject, _) -> store.ident_name(subject) ?? "channel",
+        rest -> "channel",
+    }
+}
+
+/// a task a block spawns reading a bare channel is joined with the channel closed
+export law channel_closed_before_join {
+    kind: "flow.never_ends"
+    reads: channels_left_open
+    voice: never_ends_words
+    witness: "use @std.task.{Source}\n\nfn drain(src: Source<int>) -> int { 1 }\n\nfn f() -> int {\n    let ch = channel<int>(2)\n    let t = spawn drain(ch.source)\n    t.await\n}\n"
+}
+
+fn never_ends_words(a: List<string>) -> Voice { channel_never_ends(a[0]) }
+
+collect listed_never_ends_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the never-ends law is read through, for a process to hand its engine.
+export fn never_ends_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_never_ends_facts) }

@@ -135,13 +135,13 @@ use @std.avrac.compiler.{
     program_worked,
     share_replayed,
     package_sources,
-    package_reach,
-    manifest_link_words,
+    LinkRead,
+    program_link_words,
+    program_packages,
     manifest_library,
     native_link_head,
     wasm_link_head,
     wasm_link_tail,
-    manifest_wasm_words,
     program_calls,
     shipped,
     asyncified,
@@ -3218,11 +3218,22 @@ fn children_wrong(engine: QueryEngine, disk: Disk, children: List<RefusesCall>) 
 /// a test asks for.
 export fn program_refuse_evaluated(root: string, path: string, live: bool = false) -> int {
     let disk? = disk_at(root, "") else { return std_unfound() }
+    disk_evaluated(disk, disk.file_at(path.substring(root.length + 1, path.length)), path, live)
+}
+
+/// `program_refuse_evaluated` of the lone source file at `path`, standing in no package: read as a
+/// package of that one file, its store beside it.
+export fn lone_refuse_evaluated(path: string, live: bool = false) -> int {
+    let disk? = lone_disk_at(path) else { return std_unfound() }
+    disk_evaluated(disk, disk.file_at("src/${disk.lone}"), path, live)
+}
+
+/// What the program `entry` of `disk` runs, written at `path`, made and evaluated in this process.
+fn disk_evaluated(disk: Disk, entry: SourceFileAddress, path: string, live: bool) -> int {
     let engine = query_engine(
-        program_store_at(joined_path(root, ".avra-cache/tapes")),
+        program_store_at(joined_path(disk.root, ".avra-cache/tapes")),
         avra_fact_definitions(),
     )
-    let entry = disk.file_at(path.substring(root.length + 1, path.length))
     let refusing = program_refused(engine, entry, disk.name)
     if !refusing.is_empty() {
         let _ = refusals_said(engine, disk, refusing, entry)
@@ -3413,28 +3424,22 @@ fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
 fn linked_words(engine: QueryEngine, disk: Disk, shared: bool = false, target: string = "") -> List<
     string,
 > {
-    // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
-    let world = LinkWorld { env: (n: string) -> env(n), there: (p: string) -> exists_at(p) }
-    if target != "" {
-        return flatten(
-            [manifest_wasm_words(manifest_at(disk.package_root(p)), disk.package_root(p), world) for p in reached_packages(engine, disk)],
-        )
-    }
-    flatten(
-        [manifest_link_words(
-            manifest_at(disk.package_root(p)),
-            disk.package_root(p),
-            p == disk.name,
-            world,
-            shared,
-        ) for p in reached_packages(engine, disk)],
+    program_link_words(
+        engine,
+        disk.name,
+        LinkRead {
+            root_of: (p: string) -> disk.package_root(p),
+            manifest_of: (p: string) -> manifest_at(disk.package_root(p)),
+            // LICENSED input.asked: the link's tools and holes, in the link words the binary's question holds
+            world: LinkWorld { env: (n: string) -> env(n), there: (path: string) -> exists_at(path) },
+        },
+        shared,
+        target,
     )
 }
 
 /// The packages a program on `disk` reaches, in name order.
-fn reached_packages(engine: QueryEngine, disk: Disk) -> List<string> {
-    sorted_by(package_reach(engine, disk.name).packages, (a, b) -> text_before(a, b))
-}
+fn reached_packages(engine: QueryEngine, disk: Disk) -> List<string> { program_packages(engine, disk.name) }
 
 /// The libraries the packages a program on `disk` reaches build for the evaluator to open, the
 /// packages in name order; for the program `entry`, each beside the externs that program reaches its

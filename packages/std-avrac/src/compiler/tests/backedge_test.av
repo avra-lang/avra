@@ -7,7 +7,6 @@
 //! `@std/meta` is PACKAGED, not a lone source (compiler/tests/
 //! unbroken_test.av): a lone source cannot import it, so its mark would
 //! never resolve and the `@unbroken` case would prove nothing.
-use @std.avrac.testing.old_path.{program_of}
 use @std.avrac.testing.{ir_of, provided}
 use compiler.backend.{render_ir}
 
@@ -98,25 +97,23 @@ fn top_sleep() -> List<string> {
 /// An `@unbroken` fn's own `while`, run as a task, `@std/meta` vendored.
 fn unbroken_ir() -> string {
     render_ir(
-        program_of(
-            provided(
-                [
-                    "use @std.meta.{unbroken}",
-                    "@unbroken",
-                    "fn rouse() -> int {",
-                    "    mut i = 0",
-                    "    while i < 3 { i = i + 1 }",
-                    "    i",
-                    "}",
-                    "fn go() -> int {",
-                    "    let t = spawn rouse()",
-                    "    t.await",
-                    "}",
-                    "go()",
-                ]
-                    .join("\n"),
-                "",
-            ),
+        provided(
+            [
+                "use @std.meta.{unbroken}",
+                "@unbroken",
+                "fn rouse() -> int {",
+                "    mut i = 0",
+                "    while i < 3 { i = i + 1 }",
+                "    i",
+                "}",
+                "fn go() -> int {",
+                "    let t = spawn rouse()",
+                "    t.await",
+                "}",
+                "go()",
+            ]
+                .join("\n"),
+            "",
         )
             .lowered(),
     )
@@ -134,8 +131,8 @@ spec "compiler/lower — a checked `while` back-edge" {
             in_body(walking(), "rng", "call avra_tick_cold()") == 0
     }
     then "an `@unbroken` fn's own `while` carries no check" {
-        in_text(unbroken_ir(), "rouse", "= flag tick") == 0 &&
-            in_text(unbroken_ir(), "rouse", "call avra_tick_cold()") == 0
+        in_text(unbroken_ir(), "app/src/main.av.rouse", "= flag tick") == 0 &&
+            in_text(unbroken_ir(), "app/src/main.av.rouse", "call avra_tick_cold()") == 0
     }
     then "a top-level `while` in a program whose only spawn is top-level carries the check" {
         times(ir(top_level()), "= flag tick") == 1 &&

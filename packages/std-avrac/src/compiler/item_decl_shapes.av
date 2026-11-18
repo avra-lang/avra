@@ -47,6 +47,8 @@ use compiler.typing.{
     alias_given_no_value,
     alias_naming_itself,
     builtin_type_name,
+    named_unslotted,
+    tparam_owned,
     inherent_on_builtin,
     mut_without_receiver,
     named_over_itself,
@@ -117,6 +119,14 @@ fn taken_again(
 /// Each name `o` takes again after taking it once, found where `s` stands.
 fn again_in(store: SyntaxArena, s: StmtId, o: OwnNames) -> List<Found> {
     [Found { at: store.stmt_span(s), args: [o.owner, n] } for j, n in o.names if o.names.index_of(n) < j]
+}
+
+/// Every type parameter a declaration of the written item `at` of `file` names as a type the
+/// language owns, found where the declaration stands.
+fn tparams_owned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(s), args: [n] } for s in item.stmts for o in [own_type_params(item.store, s)] if o != null for n in o!.names if builtin_type_name(avra().rows.types, n)]
 }
 
 /// A fn's seats, or an extern's.
@@ -369,6 +379,14 @@ fn once_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
 /// Every named type the written item `at` of `file` declares with type parameters.
 fn named_generic(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     named_found(engine, file, at, (n) -> !n.tparams.is_empty())
+}
+
+/// Every named type the written item `at` of `file` declares over a shape that holds nothing,
+/// handed its name and the shape.
+fn named_over_nothing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(s), args: [n!.name, of!.spelled()] } for s in item.stmts for n in [item.store.named_parts(s)] if n != null && n!.tparams.is_empty() for of in [named_shape(engine, file, n!.name)?.of] if of != null && holds_nothing(of!)]
 }
 
 /// Every named type the written item `at` of `file` declares that `keep` holds of, handed its name.
@@ -1033,6 +1051,16 @@ export law type_param_twice {
     witness: "fn f<T, T>(x: T) -> T { x }\n"
 }
 
+/// a type parameter takes no name the language owns
+export law type_param_owned {
+    kind: "type.tparam"
+    reads: tparams_owned
+    voice: tparam_owned_words
+    witness: "fn f<int>(x: int) -> int { x }\n"
+}
+
+fn tparam_owned_words(a: List<string>) -> Voice { tparam_owned(a[0]) }
+
 /// an enum names each variant once
 export law variant_twice {
     kind: "type.enum_decl"
@@ -1142,6 +1170,16 @@ export law named_type_generic {
     voice: named_generic_words
     witness: "type X<T> = List<T>\n"
 }
+
+/// a named type stands over a shape that holds a value
+export law named_type_over_nothing {
+    kind: "type.named"
+    reads: named_over_nothing
+    voice: named_nothing_words
+    witness: "type V = void\n"
+}
+
+fn named_nothing_words(a: List<string>) -> Voice { named_unslotted(a[0], a[1]) }
 
 /// a named type stands over a shape it does not name
 export law named_type_circular {

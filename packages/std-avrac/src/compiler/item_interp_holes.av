@@ -2,25 +2,20 @@
 //! one the language owns that is no number, truth or text — a list, a map, bytes, a result, a task,
 //! a range, a cell. Read off the item's typed nodes; a hole typing
 //! doesn't know whole, or a declared type, is left alone.
-use core.{ExprId, OwnType, SignedType, body_behavior, flatten}
-use compiler.laws.{Found, law}
+use core.{At, ExprId, NodeKind, OwnType, SignedType, body_behavior}
+use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.str_lit.{unprintable_hole}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// Every hole of a text literal the written item `at` of `file` writes whose type prints as no
+/// Each hole of the text literal `at` of `view`'s item, its file's own, whose type prints as no
 /// text, with that type spelled.
-fn unprintable_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
-    let item = read_item(engine, file, at)
-    if !item.store.refusals().is_empty() { return [] }
-    flatten([holes_unprinted(engine, t) for t in item_typed_nodes(engine, file, at, item)])
-}
-
-/// Every hole among the nodes `t` reads, its file's own, whose type prints as no text.
-fn holes_unprinted(engine: QueryEngine, t: TypedNodes) -> List<Found> {
-    [Found { at: t.store.expr_span(h), args: [ty!.spelled()] } for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null for h in text_holes(t, e) for ty in [(t.type_at)(h.index)] if ty != null && unprintable(engine, ty!)]
+fn unprintable_holes(view: ItemView, at: At) -> List<Found> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null { return [] }
+    [Found { at: t.store.expr_span(h), args: [ty!.spelled()] } for h in text_holes(t, e) for ty in [(t.type_at)(h.index)] if ty != null && unprintable(view.engine, ty!)]
 }
 
 /// The holes of the text literal `e`; none for any other node.
@@ -45,7 +40,10 @@ fn unprintable(engine: QueryEngine, ty: SignedType) -> bool {
 /// an interpolation hole prints as a scalar or text
 export law hole_prints {
     kind: "type.interp_hole"
-    reads: unprintable_holes
+    on: [NodeKind.ExprBody]
+    judge: unprintable_holes
+    reach: Reach.Typed
+    judged_if: read_cleanly
     voice: unprintable_words
     witness: "let xs = [1, 2]\n\"\${xs}\"\n"
 }

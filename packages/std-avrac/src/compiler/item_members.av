@@ -6,6 +6,7 @@
 //! own nodes, so it has none here.
 use core.{
     ExprId,
+    FnParts,
     Member,
     Param,
     headed_type,
@@ -68,7 +69,7 @@ use features.structs.{
     with_unstructured,
 }
 use features.nullable.{chain_called_present, chained_present}
-use features.when_expr.{when_total_twice, when_untotal}
+use features.when_expr.{arm_waiting, when_total_early, when_total_twice, when_untotal}
 use features.expr_spine.{record_not_enum, text_unindexable, unindexable}
 use features.impls.{
     keyword_called,
@@ -144,6 +145,8 @@ enum Miss {
     WhenUntotal
     /// A `when`'s second `_` arm.
     WhenTotalTwice
+    /// A `when`'s arm written after its `_` arm.
+    WhenTotalEarly
     /// `..` over a value that may be null.
     SpreadAbsent(found: string)
     /// A list's or a map's literal spreading a value that may be absent: which literal, and the value's type.
@@ -291,8 +294,11 @@ fn misses_in(engine: QueryEngine, t: TypedNodes) -> List<MissAt> {
         )
             .concat(annotation_calls(t.store)),
     )
-    let values = statement_values(t.store)
-    [kept_miss(m) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null && t.store.minted_for(e) == null && !inferred.has("${i}") for m in miss_at(engine, t, e, values)]
+    let scope = MissScope {
+        values: statement_values(t.store),
+        generic: [p! for s in t.store.stmt_ids() for p in [t.store.fn_parts(s)] if p != null && !p!.tparams.is_empty()],
+    }
+    [kept_miss(m) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null && t.store.minted_for(e) == null && !inferred.has("${i}") for m in miss_at(engine, t, e, scope)]
         .concat(
             [kept_miss(m) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null && t.store.minted_for(e) != null for m in literal_miss(engine, t, e)],
         )
@@ -344,11 +350,9 @@ fn kept_miss(m: MissPlaced) -> MissAt { MissAt { at: kept_at(m.at), miss: m.miss
 /// What the node `e` asks of a value its type doesn't have, where it's said; nothing for a node that
 /// asks for nothing, asks of a value whose type isn't known, or that typing typed: a member typing
 /// answered is had.
-fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, values: Map<string, bool>) -> List<
-    MissPlaced,
-> {
+fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> List<MissPlaced> {
     let landed = generic_method_miss(engine, t, e)
-        .concat(shape_misses(engine, t, e, values))
+        .concat(shape_misses(engine, t, e, scope))
         .concat(hash_miss(engine, t, e))
         .concat(call_spread_misses(engine, t, e))
         .concat(variant_read_miss(engine, t, e))
@@ -396,13 +400,15 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, values: Map<string, bo
     }
 }
 
+/// What every miss of a store reads of it whole: the values its statements bind, each by its node,
+/// and the fns it declares with type parameters, in the order it holds them.
+type MissScope = { values: Map<string, bool>, generic: List<FnParts> }
+
 /// What the node `e` asks of the shape of a value whether or not typing typed it: a `with` over no
 /// record, a literal's spread of no record, a `when`'s `_` arm, a type a binding holds as its value.
-fn shape_misses(engine: QueryEngine, t: TypedNodes, e: ExprId, values: Map<string, bool>) -> List<
-    MissPlaced,
-> {
+fn shape_misses(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> List<MissPlaced> {
     match t.store.expr(e) {
-        .With(subject, _, _) -> with_miss((t.type_at)(subject.index), t.store.expr_span(e)),
+        .With(subject, _, _) -> with_miss(engine, (t.type_at)(subject.index), t.store.expr_span(e)),
         .StructLit(name, fields, values) -> spread_misses(
             engine,
             t,
@@ -410,16 +416,16 @@ fn shape_misses(engine: QueryEngine, t: TypedNodes, e: ExprId, values: Map<strin
             [values[i] for i, f in fields if f.of == spread_entry && i < values.length],
             t.store.expr_span(e),
         ),
-        .When(_, _, defaults) -> when_miss(t.store, e, defaults),
+        .When(conds, values, defaults) -> when_miss(t.store, e, conds, values, defaults),
         .ListLit(elems) -> flatten(
             [literal_spread_miss(t, "list", v, v) for v in elems if t.store.spread_operand(v) != null],
         ),
         .MapLit(entries) -> flatten([literal_spread_miss(t, "map", v, v) for v in map_spreads(entries)]),
         .ChainApply(subject, _) -> chain_call_miss(t, e, subject).concat(chain_applied_miss(engine, t, e, subject)),
         .ChainCall(subject, _, _) -> chain_call_miss(t, e, subject),
-        .Ident(name) -> param_value_miss(t.store, e, name.of)
+        .Ident(name) -> param_value_miss(t.store, e, name.of, scope.generic)
             .concat(
-                if values.has("${e.index}") && read_as_type(t, e) { type_value_miss(engine, t, name.of, t.store.expr_span(e)) } else { [] },
+                if scope.values.has("${e.index}") && read_as_type(t, e) { type_value_miss(engine, t, name.of, t.store.expr_span(e)) } else { [] },
             ),
         rest -> [],
     }
@@ -475,10 +481,13 @@ fn statement_values(store: SyntaxArena) -> Map<string, bool> {
     )
 }
 
-/// A read at `e` of `name`, a type parameter of the fn whose body holds it that no seat of the fn
-/// wears as a value's name, anywhere but as the subject a static is called on.
-fn param_value_miss(store: SyntaxArena, e: ExprId, name: string) -> List<MissPlaced> {
-    let holders = [p! for s in store.stmt_ids() for p in [store.fn_parts(s)] if p != null && p!.tparams.any(it.name.of == name) && !p!.params.any(it.name.of == name)]
+/// A read at `e` of `name`, a type parameter of the fn whose body holds it — among `generic`, the
+/// store's fns that take type parameters — that no seat of the fn wears as a value's name, anywhere
+/// but as the subject a static is called on.
+fn param_value_miss(store: SyntaxArena, e: ExprId, name: string, generic: List<FnParts>) -> List<
+    MissPlaced,
+> {
+    let holders = [p for p in generic if p.tparams.any(it.name.of == name) && !p.params.any(it.name.of == name)]
     if holders.is_empty() || !holders.any((p) -> store.every_expr(p.body).contains(e)) { return [] }
     if (0..store.expr_count())
         .any((i: int) -> store.method_parts(ExprId { index: i })?.subject == e) { return [] }
@@ -595,11 +604,13 @@ fn variant_miss(engine: QueryEngine, t: TypedNodes, subject: ExprId, name: strin
     [MissPlaced { at: at, miss: Miss.Variant(d.name, name, [v.name for v in sig.variants]) }]
 }
 
-/// `with` over a value of `subject`, known whole and no record.
-fn with_miss(subject: SignedType?, at: Span?) -> List<MissPlaced> {
+/// `with` over a value of `subject`, known whole and no record: a type the language owns, an enum,
+/// a name over another shape.
+fn with_miss(engine: QueryEngine, subject: SignedType?, at: Span?) -> List<MissPlaced> {
     let s? = subject else { return [] }
     if !plain_known(s) || s.described() != null { return [] }
-    if s.head is .Declared { return [] }
+    let home = declared_at(s)
+    if home != null && record_signature(engine, home!.file, home!.name) != null { return [] }
     [MissPlaced { at: at, miss: Miss.WithUnstructured(s.spelled()) }]
 }
 
@@ -621,11 +632,19 @@ fn chained_member_miss(engine: QueryEngine, t: TypedNodes, subject: ExprId, name
         .concat(own_prop_miss(engine, s.unwrapped(), name, at, t.reader))
 }
 
-/// A `when` whose `_` arms are none, or more than one: said at the `when`, or at the second.
-fn when_miss(store: SyntaxArena, e: ExprId, defaults: List<ExprId>) -> List<MissPlaced> {
+/// A `when` whose `_` arms are none, more than one, or one with an arm after it: said at the
+/// `when`, at the second, or at the arm that waits.
+fn when_miss(
+    store: SyntaxArena,
+    e: ExprId,
+    conds: List<ExprId>,
+    values: List<ExprId>,
+    defaults: List<ExprId>,
+) -> List<MissPlaced> {
     if defaults.is_empty() { return [MissPlaced { at: store.expr_span(e), miss: Miss.WhenUntotal }] }
     if defaults.length > 1 { return [MissPlaced { at: store.expr_span(defaults[1]), miss: Miss.WhenTotalTwice }] }
-    []
+    let after? = arm_waiting(store, defaults[0], conds, values) else { return [] }
+    [MissPlaced { at: store.expr_span(after), miss: Miss.WhenTotalEarly }]
 }
 
 /// Each spread `spreads` of the literal of the record `name` that spreads no record: a value that may
@@ -1774,6 +1793,20 @@ export law when_total {
     voice: untotal_words
     witness: "fn g() -> int {\n    when { 1 < 2 -> 1 }\n}\n"
 }
+
+/// a `when`'s `_` arm is its last
+export law when_total_last {
+    kind: "type.when_arms"
+    reads: whens_total_early
+    voice: early_words
+    witness: "fn g() -> int {\n    when {\n        _ -> 2\n        1 < 2 -> 1\n    }\n}\n"
+}
+
+fn whens_total_early(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    misses_of(engine, file, at, (m: Miss) -> match m { .WhenTotalEarly -> ["_"], rest -> [] })
+}
+
+fn early_words(_a: List<string>) -> Voice { when_total_early() }
 
 /// a `when` has one `_` arm
 export law when_total_once {

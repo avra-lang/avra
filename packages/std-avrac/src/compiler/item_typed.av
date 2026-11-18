@@ -45,6 +45,7 @@ use core.{
 use @std.meta.{derive}
 use @std.program.sorted.{sorted_by}
 use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
@@ -130,7 +131,50 @@ export fn typed_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -
 
 /// `signed`'s body in `file`, typed under its signature, with the bounds its type parameters carry.
 fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> TypedBody {
-    kept_body(body_checked(engine, file, signed, false)) with { bounds: signed.signature.bounds }
+    let cx = body_checked(engine, file, signed, false)
+    seats_left()
+        .set(
+            [
+                SeatsLeft {
+                    file: spelled_file(file),
+                    stmt: signed.stmt.index,
+                    body: signed.body.index,
+                    under: signed_under(signed),
+                    seats: cx.seats.get(),
+                },
+            ],
+        )
+    kept_body(cx) with { bounds: signed.signature.bounds }
+}
+
+/// THE SEATS A SURFACE CHECK LEFT: what each node's seat wanted, by the node's index, of the body
+/// typed last in this process, and what it was typed under. A typed answer keeps no seats — they
+/// would double it — so a lowering that asks for a body's typing and finds it made here takes
+/// them from where the check left them, and one that finds the answer kept checks again.
+type SeatsLeft = { file: string, stmt: int, body: int, under: string, seats: Map<string, SignedType> }
+
+/// The seats of the surface check made last in this process, until they're taken.
+once fn seats_left() -> Cell<List<SeatsLeft>> {
+    let left: Cell<List<SeatsLeft>> = Cell.new([])
+    left
+}
+
+/// What a body's check stands under beside its nodes, as one text: its signature, its receiver, and
+/// whether a want, a seat or a const of its own steers it.
+fn signed_under(signed: SignedBody) -> string {
+    "${hash_text(content_hash(signed.signature.saved_bytes()))} ${signed.receiver?.spelled() ?? ""} ${signed.fnless} ${signed.want == null} ${signed.seat == null} ${signed.consts.length}"
+}
+
+/// The seats the surface check of `signed`'s body in `file` left, where it was the check made last
+/// in this process and stood under what `signed` stands under now; taken, so held no longer.
+fn seats_taken(file: SourceFileAddress, signed: SignedBody) -> Map<string, SignedType>? {
+    let left? = seats_left().get().first() else { return null }
+    seats_left().set([])
+    if left.file != spelled_file(file) ||
+        left.stmt != signed.stmt.index ||
+        left.body != signed.body.index ||
+        left.under != signed_under(signed) { return null }
+    left.seats
 }
 
 /// A fn's body beside the signature it is typed under, the item that holds it, the statement that
@@ -154,6 +198,8 @@ type SignedBody = {
     seat: Seating? = null,
     /// Its surface typing, where a saved answer already holds it.
     typed: TypedBody? = null,
+    /// The seats its surface check left, where that check was made in this process.
+    seats: Map<string, SignedType>? = null,
     /// The consts a body declared before it that it reads, where it is one such const's value, each
     /// as it settled.
     consts: List<ConstSeed> = [],

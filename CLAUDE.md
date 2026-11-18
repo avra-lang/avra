@@ -1668,7 +1668,6 @@ seat (F2000): the compiler's help is the note.
 Syntax the grammar lacks:
 - An import is spelled with DOTS: `use @std.io.{read_text}`; `use @std/io.{…}` is "expected `.`" at the slash (prose says `@std/io`, the `use` line never does).
 - Or-patterns spell `or`, in patterns only; `|` is "expected `}` to close the `match`", and `or`/`and` as booleans are "expected BREAK" — the operators are `&&`, `||`, `!`.
-- `[i for (i, m) in xs.enumerate()]` — "`enumerate` pairs only under a paired `for` head"; write `[f(i, x) for i, x in xs]`.
 - `int??` has no spelling ("expected `)`"/"expected `=`" at the first `?`) though a generic reaches `string??`.
 - A bare `table { … }` reads as a struct literal ("no `type table` is declared"); write `table<Row> { id | name … }` with a pipe header.
 - A record literal as a component instance's head stands in parentheses (`tally (Span { n: 2 }) { extra: 3 }`); bare, the brace opens the block — pinned by features/components/tests/components_head_test.av, not by this section.
@@ -1695,7 +1694,6 @@ Syntax the grammar lacks:
 - A match arm whose body is a bare statement (`.Bad(t) -> fail E.Bad(t),`) fails the whole file ("expected `}` to close the `match`"); brace it.
 - `get(i)?.name` and `shell(line)?.run()` lex as `?.` ("`?.` reaches into a nullable, this is `Result<…>`"); write `(get(i)?).name`.
 - `export let` is "`export` marks a fn, type, enum or trait — not this statement"; `export const` lands.
-- `Result<void, E>` is "a `Result` side cannot hold `void` yet"; a writing verb answers what it wrote.
 - A `mut` seat cannot be assigned whole, by design: "a seat is written along a path, never replaced whole" — use a `Cell<T>`, a path write, or answer the new value.
 - Two top-level consts of one name are "defined more than once"; a `let` of that name shadows from its line on, and a fn body reads the const.
 - `fail` inside a `catch` arm's block is "a `catch` arm answers the ok side"; write the statement `match`.
@@ -1707,8 +1705,6 @@ Syntax the grammar lacks:
 
 Wants the typer does not carry yet:
 - A declaring annotation's argument is a literal or a const naming one: `@traced("a" + "b")` is "`traced` generates declarations, so its arguments come from the source alone" — not pinned (needs a package with `@std/meta`).
-- A generic struct literal's field seat unifies instead of planting a want: an unpinned `mk()` there is "`N` is not pinned by the arguments".
-- A lambda in a field or argument seat does not read the seat's answer ("`.Ok` needs a known enum"); a typed `let` does, and a named fn works everywhere.
 - `Traced<E>`'s `cause`/`context`/`trace` stay inherent methods permanently (a trait member's answer is fixed by its signature); the real want is a bound on a type's own parameter.
 - A bound lands on a free fn's and a component's parameters only: `type T<K: Tr, V>` and `impl T<K: Tr, V>` are "expected `=`"/"expected `{`", a generic method is "generic methods are recorded, not landed"; a generic container keyed by a typed id keys by the slot (core's `SideTable`).
 - Variant arms or `is` over a nullable enum are "`match` chooses over an enum, found `K?`" / "`is` asks an enum for its variant, found `K?`"; unwrap first.
@@ -1717,7 +1713,7 @@ Wants the typer does not carry yet:
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
 - `==`, `contains`/`index_of` and a literal pattern compare a scalar, text, a tagged enum, or a one-field record; two fields is "`==` compares by value — …", and an enum carrying a payload is refused too (help: match on it).
 - A named type is opaque at a seat and transparent at a read: a `Rows` seat refuses a computed `List<int>` ("wants `Rows`, found `List<int>`") and takes a literal.
-- `r catch null` answers the ok side, so `let x? = r catch null else { … }` is "a `catch` arm answers the ok side: `D`, this is `null`" (and "`x?` asks a nullable"); a `Result` read as absence is a `match` (`.Ok(d) -> d, .Err(_) -> null`).
+- `r catch null` answers the ok side, so `let x? = r catch null else { … }` is "a `catch` arm answers the ok side: `D`, this is `null`"; a `Result` read as absence is a `match` (`.Ok(d) -> d, .Err(_) -> null`).
 
 Methods the runtime lacks:
 - `List.reverse()` / `sort()` are "calls a method, and `List<int>` has none"; core's `reversed` is the helper.

@@ -309,28 +309,43 @@ fn wrong_answer(mut cx: TypeCx, r: ExprId, carried: TypeId) -> TypeId {
     let n = cx.name_at(r)
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.coalesce",
                 cx.loc_of(r),
-                "`??` answers with a `${cx.view.types.name_of(carried)}`, this is `${n}`",
-                this_is(n),
-                "a chain groups to the RIGHT — `a ?? (b ?? c)`",
+                coalesce_answers(cx.view.types.name_of(carried), n),
             ),
         )
+}
+
+/// A `??` whose left side carries `carried` and whose right side is `found`, another type.
+export fn coalesce_answers(carried: string, found: string) -> Voice {
+    Voice {
+        message: "`??` answers with a `${carried}`, this is `${found}`",
+        label: this_is(found),
+        help: "a chain groups to the RIGHT — `a ?? (b ?? c)`",
+    }
 }
 
 fn arms_disagree(mut cx: TypeCx, present: ExprId, absent: ExprId) -> TypeId {
     let n = cx.name_at(absent)
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.match_opt",
                 cx.loc_of(absent),
-                "the arms disagree: `${cx.name_at(present)}` vs `${n}`",
-                this_is(n),
-                "make the arms answer one type — or declare the seat's type (`let x: T = match …`)",
+                presence_arms_apart(cx.name_at(present), n),
             ),
         )
+}
+
+/// A presence match whose present arm answers `present` and whose absent arm answers `absent`,
+/// another type.
+export fn presence_arms_apart(present: string, absent: string) -> Voice {
+    Voice {
+        message: "the arms disagree: `${present}` vs `${absent}`",
+        label: this_is(absent),
+        help: "make the arms answer one type — or declare the seat's type (`let x: T = match …`)",
+    }
 }
 
 fn else_falls_through(mut cx: TypeCx, s: StmtId, bind: string) { cx.emit(said_as("type.let_else", cx.stmt_loc(s), else_stays(bind))) }

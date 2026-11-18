@@ -1,6 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
+use @std.avrac.testing.held.{Held, held_at}
 use @std.avrac.testing.old_path.{test_workspace, write_checked_in}
 use compiler.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
@@ -151,22 +152,63 @@ fn depending_on(rows: string) -> Workspace {
     )
 }
 
-/// The package where `solo` fails to parse (a continuation led by its
-/// operator) and `main` imports from it.
-fn with_unread_solo(main: string) -> Workspace {
+/// The manifest the small package stands under: a package has one.
+const WS_MANIFEST: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// `fs` as a held package at `/w`, under its manifest where it writes none.
+fn held_files(fs: Map<string, string>, std: string = "/std") -> Held {
+    mut all = fs
+    if !all.has("/w/avra.toml") { all.set("/w/avra.toml", WS_MANIFEST) }
+    held_at(all, "/w", std)
+}
+
+/// The small package, held.
+fn held_ws() -> Held { held_files(ws_files()) }
+
+/// The small package with its root file replaced, held.
+fn held_main(text: string) -> Held {
+    mut fs = ws_files()
+    fs.set("/w/src/main.av", text)
+    held_files(fs)
+}
+
+/// The package where `solo` fails to parse and `main` imports from it, held.
+fn held_unread_solo(main: string) -> Held {
     mut fs = ws_files()
     fs.set("/w/src/main.av", main)
     fs.set("/w/src/solo.av", "export fn only(a: bool, b: bool) -> bool {\n    a\n        && b\n}\n")
-    test_workspace(memory_host(fs, ws_names()), "/w")
+    held_files(fs)
+}
+
+/// The program's root file under a toolchain whose std root is `/tc`, held.
+fn held_toolchain(main: string) -> Held {
+    mut fs = toolchain_files()
+    fs.set("/w/src/main.av", main)
+    held_files(fs, "/tc")
+}
+
+/// The same program with a declared row for `@std/text` pointing at a copy under the app, held.
+fn held_pinned(main: string) -> Held {
+    mut fs = toolchain_files()
+    fs
+        .set(
+            "/w/avra.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n",
+        )
+    fs.set("/w/vendor/text/avra.toml", "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n")
+    fs
+        .set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s + \"?\"\n}\n")
+    fs.set("/w/src/main.av", main)
+    held_files(fs, "/tc")
 }
 
 fn main_report(text: string) -> string {
-    with_main(text).analyze_file("/w/src/main.av").report()
+    held_main(text).judged_at("/w/src/main.av").report()
 }
 
 /// ONE refusal for the root file, saying this.
 fn main_refuses(text: string, saying: string) -> bool {
-    let a = with_main(text).analyze_file("/w/src/main.av")
+    let a = held_main(text).judged_at("/w/src/main.av")
     a.diagnostics.length == 1 && a.report().contains(saying)
 }
 
@@ -200,7 +242,7 @@ spec "compiler/workspace" {
             ws.visible(ws.file_id("/w/src/main.av")).fn_decl("hidden") == null
         }
         then "the whole file analyzes with nothing unresolved" {
-            ws_of().analyze_file("/w/src/main.av").report() == ""
+            held_ws().judged_at("/w/src/main.av").report() == ""
         }
     }
     given "typed across ws_files — the table is one" {
@@ -227,18 +269,18 @@ spec "compiler/workspace" {
             ) == ""
         }
         then "a foreign generic fn types, and its specialization lowers in its home" {
-            ran_as(with_main("use util.{ident}\nident(3)\n").program("/w/src/main.av").run(), "3")
+            ran_as(held_main("use util.{ident}\nident(3)\n").judged_at("/w/src/main.av").run(), "3")
         }
         then "a nested module's fn lowers under its qualified symbol" {
-            with_main("use util.{twice}\ntwice(2)\n")
-                .program("/w/src/main.av")
+            held_main("use util.{twice}\ntwice(2)\n")
+                .judged_at("/w/src/main.av")
                 .lowered()
                 .fns
                 .any(it.name == "util.twice")
         }
         then "the program lowers what the entry reaches — an unreached body stays out" {
-            with_main("use util.{twice}\ntwice(2)\n")
-                .program("/w/src/main.av")
+            held_main("use util.{twice}\ntwice(2)\n")
+                .judged_at("/w/src/main.av")
                 .lowered()
                 .fns
                 .any(it.name == "util.ident") == false
@@ -247,36 +289,36 @@ spec "compiler/workspace" {
     given "the program runs across ws_files — one worklist" {
         then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
             ran_as(
-                with_main(
+                held_main(
                     "use util.{twice, ident}\nuse solo.{only}\ntwice(20) + ident(1) + only(1) + helper(1)\n",
                 )
-                    .program("/w/src/main.av")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "43",
             )
         }
         then "a foreign fn worn as a value calls through its wrapper" {
             ran_as(
-                with_main("use util.{twice}\nlet f = twice\nf(21)\n")
-                    .program("/w/src/main.av")
+                held_main("use util.{twice}\nlet f = twice\nf(21)\n")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "42",
             )
         }
         then "a foreign enum matches by its variants" {
             ran_as(
-                with_main(
+                held_main(
                     "use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n",
                 )
-                    .program("/w/src/main.av")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "7",
             )
         }
         then "a foreign generic record instantiates and reads" {
             ran_as(
-                with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n")
-                    .program("/w/src/main.av")
+                held_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "9",
             )
@@ -303,8 +345,8 @@ spec "compiler/workspace" {
                     .contains("its exports: twice, ident, Pair, Box, Shape")
         }
         then "an item its module's unread file would have declared — the parse error named, the reads silent" {
-            let a = with_unread_solo("use solo.{only}\nonly(true, true)\n")
-                .analyze_file("/w/src/main.av")
+            let a = held_unread_solo("use solo.{only}\nonly(true, true)\n")
+                .judged_at("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("`solo` does not export `only`") &&
                 a
@@ -317,10 +359,10 @@ spec "compiler/workspace" {
                 !a.report().contains("no `fn only`")
         }
         then "a failed use's names answer to the use alone — a type read and a call both stay silent" {
-            let a = with_unread_solo(
+            let a = held_unread_solo(
                 "use solo.{only, Wide}\nlet w = Wide { n: 1 }\nonly(true, true)\n",
             )
-                .analyze_file("/w/src/main.av")
+                .judged_at("/w/src/main.av")
             a.diagnostics.length == 2 && !a.report().contains("no `type Wide`")
         }
         then "a name a sibling file would have declared — the sibling's parse error named, no remedy of its own" {
@@ -342,35 +384,35 @@ spec "compiler/workspace" {
                 !a.report().contains("did you mean")
         }
         then "an aliased item of an unread module — the alias's reads are silent too" {
-            let a = with_unread_solo("use solo.{only as one}\none(true, true)\n")
-                .analyze_file("/w/src/main.av")
+            let a = held_unread_solo("use solo.{only as one}\none(true, true)\n")
+                .judged_at("/w/src/main.av")
             a.diagnostics.length == 1 && a.report().contains("`solo` does not export `only`")
         }
         then "a local declaration of a refused name still answers its reads" {
-            let a = with_unread_solo(
+            let a = held_unread_solo(
                 "use solo.{only}\nfn only(a: bool, b: bool) -> bool { a }\nonly(true, true)\n",
             )
-                .analyze_file("/w/src/main.av")
+                .judged_at("/w/src/main.av")
             a.diagnostics.length == 1 && !a.report().contains("no `fn only`")
         }
         then "an item the unread module never named is refused with the parse error beside it" {
-            let a = with_unread_solo("use solo.{nope}\n1\n").analyze_file("/w/src/main.av")
+            let a = held_unread_solo("use solo.{nope}\n1\n").judged_at("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("fix the parse error first") &&
                 !a.report().contains("its exports: ")
         }
         then "a refused item named as an impl's trait, a `dyn` and a bound stays silent beside its use" {
-            let a = with_main(
+            let a = held_main(
                 "use solo.{Gone}\ntype S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
             )
-                .analyze_file("/w/src/main.av")
+                .judged_at("/w/src/main.av")
             a.diagnostics.length == 1 && a.report().contains("`solo` does not export `Gone`")
         }
         then "an impl's trait, a `dyn` and a bound refused in a module with an unread file point at it" {
-            let a = with_unread_solo(
+            let a = held_unread_solo(
                 "type S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
             )
-                .analyze_file("/w/src/main.av")
+                .judged_at("/w/src/main.av")
             a.diagnostics.length == 3 && a.report().split("fix the parse error first").length == 4
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
@@ -515,66 +557,42 @@ fn toolchain_names() -> List<string> {
     ]
 }
 
-/// The program's root file, under a host whose std root is `/tc`.
-fn toolchain_app(main: string) -> Workspace {
-    mut fs = toolchain_files()
-    fs.set("/w/src/main.av", main)
-    test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w")
+fn toolchain_report(ws: Held) -> string {
+    ws.judged_at("/w/src/main.av").report()
 }
 
-/// The same program with a manifest of its own: a declared row for
-/// `@std/text` pointing at a copy under the app.
-fn pinned_app(main: string) -> Workspace {
-    mut fs = toolchain_files()
-    fs
-        .set(
-            "/w/avra.toml",
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n",
-        )
-    fs.set("/w/vendor/text/avra.toml", "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n")
-    fs
-        .set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s + \"?\"\n}\n")
-    fs.set("/w/src/main.av", main)
-    let names = toolchain_names().concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
-    test_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w")
-}
-
-fn toolchain_report(ws: Workspace) -> string {
-    ws.analyze_file("/w/src/main.av").report()
-}
-
-fn toolchain_clean(ws: Workspace) -> bool {
-    ws.analyze_file("/w/src/main.av").diagnostics.is_empty()
+fn toolchain_clean(ws: Held) -> bool {
+    ws.judged_at("/w/src/main.av").diagnostics.is_empty()
 }
 
 spec "the toolchain's std packages" {
     given "a program that declares no dependency" {
         then "a std package resolves from the std root" {
-            toolchain_clean(toolchain_app("use @std.text.{shout}\nshout(\"hi\")\n"))
+            toolchain_clean(held_toolchain("use @std.text.{shout}\nshout(\"hi\")\n"))
         }
         then "a std package's own dependencies come with it" {
-            toolchain_clean(toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n"))
+            toolchain_clean(held_toolchain("use @std.io.{shouted}\nshouted(\"hi\")\n"))
         }
         then "the program runs through the toolchain's code" {
             ran_as(
-                toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n")
-                    .program("/w/src/main.av")
+                held_toolchain("use @std.io.{shouted}\nshouted(\"hi\")\n")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "hi!",
             )
         }
         then "a package the toolchain does not carry is still not a dependency" {
-            let a = toolchain_app("use @std.net.{fetch}\n1\n").analyze_file("/w/src/main.av")
+            let a = held_toolchain("use @std.net.{fetch}\n1\n").judged_at("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("`@std/net` is not a dependency of this package")
         }
         then "a key outside @std is never the toolchain's" {
-            let a = toolchain_app("use @acme.text.{shout}\n1\n").analyze_file("/w/src/main.av")
+            let a = held_toolchain("use @acme.text.{shout}\n1\n").judged_at("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("`@acme/text` is not a dependency of this package")
         }
         then "a host with no std root refuses as before" {
-            let a = with_main("use @std.text.{shout}\n1\n").analyze_file("/w/src/main.av")
+            let a = held_main("use @std.text.{shout}\n1\n").judged_at("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("`@std/text` is not a dependency of this package")
         }
@@ -582,14 +600,16 @@ spec "the toolchain's std packages" {
     given "a manifest row for a std package" {
         then "the declared copy is the one read" {
             ran_as(
-                pinned_app("use @std.text.{shout}\nshout(\"hi\")\n").program("/w/src/main.av").run(),
+                held_pinned("use @std.text.{shout}\nshout(\"hi\")\n")
+                    .judged_at("/w/src/main.av")
+                    .run(),
                 "hi?",
             )
         }
         then "the pin holds for every package in the graph" {
             ran_as(
-                pinned_app("use @std.io.{shouted}\nshouted(\"hi\")\n")
-                    .program("/w/src/main.av")
+                held_pinned("use @std.io.{shouted}\nshouted(\"hi\")\n")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "hi?",
             )
@@ -617,7 +637,7 @@ spec "the toolchain's std packages" {
             let names = toolchain_names()
                 .concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
             package_voice(
-                test_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w"),
+                held_at(only_listed(fs, names), "/w", "/tc"),
                 "`@std/text` is claimed by two directories",
             )
         }
@@ -656,7 +676,7 @@ spec "one directory, one spelling" {
 spec "the prelude" {
     given "a file that imports nothing" {
         then "a prelude export is in scope" {
-            ran_as(toolchain_app("greet(\"x\")\n").program("/w/src/main.av").run(), "hi x")
+            ran_as(held_toolchain("greet(\"x\")\n").judged_at("/w/src/main.av").run(), "hi x")
         }
         then "the toolchain's own packages see it too" {
             mut fs = toolchain_files()
@@ -674,17 +694,17 @@ spec "the prelude" {
             )
         }
         then "a host with no std root has no prelude" {
-            let a = with_main("greet(\"x\")\n").analyze_file("/w/src/main.av")
+            let a = held_main("greet(\"x\")\n").judged_at("/w/src/main.av")
             a.diagnostics.length == 1 && a.report().contains("no `fn greet` is defined")
         }
     }
     given "a name the file holds itself" {
         then "the file's own declaration wins silently" {
             ran_as(
-                toolchain_app(
+                held_toolchain(
                     "fn greet(s: string) -> string {\n    \"mine \" + s\n}\ngreet(\"x\")\n",
                 )
-                    .program("/w/src/main.av")
+                    .judged_at("/w/src/main.av")
                     .run(),
                 "mine x",
             )
@@ -724,7 +744,7 @@ spec "the prelude" {
                 )
             fs.set("/w/src/main.av", "greet(\"x\")\n")
             package_voice(
-                test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w"),
+                held_at(only_listed(fs, toolchain_names()), "/w", "/tc"),
                 "`@std/prelude` depends on nothing",
             )
         }

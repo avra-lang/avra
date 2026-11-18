@@ -101,7 +101,7 @@ fn fills_by_node(c: FillClass) -> bool {
 
 /// Whether a rewrite's hole may hold this fill: a node of the tree, a run of them, or one name. A
 /// number or a template would read as a node's index, and a run of names as a run of nodes.
-fn rewrite_takes(c: FillClass) -> bool {
+export fn rewrite_takes(c: FillClass) -> bool {
     match c {
         .Id or .PatId or .Node or .Nodes or .Text or .Named -> true,
         .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Held or .Pattern -> false,
@@ -157,24 +157,26 @@ export fn metaless(answer: string) -> Voice {
     }
 }
 
-fn rewrite_hole(at: Loc?, found: string) -> Diag {
-    refusal(
-        "type.quote_hole",
-        at,
-        "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `${found}`",
-        "this hole",
-        "a hole in a rewrite names the node it stands for — `\${self.value}`, an `ExprId` — or the one name it writes",
-    )
+fn rewrite_hole(at: Loc?, found: string) -> Diag { said_as("type.quote_hole", at, hole_unnoded(found)) }
+
+/// A rewrite's hole holding `found`, no node of the tree it rewrites nor one name.
+export fn hole_unnoded(found: string) -> Voice {
+    Voice {
+        message: "a rewrite's holes are nodes of the tree it rewrites or one name — an `ExprId`, a `PatId`, a `TypedCode`, a `List<TypedCode>` or a `string` — and this one is `${found}`",
+        label: "this hole",
+        help: "a hole in a rewrite names the node it stands for — `\${self.value}`, an `ExprId` — or the one name it writes",
+    }
 }
 
-fn ambiguous_text(at: Loc?) -> Diag {
-    refusal(
-        "type.quote_hole",
-        at,
-        "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name",
-        "this hole",
-        "say which: `\${literal(s)}` or `\${name(s)}`",
-    )
+fn ambiguous_text(at: Loc?) -> Diag { said_as("type.quote_hole", at, hole_ambiguous()) }
+
+/// A string hole where an expression stands, which reads as a literal or a name.
+export fn hole_ambiguous() -> Voice {
+    Voice {
+        message: "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name",
+        label: "this hole",
+        help: "say which: `\${literal(s)}` or `\${name(s)}`",
+    }
 }
 
 fn hole_refused(at: Loc?, kind: HoleKind, n: string) -> Diag {
@@ -187,24 +189,26 @@ fn hole_refused(at: Loc?, kind: HoleKind, n: string) -> Diag {
     )
 }
 
-fn unfillable(at: Loc?, n: string) -> Diag {
-    refusal(
-        "type.quote_hole",
-        at,
-        "a hole takes a template, a number, a name, a list of names or of templates, found `${n}`",
-        this_is(n),
-        "splice a `quote { … }` of it, or its name",
-    )
+fn unfillable(at: Loc?, n: string) -> Diag { said_as("type.quote_hole", at, hole_unfillable(n)) }
+
+/// A hole of a body of holes alone holding `n`, which fills nothing.
+export fn hole_unfillable(n: string) -> Voice {
+    Voice {
+        message: "a hole takes a template, a number, a name, a list of names or of templates, found `${n}`",
+        label: this_is(n),
+        help: "splice a `quote { … }` of it, or its name",
+    }
 }
 
-fn mixed_holes(at: Loc?) -> Diag {
-    refusal(
-        "type.quote_hole",
-        at,
-        "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree",
-        "the quote",
-        "give every hole the first's kind, or write the body around them",
-    )
+fn mixed_holes(at: Loc?) -> Diag { said_as("type.quote_hole", at, holes_mixed()) }
+
+/// A body of holes alone whose fills disagree in kind.
+export fn holes_mixed() -> Voice {
+    Voice {
+        message: "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree",
+        label: "the quote",
+        help: "give every hole the first's kind, or write the body around them",
+    }
 }
 
 // ── the quote AS A PATTERN — a DIFFERENT law: a hole BINDS instead

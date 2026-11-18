@@ -1,7 +1,7 @@
 //! THE LAWS, gathered: every `law` the compiler declares, and what they find in an item, saved per
 //! item and cut off early; a finding is worded by its law's voice only as it's said.
 use core.{At, NodeKind, Span, flatten, some_list}
-use compiler.laws.{Aside, Found, law}
+use compiler.laws.{Aside, Found, Reach, law}
 use @std.errors.{Confidence, Edit, Frame, Suggestion}
 use diagnostics.{Diag, Guess, Severity, Voice, guess_fix, loc_at, said_as}
 use @std.meta.{derive}
@@ -19,6 +19,7 @@ export type LawEntry = {
     reads: fn(QueryEngine, SourceFileAddress, int) -> List<Found>,
     on: List<NodeKind>,
     judge: fn(ItemView, At) -> List<Found>,
+    reach: Reach,
     quotes: bool,
     judged_if: fn(ItemView) -> bool,
     voice: fn(List<string>) -> Voice,
@@ -29,7 +30,7 @@ export type LawEntry = {
 }
 
 /// EVERY LAW, by name — gathered, never listed by hand.
-export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, on: it.on, judge: it.judge, quotes: it.quotes, judged_if: it.judged_if, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
+export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, on: it.on, judge: it.judge, reach: it.reach, quotes: it.quotes, judged_if: it.judged_if, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
 
 /// Every law, gathered once a process.
 once fn held_laws() -> List<LawEntry> { laws }
@@ -106,7 +107,7 @@ fn law_found(engine: QueryEngine, file: SourceFileAddress, at: int, view: ItemVi
     if l.on.is_empty() { return (l.reads)(engine, file, at) }
     let v? = view else { return [] }
     if !(l.judged_if)(v) { return [] }
-    flatten([(l.judge)(v, k) for k in v.nodes_on(l.on, l.quotes)])
+    flatten([(l.judge)(v, k) for k in v.nodes_on(l.on, l.reach, l.quotes)])
 }
 
 /// Whether the finding `a` stands before `b` in its file: a placed one before an unplaced one.

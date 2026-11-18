@@ -36,7 +36,12 @@ impl Checks for Coalesce {
         let held = left?.unwrapped()
         let right? = cx.check(self.right, Expected.Free) ?? cx.heard(self.right, held) else { return null }
         let carried? = held else { return null }
-        carried.joined_with(right) ?? if cx.stands_in(self.right, right, carried) { carried } else { null }
+        let joined? = carried.joined_with(right) else {
+            if !cx.stands_in(self.right, right, carried) { return null }
+            if !right.reaches(carried) && cx.store.expr(self.right).literal_form() { cx.seals_filled(self.right, carried) }
+            return carried
+        }
+        joined
     }
 
     /// Its sides are typed as they stand, so its meaning is typed so too; a value nothing reads stays

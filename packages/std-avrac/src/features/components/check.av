@@ -334,24 +334,27 @@ export fn format_foreign(field: string) -> Voice {
     }
 }
 
-fn undeclared_event(at: Loc?, word: string, event: string, declared: List<string>) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "`${word}` declares no event `${event}` — an instance hears the events its component declares",
-        "heard here",
-        if declared.is_empty() { "`${word}` declares no events" } else { "the events of `${word}` are ${ticked(declared)}" },
-    )
+fn undeclared_event(at: Loc?, word: string, event: string, declared: List<string>) -> Diag { said_as("type.component_event", at, event_undeclared(word, event, declared)) }
+
+/// A handler an instance of `word` writes for `event`, which `word` declares no event of; `declared`
+/// are the ones it does.
+export fn event_undeclared(word: string, event: string, declared: List<string>) -> Voice {
+    Voice {
+        message: "`${word}` declares no event `${event}` — an instance hears the events its component declares",
+        label: "heard here",
+        help: if declared.is_empty() { "`${word}` declares no events" } else { "the events of `${word}` are ${ticked(declared)}" },
+    }
 }
 
-fn copied_event(at: Loc?, word: string, event: string) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "`${word}` copies its `expand` where an instance stands, and copied code hears no event — `${event}` is never heard",
-        "declared here",
-        "declare `${event}` on a component that builds a record, one with no `expand`",
-    )
+fn copied_event(at: Loc?, word: string, event: string) -> Diag { said_as("type.component_event", at, event_copied(word, event)) }
+
+/// The event `event` a template `word` declares, which copied code never hears.
+export fn event_copied(word: string, event: string) -> Voice {
+    Voice {
+        message: "`${word}` copies its `expand` where an instance stands, and copied code hears no event — `${event}` is never heard",
+        label: "declared here",
+        help: "declare `${event}` on a component that builds a record, one with no `expand`",
+    }
 }
 
 fn refused_there(at: Loc?, word: string, event: string, declared: Loc?) -> Diag {
@@ -364,14 +367,15 @@ fn refused_there(at: Loc?, word: string, event: string, declared: Loc?) -> Diag 
     ) with { secondary: [Frame { label: "refused here", loc: declared }] }
 }
 
-fn misheard_event(at: Loc?, event: string, says: List<string>) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "`${event}` says ${if says.is_empty() { "nothing" } else { ticked(says) }} — a handler hears all its event says, or none of it",
-        "heard here",
-        heard_forms(event, says),
-    )
+fn misheard_event(at: Loc?, event: string, says: List<string>) -> Diag { said_as("type.component_event", at, event_misheard(event, says)) }
+
+/// A handler naming some of what `event` says, `says`, and not all of it.
+export fn event_misheard(event: string, says: List<string>) -> Voice {
+    Voice {
+        message: "`${event}` says ${if says.is_empty() { "nothing" } else { ticked(says) }} — a handler hears all its event says, or none of it",
+        label: "heard here",
+        help: heard_forms(event, says),
+    }
 }
 
 /// The ways a handler may hear the event.
@@ -380,54 +384,62 @@ fn heard_forms(event: string, says: List<string>) -> string {
     "`on ${event} { ${says.join(", ")} -> … }`, or `on ${event} { … }`"
 }
 
-fn heard_twice(at: Loc?, word: string, event: string) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "an instance hears an event once, and this `${word}` hears `${event}` again",
-        "heard again here",
-        "keep one handler for `${event}`",
-    )
+fn heard_twice(at: Loc?, word: string, event: string) -> Diag { said_as("type.component_event", at, event_heard_twice(word, event)) }
+
+/// A second handler an instance of `word` writes for `event`.
+export fn event_heard_twice(word: string, event: string) -> Voice {
+    Voice {
+        message: "an instance hears an event once, and this `${word}` hears `${event}` again",
+        label: "heard again here",
+        help: "keep one handler for `${event}`",
+    }
 }
 
 fn unfired_event(at: Loc?, word: string, event: string) -> Diag {
-    warning(
-        "type.component_event",
-        at,
-        "event `${event}` is declared and nothing in `${word}` calls it or hands it on — a handler an instance writes for it can never run",
-        "declared here",
-        "fire it where it is heard (`let fire? = self.${event} else { return }`, then `fire(…)`), pass it to a child's seat (`on ${event}: self.${event}`), or drop the event",
-    )
+    let v = event_unfired(word, event)
+    warning("type.component_event", at, v.message, v.label ?? "", v.help)
 }
 
-fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "an event's seats have distinct names, and `${event}` names `${seat}` twice",
-        "declared here",
-        "rename one — a handler names each seat it is told",
-    )
+/// The event `event` the composition `word` declares and never fires or hands on.
+export fn event_unfired(word: string, event: string) -> Voice {
+    Voice {
+        message: "event `${event}` is declared and nothing in `${word}` calls it or hands it on — a handler an instance writes for it can never run",
+        label: "declared here",
+        help: "fire it where it is heard (`let fire? = self.${event} else { return }`, then `fire(…)`), pass it to a child's seat (`on ${event}: self.${event}`), or drop the event",
+    }
 }
 
-fn default_twice(at: Loc?, owner: string, events: List<string>) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "a component has one default event, and `${owner}` marks ${ticked(events)} `@default`",
-        "declared here",
-        "keep `@default` on the event bare statements should run, and write `on <event> { … }` for the others",
-    )
+fn seat_twice(at: Loc?, event: string, seat: string) -> Diag { said_as("type.component_event", at, event_seat_twice(event, seat)) }
+
+/// The seat `seat` the event `event` names twice.
+export fn event_seat_twice(event: string, seat: string) -> Voice {
+    Voice {
+        message: "an event's seats have distinct names, and `${event}` names `${seat}` twice",
+        label: "declared here",
+        help: "rename one — a handler names each seat it is told",
+    }
 }
 
-fn default_field(at: Loc?, owner: string, field: string) -> Diag {
-    refusal(
-        "type.component_event",
-        at,
-        "only an event can be a component's default, and `${field}` of `${owner}` is a field",
-        "declared here",
-        "mark an `on` event — `@default on press`",
-    )
+fn default_twice(at: Loc?, owner: string, events: List<string>) -> Diag { said_as("type.component_event", at, event_default_twice(owner, events)) }
+
+/// The events `events` the component `owner` marks `@default`, more than one.
+export fn event_default_twice(owner: string, events: List<string>) -> Voice {
+    Voice {
+        message: "a component has one default event, and `${owner}` marks ${ticked(events)} `@default`",
+        label: "declared here",
+        help: "keep `@default` on the event bare statements should run, and write `on <event> { … }` for the others",
+    }
+}
+
+fn default_field(at: Loc?, owner: string, field: string) -> Diag { said_as("type.component_event", at, event_default_field(owner, field)) }
+
+/// The field `field` the component `owner` marks `@default`, which only an event can be.
+export fn event_default_field(owner: string, field: string) -> Voice {
+    Voice {
+        message: "only an event can be a component's default, and `${field}` of `${owner}` is a field",
+        label: "declared here",
+        help: "mark an `on` event — `@default on press`",
+    }
 }
 
 /// Words as a refusal lists them.

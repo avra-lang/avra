@@ -1,0 +1,208 @@
+//! THE EVENTS OF A COMPONENT, as its declaration writes them and as an instance hears them: an
+//! event's seats have distinct names; one event at most is the default, and no field is; a
+//! composition fires or hands on each event it declares; a template, whose `expand` is copied,
+//! declares none; and an instance hears an event its component declares, once, with all it says or
+//! none of it. Read off a written item's syntax, so a build asks it of every file it reaches.
+use core.{
+    At,
+    ComponentParts,
+    ExprId,
+    StmtId,
+    SyntaxArena,
+    Unheard,
+    default_mark,
+    flatten,
+    some_list,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.components.{
+    copies_events,
+    event_copied,
+    event_default_field,
+    event_default_twice,
+    event_heard_twice,
+    event_misheard,
+    event_seat_twice,
+    event_undeclared,
+    event_unfired,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// A component a written item declares: its statement and its parts.
+type Declared = { at: StmtId, parts: ComponentParts }
+
+/// The components `store` declares among `stmts`.
+fn components_in(store: SyntaxArena, stmts: List<StmtId>) -> List<Declared> { [Declared { at: s, parts: c! } for s in stmts for c in [store.component_parts(s)] if c != null] }
+
+/// What separates the names a finding hands its voice as one word.
+const NAMES_APART: string = ","
+
+/// The names `joined` holds.
+fn names_of(joined: string) -> List<string> { [n for n in joined.split(NAMES_APART) if !n.is_empty()] }
+
+/// Every event of a component the written item `at` of `file` declares that names a seat twice,
+/// where the event is declared; handed the event and the seat.
+fn seats_named_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.expr_span(d!), args: [e.name, n!] } for c in components_in(item.store, item.stmts) for e in c.parts.events() for n in [seat_twice_in([s.name.of for s in e.says])] for d in [e.holder.default] if n != null && d != null]
+}
+
+/// The first of `names` written more than once.
+fn seat_twice_in(names: List<string>) -> string? { names.find([m for m in names if m == it].length > 1) }
+
+/// Every component the written item `at` of `file` declares marking more than one event `@default`;
+/// handed the component and the events.
+fn defaults_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(c.at), args: [c.parts.name, defaults.join(NAMES_APART)] } for c in components_in(item.store, item.stmts) for defaults in [default_events(c.parts)] if defaults.length > 1]
+}
+
+/// The events `c` marks `@default`.
+fn default_events(c: ComponentParts) -> List<string> { [e.name for e in c.events() if e.holder.marks.any(it.name == default_mark)] }
+
+/// Every field of a component the written item `at` of `file` declares marked `@default`; handed
+/// the component and the field.
+fn defaults_on_fields(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(c.at), args: [c.parts.name, f.name.of] } for c in components_in(item.store, item.stmts) for f in c.parts.fields() if f.marks.any(it.name == default_mark)]
+}
+
+/// Every event a composition the written item `at` of `file` declares never reads off `self`, to
+/// call it or to hand it on; handed the component and the event. A template is expanded, never run,
+/// and a component with no body is fired from outside it.
+fn events_unfired(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(c.at), args: [c.parts.name, e.name] } for c in components_in(item.store, item.stmts) if composes(item.store, c) for read in [self_read_in(item.store, c.parts)] for e in c.parts.events() if !read.contains(e.name)]
+}
+
+/// Whether the component `c` runs a body of its own: it writes one, and no `expand`.
+fn composes(store: SyntaxArena, c: Declared) -> bool {
+    store.component_body(c.at) != null &&
+        !c.parts.fns.any((m) -> store.fn_parts(m)?.name == "expand")
+}
+
+/// Every name `self` is read at in the body and the methods of `c`.
+fn self_read_in(store: SyntaxArena, c: ComponentParts) -> List<string> {
+    let stmts = [st for m in c.fns for st in store.member_stmts(m)]
+    let methods = [f.body for st in stmts for f in some_list(store.fn_parts(st))]
+    [n for r in store.stmts_exprs(stmts).concat(methods) for k in store.every_expr(r) for n in self_read_at(store, k)]
+}
+
+/// The name `self` is read at in `e` itself: `self.name`, as a property or as a call's receiver.
+fn self_read_at(store: SyntaxArena, e: ExprId) -> List<string> {
+    let p = store.prop_parts(e)
+    if p != null { return if store.is_receiver(p!.subject) { [p!.name] } else { [] } }
+    let m? = store.method_parts(e) else { return [] }
+    if store.is_receiver(m.subject) { [m.name] } else { [] }
+}
+
+/// Every event a template the written item `at` of `file` declares, where the event is declared;
+/// handed the component and the event.
+fn events_copied(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found {
+        at: if e.holder.default == null { item.store.stmt_span(c.at) } else { item.store.expr_span(e.holder.default!) },
+        args: [c.parts.name, e.name],
+    } for c in components_in(item.store, item.stmts) if copies_events(item.store, c.parts) for e in c.parts.events()]
+}
+
+/// Every handler an instance in the written item `at` of `file` writes that its component cannot
+/// hear, at the handler; handed why, the component, the event, and the names the reason holds.
+fn handlers_unheard(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    flatten(
+        [unheard_in(item.store, e) for top in item.stmts for e in exprs_under(item.store, At.Stmt(top))],
+    )
+}
+
+/// Each handler the instance `e` writes that its component cannot hear; none for any other node.
+fn unheard_in(store: SyntaxArena, e: ExprId) -> List<Found> {
+    let inst? = store.instance_parts(e) else { return [] }
+    let body? = inst.body else { return [] }
+    [Found { at: store.stmt_span(s), args: [w[0], inst.word, heard!.event, w[1]] } for s in store.block_stmts(body) ?? [] for handler in [store.setting_parts(s)?.value] if handler != null for heard in [store.on_handler(handler!)] if heard != null for w in unheard_words(heard!.unheard)]
+}
+
+/// How a handler is unheard and the names the reason holds, as a finding hands them on.
+fn unheard_words(why: Unheard?) -> List<List<string>> {
+    let w? = why else { return [] }
+    match w {
+        .Undeclared(declared) -> [["undeclared", declared.join(NAMES_APART)]],
+        .Seats(says) -> [["seats", says.join(NAMES_APART)]],
+        .Twice -> [["twice", ""]],
+    }
+}
+
+/// an event's seats have distinct names
+export law event_seats_distinct {
+    kind: "type.component_event"
+    reads: seats_named_twice
+    voice: seat_twice_words
+    witness: "component pad {\n    on drag(x: int, x: int)\n}\n"
+}
+
+/// a component has one default event
+export law event_default_once {
+    kind: "type.component_event"
+    reads: defaults_twice
+    voice: default_twice_words
+    witness: "component pair {\n    @default on a\n    @default on b\n}\n"
+}
+
+/// only an event is a component's default
+export law event_default_is_an_event {
+    kind: "type.component_event"
+    reads: defaults_on_fields
+    voice: default_field_words
+    witness: "component flat {\n    @default size: int = 1\n}\n"
+}
+
+/// a composition fires or hands on each event it declares
+export law event_fired {
+    kind: "type.component_event"
+    reads: events_unfired
+    voice: unfired_words
+    warns: true
+    witness: "component feed(name: string) {\n    on message(text: string)\n    self.name\n}\n"
+}
+
+/// a template declares no event
+export law event_of_no_template {
+    kind: "type.component_event"
+    reads: events_copied
+    voice: copied_words
+    witness: "use @std.meta.{Code}\n\ncomponent lim {\n    on press\n    fn expand() -> Code { quote { 1 } }\n}\n"
+}
+
+/// an instance hears the events its component declares
+export law event_heard {
+    kind: "type.component_event"
+    reads: handlers_unheard
+    voice: unheard_voice
+    witness: "component panel {\n    on press\n}\n\nfn f() -> int {\n    let a = panel { on hover { 1 } }\n    1\n}\n"
+}
+
+fn seat_twice_words(a: List<string>) -> Voice { event_seat_twice(a[0], a[1]) }
+
+fn default_twice_words(a: List<string>) -> Voice { event_default_twice(a[0], names_of(a[1])) }
+
+fn default_field_words(a: List<string>) -> Voice { event_default_field(a[0], a[1]) }
+
+fn unfired_words(a: List<string>) -> Voice { event_unfired(a[0], a[1]) }
+
+fn copied_words(a: List<string>) -> Voice { event_copied(a[0], a[1]) }
+
+fn unheard_voice(a: List<string>) -> Voice {
+    match a[0] {
+        "undeclared" -> event_undeclared(a[1], a[2], names_of(a[3])),
+        "seats" -> event_misheard(a[2], names_of(a[3])),
+        _ -> event_heard_twice(a[1], a[2]),
+    }
+}

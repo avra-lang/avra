@@ -4,7 +4,7 @@
 //! `match` reads, a format pattern matching a value that is no text, or a hole reading its span as
 //! a type text doesn't read as.
 use core.{At, ExprId, FormatPart, NodeKind, PatId, SyntaxArena, flatten}
-use compiler.laws.{Found, law}
+use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.enums.{fraction_unmatched, fraction_written}
 use features.nullable.{coalesce_always_absent}
@@ -49,17 +49,13 @@ fn coalesce_sides(store: SyntaxArena, k: At) -> List<ExprId> {
 /// subject's type is, spelled; absent where typing doesn't know it.
 type FormatArm = { at: PatId, store: SyntaxArena, parts: List<FormatPart>, subject: string? }
 
-/// Every format pattern an arm of a `match` the written item `at` of `file` writes, with its
-/// subject's type.
-fn format_arms(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<FormatArm> {
-    if at >= item_count(engine, file) { return [] }
-    let item = read_item(engine, file, at)
-    flatten([format_arms_in(engine, t) for t in item_typed_nodes(engine, file, at, item)])
-}
-
-/// Every format pattern an arm of a `match` among the nodes `t` reads writes.
-fn format_arms_in(engine: QueryEngine, t: TypedNodes) -> List<FormatArm> {
-    [FormatArm { at: p, store: t.store, parts: parts!, subject: subject_spelled(engine, t, e) } for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null for arm in t.store.match_arms(e) ?? [] for p in arm.pats for parts in [format_parts(t.store, p)] if parts != null]
+/// Every format pattern an arm of the `match` `at` of `view`'s typed nodes writes, its file's own,
+/// with its subject's type.
+fn format_arms(view: ItemView, at: At) -> List<FormatArm> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null { return [] }
+    [FormatArm { at: p, store: t.store, parts: parts!, subject: subject_spelled(view.engine, t, e) } for arm in t.store.match_arms(e) ?? [] for p in arm.pats for parts in [format_parts(t.store, p)] if parts != null]
 }
 
 /// What the subject of the `match` `e` is, spelled, where typing knows it whole: the text a named
@@ -77,19 +73,20 @@ fn format_parts(store: SyntaxArena, p: PatId) -> List<FormatPart>? {
     match store.pat(p) { .Format(_, parts) -> parts, rest -> null }
 }
 
-/// Every format pattern of the written item `at` of `file` matching a value that is no text; handed
-/// the value's type.
-fn formats_off_text(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [Found { at: f.store.pat_span(f.at), args: [f.subject!] } for f in format_arms(engine, file, at) if f.subject != null && !TEXTS.contains(f.subject!)]
+/// Every format pattern of the `match` `at` of `view`'s typed nodes matching a value that is no
+/// text; handed the value's type.
+fn formats_off_text(view: ItemView, at: At) -> List<Found> {
+    [Found { at: f.store.pat_span(f.at), args: [f.subject!] } for f in format_arms(view, at) if f.subject != null && !TEXTS.contains(f.subject!)]
 }
 
 /// The types a format pattern reads.
 const TEXTS: List<string> = ["string", "Bytes"]
 
-/// Every format pattern of the written item `at` of `file` over text, its holes apart and named
-/// once, with a hole reading its span as a type text doesn't read as; handed the hole and the type.
-fn holes_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    [Found { at: f.store.pat_span(f.at), args: [h!.hole.name, h!.hole.ty!.name] } for f in format_arms(engine, file, at) if f.subject != null &&
+/// Every format pattern of the `match` `at` of `view`'s typed nodes over text, its holes apart and
+/// named once, with a hole reading its span as a type text doesn't read as; handed the hole and the
+/// type.
+fn holes_unread(view: ItemView, at: At) -> List<Found> {
+    [Found { at: f.store.pat_span(f.at), args: [h!.hole.name, h!.hole.ty!.name] } for f in format_arms(view, at) if f.subject != null &&
         TEXTS.contains(f.subject!) &&
         adjacent_fault(f.parts) == null &&
         repeated_fault(f.parts) == null for h in [f.parts.find(hole_reads(it.hole) == null)] if h != null]
@@ -98,7 +95,9 @@ fn holes_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
 /// a format pattern reads text
 export law format_on_text {
     kind: "type.format"
-    reads: formats_off_text
+    on: [NodeKind.ExprMatch]
+    judge: formats_off_text
+    reach: Reach.Typed
     voice: format_words
     witness: "fn f(n: int) -> int {\n    match n {\n        \"{a}b\" -> 1\n        _ -> 0\n    }\n}\n"
 }
@@ -106,7 +105,9 @@ export law format_on_text {
 /// a typed hole reads its span as a type text reads as
 export law hole_read_as_text {
     kind: "type.format_parse"
-    reads: holes_unread
+    on: [NodeKind.ExprMatch]
+    judge: holes_unread
+    reach: Reach.Typed
     voice: hole_words
     witness: "fn f(s: string) -> int {\n    match s {\n        \"{n: float}z\" -> 1\n        _ -> 0\n    }\n}\n"
 }

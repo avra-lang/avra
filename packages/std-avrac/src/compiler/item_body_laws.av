@@ -35,7 +35,14 @@ use features.maps.{map_value_untyped}
 use features.select_expr.{guard_reads_binder}
 use compiler.{cleanup_unbounded, row_wait_said, spawn_wait_said}
 use features.loops.{jump_behind_lambda, jump_in_comprehension, jump_unaimed, jump_unlooped}
-use features.nullable.{forced_absent, forced_present, propagated_absent, propagated_present}
+use features.nullable.{
+    coalesce_answers,
+    forced_absent,
+    forced_present,
+    presence_arms_apart,
+    propagated_absent,
+    propagated_present,
+}
 use features.results.{fail_unenclosed, fail_unfallible}
 use features.tasks.{yield_unenclosed}
 use features.defers.{
@@ -107,6 +114,10 @@ enum Breach {
     ElementUntyped(named: string)
     /// A map literal whose values give it no type, its first value's type named.
     MapValueUntyped(named: string)
+    /// A `??` whose right side is `found`, no type its left side's `carried` joins.
+    CoalesceApart(carried: string, found: string)
+    /// A presence match whose absent arm answers `absent`, no type its present arm's `present` joins.
+    PresenceApart(present: string, absent: string)
     /// A list literal whose first element answers no value.
     ElementVoid
     /// The record field `field` of `spelled`, which holds no value.
@@ -223,7 +234,7 @@ fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemB
         lambdas.is_empty() { untyped } else { item_typing(engine, file, at, item, !deferrals.is_empty() || !fails.is_empty()) }
     ItemBreaches {
         rows: written_breaches(store)
-            .concat([b for e in typed for b in some_list(typed_breach(store, typing, e))])
+            .concat([b for e in typed for b in some_list(typed_breach(engine, store, typing, e))])
             .concat([b for d in deferrals for b in defer_breaches(store, typing, deferrals, d)])
             .concat([b for d in deferrals for b in some_list(cleanup_breach(store, typing, d))])
             .concat([b for s in fails for b in some_list(fail_breach(store, typing, s))])
@@ -421,7 +432,7 @@ fn produced_body(store: SyntaxArena, e: ExprId) -> ExprId? {
 fn typed_law_reads(store: SyntaxArena, e: ExprId) -> bool {
     if store.home_of(e) != null { return false }
     match store.expr(e) {
-        .Force(_) or .Propagate(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_) -> true,
+        .Force(_) or .Propagate(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) -> true,
         .MethodCall(_, name, _) -> name.of == SET_VERB,
         rest -> false,
     }
@@ -429,13 +440,15 @@ fn typed_law_reads(store: SyntaxArena, e: ExprId) -> bool {
 
 /// What the written node `e` breaks as typing typed it: a null check of a value never absent, a list
 /// literal or a comprehension whose elements give it no type, a `set` over a task.
-fn typed_breach(store: SyntaxArena, typing: ItemTyping, e: ExprId) -> BreachAt? {
+fn typed_breach(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, e: ExprId) -> BreachAt? {
     match store.expr(e) {
         .Force(subject) -> checked_absence(store, typing, subject, false),
         .Propagate(subject) -> checked_absence(store, typing, subject, true),
         .ListLit(elems) -> untyped_list(store, typing, e, elems),
         .Comp(elem, _) -> untyped_element(store, typing, e, elem),
         .MapLit(entries) -> untyped_map(store, typing, e, entries),
+        .Coalesce(left, right) -> coalesce_apart(engine, store, typing, left, right),
+        .MatchOpt(_, _, present, absent) -> presence_apart(engine, store, typing, present, absent),
         .MethodCall(subject, _, _) -> overwritten_element(store, typing, e, subject),
         rest -> null,
     }
@@ -506,6 +519,75 @@ fn untyped_element(store: SyntaxArena, typing: ItemTyping, e: ExprId, elem: Expr
     let ty? = typing.type_at(elem) else { return null }
     if !ty.absence() { return null }
     BreachAt { at: kept_at(store.expr_span(elem)), breach: Breach.ElementUntyped(ty.spelled()) }
+}
+
+/// What `left ?? right` breaks: a right side of a type known whole that what the left side carries
+/// neither joins nor takes; nothing where either isn't typed, or the left side is a named type,
+/// which a literal fills.
+fn coalesce_apart(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    typing: ItemTyping,
+    left: ExprId,
+    right: ExprId,
+) -> BreachAt? {
+    let held? = typing.type_at(left) else { return null }
+    let found? = typing.type_at(right) else { return null }
+    if !held.nullable() || held.absence() { return null }
+    let carried = held.unwrapped()
+    if meets(engine, carried, found) { return null }
+    BreachAt {
+        at: kept_at(store.expr_span(answering_node(store, right))),
+        breach: Breach.CoalesceApart(carried.spelled(), found.spelled()),
+    }
+}
+
+/// What a presence match's arms `present` and `absent` break: two types known whole that neither
+/// join nor take one another.
+fn presence_apart(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    typing: ItemTyping,
+    present: ExprId,
+    absent: ExprId,
+) -> BreachAt? {
+    let first? = typing.type_at(present) else { return null }
+    let second? = typing.type_at(absent) else { return null }
+    if meets(engine, first, second) || meets(engine, second, first) { return null }
+    BreachAt {
+        at: kept_at(store.expr_span(answering_node(store, absent))),
+        breach: Breach.PresenceApart(first.spelled(), second.spelled()),
+    }
+}
+
+/// Whether a value of `found` meets one of `want` where two arms join: they join, `found` reaches
+/// `want`, either answers nothing a value is, or either isn't known whole or wears a name another
+/// law reads.
+fn meets(engine: QueryEngine, want: SignedType, found: SignedType) -> bool {
+    want.joined_with(found) != null ||
+        found.reaches(want) ||
+        want.generic() ||
+        found.generic() ||
+        want.inferred() ||
+        found.inferred() ||
+        want.dynamic ||
+        found.dynamic ||
+        read_elsewhere(engine, want, found) ||
+        read_elsewhere(engine, found, want) ||
+        want.owns(OwnType.Void) ||
+        found.owns(OwnType.Void)
+}
+
+/// The node that answers for `e`: the value a block of that alone answers, else `e`.
+fn answering_node(store: SyntaxArena, e: ExprId) -> ExprId {
+    if store.lead_of(e).is_empty() { store.tail_of(e) ?? e } else { e }
+}
+
+/// Whether `named` wears a name whose meeting with `other` another law reads: a name over another
+/// shape, or one beside anything but a scalar the language owns.
+fn read_elsewhere(engine: QueryEngine, named: SignedType, other: SignedType) -> bool {
+    named.head is .Declared &&
+        (named_over(engine, named) != null || other.owned() == null || !other.args.is_empty())
 }
 
 /// What the map literal `e` of `entries` breaks: values that leave it holding only absence, said at
@@ -904,7 +986,7 @@ fn slot_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: Re
 }
 
 /// Whether a slot of `ty` holds nothing: `void`, or only absence.
-fn holds_nothing(ty: SignedType) -> bool { ty.owns(OwnType.Void) || ty.absence() }
+export fn holds_nothing(ty: SignedType) -> bool { ty.owns(OwnType.Void) || ty.absence() }
 
 /// Where the enum `name` the item `item` declares stands.
 fn enum_place(item: ReadItem, name: string) -> Span? {
@@ -1195,6 +1277,44 @@ export law map_value_untyped_law {
 }
 
 fn map_untyped_words(a: List<string>) -> Voice { map_value_untyped(a[0]) }
+
+fn coalesces_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .CoalesceApart(carried, found) -> [carried, found], rest -> null },
+    )
+}
+
+/// `??` answers what its left side carries
+export law coalesce_answers_carried {
+    kind: "type.coalesce"
+    reads: coalesces_apart
+    voice: coalesce_apart_words
+    witness: "fn f(n: int?) -> int {\n    let v = n ?? \"s\"\n    1\n}\n"
+}
+
+fn coalesce_apart_words(a: List<string>) -> Voice { coalesce_answers(a[0], a[1]) }
+
+fn presences_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .PresenceApart(present, absent) -> [present, absent], rest -> null },
+    )
+}
+
+/// a presence match's arms answer one type
+export law presence_arms_agree {
+    kind: "type.match_opt"
+    reads: presences_apart
+    voice: presence_apart_words
+    witness: "fn f(n: int?) -> int {\n    let v = match n {\n        x? -> x\n        null -> \"s\"\n    }\n    1\n}\n"
+}
+
+fn presence_apart_words(a: List<string>) -> Voice { presence_arms_apart(a[0], a[1]) }
 
 fn elements_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .ElementVoid))

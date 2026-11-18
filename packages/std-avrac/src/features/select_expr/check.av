@@ -477,14 +477,15 @@ fn timers_unloaded() -> string {
     "wait on what `spawn` answers — a head ending `.await` has already waited: drop it — or `use @std.time` for the timers"
 }
 
-fn fresh_timer(cx: TypeCx, head: ExprId) -> Diag {
-    refusal(
-        "flow.fresh_deadline",
-        cx.loc_of(head),
-        "a timer made inside a loop starts over each turn, so it never runs out across the loop",
-        "made anew each turn",
-        "for one limit over the whole loop bind it before the loop; for nothing having happened for `d` write `quiet(d)`; for each `d`, bind `every(d)` before the loop",
-    )
+fn fresh_timer(cx: TypeCx, head: ExprId) -> Diag { said_as("flow.fresh_deadline", cx.loc_of(head), timer_made_fresh()) }
+
+/// A timer made inside the loop it waits in, which starts over each turn.
+export fn timer_made_fresh() -> Voice {
+    Voice {
+        message: "a timer made inside a loop starts over each turn, so it never runs out across the loop",
+        label: "made anew each turn",
+        help: "for one limit over the whole loop bind it before the loop; for nothing having happened for `d` write `quiet(d)`; for each `d`, bind `every(d)` before the loop",
+    }
 }
 
 fn index_of_one(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("one", s.index, s.bind)) }
@@ -495,28 +496,29 @@ fn index_of_source(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder",
 
 fn end_bound(cx: TypeCx, s: ArmSeats) -> Diag { said_as("flow.arm_binder", cx.loc_of(s.arm), arm_binder_said("ended", s.index, s.bind)) }
 
-fn end_arm(cx: TypeCx, head: ExprId) -> Diag {
-    let n = place_name(cx, head)
-    refusal(
-        "flow.end_arm",
-        cx.loc_of(head),
-        "`${n}` can end and this `select` does not say what then",
-        "no `.ended` arm for it",
-        "add `${n}.ended -> …`",
-    )
+fn end_arm(cx: TypeCx, head: ExprId) -> Diag { said_as("flow.end_arm", cx.loc_of(head), end_unanswered(place_name(cx, head))) }
+
+/// A supply `n` waited on, which can end, with no `.ended` arm of its own.
+export fn end_unanswered(n: string) -> Voice {
+    Voice {
+        message: "`${n}` can end and this `select` does not say what then",
+        label: "no `.ended` arm for it",
+        help: "add `${n}.ended -> …`",
+    }
 }
 
 /// A supply whose head is no place: a call has no name its `.ended` arm
 /// could be tied to, so the end law cannot be satisfied rather than
 /// silently skipped.
-fn unkeyed_source(cx: TypeCx, head: ExprId) -> Diag {
-    refusal(
-        "flow.end_arm",
-        cx.loc_of(head),
-        "a supply made by a call cannot be named, so no `.ended` arm can answer for it",
-        "a call here",
-        "bind the supply first — `let s = …` — then wait on `s` and `s.ended`",
-    )
+fn unkeyed_source(cx: TypeCx, head: ExprId) -> Diag { said_as("flow.end_arm", cx.loc_of(head), supply_unnamed()) }
+
+/// A supply a call makes, which no `.ended` arm can name.
+export fn supply_unnamed() -> Voice {
+    Voice {
+        message: "a supply made by a call cannot be named, so no `.ended` arm can answer for it",
+        label: "a call here",
+        help: "bind the supply first — `let s = …` — then wait on `s` and `s.ended`",
+    }
 }
 
 /// The name a head is written under, for a refusal to say: a place's
@@ -589,14 +591,15 @@ export fn select_refused_voice(what: string) -> Voice {
     }
 }
 
-fn quiet_never(cx: TypeCx, head: ExprId) -> Diag {
-    refusal(
-        "flow.quiet_never",
-        cx.loc_of(head),
-        "a `Quiet` beside `else` is never taken — `else` runs before any quiet has passed",
-        "armed as the `select` is entered",
-        "drop the `else`, or wait on a `Deadline`",
-    )
+fn quiet_never(cx: TypeCx, head: ExprId) -> Diag { said_as("flow.quiet_never", cx.loc_of(head), quiet_beside_else()) }
+
+/// A `Quiet` waited on beside `else`, which runs before any quiet has passed.
+export fn quiet_beside_else() -> Voice {
+    Voice {
+        message: "a `Quiet` beside `else` is never taken — `else` runs before any quiet has passed",
+        label: "armed as the `select` is entered",
+        help: "drop the `else`, or wait on a `Deadline`",
+    }
 }
 
 /// A `select` arm binding what its head hands over not as it does, `how` as `Seating.ArmBinder` says,

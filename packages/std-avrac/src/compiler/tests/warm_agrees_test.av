@@ -1,36 +1,47 @@
 //! A SAVED ANSWER READ BACK SAYS WHAT A COLD RUN SAYS: one process checks a package over a store,
 //! the next checks it edited over that store, and its report is held to a third over an empty one.
 //! A read a saved answer did not record reads here as a report that differs.
-use @std.avrac.testing.old_path.{test_workspace}
-use @std.time.{now_ns}
-use compiler.host.{memory_host}
-use compiler.store.{Store, store_at}
-
-fn fresh_store() -> Store { store_at("/tmp/avra-warm-agrees-test/${now_ns()}") }
+use @std.avrac.testing.held.{empty_store, held_at}
+use compiler.tests.support.{store_dir}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
 
 /// The package with `files` under `src`, as one process reports it over `store`.
-fn reported(files: Map<string, string>, store: Store) -> string {
+fn reported(files: Map<string, string>, store: StoreInMemory) -> string {
     mut all: Map<string, string> = {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
     }
     for path, text in files { all.set("/w/src/${path}", text) }
-    let ws = test_workspace(memory_host(all, all.keys()), "/w")
-    ws.attach_store(store)
-    let p = ws.program(null)
-    "${p.report()}\n${p.warnings()}"
+    held_at(all, "/w").checked_over(store)
+}
+
+/// The same, over a store on disk under `directory`, opened afresh.
+fn reported_on_disk(files: Map<string, string>, directory: string) -> string {
+    mut all: Map<string, string> = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    }
+    for path, text in files { all.set("/w/src/${path}", text) }
+    held_at(all, "/w").checked_on_disk(directory)
 }
 
 /// The report of `after` read over the store `before` left.
 fn warm(before: Map<string, string>, after: Map<string, string>) -> string {
-    let s = fresh_store()
+    let s = empty_store()
     let _ = reported(before, s)
     reported(after, s)
 }
 
-/// Whether the warm report of the edit is the cold one, and says `words`.
+/// The report of `after` read off the bytes a check of `before` saved on disk.
+fn warm_on_disk(before: Map<string, string>, after: Map<string, string>) -> string {
+    let directory = store_dir("warm")
+    let _ = reported_on_disk(before, directory)
+    reported_on_disk(after, directory)
+}
+
+/// Whether the warm report of the edit is the cold one — over a store in memory and over one
+/// saved on disk and opened again — and says `words`.
 fn agrees(before: Map<string, string>, after: Map<string, string>, words: string) -> bool {
-    let said = warm(before, after)
-    said == reported(after, fresh_store()) && said.contains(words)
+    let cold = reported(after, empty_store())
+    warm(before, after) == cold && warm_on_disk(before, after) == cold && cold.contains(words)
 }
 
 const BEFORE_WARN: string = "export type P = { x: int }\nimpl P {\n    fn w() -> int {\n        self.x = 1\n        1\n    }\n}\n"
