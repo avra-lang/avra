@@ -159,6 +159,42 @@ type ItemAbout = {
     impls: List<ItemImpl>,
     /// Whether a statement of the item runs, beside what it declares.
     runs: bool = false,
+    /// What each name the item's statements declare or bind wears, each name once.
+    worn: List<NameWorn> = [],
+}
+
+/// What an item's statements say of one name they declare or bind, each by the first statement of
+/// that name: whether one declares it; whether the first that declares it wears an annotation, and
+/// is a component with a body; and whether the first that declares or binds it wears one.
+@derive(Saved)
+type NameWorn = { name: string, declared: bool, marked_declared: bool, marked: bool, bodied_component: bool }
+
+/// What each name the statements `all` of `store` declare or bind wears, each name once, in the order
+/// they're met.
+fn names_worn(store: SyntaxArena, all: List<StmtId>) -> List<NameWorn> {
+    let named = [n! for s in all for n in [store.declared_name(s) ?? store.let_name(s)] if n != null]
+    [name_worn(store, all, n) for i, n in named if !named.take(i).contains(n)]
+}
+
+/// What `name` wears among the statements `all` of `store`.
+fn name_worn(store: SyntaxArena, all: List<StmtId>, name: string) -> NameWorn {
+    let declaring = all.find((s) -> store.declared_name(s) == name)
+    let binding = all.find((s) -> store.declared_name(s) ?? store.let_name(s) == name)
+    NameWorn {
+        name: name,
+        declared: declaring != null,
+        marked_declared: declaring != null && !store.annotations_of(declaring!).is_empty(),
+        marked: binding != null && !store.annotations_of(binding!).is_empty(),
+        bodied_component: declaring != null && store.component_body(declaring!) != null,
+    }
+}
+
+/// What the name the written declaration `d` names wears in its item, as its tape says; absent where
+/// no statement of the item declares or binds it. Asked only of a written item.
+fn worn_in_item(engine: QueryEngine, d: DeclaredName) -> NameWorn? {
+    let said = file_said_of_items(engine, d.file)
+    if d.item >= said.length { return null }
+    said[d.item].worn.find(it.name == d.name)
 }
 
 /// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
@@ -223,6 +259,7 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
                 } for s in stmts for c in [store.component_parts(s)] if c != null],
             ),
         runs: stmts.any((s) -> !store.is_declaration(s)),
+        worn: names_worn(store, stmts.concat(store.hoisted_decls())),
     }
         .saved_bytes()
 }
@@ -254,10 +291,17 @@ fn item_tape_about(engine: QueryEngine, file: SourceFileAddress, at: int) -> Ite
     about_of(SyntaxTape.about_in(meant_tape(engine, file, item_under(engine, file, at))))
 }
 
-/// Whether each written item of `file` runs a statement, beside what it declares, by place: read
-/// from each item's tape where it lies, once for the file.
+/// What a written item's tape says of it that a reader would else read the item back to learn:
+/// whether a statement of it runs, and what each name it declares or binds wears.
+@derive(Saved)
+type ItemSaid = { runs: bool, worn: List<NameWorn> }
+
+/// What each written item of `file` says of itself, by place: read from each item's tape where it
+/// lies, once for the file.
 @query
-fn file_running(engine: QueryEngine, file: SourceFileAddress) -> List<bool> { [item_tape_about(engine, file, at).runs for at in 0..item_count(engine, file)] }
+fn file_said_of_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemSaid> {
+    [ItemSaid { runs: about.runs, worn: about.worn } for at in 0..item_count(engine, file) for about in [item_tape_about(engine, file, at)]]
+}
 
 fn about_of(octets: Bytes?) -> ItemAbout {
     let held? = octets else {

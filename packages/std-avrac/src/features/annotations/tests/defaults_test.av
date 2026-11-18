@@ -1,12 +1,11 @@
-use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
-use @std.avrac.compiler.{Program}
-use compiler.host.{memory_host}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.testing.{vendored_meta, refused_in}
 
 fn provider() -> string {
     "use @std.meta.{Fn, Type, Code, Declared, Directive, Diagnostic, refuse}\nexport fn defaulted(f: Fn, value: int = 7) -> List<Diagnostic> { if value == 7 { [] } else { [refuse(\"wrong default value\")] } }\nexport fn chosen(f: Fn, expected: int, value: int = 7) -> List<Diagnostic> { if value == expected { [] } else { [refuse(\"wrong default value\")] } }\nfn computed() -> int { 9 }\nexport fn calculated(f: Fn, value: int = computed()) -> List<Diagnostic> { if value == 9 { [] } else { [refuse(\"wrong computed default\")] } }\nexport fn pair(f: Fn, first: string = \"a\", second: string = \"b\") -> List<Diagnostic> { if first == \"a\" && second == \"b\" { [] } else { [refuse(\"wrong pair\")] } }\nexport fn projected(t: Type, value: Code = quote { 7 }) -> Declared { Declared { made: [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { static fn configured() -> int { \${value} } } } }] } }\n"
 }
 
-fn program(source: string) -> Program {
+fn program(source: string) -> Judged {
     let files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
@@ -14,19 +13,13 @@ fn program(source: string) -> Program {
             "/w/src/provider.av": provider(),
         },
     )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            ["/w/avra.toml", "/w/src/main.av", "/w/src/provider.av"].concat(vendored_meta_paths()),
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
 fn accepts(source: string) -> bool {
     let p = program(source)
-    match p.check() {
+    match p.checked() {
         .Ok(_) -> true,
         .Err(e) -> {
             println(e)

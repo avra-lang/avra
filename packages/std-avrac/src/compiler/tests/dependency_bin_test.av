@@ -1,36 +1,25 @@
 //! A DEPENDENCY IS ITS LIBRARY: the file a dependency's `[bin]` names is
 //! that package's own program, and no module file of a program that
 //! depends on the package.
-use @std.avrac.testing.{test_workspace}
+use @std.avrac.testing.held.{Judged, held_at}
 use @std.avrac.testing.{refused_in}
-use compiler.{Program}
-use compiler.host.{memory_host}
 
 const TOOL_MANIFEST: string = "[package]\nname = \"@x/tool\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"x-tool\"\npath = \"src/lib.av\"\n\n[bin]\nname = \"tool\"\npath = \"src/main.av\"\n"
 
 /// A program `app` over `@x/tool`, a package that is a library (`lib`)
 /// and a program (`entry`) at once.
-fn over_tool(lib: string, entry: string) -> Program {
-    test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/tool\" = { path = \"vendor/tool\" }\n",
-                "/w/src/main.av": "use @x.tool.{helper}\n\"\${helper(21)}\"",
-                "/w/vendor/tool/avra.toml": TOOL_MANIFEST,
-                "/w/vendor/tool/src/lib.av": lib,
-                "/w/vendor/tool/src/main.av": entry,
-            },
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/tool/avra.toml",
-                "/w/vendor/tool/src/lib.av",
-                "/w/vendor/tool/src/main.av",
-            ],
-        ),
+fn over_tool(lib: string, entry: string) -> Judged {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/tool\" = { path = \"vendor/tool\" }\n",
+            "/w/src/main.av": "use @x.tool.{helper}\n\"\${helper(21)}\"",
+            "/w/vendor/tool/avra.toml": TOOL_MANIFEST,
+            "/w/vendor/tool/src/lib.av": lib,
+            "/w/vendor/tool/src/main.av": entry,
+        },
         "/w",
     )
-        .program("/w/src/main.av")
+        .judged_at("/w/src/main.av")
 }
 
 /// The files of a package `board` that is a library and a program, with
@@ -46,24 +35,11 @@ fn board_host_files() -> Map<string, string> {
 }
 
 /// The program at `entry`, with the workspace rooted at `root`.
-fn boarded(root: string, entry: string) -> Program {
-    test_workspace(
-        memory_host(
-            board_host_files(),
-            [
-                "/w/board/avra.toml",
-                "/w/board/src/board.av",
-                "/w/board/src/main.av",
-                "/w/board/term/avra.toml",
-                "/w/board/term/src/main.av",
-            ],
-        ),
-        root,
-    )
-        .program(entry)
+fn boarded(root: string, entry: string) -> Judged {
+    held_at(board_host_files(), root).judged_at(entry)
 }
 
-fn answer(p: Program) -> string { p.run() catch e -> e }
+fn answer(p: Judged) -> string { p.run() catch e -> e }
 
 const HELPER: string = "export fn helper(n: int) -> int {\n    n * 2\n}\n"
 

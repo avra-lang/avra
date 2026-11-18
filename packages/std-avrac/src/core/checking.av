@@ -2988,7 +2988,7 @@ impl Checking {
                     )
             }
         }
-        self.checked_free(values)
+        self.checked_unseated(values)
         true
     }
 
@@ -3225,8 +3225,18 @@ impl Checking {
             )
     }
 
-    /// Each value checked against nothing.
-    mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
+    /// Each value checked against nothing: its seat is one already refused, or unknown, so a bare
+    /// variant among them is owed no enum of its own, and is refused for want of none.
+    mut fn checked_free(values: List<ExprId>) {
+        let before = self.refused.get().length
+        for v in values { let _ = self.check(v, Expected.Free) }
+        let all = self.refused.get()
+        self.refused.set(all.take(before).concat(all.drop(before).filter(!(it.seat is .Unenumed))))
+    }
+
+    /// Each value of a literal refused whole, checked under a seat nothing knows: what it says of
+    /// itself stands, and nothing it fills is asked of it.
+    mut fn checked_unseated(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Unknown) } }
 
     /// What a call answers when `args` fill no seat: each checked free, and nothing claimed.
     mut fn unfilled(args: List<ExprId>) -> SignedType? {

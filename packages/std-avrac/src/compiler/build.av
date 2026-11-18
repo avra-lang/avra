@@ -15,7 +15,6 @@ use core.{
     rt_sigs,
     sorted_texts,
     sorted_by,
-    filled,
     fp_list,
     RtSig,
     TypeRegistry,
@@ -38,7 +37,7 @@ use compiler.backend.{
     objects_made,
     emit_cores,
     emit_width,
-    run_across,
+    turns_across,
     inlines_runtime,
     Owned,
     emit_closed,
@@ -961,8 +960,8 @@ fn by_source(objects: List<Made>) -> List<Made> {
     )
 }
 
-/// EVERY OWED OBJECT WRITTEN, `made(i)` making `owed[i]`, the owed split by `weights` across a
-/// process per core where there are enough to split, each process making its own; the first
+/// EVERY OWED OBJECT WRITTEN, `made(i)` making `owed[i]`, across a process per core where there are
+/// enough to split, each taking the heaviest by `weights` that no other has taken; the first
 /// refusal, or null. Each object is the same bytes whichever process wrote it.
 export fn written_across(
     made: fn(int) -> Lowered,
@@ -976,9 +975,13 @@ export fn written_across(
     if processes < 2 { return written_each(made, owed, all, opt, target, emit_width()) }
     // the machine's workers are shared among the processes, never multiplied by them
     let workers = [emit_width() / processes, 1].max() ?? 1
-    let ran = run_across(
-        balanced(weights, processes),
-        (share) -> written_said(written_each(made, owed, share, opt, target, workers)),
+    let heaviest_first = sorted_by(all, (a: int, b: int) -> weights[a] > weights[b])
+    let ran = turns_across(
+        processes,
+        owed.length,
+        (turn: int) -> written_said(
+            written_each(made, owed, [heaviest_first[turn]], opt, target, workers),
+        ),
     )
     if ran == null { return written_each(made, owed, all, opt, target, emit_width()) }
     if ran! { null } else { objects_not_written(owed.length) }
@@ -1007,29 +1010,6 @@ fn written_each(
 fn written_said(refused: string?) -> bool {
     if refused != null { eprintln(refused!) }
     refused == null
-}
-
-/// `weights`' positions in `count` shares, the heaviest first, each to the share lightest so far.
-fn balanced(weights: List<int>, count: int) -> List<List<int>> {
-    let order = sorted_by(
-        [i for i in 0..weights.length],
-        (a: int, b: int) -> weights[a] > weights[b],
-    )
-    mut loads = filled(count, 0)
-    mut owners: List<int> = []
-    for i in order {
-        let least = lightest(loads)
-        loads = [if j == least { l + weights[i] } else { l } for j, l in loads]
-        owners.push(least)
-    }
-    [[order[k] for k in 0..order.length if owners[k] == c] for c in 0..count]
-}
-
-/// The position of the smallest of `loads`, the first where several are.
-fn lightest(loads: List<int>) -> int {
-    mut at = 0
-    for i, l in loads { if l < loads[at] { at = i } }
-    at
 }
 
 /// Every owed object's module built and handed to a worker — the first

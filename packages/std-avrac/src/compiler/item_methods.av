@@ -758,21 +758,34 @@ fn trait_method(engine: QueryEngine, file: SourceFileAddress, declared: string, 
 }
 
 /// The traits the `collect enum` `file` declares as `name` implements over its members, each named
-/// where the enum is written; none for any other declaration.
-export fn gathered_traits(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
-    TraitAt,
-> {
+/// where the enum is written; none for any other declaration. With `written`, each is read among
+/// written names alone: what a generator's own sites ask, since a name nothing writes would ask
+/// what generators make.
+export fn gathered_traits(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    written: bool = false,
+) -> List<TraitAt> {
     let item? = declaring_item(engine, file, name, ItemKind.CollectEnum) else { return [] }
     let parts? = [p! for s in item.stmts for p in [item.store.collect_enum_parts(s)] if p != null]
         .find(it.name == name) else { return [] }
-    [t! for e in parts.traits for t in [trait_written(engine, file, item.store.ident_name(e))] if t != null]
+    [t! for e in parts.traits for t in [trait_written(engine, file, item.store.ident_name(e), written)] if t != null]
 }
 
-/// The trait `written` names from `file`, absent for a name naming none.
-fn trait_written(engine: QueryEngine, file: SourceFileAddress, written: string?) -> TraitAt? {
-    let n? = written else { return null }
-    let d? = resolved(engine, file, Space.Type, n).named() else { return null }
+/// The trait `named` names from `file`, absent for a name naming none; among written names alone
+/// where `written`.
+fn trait_written(engine: QueryEngine, file: SourceFileAddress, named: string?, written: bool) -> TraitAt? {
+    let n? = named else { return null }
+    let d? = type_named(engine, file, n, written) else { return null }
     if d.kind == ItemKind.Trait { trait_declared(d) } else { null }
+}
+
+/// What `name` names as a type from `file`'s top level; among written names alone where `written`.
+fn type_named(engine: QueryEngine, file: SourceFileAddress, name: string, written: bool) -> DeclaredName? {
+    if !written { return resolved(engine, file, Space.Type, name).named() }
+    let scope? = file_scope(engine, file) else { return null }
+    resolved_in(engine, scope, file, Space.Type, name).named()
 }
 
 /// The trait the declaration `d` is.

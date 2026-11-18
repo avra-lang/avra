@@ -387,6 +387,12 @@ fn sugar_noted(store: SyntaxArena, seat: Seating, node: int) -> SugarNote? {
     SugarNote { label: label, at: kept_at(store.expr_span(at)) }
 }
 
+/// The names of the fields the record or component `file` declares as `name` has, each once.
+fn fields_named_once(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    let names = [f.name for f in record_signature(engine, file, name)?.fields ?? []]
+    [n for j, n in names if names.index_of(n) == j]
+}
+
 /// The bodies a written item holds beside its fns' and methods': each seat's default a fn or a
 /// method writes, each record field's default, each const's value and each state's start, and each
 /// body a trait's own members write.
@@ -398,7 +404,7 @@ fn default_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: R
         item.stmts.any((s) -> item.store.fn_parts(s)?.name == d.name && defaults_a_seat(item, s)) for s in [signed_body(engine, file, d.name)] if s != null]
     let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns(item, a) if defaults_a_seat(item, s) for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
     let seats = [b! for s in fns.concat(methods) for p in s.signature.params for b in [seat_default_body(s, p.name)] if b != null]
-    let fields = [b! for d in names if d.kind == ItemKind.Record for f in record_signature(engine, file, d.name)?.fields ?? [] for b in [field_default_body(engine, file, d.name, f.name)] if b != null]
+    let fields = [b! for d in names if d.kind == ItemKind.Record || d.kind == ItemKind.Component for n in fields_named_once(engine, file, d.name) for b in [field_default_body(engine, file, d.name, n)] if b != null]
     let consts = [b for d in names if d.kind == ItemKind.Const for b in some_list(const_body_of(engine, d))]
     let states = [b for d in names if d.kind == ItemKind.State for b in some_list(state_body(engine, d))]
     let traits = [b for d in names if d.kind == ItemKind.Trait for b in trait_bodies(engine, TraitAt { file: file, name: d.name })]

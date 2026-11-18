@@ -62,6 +62,9 @@ fn keys_by_text(key: SignedType) -> bool {
 /// Where a statement's written types are read: its file, and the type parameters its item declares.
 type AppliedScope = { engine: QueryEngine, file: SourceFileAddress, params: List<string> }
 
+/// A map's key as a seat reads it, and where its names are read.
+type KeySeen = { scope: AppliedScope, key: TypeRef }
+
 impl AppliedScope {
     /// The type `t` and each it holds, where applied to what it doesn't take, outermost first.
     fn misapplied(t: TypeRef) -> List<List<string>> {
@@ -79,12 +82,12 @@ impl AppliedScope {
         if takes == 0 && found > 0 { return [["none", name]] }
         if takes > 0 && found == 0 { return [["bare", name, "${takes}"]] }
         if found != takes { return [["count", name, "${found}", "${takes}"]] }
-        if name == MAP && self.unkeyed(t.applied[0]) { return [["key", spelled(t.applied[0])]] }
+        if name == MAP && self.unkeyed(t.applied[0]) { return [["key", spelled(self.keyed_as(t.applied[0], []).key)]] }
         []
     }
 
-    /// How many type arguments the type `name` takes: a type the language owns, or a record or an
-    /// enum the file sees; absent for any other.
+    /// How many type arguments the type `name` takes: a type the language owns, or a record, an
+    /// enum or an alias the file sees; absent for any other.
     fn takes(name: string) -> int? {
         let row = type_row(avra().rows.types, name)
         if row != null { return row!.arity }
@@ -92,22 +95,38 @@ impl AppliedScope {
         let d? = resolved(self.engine, self.file, Space.Type, name).named() else { return null }
         match d.kind {
             .Record or .Enum -> declared_params(self.engine, d.file, d.name).length,
-            .Fn or .Const or .State or .Named or .Alias or .Trait or .Component or .Syntax or .Collect or .CollectEnum -> null,
+            .Alias -> alias_written(self.engine, d.file, d.name)?.tparams?.length,
+            .Fn or .Const or .State or .Named or .Trait or .Component or .Syntax or .Collect or .CollectEnum -> null,
         }
     }
 
-    /// Whether a map keyed by `key` is keyed by what is no text: anything but `string`, an alias, or a
-    /// name the file sees no type by, whose own law says it.
+    /// Whether a map keyed by `key` is keyed by what is no text: anything but `string`, or a name
+    /// the file sees no type by, whose own law says it. An alias is what it names.
     fn unkeyed(key: TypeRef) -> bool {
-        if key.arrow ||
-            key.optional ||
-            !key.alternatives.is_empty() ||
-            self.params.contains(key.name) { return true }
-        if key.name == STRING { return !key.applied.is_empty() }
-        if key.name == INFERRED || key.name == self_word { return false }
-        if self.takes(key.name) != null { return true }
-        let d? = resolved(self.engine, self.file, Space.Type, key.name).named() else { return false }
+        let seen = self.keyed_as(key, [])
+        let k = seen.key
+        if k.arrow || k.optional || !k.alternatives.is_empty() || seen.scope.params.contains(k.name) { return true }
+        if k.name == STRING { return !k.applied.is_empty() }
+        if k.name == INFERRED || k.name == self_word { return false }
+        let d? = resolved(seen.scope.engine, seen.scope.file, Space.Type, k.name).named() else { return seen.scope.takes(k.name) != null }
         d.kind != ItemKind.Alias
+    }
+
+    /// `key` as a seat reads it: an alias taking no type arguments read as what it names, alias by
+    /// alias through none among `seen`, where its own file reads it; any other type itself.
+    fn keyed_as(key: TypeRef, seen: List<string>) -> KeySeen {
+        let own = KeySeen { scope: self, key: key }
+        if key.arrow ||
+            !key.applied.is_empty() ||
+            !key.alternatives.is_empty() ||
+            self.params.contains(key.name) { return own }
+        let d? = resolved(self.engine, self.file, Space.Type, key.name).named() else { return own }
+        if d.kind != ItemKind.Alias || seen.contains(d.name) { return own }
+        let named? = alias_written(self.engine, d.file, d.name) else { return own }
+        if !named.tparams.is_empty() { return own }
+        let there = (self with { file: d.file, params: [] })
+            .keyed_as(named.of, seen.concat([d.name]))
+        there with { key: there.key with { optional: there.key.optional || key.optional } }
     }
 }
 

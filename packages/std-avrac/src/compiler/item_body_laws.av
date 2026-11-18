@@ -6,6 +6,7 @@
 //! fns' and methods' bodies, its declarations' signatures, and the statements it runs where its file
 //! is an entry — and said in the voices the old path speaks.
 use core.{
+    MapEntry,
     BinOp,
     BindSite,
     LandedSeat,
@@ -30,6 +31,7 @@ use compiler.typing.{answer_label, carried_label, field_label, field_unslotted, 
 use features.{task_outlives, task_overwritten, task_unheld}
 use features.closures.{capture_named, captured_label, lambda_answer_label}
 use features.lists.{list_element_untyped, list_element_void}
+use features.maps.{map_value_untyped}
 use features.select_expr.{guard_reads_binder}
 use compiler.{cleanup_unbounded, row_wait_said, spawn_wait_said}
 use features.loops.{jump_behind_lambda, jump_in_comprehension, jump_unaimed, jump_unlooped}
@@ -103,6 +105,8 @@ enum Breach {
     YieldUnenclosed
     /// A list literal whose first element, of `named`, gives it no type.
     ElementUntyped(named: string)
+    /// A map literal whose values give it no type, its first value's type named.
+    MapValueUntyped(named: string)
     /// A list literal whose first element answers no value.
     ElementVoid
     /// The record field `field` of `spelled`, which holds no value.
@@ -416,7 +420,7 @@ fn produced_body(store: SyntaxArena, e: ExprId) -> ExprId? {
 fn typed_law_reads(store: SyntaxArena, e: ExprId) -> bool {
     if store.home_of(e) != null { return false }
     match store.expr(e) {
-        .Force(_) or .Propagate(_) or .ListLit(_) -> true,
+        .Force(_) or .Propagate(_) or .ListLit(_) or .MapLit(_) -> true,
         .MethodCall(_, name, _) -> name.of == SET_VERB,
         rest -> false,
     }
@@ -429,6 +433,7 @@ fn typed_breach(store: SyntaxArena, typing: ItemTyping, e: ExprId) -> BreachAt? 
         .Force(subject) -> checked_absence(store, typing, subject, false),
         .Propagate(subject) -> checked_absence(store, typing, subject, true),
         .ListLit(elems) -> untyped_list(store, typing, e, elems),
+        .MapLit(entries) -> untyped_map(store, typing, e, entries),
         .MethodCall(subject, _, _) -> overwritten_element(store, typing, e, subject),
         rest -> null,
     }
@@ -490,6 +495,23 @@ fn untyped_list(store: SyntaxArena, typing: ItemTyping, e: ExprId, elems: List<E
     }
     if elem.owns(OwnType.Void) { return BreachAt { at: place, breach: Breach.ElementVoid } }
     null
+}
+
+/// What the map literal `e` of `entries` breaks: values that leave it holding only absence, said at
+/// the first value it writes.
+fn untyped_map(store: SyntaxArena, typing: ItemTyping, e: ExprId, entries: List<MapEntry>) -> BreachAt? {
+    let held? = typing.type_at(e)?.mapped() else { return null }
+    if !held.absence() { return null }
+    let first? = [v! for entry in entries for v in [pair_value(entry)] if v != null].first() else { return null }
+    BreachAt {
+        at: kept_at(store.expr_span(first)),
+        breach: Breach.MapValueUntyped(typing.type_at(first)?.spelled() ?? held.spelled()),
+    }
+}
+
+/// The value a map entry writes, absent for a spread.
+fn pair_value(entry: MapEntry) -> ExprId? {
+    match entry { .Pair(_, value) -> value, .Spread(_) -> null }
 }
 
 /// What the `fail` `s` lacks of a failure channel: a fn around it, which a lambda between hides and
@@ -1143,6 +1165,25 @@ export law element_untyped {
 }
 
 fn untyped_words(a: List<string>) -> Voice { list_element_untyped(a[0]) }
+
+fn map_values_untyped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    breaches_said(
+        engine,
+        file,
+        at,
+        (b) -> match b { .MapValueUntyped(named) -> [named], rest -> null },
+    )
+}
+
+/// a map literal whose values give it no type
+export law map_value_untyped_law {
+    kind: "type.list_scalar"
+    reads: map_values_untyped
+    voice: map_untyped_words
+    witness: "fn f() -> int {\n    let m = { \"a\": null }\n    1\n}\n"
+}
+
+fn map_untyped_words(a: List<string>) -> Voice { map_value_untyped(a[0]) }
 
 fn elements_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     breaches_said(engine, file, at, (b) -> wordless(b is .ElementVoid))

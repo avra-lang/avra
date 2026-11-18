@@ -1,23 +1,22 @@
 // A quote is `Code`: its runs remember the file that wrote them, a
 // hole's text resolves where it is spliced, and a template's own
 // names resolve in the file that wrote the quote — origin hygiene.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{parse_source, Program}
+use @std.avrac.testing.old_path.{program_of}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.compiler.{parse_source}
 use @std.avrac.testing.{
     vendored_meta,
     vendored_meta_as,
-    vendored_meta_paths,
     real_meta_source,
     said,
     refused_n,
     refused_in,
 }
-use compiler.host.{memory_host}
 use compiler.format.{render_source}
 
 /// A program with `@std/meta` and a PROVIDER package (`@x/prov`) whose
 /// templates the program's annotations run.
-fn packaged(main: string, prov: string) -> Program {
+fn packaged(main: string, prov: string) -> Judged {
     let files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
@@ -26,27 +25,15 @@ fn packaged(main: string, prov: string) -> Program {
             "/w/vendor/prov/src/prov.av": prov,
         },
     )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/prov/avra.toml",
-                "/w/vendor/prov/src/prov.av",
-            ]
-                .concat(vendored_meta_paths()),
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
 /// The same program under an `@std/meta` THIS COMPILER WAS NOT BUILT
 /// AGAINST: every template wrapper names its node field `blob`, so
 /// the shapes the crossing reads by slot have moved. Built from the
 /// real source, one thing changed.
-fn packaged_under(main: string, prov: string, meta: string) -> Program {
+fn packaged_under(main: string, prov: string, meta: string) -> Judged {
     let files = vendored_meta_as(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
@@ -56,20 +43,8 @@ fn packaged_under(main: string, prov: string, meta: string) -> Program {
         },
         meta,
     )
-    let ws = test_workspace(
-        memory_host(
-            files,
-            [
-                "/w/avra.toml",
-                "/w/src/main.av",
-                "/w/vendor/prov/avra.toml",
-                "/w/vendor/prov/src/prov.av",
-            ]
-                .concat(vendored_meta_paths()),
-        ),
-        "/w",
-    )
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
 /// `@std/meta` with the template wrappers' one field RENAMED — the
@@ -79,20 +54,20 @@ fn renamed_node_field() -> string {
 }
 
 /// A program WITHOUT `@std/meta` — where a quote has no `Code` to answer.
-fn meta_less(main: string) -> Program {
+fn meta_less(main: string) -> Judged {
     let files = {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
         "/w/src/main.av": main,
     }
-    let ws = test_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av"]), "/w")
-    ws.program("/w/src/main.av")
+    let ws = held_at(files, "/w")
+    ws.judged_at("/w/src/main.av")
 }
 
-fn report(p: Program) -> string {
-    match p.check() { .Ok(warned) -> warned, .Err(words) -> words }
+fn report(p: Judged) -> string {
+    match p.checked() { .Ok(warned) -> warned, .Err(words) -> words }
 }
 
-fn clean(p: Program) -> bool { p.check() is .Ok }
+fn clean(p: Judged) -> bool { p.checked() is .Ok }
 
 /// The provider: a trait whose template names this file's PRIVATE
 /// helper unqualified, and an annotation that splices the user's code

@@ -127,6 +127,11 @@ export trait AnswerStore {
     /// where it holds the claim, else the living process that does.
     fn claimed(_question: ContentHash) -> int { 0 }
 
+    /// Whether a question of the query `query_name` is one a process works out beside another that
+    /// is working it out, where it would wait for any other: an answer gathered from many
+    /// questions, each claimed on its own, so two that gather it share the work under it.
+    fn works_beside(_query_name: string) -> bool { false }
+
     /// Waits while the process `holder` holds the claim of `question` and lives.
     fn claim_awaited(_question: ContentHash, _holder: int) {}
 
@@ -766,7 +771,7 @@ impl QueryEngine {
     /// another process working beside this one is working the question out, it is waited for and
     /// its answer taken where its record stands here.
     fn computed_answer(asked: Question) -> ContentHash {
-        if !self.definition_of(asked).is_input {
+        if !self.definition_of(asked).is_input && !self.store.works_beside(asked.query_name) {
             mut holder = self.store.claimed(asked.known_as)
             while holder != 0 {
                 let from = now_ms()

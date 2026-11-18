@@ -4,6 +4,7 @@
 //! asks nothing, and another reader makes its own and reads what it stands on for itself. The item is
 //! never written after its read, so what a view holds of it stays true.
 use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{RecordedRead}
 use @std.program.query_engine.{QueryEngine}
 
 /// What the laws read of the item `at` of `file`: for the engine and the reader its reads reached,
@@ -16,7 +17,12 @@ type ItemView = {
     item: ReadItem,
     impls: Cell<List<ImplAt>?>,
     typed: Cell<List<TypedNodes>?>,
+    stated: Cell<StatedHeld?>,
 }
+
+/// The bodies an item holds, typed, beside the engine reads their gathering made: another reader's
+/// view takes them by making those reads again.
+type StatedHeld = { bodies: List<StatedBody>, reads: List<RecordedRead> }
 
 impl ItemView {
     /// Whether this is `reader`'s view, in `engine`, of the item `at` of `file`.
@@ -50,6 +56,7 @@ fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView 
     let read = held.find(it.holds(engine, file, at))?.item
     let impls: Cell<List<ImplAt>?> = Cell.new(null)
     let typed: Cell<List<TypedNodes>?> = Cell.new(null)
+    let stated: Cell<StatedHeld?> = Cell.new(null)
     let view = ItemView {
         engine: engine.serial,
         reader: reader,
@@ -58,6 +65,7 @@ fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView 
         item: if read == null { item_read(engine, file, at) } else { item_asked(engine, file, at, read!) },
         impls: impls,
         typed: typed,
+        stated: stated,
     }
     views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
     view
@@ -89,4 +97,41 @@ fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: int, item:
         return typed
     }
     made
+}
+
+/// Every body the written item `at` of `file` holds, typed, each beside the statement that declares
+/// it: the asker's view of them, taken from another reader's view of the item where one holds them,
+/// its reads made again, else gathered with the reads their gathering makes.
+export fn item_stated_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    StatedBody,
+> {
+    let view = item_view(engine, file, at)
+    let mine? = view.stated.get() else { return stated_taken(engine, view, item).bodies }
+    mine.bodies
+}
+
+/// The bodies of `view`'s item for its reader, held on it from here on: another reader's, its reads
+/// made again, else gathered.
+fn stated_taken(engine: QueryEngine, view: ItemView, item: ReadItem) -> StatedHeld {
+    let held = stated_elsewhere(engine, view) ?? stated_gathered(engine, view.file, view.at, item)
+    view.stated.set(held)
+    held
+}
+
+/// The bodies another reader's view of `view`'s item holds, the reads their gathering made made
+/// again by whoever is asking; absent where no held view holds them.
+fn stated_elsewhere(engine: QueryEngine, view: ItemView) -> StatedHeld? {
+    let other? = views_held()
+        .get()
+        .find_map(if it.holds(engine, view.file, view.at) { it.stated.get() } else { null }) else { return null }
+    engine.reads_made_again(other.reads)
+    other
+}
+
+/// The bodies of the item `at` of `file`, gathered with the reads the gathering makes, which are the
+/// asker's already.
+fn stated_gathered(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> StatedHeld {
+    engine.reads_begun()
+    let bodies = stated_bodies_read(engine, file, at, item)
+    StatedHeld { bodies: bodies, reads: engine.reads_gathered() }
 }

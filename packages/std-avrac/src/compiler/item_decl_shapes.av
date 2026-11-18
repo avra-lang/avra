@@ -138,12 +138,12 @@ fn enum_variants(store: SyntaxArena, s: StmtId) -> OwnNames? {
 }
 
 /// Every field a record or a component the written item `at` of `file` declares takes again among
-/// its signature's: its own, a spread's in its place, and what it carries; none where the item failed
-/// to read, whose failure is what a build says.
+/// its signature's: its own, a spread's in its place, and what it carries; none where a builder
+/// refused the item, whose failure is what a build says.
 fn fields_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
-    if !item.store.refusals().is_empty() { return [] }
+    if item.store.refusals().any(builder_refused(it)) { return [] }
     flatten(
         [again_in(item.store, s, OwnNames { owner: n!, names: [f.name for f in sig!.fields] }) for s in item.stmts for n in [item.store.struct_parts(s)?.name ?? item.store.component_parts(s)?.name] if n != null for sig in [record_signature(engine, file, n!)] if sig != null],
     )

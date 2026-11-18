@@ -4,38 +4,26 @@
 // that says what it answers leaves by `?`. The accepted shapes run in
 // `template_gaps/` and `closures/tests/lambda_question`; these pin what
 // refuses, in the seat's own words.
-use @std.avrac.compiler.{Program}
-use @std.avrac.testing.{
-    refused_n,
-    vendored_meta,
-    vendored_meta_paths,
-    test_workspace,
-    refused_with,
-    shown,
-}
-use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.testing.{refused_n, vendored_meta, refused_with, shown}
 
 /// A program with `@std/meta` whose one fn is `body`.
-fn meta_program(body: string) -> Program {
+fn meta_program(body: string) -> Judged {
     let files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
             "/w/src/main.av": "use @std.meta.{Code, Stmts, Arms}\nfn f(xs: List<Stmts>, arms: List<Arms>, n: int, s: string, rs: List<Code>) {\n    let _ = ${body}\n}\n1",
         },
     )
-    test_workspace(
-        memory_host(files, ["/w/avra.toml", "/w/src/main.av"].concat(vendored_meta_paths())),
-        "/w",
-    )
-        .program("/w/src/main.av")
+    held_at(files, "/w").judged_at("/w/src/main.av")
 }
 
 spec "features/quote — a block's last hole" {
     given "the fill" {
         then "a list of statements is a statement run, and the block still answers Code" {
-            meta_program("quote { fn g() { \${xs} } }").check() is .Ok
+            meta_program("quote { fn g() { \${xs} } }").checked() is .Ok
         }
-        then "an int is a value" { meta_program("quote { fn g() -> int { \${n} } }").check() is .Ok }
+        then "an int is a value" { meta_program("quote { fn g() -> int { \${n} } }").checked() is .Ok }
         then "arms have no place at a block's end" {
             refused_n(
                 meta_program("quote { fn g() { \${arms} } }"),
@@ -56,10 +44,10 @@ spec "features/quote — a block's last hole" {
 spec "features/quote — a spread into arguments" {
     given "the template" {
         then "a run spreads into a call's arguments" {
-            meta_program("quote { add(..\${rs}) }").check() is .Ok
+            meta_program("quote { add(..\${rs}) }").checked() is .Ok
         }
         then "a run spreads into a variant's payload" {
-            meta_program("quote { .Pair(..\${rs}) }").check() is .Ok
+            meta_program("quote { .Pair(..\${rs}) }").checked() is .Ok
         }
         then "a list of statements is no run of expressions" {
             refused_n(
@@ -82,8 +70,8 @@ spec "features/quote — a spread into arguments" {
 spec "features/quote — a literal pattern" {
     given "the arm" {
         then "an int fills a pattern seat as a literal" {
-            meta_program("quote { match 1 { \${n} -> 1, _ -> 0 } }").check() is .Ok
+            meta_program("quote { match 1 { \${n} -> 1, _ -> 0 } }").checked() is .Ok
         }
-        then "a text still binds" { meta_program("quote { match 1 { \${s} -> 1 } }").check() is .Ok }
+        then "a text still binds" { meta_program("quote { match 1 { \${s} -> 1 } }").checked() is .Ok }
     }
 }

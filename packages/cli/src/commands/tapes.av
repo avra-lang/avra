@@ -8,11 +8,14 @@ use stage.{judged, refuse_eval_words}
 use @std.avrac.compiler.backend.{host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
     default_opt,
-    raw_borrowed,
     unset_link_holes_of,
-    Admitting,
     FileWarned,
     RefusesCall,
+    AdmittedSaid,
+    GraphHeld,
+    GraphRoot,
+    NOTHING_ADMITTED,
+    package_stands,
     Finding,
     LawFinding,
     ProgramFile,
@@ -38,11 +41,10 @@ use @std.avrac.compiler.{
     program_files,
     program_warned,
 }
-use @std.avrac.compiler.host.{Manifest, library_stem, read_manifest}
+use @std.avrac.compiler.host.{Manifest, read_manifest}
 use @std.avrac.compiler.store.{machine_cache}
 use @std.avrac.diagnostics.{Diag, SourceFile, loc_at, new_source_file, render, rendered_among}
 use @std.avrac.compiler.hosts.{host_fn_owed_diag}
-use @std.errors.{Loc}
 use @std.avrac.core.{
     CalledFn,
     Span,
@@ -114,9 +116,6 @@ use @std.avrac.compiler.{
     lowering_moved,
     program_refused,
     entry_files,
-    admission,
-    dep_chain,
-    entering,
     digest_of_binary,
     written_across,
     opt_level,
@@ -218,7 +217,7 @@ use @std.io.{
     write_bytes,
     write_text,
 }
-use @std.path.{dir_of, file_name, joined_path, normalized, relative_path, stem_of, under_dir}
+use @std.path.{dir_of, file_name, joined_path, relative_path, stem_of, under_dir}
 use @std.process.{
     Command,
     Env,
@@ -334,7 +333,7 @@ fn worlded(root: string, only: string, lone: string) -> Disk? {
     let home = GraphRoot { name: package_named(root), dir: root }
     mut deps: Map<string, string> = {}
     mut admitted = NOTHING_ADMITTED
-    if lone.is_empty() { rows_admitted(root, true, [home.name], home, deps, admitted) }
+    if lone.is_empty() { on_disk().rows_admitted(root, true, [home.name], home, deps, admitted) }
     let disk = Disk {
         root: root,
         name: home.name,
@@ -350,10 +349,7 @@ fn worlded(root: string, only: string, lone: string) -> Disk? {
 
 /// The name the package at `root` is addressed by: its manifest's, else, a directory with none, the
 /// directory's own.
-fn package_named(root: string) -> string {
-    let named = manifest_at(root).name
-    if named.is_empty() { file_name(root) } else { named }
-}
+fn package_named(root: string) -> string { on_disk().package_named(root, file_name(root)) }
 
 /// A file a build reads as data: its octets beneath its package's root, reached through no link.
 fn disk_octets(root: string, path: string) -> FileOctets {
@@ -1159,12 +1155,6 @@ type Disk = {
     over: Map<string, string> = {},
 }
 
-/// What admitting a package graph's rows said, and the manifests it read them off.
-type AdmittedSaid = { voices: List<Diag>, sources: List<SourceFile> }
-
-/// What admitting no row says.
-const NOTHING_ADMITTED: AdmittedSaid = AdmittedSaid { voices: [], sources: [] }
-
 impl Disk {
     /// The named package's source files a receipt holds: each under `only`.
     fn held(engine: QueryEngine) -> List<string> { package_sources(engine, self.name, "src").filter(it.starts_with(self.only)) }
@@ -1221,15 +1211,7 @@ impl Disk {
 
     /// Where a package stands: a path dependency's directory, a std package's in the toolchain, else
     /// the root's.
-    fn package_root(package: string) -> string {
-        let dep = self.deps.get(package)
-        if dep != null { return dep! }
-        if package != self.name && package.starts_with(STD) {
-            joined_path(self.std, library_stem(package))
-        } else {
-            self.root
-        }
-    }
+    fn package_root(package: string) -> string { package_stands(package, self.name, self.root, self.std, self.deps) }
 
     /// The named package's file at `path`, as the program addresses it.
     fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: self.name, path_in_package: path } }
@@ -1250,64 +1232,10 @@ impl Disk {
 fn manifest_at(dir: string) -> Manifest { read_manifest(new_source_file("avra.toml", text_at(joined_path(dir, "avra.toml")) ?? "")) }
 
 /// The manifest at `dir` as its text reads, an empty one where it has none.
-fn manifest_source(dir: string) -> SourceFile {
-    let path = joined_path(dir, "avra.toml")
-    new_source_file(path, text_at(path) ?? "")
-}
+fn manifest_source(dir: string) -> SourceFile { on_disk().manifest_source(dir) }
 
-/// The package a graph is rooted at: its name and directory, which the graph holds before any row.
-type GraphRoot = { name: string, dir: string }
-
-/// THE ROWS OF THE MANIFEST AT `dir` ADMITTED as the old path admits them (`admission`, then
-/// `entering`): depth first, each key once, a row serving tests followed from the root alone, and a
-/// row naming a std package a pin that wins for the whole graph. Each package entered is set in
-/// `dirs` by its directory; what the admission says goes to `admitted`'s voices, the manifest it was
-/// read off to its sources. `chain` is the packages depending on the one at `dir`.
-fn rows_admitted(
-    dir: string,
-    root: bool,
-    chain: List<string>,
-    home: GraphRoot,
-    mut dirs: Map<string, string>,
-    mut admitted: AdmittedSaid,
-) {
-    let src = manifest_source(dir)
-    admitted.sources.push(src)
-    for d in read_manifest(src).deps {
-        if d.dev && !root { continue }
-        let p? = d.path else { continue }
-        let at = normalized(joined_path(dir, p))
-        let chained = dep_chain(d, chain)
-        let known = if d.key == home.name { home.dir } else { dirs.get(d.key) }
-        let row = Admitting { key: d.key, dir: at, at: d.at, chain: chained, known: known }
-        match admission(row, rooted, (f) -> text_at(f) != null) {
-            .Refused(said) -> admitted.voices.push(said),
-            .Held -> { continue },
-            .Entered -> package_entered(d.key, at, d.at, chained, home, dirs, admitted),
-        }
-    }
-}
-
-/// The package `key` entered at `at`, named by a row standing at `row`: set in `dirs`, its entry
-/// law's voices said, and its own rows admitted where that law lets them be.
-fn package_entered(
-    key: string,
-    at: string,
-    row: Loc?,
-    chain: List<string>,
-    home: GraphRoot,
-    mut dirs: Map<string, string>,
-    mut admitted: AdmittedSaid,
-) {
-    dirs.set(key, at)
-    let m = read_manifest(manifest_source(at))
-    let said = entering(key, at, row, m)
-    admitted.voices = admitted
-        .voices
-        .concat(said.voices)
-        .concat(if m.raw.is_empty() { [] } else { [raw_borrowed(row, key)] })
-    if said.admits { rows_admitted(at, false, chain.concat([key]), home, dirs, admitted) }
-}
+/// The graph's read of this disk: a file's text, and a path rooted where the process stands.
+fn on_disk() -> GraphHeld { GraphHeld { text_at: text_at, absolute: rooted } }
 
 /// The toolchain's packages, by the prefix their names wear.
 const STD: string = "@std/"
@@ -4290,7 +4218,7 @@ fn graph_said(engine: QueryEngine, disk: Disk) -> AdmittedSaid {
         if p == disk.name || dirs.has(p) || !p.starts_with(STD) { continue }
         let dir = disk.package_root(p)
         if text_at(joined_path(dir, "avra.toml")) == null { continue }
-        package_entered(p, dir, null, [], home, dirs, admitted)
+        on_disk().package_entered(p, dir, null, [], home, dirs, admitted)
     }
     admitted
 }

@@ -2,24 +2,19 @@
 //! then: an edit anywhere it reaches moves it, a rename, a comment or an
 //! edit it never reaches does not. Each case runs two programs and
 //! compares what `code_hash(answer)` says in each.
-use @std.avrac.compiler.{Program}
-use @std.avrac.compiler.host.{memory_host}
-use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.testing.{vendored_meta, refused_in}
 use compiler.lower.{code_graph, CodeFacts, FactNode}
 use compiler.lower.code_hash.{empty_sum, node_digest, summed, summed_hash}
 
-fn hashing(main: string) -> Program {
+fn hashing(main: string) -> Judged {
     let held = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
             "/w/src/main.av": "use @std.meta.{code_hash}\n${main}",
         },
     )
-    test_workspace(
-        memory_host(held, ["/w/avra.toml", "/w/src/main.av"].concat(vendored_meta_paths())),
-        "/w",
-    )
-        .program("/w/src/main.av")
+    held_at(held, "/w").judged_at("/w/src/main.av")
 }
 
 /// What `code_hash(answer)` says in a program of `decls`.

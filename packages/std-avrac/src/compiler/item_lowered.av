@@ -1169,16 +1169,17 @@ export fn lowered_field_default(
     signed_lowered(engine, file, signed, "${owner}.${field}\$default", under)
 }
 
-/// The default the record `file` declares as `owner` writes for its field `field`, as a body of no
-/// seats answering the field's type. Absent where it writes none.
+/// The default the record or component `file` declares as `owner` writes for its field `field`, as
+/// a body of no seats answering the field's type. Absent where it writes none.
 fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: string, field: string) -> SignedBody? {
     let item? = record_item(engine, file, owner) else { return null }
-    let stmt? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == owner) else { return null }
-    let written? = item.store.struct_parts(stmt)!.fields.find(it.name.of == field) else { return null }
-    let value? = written.default else { return null }
+    let stmt? = item.stmts.find((s) -> fields_written(item.store, s)?.name == owner) else { return null }
+    let value? = fields_written(item.store, stmt)!
+        .fields
+        .find(it.name.of == field && it.default != null)?.default else { return null }
     let ty? = (record_signature(engine, file, owner)?.fields ?? []).find(it.name == field)?.ty else { return null }
     SignedBody {
-        signature: value_signature(ty) with { type_params: item.store.struct_parts(stmt)!.tparams },
+        signature: value_signature(ty) with { type_params: written_params(engine, file, owner) ?? [] },
         item: item,
         body: value,
         stmt: stmt,

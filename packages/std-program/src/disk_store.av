@@ -496,6 +496,22 @@ export fn wave_question(question: ContentHash) -> Question? {
 /// The octets another process of the wave kept of `answer`.
 export fn wave_answer(answer: ContentHash) -> SavedBytes? { wave_found(WAVE_ANSWERS, answer) }
 
+/// The queries whose answers are gathered from many questions, each claimed on its own.
+once fn wave_gathered() -> Cell<Map<string, bool>> {
+    let gathered: Cell<Map<string, bool>> = Cell.new({})
+    gathered
+}
+
+/// Each query of `names` gathers its answer from many questions, each claimed on its own: a
+/// process that needs such an answer while another gathers it gathers it too, the two sharing
+/// what lies under it, where it would otherwise wait with nothing to do.
+export fn wave_gathers(names: List<string>) {
+    for name in names { wave_gathered().put(name, true) }
+}
+
+/// Whether `query_name` is one `wave_gathers` named.
+export fn wave_gathered_by(query_name: string) -> bool { wave_gathered().get().has(query_name) }
+
 /// `question` claimed by this process to work out: zero where it holds the claim now, else the
 /// living process that does.
 export fn wave_claimed(question: ContentHash) -> int {

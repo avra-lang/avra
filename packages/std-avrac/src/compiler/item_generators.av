@@ -524,6 +524,11 @@ export fn declaration_sites(engine: QueryEngine, file: SourceFileAddress, d: Dec
 fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, d: DeclaredName) -> List<
     GeneratorSite,
 > {
+    if d.item < item_count(engine, file) {
+        let worn? = worn_in_item(engine, d) else { return [] }
+        if !worn.declared { return [] }
+        if !worn.marked_declared && !(d.kind == ItemKind.Component && worn.bodied_component) { return delegated_sites(engine, d).concat(member_sites(engine, d, [])) }
+    }
     let item = read_item(engine, file, d.item)
     let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
     let annotated = flatten(
@@ -567,7 +572,7 @@ fn delegated_sites(engine: QueryEngine, d: DeclaredName) -> List<GeneratorSite> 
         name: made_by.name,
         kind: GeneratorKind.TypeAnnotation,
     }
-    [GeneratorSite { name: d.name, item: d.item, generator: g, handed: [HandedArg.Decl(h!)] } for t in gathered_traits(engine, d.file, d.name) for h in [handed_trait(engine, t)] if h != null]
+    [GeneratorSite { name: d.name, item: d.item, generator: g, handed: [HandedArg.Decl(h!)] } for t in gathered_traits(engine, d.file, d.name, true) for h in [handed_trait(engine, t)] if h != null]
 }
 
 /// The trait `t` as a declaration handed to a generator's `Trait` seat.
@@ -632,7 +637,7 @@ fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings
 /// The gathering the `collect enum` `d` makes; absent when none of its traits derives, or it gathers
 /// only once built.
 fn gathering(engine: QueryEngine, d: DeclaredName) -> DerivedGathering? {
-    let derived = [t for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
+    let derived = [t for t in gathered_traits(engine, d.file, d.name, true) if derives(engine, t)]
     if derived.is_empty() { return null }
     let members? = members_of(engine, d.file, d.name, false, "") else { return null }
     DerivedGathering { members: members, derived: derived }

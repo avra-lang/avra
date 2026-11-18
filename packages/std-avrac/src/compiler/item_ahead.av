@@ -8,6 +8,7 @@
 use core.{some_list}
 use @std.program.address.{SourceFileAddress}
 use @std.program.layered_store.{LayeredStore}
+use @std.program.disk_store.{wave_gathers}
 use @std.program.query_engine.{QueryDefinition, QueryEngine, query_engine}
 use @std.program.query_times.{QueryTimes, TimedSide, query_times}
 use @std.program.sorted.{sorted_by}
@@ -48,6 +49,7 @@ export fn program_worked(
         process_count: process_count,
         timed: timed,
     }
+    wave_gathers(GATHERED)
     let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
     if process_count < 2 || few_moved(alone.engine) { return alone }
     let _ = alone.store.saved()
@@ -123,6 +125,18 @@ fn unit_placed(engine: QueryEngine, u: WalkedUnit) -> int {
     let _ = placed_code(engine, u.called, u.kept)
     placed_names(engine, u.called, u.kept).length
 }
+
+/// The queries that gather a package's or a module's answer from its files': a process that needs
+/// one while another gathers it gathers it too, each file's part worked by one of them.
+const GATHERED: List<string> = [
+    "package_gatherings",
+    "collect_members",
+    "generated_names",
+    "module_declares",
+    "module_bindings",
+    "module_kept",
+    "module_winners",
+]
 
 /// At most this many moved inputs are walked in this process alone: an edit re-asks a handful of
 /// bodies, which a fork costs more than.
@@ -253,7 +267,7 @@ fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declare
 
 /// Whether anything is kept about the lowering of every body `file` declares and about what its laws
 /// find, asking only what its declarations are.
-fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress) -> bool { bodies_known(engine, file) && file_erring_is_known(engine, file) }
+fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress) -> bool { file_erring_is_known(engine, file) && bodies_known(engine, file) }
 
 /// Every body `file` declares lowered, then what every law finds in its written items, in one process
 /// so the laws read the typing the lowering held, then what a program's whole shape reads of the

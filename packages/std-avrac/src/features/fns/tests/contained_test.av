@@ -3,13 +3,11 @@
 //! register carries refuses at the call, and the verb read as a value
 //! refuses — a guard that quietly runs nothing is the worst failure there
 //! is.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{Program}
-use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.held.{Judged, held_at}
 use @std.avrac.testing.{vendored_meta, vendored_meta_paths, refused_in}
 
 /// `main` as the entry of a package that depends on `@std/meta`.
-fn guarding(main: string) -> Program {
+fn guarding(main: string) -> Judged {
     let held = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
@@ -17,7 +15,7 @@ fn guarding(main: string) -> Program {
         },
     )
     let paths = ["/w/avra.toml", "/w/src/main.av"].concat(vendored_meta_paths())
-    test_workspace(memory_host(held, paths), "/w").program("/w/src/main.av")
+    held_at(held, "/w").judged_at("/w/src/main.av")
 }
 
 fn answered(main: string) -> string { guarding(main).run() catch e -> e }

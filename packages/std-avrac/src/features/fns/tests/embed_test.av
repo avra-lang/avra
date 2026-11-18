@@ -3,14 +3,13 @@
 //! that writes it, and what stands there is text. Each refusal is spoken
 //! at the literal, once; a file the law accepts is read from beside the
 //! source that names it, whatever const runs the read.
-use @std.avrac.testing.{test_workspace}
-use @std.avrac.compiler.{Program}
-use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.old_path.{program_of}
+use @std.avrac.testing.held.{Judged, held_at}
 use @std.avrac.testing.{vendored_meta, vendored_meta_paths, refused_in}
 
 /// `main` as the entry of a package that also holds `files`, each by its
 /// path under the package root `/w`, and that depends on a library `@x/lib`.
-fn embedding(main: string, files: Map<string, string>) -> Program {
+fn embedding(main: string, files: Map<string, string>) -> Judged {
     mut held = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/lib\" = { path = \"vendor/lib\" }\n",
@@ -31,12 +30,12 @@ fn embedding(main: string, files: Map<string, string>) -> Program {
     ]
         .concat(vendored_meta_paths())
         .concat(["/w/${k}" for k in placed])
-    test_workspace(memory_host(held, paths), "/w").program("/w/src/main.av")
+    held_at(held, "/w").judged_at("/w/src/main.av")
 }
 
 /// `main` in a package that depends on nothing but `@std/meta`, over a toolchain
 /// directory that carries `@std/sqlite` — a package with C objects — and a file of it.
-fn embedding_toolchain(main: string) -> Program {
+fn embedding_toolchain(main: string) -> Judged {
     let held = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
@@ -52,8 +51,7 @@ fn embedding_toolchain(main: string) -> Program {
         "/std/std-sqlite/src/probe.txt",
     ]
         .concat(vendored_meta_paths())
-    test_workspace(memory_host(held, paths) with { std_root: "/std" }, "/w")
-        .program("/w/src/main.av")
+    held_at(held, "/w").judged_at("/w/src/main.av")
 }
 
 /// Every path a case here may place a file at, under the package root.
@@ -103,7 +101,9 @@ spec "features/fns — embed reads a file inside its own package" {
             (embedding_toolchain("const A: string = embed(\"@std/sqlite/src/probe.txt\")\nA").run() catch e -> e) == "sqlite's text"
         }
         then "the package joins no build: it is no package row and links no object" {
-            let p = embedding_toolchain("const A: string = embed(\"@std/sqlite/src/probe.txt\")\nA")
+            let p = program_of(
+                embedding_toolchain("const A: string = embed(\"@std/sqlite/src/probe.txt\")\nA"),
+            )
             let _ = p.run() catch e -> e
             !p.ws.packages().any(it.key == "@std/sqlite") &&
                 !p.ws.link_words("").any(it.contains("sqlite3.o"))

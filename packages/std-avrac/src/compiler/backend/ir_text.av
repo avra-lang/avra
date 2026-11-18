@@ -21,15 +21,29 @@ use core.{
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
 
-export fn render_ir(l: Lowered) -> string { listed(l, (b) -> "(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}") }
+export fn render_ir(l: Lowered) -> string {
+    listed(
+        l,
+        (b) -> if typed_in(l, b) { "(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}" } else { laid_signature(b) },
+    )
+}
+
+/// Whether the program's registry holds every type `b`'s signature names: a body that carries
+/// layouts alone names none it holds, and is signed by its layouts.
+fn typed_in(l: Lowered, b: Body) -> bool {
+    let held = l.types.shapes.get().length
+    b.params.all(it.index < held) && b.ret.index < held
+}
+
+/// A body's seats and answer by what they are in registers.
+fn laid_signature(b: Body) -> string {
+    "(${joined(["r${j}: ${s.spelled()}" for j, s in b.seats], ", ")}) -> ${(b.answer ?? Layout.Void).spelled()}"
+}
 
 /// A program's IR as text where its bodies carry layouts and no type: each fn's seats and answer
 /// by what they are in registers.
 export fn render_laid(l: Lowered) -> string {
-    listed(
-        l,
-        (b) -> "(${joined(["r${j}: ${s.spelled()}" for j, s in b.seats], ", ")}) -> ${(b.answer ?? Layout.Void).spelled()}",
-    )
+    listed(l, laid_signature)
 }
 
 /// The listing: each fn under its signature as `signed` writes it, the statics, then the entry.

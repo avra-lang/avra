@@ -312,6 +312,7 @@ export fn disk_free_at(path: string) -> int? {
 export fn file_bytes(path: string) -> int { avra_file_bytes(path) }
 extern fn avra_cores_group(count: int) -> int
 extern fn avra_cores_fork(group: int, serving: int) -> int
+extern fn avra_cores_claimed(group: int) -> int
 extern fn avra_cores_leave(group: int, core: int, accepted: int, err: int) -> int
 extern fn avra_cores_end_fd(group: int, core: int) -> int
 extern fn avra_cores_heard(group: int, core: int) -> int
@@ -327,22 +328,27 @@ export fn emit_cores() -> int {
     avra_cores_online()
 }
 
-/// EACH SHARE RUN IN A PROCESS OF ITS OWN, forked from this one: `run` answers whether its share
-/// went clean, and its process leaves with that. Whether every process left clean once all have;
-/// absent where nothing forked, and the caller runs the shares itself.
-export fn run_across(shares: List<List<int>>, run: fn(List<int>) -> bool) -> bool? {
-    let group = avra_cores_group(shares.length)
+/// `count` turns taken across `processes` forked processes, each taking the next turn no other
+/// has taken until none is left, so none sits idle while another still holds turns: whether
+/// every process ran each turn it took clean; absent where none forked.
+export fn turns_across(processes: int, count: int, run: fn(int) -> bool) -> bool? {
+    let group = avra_cores_group(processes)
     if group < 0 { return null }
     let core = avra_cores_fork(group, 0 - 1)
     if core < 0 { return null }
-    if core < shares.length {
-        let clean = run(shares[core])
+    if core < processes {
+        mut clean = true
+        mut turn = avra_cores_claimed(group)
+        while turn < count {
+            if !run(turn) { clean = false }
+            turn = avra_cores_claimed(group)
+        }
         let _ = avra_cores_leave(group, core, 0, if clean { 0 } else { 1 })
     }
-    for c in 0..shares.length {
+    for c in 0..processes {
         while avra_cores_heard(group, c) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(group, c), 0, EMIT_WAIT_MS) }
     }
-    avra_cores_finished(group) == shares.length
+    avra_cores_finished(group) == processes
 }
 
 /// How many objects are made at once: a worker is a thread of this process and holds one
