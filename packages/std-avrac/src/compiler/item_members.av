@@ -262,9 +262,10 @@ fn written_types(engine: QueryEngine, file: SourceFileAddress, at: int, item: Re
 }
 
 /// The statements the written item `at` of `file` runs where its file is an entry, typed; absent
-/// where it runs none. An item that only declares runs nothing, and reads none of its file's others.
+/// where it runs none. An item that only declares — a name, or an impl's members — runs nothing,
+/// and reads none of its file's others.
 fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: int) -> TypedNodes? {
-    if file_declares(engine, file).names.any(it.item == at) && !runs_in(engine, file, at) { return null }
+    if !runs_in(engine, file, at) { return null }
     if entry_types(engine, file).bases.is_empty() { return null }
     let read = entry_read(engine, file)
     let mine? = read.items.find(it.at == at) else { return null }
@@ -1063,18 +1064,14 @@ fn verb_unfit(engine: QueryEngine, s: SignedType, word: string, name: string, at
     MissPlaced { at: at, miss: Miss.VerbUnfit(name, s.spelled(), elem.spelled()) }
 }
 
-/// `[…]` on a value of `subject` that's no list.
+/// `[…]` on a value of `subject` that's no list — one that may be absent is none, a list's too.
 fn index_miss(subject: SignedType?, at: Span?) -> List<MissPlaced> {
     let s? = subject else { return [] }
-    if !plain_known(s) || s.listed() != null { return [] }
+    let absent = s.nullable() && plain_known(s with { nulls: 0 })
+    if !absent && (!plain_known(s) || s.listed() != null) { return [] }
+    let text = !absent && match s.head { .Owned(word) -> word == "string", rest -> false }
     match s.head {
-        .Owned(word) -> [
-            MissPlaced {
-                at: at,
-                miss: if word == "string" { Miss.Text } else { Miss.Index(s.spelled()) },
-            },
-        ],
-        .Declared(_, _) -> [MissPlaced { at: at, miss: Miss.Index(s.spelled()) }],
+        .Owned(_) or .Declared(_, _) -> [MissPlaced { at: at, miss: if text { Miss.Text } else { Miss.Index(s.spelled()) } }],
         rest -> [],
     }
 }

@@ -3391,9 +3391,17 @@ impl Checking {
         true
     }
 
+    /// The call being checked, checked before under a seat that named no type and refused for a type
+    /// parameter nothing filled, withdraws that: checked again where its arms meet, it is judged
+    /// under the seat it then has.
+    mut fn unpinned_withdrawn() {
+        let at? = self.site_node() else { return }
+        self.refused.set([r for r in self.refused.get() if !(r.at == at && r.seat is .Unpinned)])
+    }
+
     /// Whether the call of the fn `declared` names leaves one of its type parameters filled by
     /// nothing: refused at the first that none of `fillers` names — the seats, whose arguments say
-    /// their own refusals, and the answer where a seat may yet take it.
+    /// their own refusals, and the answer under a seat that wants a type.
     mut fn left_unpinned(
         declared: CalleeNamed?,
         found: Map<string, SignedType>,
@@ -3502,9 +3510,10 @@ impl Checking {
     /// Each value checked under a seat it can't see: one already refused says nothing more of them.
     mut fn checked_unseen(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Unknown) } }
 
-    /// The crossing at `e` into the named type `callee`, handed other than its one value: refused as
-    /// a call's count, its arguments checked against nothing.
-    mut fn crossing_miscounted(e: ExprId, callee: string, args: List<ExprId>) {
+    /// The construct at `e` named `callee`, handed other than the `takes` values it takes — a
+    /// crossing into a named type its one, a variant written bare what it carries: refused as a
+    /// call's count, its arguments checked against nothing.
+    mut fn crossing_miscounted(e: ExprId, callee: string, args: List<ExprId>, takes: int = 1) {
         self.checked_free(args)
         if self.meanings { return }
         let none = owned_type("void")
@@ -3515,7 +3524,7 @@ impl Checking {
                     at: e,
                     want: none,
                     found: none,
-                    seat: Seating.Miscounted("", callee, false, 1, 1, args.length, 0, false),
+                    seat: Seating.Miscounted("", callee, false, takes, takes, args.length, 0, false),
                 },
             )
     }
@@ -3801,6 +3810,7 @@ impl Checking {
         bounds: List<SignedType?> = [],
         declared: CalleeNamed? = null,
     ) -> SignedType? {
+        if declared != null { self.unpinned_withdrawn() }
         let before = self.refused.get().length
         if self.spreads_records(f, args) { return self.spread_called(f, args, 0, {}, expected, seat_of) }
         let fill? = self.filling(f, args, 0) else { return self.miscounted(f, args, 0, seat_of(0), true) }
@@ -3835,7 +3845,7 @@ impl Checking {
                     declared,
                     found,
                     [s.ty for s in seats]
-                        .concat(if expected is .Dropped || f.answer == null { [] } else { [f.answer!] }),
+                        .concat(if expected is .Exactly && f.answer != null { [f.answer!] } else { [] }),
                 ) { return null }
         let answer? = f.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }

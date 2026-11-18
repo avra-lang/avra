@@ -1,86 +1,33 @@
-// A declaration's names (COMPILER DB townhall §6.11): a foreign reader of a
-// body's names depends on that declaration's own slice, never on the
-// file's whole `Resolved`. `Visible` is a saved query keyed by its file;
-// `Names` is one keyed by its declaration.
-use @std.avrac.testing.old_path.{test_workspace}
-use compiler.{Workspace, file_visible_made_key, names_in_key}
-use compiler.host.{memory_host}
-use core.{DeclId}
-use @std.relation.engine.{Key}
-
-fn names_key(ws: Workspace, d: DeclId) -> Key { names_in_key(ws, d) }
-
-fn names_visible_key(ws: Workspace) -> Key { file_visible_made_key(ws, ws.file_id("/w/src/main.av")) }
-
-fn names_workspace(main: string) -> Workspace {
-    test_workspace(
-        memory_host(
-            {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": main,
-            },
-            ["/w/avra.toml", "/w/src/main.av"],
-        ),
-        "/w",
-    )
-}
-
-fn names_decl_named(ws: Workspace, name: string) -> DeclId {
-    [x.id for x in ws.decls.all_decls() if x.name == name][0]
-}
+// A declaration's names are its own: a binding gained in one fn's body types that fn again and
+// leaves its neighbour's answers standing, over the store an earlier judging left.
+use @std.avrac.testing.held.{Held, empty_store, held_at}
 
 fn names_source(a_body: string, b_body: string) -> string {
     "fn one() -> int {\n    1\n}\nfn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    ${b_body}\n}\n"
 }
 
-/// `b`'s name slice after its write summary has read it.
-fn names_slice_of_b(ws: Workspace) -> int {
-    let _ = ws.items(ws.file_id("/w/src/main.av"))
-    let _ = ws.writes_of(names_decl_named(ws, "b"))
-    ws.name_slice(names_decl_named(ws, "b"))
+fn names_held(main: string) -> Held {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+        "/w",
+    )
+}
+
+/// How many fn bodies a second process types again judging the file as `after`, over the store a
+/// judging of it as `before` left.
+fn names_retyped(before: string, after: string) -> int {
+    let store = empty_store()
+    let _ = names_held(before).worked_judging("/w/src/main.av", store)
+    names_held(after).worked_judging("/w/src/main.av", store).filter(it == "typed_fn").length
 }
 
 spec "compiler/workspace — a declaration's names are declaration-grain" {
-    given "`b`'s write summary over a program with plain fns" {
-        then "its dependency list names `b`'s Names directly" {
-            let ws = names_workspace(names_source("1", "2"))
-            let _ = ws.items(ws.file_id("/w/src/main.av"))
-            let b = names_decl_named(ws, "b")
-            let _ = ws.writes_of(b)
-            ws
-                .cells_named("write_summary")
-                .any(
-                    (s: Key) -> ws
-                        .db
-                        .edges_by_reader(s)
-                        .any(
-                            (k: Key) -> k.family == names_key(ws, b).family &&
-                                k.arg == names_key(ws, b).arg,
-                        ),
-                )
+    given "a file where one fn gains a binding" {
+        then "a new binding in `a` types `a` alone again, and leaves `b` where it was" {
+            names_retyped(names_source("1", "2"), names_source("one()", "2")) == 1
         }
-        then "and names the file's Visible, which carries the namespace the slice leaves out" {
-            let ws = names_workspace(names_source("1", "2"))
-            let _ = ws.items(ws.file_id("/w/src/main.av"))
-            let b = names_decl_named(ws, "b")
-            let _ = ws.writes_of(b)
-            let v = names_visible_key(ws)
-            ws
-                .cells_named("write_summary")
-                .any(
-                    (s: Key) -> ws
-                        .db
-                        .edges_by_reader(s)
-                        .any((k: Key) -> k.family == v.family && k.arg == v.arg),
-                )
-        }
-    }
-    given "`b`'s slice in a file where `a` is edited" {
-        then "a new binding in `a` leaves `b`'s slice where it was" {
-            names_slice_of_b(names_workspace(names_source("1", "2"))) == names_slice_of_b(names_workspace(names_source("one()", "2")))
-        }
-        then "a new binding in `b` moves it" {
-            names_slice_of_b(names_workspace(names_source("1", "2"))) != names_slice_of_b(names_workspace(names_source("1", "one()")))
+        then "a new binding in `b` types `b` again" {
+            names_retyped(names_source("1", "2"), names_source("1", "one()")) == 1
         }
     }
 }

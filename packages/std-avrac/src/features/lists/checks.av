@@ -26,7 +26,8 @@ use core.pat.{Seq}
 
 impl Checks for ListLit {
     /// A list a seat wants as `List<T>` checks each element as a `T`. Any other joins its elements'
-    /// types, and a variant written by its name alone takes the type the others join to.
+    /// types — an element whose type isn't known checked again as what the others join to — and a
+    /// variant written by its name alone takes that join.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
         let element = wanted?.listed()
@@ -41,14 +42,16 @@ impl Checks for ListLit {
             return if self.elems.is_empty() { owned_type("List") with { args: [never_type()] } } else { wanted }
         }
         let free = if expected is .Unknown { Expected.Unknown } else { Expected.Free }
-        let own = [contributed(cx, v, cx.check(v, free)) for v in self.elems if !cx.store.variant_literal(v)]
+        let plain = [v for v in self.elems if !cx.store.variant_literal(v)]
+        let read = [contributed(cx, v, cx.check(v, free)) for v in plain]
+        let again = cx.pinning(read, expected)
+        let own = [if t != null || again == null || cx.store.spread_operand(plain[at]) != null { t } else { cx.check(plain[at], Expected.Exactly(again!)) } for at, t in read]
         let joined = types_joined(own)
         let seated = if own.is_empty() || joined == null { free } else { Expected.Exactly(joined!) }
         let held = types_joined(
             own.concat([cx.check(v, seated) for v in self.elems if cx.store.variant_literal(v)]),
         )
         if held != null { return owned_type("List") with { args: [held!] } }
-        let plain = [v for v in self.elems if !cx.store.variant_literal(v)]
         cx.literal_apart("list", plain, [cx.store.spread_operand(v) != null for v in plain])
         null
     }
