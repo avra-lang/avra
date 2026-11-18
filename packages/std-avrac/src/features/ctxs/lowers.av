@@ -1,0 +1,24 @@
+//! The lowering rules of `ctx`: a read is what the frame in force holds, a set makes the next frame
+//! until its scope ends (core/contexts_lowered.av). A declaration runs nothing where it stands: its
+//! default is its own unit, built at its first read.
+use core.{Lowering, Lowers, StmtLowers, ExprId, StmtId, Reg}
+use core.stmt.{CtxDecl, CtxSet}
+use core.expr.{CtxRead}
+
+impl Lowers for CtxRead {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let c? = cx.context(self.name.of, e) else { return cx.unlowered(e) }
+        cx.context_read(c, self.name.of)
+    }
+}
+
+impl StmtLowers for CtxSet {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let c? = cx.context(self.name.of, self.value) else { return cx.stmt_unlowered(s) }
+        cx.context_set(c, cx.lowered_into(self.value, c.held), s)
+    }
+}
+
+impl StmtLowers for CtxDecl {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {}
+}

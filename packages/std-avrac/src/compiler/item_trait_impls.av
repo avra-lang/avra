@@ -9,6 +9,7 @@ use compiler.typing.{
     bound_miscounts_trait,
     default_is_the_traits,
     impl_miscounts_trait,
+    impl_no_trait,
     impl_of_instantiation,
     impl_on_alias,
     impl_unanswered,
@@ -68,6 +69,17 @@ fn impls_read(engine: QueryEngine, file: SourceFileAddress, item: ReadItem) -> L
         args: [spelled(a) for a in item.store.trait_args_of(s)],
         tr: tr!,
     } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null for tr in [trait_read(engine, file, p!.of!)] if tr != null]
+}
+
+/// Every impl-for the written item `at` of `file` writes whose trait names no trait, behind the parse
+/// refusal of a file of its module where one holds; a name a refused `use` binds answers to that
+/// `use` alone.
+fn impls_untraited(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let item? = parsed_item(engine, file, at) else { return [] }
+    let untraited = [Found { at: item.store.stmt_span(s), args: [p!.of!] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null && trait_read(engine, file, p!.of!) == null]
+    if untraited.is_empty() { return [] }
+    let refused = refused_imports(engine, file)
+    [f with { unread: unread_here(engine, file, f.args[0]) } for f in untraited if !refused.contains(f.args[0])]
 }
 
 /// The written item `at` of `file`, read where it parsed; absent otherwise.
@@ -177,6 +189,16 @@ fn bounds_miscounting(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
         args: [b.name, "${tr!.takes()}", "${b.type_args().length}"],
     } for s in item.store.stmt_ids() for b in item.store.bound_roots(s) if !b.optional && !b.dynamic && !b.arrow for tr in [trait_read(engine, file, b.name)] if tr != null && tr!.takes() != b.type_args().length]
 }
+
+/// an impl-for names a trait
+export law impl_names_a_trait {
+    kind: "type.trait"
+    reads: impls_untraited
+    voice: impl_untraited_words
+    witness: "type P = { x: int }\n\nimpl Nope for P {\n}\n"
+}
+
+fn impl_untraited_words(a: List<string>) -> Voice { impl_no_trait(a[0]) }
 
 /// an impl names its trait at every parameter the trait declares
 export law impl_names_its_trait_whole {

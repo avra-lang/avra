@@ -43,11 +43,13 @@ impl Lowering {
         } for j, c in callees]
         if entries.any(it == null) { return self.missed_as("a `dyn` box over a value laid inline whose method writes a seat") }
         let tag? = self.type_tag(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
+        self.box_marked(from, into, callees)
         let dst = self.call_row(self.laid_out(into), rt_sig_of("avra_array_new")!, [])
         self.run_row(rt_sig_of("avra_array_push")!, [dst, if inline { self.crossed(r) } else { r }])
         for j, c in callees {
             self.reached(c)
             let code = self.mint(Layout.Word)
+            self.entry_marked(code)
             self.emit(Ins.FnAddr(code, entries[j]!))
             self.run_row(rt_sig_of("avra_array_push")!, [dst, code])
         }

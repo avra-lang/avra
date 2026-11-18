@@ -2,15 +2,19 @@
 //! before, each filter a region around what follows it, and past the last clause the element pushed.
 //! A head over a map walks its keys and its values side by side; one over octets, each octet.
 use core.{
+    BinOp,
     Bound,
     CompClause,
     ExprId,
+    Layout,
     ListWalk,
+    Literal,
     Lowering,
     Lowers,
     OwnType,
     Reg,
     SignedType,
+    literal_of,
     owned_type,
     rt_sig_of,
 }
@@ -23,10 +27,41 @@ impl Lowers for Comp {
         let ty? = cx.type_at(e) else { return cx.untyped(e) }
         if ty.listed() == null { return cx.unlowered(e) }
         if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as(source_unwalked()) }
-        let built = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+        let fill = filling(cx, self, ty)
+        if fill != null { return filled(cx, ty, fill!) }
+        let built = cx.list_made(ty, cx.const_int(0))
         walked(cx, self, 0, built)
         built
     }
+}
+
+/// A comprehension that is a fill: a count from `lo` up to `hi`, every cell the literal `cell`.
+type Fill = { lo: ExprId, hi: ExprId, cell: Literal }
+
+/// THE FILL: `[c for _k in lo..hi]`, one count and a literal scalar `c` of the list's own element,
+/// is a packed list laid out full of `c` — no walk, no push. The literal reads nothing the walk
+/// binds, so every cell is the same word. Absent for any other comprehension.
+fn filling(mut cx: Lowering, c: Comp, ty: SignedType) -> Fill? {
+    if c.clauses.length != 1 || !cx.packs(ty) { return null }
+    let head = match c.clauses[0] {
+        .Head(index, _, source, hi) -> if index == null && hi != null { Fill { lo: source, hi: hi!, cell: Literal.Int(0) } } else { null },
+        .Filter(_) -> null,
+    }
+    let fill? = head else { return null }
+    let lit? = literal_of(cx.store.valued(c.elem)) else { return null }
+    let elem? = ty.listed() else { return null }
+    let scalar = match lit { .Int(_) or .Float(_) or .Bool(_) -> true, .Text(_) -> false }
+    if !scalar || lit.type().spelled() != elem.spelled() { return null }
+    fill with { cell: lit }
+}
+
+/// The fill `f` of type `ty`: the count's bound read, then its start, as its walk reads them, and a
+/// cell for each step between.
+fn filled(mut cx: Lowering, ty: SignedType, f: Fill) -> Reg {
+    let end = cx.lower(f.hi)
+    let start = cx.lower(f.lo)
+    let n = cx.bin(Layout.Word, BinOp.Sub, end, start)
+    cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_filled_words")!, [n, cx.constant(f.cell)])
 }
 
 /// Whether a clause is one this rule walks: a filter, or a head over a list, a map or octets, or

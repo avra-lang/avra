@@ -248,7 +248,8 @@ export enum Ins {
 
     // Memory: inserted by the memory pass, never by lowering.
     Retain(r: Reg)
-    Release(r: Reg)
+    /// Each of `rs` released, in order: a run of releases is one instruction.
+    Release(rs: List<Reg>)
 
     // Effects.
     Ret(code: int)
@@ -306,7 +307,7 @@ fn ins_words(i: Ins) -> InsWords {
         .LoopEnd -> InsWords { tag: 27, ints: [], texts: [] },
         .LoopJump(outward, again) -> InsWords { tag: 33, ints: [outward, if again { 1 } else { 0 }], texts: [] },
         .Retain(r) -> InsWords { tag: 28, ints: [r.index], texts: [] },
-        .Release(r) -> InsWords { tag: 29, ints: [r.index], texts: [] },
+        .Release(rs) -> InsWords { tag: 29, ints: [r.index for r in rs], texts: [] },
         .Ret(code) -> InsWords { tag: 30, ints: [code], texts: [] },
     }
 }
@@ -358,7 +359,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .LoopEnd -> Ins.LoopEnd,
         .LoopJump(outward, again) -> Ins.LoopJump(outward, again),
         .Retain(r) -> Ins.Retain(m(r)),
-        .Release(r) -> Ins.Release(m(r)),
+        .Release(rs) -> Ins.Release([m(r) for r in rs]),
         .Ret(code) -> Ins.Ret(code),
     }
 }
@@ -769,7 +770,10 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .LoopEnd -> match b { .LoopEnd -> true, rest -> false },
         .LoopJump(o1, a1) -> match b { .LoopJump(o2, a2) -> o1 == o2 && a1 == a2, rest -> false },
         .Retain(r1) -> match b { .Retain(r2) -> same_reg(r1, r2), rest -> false },
-        .Release(r1) -> match b { .Release(r2) -> same_reg(r1, r2), rest -> false },
+        .Release(rs1) -> match b {
+            .Release(rs2) -> rs1.length == rs2.length && (0..rs1.length).all((k: int) -> same_reg(rs1[k], rs2[k])),
+            rest -> false,
+        },
         .Ret(c1) -> match b { .Ret(c2) -> c1 == c2, rest -> false },
     }
 }
@@ -815,6 +819,8 @@ export enum RtHost {
     Puts
     Streq
     ArrayNew
+    /// A list laid out full of one word.
+    ArrayFilled
     ArrayPush
     ArrayGet
     ArrayLen
@@ -1009,6 +1015,10 @@ export enum RtHost {
     TaskCancel
     TaskSlot
     TaskSlotSet
+    /// The running task's contexts: the cell a key's set gave, a set, and the end of a set's block.
+    CtxRead
+    CtxSet
+    CtxBack
     TaskId
     /// Who asked the cancel that ended a task, or its own id for an
     /// answer: the record `avra_task_ended_by` reads.

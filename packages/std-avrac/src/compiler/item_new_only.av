@@ -24,6 +24,8 @@ export enum NewOnly {
     /// A field of `@std/meta`'s `Key` written in a literal, which takes a value of any type a key is
     /// made from.
     AnyKey
+    /// A context: `ctx name: T` declared, `ctx name = v` set, or `ctx.name` read.
+    Ctx
 }
 
 impl NewOnly {
@@ -36,6 +38,7 @@ impl NewOnly {
             .PlacedMember -> "a component's `state` member written at its instance",
             .DefaultSlot -> "a component's `List` field marked `@default`",
             .AnyKey -> "a field of `@std/meta`'s `Key` written in a literal",
+            .Ctx -> "a context (`ctx`)",
         }
     }
 }
@@ -60,10 +63,18 @@ fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     let member = if nodes.any(member_placed(engine, file, item.store, it)) { [NewOnly.PlacedMember] } else { [] }
     let writes = flatten([key_writes(engine, file, item.store, e) for e in nodes])
     let keyed = if writes.is_empty() || keys_all(item_typed(engine, file, at, item), writes) { [] } else { [NewOnly.AnyKey] }
+    let contexts = if contexted(item.store, nodes) { [NewOnly.Ctx] } else { [] }
     flatten([stmt_new_only(item.store, s) for s in item.stmts])
         .concat(wide)
         .concat(member)
         .concat(keyed)
+        .concat(contexts)
+}
+
+/// Whether a store whose expressions are `nodes` holds a context's form: a declaration, a set or a read.
+fn contexted(store: SyntaxArena, nodes: List<ExprId>) -> bool {
+    nodes.any((e) -> store.ctx_read(e) != null) ||
+        store.stmt_ids().any((s) -> store.ctx_declared(s) != null || store.ctx_set(s) != null)
 }
 
 /// Whether `e` calls a fn with a `state` seat, handing an argument a module's `state` or a field by a

@@ -38,9 +38,12 @@ fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs
     UnreadName,
 > {
     if !file_generated(engine, file).said.is_empty() || read_refused(engine, file) { return [] }
-    [u for u in item_refusals(engine, file, at).unread if u.read == read &&
+    let unread = [u for u in item_refusals(engine, file, at).unread if u.read == read &&
         apart_files(engine, file, u.name).is_empty() &&
         !reexport_unreached_read(engine, file, u.name)]
+    if unread.is_empty() { return [] }
+    let refused = refused_imports(engine, file)
+    [u for u in unread if !refused.contains(u.name)]
 }
 
 /// Whether a statement of `file` failed to build what it read: a builder refused its shape, so the
@@ -63,6 +66,17 @@ fn unread_found(u: UnreadName, candidates: List<string>) -> Found {
     Found { at: span_of(u.at), args: [u.name].concat(if u.written_here { candidates } else { [] }) }
 }
 
+/// A name nothing answers in `file`, as `unread_found` says it, behind the parse refusal of a file of
+/// its module where one holds: the name may be declared where nothing could be read.
+fn unread_behind_found(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    u: UnreadName,
+    candidates: List<string>,
+) -> Found {
+    unread_found(u, candidates) with { unread: unread_here(engine, file, u.name) }
+}
+
 /// Every value read nothing answers, beside the names the file defines at its top level; a member
 /// of a record its file declares, read bare in an impl, is a member's law, and a binding the file's
 /// statements make, the run-time binding's.
@@ -70,7 +84,7 @@ fn values_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
     if unread.is_empty() { return [] }
     let defined = top_level_defined(engine, file)
-    [unread_found(u, defined) for u in unread if !defined.contains(u.name)]
+    [unread_behind_found(engine, file, u, defined) for u in unread if !defined.contains(u.name)]
 }
 
 /// Every value read nothing answers that a binding of the file's top level makes, in a declaration
@@ -139,7 +153,7 @@ fn calls_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
     let unread = unread_in(engine, file, at, ReadAs.Call)
     if unread.is_empty() { return [] }
     let names = names_seen(engine, file, Space.Value)
-    [unread_found(u, names) for u in unread]
+    [unread_behind_found(engine, file, u, names) for u in unread]
 }
 
 /// Every record literal of a type nothing declares, beside the types the file's names hold; one
@@ -148,7 +162,7 @@ fn records_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
     let unread = [u for u in unread_as(engine, file, at, ReadAs.Record) if !names_fn(engine, file, u.name)]
     if unread.is_empty() { return [] }
     let names = names_seen(engine, file, Space.Type)
-    [unread_found(u, names) for u in unread]
+    [unread_behind_found(engine, file, u, names) for u in unread]
 }
 
 /// Every record literal whose name declares a fn and no type.

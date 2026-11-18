@@ -528,7 +528,9 @@ fn names_read(store: SyntaxArena) -> List<ReadName> {
     let typed = [type_read(n) for s in store.stmt_ids() for t in store.type_roots(s) for n in type_names(t, store.decl_tparams(s))]
     let heads = [type_read(n) for s in store.stmt_ids() for p in some_list(store.impl_parts(s)) for n in some_list(p.of).concat([p.target])]
     let marks = [ReadName { space: Space.Value, name: m.name } for s in store.stmt_ids() for m in store.marks_written(s)]
-    used.concat(typed).concat(heads).concat(marks)
+    let read = [value_named(n) with { home: store.home_of(e) } for e in store.expr_ids() for n in some_list(store.ctx_read(e))]
+    let set = [value_named(n) for s in store.stmt_ids() for n in some_list(store.ctx_set(s))]
+    used.concat(typed).concat(heads).concat(marks).concat(read).concat(set)
 }
 
 /// The name the expression `e` reads, by the shape of its use; absent for one that reads none.
@@ -548,8 +550,11 @@ fn type_read(name: string) -> ReadName { ReadName { space: Space.Type, name: nam
 
 fn value_read(name: string?) -> ReadName? {
     let n? = name else { return null }
-    ReadName { space: Space.Value, name: n }
+    value_named(n)
 }
+
+/// A value's name read.
+fn value_named(name: string) -> ReadName { ReadName { space: Space.Value, name: name } }
 
 /// Every name a written type names, its arguments and alternatives included, but those of `bound`.
 fn type_names(t: TypeRef, bound: List<string>) -> List<string> {

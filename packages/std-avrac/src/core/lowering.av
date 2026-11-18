@@ -12,6 +12,9 @@ use @std.program.address.{SourceFileAddress}
 /// fn a type has by a name.
 export type LoweredProgram = {
     checked: CheckedProgram,
+    /// The context a name names, as a read or a set reaches it, read where the template that wrote it
+    /// stands (its home) before where the body stands.
+    contexts: fn(string, string?) -> HeldContext?,
     /// What a top-level name is, read where the template that wrote the read stands (its home, as an
     /// origin spells it) before where the body stands.
     named: fn(string, string?) -> NamedValue?,
@@ -162,6 +165,10 @@ export enum CollectedValue {
 /// One word a settled value is carried in: its slot, and the register it's read into.
 @derive(Saved)
 export type SettledWord = { slot: Slot, layout: Layout }
+
+/// A context as a read or a set reaches it: the key its frame's entries wear, the type it holds, and
+/// the unit answering the one-slot box its default is kept in, absent where it's required.
+export type HeldContext = { key: int, held: SignedType, start: CalledFn? }
 
 /// A fn a body calls: where it's declared, the symbol its code is known by, whether C defines it,
 /// whether a call hands it its arguments by position into seats that promise nothing and have no
@@ -411,6 +418,9 @@ export type Lowering = {
     /// Each register holding a fn value's box and the type the box is of, where one is known: what a
     /// code hash reads to tell a call through a value apart by the value's type.
     boxed: Cell<List<BoxedValue>>,
+    /// Each `ctx` set the body makes and each call it makes through a `dyn` box, as a survey of the
+    /// contexts a program reads finds them in its code (compiler/item_context_reads.av).
+    marks: Cell<ContextMarks>,
     /// The plain `let`s, by their statements' indices, a writing method writes through: each seeds
     /// its value in a cell.
     celled_lets: Cell<List<int>>,
@@ -476,6 +486,7 @@ export fn lowering(
     let handing: Cell<List<HandedPlace>> = Cell.new([])
     let pins: Cell<List<Pin>> = Cell.new([])
     let boxed: Cell<List<BoxedValue>> = Cell.new([])
+    let marks: Cell<ContextMarks> = Cell.new(ContextMarks {})
     let celled_lets: Cell<List<int>> = Cell.new([])
     let settled_consts: Cell<Map<string, ConstSeed>> = Cell.new({})
     Lowering {
@@ -503,6 +514,7 @@ export fn lowering(
         handing: handing,
         pins: pins,
         boxed: boxed,
+        marks: marks,
         celled_lets: celled_lets,
         settled_consts: settled_consts,
     }

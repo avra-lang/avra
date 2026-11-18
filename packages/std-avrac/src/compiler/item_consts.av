@@ -24,6 +24,7 @@ use core.{
     flatten,
 }
 use features.{
+    Lifted,
     EmbedFault,
     MetaHeap,
     MetaVal,
@@ -89,34 +90,7 @@ fn const_settlement(engine: QueryEngine, file: SourceFileAddress, name: string, 
 /// binary's own data.
 fn settlement_of(engine: QueryEngine, file: SourceFileAddress, body: SignedBody, name: string) -> ConstSettlement {
     let ty = body.signature.answer
-    let symbol = declared_symbol(file, name)
-    let root = signed_lowered(engine, file, body, name, null)
-    if !root.whole() { return unsettled_as("a const whose value isn't lowered yet: ${root.missing[0]}") }
-    let survey = task_survey(engine)
-    if reaches_gathered(survey, root) { return unsettled_as(per_program()) with { per_program: true } }
-    let made = match made_reaching(survey, root, symbol, [], TaskChecks.Surveyed, lazy: true) {
-        .Made(l) -> l,
-        .Unmade(why, _) -> {
-            if why == unhashed() { return code_hash_trapped(name) }
-            return unsettled_as("a const whose value reaches a body not lowered yet: ${why}")
-        },
-        .Refused(_) -> { return unsettled_as(const_refused()) },
-    }
-    let ran = match run_lifted(
-        made,
-        symbol,
-        [],
-        new_meta_heap(),
-        lifted_budgets(engine, file.package_name),
-        (n: string) -> named_lifted(engine, file, n),
-        EmbedReader { read: (path: string, kind: EmbedKind) -> embedded(engine, path, kind) },
-        null,
-        (symbol: string) -> reader_symbol(symbol, file.package_name),
-        late_door(survey, TaskChecks.Surveyed),
-    ) {
-        .Ok(lifted) -> lifted,
-        .Err(why) -> { return unsettled_as(unsettled_label(name, why)) with { broken: broken_of(why) } },
-    }
+    let ran = match const_run(engine, file, body, name) { .Ok(r) -> r, .Err(why) -> { return why } }
     let boxes: Cell<List<StaticBox>> = Cell.new([])
     let crossing = Crossing {
         program: program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
@@ -130,6 +104,53 @@ fn settlement_of(engine: QueryEngine, file: SourceFileAddress, body: SignedBody,
         unsettled: null,
         broken: null,
     }
+}
+
+/// The value `body` holds, under the name `name` of `file`, run in the evaluator: lowered as a body of
+/// nothing answering its type; or the settlement that says why it isn't.
+fn const_run(engine: QueryEngine, file: SourceFileAddress, body: SignedBody, name: string) -> Result<
+    Lifted,
+    ConstSettlement,
+> {
+    let symbol = declared_symbol(file, name)
+    let root = signed_lowered(engine, file, body, name, null)
+    if !root.whole() { return .Err(unsettled_as("a const whose value isn't lowered yet: ${root.missing[0]}")) }
+    let survey = task_survey(engine)
+    if reaches_gathered(survey, root) { return .Err(unsettled_as(per_program()) with { per_program: true }) }
+    let made = match made_reaching(survey, root, symbol, [], TaskChecks.Surveyed, lazy: true) {
+        .Made(l) -> l,
+        .Unmade(why, _) -> {
+            if why == unhashed() { return .Err(code_hash_trapped(name)) }
+            return .Err(unsettled_as("a const whose value reaches a body not lowered yet: ${why}"))
+        },
+        .Refused(_) -> { return .Err(unsettled_as(const_refused())) },
+    }
+    match run_lifted(
+        made,
+        symbol,
+        [],
+        new_meta_heap(),
+        lifted_budgets(engine, file.package_name),
+        (n: string) -> named_lifted(engine, file, n),
+        EmbedReader { read: (path: string, kind: EmbedKind) -> embedded(engine, path, kind) },
+        null,
+        (symbol: string) -> reader_symbol(symbol, file.package_name),
+        late_door(survey, TaskChecks.Surveyed),
+    ) {
+        .Ok(lifted) -> .Ok(lifted),
+        .Err(why) -> .Err(unsettled_as(unsettled_label(name, why)) with { broken: broken_of(why) }),
+    }
+}
+
+/// The const `name` of the written item `item` of `file` as its run answers it, in a heap of its own:
+/// what a seat taking its value is handed. Absent where it doesn't run.
+export fn const_lifted(engine: QueryEngine, file: SourceFileAddress, name: string, item: int) -> Lifted? {
+    if const_loop(engine, file, name) != null || const_value_loop(engine, file, name) != null { return null }
+    let body = match const_body_at(engine, file, name, item) {
+        .Ok(b) -> b,
+        .Err(_) -> { return null },
+    }
+    match const_run(engine, file, body, name) { .Ok(ran) -> ran, .Err(_) -> null }
 }
 
 /// The type `m` declares, as a value of `ty` read by a body of `reader` carries it: its `Type`,

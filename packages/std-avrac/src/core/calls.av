@@ -50,7 +50,7 @@ impl Lowering {
         let list = seats[k]!.ty
         let elem? = list.listed() else { return null }
         let regs = [if spreads[at] { self.lower(self.store.spread_operand(a)!) } else { self.lowered_into(a, elem) } for at, a in extras]
-        let packed = if spreads.length == 1 && spreads[0] { regs[0] } else { self.listed(self.laid_out(list), regs, spreads) }
+        let packed = if spreads.length == 1 && spreads[0] { regs[0] } else { self.listed(list, regs, spreads) }
         [r! for r in before].concat([packed])
     }
 
@@ -131,9 +131,28 @@ impl Lowering {
     /// The value the default `callee` writes for `seat` gives: a call of the default's own body.
     mut fn defaulted(callee: CalledFn, seat: CalledSeat) -> Reg { self.call_fn(self.laid_out(seat.ty), callee.seat_default(seat.name), []) }
 
-    /// `regs` as one list of layout `l`, sized for each plain one and each spread one's length, then
+    /// A new list of type `ty` with room for `size` cells: PACKED, its cells and no marks, when its
+    /// element is a plain scalar, which no cell of it ever owns or leaves absent.
+    mut fn list_made(ty: SignedType, size: Reg) -> Reg {
+        let row = if self.packs(ty) { "avra_array_sized_words" } else { "avra_array_sized" }
+        self.call_row(self.laid_out(ty), rt_sig_of(row)!, [size])
+    }
+
+    /// Whether a list of type `ty` is made packed: its element lays out as an int's word, a truth or
+    /// a float — an int, a bool, a float, or an enum whose variants carry nothing. Only asked: an
+    /// element with no layout (an empty literal's `never`) is a list made as any other.
+    fn packs(ty: SignedType) -> bool {
+        let elem? = (self.named_over(ty) ?? ty).listed() else { return false }
+        let laid? = self.program.checked.layout(elem) else { return false }
+        match laid {
+            .Word or .Truth or .Real -> true,
+            .Void or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
+        }
+    }
+
+    /// `regs` as one list of type `ty`, sized for each plain one and each spread one's length, then
     /// each plain one pushed and each spread one's slots appended, in order.
-    mut fn listed(l: Layout, regs: List<Reg>, spreads: List<bool>) -> Reg {
+    mut fn listed(ty: SignedType, regs: List<Reg>, spreads: List<bool>) -> Reg {
         mut size = self.const_int([s for s in spreads if !s].length)
         for at, r in regs {
             if spreads[at] {
@@ -146,7 +165,7 @@ impl Lowering {
                     )
             }
         }
-        let dst = self.call_row(l, rt_sig_of("avra_array_sized")!, [size])
+        let dst = self.list_made(ty, size)
         for at, r in regs { if spreads[at] { self.run_row(rt_sig_of("avra_array_extend")!, [dst, r]) } else { self.push_slot(dst, r) } }
         dst
     }

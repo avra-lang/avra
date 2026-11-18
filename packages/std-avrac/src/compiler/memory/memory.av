@@ -110,14 +110,16 @@ fn body_ins(
     by_name: Map<string, List<SeatMark>>,
 ) -> List<Ins> {
     let immortal = immortal_regs(layouts.length, ins)
-    noted_pairs(
-        [i for i in memory_ins(
-            layouts,
-            ins,
-            standing_regs(immortal, ins, seats, marks),
-            consuming_seats(seats, marks),
-            by_name,
-        ) if !immortal_rc_op(i, immortal)],
+    runs_joined(
+        noted_pairs(
+            [i for i in memory_ins(
+                layouts,
+                ins,
+                standing_regs(immortal, ins, seats, marks),
+                consuming_seats(seats, marks),
+                by_name,
+            ) if !immortal_rc_op(i, immortal)],
+        ),
     )
 }
 
@@ -183,7 +185,11 @@ fn immortal_dst(i: Ins) -> Reg? {
 /// register the same way, so stripping only the retain leaves the release
 /// unmatched — a debt this body never took.
 fn immortal_rc_op(i: Ins, immortal: List<bool>) -> bool {
-    match i { .Retain(r) or .Release(r) -> immortal[r.index], rest -> false }
+    match i {
+        .Retain(r) -> immortal[r.index],
+        .Release(rs) -> rs.all(immortal[it.index]),
+        rest -> false,
+    }
 }
 
 /// The memory instructions as every scope's strategy places them — the pass's
@@ -324,7 +330,7 @@ fn memory_ins(
                 manages(layouts, open_scopes, i)
                 out.push(i)
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for r in lent { out.push(Ins.Release(r)) }
+                for r in lent { out.push(Ins.Release([r])) }
             },
             // An EARLY exit settles EVERY open scope's debts at the
             // site — nothing pops, because other paths continue.
@@ -489,7 +495,7 @@ fn memory_ins(
         // copies the whole box.
         for r in life.dead_here(open_scopes, at) {
             noted("release: a last read", 1)
-            out.push(Ins.Release(r))
+            out.push(Ins.Release([r]))
             disowns(open_scopes, r)
         }
     }
@@ -909,7 +915,7 @@ fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
 /// value the exit answers, excluded.
 fn owed_from(open_scopes: Stack<Scope>, floor: int, kept: Reg?) -> List<Ins> {
     [cell_settle(c) for c in exit_cells(open_scopes, floor)]
-        .concat([Ins.Release(r) for r in exit_releases(open_scopes, floor, kept)])
+        .concat([Ins.Release([r]) for r in exit_releases(open_scopes, floor, kept)])
 }
 
 /// Everything each open scope from `floor` in owes at an early exit,
@@ -960,11 +966,11 @@ fn moved_out(layouts: List<Layout>, scope: Scope, gives: Reg?) -> List<Ins> {
 fn arm_handed(layouts: List<Layout>, scope: Scope, gives: Reg, handed: List<Reg>) -> List<Ins> {
     if handed.any(same_reg(it, gives)) && !scope.managed.any(same_reg(it, gives)) {
         noted("moved: an arm's yield into the merge", 1)
-        return [Ins.Release(r) for r in handed if !same_reg(r, gives)]
+        return [Ins.Release([r]) for r in handed if !same_reg(r, gives)]
     }
     let kept = noted_all(YIELD_NOT_OWNED, moved_out(layouts, scope, gives))
     noted("release: a value another arm hands to the merge", handed.length)
-    kept.concat([Ins.Release(r) for r in handed])
+    kept.concat([Ins.Release([r]) for r in handed])
 }
 
 impl Scope {
@@ -1197,7 +1203,7 @@ impl Scope {
     /// then the releases its yield leaves behind.
     fn settled(gives: Reg?) -> List<Ins> {
         [cell_settle(c) for c in reversed(self.cells)]
-            .concat([Ins.Release(r) for r in self.releases_for(gives)])
+            .concat([Ins.Release([r]) for r in self.releases_for(gives)])
     }
 }
 
@@ -1568,7 +1574,7 @@ fn noted(reason: string, n: int) {
 fn noted_all(site: string, placed: List<Ins>) -> List<Ins> {
     if !tallying() { return placed }
     noted("retain: ${site}", placed.filter(it is .Retain).length)
-    noted("release: ${site}", placed.filter(it is .Release).length)
+    noted("release: ${site}", flatten([released_regs(i) for i in placed]).length)
     noted("settle: ${site}", placed.length - placed.filter(it is .Retain || it is .Release).length)
     placed
 }
@@ -1601,7 +1607,7 @@ fn paired_ahead(placed: List<Ins>, k: int, i: Ins) -> bool {
     let r? = retained_reg(i) else { return false }
     for j in k + 1..placed.length {
         let next = placed[j]
-        if released_reg(next)?.index == r.index { return true }
+        if released_regs(next).any(same_reg(it, r)) { return true }
         if opens(next) || closes(next) || turns(next) || calls(next) { return false }
     }
     false
@@ -1611,8 +1617,32 @@ fn retained_reg(i: Ins) -> Reg? {
     match i { .Retain(r) -> r, rest -> null }
 }
 
-fn released_reg(i: Ins) -> Reg? {
-    match i { .Release(r) -> r, rest -> null }
+fn released_regs(i: Ins) -> List<Reg> {
+    match i { .Release(rs) -> rs, rest -> [] }
+}
+
+/// `placed`, each run of releases standing side by side made one release of them all, in their
+/// order: what the pass decided is what runs, said in fewer instructions.
+fn runs_joined(placed: List<Ins>) -> List<Ins> {
+    mut out: List<Ins> = []
+    mut run: List<Reg> = []
+    for i in placed {
+        match i {
+            .Release(rs) -> {
+                // LICENSED loops.push_loop: the run grows in place, where a concat copies it whole per release
+                for r in rs { run.push(r) }
+            },
+            rest -> {
+                if !run.is_empty() {
+                    out.push(Ins.Release(run))
+                    run = []
+                }
+                out.push(i)
+            },
+        }
+    }
+    if !run.is_empty() { out.push(Ins.Release(run)) }
+    out
 }
 
 /// The tally of why the pass placed each count, most first; absent unless `AVRA_RC_REASONS` is set.

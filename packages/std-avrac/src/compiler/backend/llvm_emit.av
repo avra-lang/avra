@@ -171,9 +171,9 @@ impl Emit {
             .OnceCommit(sym, value) -> self.once_committed(sym, value),
             .FlagRead(_, flag) -> self.define(self.flag_value(flag)),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
-            .Release(r) -> {
-                self.census_row("release")
-                self.released(r)
+            .Release(rs) -> {
+                for _r in rs { self.census_row("release") }
+                self.released_run(rs)
             },
             .Retain(r) -> {
                 self.census_row("retain")
@@ -685,6 +685,33 @@ impl Emit {
 
     fn released(r: Reg) { self.counted_by(tagged_release, "avra_rc_release", r) }
 
+    /// Each of `rs` released, in order: those released by their pointer go to the runtime a row of
+    /// up to four at a call, a value enum's word by its tag alone between them.
+    fn released_run(rs: List<Reg>) {
+        mut row: List<ptr> = []
+        for r in rs {
+            if self.layouts[r.index].tag_mask() != null {
+                self.row_released(row)
+                row = []
+                self.released(r)
+                continue
+            }
+            row.push(self.counted(self.vals[r.index], self.layouts[r.index]))
+            if row.length == RELEASE_ROW {
+                self.row_released(row)
+                row = []
+            }
+        }
+        self.row_released(row)
+    }
+
+    /// The pointers of `row` released by the one row that takes as many; none, nothing.
+    fn row_released(row: List<ptr>) {
+        if row.is_empty() { return }
+        let _ = self
+            .call(if row.length == 1 { "avra_rc_release" } else { "avra_rc_release${row.length}" }, row)
+    }
+
     fn retained(r: Reg) { self.counted_by(tagged_retain, "avra_rc_retain", r) }
 
     /// `r`'s count moved: a value enum's word by `by_tag` when its tag's variant carries a pointer,
@@ -871,3 +898,6 @@ fn plain_shift(v: ptr) -> bool {
 /// The rows that count a value enum's word by its tag.
 const tagged_retain: string = "avra_rc_retain_tagged"
 const tagged_release: string = "avra_rc_release_tagged"
+
+/// How many pointers the widest release row takes.
+const RELEASE_ROW: int = 4

@@ -1,7 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.testing.held.{Held, held_at}
+use @std.avrac.testing.held.{Held, Judged, held_at}
 use @std.avrac.testing.old_path.{test_workspace, write_checked_in}
 use compiler.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
@@ -180,6 +180,15 @@ fn held_unread_solo(main: string) -> Held {
     held_files(fs)
 }
 
+/// How many diagnostics a build of a program over `held_unread_solo` says beside `solo`'s own parse
+/// refusal, which it says once, in `solo`'s file; -1 where it doesn't.
+fn said_beside_solo(a: Judged) -> int {
+    let own = a
+        .diagnostics
+        .filter(it.kind == "parse.expected" && it.primary.loc?.file ?? "" == "/w/src/solo.av")
+    if own.length == 1 { a.diagnostics.length - 1 } else { -1 }
+}
+
 /// The program's root file under a toolchain whose std root is `/tc`, held.
 fn held_toolchain(main: string) -> Held {
     mut fs = toolchain_files()
@@ -347,7 +356,7 @@ spec "compiler/workspace" {
         then "an item its module's unread file would have declared — the parse error named, the reads silent" {
             let a = held_unread_solo("use solo.{only}\nonly(true, true)\n")
                 .judged_at("/w/src/main.av")
-            a.diagnostics.length == 1 &&
+            said_beside_solo(a) == 1 &&
                 a.report().contains("`solo` does not export `only`") &&
                 a
                     .report()
@@ -363,7 +372,7 @@ spec "compiler/workspace" {
                 "use solo.{only, Wide}\nlet w = Wide { n: 1 }\nonly(true, true)\n",
             )
                 .judged_at("/w/src/main.av")
-            a.diagnostics.length == 2 && !a.report().contains("no `type Wide`")
+            said_beside_solo(a) == 2 && !a.report().contains("no `type Wide`")
         }
         then "a name a sibling file would have declared — the sibling's parse error named, no remedy of its own" {
             mut fs = ws_files()
@@ -386,18 +395,18 @@ spec "compiler/workspace" {
         then "an aliased item of an unread module — the alias's reads are silent too" {
             let a = held_unread_solo("use solo.{only as one}\none(true, true)\n")
                 .judged_at("/w/src/main.av")
-            a.diagnostics.length == 1 && a.report().contains("`solo` does not export `only`")
+            said_beside_solo(a) == 1 && a.report().contains("`solo` does not export `only`")
         }
         then "a local declaration of a refused name still answers its reads" {
             let a = held_unread_solo(
                 "use solo.{only}\nfn only(a: bool, b: bool) -> bool { a }\nonly(true, true)\n",
             )
                 .judged_at("/w/src/main.av")
-            a.diagnostics.length == 1 && !a.report().contains("no `fn only`")
+            said_beside_solo(a) == 1 && !a.report().contains("no `fn only`")
         }
         then "an item the unread module never named is refused with the parse error beside it" {
             let a = held_unread_solo("use solo.{nope}\n1\n").judged_at("/w/src/main.av")
-            a.diagnostics.length == 1 &&
+            said_beside_solo(a) == 1 &&
                 a.report().contains("fix the parse error first") &&
                 !a.report().contains("its exports: ")
         }
@@ -413,7 +422,7 @@ spec "compiler/workspace" {
                 "type S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
             )
                 .judged_at("/w/src/main.av")
-            a.diagnostics.length == 3 && a.report().split("fix the parse error first").length == 4
+            said_beside_solo(a) == 3 && a.report().split("fix the parse error first").length == 4
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses(

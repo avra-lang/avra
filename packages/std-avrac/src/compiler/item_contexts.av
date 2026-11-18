@@ -1,0 +1,83 @@
+//! THE CONTEXTS A PROGRAM DECLARES: each `ctx name: T = v` a name its module puts on its surface, read
+//! as `ctx.name` and set as `ctx name = v` from any file that names it. Its key is made from its
+//! declared symbol, so a library's context wears one key in every program that links it.
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use core.{SignedType, same_stmt, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.ctxs.{context_misplaced, context_unknown}
+
+/// The context `name`, read from `file`, names: its own, its module's or one it imports.
+export fn context_named(engine: QueryEngine, file: SourceFileAddress, name: string) -> DeclaredName? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    if d.kind == ItemKind.Ctx { d } else { null }
+}
+
+/// The type the context `d` holds, as it's written.
+export fn context_type(engine: QueryEngine, d: DeclaredName) -> SignedType? {
+    let item? = declaring_item(engine, d.file, d.name, ItemKind.Ctx) else { return null }
+    let s? = item.stmts.find((x) -> item.store.ctx_declared(x) == d.name) else { return null }
+    let written? = item.store.binding_ty(s) else { return null }
+    Signing { engine: engine, file: d.file, type_params: [], writer: written_by(item.store, s) }
+        .signed(written)
+}
+
+/// The type the context `name`, read from `file`, holds; absent where it names none.
+fn context_read(engine: QueryEngine, file: SourceFileAddress, name: string) -> SignedType? {
+    let d? = context_named(engine, file, name) else { return null }
+    context_type(engine, d)
+}
+
+/// The key the context `d`'s frame entries wear: a number of its declared symbol, the same in every
+/// build and every program, never 0.
+export fn context_key(d: DeclaredName) -> int {
+    let symbol = declared_symbol(d.file, d.name)
+    let high = symbol.chars().fold(7, (h: int, c: int) -> (h * 31 + c) % 1000000007)
+    let low = symbol.chars().fold(11, (h: int, c: int) -> (h * 37 + c) % 998244353)
+    1 + high * 998244353 + low
+}
+
+/// Every read and set in the written item `at` of `file` of a name that declares no context: where it
+/// stands, and the name.
+fn contexts_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let store = read_item(engine, file, at).store
+    if !store.refusals().is_empty() { return [] }
+    let reads = [Found { at: store.expr_span(e), args: [n] } for e in store.expr_ids() for n in some_list(store.ctx_read(e)) if context_named(engine, file, n) == null]
+    let sets = [Found { at: store.stmt_span(s), args: [n] } for s in store.stmt_ids() for n in some_list(store.ctx_set(s)) if context_named(engine, file, n) == null]
+    reads.concat(sets)
+}
+
+/// a `ctx` read or set names a context the file declares or imports
+export law context_undeclared {
+    kind: "ctx.unknown"
+    reads: contexts_unknown
+    voice: unknown_words
+    witness: "fn f() -> int {\n    ctx.depth\n}\n"
+}
+
+fn unknown_words(a: List<string>) -> Voice { context_unknown(a[0]) }
+
+/// Every context the written item `at` of `file` declares inside a body, and every one it sets at its
+/// top level: where it stands, the name, and "declared" or "set".
+fn contexts_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    let store = item.store
+    if !store.refusals().is_empty() { return [] }
+    let tops = item.stmts
+    let inner = [Found { at: store.stmt_span(s), args: [n, "declared"] } for s in store.stmt_ids() for n in some_list(store.ctx_declared(s)) if !tops.any(same_stmt(it, s))]
+    let outer = [Found { at: store.stmt_span(s), args: [n, "set"] } for s in tops for n in some_list(store.ctx_set(s))]
+    inner.concat(outer)
+}
+
+/// a context is declared at a module's top level, and set inside a body
+export law context_misplaced_law {
+    kind: "ctx.where"
+    reads: contexts_misplaced
+    voice: misplaced_words
+    witness: "ctx depth: int = 0\n\nctx depth = 1\n"
+}
+
+fn misplaced_words(a: List<string>) -> Voice { context_misplaced(a[0], a[1] == "declared") }

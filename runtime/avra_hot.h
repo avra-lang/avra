@@ -44,6 +44,10 @@ static inline uint8_t avra_box_flags(const void* payload) {
 // The leaves themselves (avra_hot.c).
 void avra_rc_retain(void* p);
 void avra_rc_release(void* p);
+// A row of releases, each as `avra_rc_release` releases it, in order.
+void avra_rc_release2(void* a, void* b);
+void avra_rc_release3(void* a, void* b, void* c);
+void avra_rc_release4(void* a, void* b, void* c, void* d);
 void avra_rc_retain_tagged(int64_t word, int64_t tag, int64_t counted);
 void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted);
 int64_t avra_array_get(void* arr, int64_t i);

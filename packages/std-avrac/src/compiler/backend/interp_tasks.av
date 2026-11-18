@@ -5,6 +5,10 @@
 //! PARKING and the run loop saves the task at that very instruction, so
 //! the row runs again when its task resumes and answers then.
 
+/// The slot of a task's four that holds its frame of contexts (runtime/avra_runtime.h's
+/// `AVRA_SLOT_CTX`).
+const ctx_slot = 2
+
 extern fn avra_vtask_new_at(site: int, id: int) -> int
 extern fn avra_vtask_free(t: int)
 extern fn avra_vtask_end(t: int)
@@ -832,6 +836,77 @@ impl Machine {
         self.tasks[self.running].slots.set(key, vals[1])
         self.releases_val(old)
         Val.I(0)
+    }
+
+    /// The running task's frame of contexts: the null pointer where nothing is set, or no task stands
+    /// yet.
+    fn ctx_frame() -> Val {
+        if self.running < 0 { return Val.N }
+        self.tasks[self.running].slots[ctx_slot]
+    }
+
+    /// `avra_ctx_read`: the cell the running task's frame holds for the key, or the null pointer
+    /// where nothing set it.
+    fn ctx_read_val(vals: List<Val>) -> Val {
+        let key = self.whole(vals[0])
+        let id? = array_id(self.ctx_frame()) else { return Val.N }
+        let held = self.arrays[id]
+        mut at = 1
+        while at + 1 < held.length {
+            if self.whole(held[at]) == key {
+                self.retains(held[at + 1])
+                return held[at + 1]
+            }
+            at = at + 2
+        }
+        Val.N
+    }
+
+    /// `avra_ctx_set`: the running task's frame with the key holding the cell, made current. The
+    /// frame it replaced is the new one's first slot, which takes the reference the task held.
+    fn ctx_set_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key = self.whole(vals[0])
+        let old = self.ctx_frame()
+        mut kept: List<Val> = []
+        let id = array_id(old)
+        if id != null {
+            let held = self.arrays[id!]
+            mut at = 1
+            while at + 1 < held.length {
+                if self.whole(held[at]) != key {
+                    self.retains(held[at + 1])
+                    kept = kept.concat([held[at], held[at + 1]])
+                }
+                at = at + 2
+            }
+        }
+        self.retains(vals[1])
+        let next = self.fresh_array([old].concat(kept).concat([Val.I(key), vals[1]]))
+        self.tasks[self.running].slots.set(ctx_slot, next)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_back`: the frame the running task's frame replaced made current again.
+    fn ctx_back_val() -> Val {
+        self.rooted()
+        let now = self.ctx_frame()
+        let id? = array_id(now) else { return Val.I(0) }
+        let before = self.arrays[id].first() ?? Val.N
+        self.retains(before)
+        self.tasks[self.running].slots.set(ctx_slot, before)
+        self.releases_val(now)
+        Val.I(0)
+    }
+
+    /// `frame` the running task's frame, the one it replaces released: what a guard was entered
+    /// under, put back where it catches.
+    fn ctx_restored(frame: Val) {
+        if self.running < 0 { return }
+        let now = self.ctx_frame()
+        self.retains(frame)
+        self.tasks[self.running].slots.set(ctx_slot, frame)
+        self.releases_val(now)
     }
 
     fn task_id_val() -> Val {

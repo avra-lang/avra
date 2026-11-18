@@ -4,7 +4,7 @@
 //! `use` lines and the surfaces of the modules they name, in the old reader's order: the path first,
 //! then each item.
 use core.{ModulePath, Span, distinct, flatten, module_path}
-use compiler.laws.{Found, law}
+use compiler.laws.{Found, Unread, law}
 use diagnostics.{Voice}
 use compiler.{
     undeclared_dependency,
@@ -41,7 +41,7 @@ enum UseFault {
 }
 
 /// A fault of a `use` line, where the line stands and the path it names.
-type UseFaultAt = { at: Span?, path: List<string>, fault: UseFault }
+type UseFaultAt = { at: Span?, path: List<string>, fault: UseFault, unread: Unread? = null }
 
 /// Every fault of the `use` lines the written item `at` of `file` writes, line by line.
 fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<UseFaultAt> {
@@ -81,7 +81,77 @@ fn line_faults(
         as_root: provider == file.package_name,
     }
     if module_files(engine, provider, module.local, module.as_root).is_empty() { return [fault(UseFault.Moduleless)] }
-    [fault(f!) for j, item in items for f in [item_fault(engine, file, module, items.take(j), item)] if f != null]
+    let behind = (f: UseFault, item: string) -> if f is .Unexported { unread_in_module(engine, file, module, "`${path.join(".")}`", item) } else { null }
+    [fault(f!) with { unread: behind(f!, item) } for j, item in items for f in [item_fault(engine, file, module, items.take(j), item)] if f != null]
+}
+
+/// The names the `use` lines of `file` bind that nothing answers: every name of a line its path
+/// refuses, and each item its module's surface doesn't hold. A read of one answers to its `use`
+/// alone, which is refused already.
+export fn refused_imports(engine: QueryEngine, file: SourceFileAddress) -> List<string> {
+    flatten([line_refused(engine, file, u) for u in file_words(engine, file).uses])
+}
+
+/// The names the `use` line `u` of `file` binds that nothing answers.
+fn line_refused(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> List<string> {
+    let faults = line_faults(engine, file, null, u.path, u.items)
+    if faults.is_empty() { return [] }
+    [u.bound_as(j) for j, item in u.items if faults.any((f) -> refuses_item(f.fault, item))]
+}
+
+/// Whether the fault `f` of a `use` line leaves its item `item` unbound: a fault of the path leaves
+/// every item, an item's own only that item, and a name listed again is bound by its first.
+fn refuses_item(f: UseFault, item: string) -> bool {
+    match f { .Listed(_) -> false, .Unexported(i, _, _) or .Apart(i, _) -> i == item, rest -> true }
+}
+
+/// The first parse refusal among the files of `module`, said beside a refusal of `name` in `file`
+/// as what `subject` holds: the name may be declared where nothing could be read. Absent where every
+/// file of the module reads, or the module is another package's.
+export fn unread_in_module(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    module: ModuleAt,
+    subject: string,
+    name: string,
+) -> Unread? {
+    if module.package != file.package_name { return null }
+    for f in module_files(engine, module.package, module.local, module.as_root) {
+        for i in 0..item_count(engine, f) {
+            let r? = read_item(engine, f, i).store.refusals().first() else { continue }
+            let found = refused_found(r)
+            let at = if found.at == null { null } else { span_of(file_placed(engine, f, i, kept_at(found.at)!)) }
+            return Unread {
+                subject: subject,
+                name: name,
+                path: path_from(file, f),
+                at: at,
+                message: found.args[0],
+            }
+        }
+    }
+    null
+}
+
+/// The first parse refusal among the files of `file`'s own module, said beside a refusal of `name`
+/// there.
+export fn unread_here(engine: QueryEngine, file: SourceFileAddress, name: string) -> Unread? {
+    let module = ModuleAt {
+        package: file.package_name,
+        local: module_segments(file),
+        as_root: true,
+    }
+    unread_in_module(engine, file, module, "this module", name)
+}
+
+/// The file `to` as a path from the directory `from` stands in, both of one package.
+fn path_from(from: SourceFileAddress, to: SourceFileAddress) -> string {
+    let here = from.path_in_package.split("/")
+    let dirs = here.take(here.length - 1)
+    let there = to.path_in_package.split("/")
+    let shared = (0..dirs.length)
+        .find_index((k: int) -> k >= there.length - 1 || dirs[k] != there[k]) ?? dirs.length
+    ["../" for _d in dirs.drop(shared)].join("") + there.drop(shared).join("/")
 }
 
 /// What the `use` line's item `item`, listed after `before`, names that isn't there in `module`;
@@ -116,7 +186,7 @@ fn faults_said(
     at: int,
     words: fn(UseFault) -> List<string>,
 ) -> List<Found> {
-    [Found { at: f.at, args: [f.path.join(".")].concat(w) } for f in use_faults(engine, file, at) for w in [words(f.fault)] if !w.is_empty()]
+    [Found { at: f.at, args: [f.path.join(".")].concat(w), unread: f.unread } for f in use_faults(engine, file, at) for w in [words(f.fault)] if !w.is_empty()]
 }
 
 fn unpackaged_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {

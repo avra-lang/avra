@@ -434,6 +434,27 @@ impl SourceText {
                     )
                 },
             ],
+            .CtxDecl(name, ty, value) -> {
+                let name_part = "${exported}ctx ${source_name(name.of)}"
+                let typed = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))}"
+                let v? = value else { return [source_line(depth, typed)] }
+                let prefix = "${typed} = "
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(v, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
+            },
+            .CtxSet(name, value) -> {
+                let prefix = "ctx ${source_name(name.of)} = "
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
+            },
             .Assign(target, value) -> {
                 let prefix = "${self.expression(target, loosest_tier, depth)} = "
                 [
@@ -1340,6 +1361,7 @@ impl SourceText {
             .GrammarLit(source) -> grouped("grammar {${source}}", atom_tier, parent),
             .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) or .Index(_, _) or .Force(_) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
+            .CtxRead(name) -> grouped("ctx.${source_name(name.of)}", atom_tier, parent),
             .Range(lo, hi) -> grouped(
                 "(${self.expression(lo, loosest_tier, depth, resolved_col(c, depth) + 1)}..${self.expression(hi, loosest_tier, depth)})",
                 atom_tier,

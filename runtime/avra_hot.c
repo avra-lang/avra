@@ -40,6 +40,24 @@ void avra_rc_retain_tagged(int64_t word, int64_t tag, int64_t counted) {
     if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_retain((void*)(uintptr_t)word);
 }
 
+void avra_rc_release2(void* a, void* b) {
+    avra_rc_release(a);
+    avra_rc_release(b);
+}
+
+void avra_rc_release3(void* a, void* b, void* c) {
+    avra_rc_release(a);
+    avra_rc_release(b);
+    avra_rc_release(c);
+}
+
+void avra_rc_release4(void* a, void* b, void* c, void* d) {
+    avra_rc_release(a);
+    avra_rc_release(b);
+    avra_rc_release(c);
+    avra_rc_release(d);
+}
+
 void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted) {
     if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_release((void*)(uintptr_t)word);
 }

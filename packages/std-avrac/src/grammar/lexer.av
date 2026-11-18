@@ -32,7 +32,7 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder, sorted_b
 /// text between the braces, holes as placeholders. `Component` is an
 /// imported component's word, which opens an instance. `Octets` is a
 /// byte string `b"…"`, its `text` the spelling between the quotes.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide, On }
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide, On, Ctx }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters. A
@@ -1461,6 +1461,7 @@ export fn lex_blocks(
     lexed with { tokens: [when {
         opens_instance(ts, i, components, named, keywords) -> t with { kind: TokenKind.Component }
         opens_state(ts, i) -> t with { kind: TokenKind.State }
+        opens_ctx(ts, i) -> t with { kind: TokenKind.Ctx }
         opens_on(ts, i, keywords) -> t with { kind: TokenKind.On }
         _ -> t
     } for i, t in ts] }
@@ -1477,6 +1478,18 @@ fn opens_state(ts: List<Token>, i: int) -> bool {
     if !starts_statement(ts, i) && !after_param_sep(ts, i) { return false }
     if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
     i + 2 < ts.length && (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
+}
+
+/// Whether the token at `i` is `ctx` opening a context's form — a SOFT keyword: `ctx NAME :` declares
+/// one and `ctx NAME =` sets one, at a statement's start; `ctx.NAME` reads one, where no `.` stands
+/// before it. Anywhere else `ctx` is an ordinary name.
+fn opens_ctx(ts: List<Token>, i: int) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name || t.text != "ctx" || i + 2 >= ts.length { return false }
+    if ts[i + 1].lit_matches(".") { return ts[i + 2].kind == TokenKind.Name && (i == 0 || !ts[i - 1].lit_matches(".")) }
+    starts_statement(ts, i) &&
+        ts[i + 1].kind == TokenKind.Name &&
+        (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
 }
 
 /// Whether `i` stands where a parameter's mark does: right after the
@@ -1689,7 +1702,7 @@ fn heads_instance(ts: List<Token>, at: int, keywords: List<string>) -> bool {
     match ts[at].kind {
         .Str or .IStrBegin or .Num -> true,
         .Name -> !keywords.contains(ts[at].text) || value_words.contains(ts[at].text),
-        .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Octets or .Env or .Provide or .On -> false,
+        .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Octets or .Env or .Provide or .On or .Ctx -> false,
     }
 }
 

@@ -14,6 +14,8 @@ export type Arena<N> = {
     spans: Cell<List<Span?>>,
     kinds: Cell<Map<string, Cell<List<int>>>>,
     kinded: Cell<int>,
+    /// The first node replaced since the arena last forgot its rewrites, -1 for none.
+    rewritten: Cell<int>,
 }
 
 export fn new_arena<N>() -> Arena<N> {
@@ -22,6 +24,7 @@ export fn new_arena<N>() -> Arena<N> {
         spans: list_cell<Span?>(),
         kinds: map_cell(),
         kinded: Cell.new(0),
+        rewritten: Cell.new(-1),
     }
 }
 
@@ -41,11 +44,21 @@ impl Arena {
             spans: Cell.new(self.spans.get()),
             kinds: map_cell(),
             kinded: Cell.new(0),
+            rewritten: Cell.new(self.rewritten.get()),
         }
     }
 
     /// Node `i` is `n` now, a node of its own kind.
-    fn replaced(i: int, n: N) { self.nodes.set_at(i, n) }
+    fn replaced(i: int, n: N) {
+        self.nodes.set_at(i, n)
+        if self.rewritten.get() < 0 || i < self.rewritten.get() { self.rewritten.set(i) }
+    }
+
+    /// The first node replaced since the arena last forgot its rewrites, -1 for none.
+    fn rewritten_from() -> int { self.rewritten.get() }
+
+    /// Its rewrites forgotten: what replaced a node from here on is a rewrite again.
+    fn rewrites_forgotten() { self.rewritten.set(-1) }
 
     /// Sets the span of a node appended without one.
     fn place(i: int, span: Span) { self.spans.set_at(i, span) }

@@ -1,0 +1,107 @@
+//! A CONTEXT AS CODE REACHES IT: a read is what the running task's frame holds for the context's key,
+//! else what its default's box holds; a set makes the next frame, and the end of the set's scope takes
+//! it back, as every other way out of that scope does. A trap a guard catches puts back the frame the
+//! guard was entered under (runtime/avra_runtime.c).
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+
+/// What a body's code holds of contexts that its instructions alone don't say: each set, at the
+/// instruction that makes it, of the key it sets, written by the statement `stmt` of the body's store;
+/// each call through a `dyn` box, by the register it answers into, of the box's type and the trait
+/// method's slot; each `dyn` box it makes, with the method it holds in each slot; and each register a
+/// `dyn` box's method is taken into, which makes no fn value: the method runs where a call through the
+/// box runs it.
+@derive(Saved)
+export type ContextMarks = {
+    sets: List<SetMark> = [],
+    dyns: List<DynMark> = [],
+    boxes: List<BoxMark> = [],
+    entries: List<int> = [],
+}
+
+/// A `ctx` set: the instruction that makes it, the context's key, and the statement that writes it.
+@derive(Saved)
+export type SetMark = { at: int, key: int, stmt: int }
+
+/// A call through a `dyn` box: the register it answers into, the box's type, and the slot among the
+/// trait's methods of the one called.
+@derive(Saved)
+export type DynMark = { dst: int, subject: SignedType, slot: int }
+
+/// A `dyn` box made: the type of the value it holds, the box's type, and the method of that value the
+/// box holds in each of the trait's slots, in slot order.
+@derive(Saved)
+export type BoxMark = { held: SignedType, into: SignedType, methods: List<CalledFn> }
+
+impl Lowering {
+    /// `m` among what the body's code holds of contexts.
+    fn context_marked(m: ContextMarks) { self.marks.set(m) }
+
+    /// The context `name`, read or set at `at`, as the program names it there.
+    fn context(name: string, at: ExprId) -> HeldContext? { (self.program.contexts)(name, self.store.home_of(at)) }
+
+    /// What the context `c` holds where it is read: the cell a set in force gave it, else its default's
+    /// box; a required one nothing set traps.
+    mut fn context_read(c: HeldContext, name: string) -> Reg {
+        let held = cell_of(c.held)
+        let l = self.laid_out(held)
+        let maybe = held with { nulls: 1 }
+        let set = self
+            .call_row(self.laid_out(maybe), rt_sig_of("avra_ctx_read")!, [self.const_int(c.key)])
+        let cell = self
+            .region(self.present(set, maybe), l) { cx -> cx.carried(set, maybe) } else { cx -> cx.context_started(c, name, l) }
+        self.proven_read(self.laid_out(c.held), cell, 0)
+    }
+
+    /// The box the default of the context `c` is kept in, of layout `l`; a required one traps.
+    mut fn context_started(c: HeldContext, name: string, l: Layout) -> Reg {
+        let start? = c.start else {
+            self.run_row(rt_sig_of("avra_trap")!, [self.const_str(unset_words(name))])
+            return self.zero_of(l)
+        }
+        self.state_box(start, c.held)
+    }
+
+    /// The context `c` set to `v`, a value of its type, by the statement `s`, until the innermost
+    /// scope ends.
+    mut fn context_set(c: HeldContext, v: Reg, s: StmtId) {
+        let held = cell_of(c.held)
+        let cell = self.celled(v, c.held, self.laid_out(held))
+        let key = self.const_int(c.key)
+        let m = self.marks.get()
+        self
+            .context_marked(
+                m with { sets: m.sets.concat([SetMark { at: self.ins.get().length, key: c.key, stmt: s.index }]) },
+            )
+        self.run_row(rt_sig_of("avra_ctx_set")!, [key, cell])
+        self.ends_with(Ending.Restored)
+    }
+
+    /// The register `code` a `dyn` box's method is taken into, marked.
+    fn entry_marked(code: Reg) {
+        let m = self.marks.get()
+        self.context_marked(m with { entries: m.entries.concat([code.index]) })
+    }
+
+    /// The call through a `dyn` box of `subject` that answers into `dst`, of the trait method in the
+    /// slot `slot`, marked.
+    fn dyn_marked(dst: Reg, subject: SignedType, slot: int) {
+        let m = self.marks.get()
+        self
+            .context_marked(
+                m with { dyns: m.dyns.concat([DynMark { dst: dst.index, subject: subject, slot: slot }]) },
+            )
+    }
+
+    /// A `dyn` box of `into` made over a value of `held`, its slots holding `methods`, marked.
+    fn box_marked(held: SignedType, into: SignedType, methods: List<CalledFn>) {
+        let m = self.marks.get()
+        self
+            .context_marked(
+                m with { boxes: m.boxes.concat([BoxMark { held: held, into: into, methods: methods }]) },
+            )
+    }
+}
+
+/// What a read of the required context `name` that nothing set says as it traps.
+fn unset_words(name: string) -> string { "the context `${name}` is required, and nothing set it before it was read" }

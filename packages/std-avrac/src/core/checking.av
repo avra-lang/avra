@@ -73,6 +73,9 @@ export type CheckedProgram = {
     /// Whether a value's name, read where the template that wrote the read stands (its home) before
     /// where the body stands, names a module's `state`.
     kept: fn(string, string?) -> bool,
+    /// The type the context a name names holds, read where the template that wrote the read stands
+    /// (its home) before where the body stands; absent where it names no context.
+    context: fn(string, string?) -> SignedType?,
     /// Whether a value of a type implements the trait a bound names, as the whole program's impls
     /// say; absent where nothing says.
     implements: fn(SignedType, SignedType) -> bool?,
@@ -916,7 +919,8 @@ fn seat_fn(expected: Expected, arity: int) -> SignedType? {
     if wanted.head is .Function && wanted.seats.length == arity && !wanted.nullable() { wanted } else { null }
 }
 
-/// Whether `a` and `b`, the types one name is bound at twice, are both known whole and join in none.
+/// Whether `a` and `b`, the types one name is bound at twice, are both known whole and are two types:
+/// they join in none, or one may be absent where the other never is, which lays out apart.
 fn types_apart(a: SignedType?, b: SignedType?) -> bool {
     let first? = a else { return false }
     let second? = b else { return false }
@@ -924,7 +928,7 @@ fn types_apart(a: SignedType?, b: SignedType?) -> bool {
         !second.generic() &&
         !first.inferred() &&
         !second.inferred() &&
-        first.joined_with(second) == null
+        (first.nulls != second.nulls || first.joined_with(second) == null)
 }
 
 /// A body of `store` to check against `program`, its fn answering `answer`.
@@ -4095,6 +4099,9 @@ impl Checking {
     fn written_in(ty: TypeRef, s: StmtId) -> SignedType {
         (self.program.written)(ty, self.store.seat_home(s, LandedSeat.Names))
     }
+
+    /// The type the context `name`, read at `at`, holds; absent where it names none.
+    fn context_typed(name: string, at: ExprId) -> SignedType? { (self.program.context)(name, self.home_of(at)) }
 }
 
 /// A scope with nothing bound in it yet.

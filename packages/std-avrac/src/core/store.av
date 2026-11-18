@@ -81,6 +81,10 @@ export type Stamped = {
     /// The settle under way, 0 for none, and the last one begun.
     pass: Cell<int>,
     passes: Cell<int>,
+    /// How many nodes, from the first, a settle has derived: those added since are the next one's.
+    settled: Cell<int>,
+    /// Whether a node a settle derived was written since, outside a settle.
+    stale: Cell<bool>,
 }
 
 /// A mark folded into a node's print: its code, and what it carries as one value.
@@ -94,6 +98,8 @@ fn no_prints() -> Stamped {
         settled_in: list_cell(),
         pass: Cell.new(0),
         passes: Cell.new(0),
+        settled: Cell.new(0),
+        stale: Cell.new(false),
     }
 }
 
@@ -116,7 +122,14 @@ impl Stamped {
             .concat([s for s in kept if s.code > code])
         self.stamps.set_at(at, stamps)
         self.refold(at)
+        self.written(at)
     }
+
+    /// Node `at` was written: outside a settle, one a settle derived makes every print stale.
+    fn written(at: int) { if self.pass.get() == 0 && at < self.settled.get() { self.stale.set(true) } }
+
+    /// Whether a node a settle derived was written since, outside a settle.
+    fn stale_since() -> bool { self.stale.get() }
 
     fn refold(at: int) {
         let identity = self.identities.get()[at]
@@ -134,7 +147,15 @@ impl Stamped {
         self.pass.set(self.passes.get())
     }
 
-    fn ended() { self.pass.set(0) }
+    /// The settle under way ends, having derived every node up to `count`.
+    fn ended(count: int) {
+        self.pass.set(0)
+        self.settled.set(count)
+        self.stale.set(false)
+    }
+
+    /// The first node no settle has derived.
+    fn unsettled_from() -> int { self.settled.get() }
 
     /// Whether a settle is under way and hasn't derived node `at`'s print yet.
     fn unsettled(at: int) -> bool { self.pass.get() > 0 && self.settled_in.get()[at] != self.pass.get() }
@@ -151,6 +172,8 @@ impl Stamped {
             settled_in: Cell.new(self.settled_in.get()),
             pass: Cell.new(self.pass.get()),
             passes: Cell.new(self.passes.get()),
+            settled: Cell.new(self.settled.get()),
+            stale: Cell.new(self.stale.get()),
         }
     }
 
@@ -1297,7 +1320,7 @@ impl SyntaxArena {
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> if self.answers(v) { v } else { null },
-            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -1904,17 +1927,37 @@ impl SyntaxArena {
         if !self.annotations_of(s).is_empty() { self.restamp_annotations(s) }
     }
 
-    /// Every print derived again from the finished tree, each child's before what holds it.
+    /// The print of every node added since the last settle derived from the finished tree, each
+    /// child's before what holds it — of every node, where one a settle derived was written since,
+    /// which any print over it may fold.
     fn settle_prints() {
+        let whole = self.prints_stale()
         self.expr_prints.begun()
         self.stmt_prints.begun()
         self.pat_prints.begun()
-        for at in 0..self.exprs.count() { let _ = self.expr_fingerprint(ExprId { index: at }) }
-        for at in 0..self.stmts.count() { let _ = self.stmt_fingerprint(StmtId { index: at }) }
-        for at in 0..self.pats.get().length { let _ = self.pat_fingerprint(PatId { index: at }) }
-        self.expr_prints.ended()
-        self.stmt_prints.ended()
-        self.pat_prints.ended()
+        for at in if whole { 0 } else { self.expr_prints.unsettled_from() }..self.exprs.count() { let _ = self.expr_fingerprint(ExprId { index: at }) }
+        for at in if whole { 0 } else { self.stmt_prints.unsettled_from() }..self.stmts.count() { let _ = self.stmt_fingerprint(StmtId { index: at }) }
+        for at in if whole { 0 } else { self.pat_prints.unsettled_from() }..self.pats.get().length { let _ = self.pat_fingerprint(PatId { index: at }) }
+        self.exprs.rewrites_forgotten()
+        self.stmts.rewrites_forgotten()
+        self.expr_prints.ended(self.exprs.count())
+        self.stmt_prints.ended(self.stmts.count())
+        self.pat_prints.ended(self.pats.get().length)
+    }
+
+    /// Whether a node a settle derived was written since, outside a settle: stamped, or replaced.
+    fn prints_stale() -> bool {
+        self.expr_prints.stale_since() ||
+            self.stmt_prints.stale_since() ||
+            self.pat_prints.stale_since() ||
+            written_under(self.exprs.rewritten_from(), self.expr_prints.unsettled_from()) ||
+            written_under(self.stmts.rewritten_from(), self.stmt_prints.unsettled_from())
+    }
+
+    /// The pattern `p` is `pat` now.
+    fn pat_replaced(p: PatId, pat: Pat) {
+        self.pats.set_at(p.index, pat)
+        self.pat_prints.written(p.index)
     }
 
     /// Every expression tagged `k` (`tag_expr`, `@derive(Matchable)`'s
@@ -2300,3 +2343,6 @@ fn filler(labels: List<string>, seat: string, j: int) -> int {
 fn not_a_call_trailed() -> string {
     "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read"
 }
+
+/// Whether a rewrite from `first`, -1 for none, wrote a node below `settled`.
+fn written_under(first: int, settled: int) -> bool { first >= 0 && first < settled }

@@ -29,6 +29,8 @@ use core.{
     root_kind_of,
     CalledFn,
     CalledSeat,
+    ContextMarks,
+    HeldContext,
     CollectedRow,
     CollectedValue,
     Defaulting,
@@ -102,6 +104,8 @@ export type LoweredFn = {
     tests: List<TaskTest> = [],
     /// Its registers holding a fn value's box, each with the box's type.
     boxed: List<BoxedValue> = [],
+    /// Its `ctx` sets and its calls through a `dyn` box, its lambdas' aside.
+    marks: ContextMarks = ContextMarks {},
     /// How many nodes of its body a seat refused: a unit built over a refusal is no program.
     refused: int = 0,
     /// Each name its body reads that nothing binds and the program gives no type: one nothing
@@ -202,7 +206,7 @@ fn lowered_under(
                 engine,
                 file,
                 name,
-            )
+            ) ?? lowered_context(engine, file, name)
         } else {
             null
         }
@@ -479,6 +483,8 @@ fn lowered_program(
         ),
         spins: Cell.new(false),
         compared: (n: string, home: string?) -> compared_value(engine, home_file(engine, home) ?? file, n),
+        contexts: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> held_context(engine, f, n)),
     }
 }
 
@@ -515,7 +521,7 @@ fn settled_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> 
 fn compares_kind(kind: ItemKind) -> bool {
     match kind {
         .Const or .Collect -> true,
-        .Fn or .State or .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> false,
+        .Fn or .State or .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .Ctx -> false,
     }
 }
 
@@ -536,6 +542,7 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
         spins: cx.program.spins.get(),
         tests: cx.tests.get(),
         boxed: cx.boxed.get(),
+        marks: cx.marks.get(),
     }
 }
 
@@ -583,7 +590,7 @@ fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> Na
         .Const -> const_named(engine, d),
         .Collect -> collected_value(engine, d),
         .State -> kept_value(engine, d),
-        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum -> null,
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .Ctx -> null,
     }
 }
 
@@ -642,6 +649,56 @@ fn lowered_state(engine: QueryEngine, file: SourceFileAddress, name: string) -> 
     cx.scope_exit(r)
     cx.emit(Ins.RetVal(r))
     unit_lowered(cx, 0, cx.laid_out(cell_of(held))) with { refused: body.refused, unread: body.unread }
+}
+
+/// The default the context `d` declares, as a body of no seats answering its type; absent where it's
+/// required, or its type isn't known.
+fn context_body(engine: QueryEngine, d: DeclaredName) -> SignedBody? {
+    let held? = context_type(engine, d) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    let stmt? = item.stmts.find((s) -> item.store.ctx_declared(s) == d.name) else { return null }
+    let start? = item.store.stmt_value(stmt) else { return null }
+    SignedBody {
+        signature: value_signature(held),
+        item: item,
+        body: start,
+        stmt: stmt,
+        seat: Seating.Binding(d.name),
+    }
+}
+
+/// The unit of the context `file` declares as `name`: no seats, the box keeping its default built at
+/// its first call and answered by every call. Absent where it declares none with a default, or its
+/// type isn't known.
+fn lowered_context(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Ctx) else { return null }
+    let signed? = context_body(engine, d) else { return null }
+    let held = signed.signature.answer
+    let body = elaborated(engine, file, signed)
+    mut cx = lowering(
+        body.store,
+        lowered_program(engine, file, body.store, name, [], null),
+        body.core,
+        body.seats,
+        held,
+    )
+    cx.scope_enter()
+    let r = cx.state_kept(declared_symbol(file, name), body.body, held)
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(cell_of(held))) with { refused: body.refused, unread: body.unread }
+}
+
+/// The context `name` read from `file` names, as a read or a set reaches it. Absent where it names
+/// none, or its type isn't known.
+fn held_context(engine: QueryEngine, file: SourceFileAddress, name: string) -> HeldContext? {
+    let d? = context_named(engine, file, name) else { return null }
+    let held? = context_type(engine, d) else { return null }
+    HeldContext {
+        key: context_key(d),
+        held: held,
+        start: if context_body(engine, d) == null { null } else { unit_callee(d) },
+    }
 }
 
 /// The `collect` `d` names, as code reads it: a call of the unit that builds its list, one a program
@@ -779,7 +836,7 @@ export fn lowered_every_variant(
     let l = cx.laid_out(of)
     let r = cx
         .listed(
-            cx.laid_out(ty),
+            ty,
             [cx.tagged_value(l, i, []) for i, _v in shape.variants],
             [false for _v in shape.variants],
         )
@@ -823,7 +880,7 @@ fn member_itself(engine: QueryEngine, p: Projecting, m: DeclaredName) -> Collect
             let seat? = p.seat else { return null }
             CollectedValue.Valued(settled_type(engine, p.reader, m, seat))
         },
-        .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State -> null,
+        .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State or .Ctx -> null,
     }
 }
 

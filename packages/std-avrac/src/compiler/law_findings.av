@@ -1,9 +1,9 @@
 //! THE LAWS, gathered: every `law` the compiler declares, and what they find in an item, saved per
 //! item and cut off early; a finding is worded by its law's voice only as it's said.
 use core.{At, NodeKind, Span, flatten, some_list}
-use compiler.laws.{Aside, Found, Reach, law}
+use compiler.laws.{Aside, Found, Reach, Unread, law}
 use @std.errors.{Confidence, Edit, Frame, Suggestion}
-use diagnostics.{Diag, Guess, Severity, Voice, guess_fix, loc_at, said_as}
+use diagnostics.{Diag, Guess, Severity, Voice, error_at, guess_fix, loc_at, said_as, unread_behind}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -55,6 +55,8 @@ export type LawFinding = {
     /// The item of the file its places are counted from the start of, where it stands in another
     /// than the one it was found in.
     item: int? = null,
+    /// The parse refusal the finding's name may stand behind, said in place of its remedy.
+    unread: UnreadKept? = null,
 }
 
 /// An edit a finding offers, where it writes.
@@ -64,6 +66,11 @@ export type FixAt = { description: string, at: FindingAt?, replacement: string, 
 /// A sentence said beside a finding, where it names: in the finding's item, or the item `item`.
 @derive(Saved)
 export type AsideAt = { label: string, at: FindingAt?, item: int? = null }
+
+/// A parse refusal a finding's name may stand behind: what holds its file, the name, the file as a
+/// path from the finding's, where it stands counted from that file's start, and its words.
+@derive(Saved)
+export type UnreadKept = { subject: string, name: string, path: string, at: FindingAt?, message: string }
 
 /// What every law finds in one item.
 @derive(Saved)
@@ -92,6 +99,7 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) ->
                 } for x in s.fixes],
                 local: s.local,
                 item: s.item,
+                unread: kept_unread(s.unread),
             } for l in held_laws() for s in law_found(engine, file, at, view, l)],
             stands_before,
         ),
@@ -216,6 +224,18 @@ fn aside_in_file(engine: QueryEngine, file: SourceFileAddress, at: int, aside: A
     a with { at: file_placed(engine, file, a.item ?? at, place), item: null }
 }
 
+/// An unread file's refusal as a finding keeps it.
+fn kept_unread(u: Unread?) -> UnreadKept? {
+    let held? = u else { return null }
+    UnreadKept {
+        subject: held.subject,
+        name: held.name,
+        path: held.path,
+        at: kept_at(held.at),
+        message: held.message,
+    }
+}
+
 /// A span as a finding keeps it.
 fn kept_at(s: Span?) -> FindingAt? {
     let at? = s else { return null }
@@ -234,7 +254,20 @@ export fn finding_diag(f: LawFinding, path: string) -> Diag? {
     let v = (l.voice)(placed_args(f, path))
     let loc = loc_at(path, span_of(f.at))
     let d = said_as(f.kind ?? l.kind, loc, v) with { suggestions: guessed_fixes(v.guess, f.named ?? f.at, path).concat(offered(f.fixes, path)), secondary: [Frame { label: a.label, loc: loc_at(path, span_of(a.at)) } for a in some_list(f.aside)] }
-    if l.warns { d with { severity: Severity.Warning } } else { d }
+    let said = behind(d, f.unread, path)
+    if l.warns { said with { severity: Severity.Warning } } else { said }
+}
+
+/// `d`, said of the file `path` names, behind the parse refusal `unread` of a file its name may be
+/// declared in, where there is one: pointed there, with no remedy of its own.
+fn behind(d: Diag, unread: UnreadKept?, path: string) -> Diag {
+    let u? = unread else { return d }
+    let root = error_at(
+        "parse.expected",
+        loc_at(normalized(joined_path(dir_of(path), u.path)), span_of(u.at)),
+        u.message,
+    )
+    unread_behind(d, u.subject, root, u.name)
 }
 
 /// The edits a finding offers, each where it writes, sure or likely as it says; none where a place

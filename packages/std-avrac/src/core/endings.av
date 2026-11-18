@@ -19,6 +19,8 @@ export enum Ending {
     /// An owner `owner` of the type `ty` a package marks `@owns`: each producer it holds cancelled,
     /// then joined.
     Owned(owner: Reg, ty: SignedType)
+    /// A `ctx` set's frame taken back to the one it replaced.
+    Restored
 }
 
 /// How a deferred body runs: its box's code called through, handed the box; or the body, one call,
@@ -39,7 +41,7 @@ impl Ending {
     /// Whether ending it calls a deferred body.
     fn calls() -> bool {
         match self {
-            .Joined(_) or .Landed(_, _) or .Owned(_, _) -> false,
+            .Joined(_) or .Landed(_, _) or .Owned(_, _) or .Restored -> false,
             .Deferred(_, _, _, _) -> true,
         }
     }
@@ -179,6 +181,7 @@ impl Lowering {
             .Landed(scope, cell) -> self
                 .stored(cell, self.call_row(Layout.Word, rt_sig_of("avra_fiber_within_end")!, [scope])),
             .Owned(owner, ty) -> self.owner_settled(owner, ty),
+            .Restored -> self.run_row(rt_sig_of("avra_ctx_back")!, []),
         }
     }
 
