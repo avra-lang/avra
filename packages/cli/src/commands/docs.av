@@ -3,7 +3,9 @@
 //! thing's own doc — a diagnostic's meaning, or a declared symbol's
 //! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{DeclDoc, FileDocs, avra, avra_fact_definitions, file_docs}
+use @std.avrac.compiler.{DeclDoc, FileDocs, avra, avra_fact_definitions, file_docs, package_sources}
+use @std.avrac.core.{sorted_texts}
+use @std.program.address.{SourceFileAddress}
 use @std.path.{joined_path}
 use @std.program.layered_store.{program_store_at}
 use @std.program.query_engine.{query_engine}
@@ -89,13 +91,15 @@ fn collision_said(name: string, modules: List<string>) -> string {
     "`${name}` names more than one declaration in this package — qualify it: ${["${m}.${name}" for m in modules].join(", ")}"
 }
 
-/// What each source file of the package at `root` says of the names it declares, read on the
-/// program layer; the exit spoken where no std stands beside this compiler.
+/// What each source file of the package at `root` and of every package it depends on says of the
+/// names it declares, read on the program layer; the exit spoken where no std stands beside this
+/// compiler.
 fn package_docs(root: string) -> Result<List<FileDocs>, int> {
     let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
     let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
     let engine = query_engine(store, avra_fact_definitions())
-    let docs = [file_docs(engine, disk.file_at(p)) for p in disk.held(engine)]
+    let packages = [disk.name].concat(sorted_texts(disk.deps.keys()))
+    let docs = [file_docs(engine, SourceFileAddress { package_name: package, path_in_package: path }) for package in packages for path in package_sources(engine, package, "src")]
     store_kept(engine, store)
     docs
 }

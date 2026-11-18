@@ -67,7 +67,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, beside_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace; witness_compiler_key; docs_cache_attack, obj_gone_attack, moved_tree_attack, layer_sites_attack, closure_gather_attack, store_bound_attack, path_leak_attack
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -374,6 +374,13 @@ slice_witness_b() {
     row wave-share-attack env WAVE_ATTACK_AVRA="$root/build/avra" sh tools/wave_share_attack.sh
     row flow-trace make -s -o avra flow-trace
     row compiler-key sh tools/witness_compiler_key.sh build/avra
+    row docs-cache-attack sh tools/docs_cache_attack.sh
+    row obj-gone-attack sh tools/obj_gone_attack.sh
+    row moved-tree-attack sh tools/moved_tree_attack.sh
+    row layer-sites-attack sh tools/layer_sites_attack.sh
+    row closure-gather-attack sh tools/closure_gather_attack.sh
+    row store-bound-attack sh tools/store_bound_attack.sh
+    row path-leak-attack sh tools/path_leak_attack.sh
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

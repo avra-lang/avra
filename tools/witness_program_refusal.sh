@@ -9,8 +9,13 @@
 #     refusal is its words, and a printing case's module runs under node (`tools/run_wasm.mjs`); on a
 #     machine with no toolchain for the target, both paths refuse in the toolchain's same words, exit 2,
 #     and the case is said untooled, neither held nor failed;
+#   warns.expected — beside either: each path's warnings, their first lines in the order said, are
+#     exactly this text;
 #   differs.why — the paths are known to differ on it, for the reason written there: it is said
 #     and not failed while it differs, and FAILS once it holds, until the file is taken away.
+# A case that uses a form only the program layer builds (`avra tapes <case> --new-only`) is never
+# asked of the old path, which never learned the form: the program layer alone is held to the
+# expectation, and the count of such cases is said.
 # Every case is copied to a directory of its own with no store and a machine store of its own, so
 # each judgement is cold; a path into that copy is said as `<case>`. Prints each failing case with what differs, then the
 # counts; exits 1 on any failure. With PIN=1, a case holding neither expectation is first given
@@ -55,6 +60,37 @@ said() {
             { while (gap > 0) { print ""; gap = gap - 1 } print }'
 }
 
+# whether the case `$1`, which uses a form only the program layer builds, holds on the program layer
+# alone: 3 where it does, 1 with what differs said on stderr where it doesn't. With PIN=1 a case
+# holding neither expectation is first given the program layer's.
+judged_alone() {
+    name=$1
+    from="$cases_dir/$name"
+    (cd "$tmp/$name" && AVRA_PROGRAM=1 AVRA_PROGRAM_NET=0 "$avra" build . >"$tmp/$name.new" 2>&1)
+    new=$?
+    said "$name" new >"$tmp/$name.new.said"
+    if [ "${PIN:-}" = 1 ] && [ ! -e "$from/refuses.expected" ] && [ ! -e "$from/prints.expected" ]; then
+        if [ "$new" = 1 ]; then cp "$tmp/$name.new.said" "$from/refuses.expected"; else "$tmp/$name/src/main" >"$from/prints.expected" 2>/dev/null; fi
+    fi
+    if [ -e "$from/refuses.expected" ]; then
+        [ "$new" = 1 ] || { echo "$name: the program layer's build exited $new, not 1" >&2; cat "$tmp/$name.new.said" >&2; return 1; }
+        cmp -s "$tmp/$name.new.said" "$from/refuses.expected" || {
+            echo "$name: the program layer's words differ from refuses.expected" >&2
+            diff "$from/refuses.expected" "$tmp/$name.new.said" >&2
+            return 1
+        }
+        return 3
+    fi
+    [ "$new" = 0 ] || { echo "$name: the program layer refused it ($new)" >&2; cat "$tmp/$name.new.said" >&2; return 1; }
+    "$tmp/$name/src/main" >"$tmp/$name.ran" 2>&1 || { echo "$name: its product failed" >&2; cat "$tmp/$name.ran" >&2; return 1; }
+    cmp -s "$tmp/$name.ran" "$from/prints.expected" || {
+        echo "$name: its product printed otherwise" >&2
+        diff "$from/prints.expected" "$tmp/$name.ran" >&2
+        return 1
+    }
+    return 3
+}
+
 # whether the case `$1` holds; what differs said on stderr where it doesn't
 judged() {
     name=$1
@@ -64,6 +100,8 @@ judged() {
     mkdir -p "$tmp/$name.machine"
     export AVRA_CACHE_DIR="$tmp/$name.machine"
     target=$(cat "$from/target" 2>/dev/null || true)
+    forms=$(AVRA_PROGRAM=1 "$avra" tapes "$tmp/$name" --new-only 2>/dev/null)
+    [ -z "$forms" ] || { judged_alone "$name"; return $?; }
     if [ -n "$target" ]; then
         (cd "$tmp/$name" && AVRA_PROGRAM=0 "$avra" build --target "$target" . >"$tmp/$name.old" 2>&1)
     else
@@ -87,6 +125,15 @@ judged() {
                 (cd "$tmp/$name" && AVRA_PROGRAM=0 "$avra" run . >"$from/prints.expected" 2>/dev/null)
             fi
         fi
+    fi
+    if [ -e "$from/warns.expected" ]; then
+        for path in old new; do
+            grep '^warning\[' "$tmp/$name.$path" | cmp -s - "$from/warns.expected" || {
+                echo "$name: the $path path's warnings differ from warns.expected" >&2
+                grep '^warning\[' "$tmp/$name.$path" | diff "$from/warns.expected" - >&2
+                return 1
+            }
+        done
     fi
     if [ -e "$from/refuses.expected" ]; then
         [ "$old" = 1 ] || { echo "$name: the old path's check exited $old, not 1" >&2; cat "$tmp/$name.old.said" >&2; return 1; }
@@ -122,11 +169,15 @@ held=0
 failed=0
 known=0
 untooled=0
+alone=0
 for name in $names; do
     why="$cases_dir/$name/differs.why"
     judged "$name" 2>"$tmp/$name.why"
     judgement=$?
-    if [ "$judgement" = 2 ]; then
+    if [ "$judgement" = 3 ]; then
+        held=$((held + 1))
+        alone=$((alone + 1))
+    elif [ "$judgement" = 2 ]; then
         echo "$name: untooled — no toolchain here for $(cat "$cases_dir/$name/target"); both paths refuse alike"
         untooled=$((untooled + 1))
     elif [ "$judgement" = 0 ]; then
@@ -144,5 +195,5 @@ for name in $names; do
         failed=$((failed + 1))
     fi
 done
-echo "witness_program_refusal: $held of $((held + failed + known)) cases hold, $known known to differ, $failed failing$([ "$untooled" = 0 ] || echo ", $untooled untooled")"
+echo "witness_program_refusal: $held of $((held + failed + known)) cases hold, $known known to differ, $failed failing$([ "$untooled" = 0 ] || echo ", $untooled untooled"); $alone skipped by the old path (a form only the program layer builds), held on the program layer alone"
 [ "$failed" = 0 ]

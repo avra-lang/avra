@@ -15,7 +15,7 @@
 //!
 //! A row whose own key is not the key the list was given is SAID: the key
 //! the list finds a row by must be the key the row stands under.
-use tree.identity.{Stand, Step, steps, shared}
+use tree.identity.{Stand, Step, StepRows, keyed_step, same_step, stepped, text_key}
 use tree.lists.{flatten}
 use tree.node.{Node, Prim, Attribute}
 use style.box.{Box}
@@ -67,13 +67,13 @@ impl View for Rows {
         let indices = self.built_at(at, w)
         let built = [self.at(i) for i in indices]
         let said = [lent(v.stand(), self.key_at(indices[j]), at) for j, v in built]
-        let seats = [s.spelled() for s in steps(said)]
+        let told = stepped(said)
         let stands = at
             .children_windowed(
-                seats,
-                shared(said),
+                told.steps,
+                told.shared,
                 indices,
-                (step: string, i: int) -> i < self.count && self.step_at(i) == step,
+                (step: Step, i: int) -> i < self.count && same_step(self.step_at(i), step),
                 () -> self.present(),
             )
         at.tally(built.length)
@@ -87,16 +87,11 @@ impl View for Rows {
 
 impl Rows {
     /// The step of the row at `i`.
-    fn step_at(i: int) -> string { Step.Keyed(self.key_at(i), 0).spelled() }
+    fn step_at(i: int) -> Step { keyed_step(text_key(self.key_at(i)), 0) }
 
     /// The index of every row's step in the source: asked only when a kept
     /// row is no longer where it was.
-    fn present() -> Map<string, int> {
-        mut at: Map<string, int> = {}
-        // LICENSED loops.push_loop: one key a row, found without building the row
-        for i in 0..self.count { at.set(self.step_at(i), i) }
-        at
-    }
+    fn present() -> StepRows { StepRows.of([self.step_at(i) for i in 0..self.count], [i for i in 0..self.count]) }
 
     /// Where the row named `key` stands, looking first at `hint`.
     fn find_key(key: string, hint: int) -> int? {
@@ -145,7 +140,7 @@ fn skipped(at: Standing, next: int, rows: int) -> List<Node> {
         Node {
             prim: Prim.Item,
             attrs: [Attribute.Skipped(at.route.get(), rows, at.extent_of())],
-            box: Box { key: "~skipped-${next}" },
+            box: Box { key: text_key("~skipped-${next}") },
             children: [],
         },
     ]
@@ -154,8 +149,9 @@ fn skipped(at: Standing, next: int, rows: int) -> List<Node> {
 /// A row's stand, under the key the list found it by. A row that says
 /// another key of its own is said.
 fn lent(own: Stand, key: string, at: Standing) -> Stand {
-    if own.key != null && own.key != key { at.says(told_apart(key)) }
-    own with { key: key }
+    let named = text_key(key)
+    if own.key != null && !own.key!.same(named) { at.says(told_apart(key)) }
+    own with { key: named }
 }
 
 fn told_apart(key: string) -> string {

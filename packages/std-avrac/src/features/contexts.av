@@ -756,16 +756,11 @@ impl Decls {
 
     fn self_referent(d: DeclId) -> Diag { said_as("const.cycle", self.loc(d), const_reads_itself(self.decl(d).name)) }
 
-    fn not_a_value(d: DeclId) -> Diag {
-        let names = joined([wrapper_seat(i) for i, _p in self.sig(d)?.fn_sig()?.params ?? []], ", ")
-        refusal(
+    fn not_a_value(d: DeclId) -> Diag { said_as(
             "type.lambda",
             self.loc(d),
-            "a generic fn is not a value — no single signature to wear",
-            "declared here",
-            "wrap it in a lambda — `(${names}) -> ${self.fn_name(d) ?? "f"}(${names})` — whose seat's own type pins the generic's",
-        )
-    }
+            generic_no_value(self.fn_name(d) ?? "f", (self.sig(d)?.fn_sig()?.params ?? []).length),
+        ) }
 
     /// An extern names a C SYMBOL, called across the host seam — it
     /// wears no address a value can carry, so a `let`, a list element
@@ -849,6 +844,16 @@ impl Decls {
 }
 
 /// One wrapper seat's name, by position.
+/// The generic fn `name`, of `seats` seats, read as a value: said where it's declared.
+export fn generic_no_value(name: string, seats: int) -> Voice {
+    let names = joined([wrapper_seat(i) for i in 0..seats], ", ")
+    Voice {
+        message: "a generic fn is not a value — no single signature to wear",
+        label: "declared here",
+        help: "wrap it in a lambda — `(${names}) -> ${name}(${names})` — whose seat's own type pins the generic's",
+    }
+}
+
 fn wrapper_seat(i: int) -> string {
     "x${i}"
 }

@@ -1,45 +1,50 @@
 #!/bin/sh
-# A CACHE ENTRY IS ALWAYS DROPPABLE. A held file's object is the store's, and a build used to
-# refuse (`build.object_gone`) when one was missing. A missing object is a MISS now: the file is
-# read again and its object rebuilt, so the build passes — and counted: the second build
-# rebuilds objects, the third rebuilds none; and a ceiling that evicts them leaves builds passing. It CLEARS the store, as the attacks beside it do.
+# A KEPT OBJECT IS ALWAYS DROPPABLE. A program's objects are kept in its package's
+# `.avra-cache/tapes-build/obj`, each by its key; a build owes the ones it can't find there and
+# makes them again. Held to each step: the build passes, its binary prints what the source says,
+# and the objects it made are counted — an edit makes few, an edit after every object was deleted
+# makes them all, and a build after that makes none. A build that changed nothing stands on its
+# kept binary whatever was deleted beside it, and a deleted binary is put back.
 set -u
 . "$(dirname "$0")/lib/attack.sh"
+who=obj-gone-attack
+. tools/lib/steps.sh
 R=build/obj-gone
-find "$R" .avra-cache -type f -delete 2>/dev/null
+find "$R" -delete 2>/dev/null
 mkdir -p $R/app/src $R/lib/src
+own_store $R
 printf '[package]\nname = "@rt/oglib"\nversion = "0.1.0"\n\n[lib]\nname = "rt-oglib"\npath = "src/lib.av"\n' > $R/lib/avra.toml
 printf '[package]\nname = "og"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/oglib" = { path = "../lib" }\n' > $R/app/avra.toml
 printf 'export fn one() -> int { 1 }\nexport fn two() -> int { one() + 1 }\n' > $R/lib/src/lib.av
-printf 'use @rt.oglib.{two}\n\nprintln("n ${two()}")\n' > $R/app/src/main.av
-B() { # B <label> <want>: build and run, the output held to <want>
-    AVRA_QTRACE=1 ./avra build $R/app > $R/out 2> $R/err; st=$?
-    [ $st -eq 0 ] || { fail "$1: status $st"; tail -n 12 $R/err | grep -v '^Q' | cut -c1-200; return 1; }
+O=$R/app/.avra-cache/tapes-build/obj
+main() { printf 'use @rt.oglib.{two}\n\nprintln("%s ${two()}")\n' "$1" > $R/app/src/main.av; }
+# build <label> <want> <made>: the build passes, prints <want>, and made <made> objects
+# ("some": at least one, fewer than all; "all": every object it keeps)
+build() {
+    touch $R/mark
+    ./avra build $R/app > $R/out 2> $R/err || { fail "$1: the build failed: $(grep -v '^Q' $R/err | head -3 | tr '\n' ' ')"; return; }
     got=$($R/app/src/main 2>&1)
-    [ "$got" = "$2" ] || fail "$1: printed '$got', wanted '$2'"
-    owed=$(grep "$(printf '^Q\tobjects\t')" $R/err | tail -1 | cut -f3)
-    echo "$1: ${owed:-0} object(s) owed"
+    [ "$got" = "$2" ] || { fail "$1: printed '$got', the source says '$2'"; return; }
+    made=$(find $O -type f -newer $R/mark | wc -l | tr -d ' ')
+    kept=$(find $O -type f | wc -l | tr -d ' ')
+    case $3 in
+        some) [ "$made" -gt 0 ] && [ "$made" -lt "$kept" ] || { fail "$1: made $made of $kept objects, where an edit makes some"; return; } ;;
+        all) [ "$made" -gt 0 ] && [ "$made" = "$kept" ] || { fail "$1: made $made of $kept objects, where every one was deleted"; return; } ;;
+        *) [ "$made" = "$3" ] || { fail "$1: made $made objects, wanted $3"; return; } ;;
+    esac
+    say "$1: made $made of $kept objects, printed '$got'"
 }
-B "cold" "n 2"
-printf 'use @rt.oglib.{two}\n\nprintln("m ${two()}")\n' > $R/app/src/main.av
-B "main edited, lib held" "m 2"
-held_owed=$owed
-find .avra-cache/obj -mindepth 2 -type f ! -name '*.deps' -delete
-printf 'use @rt.oglib.{two}\n\nprintln("k ${two()}")\n' > $R/app/src/main.av
-B "every object deleted, main edited" "k 2"
-[ "${owed:-0}" -gt "${held_owed:-0}" ] || fail "the deleted objects were not rebuilt (owed $owed, was $held_owed)"
-B "again, nothing changed" "k 2"
-[ "${owed:-0}" -eq 0 ] || fail "a rebuilt store still owed $owed object(s)"
-# THE CEILING EVICTS, AND NOTHING BREAKS: under a one-byte ceiling every seal drops every object
-# but the newest, and each edit-build still passes, the dropped files read again.
-i=0
-while [ $i -lt 4 ]; do
-    i=$((i + 1))
-    printf 'use @rt.oglib.{two}\n\nprintln("e%s ${two()}")\n' $i > $R/app/src/main.av
-    AVRA_OBJ_MAX_BYTES=1 AVRA_STORE_SEAL_FRAMES=1 B "ceiling cycle $i" "e$i 2" || break
-done
-count=$(find .avra-cache/obj -mindepth 2 -type f ! -name '*.deps' | wc -l | tr -d ' ')
-echo "objects left under a one-byte ceiling: $count"
-[ "$count" -le 3 ] || fail "$count objects stand under a one-byte ceiling"
-echo "obj-gone-attack: $fails failed"
-[ "$fails" -eq 0 ]
+main n; build "cold" "n 2" all
+main m; build "main edited, the library's objects kept" "m 2" some
+build "nothing changed" "m 2" 0
+find $O -type f -delete
+build "every object deleted, nothing changed: the kept binary stands" "m 2" 0
+find $O -type f -delete; find $R/app/src/main -delete
+build "every object and the binary deleted, nothing changed" "m 2" 0
+find $O -type f -delete; main k
+build "every object deleted, main edited: each made again" "k 2" all
+build "again, nothing changed" "k 2" 0
+main j; build "edited once more" "j 2" some
+printf 'export fn one() -> int { 3 }\nexport fn two() -> int { one() + 1 }\n' > $R/lib/src/lib.av
+build "the library edited" "j 4" some
+verdict

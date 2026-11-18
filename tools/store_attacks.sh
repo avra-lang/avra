@@ -32,7 +32,7 @@ set -u
 # THE HARNESS HOLDS THE SLOT: two writers and a contended compaction need two
 # processes AT ONCE, and the `avra` shim serialises package-scale runs on the
 # machine lock. `AVRA_WATCH_HELD` tells the shim this harness is the slot —
-# the same door `tools/store_baseline.sh` and `tools/cache_attacks.sh` use.
+# the same door `tools/store_baseline.sh` uses.
 export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 # The machine's cache is this tree's own, so a cleared .avra-cache is a cold store.

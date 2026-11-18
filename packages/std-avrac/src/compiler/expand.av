@@ -668,7 +668,8 @@ impl Workspace {
     /// program does not export is gathered only from inside the build — so a mark on such a
     /// declaration no collect of the build gathers, and its own derives do not claim, is
     /// read by nothing — a gathered one's marks are its collect's to read. An exported
-    /// one may be gathered by a package outside the build, and is not judged here.
+    /// one may be gathered by a package outside the build, and a dependency's by a build of
+    /// its own, whose closure is its own; neither is judged here.
     fn speak_unread_own_marks(
         f: FileId,
         s: StmtId,
@@ -682,7 +683,7 @@ impl Workspace {
             .find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else {
             return
         }
-        if self.decls.decl(d).exported { return }
+        if self.decls.decl(d).exported || !self.decls.of_root(f) { return }
         let marks = self.decls.member_marks(d, null)
         if marks.is_empty() { return }
         let worn = self.decls.annotations_of(d)

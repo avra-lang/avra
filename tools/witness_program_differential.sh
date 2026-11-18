@@ -15,6 +15,8 @@
 #   BEYOND / ABSENT no source reaches the code / no witness is written yet
 #   STD-ROOT        the witness lays out a std of its own, which a compiler on disk reads only beside
 #                   itself — not run
+#   NEW-ONLY        the witness uses a form only the program layer builds (`avra tapes --new-only`):
+#                   skipped, never asked of the old path, and counted
 # Prints one row per code that isn't SAME (code, verdict, the lane whose kinds it is — a guess from
 # the kind — and both first lines), then the counts. With --bar N it exits 1 where fewer than N are
 # SAME, else 0.

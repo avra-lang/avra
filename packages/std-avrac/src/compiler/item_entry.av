@@ -252,58 +252,91 @@ fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
 fn runs(store: SyntaxArena, s: StmtId) -> bool { !store.is_declaration(s) }
 
 /// The entry's shown value printed as text, as the type it's typed with spells it: text as itself, a
-/// number or a truth by its row, a list of them by the row that joins it. A value of any other type
-/// isn't shown yet; a map, and a value of no type, show nothing.
+/// number or a truth by its row, a list or a record as the list of its parts' texts, as the
+/// evaluator prints it. A value of any other type isn't shown yet; a map, and a value of no type,
+/// show nothing.
 fn shown_as_text(mut cx: Lowering, ty: SignedType?, value: Reg) {
     let shown? = ty else { return }
     if shown.mapped() != null && !shown.nullable() && !shown.dynamic { return }
-    let spelled? = spelling_of(cx, shown) else {
+    if !spellable(cx, shown, []) {
         if !(cx.laid_out(shown) is .Void) { cx.missed("a shown `${shown.spelled()}`, which no text spells yet") }
         return
     }
-    let text = match spelled {
-        .Itself -> value,
-        .Row(name) -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(name)!, [value]),
-    }
-    cx.run_row(rt_sig_of("avra_puts")!, [text])
+    cx.run_row(rt_sig_of("avra_puts")!, [value_spelled(cx, shown, value)])
 }
 
-/// How a shown value is spelled as text: itself, or by the runtime row that spells it.
-enum Spelling {
-    Itself
-    Row(name: string)
-}
-
-/// How a value of `ty` is spelled; absent for a type no row spells.
-fn spelling_of(cx: Lowering, ty: SignedType) -> Spelling? {
-    if ty.nullable() || ty.dynamic || !(ty.head is .Owned) { return null }
-    let l? = cx.program.checked.layout(ty) else { return null }
+/// Whether a value of `ty` is spelled as text: a number, a truth, text, a list of what is spelled,
+/// or a record whose every field is, met once on the way down; never a nullable, a `dyn`, an enum,
+/// a map or anything else.
+fn spellable(cx: Lowering, ty: SignedType, met: List<string>) -> bool {
+    let t = cx.named_over(ty) ?? ty
+    if t.nullable() || t.dynamic || met.contains(t.spelled()) { return false }
+    let l? = cx.program.checked.layout(t) else { return false }
     match l {
-        .Word -> Spelling.Row("avra_int_text"),
-        .Real -> Spelling.Row("avra_float_text"),
-        .Truth -> Spelling.Row("avra_bool_text"),
+        .Word or .Real or .Truth -> t.head is .Owned,
         .Boxed(box) -> match box {
-            .Text -> Spelling.Itself,
-            .List -> list_spelling(cx, ty.args.first()),
-            .Bytes or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+            .Text -> true,
+            .List -> spellable(cx, t.listed() ?? t, met.concat([t.spelled()])) && t.listed() != null,
+            .Record -> record_spellable(cx, t, met),
+            .Bytes or .Map or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> false,
         },
-        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+        .Fields(_) -> record_spellable(cx, t, met),
+        .Void or .Bare or .Tagged(_) or .Maybe(_) -> false,
     }
 }
 
-/// How a list of `elem` is spelled: by the row that joins its elements as text; absent for an
-/// element no row joins.
-fn list_spelling(cx: Lowering, elem: SignedType?) -> Spelling? {
-    let e? = elem else { return null }
-    if e.nullable() || e.dynamic || !(e.head is .Owned) { return null }
-    let l? = cx.program.checked.layout(e) else { return null }
-    match l {
-        .Word -> Spelling.Row("avra_ints_text"),
-        .Truth -> Spelling.Row("avra_bools_text"),
+/// Whether the record `ty` is spelled: each field typed, no `state` one, each spelled.
+fn record_spellable(cx: Lowering, ty: SignedType, met: List<string>) -> bool {
+    if cx.variants_of(ty) != null { return false }
+    let fields? = cx.fields_of(ty) else { return false }
+    fields.all((f) -> !f.state && f.ty != null && spellable(cx, f.ty!, met.concat([ty.spelled()])))
+}
+
+/// The text the value `v` of `ty`, which `spellable` passes, is spelled as: a list of numbers, truths
+/// or texts by the row that joins it; any other list, and a record, as the list of its parts' texts
+/// joined as text is.
+fn value_spelled(mut cx: Lowering, ty: SignedType, v: Reg) -> Reg {
+    let t = cx.named_over(ty) ?? ty
+    let text = Layout.Boxed(BoxKind.Text)
+    match cx.laid_out(t) {
+        .Word -> cx.call_row(text, rt_sig_of("avra_int_text")!, [v]),
+        .Real -> cx.call_row(text, rt_sig_of("avra_float_text")!, [v]),
+        .Truth -> cx.call_row(text, rt_sig_of("avra_bool_text")!, [v]),
         .Boxed(box) -> match box {
-            .Text -> Spelling.Row("avra_strs_text"),
-            .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+            .Text -> v,
+            .List -> list_spelled(cx, t.listed()!, v),
+            rest -> parts_spelled(cx, t, v),
         },
-        .Void or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+        rest -> parts_spelled(cx, t, v),
     }
+}
+
+/// The list `v` of `elem`s spelled: by the row that joins it where one joins its elements, else
+/// each element spelled, the texts joined.
+fn list_spelled(mut cx: Lowering, elem: SignedType, v: Reg) -> Reg {
+    let e = cx.named_over(elem) ?? elem
+    let joining = match cx.laid_out(e) {
+        .Word -> "avra_ints_text",
+        .Truth -> "avra_bools_text",
+        .Boxed(box) -> if box is .Text { "avra_strs_text" } else { "" },
+        rest -> "",
+    }
+    if joining != "" && e.head is .Owned { return cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(joining)!, [v]) }
+    let texts = cx
+        .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+    let w = cx.walk_list(v, elem)
+    let here = cx.walk_turn(w)
+    cx.push_slot(texts, value_spelled(cx, elem, cx.walked_element(w, here)))
+    cx.loop_end()
+    cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_strs_text")!, [texts])
+}
+
+/// The record `v` of `ty` spelled: each field's text, in the order it declares them, joined.
+fn parts_spelled(mut cx: Lowering, ty: SignedType, v: Reg) -> Reg {
+    let fields = cx.fields_of(ty)!
+    let laid = cx.seat_layouts(fields)!
+    let texts = cx
+        .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_sized")!, [cx.const_int(0)])
+    for j, f in fields { cx.push_slot(texts, value_spelled(cx, f.ty!, cx.field_read(v, ty, laid, j))) }
+    cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_strs_text")!, [texts])
 }

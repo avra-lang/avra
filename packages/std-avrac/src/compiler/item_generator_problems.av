@@ -2,7 +2,8 @@
 //! points — or at the declaration, where it points nowhere, or into another file — in the old path's
 //! words: `@std/meta`'s `delegate` over a `collect enum` as `collect_enum.self`; an annotation's under
 //! its own kind, its package's, or `annotation.said`, and as `annotation.kind` where that kind is no
-//! word. A warning is a declaration's word for its users, and isn't said here.
+//! word. A warning is a declaration's word for its users, and isn't said here; nor is a run that
+//! didn't happen because the annotation writes the wrong count of arguments, which its seats' law says.
 use core.{Span, StmtId, SyntaxArena, is_kind_word, user_kind}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
@@ -17,8 +18,10 @@ const DELEGATING: string = "delegate"
 /// Every problem a generator kept about a declaration of the written item `at` of `file`.
 fn problems_said(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
-    let mine = [p for p in file_generated(engine, file).problems if p.item == at && !p.warning]
-    if mine.is_empty() { return [] }
+    let kept = [p for p in file_problems(engine, file) if p.item == at && !p.warning && !p.unrun]
+    if kept.is_empty() { return [] }
+    let miscounted = [f.args[0] for f in miscounted_annotations(engine, file, at)]
+    let mine = [p for p in kept if !(p.trapped && miscounted.contains(p.by))]
     let item = read_item(engine, file, at)
     [problem_found(engine, item.store, item.stmts, file, p) for p in mine]
 }

@@ -2,19 +2,24 @@
 //! is the record. A generic record's arguments come from the type arguments the literal writes, else
 //! from the seat it fills when that names the record, else from what its values fill.
 use core.{
+    Refused,
+    meta_key,
     Checking,
     Checks,
     ExprId,
     Expected,
+    FieldSeat,
     LiteralFault,
     PatChecks,
     PatId,
     ReadAs,
     Seating,
+    Unhanded,
     SignedType,
     spread_entry,
 }
 use core.expr.{StructLit, With}
+use features.expr_spine.{makes_key}
 use core.pat.{Fields}
 
 /// Whether a literal's name `named` reads as names nothing a program declares: no name at all, a
@@ -60,23 +65,67 @@ impl Checks for StructLit {
             record.params,
         )
         if applied != null {
-            for at, v in self.values {
-                let _ = cx
-                    .check_seated(v, seats[at]!.bound(applied!.args), Seating.Field(self.fields[at].of))
-            }
+            for at, v in self.values { seated(cx, v, seats[at]!.bound(applied!.args), self.fields[at].of) }
+            places_handed(cx, e, self, record.fields, seats)
             return applied
         }
+        let keyed = [at for at, s in seats if meta_key(s!.unwrapped())]
+        for at in keyed { seated(cx, self.values[at], seats[at]!, self.fields[at].of) }
+        let rest = [at for at in 0..seats.length if !keyed.contains(at)]
         let found? = cx
             .fills(
-                [s! for s in seats],
-                self.values,
+                [seats[at]! for at in rest],
+                [self.values[at] for at in rest],
                 {},
                 null,
                 Expected.Free,
-                (at: int) -> Seating.Field(self.fields[at].of),
+                (j: int) -> Seating.Field(self.fields[rest[j]].of),
             ) else { return null }
+        places_handed(cx, e, self, record.fields, seats)
         let args = [found.get("${at}") for at in 0..record.params]
         if args.any(it == null) { null } else { named with { args: [a! for a in args] } }
+    }
+}
+
+/// The value `v` checked into the seat `seat` of the field `name`: a field of `@std/meta`'s `Key` takes
+/// a value of any type a key is made from, as its own type; refused, as a value of no such type, where
+/// it makes none.
+fn seated(mut cx: Checking, v: ExprId, seat: SignedType, name: string) {
+    if !meta_key(seat.unwrapped()) || cx.store.null_literal(v) {
+        let _ = cx.check_seated(v, seat, Seating.Field(name))
+        return
+    }
+    let made? = cx.check(v, Expected.Free) else { return }
+    if meta_key(made.unwrapped()) ||
+        makes_key(cx, made) ||
+        seat.nullable() && made.nullable() && makes_key(cx, made.unwrapped()) { return }
+    cx.refused.push(Refused { at: v, want: seat, found: made, seat: Seating.Field(name) })
+}
+
+/// Each entry of the literal `e`, what an instance means, writing a field that takes its writer's
+/// place, held to the place law once its value is typed. A literal the compiler makes for itself
+/// writes values, never places.
+fn places_handed(
+    mut cx: Checking,
+    e: ExprId,
+    lit: StructLit,
+    fields: List<FieldSeat>,
+    seats: List<SignedType?>,
+) {
+    let sugar? = cx.store.minted_for(e) else { return }
+    if !(cx.store.expr(sugar) is .Component) { return }
+    for at, f in lit.fields {
+        if fields.any(it.name == f.of && it.placed) {
+            cx
+                .state_seat_handed(
+                    cx.store.unnamed(lit.values[at]),
+                    seats[at]!,
+                    lit.name.of,
+                    at,
+                    f.of,
+                    Unhanded.Unshared,
+                )
+        }
     }
 }
 
@@ -99,7 +148,11 @@ fn spread_checked(mut cx: Checking, lit: StructLit, named: SignedType, params: i
     for at, v in lit.values {
         let name = lit.fields[at].of
         let field = if name == spread_entry { null } else { cx.field_of(named, name) }
-        let _ = if field == null { cx.check(v, Expected.Free) } else { cx.check_seated(v, field!, Seating.Field(name)) }
+        if field == null {
+            let _ = cx.check(v, Expected.Free)
+        } else {
+            seated(cx, v, field!, name)
+        }
     }
     named
 }
@@ -120,17 +173,28 @@ fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType?
     wanted with { nulls: 0 }
 }
 
+/// The value `v` a `with` writes for the field `name` of `subject`, checked against that field: a
+/// field of `@std/meta`'s `Key` as a literal's is; a value of a subject no field is known of, freely.
+fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
+    let held? = subject else {
+        let _ = cx.check(v, Expected.Free)
+        return
+    }
+    let field? = cx.field_of(held, name) else {
+        let _ = cx.check(v, Expected.Free)
+        return
+    }
+    if meta_key(field.unwrapped()) { return seated(cx, v, field, name) }
+    let _ = cx.check(v, Expected.Exactly(field))
+}
+
 impl Checks for With {
     /// `r with { f: v }` is `r`'s record, each value checked against its field.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
         let _ = cx.seals(e, subject, "copied with new fields here")
         if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return subject }
-        for at, v in self.values {
-            let field = if subject == null { null } else { cx.field_of(subject!, self.fields[at].of) }
-            let _ = cx
-                .check(v, if field == null { Expected.Free } else { Expected.Exactly(field!) })
-        }
+        for at, v in self.values { written(cx, subject, v, self.fields[at].of) }
         subject
     }
 }

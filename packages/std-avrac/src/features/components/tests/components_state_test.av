@@ -6,7 +6,7 @@ use @std.avrac.testing.held.{Judged}
 
 /// The provider: a counter whose count is a place.
 fn parts() -> string {
-    "export component counter(label: string) {\n    step: int = 1\n    state n: int = 0\n    fn bump() -> fn() -> void { () -> { self.n = self.n + self.step } }\n    fn poke() { self.n = self.n + self.step }\n    fn shown() -> string { \"\${self.label}=\${self.n}\" }\n}\n"
+    "export component counter(label: string) {\n    step: int = 1\n    start: int = 0\n    state n: int = self.start\n    fn bump() -> fn() -> void { () -> { self.n = self.n + self.step } }\n    fn poke() { self.n = self.n + self.step }\n    fn shown() -> string { \"\${self.label}=\${self.n}\" }\n}\n"
 }
 
 fn built(main: string) -> Judged { provided("use @x.c.{counter}\n" + main, parts()) }
@@ -14,8 +14,8 @@ fn built(main: string) -> Judged { provided("use @x.c.{counter}\n" + main, parts
 spec "features/components — a state field" {
     given "an instance" {
         then "seeds its place from the default" { answered(built("let c = counter \"a\"\nc.shown()")) == "a=0" }
-        then "seeds its place from its own setting" {
-            answered(built("let c = counter \"a\" {\n    n: 7\n}\nc.shown()")) == "a=7"
+        then "seeds its place from the input it starts from" {
+            answered(built("let c = counter \"a\" {\n    start: 7\n}\nc.shown()")) == "a=7"
         }
         then "holds a place no other instance shares" {
             answered(

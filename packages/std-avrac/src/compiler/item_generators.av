@@ -60,6 +60,8 @@ export enum GeneratorKind {
     TypeAnnotation
     /// A declaring annotation's own fn over a trait: handed the `Trait` the annotation stands on.
     TraitAnnotation
+    /// An annotation's own fn over any declaration: handed the `Named` it stands on.
+    NamedAnnotation
 }
 
 /// The `@std/meta` record a generator's seat takes a declaration as.
@@ -68,18 +70,30 @@ export enum DeclSeat {
     Fn
     Type
     Trait
+    Named
 }
 
 impl DeclSeat {
+    /// The seat as `@std/meta` names its type.
+    fn spelled() -> string {
+        match self {
+            .Fn -> META_FN,
+            .Type -> META_TYPE,
+            .Trait -> META_TRAIT,
+            .Named -> META_NAMED,
+        }
+    }
+
     /// Whether a declaration of `kind` crosses into the seat.
     fn takes(kind: ItemKind) -> bool {
         match self {
             .Fn -> kind == ItemKind.Fn,
             .Type -> match kind {
-                .Record or .Enum or .Named or .CollectEnum -> true,
-                .Fn or .Alias or .Trait or .Component or .Syntax or .Collect or .Const or .State -> false,
+                .Record or .Enum or .Named or .CollectEnum or .Component -> true,
+                .Fn or .Alias or .Trait or .Syntax or .Collect or .Const or .State -> false,
             },
             .Trait -> kind == ItemKind.Trait,
+            .Named -> true,
         }
     }
 }
@@ -99,8 +113,10 @@ export enum HandedArg {
     Value(l: Literal)
     /// A quote with no holes, written in the file `home` names at `at`.
     Code(home: string, at: int, parts: List<string>)
-    /// An argument that crosses as none of these.
+    /// An argument the program layer doesn't cross yet, and why.
     Uncrossed(why: string)
+    /// An argument naming no declaration its seat takes: the program's fault, and why.
+    Unfit(why: string)
 }
 
 impl GeneratorAt {
@@ -108,7 +124,7 @@ impl GeneratorAt {
     fn unit() -> string {
         match self.kind {
             .Derive -> "${self.name}.${GENERATOR}",
-            .Annotation or .TypeAnnotation or .TraitAnnotation -> self.name,
+            .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> self.name,
         }
     }
 }
@@ -120,6 +136,7 @@ impl GeneratorKind {
             .Annotation -> DeclSeat.Fn,
             .Derive or .TypeAnnotation -> DeclSeat.Type,
             .TraitAnnotation -> DeclSeat.Trait,
+            .NamedAnnotation -> DeclSeat.Named,
         }
     }
 }
@@ -128,7 +145,7 @@ impl GeneratorKind {
 fn generator_body(engine: QueryEngine, g: GeneratorAt) -> SignedBody? {
     match g.kind {
         .Derive -> trait_generator(engine, TraitAt { file: g.file, name: g.name }),
-        .Annotation or .TypeAnnotation or .TraitAnnotation -> signed_body(engine, g.file, g.name),
+        .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> signed_body(engine, g.file, g.name),
     }
 }
 
@@ -266,7 +283,7 @@ fn print_key(print: ContentHash) -> string { "${print.high_word}:${print.low_wor
 export enum GeneratorRun {
     Ran(made: List<Directive>, problems: List<Diagnostic>)
     /// It didn't run: the program layer couldn't hand it what it takes.
-    Stopped(why: string)
+    Stopped(why: string, fault: bool)
     /// It ran, and stopped before it answered: a trap, a budget spent.
     Trapped(why: string)
 }
@@ -286,7 +303,7 @@ export fn generator_run(
     method: MethodSite? = null,
 ) -> GeneratorRun {
     let values = handed_values(engine, file, name, g.kind.first_seat(), handed, method)
-    if !values.stopped.is_empty() { return GeneratorRun.Stopped(values.stopped) }
+    if !values.stopped.is_empty() { return GeneratorRun.Stopped(values.stopped, values.fault) }
     match run_lifted(
         l,
         generator_symbol(g),
@@ -311,7 +328,7 @@ export fn generator_run(
 /// What a site hands its generator, crossed into one heap: the declaration it stands on, then each
 /// argument; none, and why, where one doesn't cross.
 @derive(Saved)
-export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string }
+export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string, fault: bool = false }
 
 /// What the site over the declaration `file` writes as `name` — a method of the impl `method` where
 /// it's one — hands a generator whose first seat is `first`, past it `handed`. An answer of its own,
@@ -328,6 +345,8 @@ export fn handed_values(
 ) -> HandedValues {
     mut heap = new_meta_heap()
     let arg? = (if method == null { meta_handed(engine, first, file, name, heap) } else { method_handed(engine, method!, name, heap) }) else { return unhanded(not_handed(first, name)) }
+    let unfit = handed.find_map(match it { .Unfit(w) -> w, rest -> null })
+    if unfit != null { return unhanded(unfit!) with { fault: true } }
     let why = handed.find_map(match it { .Uncrossed(w) -> w, rest -> null })
     if why != null { return unhanded(why!) }
     let rest = [v! for h in handed for v in [meta_arg(engine, h, heap)] if v != null]
@@ -377,6 +396,7 @@ fn meta_handed(
             let t? = meta_of_trait_decl(engine, file, name) else { return null }
             meta_of_trait(t, fn_slots(engine), heap)
         },
+        .Named -> named_handed(engine, file, name, heap),
     }
 }
 
@@ -392,7 +412,7 @@ fn meta_arg(engine: QueryEngine, h: HandedArg, mut heap: MetaHeap) -> MetaVal? {
             .Text(t) -> MetaVal.Text(t),
         },
         .Code(home, at, parts) -> meta_of_template(Node.Template(home, at, parts, []), heap),
-        .Uncrossed(_) -> null,
+        .Uncrossed(_) or .Unfit(_) -> null,
     }
 }
 
@@ -461,9 +481,16 @@ export type GeneratorSite = { name: string, item: int, generator: GeneratorAt, h
 @derive(Saved)
 export type MethodSite = { at: ImplAt, statics: bool }
 
-/// Each generator a file's declarations name, in the order written: each trait a `@derive` names,
-/// and each declaring annotation a fn wears.
-export fn generator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> {
+/// Each generator a file's declarations name that makes declarations, in the order written: each
+/// trait a `@derive` names, and each declaring annotation a declaration wears.
+export fn generator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> { [s for s in annotated_sites(engine, file) if !validates(engine, s.generator)] }
+
+/// Each validating annotation a file's declarations wear, in the order written: one whose own fn
+/// answers diagnostics, or nothing, and makes no declaration.
+export fn validator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> { [s for s in annotated_sites(engine, file) if validates(engine, s.generator)] }
+
+/// Each annotation's own fn or derived trait a file's declarations name, in the order written.
+fn annotated_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> {
     let scope? = file_scope(engine, file) else { return [] }
     flatten([declared_sites(engine, scope, file, d) for d in file_declares(engine, file).names])
         .concat(method_sites(engine, scope, file))
@@ -527,11 +554,13 @@ fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress
 > {
     if d.item < item_count(engine, file) {
         let worn? = worn_in_item(engine, d) else { return [] }
-        if !worn.declared { return [] }
-        if !worn.marked_declared && !(d.kind == ItemKind.Component && worn.bodied_component) { return delegated_sites(engine, d).concat(member_sites(engine, d, [])) }
+        if !worn.declared && !worn.marked { return [] }
+        if worn.declared &&
+            !worn.marked_declared &&
+            !(d.kind == ItemKind.Component && worn.bodied_component) { return delegated_sites(engine, d).concat(member_sites(engine, d, [])) }
     }
     let item = read_item(engine, file, d.item)
-    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
+    let s? = item.stmts.find((x) -> item.store.named_by(x) == d.name) else { return [] }
     let annotated = flatten(
         [annotation_sites(engine, scope, file, d.name, d.item, d.kind, item, a) for a in item.store.annotations_of(s)],
     )
@@ -615,7 +644,7 @@ fn same_trait(a: TraitAt, b: TraitAt) -> bool { a.name == b.name && same_file(a.
 fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
     match site.generator.kind {
         .Derive -> same_trait(TraitAt { file: site.generator.file, name: site.generator.name }, t),
-        .Annotation or .TypeAnnotation or .TraitAnnotation -> false,
+        .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> false,
     }
 }
 
@@ -706,9 +735,9 @@ fn handed_arg(
 ) -> HandedArg {
     let store = read.store
     let seat? = meta_seat_of(ty) else { return spelled_arg(engine, scope, file, read, e, 0) }
-    let name? = store.ident_name(e) else { return HandedArg.Uncrossed(unnamed_decl()) }
-    let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Uncrossed(unnamed_decl()) }
-    if seat.takes(d.kind) { HandedArg.Decl(HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat }) } else { HandedArg.Uncrossed(unnamed_decl()) }
+    let name? = store.ident_name(e) else { return HandedArg.Unfit(unnamed_decl()) }
+    let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Unfit(unnamed_decl()) }
+    if seat.takes(d.kind) { HandedArg.Decl(HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat }) } else { HandedArg.Unfit(unnamed_decl()) }
 }
 
 /// The value `e`, written in `file`, spells: its literal, a hole-less quote as the template it is,
@@ -798,41 +827,58 @@ fn unspelled_arg() -> string { "an annotation's argument spells no literal, quot
 
 /// The space a name handed to `seat` is read in.
 fn space_taking(seat: DeclSeat) -> Space {
-    match seat { .Fn -> Space.Value, .Type or .Trait -> Space.Type }
+    match seat { .Fn -> Space.Value, .Type or .Trait or .Named -> Space.Type }
 }
 
-/// What generator the fn `file` declares as `name` is when it's a declaring annotation: one over a
-/// fn when its first seat takes `@std/meta`'s `Fn`, over a type when it takes its `Type`, and either
-/// answering `Declared` or a list of directives. Absent for any other fn.
+/// What generator the fn `file` declares as `name` is when it's an annotation's own: one over a fn
+/// when its first seat takes `@std/meta`'s `Fn`, over a type when it takes its `Type`, answering
+/// `Declared`, a list of directives, a list of diagnostics, or nothing. Absent for any other fn.
 export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratorKind? {
     let sig? = fn_signature(engine, file, name) else { return null }
     let first? = sig.params.first()?.ty else { return null }
-    // A VALIDATING annotation (answering diagnostics, or nothing) isn't run here yet: what it reads
-    // of a declaration — its doc, its place, its fields' and seats' spelling — doesn't cross whole on
-    // the program layer, and a validator reading what doesn't cross would refuse a program the old
-    // path builds. Its answer's shape is read all the same (`answer_shape`), for when it does.
-    if !meta_named(sig.answer, DECLARED) && !directives_listed(sig.answer) { return null }
+    if !meta_named(sig.answer, DECLARED) &&
+        !directives_listed(sig.answer) &&
+        !diagnostics_listed(sig.answer) &&
+        !sig.answer.owns(OwnType.Void) { return null }
     let seat? = meta_seat_of(first) else { return null }
     match seat {
         .Fn -> GeneratorKind.Annotation,
         .Type -> GeneratorKind.TypeAnnotation,
         .Trait -> GeneratorKind.TraitAnnotation,
+        .Named -> GeneratorKind.NamedAnnotation,
     }
 }
 
-/// The seat a type names, when it's `@std/meta`'s `Fn`, `Type` or `Trait`, present.
+/// Whether the generator `g` is a validating annotation's: its own fn answers diagnostics, or
+/// nothing, so it makes no item.
+export fn validates(engine: QueryEngine, g: GeneratorAt) -> bool {
+    if g.kind is .Derive { return false }
+    let answer? = fn_signature(engine, g.file, g.name)?.answer else { return false }
+    diagnostics_listed(answer) || answer.owns(OwnType.Void)
+}
+
+/// Whether the generator `g` is an annotation's own fn answering diagnostics: one whose run judges
+/// the declaration, so a run that doesn't happen is a judgement not made.
+export fn judges(engine: QueryEngine, g: GeneratorAt) -> bool {
+    if g.kind is .Derive { return false }
+    let answer? = fn_signature(engine, g.file, g.name)?.answer else { return false }
+    diagnostics_listed(answer)
+}
+
+/// The seat a type names, when it's `@std/meta`'s `Fn`, `Type`, `Trait` or `Named`, present.
 fn meta_seat_of(ty: SignedType?) -> DeclSeat? {
     let t? = ty else { return null }
     if meta_named(t, META_FN) { return DeclSeat.Fn }
     if meta_named(t, META_TYPE) { return DeclSeat.Type }
-    if meta_named(t, META_TRAIT) { DeclSeat.Trait } else { null }
+    if meta_named(t, META_TRAIT) { return DeclSeat.Trait }
+    if meta_named(t, META_NAMED) { DeclSeat.Named } else { null }
 }
 
 /// Whether a seat of type `ty` takes a declaration whole: `@std/meta`'s `Fn`, `Type`, `Trait` or
 /// `Named`.
 export fn takes_a_declaration(ty: SignedType?) -> bool {
     let t? = ty else { return false }
-    meta_seat_of(t) != null || meta_named(t, META_NAMED)
+    meta_seat_of(t) != null
 }
 
 /// Whether `ty` is a list of `@std/meta`'s `Diagnostic`s: what a validating annotation answers.
@@ -896,6 +942,7 @@ fn not_handed(seat: DeclSeat, name: string) -> string {
         .Type -> "`${name}` declares no type with fields, variants or a shape",
         .Fn -> "`${name}` declares no fn",
         .Trait -> "`${name}` declares no trait whose methods each sign",
+        .Named -> "`${name}` declares nothing",
     }
 }
 

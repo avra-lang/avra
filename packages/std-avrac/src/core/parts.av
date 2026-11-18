@@ -388,13 +388,14 @@ impl SyntaxArena {
     /// A component declaration's pieces, when the statement is one.
     fn component_parts(s: StmtId) -> ComponentParts? {
         match self.stmt(s) {
-            .ComponentDecl(name, tparams, head, members, fns, _) -> ComponentParts {
+            .ComponentDecl(name, tparams, head, members, fns, spreads) -> ComponentParts {
                 name: name.of,
                 tparams: [t.name.of for t in tparams],
                 head: head,
                 members: [member_of(p) for p in members],
                 holders: members,
                 fns: fns,
+                spreads: spreads,
             },
             _ -> null,
         }
@@ -571,6 +572,9 @@ impl SyntaxArena {
             .trait_parts(s)?.name ?? self.syntax_parts(s)?.name ?? self.collect_parts(s)?.name
     }
 
+    /// The name a statement gives the file: what it declares, or what its `const` binds.
+    fn named_by(s: StmtId) -> string? { self.declared_name(s) ?? if self.const_value(s) != null { self.let_name(s) } else { null } }
+
     /// A statement that declares rather than runs: a declaration,
     /// an impl block, a `use` line, a spec, or a `const` — a settled
     /// value the program never computes.
@@ -722,7 +726,15 @@ export type TraitParts = { name: string, fns: List<StmtId> }
 /// every member as the record field that holds it — what the record's
 /// own laws read; a reader of what a component DECLARES asks `fields`
 /// or `events`, and each answers one kind of member alone.
-export type ComponentParts = { name: string, tparams: List<string>, head: List<Param>, members: List<Member>, holders: List<Param>, fns: List<StmtId> }
+export type ComponentParts = {
+    name: string,
+    tparams: List<string>,
+    head: List<Param>,
+    members: List<Member>,
+    holders: List<Param>,
+    fns: List<StmtId>,
+    spreads: List<TypeRef> = [],
+}
 
 /// One member a component declares beside its head: a field, or an event
 /// an instance may hear.

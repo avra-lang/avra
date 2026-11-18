@@ -1,5 +1,6 @@
 //! The typing rules of the literals, names and operators this feature reads.
 use core.{
+    OwnType,
     BinOp,
     Checking,
     Uncompared,
@@ -189,6 +190,14 @@ fn compares(cx: Checking, t: SignedType) -> bool {
         .Declared(_, _) -> unit_enum(cx, ty) || one_field(cx, ty),
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
     }
+}
+
+/// Whether a value of `ty` makes a key (`@std/meta`'s `Key`): it compares by value, is never absent,
+/// and holds no fraction and no bytes.
+export fn makes_key(cx: Checking, ty: SignedType) -> bool {
+    let shape = unnamed_shape(cx, ty)
+    if ty.nullable() || shape.owns(OwnType.Float) || shape.owns(OwnType.Bytes) { return false }
+    compares(cx, ty)
 }
 
 /// The types of the language's own that compare by value.

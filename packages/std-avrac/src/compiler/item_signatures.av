@@ -242,7 +242,8 @@ export fn record_signature(engine: QueryEngine, file: SourceFileAddress, name: s
     let s? = item.stmts.find((s) -> item.store.struct_parts(s)?.name == name) else { return component_signature(engine, file, item, name) }
     let parts = item.store.struct_parts(s)!
     let signing = signing_in(engine, file, parts.tparams)
-    let written = [field_seat(engine, signing, f) for f in parts.fields]
+    let placing = item.store.component_parts(s) != null
+    let written = [field_seat(engine, signing, f) with { placed: placing && f.state, made: placing && reads_self(item.store, f.default) } for f in parts.fields]
     let home = declared_place(file, name)
     let spread = (at: int) -> [g for x in parts.spreads if x.at == at && !spreads_home(engine, file, x.of.name, home) for g in spread_fields(engine, signing.signed(x.of))]
     let own = [f for at in 0..written.length + 1 for f in spread(at).concat(if at < written.length { [written[at]] } else { [] })]
@@ -366,6 +367,12 @@ fn file_key(f: SourceFileAddress) -> string { "${f.package_name}/${f.path_in_pac
 
 /// The annotation a trait wears to name what every component it composes carries.
 const COMPOSES: string = "composes"
+
+/// Whether the expression `e` reads the instance it stands in (`self`).
+export fn reads_self(store: SyntaxArena, e: ExprId?) -> bool {
+    let at? = e else { return false }
+    store.expr(at) is .Receiver || store.walked(at).any((k) -> reads_self(store, k))
+}
 
 /// The field `p` signed: a `state`, or a prop whose type compares by value, is a cell — its parent
 /// writes it at every paint, and a change is what the component sees. An event's field holds its

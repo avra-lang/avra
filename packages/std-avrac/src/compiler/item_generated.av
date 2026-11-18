@@ -63,6 +63,8 @@ export type KeptProblem = {
     from: string = "",
     trapped: bool = false,
     unplaced: bool = false,
+    /// A validator the program layer didn't run, for what it doesn't cross yet: counted, never said.
+    unrun: bool = false,
 }
 
 /// What a site hands its generator past the declaration it stands on: each argument, and what the
@@ -100,19 +102,51 @@ export fn generated(
             let made_here = items_spliced(engine, file, name, made, method)
             made_here with { problems: made_here.problems.concat([kept_problem(p) for p in problems]) }
         },
-        .Stopped(why) -> said_only([why]),
-        .Trapped(why) -> said_only([why]) with { problems: [
-            KeptProblem {
-                message: why,
-                help: null,
-                kind: null,
-                warning: false,
-                at: null,
-                home: null,
-                trapped: true,
-            },
-        ] },
+        .Stopped(why, fault) -> stopped_run(engine, generator, why, fault),
+        .Trapped(why) -> unsettled_run(why),
     }
+}
+
+/// A run of `g` that its site stopped before it began, for `why`: said where `g` judges and the
+/// program is at `fault`, counted where `g` judges and the layer can't hand it what it takes.
+fn stopped_run(engine: QueryEngine, g: GeneratorAt, why: string, fault: bool) -> GeneratedItems {
+    if !judges(engine, g) { return said_only([why]) }
+    if fault { unsettled_run(didnt_run(g, why)) } else { unrun(didnt_run(g, why)) }
+}
+
+/// `g` named as a run that didn't happen, and why.
+fn didnt_run(g: GeneratorAt, why: string) -> string { "`${annotation_named(g)}` didn't run: ${why}" }
+
+/// A validator's run the program layer couldn't make, for what it doesn't cross yet: kept as a
+/// problem no law says, which the layer's gaps count.
+fn unrun(why: string) -> GeneratedItems {
+    said_only([why]) with { problems: [
+        KeptProblem {
+            message: why,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            unrun: true,
+        },
+    ] }
+}
+
+/// A run that didn't settle, kept as the problem its site says: `why`, as an annotation that could
+/// not run.
+fn unsettled_run(why: string) -> GeneratedItems {
+    said_only([why]) with { problems: [
+        KeptProblem {
+            message: why,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            trapped: true,
+        },
+    ] }
 }
 
 /// What the generators every declaration of a file names make, in the order written, then what each
@@ -125,12 +159,27 @@ export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> Genera
     )
 }
 
+/// What the validating annotations every declaration of a file wears say of it: no item, only their
+/// problems. Apart from what the file's generators make, so nothing a validator's own body needs of
+/// its package — an impl a generator there makes — waits on the validator's run.
+@cut_query
+export fn file_validated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
+    gathered_items([site_generated(engine, file, site) for site in validator_sites(engine, file)])
+}
+
+/// Each validator the program the package `package` roots reads didn't run, for what the program
+/// layer doesn't cross yet: a gap of the layer's, never a pass.
+export fn package_unrun(engine: QueryEngine, package: string) -> List<KeptProblem> { [p for f in program_files(engine, package) for p in file_validated(engine, f).problems if p.unrun] }
+
+/// Every problem a generator or a validating annotation kept about a declaration of `file`.
+export fn file_problems(engine: QueryEngine, file: SourceFileAddress) -> List<KeptProblem> { file_generated(engine, file).problems.concat(file_validated(engine, file).problems) }
+
 /// What the generators the fn `file` writes as `name` wears make: what the written declaration
 /// names, never what generated items do.
 export fn fn_generated(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratedItems {
     let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return said_only([]) }
     gathered_items(
-        [site_generated(engine, file, site) for site in declaration_sites(engine, file, d)],
+        [site_generated(engine, file, site) for site in declaration_sites(engine, file, d) if !validates(engine, site.generator)],
     )
 }
 

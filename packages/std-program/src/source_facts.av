@@ -5,6 +5,7 @@
 //! and where each item sits, which moves with anything above it and is read by nothing that only
 //! wants to know what an item says.
 use address.{DirectoryAddress, SourceFileAddress}
+use @std.path.{normalized}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{ContentHash}
 use item_hashes.{HashedItem, hashed_items}
@@ -62,6 +63,13 @@ export fn use_source_world(world: SourceWorld) {
 
 /// The world this process set. Asking before setting one is the caller's defect.
 fn current_world() -> SourceWorld { world_cell().get()! }
+
+/// Where the package `package` lies on the host, as this process's world places it; absent for a
+/// world that isn't on a host's disk.
+export fn package_lies(package: string) -> string? {
+    let places? = current_world().places else { return null }
+    normalized((places.directory)(DirectoryAddress { package_name: package, path_in_package: "" }))
+}
 
 @input
 fn language_print(_engine: QueryEngine) -> string { current_world().language_print }

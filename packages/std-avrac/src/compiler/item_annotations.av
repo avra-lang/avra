@@ -11,6 +11,7 @@ use features.annotations.{
     foreign_diagnostics,
     miscounted,
     names_no_fn,
+    takes_another_kind,
     takes_nothing,
 }
 use @std.program.address.{SourceFileAddress}
@@ -79,6 +80,43 @@ export law annotation_takes_the_declaration {
     voice: seatless_words
     witness: "fn tag() { }\n\n@tag\ntype P = { x: int }\n"
 }
+
+/// an annotation's fn takes a declaration of the kind it stands on
+export law annotation_takes_this_kind {
+    kind: "annotation.receiver"
+    reads: misplaced_annotations
+    voice: misplaced_words
+    witness: "use @std.meta.{Fn, Diagnostic}\nfn vet(f: Fn) -> List<Diagnostic> { [] }\n\n@vet\ntype P = { x: int }\n"
+}
+
+/// Every annotation the written item `at` of `file` wears whose fn's first seat takes a declaration
+/// of `@std/meta`'s, and not one of the kind it stands on: a `Fn` seat on a type, a `Type` seat on a
+/// fn or a const.
+fn misplaced_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let kinds = [d.kind for d in file_declares(engine, file).names if d.item == at]
+    if kinds.length != 1 { return [] }
+    [Found { at: w.at, args: [w.name, seat.spelled(), stood_on(kinds[0])] } for w in worn_in(engine, file, at) for seat in first_seat_of(engine, w.named) if !seat.takes(kinds[0])]
+}
+
+/// The declaration the first seat of the fn `d` names takes, as a list: none for a name that names
+/// no fn, or a fn whose first seat takes no declaration.
+fn first_seat_of(engine: QueryEngine, d: DeclaredName?) -> List<DeclSeat> {
+    let named? = d else { return [] }
+    if named.kind != ItemKind.Fn { return [] }
+    let seat? = meta_seat_of(fn_signature(engine, named.file, named.name)?.params?.first()?.ty) else { return [] }
+    [seat]
+}
+
+/// A declaration's kind as a misplaced annotation says it.
+fn stood_on(kind: ItemKind) -> string {
+    match kind {
+        .Component -> "a type",
+        .Fn or .Record or .Enum or .Named or .Alias or .Trait or .Syntax or .Collect or .CollectEnum or .Const or .State -> "a ${kind_said(kind)}",
+    }
+}
+
+fn misplaced_words(a: List<string>) -> Voice { takes_another_kind(a[0], a[1], a[2]) }
 
 fn fnless_words(a: List<string>) -> Voice { names_no_fn(a[0]) }
 

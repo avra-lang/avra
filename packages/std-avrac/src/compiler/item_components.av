@@ -1,10 +1,10 @@
 //! WHERE A COMPONENT'S SHAPE BREAKS ITS CONTRACT WITH THE COMPILER: its `check` answering other than
 //! `@std/meta`'s `List<Diagnostic>`, or taking a seat; a head spelled `Format` that names another type
 //! than `@std/meta`'s pattern. Read off the component's signature and its `check`'s.
-use core.{ExprId, SignedType, StmtId, SyntaxArena, flatten}
+use core.{ComponentParts, ExprId, SignedType, StmtId, SyntaxArena, default_mark, flatten, some_list}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.components.{check_unshaped, format_foreign, formats_of}
+use features.components.{check_unshaped, default_unmade, format_foreign, formats_of, slot_shadows}
 use features.{row_unkeyed}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -119,6 +119,83 @@ fn keeps_state(engine: QueryEngine, file: SourceFileAddress, word: string) -> bo
     let sig? = record_signature(engine, d.file, d.name) else { return false }
     sig.fields.any(it.state)
 }
+
+/// Every read of the instance a component member's default makes, in the written item `at` of `file`,
+/// of a field that isn't one of the component's plain inputs — a `state` one, or one itself made from
+/// the instance: where it stands, the component, the member and the field read.
+fn defaults_unmade(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    flatten([unmade_reads(engine, file, item.store, s) for s in item.stmts])
+}
+
+/// The reads of the instance in the member defaults of the component `s` declares, of a field no
+/// default may read.
+fn unmade_reads(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> List<
+    Found,
+> {
+    let c? = store.component_parts(s) else { return [] }
+    let fields = record_signature(engine, file, c.name)?.fields ?? []
+    [Found { at: store.expr_span(r.at), args: [c.name, m.name.of, r.field] } for m in c.holders if m.default != null for r in self_reads(store, m.default!) if fields.any(it.name == r.field && (it.placed || it.made))]
+}
+
+/// A read of a field of the instance: where it stands, and the field.
+type SelfRead = { at: ExprId, field: string }
+
+/// Every `self.<field>` read at and under `e`.
+fn self_reads(store: SyntaxArena, e: ExprId) -> List<SelfRead> {
+    let own = match store.expr(e) {
+        .Prop(subject, name) -> if store.expr(subject) is .Receiver { [SelfRead { at: e, field: name.of }] } else { [] },
+        _ -> [],
+    }
+    own.concat(flatten([self_reads(store, k) for k in store.walked(e)]))
+}
+
+/// a component member's default reads only the component's plain inputs, once, as the instance is made
+export law member_made_from_inputs {
+    kind: "type.component_default"
+    reads: defaults_unmade
+    voice: unmade_words
+    witness: "component tally(start: int) {\n    state n: int = self.start\n    state m: int = self.n\n}\n\nlet t = tally 1\n"
+}
+
+fn unmade_words(a: List<string>) -> Voice { default_unmade(a[0], a[1], a[2]) }
+
+/// Every instance in the written item `at` of `file` written in another instance's block under a word
+/// that names a slot of that instance's component: there the slot's name wins, and the component of
+/// that name is shadowed. Where it stands, the slot, and the component around it.
+fn slots_shadowing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    let store = item.store
+    if !store.refusals().is_empty() { return [] }
+    flatten([shadowed_in(engine, file, store, ExprId { index: i }) for i in 0..store.expr_count()])
+}
+
+/// The instances the block of the instance `e` holds whose word names one of its component's slots.
+fn shadowed_in(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> List<
+    Found,
+> {
+    let inst? = store.instance_parts(e) else { return [] }
+    let block? = inst.body else { return [] }
+    let outer = inst.word
+    let d? = resolved(engine, file, Space.Type, outer).named() else { return [] }
+    if d.kind != ItemKind.Component { return [] }
+    let slots = [f.name for f in record_signature(engine, d.file, d.name)?.fields ?? [] if f.ty?.listed() != null && !f.placed]
+    [Found { at: store.expr_span(v), args: [w, outer] } for s in store.block_stmts(block) ?? [] for v in some_list(store.stmt_value(s)) for w in some_list(store.instance_word(v)) if slots.contains(w)]
+}
+
+/// an instance's block names its component's slot, not a component of the slot's name
+export law slot_shadows_component {
+    kind: "type.slot_shadows"
+    reads: slots_shadowing
+    voice: shadow_words
+    warns: true
+    witness: "use @std.ui.components.{column, item, text}\nuse @std.ui.tree.view.{View}\n\ncomponent board {\n    item: List<dyn View> = []\n    column { self.item }\n}\n\nlet b = board {\n    item {\n        text \"x\"\n    }\n}\n"
+}
+
+fn shadow_words(a: List<string>) -> Voice { slot_shadows(a[0], a[1]) }
 
 /// a repeated component that keeps state wears a key
 export law repeated_row_keyed {

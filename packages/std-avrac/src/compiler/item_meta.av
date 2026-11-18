@@ -30,7 +30,7 @@ use core.{
     sorted_by,
     spelled,
 }
-use features.{Lifted, arg_lit, meta_of_type, new_meta_heap}
+use features.{Lifted, MetaHeap, MetaVal, arg_lit, meta_of_named, meta_of_type, new_meta_heap}
 use @std.errors.{Loc}
 use @std.meta.{
     derive,
@@ -40,6 +40,7 @@ use @std.meta.{
     Fn as MetaFn,
     Kind,
     Mark as MetaMark,
+    Named as MetaNamed,
     MarkArg as MetaMarkArg,
     Node as MetaNode,
     Param as MetaParam,
@@ -109,6 +110,16 @@ fn trait_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, nam
     Loc { file: spelled_file(file), lo: span.lo, hi: span.hi }
 }
 
+/// A span of `file` as the place a meta value names: its file spelled by package and path.
+fn meta_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, span: Span?) -> Loc? {
+    let held? = span else { return null }
+    let at = span_in_file(engine, file, item, held)
+    Loc { file: spelled_file(file), lo: at.lo, hi: at.hi }
+}
+
+/// The doc the statement `s` wears in `store`, its lines joined; absent where it wears none.
+fn doc_text(store: SyntaxArena, s: StmtId) -> string? { store.docs.at(s.index)?.lines?.join("\n") }
+
 /// The fn `s` writes in `store` of `file`, signed as `sig`, as a `Fn`.
 fn fn_meta(
     engine: QueryEngine,
@@ -121,35 +132,75 @@ fn fn_meta(
     let parts = store.fn_parts(s)!
     MetaFn {
         name: parts.name,
-        params: [param_meta(p, sig.params[j].ty) for j, p in parts.params],
+        params: [param_meta(engine, file, item, p, sig.params[j].ty) for j, p in parts.params],
         answer: spelled(parts.ret),
-        at: null,
+        at: meta_place(engine, file, item, store.stmt_span(s)),
+        doc: doc_text(store, s),
         answers: signed_kind(sig.answer),
         annotations: [annotation_meta(engine, file, item, a) for a in store.annotations_of(s)],
     }
 }
 
 /// A fn's seat as a `Param`: its name, its type as written and `signed`'s shape, its promises.
-fn param_meta(p: Param, signed: SignedType?) -> MetaParam { param_kind_meta(p, if signed == null { Kind.Unspelled("") } else { signed_kind(signed!) }) }
+fn param_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    p: Param,
+    signed: SignedType?,
+) -> MetaParam {
+    param_kind_meta(
+        engine,
+        file,
+        item,
+        p,
+        if signed == null { Kind.Unspelled("") } else { signed_kind(signed!) },
+    )
+}
 
 /// A seat as a `Param`, of the kind `kind`.
-fn param_kind_meta(p: Param, kind: Kind) -> MetaParam {
+fn param_kind_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    p: Param,
+    kind: Kind,
+) -> MetaParam {
     MetaParam {
         name: p.name.of,
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         mutable: p.promises.mutable,
         settled: p.promises.settled,
-        at: null,
+        at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
         kind: kind,
     }
 }
 
 /// What an event member tells its handler, each seat of the kind the handler's seat is; absent on a
 /// member that is no event.
-fn says_meta(p: Param, kind: Kind) -> List<MetaParam>? {
+fn says_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, p: Param, kind: Kind) -> List<
+    MetaParam,
+>? {
     let says? = p.says else { return null }
     let kinds = told_kinds(kind)
-    [param_kind_meta(s, kind_at(kinds, j)) for j, s in says]
+    [param_kind_meta(engine, file, item, s, kind_at(kinds, j)) for j, s in says]
+}
+
+/// The declaration `file` writes as `name` as `@std/meta`'s `Named` — its name and where it stands —
+/// laid out in `heap`; absent when the file declares none of that name.
+export fn named_handed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    mut heap: MetaHeap,
+) -> MetaVal? {
+    let d? = file_declares(engine, file).names.find(it.name == name) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.named_by(x) == name) else { return null }
+    meta_of_named(
+        MetaNamed { name: name, at: meta_place(engine, file, item, item.store.stmt_span(s)) },
+        heap,
+    )
 }
 
 /// A declaration as a `Type`, absent for one that declares no type with fields, variants or a shape;
@@ -161,7 +212,8 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         name: d.name,
         fields: [],
         variants: [],
-        at: null,
+        at: meta_place(engine, d.file, item, item.store.stmt_span(s)),
+        doc: doc_text(item.store, s),
         annotations: [annotation_meta(engine, d.file, item, a) for a in item.store.annotations_of(s)],
         module: dotted_module(d.file),
         impls: written_traits(engine, d.file, d.name),
@@ -461,7 +513,7 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
 /// write.
 fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaMark {
     let written = annotation_meta(engine, file, item, a)
-    MetaMark { name: written.name, args: written.args, at: null, named: written.named }
+    MetaMark { name: written.name, args: written.args, at: written.at, named: written.named }
 }
 
 /// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
@@ -498,12 +550,12 @@ fn field_meta(
     MetaField {
         name: p.name.of,
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
-        at: null,
+        at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
         kind: if cell { Kind.Cell(kind) } else { kind },
-        marks: [mark_meta(m) for m in p.marks],
+        marks: [mark_meta(engine, file, item, m) for m in p.marks],
         annotations: [mark_as_annotation(engine, file, item, m) for m in p.marks],
         defaulted: p.default != null,
-        says: says_meta(p, kind),
+        says: says_meta(engine, file, item, p, kind),
         default: default,
         state: cell,
         prop: p.prop,
@@ -577,9 +629,9 @@ fn variant_meta(
     MetaVariant {
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
-        at: null,
+        at: meta_place(engine, file, item, v.span),
         fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.of), null, false) for p in v.payloads],
-        marks: [mark_meta(m) for m in v.marks],
+        marks: [mark_meta(engine, file, item, m) for m in v.marks],
     }
 }
 
@@ -590,8 +642,13 @@ fn field_kind(signed: List<FieldSeat>, name: string) -> Kind {
 }
 
 /// A mark as a `Mark`.
-fn mark_meta(m: Mark) -> MetaMark {
-    MetaMark { name: m.name, args: m.args, at: null, named: named_args(m) }
+fn mark_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaMark {
+    MetaMark {
+        name: m.name,
+        args: m.args,
+        at: meta_place(engine, file, item, m.span),
+        named: named_args(m),
+    }
 }
 
 /// A mark's named arguments, each as its label and literal.
@@ -602,7 +659,7 @@ fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadIt
     MetaAnnotation {
         name: m.name,
         args: m.args,
-        at: null,
+        at: meta_place(engine, file, item, m.span),
         call: call_written(engine, file, item, m.name, m.span),
         named: named_args(m),
     }
@@ -616,7 +673,7 @@ fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem,
         name: a.name,
         call: if rule_named(engine, file, a.name) { call_written(engine, file, item, a.name, a.span) } else { null },
         args: [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null],
-        at: null,
+        at: meta_place(engine, file, item, a.span),
         named: [MetaMarkArg { label: store.arg_label(e)!, value: arg_lit(store, store.unnamed(e)).text } for e in a.args if store.arg_label(e) != null],
     }
 }

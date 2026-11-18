@@ -3243,6 +3243,19 @@ reads the file's top-level statements only). The program layer's naming laws (co
 follow the old path exactly; close both on both paths after the switch, and the witnesses are
 `extern fn f(select: int)` and `impl P { fn match() -> int { 1 } }`.
 
+### `explain` says what a fn's cancel bits are, and whether a check read a file, on the program layer
+
+The old path's `avra explain @fn` said whether a call to `fn` may reach a cancel point, with each
+bit (parks, spins) and what earned it (a wait of its own, a `while` here, a call through a value,
+the first callee that carries it); its `avra explain <file> --why` said after an `avra check`
+whether the file was held or read again. The program layer holds the bits (compiler/item_cancels.av,
+`CancelFact` over each `BodyAt`, a body's own and its callees') but no view speaks them, and keeps
+why a file was worked out again for a build alone (`rebuilt.txt`), never for a check. The want:
+`explain @fn` reads `CancelFact` and names the first own wait or callee behind each bit, and a
+check keeps per file whether its answers stood. Then the two attacks that held them
+(cancel_bits_attack, cancel_cache_attack: an edit that moves no bit leaves the caller held, one
+that moves a bit reads it again and names the callee) are written again against those views.
+
 ### A `self` field stands for a call that cannot reach `self`
 
 `packages/std-program/src/syntax_tape.av`'s `TapeReader.count` and `flag` hand `self.structure` and

@@ -2,6 +2,7 @@
 //! file, the analyze-or-refuse step, and what every file command takes.
 use @std.cli.{CliResult, flag, arg}
 use @std.avrac.compiler.{
+    NewOnly,
     default_opt,
     Program,
     Workspace,
@@ -391,7 +392,7 @@ export fn program_door() -> bool { env("AVRA_PROGRAM") != "0" }
 // LICENSED input.debug_flag: which path answers during the switch, never an input of an answer
 export fn program_net() -> bool { program_door() && env("AVRA_PROGRAM_NET") != "0" }
 
-/// What the net judges a program by, as the old path's own command for it reads it: a build or a run,
+/// What the old path judges a program by, as the old path's own command for it reads it: a build or a run,
 /// the entry's reach, analysed, before anything is lowered; a check, the whole package as its entry
 /// sees it; a test, the whole package the path stands in, which its suite reads with no entry of its
 /// own.
@@ -401,11 +402,39 @@ export enum NetJudge {
     Proved
 }
 
-/// The net over `paths`: the old path's judgement of each, as `judge` names it, a refusal said in its
-/// words — the exit it left by; absent where the net is off or the old path accepts every path.
-export fn net_refused(paths: List<string>, judge: NetJudge) -> int? {
-    if !program_net() { return null }
-    let report? = paths.find_map((p) -> net_report(p, judge)) else { return null }
+/// What the net said of a program before the program layer reads it: nothing, where the net is off;
+/// the old path's acceptance; or its refusal, in its words.
+export enum NetSaid {
+    Off
+    Accepted
+    Refused(report: string)
+}
+
+/// The net over `paths`: the old path's judgement of each, as `judge` names it.
+export fn net_said(paths: List<string>, judge: NetJudge) -> NetSaid {
+    if !program_net() { return NetSaid.Off }
+    let report? = paths.find_map((p) -> net_report(p, judge)) else { return NetSaid.Accepted }
+    NetSaid.Refused(report)
+}
+
+/// THE NET STEPS ASIDE for a program that uses a form only the program layer builds (`uses`, as the
+/// layer reads them): the old path never learned it, so its refusal is no verdict, and the layer's
+/// answer is the program's. Any other refusal stops the command, said in the old path's words: the
+/// exit it left by. `uses` is asked only of a program the old path refused.
+export fn net_stops(said: NetSaid, uses: fn() -> List<NewOnly>) -> int? {
+    match said {
+        .Refused(report) -> if uses().is_empty() { said_refused(report) } else { null },
+        _ -> null,
+    }
+}
+
+/// Whether the net vouches for a program the layer refuses, so the refusal is the layer's defect: the
+/// old path accepted it, and it uses no form only the layer builds (`uses`), whose meaning the old path
+/// never learned.
+export fn net_vouches(said: NetSaid, uses: fn() -> List<NewOnly>) -> bool { said is .Accepted && uses().is_empty() }
+
+/// The old path's refusal, said: exit 1.
+fn said_refused(report: string) -> int {
     println(report)
     1
 }
@@ -700,9 +729,7 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
                 !args.has_flag("no_wasm_fallback"),
             ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
         }
-        let refused = net_refused([path], NetJudge.Build)
-        if refused != null { return .Err(refused!) }
-        let net = program_net()
+        let net = net_said([path], NetJudge.Build)
         let built = if is_a_dir(path) { program_built(path, timed(args), tools, net, args.has_flag("release")) } else { program_file_built(path, timed(args), tools, net, args.has_flag("release")) }
         let binary = match built { .Ok(b) -> b, .Err(code) -> { return .Err(code) } }
         if !exists_at(binary) {

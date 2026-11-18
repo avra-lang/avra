@@ -3,7 +3,7 @@
 //! the arms, else against the first arm joined with each arm in turn, as the body's typing refused
 //! it; one a `void` fn ends on against the seat, read off the item's typed nodes. A build that let
 //! them through would join values of two types, or a value with nothing.
-use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten}
+use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten, owned_type}
 use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
 use features.{Conversion, arms_disagreement, interpolation, this_is, value_wanted, wrapped}
@@ -77,15 +77,11 @@ fn void_fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
 /// nodes `t` reads.
 fn void_disagreeing(t: TypedNodes, void_tails: List<ExprId>, text: string) -> List<Found> {
     let tails = [x! for b in void_tails for x in [t.store.tail_of(b)] if x != null && x!.index >= t.lo && x!.index < t.hi]
-    flatten([arms_against(t, m, void_seat(t, m), text) for m in tails])
+    flatten([arms_against(t, m, void_seat(), text) for m in tails])
 }
 
-/// The seat a `void` fn's tail `m` is judged against, `void` as `m`'s first arm types it; absent
-/// where none of its arms types as `void` to read it from.
-fn void_seat(t: TypedNodes, m: ExprId) -> ArmsAnchor? {
-    let v? = [ty! for ty in arm_types(t, m) if ty != null && voided(ty!)].first() else { return null }
-    ArmsAnchor { name: "the seat", want: v }
-}
+/// The seat a `void` fn's tail is judged against: `void`.
+fn void_seat() -> ArmsAnchor { ArmsAnchor { name: "the seat", want: owned_type("void") } }
 
 /// The type each arm of the `match` `m` answers, absent where typing doesn't know it whole or the
 /// arm leaves; none where `m` is no `match`.

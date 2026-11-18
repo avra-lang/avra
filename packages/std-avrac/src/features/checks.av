@@ -98,14 +98,15 @@ impl TypeCx {
                 if held.is_empty() { return }
                 self.facts.mark_warned(e)
                 for x in held {
+                    let said = use_warned(x.message, x.help)
                     let _ = self
                         .spoken(
                             warning(
                                 x.kind ?? "annotation.warning",
                                 x.at ?? self.loc_of(e),
-                                x.message,
-                                "used here",
-                                x.help ?? warned_help,
+                                said.message,
+                                said.label ?? "",
+                                said.help,
                             ),
                         )
                 }
@@ -820,7 +821,7 @@ impl TypeCx {
         // declaration stands behind a fn VALUE, so the fingerprints are
         // judged and dropped — a call through a box does not specialize.
         self.mut_seats_law(e, callee, marks, args, null)
-        self.state_seats_law(callee, marks, args)
+        self.state_seats_law(callee, [], marks, args)
         self.isolated_seats_law(callee, [], marks, args)
         if self.const_seats(callee, [], marks, args) == null { return self.error_type }
         ret
@@ -1772,9 +1773,14 @@ impl TypeCx {
     /// owns, so its argument is a `state` binding (or a `state` seat
     /// it forwards) — never a value, a plain place, or an explicit
     /// `Cell` the callee would have to mint.
-    mut fn state_seats_law(callee: string, marks: List<SeatMark>, args: List<ExprId>) {
+    mut fn state_seats_law(
+        callee: string,
+        names: List<string>,
+        marks: List<SeatMark>,
+        args: List<ExprId>,
+    ) {
         for j, a in args {
-            if state_mark(marks, j) && !self.state_seat_arg(a) { self.value_in_state_seat(a, callee, j) }
+            if state_mark(marks, j) && !self.state_seat_arg(a) { self.value_in_state_seat(a, callee, j, names.get(j) ?? "") }
         }
     }
 
@@ -1789,8 +1795,8 @@ impl TypeCx {
         }
     }
 
-    mut fn value_in_state_seat(a: ExprId, callee: string, j: int) {
-        self.emit(said_as("type.seat", self.loc_of(a), stateless_seat(callee, j)))
+    mut fn value_in_state_seat(a: ExprId, callee: string, j: int, seat: string) {
+        self.emit(said_as("type.seat", self.loc_of(a), stateless_seat(callee, j, seat)))
     }
 
     /// A DECLARATION'S marks for the seats its ARGUMENTS fill — from
@@ -1825,7 +1831,7 @@ impl TypeCx {
     ) -> bool {
         let marks = self.declared_marks(d, base, args.length)
         self.mut_seats_law(e, callee, marks, args, receiver)
-        self.state_seats_law(callee, marks, args)
+        self.state_seats_law(callee, self.seat_names(d), marks, args)
         self.isolated_seats_law(callee, self.seat_names(d), marks, args)
         let fps? = self.const_seats(callee, self.seat_names(d), marks, args) else { return false }
         if !fps.is_empty() { self.record_subst(e, d, [], fps) }
@@ -2312,6 +2318,10 @@ export const slot_help: string = "a slot holds a value — `void` and a type nam
 /// What a declaration's warning says when it gave no way out.
 const warned_help: string = "stop using it, or ask the declaration's owner what replaces it"
 
+/// A declaration's warning as a use of it says it: the declaration's words, its own help where it
+/// gives one.
+export fn use_warned(message: string, help: string?) -> Voice { Voice { message: message, label: "used here", help: help ?? warned_help } }
+
 /// A type literal's hole `name`, naming a binding that holds `found` where it names an id.
 export fn hole_holds(name: string, found: string) -> Voice {
     Voice {
@@ -2447,12 +2457,26 @@ export fn nameless_seats(label: string, callee: string) -> Voice {
 }
 
 /// What is no `state` binding handed the `state` seat `j` of `callee`, which writes the caller's place.
-export fn stateless_seat(callee: string, j: int) -> Voice {
+export fn stateless_seat(callee: string, j: int, seat: string) -> Voice {
     Voice {
-        message: "seat ${j + 1} of `${callee}` is `state`, and this has no place to write",
+        message: "${seat_named(callee, j, seat)} is `state`: it takes a place, and this is a value",
         label: "a value",
-        help: "pass the `state` binding it reads",
+        help: "pass a `state` — one this code holds (`state draft = \"\"`), a module's, or a `state` field; or declare the field `state` in its type",
     }
+}
+
+/// A component's `state` seat or member handed a value: `state` is always a place.
+export fn unshared_seat(word: string, seat: string) -> Voice {
+    Voice {
+        message: "`${word}`'s `${seat}` is `state`: it takes a place, and this is a value",
+        label: "a value",
+        help: "pass a `state` to share it, or give the component a plain input its state starts from",
+    }
+}
+
+/// A seat as a refusal names it: by its name, else by its place.
+fn seat_named(callee: string, j: int, seat: string) -> string {
+    if seat.is_empty() { "seat ${j + 1} of `${callee}`" } else { "`${callee}`'s seat `${seat}`" }
 }
 
 /// A value handed the `mut` seat `j` of `callee`, which writes through a place.

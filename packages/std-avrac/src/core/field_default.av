@@ -36,7 +36,7 @@ impl Lowering {
     /// names its type parameters as the unit the record's type arguments lay out. A field no default
     /// the program declares fills isn't lowered yet.
     mut fn field_default(ty: SignedType, f: FieldSeat) -> Reg {
-        let field? = f.ty else { return self.missed_as("an untyped field left to its default") }
+        let field? = f.ty else { return self.missed_as(untyped_left()) }
         let declared? = (self.program.defaults)(ty, f.name) else { return self.missed_as(unfilled(self, ty)) }
         if declared.type_params == 0 { return self.call_fn(self.laid_out(field), declared, []) }
         let unit? = self.laid_unit(declared, ty.args, []) else { return self.missed_as(unfilled(self, ty)) }
@@ -44,10 +44,33 @@ impl Lowering {
     }
 }
 
+impl Lowering {
+    /// The default of the field `f` of the record `ty` that reads the instance, called on `made`: the
+    /// instance as its inputs stand, read once, as it's made.
+    mut fn made_default(ty: SignedType, f: FieldSeat, made: Reg) -> Reg {
+        let field? = f.ty else { return self.missed_as(untyped_left()) }
+        let declared? = (self.program.defaults)(ty, f.name) else { return self.missed_as(unfilled(self, ty)) }
+        if declared.type_params != 0 { return self.missed_as("a generic component's member made from its inputs") }
+        self.call_fn(self.laid_out(field), declared, [made])
+    }
+
+    /// `v` written into the slot of the field `n` of the boxed record `r`, whose fields are `fields`.
+    mut fn slot_made(r: Reg, fields: List<FieldSeat>, n: int, v: Reg) {
+        let laid? = self.seat_layouts(fields) else {
+            let _ = self.missed_as("a record whose fields aren't laid out")
+            return
+        }
+        self.slot_written(r, self.const_int(slots_before(laid, n)), v, true)
+    }
+}
+
 /// The closure the builder minted beside the literal `e`: the node extending it that is a lambda.
 fn minted_closure(store: SyntaxArena, e: ExprId) -> ExprId? {
     store.extended_by(e).find((v) -> store.minted_for(v) != null && store.lambda_parts(v) != null)
 }
+
+/// Why a field left to its default whose type isn't known isn't lowered yet.
+fn untyped_left() -> string { "an untyped field left to its default" }
 
 /// Why a field left to its default of the record `ty` isn't lowered yet.
 fn unfilled(cx: Lowering, ty: SignedType) -> string {

@@ -195,6 +195,26 @@ impl Lowering {
         self.boxed_field(self.lower(subject), laid, n, laid[n])
     }
 
+    /// The Cell the place `a` keeps its value in: a `state` this body binds or a `state` seat it
+    /// forwards, a module's `state`, or a `state` field by any path. Absent for any other, which typing
+    /// refuses.
+    mut fn place_cell(a: ExprId) -> Reg? {
+        match self.store.expr(a) {
+            .Ident(n) -> self.named_cell(a, n.of),
+            .Prop(subject, name) -> self.state_cell(subject, name.of),
+            _ -> null,
+        }
+    }
+
+    /// The Cell the `state` `name` names at `at`: a binding of this body's, else a module's.
+    mut fn named_cell(at: ExprId, name: string) -> Reg? {
+        let b = self.bound(name)
+        if b != null { return self.shared_cell(b!) }
+        let named? = self.named(at, name) else { return null }
+        let kept? = kept_state(named) else { return null }
+        self.state_box(kept.callee, kept.held)
+    }
+
     /// Where the field `name` of the boxed record `subject` is stands; absent for a record laid any
     /// other way, a field that isn't known, and a `state` field, whose cell holds its value.
     mut fn field_at(subject: ExprId, name: string) -> FieldAt? {

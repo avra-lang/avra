@@ -407,7 +407,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: compiler-key pool-check ready tools-suite dev-server census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -737,9 +737,7 @@ db-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # The two shards are one job each on CI, one runner each, so the store they clear
 # is their own; locally they run in order.
-cache-attacks: cache-attacks-a cache-attacks-b cache-attacks-w
-cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/cache_attacks.sh
+cache-attacks: cache-attacks-b cache-attacks-w
 
 # THE STORE'S CLEAN AND TIME TRAVEL (§6.7): the window, the size and age limits,
 # a reader beside clean, a torn frame, a hold, the empty and absent cases — each
@@ -752,28 +750,19 @@ store-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b: cache-attacks-b1 cache-attacks-b2
 cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
-	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
 	@sh tools/closure_gather_attack.sh
 	@sh tools/closure_fold_attack.sh
 	@sh tools/impl_held_attack.sh
 	@sh tools/store_reads_attack.sh
-	@sh tools/cas_attack.sh
 	@sh tools/docs_cache_attack.sh
-	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
 	@sh tools/path_leak_attack.sh
-	@sh tools/held_runs_attack.sh
 
 cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/print_mix_attack.sh
-	@sh tools/expanded_attack.sh
-	@sh tools/held_generated_attack.sh
 	@sh tools/store_quiet_attack.sh
-	@sh tools/store_seal_attack.sh
-	@sh tools/store_index_attack.sh
 	@sh tools/stale_imports_attack.sh
-	@sh tools/fn_add_attack.sh
 	@sh tools/sig_restore_attack.sh
 	@sh tools/host_fn_edit_attack.sh
 	@sh tools/suspect_narrow_attack.sh
@@ -782,12 +771,8 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/obj_gone_attack.sh
 	@sh tools/names_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
-	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/file_module_attack.sh
-	@sh tools/cancel_bits_attack.sh
-	@sh tools/readfound_attack.sh
-	@sh tools/durable_symbol_attack.sh
 	@sh tools/store_clean_attack.sh
 	@sh tools/package_swap_attack.sh
 
@@ -832,11 +817,6 @@ wave-share-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/code_hash_attacks.sh
 
-# ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
-# link of a chain of held bodies, under a ceiling one attempt clears and their
-# sum trips. It CLEARS the store, as the attacks above do.
-turn-memory-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/turn_memory_attack.sh
 
 # A BUILD AFTER THE TREE'S CACHE WAS CLEARED: the machine's store names objects the tree's cache
 # no longer holds. It CLEARS the tree's cache, as the attacks above do.

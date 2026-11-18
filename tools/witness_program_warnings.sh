@@ -117,13 +117,19 @@ fi
 
 # Each case under tools/program-warnings/ is a package of its own, built cold on both paths in a
 # copy of its own: the program layer's warnings must be the old path's, word for word, and there
-# must be some.
+# must be some. A case using a form only the program layer builds is skipped and counted.
 cp "$tmp/orig.av" "$file"
 if wanted cases; then
+    alone=0
     for d in tools/program-warnings/*/; do
         name=$(basename "$d")
         c="$tmp/case-$name"
         cp -R "$d" "$c"
+        # a case using a form only the program layer builds is never asked of the old path
+        if [ -n "$(AVRA_PROGRAM=1 AVRA_CACHE_DIR="$c-forms-store" "$avra" tapes "$c" --new-only 2>/dev/null)" ]; then
+            alone=$((alone + 1))
+            continue
+        fi
         for side in old new; do
             mkdir -p "$c-$side-store"
             if [ "$side" = new ]; then run="env AVRA_PROGRAM=1"; else run="env AVRA_PROGRAM=0"; fi
@@ -140,4 +146,5 @@ if wanted cases; then
         fi
         echo "witness_program_warnings: case $name — $(wc -l < "$c.new" | tr -d ' ') warning(s) as the old path says them"
     done
+    echo "witness_program_warnings: $alone case(s) skipped: a form only the program layer builds, never asked of the old path"
 fi

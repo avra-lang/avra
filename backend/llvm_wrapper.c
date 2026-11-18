@@ -434,7 +434,6 @@ static void sites_registered(LLVMModuleRef m) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
-    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
     if (LLVMGetNamedFunction(m, "avra.sites.registered")) return;
     LLVMValueRef bound[2];
     const char* names[2] = { "__start_" AVRA_SITES_ELF_SECTION, "__stop_" AVRA_SITES_ELF_SECTION };
@@ -468,13 +467,15 @@ static void sites_registered(LLVMModuleRef m) {
     LLVMPositionBuilderAtEnd(b, done);
     LLVMBuildRetVoid(b);
     LLVMDisposeBuilder(b);
-    LLVMTypeRef ctor_fields[3] = { i32, ptr, ptr };
-    LLVMTypeRef ctor_ty = LLVMStructTypeInContext(ctx, ctor_fields, 3, 0);
-    LLVMValueRef cells[3] = { LLVMConstInt(i32, 65535, 0), fn, LLVMConstNull(ptr) };
-    LLVMValueRef entry_row = LLVMConstStructInContext(ctx, cells, 3, 0);
-    LLVMValueRef ctors = LLVMAddGlobal(m, LLVMArrayType(ctor_ty, 1), "llvm.global_ctors");
-    LLVMSetLinkage(ctors, LLVMAppendingLinkage);
-    LLVMSetInitializer(ctors, LLVMConstArray(ctor_ty, &entry_row, 1));
+    // `.init_array`, which the loader runs however the image was linked: `llvm.global_ctors` is
+    // emitted as `.ctors` here, run only by the crt files a compiler driver's link adds, and a
+    // layer is linked without them.
+    LLVMValueRef init = LLVMAddGlobal(m, ptr, "avra.sites.init");
+    LLVMSetInitializer(init, fn);
+    LLVMSetLinkage(init, LLVMPrivateLinkage);
+    LLVMSetSection(init, ".init_array");
+    LLVMSetAlignment(init, 8);
+    kept_whole(m, init);
 }
 
 // Whether this build counts the boxes runtime rows mint, by type:

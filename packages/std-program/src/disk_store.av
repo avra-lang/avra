@@ -29,6 +29,7 @@ use @std.io.{
     write_text,
 }
 use @std.meta.{derive}
+use @std.path.{is_absolute, joined_path, normalized, relative_path}
 use @std.text.{parse_int, text_before}
 use answer_record.{
     AnswerRecord,
@@ -893,14 +894,26 @@ impl AnswerStore for DiskStore {
     /// answers is.
     fn keep_frontier(print: string, learned: FrontierLearned) { self.pending_frontier.set(PendingFrontier { print: print, learned: learned }) }
 
-    fn input_stamps() -> List<InputStamp> { stamps_read("${self.directory}/${STAMPS_FILE}") }
+    /// The stamps kept here, each path read where it lies from this store.
+    fn input_stamps() -> List<InputStamp> {
+        [s with { path: normalized(joined_path(self.directory, s.path)) } for s in stamps_read("${self.directory}/${STAMPS_FILE}")]
+    }
 
-    /// Writes `stamps` at once, whole or not at all: a stamp only ever spares a read whose answer the
-    /// frontier still holds.
+    /// Writes `stamps` at once, whole or not at all, each path named from this store, so the store
+    /// names no checkout: a stamp only ever spares a read whose answer the frontier still holds.
     fn keep_input_stamps(stamps: List<InputStamp>) {
         let _ = make_dirs(self.directory) catch ""
-        stamps_written("${self.directory}/${STAMPS_FILE}", stamps)
+        stamps_written(
+            "${self.directory}/${STAMPS_FILE}",
+            [s with { path: named_from(self.directory, s.path) } for s in stamps],
+        )
     }
+}
+
+/// `path` named from the directory `dir` where the two are spelled from one root, else as it stands.
+fn named_from(dir: string, path: string) -> string {
+    if is_absolute(path) != is_absolute(dir) { return path }
+    relative_path(dir, path)
 }
 
 /// The file a store keeps its inputs' stamps in.

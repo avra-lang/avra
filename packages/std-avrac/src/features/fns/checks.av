@@ -18,6 +18,7 @@ use core.{
     StmtChecks,
     StmtId,
     TypeHead,
+    Unhanded,
     owned_type,
 }
 use core.expr.{Call, Named}
@@ -94,7 +95,15 @@ fn seats_written(mut cx: Checking, e: ExprId, call: Call, f: SignedType) {
     mut roots: List<string> = []
     for j, at in plan {
         if at >= 0 && f.seats[j].state {
-            cx.state_seat_handed(cx.store.unnamed(call.args[at]), f.seats[j].ty, call.callee.of, j)
+            cx
+                .state_seat_handed(
+                    cx.store.unnamed(call.args[at]),
+                    f.seats[j].ty,
+                    call.callee.of,
+                    j,
+                    if cx.local(call.callee.of) == null { f.seats[j].name ?? "" } else { "" },
+                    Unhanded.Stateless,
+                )
         } else if at >= 0 && f.seats[j].mutable {
             let a = cx.store.unnamed(call.args[at])
             cx.seat_written(a, f.seats[j].ty, call.callee.of, j, external)

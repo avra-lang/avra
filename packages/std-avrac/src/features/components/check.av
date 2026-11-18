@@ -295,6 +295,24 @@ export fn fate_unnamed(word: string) -> Voice {
 fn no_diagnostics(at: Loc?, found: string) -> Diag { said_as("type.component_check", at, check_unshaped(found)) }
 
 /// A component's `check` answering `found`, or taking a seat.
+/// An instance in another's block written under the name of one of its slots.
+export fn slot_shadows(slot: string, outer: string) -> Voice {
+    Voice {
+        message: "in `${outer}`'s block, `${slot}` names its slot, and this fills it — the component `${slot}` is not made here",
+        label: "fills the slot",
+        help: "to place the component `${slot}` in the slot, write it inside: `${slot}: collect { ${slot} { … } }`",
+    }
+}
+
+/// A member's default reading what isn't one of its component's plain inputs.
+export fn default_unmade(word: string, member: string, field: string) -> Voice {
+    Voice {
+        message: "`${word}`'s `${member}` starts from `self.${field}`, which isn't one of its plain inputs",
+        label: "not a plain input",
+        help: "a member's default reads the component's plain inputs, once, as the instance is made — give `${word}` an input `${member}` starts from",
+    }
+}
+
 export fn check_unshaped(found: string) -> Voice {
     Voice {
         message: "a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `${found}`",
@@ -420,25 +438,26 @@ export fn event_seat_twice(event: string, seat: string) -> Voice {
     }
 }
 
-fn default_twice(at: Loc?, owner: string, events: List<string>) -> Diag { said_as("type.component_event", at, event_default_twice(owner, events)) }
+fn default_twice(at: Loc?, owner: string, marked: List<string>) -> Diag { said_as("type.component_event", at, event_default_twice(owner, marked)) }
 
-/// The events `events` the component `owner` marks `@default`, more than one.
-export fn event_default_twice(owner: string, events: List<string>) -> Voice {
+/// The members `marked` the component `owner` marks `@default`, more than one: its events and the
+/// fields a `collect` fills, as written.
+export fn event_default_twice(owner: string, marked: List<string>) -> Voice {
     Voice {
-        message: "a component has one default event, and `${owner}` marks ${ticked(events)} `@default`",
+        message: "a component has one default, an event or a field a `collect` fills, and `${owner}` marks ${ticked(marked)} `@default`",
         label: "declared here",
-        help: "keep `@default` on the event bare statements should run, and write `on <event> { … }` for the others",
+        help: "keep `@default` on the one bare statements fill, and write `on <event> { … }` or the field's own block for the others",
     }
 }
 
 fn default_field(at: Loc?, owner: string, field: string) -> Diag { said_as("type.component_event", at, event_default_field(owner, field)) }
 
-/// The field `field` the component `owner` marks `@default`, which only an event can be.
+/// The field `field` the component `owner` marks `@default`, which no `collect` fills.
 export fn event_default_field(owner: string, field: string) -> Voice {
     Voice {
-        message: "only an event can be a component's default, and `${field}` of `${owner}` is a field",
+        message: "only an event or a field a `collect` fills can be a component's default, and `${field}` of `${owner}` is neither",
         label: "declared here",
-        help: "mark an `on` event — `@default on press`",
+        help: "mark the event (`@default on press`) or the `List` field bare statements fill",
     }
 }
 

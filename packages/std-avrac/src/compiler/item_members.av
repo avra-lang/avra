@@ -361,7 +361,7 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
     let unfilled = literal_miss(engine, t, e)
     if !landed.is_empty() || !unfilled.is_empty() { return unfilled.concat(landed) }
     match t.store.expr(e) {
-        .Prop(subject, name) -> field_miss(engine, (t.type_at)(subject.index), name.of, t.store.expr_span(e), t.reader)
+        .Prop(subject, name) -> field_miss(engine, (t.type_at)(subject.index), name.of, t.store.expr_span(e))
             .concat(type_named_miss(engine, t, subject, name.of, false, t.store.expr_span(e)))
             .concat(
                 own_prop_miss(
@@ -629,7 +629,7 @@ fn chained_member_miss(engine: QueryEngine, t: TypedNodes, subject: ExprId, name
 > {
     let s? = (t.type_at)(subject.index) else { return [] }
     if !s.nullable() { return [] }
-    field_miss(engine, s.unwrapped(), name, at, t.reader)
+    field_miss(engine, s.unwrapped(), name, at)
         .concat(own_prop_miss(engine, s.unwrapped(), name, at, t.reader))
 }
 
@@ -986,14 +986,12 @@ fn spread_covers(engine: QueryEngine, t: TypedNodes, v: ExprId, declared: List<s
 
 /// A field read of `name` on a record of `subject` that neither its fields nor its type's members
 /// answer.
-fn field_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Span?, reader: string) -> List<
+fn field_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Span?) -> List<
     MissPlaced,
 > {
     let s? = declared_value(subject) else { return [] }
     let fields? = fields_of_record(engine, s) else { return [] }
-    if fields.contains(name) ||
-        property_type(engine, s, name) != null ||
-        member_answers(engine, s, name, reader) { return [] }
+    if fields.contains(name) || property_type(engine, s, name) != null || home_unsettled(engine, s) { return [] }
     [MissPlaced { at: at, miss: Miss.Field(s.spelled(), name, fields) }]
 }
 
@@ -1028,6 +1026,7 @@ fn own_row_shape(s: SignedType) -> Type? {
         "List" -> Type.List(any),
         "Map" -> Type.Map(any, any),
         "Cell" -> Type.Cell(any),
+        "Range" -> Type.Range,
         rest -> null,
     }
 }
@@ -1083,6 +1082,15 @@ fn member_answers(engine: QueryEngine, subject: SignedType, name: string, reader
         static_type(engine, subject, name) != null ||
         impl_gives(engine, subject, name, reader) ||
         trait_gives(engine, subject, name)
+}
+
+/// Whether what the file declaring `subject`'s type gives it isn't all written: a generator runs
+/// there, or the file reads as no items here.
+fn home_unsettled(engine: QueryEngine, subject: SignedType) -> bool {
+    match subject.head {
+        .Declared(file, _) -> item_count(engine, file) == 0 || !generator_sites(engine, file).is_empty(),
+        rest -> false,
+    }
 }
 
 /// Whether the file declaring `subject`'s type gives it `name` as written — an impl there writes

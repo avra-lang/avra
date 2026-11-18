@@ -1,0 +1,162 @@
+//! WHAT ONLY THE PROGRAM LAYER BUILDS: the language forms the old path never learned. A program that
+//! uses one is the program layer's alone to judge, so the net steps aside for it, and a tool that
+//! holds the two paths side by side leaves it out and says so. Read off the parsed items.
+use core.{ExprId, SignedType, StmtId, SyntaxArena, default_mark, flatten, meta_key, some_list}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A form only the program layer builds.
+@derive(Saved)
+export enum NewOnly {
+    /// A component's head seat declared `state`: it takes the caller's place.
+    StateSeat
+    /// A `state` seat handed a module's `state`, or a `state` field by a path.
+    WidePlace
+    /// A component member whose default reads the instance's own inputs (`= self.start`).
+    MadeMember
+    /// A component's `state` member written at its instance, which takes a place.
+    PlacedMember
+    /// A component's `List` field marked `@default`, which bare statements fill.
+    DefaultSlot
+    /// A field of `@std/meta`'s `Key` written in a literal, which takes a value of any type a key is
+    /// made from.
+    AnyKey
+}
+
+impl NewOnly {
+    /// The form as a reader names it.
+    fn word() -> string {
+        match self {
+            .StateSeat -> "a `state` seat in a component's head",
+            .WidePlace -> "a `state` seat handed a module's `state` or a `state` field",
+            .MadeMember -> "a component member whose default reads the instance's inputs",
+            .PlacedMember -> "a component's `state` member written at its instance",
+            .DefaultSlot -> "a component's `List` field marked `@default`",
+            .AnyKey -> "a field of `@std/meta`'s `Key` written in a literal",
+        }
+    }
+}
+
+/// The forms only the program layer builds that one file's items use, each once.
+@derive(Saved)
+type FileNewOnly = { forms: List<NewOnly> }
+
+@query
+fn file_new_only(engine: QueryEngine, file: SourceFileAddress) -> FileNewOnly {
+    if is_manifest(file) { return FileNewOnly { forms: [] } }
+    FileNewOnly {
+        forms: forms_once(flatten([item_new_only(engine, file, at) for at in 0..item_count(engine, file)])),
+    }
+}
+
+/// The forms only the program layer builds that the item `at` of `file` uses.
+fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<NewOnly> {
+    let item = read_item(engine, file, at)
+    let nodes = [ExprId { index: i } for i in 0..item.store.expr_count()]
+    let wide = if nodes.any(widely_placed(engine, file, item.store, it)) { [NewOnly.WidePlace] } else { [] }
+    let member = if nodes.any(member_placed(engine, file, item.store, it)) { [NewOnly.PlacedMember] } else { [] }
+    let writes = flatten([key_writes(engine, file, item.store, e) for e in nodes])
+    let keyed = if writes.is_empty() || keys_all(item_typed(engine, file, at, item), writes) { [] } else { [NewOnly.AnyKey] }
+    flatten([stmt_new_only(item.store, s) for s in item.stmts])
+        .concat(wide)
+        .concat(member)
+        .concat(keyed)
+}
+
+/// Whether `e` calls a fn with a `state` seat, handing an argument a module's `state` or a field by a
+/// path — a place the old path's seat refuses. Seats are matched by kind, not by place: this only sets
+/// a judge aside, and the program layer judges the call.
+fn widely_placed(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Call(callee, _, args) -> args.any((a) -> wide_arg(engine, file, store, store.unnamed(a))) &&
+            state_seated(engine, file, callee.of),
+        _ -> false,
+    }
+}
+
+/// Whether `e` is a component's instance writing one of its `state` members.
+fn member_placed(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> bool {
+    if !(store.expr(e) is .Component) { return false }
+    let lit? = store.expansion_of(e) else { return false }
+    let parts? = store.struct_lit_parts(lit) else { return false }
+    let d? = resolved(engine, file, Space.Type, parts.name).named() else { return false }
+    let fields = record_signature(engine, d.file, d.name)?.fields ?? []
+    parts.fields.any((written) -> fields.any(it.name == written && it.placed))
+}
+
+/// The values the record literal `e` writes into fields of `@std/meta`'s `Key`; none where `e` is no
+/// literal or writes none.
+fn key_writes(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> List<
+    ExprId,
+> {
+    let parts? = store.struct_lit_parts(e) else { return [] }
+    let d? = resolved(engine, file, Space.Type, parts.name).named() else { return [] }
+    let keys = [f.name for f in record_signature(engine, d.file, d.name)?.fields ?? [] if f.ty != null && meta_key(f.ty!.unwrapped())]
+    [parts.values[j] for j, written in parts.fields if keys.contains(written)]
+}
+
+/// Whether the item's typed fns and methods (`typed`) give each of `writes` a key's type: a value no
+/// typed fn gives a type is no key here, since this only sets a judge aside. The item is typed only
+/// where it writes a key field at all.
+fn keys_all(typed: List<List<SignedType?>>, writes: List<ExprId>) -> bool { writes.all(keyed_value(typed, it)) }
+
+/// Whether one of `typed`, each a typed fn's types by node, gives `v` a key's type.
+fn keyed_value(typed: List<List<SignedType?>>, v: ExprId) -> bool {
+    typed
+        .any(
+            (types) -> v.index < types.length &&
+                types[v.index] != null &&
+                meta_key(types[v.index]!.unwrapped()),
+        )
+}
+
+/// The types each fn and each impl's method the item `at` of `file` declares give its nodes, by node.
+fn item_typed(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    List<SignedType?>,
+> {
+    let fns = [b.types for s in item.stmts for p in some_list(item.store.fn_parts(s)) for b in some_list(typed_fn(engine, file, p.name))]
+    let methods = [method_body_typed(engine, a, p.name, item.store.is_static(f)).types for a in impls_at(engine, file, at) for f in impl_fns(item, a) for p in some_list(item.store.fn_parts(f))]
+    fns.concat(methods)
+}
+
+/// Whether `callee`, read in `file`, names a fn with a `state` seat.
+fn state_seated(engine: QueryEngine, file: SourceFileAddress, callee: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, callee).named() else { return false }
+    d.kind == ItemKind.Fn && (fn_signature(engine, d.file, d.name)?.params ?? []).any(it.state)
+}
+
+/// Whether `a` reads a module's `state` or a field by a path.
+fn wide_arg(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, a: ExprId) -> bool {
+    match store.expr(a) {
+        .Prop(_, _) -> true,
+        .Ident(n) -> resolved(engine, file, Space.Value, n.of).named()?.kind == ItemKind.State,
+        _ -> false,
+    }
+}
+
+/// The forms only the program layer builds that the statement `s` declares.
+fn stmt_new_only(store: SyntaxArena, s: StmtId) -> List<NewOnly> {
+    let c? = store.component_parts(s) else { return [] }
+    let seated = if c.head.any(it.state) { [NewOnly.StateSeat] } else { [] }
+    let made = if c.holders.any(reads_self(store, it.default)) { [NewOnly.MadeMember] } else { [] }
+    let slot = if c
+        .fields()
+        .any((f) -> f.ty?.name == "List" && f.marks.any(it.name == default_mark)) { [NewOnly.DefaultSlot] } else { [] }
+    seated.concat(made).concat(slot)
+}
+
+/// Every form only the program layer builds that a file the program of `package` reads uses, each
+/// once, in the order met.
+export fn program_new_only(engine: QueryEngine, package: string) -> List<NewOnly> {
+    forms_once(flatten([file_new_only(engine, f).forms for f in program_files(engine, package)]))
+}
+
+fn forms_once(forms: List<NewOnly>) -> List<NewOnly> { [f for i, f in forms if !forms.take(i).contains(f)] }
+
+collect listed_new_only_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries what only the program layer builds is read through, for a process to hand its engine.
+export fn new_only_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_new_only_facts) }

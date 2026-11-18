@@ -266,21 +266,24 @@ export fn takes_nothing(name: string) -> Voice {
 
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
-    let found = if counterfeit_meta(cx, seat) {
-        "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
+    let said = if counterfeit_meta(cx, seat) {
+        receiver_unfit("`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`")
     } else {
-        "`${a.name}` takes `${took}`, and this is ${a_kind(kind)}"
+        takes_another_kind(a.name, took, a_kind(kind))
     }
-    let _ = cx
-        .spoken(
-            refusal(
-                "annotation.receiver",
-                at_annotation(cx, a),
-                receiver_law,
-                found,
-                "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration",
-            ),
-        )
+    let _ = cx.spoken(said_as("annotation.receiver", at_annotation(cx, a), said))
+}
+
+/// `@${name}`, whose first seat takes `@std/meta`'s `took`, on a declaration of another kind,
+/// `found` in a refusal's words (`a fn`).
+export fn takes_another_kind(name: string, took: string, found: string) -> Voice { receiver_unfit("`${name}` takes `${took}`, and this is ${found}") }
+
+fn receiver_unfit(found: string) -> Voice {
+    Voice {
+        message: receiver_law,
+        label: found,
+        help: "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration",
+    }
 }
 
 fn wrong_count(mut cx: TypeCx, a: Annotation, least: int, most: int) {

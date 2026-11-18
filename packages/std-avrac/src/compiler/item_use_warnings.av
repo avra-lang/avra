@@ -1,0 +1,89 @@
+//! A DECLARATION'S WARNING, SAID AT EACH USE: what a validating annotation warns of the declaration
+//! it stands on is that declaration's word for its users, so it is said wherever a body or the
+//! entry reads the declaration by name — never at the declaration, and never where a binding of the
+//! body hides the name. Under the annotation's own kind, its package's, else `annotation.warning`.
+use core.{ExprId, NameRead, SyntaxArena, flatten, some_list, user_kind}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{use_warned}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The kind a warning with none of its own is said under.
+const USE_WARNING: string = "annotation.warning"
+
+/// Every use, in the written item `at` of `file`, of a declaration an annotation warns of.
+fn uses_warned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    let built = flatten(
+        [literals_warned(engine, t) for t in item_typed_nodes(engine, file, at, item)],
+    )
+    let own = flatten(
+        [reads_warned(engine, file, item.store, b.reads) for b in item_bodies(engine, file, at, item)],
+    )
+    let read = entry_read(engine, file)
+    let signed? = entry_signed(read) else { return own.concat(built) }
+    let entry = kept_body(body_checked(engine, file, signed, false))
+    own
+        .concat(
+            reads_warned(
+                engine,
+                file,
+                read.store,
+                [r for r in entry.reads if item_holding(read, r.at) == at],
+            ),
+        )
+        .concat(built)
+}
+
+/// Each record literal among the nodes `t` types whose record wears a warning: one finding a
+/// warning, at the literal.
+fn literals_warned(engine: QueryEngine, t: TypedNodes) -> List<Found> {
+    [warned_at(t.store, e, p) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null for lit in some_list(t.store.struct_lit_parts(e)) for p in warnings_worn(engine, t.file, Space.Type, lit.name)]
+}
+
+/// The warning `p` as the use `e`, standing in `store`, says it.
+fn warned_at(store: SyntaxArena, e: ExprId, p: KeptProblem) -> Found { Found {
+        at: store.expr_span(e),
+        args: [p.message, p.help ?? ""],
+        kind: user_kind(p.from, p.kind) ?? USE_WARNING,
+    } }
+
+/// Each of `reads`, standing in `store`, that names a declaration wearing a warning: one finding a
+/// warning, at the read.
+fn reads_warned(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    reads: List<NameRead>,
+) -> List<Found> {
+    [warned_at(store, ExprId { index: r.at }, p) for r in reads if r.binder == null && r.home == null for p in warnings_worn(engine, file, Space.Value, r.name)]
+}
+
+/// What the annotations on the written declaration `name` names in `space` from `file` warn of it; none for a
+/// name that names no written declaration, or one that wears no annotation.
+fn warnings_worn(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> List<
+    KeptProblem,
+> {
+    let d? = resolved(engine, file, space, name).named() else { return [] }
+    if d.item >= item_count(engine, d.file) { return [] }
+    let worn? = worn_in_item(engine, d) else { return [] }
+    if !worn.marked { return [] }
+    [p for p in file_problems(engine, d.file) if p.warning && p.owner == d.name]
+}
+
+/// a declaration's warning is said at each use of it
+export law declaration_warning_at_use {
+    kind: "annotation.warning"
+    reads: uses_warned
+    voice: use_words
+    warns: true
+    witness: "use @std.meta.{Fn, Diagnostic, warn}\nfn waning(f: Fn) -> List<Diagnostic> { [warn(\"on its way out\")] }\n@waning\nfn work() -> int { 1 }\nlet n = work()\n"
+}
+
+fn use_words(a: List<string>) -> Voice {
+    let help: string? = if a[1].is_empty() { null } else { a[1] }
+    use_warned(a[0], help)
+}

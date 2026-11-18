@@ -1,6 +1,5 @@
 #!/bin/sh
-# `type_named`'s DEPENDENCY, ATTACKED — the same shape as
-# tools/cache_attacks.sh: one package, built through the SAME
+# `type_named`'s DEPENDENCY, ATTACKED: one package, built through the SAME
 # `.avra-cache` across separate `avra` invocations (a `Workspace` is
 # single-shot per process, CLAUDE.md's "A ONE-SHOT WORKSPACE ENDS ITS
 # OWN CYCLES"), so the memo kernel's own dependency tracking is what

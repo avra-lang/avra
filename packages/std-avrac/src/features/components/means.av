@@ -159,8 +159,10 @@ impl Mint {
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
         if written_fn != null && r.fn_field == null { return .Err(record_fn_body(word)) }
         let stmts = if written_fn == null { self.written(body) } else { [] }
-        let loose = [s for s in stmts if self.store.setting_parts(s) == null]
+        let blocks = [self.slot_block(r, s) for s in stmts]
+        let loose = [s for j, s in stmts if self.store.setting_parts(s) == null && blocks[j] == null]
         let written = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
+            .concat([b! for b in blocks if b != null])
         let settings = written.concat(self.defaulted(word, r, loose, written)?)
         let children = if r.events.any(it.default) { [] } else { loose }
         let places = self.placed(word, r, settings, children)?
@@ -186,6 +188,50 @@ impl Mint {
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
         if again != null { self.store.extend(literal, said_again_note(word), [again!.root], again!.minted) }
         .Ok(Expansion { literal: literal, check: check })
+    }
+
+    /// A statement filling a slot by its name, `actions { … }`, as the setting it means,
+    /// `actions: collect { … }`; absent for any other statement.
+    fn slot_block(r: Record, s: StmtId) -> SettingParts? {
+        let v? = self.store.stmt_value(s) else { return null }
+        match self.store.expr(v) {
+            .Trailed(subject, blocks) -> if blocks.length == 1 { self.slot_filled(r, subject, blocks[0]) } else { null },
+            .Component(word, targs, heads, body, _, _) -> if targs.is_empty() && heads.is_empty() { self.slot_shadowed(r, word, body) } else { null },
+            _ -> null,
+        }
+    }
+
+    /// The setting a slot of `r` named `word` takes from an instance of a component of that name
+    /// written in the block, `body` its block: inside the block the slot's name wins, and a law warns
+    /// of the component it shadows. Absent where `word` names none of `r`'s slots.
+    fn slot_shadowed(r: Record, word: string, body: ExprId?) -> SettingParts? {
+        if !r.slots.any(it.name == word) { return null }
+        let block? = body else { return null }
+        let stmts? = self.store.block_stmts(block) else { return null }
+        SettingParts {
+            name: word,
+            value: self.store.alloc_expr(Expr.Collect(stmts), self.store.expr_span(block)),
+        }
+    }
+
+    /// The setting a slot named by `subject` takes from the block `block` written after it; absent
+    /// where `subject` names none of `r`'s slots, or the block takes seats.
+    fn slot_filled(r: Record, subject: ExprId, block: ExprId) -> SettingParts? {
+        let name? = self.store.ident_name(subject) else { return null }
+        if !r.slots.any(it.name == name) { return null }
+        let stmts? = self.unseated_block(block) else { return null }
+        SettingParts {
+            name: name,
+            value: self.store.alloc_expr(Expr.Collect(stmts), self.store.expr_span(block)),
+        }
+    }
+
+    /// The statements of a block written after a name that takes no seats; absent for any other.
+    fn unseated_block(block: ExprId) -> List<StmtId>? {
+        match self.store.expr(block) {
+            .BlockLambda(seats, body) -> if seats.is_empty() { self.store.block_stmts(body) } else { null },
+            _ -> null,
+        }
     }
 
     /// A SITED component's head text, said again: a closure over a COPY of the
@@ -376,9 +422,16 @@ impl Mint {
         )
     }
 
-    /// The slot a child naming no slot's component lands in: the only
-    /// slot, or the one open slot that gathers anything.
+    /// The slot a child naming no slot's component lands in: the slot
+    /// marked `@default`, else the only one, or the open one that gathers.
     fn taker(word: string, r: Record, open: List<ChildSlot>) -> Result<string, string> {
+        let marked? = r.slots.find(it.default) else { return self.only_taker(word, r, open) }
+        .Ok(marked.name)
+    }
+
+    /// The slot a child naming no slot's component lands in where none is the default: the only slot,
+    /// or the one open slot that gathers anything.
+    fn only_taker(word: string, r: Record, open: List<ChildSlot>) -> Result<string, string> {
         let takers = if r.slots.length == 1 { r.slots } else { [s for s in open if s.gathers] }
         if takers.is_empty() { return .Err(which_slot(word, [s.name for s in r.slots])) }
         if takers.length > 1 { return .Err(which_slot(word, [s.name for s in takers])) }

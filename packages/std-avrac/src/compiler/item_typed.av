@@ -393,6 +393,8 @@ fn program_answered(
         ),
         external: (n: string, home: string?) -> read_from(engine, file, home)
             .any((f) -> names_extern(engine, f, n)),
+        kept: (n: string, home: string?) -> read_from(engine, file, home)
+            .any((f) -> names_state(engine, f, n)),
         bound_of: (t: SignedType) -> signing.bound_of(t),
         default_seats: (t: SignedType, name: string) -> match t.head {
             .Declared(f, owner) -> default_seats(engine, f, owner, name),
@@ -722,6 +724,11 @@ fn names_extern(engine: QueryEngine, file: SourceFileAddress, name: string) -> b
     if d.kind != ItemKind.Fn { return false }
     let item = read_item(engine, d.file, d.item)
     item.stmts.any((s) -> item.store.extern_parts(s)?.name == d.name)
+}
+
+/// Whether `name`, read in a body of `file`, names a module's `state`.
+fn names_state(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    resolved(engine, file, Space.Value, name).named()?.kind == ItemKind.State
 }
 
 /// Whether the name `u` reads in a body of `file` names a declaration it can be read as, read where

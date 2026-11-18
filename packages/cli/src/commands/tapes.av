@@ -7,6 +7,7 @@ use @std.cli.{CliResult, Runnable, command, flag, option}
 use stage.{judged, refuse_eval_words}
 use @std.avrac.compiler.backend.{emit_modes, host_kept_words, inlines_runtime}
 use @std.avrac.compiler.{
+    program_new_only,
     default_opt,
     unset_link_holes_of,
     FileWarned,
@@ -38,6 +39,7 @@ use @std.avrac.compiler.{
     manifests_refused,
     manifests_voiced,
     laws,
+    package_unrun,
     program_files,
     program_warned,
 }
@@ -211,6 +213,7 @@ use @std.io.{
     env,
     list_dir,
     make_dirs,
+    open_beneath,
     read_bytes,
     read_text,
     remove,
@@ -219,7 +222,16 @@ use @std.io.{
     write_bytes,
     write_text,
 }
-use @std.path.{dir_of, file_name, joined_path, relative_path, stem_of, under_dir}
+use @std.path.{
+    dir_of,
+    file_name,
+    is_absolute,
+    joined_path,
+    normalized,
+    relative_path,
+    stem_of,
+    under_dir,
+}
 use @std.process.{
     Command,
     Env,
@@ -250,7 +262,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.worked_ahead.{Apart, answered_apart, cores_online, saved_by_heir}
 use @std.meta.{derive, guarded}
 use @std.program.sorted.{sorted_by}
-use @std.program.source_facts.{FileOctets, WorldPlaces, use_source_world}
+use @std.program.source_facts.{FileOctets, WorldPlaces, package_lies, use_source_world}
 use @std.program.syntax_tape.{SyntaxTape}
 use @std.text.{parse_int, text_before}
 
@@ -366,7 +378,7 @@ export fn program_built(
     root: string,
     timed: bool = false,
     tools: Toolchain? = null,
-    net: bool = false,
+    net: NetSaid = NetSaid.Off,
     release: bool = false,
 ) -> Result<string, int> {
     let bin? = entry_written(root) else {
@@ -383,7 +395,7 @@ export fn program_file_built(
     path: string,
     timed: bool = false,
     tools: Toolchain? = null,
-    net: bool = false,
+    net: NetSaid = NetSaid.Off,
     release: bool = false,
 ) -> Result<string, int> {
     let at = rooted(path)
@@ -416,7 +428,7 @@ fn program_built_at(
     bin: string,
     timed: bool,
     tools: Toolchain?,
-    net: bool,
+    net: NetSaid,
     release: bool,
 ) -> Result<string, int> {
     let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
@@ -434,7 +446,7 @@ fn disk_built(
     native_stem: string,
     timed: bool,
     tools: Toolchain?,
-    net: bool,
+    net: NetSaid,
     release: bool,
 ) -> Result<string, int> {
     let stem = if tools == null { native_stem } else { "${native_stem}.wasm" }
@@ -462,6 +474,8 @@ fn disk_built(
     if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return .Err(refused!) }
+    let stopped = net_stops(net, () -> program_new_only(engine, disk.name))
+    if stopped != null { return .Err(stopped!) }
     let _ = program_placed(
         worked,
         joined_path(root, ".avra-cache/tapes"),
@@ -493,7 +507,13 @@ fn disk_built(
         () -> program_refused(engine, asked.entry, disk.name),
     )
     if !refusing.is_empty() {
-        let said = refusals_said(engine, disk, refusing, asked.entry, net)
+        let said = refusals_said(
+            engine,
+            disk,
+            refusing,
+            asked.entry,
+            net_vouches(net, () -> program_new_only(engine, disk.name)),
+        )
         store_left_kept(engine, store)
         return .Err(said)
     }
@@ -669,6 +689,7 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
         opt: mode.opt,
         layered: mode.layered && hosted.is_empty(),
         inlined: inlines_runtime(),
+        placed: relative_path(joined_path(disk.root, BUILD_DIR), dir_of(stem)),
     }
 }
 
@@ -700,7 +721,7 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
         asked.head,
         asked.words,
         asked.linked,
-        asked.dir,
+        dir_in_package(asked),
         asked.opt,
         asked.layered,
         asked.inlined,
@@ -709,6 +730,7 @@ fn binary_question(engine: QueryEngine, asked: BinaryAsked) -> Question {
         asked.linker,
         asked.wasm_opt,
         asked.fallback,
+        asked.placed,
     )
 }
 
@@ -808,6 +830,9 @@ type BinaryAsked = {
     wasm_opt: string = "",
     /// Whether a module that runs tasks ships an asyncified twin beside it.
     fallback: bool = false,
+    /// The directory the binary is placed in, from `dir`: where a layered binary finds its layers
+    /// from when it's run there.
+    placed: string = "",
 }
 
 /// HOW THE PROGRAM LAYER MAKES A BINARY: the level its objects are emitted at, as clang spells it;
@@ -856,8 +881,9 @@ fn linked_digests(words: List<string>) -> List<string> {
         .map((path) -> "${path} ${digest_of_binary(path) ?? "-"}")
 }
 
-/// A program's build: the binary it links, kept, and each body a trap stood in for; or why the
-/// program isn't made, or isn't linked.
+/// A program's build: the binary it links, kept (as `program_binary` answers it, its file in the
+/// build's directory), and each body a trap stood in for; or why the program isn't made, or isn't
+/// linked.
 @derive(Saved)
 enum BuiltBinary {
     Linked(kept: string, stood: List<Missed>)
@@ -866,9 +892,9 @@ enum BuiltBinary {
 }
 
 /// THE BUILD AS ONE ANSWER: the program at `entry` made by the compiler `compiler`, its buckets'
-/// objects emitted at `opt` and its binary kept in `dir`, linked with `head` and `words`. A build nothing it reads has moved is
-/// this answer standing, so nothing is walked, emitted or linked; one an edit reaches is worked out
-/// again.
+/// objects emitted at `opt` and its binary kept in `dir` (named from its package) and placed in `placed` from it, linked with
+/// `head` and `words`. A build nothing it reads has moved is this answer standing, so nothing is
+/// walked, emitted or linked; one an edit reaches is worked out again.
 @query
 fn program_binary(
     engine: QueryEngine,
@@ -886,8 +912,9 @@ fn program_binary(
     linker: string,
     wasm_opt: string,
     fallback: bool,
+    placed: string,
 ) -> BuiltBinary {
-    binary_made(
+    let made = binary_made(
         engine,
         BinaryAsked {
             entry: entry,
@@ -895,7 +922,7 @@ fn program_binary(
             head: head,
             words: words,
             linked: linked,
-            dir: dir,
+            dir: package_dir(entry.package_name, dir),
             opt: opt,
             layered: layered,
             inlined: inlined,
@@ -904,8 +931,23 @@ fn program_binary(
             linker: linker,
             wasm_opt: wasm_opt,
             fallback: fallback,
+            placed: placed,
         },
     )
+    match made { .Linked(kept, stood) -> BuiltBinary.Linked(file_name(kept), stood), rest -> made }
+}
+
+/// Where `asked` keeps its binary, named from its package, so the build's question names no checkout.
+fn dir_in_package(asked: BinaryAsked) -> string {
+    let root? = package_lies(asked.entry.package_name) else { return asked.dir }
+    if is_absolute(root) != is_absolute(asked.dir) { return asked.dir }
+    relative_path(root, asked.dir)
+}
+
+/// The directory `dir`, named from the package `package`, where it lies.
+fn package_dir(package: string, dir: string) -> string {
+    let root? = package_lies(package) else { return dir }
+    normalized(joined_path(root, dir))
 }
 
 /// The file beside a program's kept binary that says why its last build was worked out again.
@@ -1003,7 +1045,7 @@ fn standing_binary(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
         asked.head,
         asked.words,
         asked.linked,
-        asked.dir,
+        dir_in_package(asked),
         asked.opt,
         asked.layered,
         asked.inlined,
@@ -1012,9 +1054,13 @@ fn standing_binary(engine: QueryEngine, asked: BinaryAsked) -> BuiltBinary {
         asked.linker,
         asked.wasm_opt,
         asked.fallback,
+        asked.placed,
     )
     match answer {
-        .Linked(kept, _stood) -> if exists_at(kept) { answer } else { binary_made(engine, asked) },
+        .Linked(kept, stood) -> {
+            let at = joined_path(asked.dir, kept)
+            if exists_at(at) { BuiltBinary.Linked(at, stood) } else { binary_made(engine, asked) }
+        },
         .Unmade(_why, _at) -> answer,
         .Unlinked(_why) -> binary_made(engine, asked),
     }
@@ -1111,6 +1157,13 @@ fn times_said(engine: QueryEngine) {
     eprintln("cutoff: ${engine.cutoff_said()}")
 }
 
+/// Each form only the program layer builds that the program of the package on `disk` uses, said one a
+/// line: exit 0.
+fn new_only_said(engine: QueryEngine, disk: Disk) -> int {
+    for f in program_new_only(engine, disk.name) { println(f.word()) }
+    0
+}
+
 /// The workspace's lowering of the want `w`, timed as its own phase.
 fn unit_timed(engine: QueryEngine, ws: Workspace, w: Wanted) -> Unit {
     phased(engine, "workspace lowering", () -> lowered_unit_of(ws, w))
@@ -1132,6 +1185,7 @@ fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: 
     if args.has_flag("link_words") { return link_words_held(engine, disk) }
     if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
     if args.has_flag("findings") { return findings_said(engine, disk) }
+    if args.has_flag("new_only") { return new_only_said(engine, disk) }
     if args.has_flag("built") {
         return built_held(
             engine,
@@ -1558,6 +1612,11 @@ export flag findings {
     aliases: ["--findings"]
 }
 
+export flag new_only {
+    description: "say each form only the program layer builds that the package's program uses, one per line: what the old path is never asked to judge"
+    aliases: ["--new-only"]
+}
+
 export flag law_witnesses {
     description: "write each law's witness under the directory as a package of its own, named by the law"
     aliases: ["--law-witnesses"]
@@ -1593,6 +1652,7 @@ export command tapes {
         entry_run,
         link_words,
         findings,
+        new_only,
         law_witnesses,
         kinds,
     ]
@@ -1812,7 +1872,10 @@ fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
 
 /// One for a generator an annotation names, none for a derive.
 fn by_annotation(k: GeneratorKind) -> int {
-    match k { .Derive -> 0, .Annotation or .TypeAnnotation or .TraitAnnotation -> 1 }
+    match k {
+        .Derive -> 0,
+        .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> 1,
+    }
 }
 
 /// How many directives the made generator `l` of `g` makes over the declaration `site` stands on in
@@ -1826,7 +1889,7 @@ fn directives_made(
 ) -> int {
     match generator_run(engine, l, g, file, site.name, site.handed, budgets_of()) {
         .Ran(made, _) -> made.length,
-        .Stopped(_) or .Trapped(_) -> 0,
+        .Stopped(_, _) or .Trapped(_) -> 0,
     }
 }
 
@@ -3060,7 +3123,7 @@ fn agreement_kept(proof: string, reads: string?, heard: List<Ran>) {
 /// run at or under them, made there and run in both engines, each said as the suite says it, then
 /// how many proved. What the layer can't prove yet — a suite's spec cases, a test run as a child —
 /// refuses the whole run, named, before anything runs.
-export fn program_tested(paths: List<string>, timed: bool = false) -> int {
+export fn program_tested(paths: List<string>, timed: bool = false, net: NetSaid = NetSaid.Off) -> int {
     let first = rooted(paths[0])
     let root = if is_a_dir(first) { package_root(first) ?? first } else { file_home(first) ?? dir_of(first) }
     let scope = if paths.length == 1 && rooted(paths[0]) == root { [] } else { [p for p in paths] }
@@ -3090,6 +3153,11 @@ export fn program_tested(paths: List<string>, timed: bool = false) -> int {
                 },
             )
     }
+    let stopped = net_stops(
+        net,
+        () -> flatten([program_new_only(s.engine, s.disk.name) for s in suites]),
+    )
+    if stopped != null { return stopped! }
     if tests.is_empty() && suites.all(it.specs.is_empty()) { return if scope.is_empty() { no_tests_here() } else { names_no_test(paths[0]) } }
     let children = flatten([[t.child! for t in s.tests if t.child != null] for s in suites])
     if !children.is_empty() {
@@ -3627,10 +3695,53 @@ fn bucket_kept(
     if twin.said != "" { eprintln(twin.said) }
     let unkept = kept_published(ready, kept)
     if unkept != null { return BuiltBinary.Unlinked(unkept!) }
+    objects_bounded(joined_path(asked.dir, "obj"), [o.obj for o in made])
     let made_twin? = twin.path else { return BuiltBinary.Linked(kept, shape.unlowered()) }
     if !published(made_twin, fallback_kept(kept)) { return BuiltBinary.Unlinked("the built fallback couldn't be kept: ${fallback_kept(kept)}") }
     BuiltBinary.Linked(kept, shape.unlowered())
 }
+
+/// The objects kept in `dir` past the ceiling (`objects_ceiling`) let go, oldest first, but those of
+/// `linked`, the build's own: a session of edits keeps a bounded store, and an object let go is
+/// made again where a build owes it.
+fn objects_bounded(dir: string, linked: List<string>) {
+    let limit = objects_ceiling()
+    mut standing: Map<string, bool> = {}
+    for path in linked { standing.set(path, true) }
+    let kept = sorted_by(
+        [o! for name in names_at(dir) ?? [] for o in [object_kept(joined_path(dir, name))] if o != null],
+        (a: ObjectKept, b: ObjectKept) -> a.at < b.at,
+    )
+    mut held = kept.fold(0, (sum, o) -> sum + o.bytes)
+    for o in kept {
+        if held <= limit { break }
+        if standing.has(o.path) { continue }
+        let _ = remove(o.path)
+        held = held - o.bytes
+    }
+}
+
+/// A kept object: where it stands, its bytes, and when it was written.
+type ObjectKept = { path: string, bytes: int, at: int }
+
+/// The object kept at `path`, measured and dated; absent where none stands.
+fn object_kept(path: string) -> ObjectKept? {
+    // LICENSED input.store_io: a kept object, measured and dated for the ceiling
+    let o? = match open_beneath(dir_of(path), file_name(path)) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+    let kept = ObjectKept { path: path, bytes: o.size, at: o.mtime }
+    o.close()
+    kept
+}
+
+/// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
+fn objects_ceiling() -> int {
+    // LICENSED input.debug_flag: the store's own ceiling, never an input of what is built
+    let told = env("AVRA_OBJ_MAX_BYTES")
+    parse_int(told ?? "") ?? OBJECT_BYTES_KEPT
+}
+
+/// The kept objects' ceiling where none is told: two gigabytes.
+const OBJECT_BYTES_KEPT: int = 2147483648
 
 /// The word a build that ships a fallback adds to its binary's key.
 const FALLBACK: string = "fallback"
@@ -3709,8 +3820,9 @@ fn binary_placed(kept: string, stem: string) -> string? {
 /// The file beside a program's kept binary that notes the stamp its stem wore when it last held it.
 const PLACED: string = "placed.txt"
 
-/// The note that the stem holding `kept` wore `worn`; a stem of no stamp yet notes none that holds.
-fn placed_note(kept: string, worn: int) -> string { "${kept}\n${worn}\n" }
+/// The note that the stem holding `kept` wore `worn`, the binary named beside the note; a stem of no
+/// stamp yet notes none that holds.
+fn placed_note(kept: string, worn: int) -> string { "${file_name(kept)}\n${worn}\n" }
 
 /// Whether the file at `stem` holds the bytes at `kept` and runs.
 fn holds_binary(stem: string, kept: string) -> bool {
@@ -3880,6 +3992,7 @@ fn layered_refused(asked: BinaryAsked, made: List<Made>, stem: string) -> string
             asked.head,
             [overlay_dir, world_dir],
             exe,
+            [normalized(joined_path(asked.dir, asked.placed)), asked.dir, world_dir],
             words.shared_libraries(asked.words),
         )
         if refused != null { return refused }
@@ -3970,6 +4083,12 @@ impl LayerWords {
             .concat(["-lm"])
     }
 
+    /// Where an executable in `exe_dir` finds the layer in `dir` when it's loaded: named from the
+    /// executable's own directory, so the bytes are the same wherever the tree stands.
+    fn searched(exe_dir: string, dir: string) -> string {
+        "-Wl,-rpath,${if self.ld64 { "@executable_path" } else { "\$ORIGIN" }}/${relative_path(exe_dir, dir)}"
+    }
+
     /// The words an executable loading layers adds: every named layer kept, and no symbol left that
     /// none answers — ld64 keeps what it is told and refuses an executable's own unanswered symbols
     /// already.
@@ -4010,12 +4129,19 @@ fn shared_refused(
 }
 
 /// Why the executable `stem`, loading the shared objects in `dirs` in order, didn't link; absent when it
-/// did.
-fn layers_linked(head: List<string>, dirs: List<string>, stem: string, shared: List<string>) -> string? {
+/// did. It finds each from every directory in `runs_in` it's run from.
+fn layers_linked(
+    head: List<string>,
+    dirs: List<string>,
+    stem: string,
+    runs_in: List<string>,
+    shared: List<string>,
+) -> string? {
     let libs = [if file_name(d) == OVERLAY { "-lavra_overlay" } else { "-lavra_world" } for d in dirs]
     clang_refused(
         head
-            .concat(flatten([["-L${d}", "-Wl,-rpath,${d}"] for d in dirs]))
+            .concat(["-L${d}" for d in dirs])
+            .concat([layer_words().searched(r, d) for d in dirs for r in runs_in])
             .concat(layer_words().loading())
             .concat(libs)
             .concat(shared)
@@ -4180,7 +4306,10 @@ fn built_held(engine: QueryEngine, disk: Disk, seconds: int, shown: bool) -> int
         "by package: ${[package_share(bodies, p) for p in sorted_by(packages.keys(), (a, b) -> packages.get(a)! > packages.get(b)!)].join(", ")}",
     )
     if shown { for b in unmade { println("left: ${b.why!} in ${body_named(b)}") } }
-    if unmade.is_empty() { 0 } else { 1 }
+    let unrun = package_unrun(engine, disk.name)
+    println("validators not run: ${unrun.length}")
+    for p in unrun { println("  ${p.message} — on `${p.owner}`") }
+    if unmade.is_empty() && unrun.is_empty() { 0 } else { 1 }
 }
 
 /// Every kind of body a program reaches, in the order a receipt names them.

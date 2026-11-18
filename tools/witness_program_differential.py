@@ -73,6 +73,13 @@ def run(args, cwd, env):
         return "timeout", out
 
 
+def new_only(avra, pkg, env):
+    """Each form only the program layer builds that the package at `pkg` uses, as `tapes` says them."""
+    done = subprocess.run([avra, "tapes", pkg, "--new-only"], cwd=pkg, env=env, capture_output=True, text=True,
+                          timeout=TIMEOUT)
+    return [l for l in done.stdout.splitlines() if l.strip()]
+
+
 def first(pattern, said):
     """The first line of `said` that `pattern` opens, and the kind it names; absent where none."""
     for line in said.splitlines():
@@ -119,6 +126,11 @@ def judged(avra, scratch, w):
     # the old path by name: since the flip the program layer is the default
     env["AVRA_PROGRAM"] = "0"
     env["AVRA_CACHE_DIR"] = os.path.join(case, "machine")
+    # a witness using a form only the program layer builds is never asked of the old path
+    forms = new_only(avra, pkg, dict(env, AVRA_PROGRAM="1", PWD=pkg))
+    if forms:
+        shutil.rmtree(case, ignore_errors=True)
+        return dict(row, verdict="NEW-ONLY", new=forms[0])
     old_verb = "build" if w["shape"] == "built" else "check"
     old_exit, old_said = run([avra, old_verb, pkg], pkg, dict(env, PWD=pkg))
     for d, _, _ in os.walk(pkg):
@@ -163,7 +175,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         rows = list(pool.map(lambda w: judged(avra, scratch, w), witnesses))
     order = ["COMPILER-DEFECT", "ACCEPTED", "OTHER-ERROR", "DIFFERENT", "UNBUILT", "WARN-MISSING",
-             "OLD-SILENT", "STD-ROOT", "BEYOND", "ABSENT", "WARNED", "SAME"]
+             "OLD-SILENT", "STD-ROOT", "NEW-ONLY", "BEYOND", "ABSENT", "WARNED", "SAME"]
     print("| code | verdict | owner (guess) | old first line | program layer first line |")
     print("|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (order.index(r["verdict"]), r["owner"], r["code"])):
@@ -175,6 +187,7 @@ def main():
     print()
     print("witness_program_differential: " + ", ".join(f"{counts[v]} {v}" for v in order if counts[v]) +
           f" — {len(rows)} codes")
+    print(f"witness_program_differential: {counts['NEW-ONLY']} skipped (NEW-ONLY: a form only the program layer builds, never asked of the old path)")
     same = counts["SAME"]
     if same < bar:
         print(f"witness_program_differential: {same} SAME, under the bar of {bar}")

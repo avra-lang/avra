@@ -70,6 +70,9 @@ export type CheckedProgram = {
     /// Whether a value's name, read where the template that wrote the read stands (its home) before
     /// where the body stands, names an `extern fn`, whose body C writes.
     external: fn(string, string?) -> bool,
+    /// Whether a value's name, read where the template that wrote the read stands (its home) before
+    /// where the body stands, names a module's `state`.
+    kept: fn(string, string?) -> bool,
     /// Whether a value of a type implements the trait a bound names, as the whole program's impls
     /// say; absent where nothing says.
     implements: fn(SignedType, SignedType) -> bool?,
@@ -116,11 +119,13 @@ export type FilledByName = { f: SignedType, values: List<ExprId>, seats: List<in
 /// them.
 export type RecordShape = { params: int, fields: List<FieldSeat> }
 
-/// A record's field: its name, its type when it's written, and whether it's a `state` field, whose
-/// slot holds the cell its value lives in. A record's signature saves its fields as these, and typing
-/// reads them as saved.
+/// A record's field: its name, its type when it's written, whether it's a `state` field, whose slot
+/// holds the cell its value lives in, whether that cell is the place its writer names — a
+/// component's `state` seat or member — where a record's is its own, and whether its default reads
+/// the instance (`self`), so it is made once the inputs it reads stand. A record's signature saves its
+/// fields as these, and typing reads them as saved.
 @derive(Saved)
-export type FieldSeat = { name: string, ty: SignedType?, state: bool = false }
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false }
 
 impl FieldSeat {
     /// What the field's slot holds: its type, or the cell its value lives in for a `state` field;
@@ -453,8 +458,10 @@ export enum Unhanded {
     Captured
     /// An extern's seat handed a place that is no `mut` binding's own cell, which C writes through.
     Cellless
-    /// A `state` seat handed what is no `state` of the body's own, nor a `state` seat it forwards.
+    /// A fn's `state` seat handed what is no place.
     Stateless
+    /// A component's `state` seat or member handed what is no place.
+    Unshared
     /// A place rooted in a binding one call hands a `mut` seat twice.
     Twice
 }
@@ -2130,14 +2137,36 @@ impl Checking {
         if self.local(name) != null && self.writes_through(name) { name } else { null }
     }
 
-    /// The argument `a` handed the `state` seat `at` of `callee`: refused unless it names a `state` of
-    /// the body's own, or a `state` seat it forwards, read where the body binds it — never a value, a
-    /// module's `state`, or one a lambda holds a copy of.
-    mut fn state_seat_handed(a: ExprId, ty: SignedType, callee: string, at: int) {
-        let name = self.store.ident_name(a) ?? ""
-        let local = self.local(name)
-        if local != null && local!.shared && !self.captured(name) { return }
-        self.unhanded(a, ty, callee, at, name, Unhanded.Stateless)
+    /// The argument `a` handed the `state` seat `seat`, the `at`th of `callee`, refused as `how` says
+    /// unless it is a place.
+    mut fn state_seat_handed(
+        a: ExprId,
+        ty: SignedType,
+        callee: string,
+        at: int,
+        seat: string,
+        how: Unhanded,
+    ) {
+        if self.placed(a) { return }
+        self.unhanded(a, ty, callee, at, seat, how)
+    }
+
+    /// THE PLACE LAW, one for every `state` seat, a fn's and a component's: what it takes is a place —
+    /// a `state` binding (the body's own, read where the body binds it, since a lambda holds a copy; a
+    /// `state` seat it forwards; a module's), or a `state` field reached by any path, whose Cell every
+    /// copy of its record shares. Anything else is a value.
+    fn placed(a: ExprId) -> bool {
+        match self.store.expr(a) {
+            .Ident(n) -> self.state_named(a, n.of),
+            .Prop(_, _) -> self.state_field(a),
+            _ -> false,
+        }
+    }
+
+    /// Whether `name`, read at `at`, names a `state` binding.
+    fn state_named(at: ExprId, name: string) -> bool {
+        let local? = self.local(name) else { return (self.program.kept)(name, self.home_of(at)) }
+        local.shared && !self.captured(name)
     }
 
     /// Whether the body binds `name` only outside a lambda it's read in, which holds a copy of it.

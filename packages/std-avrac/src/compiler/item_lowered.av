@@ -1294,19 +1294,22 @@ export fn lowered_field_default(
 }
 
 /// The default the record or component `file` declares as `owner` writes for its field `field`, as
-/// a body of no seats answering the field's type. Absent where it writes none.
+/// a body of no seats answering the field's type — a component member's that reads the instance, of
+/// the instance as its receiver. Absent where it writes none.
 fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: string, field: string) -> SignedBody? {
     let item? = record_item(engine, file, owner) else { return null }
     let stmt? = item.stmts.find((s) -> fields_written(item.store, s)?.name == owner) else { return null }
     let value? = fields_written(item.store, stmt)!
         .fields
         .find(it.name.of == field && it.default != null)?.default else { return null }
-    let ty? = (record_signature(engine, file, owner)?.fields ?? []).find(it.name == field)?.ty else { return null }
+    let seat? = (record_signature(engine, file, owner)?.fields ?? []).find(it.name == field) else { return null }
+    let ty? = seat.ty else { return null }
     SignedBody {
         signature: value_signature(ty) with { type_params: written_params(engine, file, owner) ?? [] },
         item: item,
         body: value,
         stmt: stmt,
+        receiver: if seat.made { headed_type(TypeHead.Declared(file, owner)) } else { null },
         seat: Seating.FieldDefault(field),
     }
 }

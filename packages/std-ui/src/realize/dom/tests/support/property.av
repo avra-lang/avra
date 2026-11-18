@@ -10,7 +10,7 @@ use realize.dom.wire.{frame}
 use realize.html.element.{Element, Tagged, lowered}
 use realize.tests.support.{kind_at}
 use style.theme.{default_theme}
-use tree.identity.{NodeId}
+use tree.identity.{NodeId, same_step}
 use tree.node.{Action, Handler, Said}
 
 /// A user speaking to a control between two paints: the `nth` control
@@ -185,12 +185,12 @@ fn kids_of(e: Element) -> List<Element> { e.tagged()?.kids ?? [] }
 /// `old` — the same seat and kind under kept parents — and wears another
 /// number: an element made again where it should have stayed.
 fn remade(old: List<Element>, new: List<Element>, above: string) -> List<string> {
-    [seat for e in new for was in present(old.find(it.seat() == e.seat())) for seat in remade_at(was, e, above)]
+    [seat for e in new for was in present(old.find(same_step(it.seat(), e.seat()))) for seat in remade_at(was, e, above)]
 }
 
 fn remade_at(was: Element, now: Element, above: string) -> List<string> {
     if kind_of(was) != kind_of(now) { return [] }
-    let here = "${above}/${now.seat()}"
+    let here = "${above}/${now.seat().spelled()}"
     let own = if was.id() == now.id() { [] } else { [here] }
     own.concat(remade(kids_of(was), kids_of(now), here))
 }

@@ -112,16 +112,21 @@ S() { # S <program> <want output>
 S a "[]";       S b "[knob]"
 S a "[]";       S b "[knob]"
 S c "[knob] 1 7"
-# C adds a private member, twice — the second edit meets a derivation that kept its rows
-L() { # L <want output>: built, and the units it lowered afresh hold `rows` and nothing of `other`
+# C adds a private member, twice — the second edit meets a derivation that kept its rows. The
+# objects say what was made afresh: one defining `rows` is new, the one defining `other_id` stands.
+O=$B/c/.avra-cache/tapes-build/obj
+defining() { for f in $O/*.o; do nm "$f" 2>/dev/null | grep -q " T av_.*$1\$" && echo "$f"; done; }
+L() { # L <want output>: built, `rows` made afresh and nothing of `other`
     steps=$((steps+1))
-    AVRA_QTRACE=1 $AVRA build $B/c/src/main.av > $B/out 2> $B/err; st=$?
+    touch $B/mark
+    $AVRA build $B/c/src/main.av > $B/out 2> $B/err; st=$?
     if [ $st -ne 0 ]; then fail "c: did not build (status $st)"; tail -5 $B/err; return; fi
     got=$($B/c/src/main 2>&1)
     [ "$got" = "$1" ] || fail "program c printed '$got', wanted '$1'"
-    fresh=$(awk -F'\t' '$1 == "Q" && $2 == "unit" && $3 == "lowered" { print $4 }' $B/err | tr '\n' ' ')
-    case " $fresh" in *" @t.libx.rows "*) ;; *) fail "c: a member arrived and \`rows\` was not lowered afresh: $fresh" ;; esac
-    case " $fresh" in *"other"*) fail "c: a module that reads no collect was lowered afresh: $fresh" ;; esac
+    [ -n "$(find $(defining 2Erows) -newer $B/mark)" ] || fail "c: a member arrived and \`rows\` was not made afresh"
+    other=$(defining 2Eother_id)
+    [ -n "$other" ] || { fail "c: no object defines other_id"; return; }
+    [ -z "$(find $other -newer $B/mark)" ] || fail "c: a module that reads no collect was made afresh"
 }
 printf '\n@seat\nconst lamp: Row = Row { owner: "lamp" }\n' >> $B/c/src/main.av
 L "[knob,lamp] 1 7"

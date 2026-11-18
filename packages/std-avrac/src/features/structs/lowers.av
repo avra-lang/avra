@@ -2,7 +2,7 @@
 //! its fields' order, packed when the record is flat and boxed when it isn't. A field takes the last
 //! entry that gives it — written by its name, or spread from a record that has it — else what its
 //! role fills, else its default.
-use core.{ExprId, Lowering, Lowers, Reg, spread_entry}
+use core.{ExprId, FieldSeat, Lowering, Lowers, Reg, SignedType, meta_key, spread_entry}
 use core.expr.{StructLit}
 
 /// What the literal `lit`, its entries lowered to `values`, writes for the field `name`: the last of
@@ -15,6 +15,26 @@ fn given_by(mut cx: Lowering, lit: StructLit, values: List<Reg>, name: string) -
     let spread = cx.type_at(lit.values[at])!
     let fields = cx.fields_of(spread)!
     cx.field_read(values[at], spread, cx.seat_layouts(fields)!, fields.find_index(it.name == name)!)
+}
+
+/// The entry `v` written for the field `name` of `fields`, lowered: a value written for a field of
+/// `@std/meta`'s `Key` made a key, any other as it is.
+fn keyed(mut cx: Lowering, fields: List<FieldSeat>, name: string, v: ExprId) -> Reg {
+    let lowered = cx.lower(v)
+    let want? = fields.find(it.name == name)?.ty else { return lowered }
+    let made? = cx.type_at(v) else { return lowered }
+    if !meta_key(want.unwrapped()) || meta_key(made.unwrapped()) || made.bottom() { return lowered }
+    if made.nullable() { return cx.key_held(lowered, made, want) }
+    let key = cx.key_made(lowered, made, cx.laid_out(want.unwrapped()))
+    cx.lifted(key, want.unwrapped(), want)
+}
+
+/// Whether an entry of `lit` gives the field `name`: written by that name, or spread from a record that
+/// has it.
+fn gives(cx: Lowering, lit: StructLit, name: string) -> bool {
+    lit.fields.any(it.of == name) ||
+        (0..lit.fields.length)
+            .any((j) -> lit.fields[j].of == spread_entry && spreads(cx, lit.values[j], name))
 }
 
 /// Whether the spread `v` is a record with a field `name`, laid out.
@@ -32,24 +52,53 @@ fn spread_unknown(cx: Lowering, lit: StructLit, at: int) -> bool {
     fields.any(it.ty == null)
 }
 
+/// The Cell of the place each entry of `lit` names, where it writes a field that takes its writer's
+/// place and names one; absent for any other entry, a value a literal the compiler made writes among
+/// them.
+fn places_named(mut cx: Lowering, lit: StructLit, fields: List<FieldSeat>) -> List<Reg?> {
+    [if fields.any(it.name == lit.fields[j].of && it.placed) { cx.place_cell(v) } else { null } for j, v in lit.values]
+}
+
+/// What the literal `lit` writes into the slot of `f`: the Cell of the place its last entry for `f`
+/// names (`cells`); else the value given or left, in a cell of its own for a `state` field.
+fn filled(
+    mut cx: Lowering,
+    lit: StructLit,
+    e: ExprId,
+    ty: SignedType,
+    values: List<Reg>,
+    cells: List<Reg?>,
+    f: FieldSeat,
+) -> Reg {
+    let at = [j for j, entry in lit.fields if entry.of == f.name].last()
+    if at != null && cells[at!] != null { return cells[at!]! }
+    cx.seat_filled(f, given_by(cx, lit, values, f.name) ?? cx.field_left(e, ty, f))
+}
+
 impl Lowers for StructLit {
     /// A literal of entries and spreads, or one the source alone spells and that holds no `state` field,
     /// which is the binary's own data. A field no entry gives is what its role fills, else its
-    /// default's; a `state` field's value is held in a cell of its own, minted at this literal. One that
-    /// spreads what isn't a record whose fields are known isn't lowered yet.
+    /// default's; a `state` field's value is held in a cell of its own, minted at this literal, or is the
+    /// place an entry names. A component member whose default reads the instance is made last, its
+    /// default called on the instance as its inputs stand. One that spreads what isn't a record whose
+    /// fields are known isn't lowered yet.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.missed_as("an untyped record literal `${self.name.of}`") }
         let fields? = cx.fields_of(ty) else { return cx.missed_as("a record literal of `${ty.spelled()}`, whose fields aren't known") }
-        if !fields.any(it.state) {
+        if !fields.any(it.state || it.made) {
             let data = cx.static_literal(e)
             if data != null { return data! }
         }
         if (0..self.fields.length).any(spread_unknown(cx, self, it)) { return cx.missed_as("a record literal spreading what isn't a record") }
-        let values = [cx.lower(v) for v in self.values]
-        cx
+        let cells = places_named(cx, self, fields)
+        let values = [cells[j] ?? keyed(cx, fields, self.fields[j].of, v) for j, v in self.values]
+        let made = [f.made && !gives(cx, self, f.name) for f in fields]
+        let record = cx
             .record_packed(
                 cx.laid_out(ty),
-                [cx.seat_filled(f, given_by(cx, self, values, f.name) ?? cx.field_left(e, ty, f)) for f in fields],
+                [if made[n] { cx.hollow_of(f.slot_type()!) } else { filled(cx, self, e, ty, values, cells, f) } for n, f in fields],
             )
+        for n, f in fields { if made[n] { cx.slot_made(record, fields, n, cx.seat_filled(f, cx.made_default(ty, f, record))) } }
+        record
     }
 }
