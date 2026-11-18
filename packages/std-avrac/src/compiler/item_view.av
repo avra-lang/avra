@@ -1,0 +1,92 @@
+//! ONE VIEW OF AN ITEM FOR EVERY LAW THAT READS IT: the item read back, its impls and its typed
+//! nodes, each made once for whoever is reading and handed to each law that asks after. A view is
+//! one reader's: the engine reads its making made are that reader's, so the same reader asking again
+//! asks nothing, and another reader makes its own and reads what it stands on for itself. The item is
+//! never written after its read, so what a view holds of it stays true.
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// What the laws read of the item `at` of `file`: for the engine and the reader its reads reached,
+/// the item read back, and its impls and typed nodes once a law asked for them.
+type ItemView = {
+    engine: int,
+    reader: int,
+    file: SourceFileAddress,
+    at: int,
+    item: ReadItem,
+    impls: Cell<List<ImplAt>?>,
+    typed: Cell<List<TypedNodes>?>,
+}
+
+impl ItemView {
+    /// Whether this is `reader`'s view, in `engine`, of the item `at` of `file`.
+    fn shows(engine: QueryEngine, reader: int, file: SourceFileAddress, at: int) -> bool { self.reader == reader && self.holds(engine, file, at) }
+
+    /// Whether this is a view, in `engine`, of the item `at` of `file`, whoever's it is: the item it
+    /// holds is that item read back, which one process reads back alike for every reader.
+    fn holds(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
+        self.at == at &&
+            self.engine == engine.serial &&
+            self.file.path_in_package == file.path_in_package &&
+            self.file.package_name == file.package_name
+    }
+}
+
+/// How many views are held: a law's own, and those of the queries it asks about the same item.
+const VIEWS_HELD: int = 4
+
+/// The views made last, the newest first.
+once fn views_held() -> Cell<List<ItemView>> {
+    let held: Cell<List<ItemView>> = Cell.new([])
+    held
+}
+
+/// The view of the item `at` of `file` for whoever is asking `engine` now: the one held for that
+/// reader, else made, its item read back with each query it stands on asked.
+fn item_view(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemView {
+    let reader = engine.reader()
+    let held = views_held().get()
+    for v in held { if v.shows(engine, reader, file, at) { return v } }
+    let read = held.find(it.holds(engine, file, at))?.item
+    let impls: Cell<List<ImplAt>?> = Cell.new(null)
+    let typed: Cell<List<TypedNodes>?> = Cell.new(null)
+    let view = ItemView {
+        engine: engine.serial,
+        reader: reader,
+        file: file,
+        at: at,
+        item: if read == null { item_read(engine, file, at) } else { item_asked(engine, file, at, read!) },
+        impls: impls,
+        typed: typed,
+    }
+    views_held().set([view].concat(held.take(VIEWS_HELD - 1)))
+    view
+}
+
+/// The item at `at` in `file`, read back: the asker's view of it.
+fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem { item_view(engine, file, at).item }
+
+/// The impls the written item `at` of `file` holds, each as a method's typing reaches it: the
+/// asker's view of them.
+fn impls_at(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ImplAt> {
+    let view = item_view(engine, file, at)
+    let made? = view.impls.get() else {
+        let impls = item_impls_read(engine, file, at)
+        view.impls.set(impls)
+        return impls
+    }
+    made
+}
+
+/// The nodes the written item `at` of `file` holds, typed: the asker's view of them.
+fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    TypedNodes,
+> {
+    let view = item_view(engine, file, at)
+    let made? = view.typed.get() else {
+        let typed = typed_nodes_read(engine, file, at, item)
+        view.typed.set(typed)
+        return typed
+    }
+    made
+}

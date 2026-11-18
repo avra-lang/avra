@@ -45,14 +45,27 @@ once fn differential_flag() -> string? {
 fn differ(source: string, j: Judged) {
     let a = analyze_source(source)
     let quiet = a.diagnostics.is_empty()
-    let old_said = said_sorted(a.diagnostics)
+    let ran = a.run()
+    let old_said = if quiet { run_refusal(ran) } else { said_sorted(a.diagnostics) }
     let new_said = said_sorted(j.diagnostics)
-    let old_run = run_said(a.run(), quiet)
+    let old_run = run_said(ran, quiet)
     let new_run = run_said(j.run(), quiet)
     if old_said == new_said && old_run == new_run { return }
     println(
         "=====DIFF\n--SRC\n${source}\n--OLDK\n${old_said}\n--NEWK\n${new_said}\n--OLDRUN\n${old_run}\n--NEWRUN\n${new_run}\n=====END",
     )
+}
+
+/// What a run that refused says, as a diagnostic is said: the old path refuses at run what the layer
+/// refuses at build, so a refusal stands where it is said. Empty for a run that answers, and for a
+/// refusal no kind heads.
+fn run_refusal(r: Result<string, string>) -> string {
+    let e? = match r { .Err(e) -> e, .Ok(_) -> null } else { return "" }
+    let head = e.split("\n")[0]
+    if !head.starts_with("error[") { return "" }
+    let close = head.index_of("]: ")
+    if close < 0 { return "" }
+    "${head.substring(6, close)}: ${head.substring(close + 3, head.length)}"
 }
 
 /// Each diagnostic's kind and message, a line each, in text order.

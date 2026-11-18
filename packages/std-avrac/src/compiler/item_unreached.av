@@ -2,7 +2,7 @@
 //! const of its name to compare against — leaves the arm after it nothing to match. Read over a
 //! written item's `match`es; the arm after each such catch-all is warned of where its first pattern
 //! stands.
-use core.{ExprId, PatId, SignedType, flatten, some_list}
+use core.{ExprId, PatId, SignedType, SyntaxArena, flatten, some_list}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.enums.{last_arm_compares_said, unreached_after_binder_said, unreached_after_hole_said}
@@ -30,15 +30,29 @@ fn after_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fo
 }
 
 /// Every arm of the written item `at` of `file`'s `match`es that comes right after an unguarded
-/// arm taking every value, in node order.
+/// arm taking every value, in node order; a `match` over a name nothing answers judged no further.
 @query
 fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnreached {
     if at >= item_count(engine, file) { return ItemUnreached { arms: [] } }
     let item = read_item(engine, file, at)
-    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
+    let unread = [u.at for u in item_refusals(engine, file, at).unread]
+    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] for m in some_list(match_at(item.store, e)) if !reads_unanswered(item.store, m.subject, unread)]
     if matches.is_empty() { return ItemUnreached { arms: [] } }
     let cover = reach_cover(engine, file, at, item)
     ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
+}
+
+/// Whether the subject `subject` is a name nothing answers, among `unread`: a `match` over it chooses
+/// nothing, and its arms are judged no further.
+fn reads_unanswered(store: SyntaxArena, subject: ExprId, unread: List<FindingAt?>) -> bool {
+    let at? = kept_at(store.expr_span(subject)) else { return false }
+    unread.any(stands_at(it, at))
+}
+
+/// Whether the place `u`, where it is kept, is `at`.
+fn stands_at(u: FindingAt?, at: FindingAt) -> bool {
+    let held? = u else { return false }
+    held.lo == at.lo && held.hi == at.hi
 }
 
 /// What the arms' reach reads of the written item `at` of `file`, read as `item`: no type, and a

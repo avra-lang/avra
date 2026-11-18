@@ -18,13 +18,23 @@ impl Lowering {
     }
 
     /// `r`, a value of `from` in a seat of `into` it doesn't reach: itself where the two are one thing
-    /// to the machine, either isn't laid out, or the seat is `void`, which nothing reads; a value laid
-    /// out otherwise makes no program.
+    /// to the machine, either isn't laid out, or the seat is `void`, which nothing reads; lifted as
+    /// the shape a named seat stands over takes it, as a literal fills one; a value laid out
+    /// otherwise makes no program.
     mut fn unreached(r: Reg, from: SignedType, into: SignedType) -> Reg {
         if into.owns(OwnType.Void) { return r }
+        let shaped = self.shape_seat(into)
+        if shaped != null && from.reaches(shaped!) { return self.lifted(r, from, shaped!) }
         let has? = self.program.checked.layout(from) else { return r }
         let wants? = self.program.checked.layout(into) else { return r }
         if has.same(wants) { r } else { self.missed_as(misseated(from, into)) }
+    }
+
+    /// The seat of `into` as the shape its named type stands over, under the nulls it carries; absent
+    /// for a seat of no named type.
+    fn shape_seat(into: SignedType) -> SignedType? {
+        let shape? = self.named_over(into with { nulls: 0 }) else { return null }
+        shape with { nulls: shape.nulls + into.nulls }
     }
 
     /// The template `r` as the rule's `Fix` `into`, its `Rewrite`.

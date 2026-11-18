@@ -2,7 +2,7 @@
 //! first bound that is not.
 use core.{ExprId}
 use features.{TypeCx, this_is}
-use diagnostics.{Diag, refusal}
+use diagnostics.{Diag, Voice, said_as}
 
 /// A range bound is an `int`; Error absorbs.
 fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
@@ -15,12 +15,14 @@ fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
 // ── The voices ──
 
 fn bound_not_int(cx: TypeCx, e: ExprId, verb: string) -> Diag {
-    let n = cx.name_at(e)
-    refusal(
-        "type.mismatch",
-        cx.loc_of(e),
-        "a range ${verb} at an `int`, found `${n}`",
-        this_is(n),
-        "a range counts between `int`s — `for i in 0..n`; to walk a list, name it directly: `for x in xs`",
-    )
+    said_as("type.mismatch", cx.loc_of(e), range_bound_said(verb, cx.name_at(e)))
+}
+
+/// A range's bound — where it `verb`s, `starts` or `ends` — that is a `found`, no `int`.
+export fn range_bound_said(verb: string, found: string) -> Voice {
+    Voice {
+        message: "a range ${verb} at an `int`, found `${found}`",
+        label: this_is(found),
+        help: "a range counts between `int`s — `for i in 0..n`; to walk a list, name it directly: `for x in xs`",
+    }
 }

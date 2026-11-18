@@ -29,10 +29,15 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__linux__)
 #include <sched.h>
+#endif
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/proc.h>
 #endif
 
 #include "avra_cores.h"
@@ -40,7 +45,8 @@
 #include "avra_runtime.h"
 
 // What a core tells the supervisor, in memory the whole group shares.
-// Each core writes only its own slot.
+// Each core writes only its own slot. One slot past the cores' is the
+// group's own: its `live` counts the turns its cores have claimed.
 typedef struct {
     int64_t live;        // open connections
     int64_t accepted;    // written as it leaves
@@ -64,6 +70,9 @@ typedef struct {
 } Group;
 
 static Group* group_at(int64_t g) { return (Group*)(uintptr_t)g; }
+
+// A reaped core's id marked gone in the table its wave shares, where there is one.
+static void core_marked_gone(int64_t pid);
 
 static int is_supervisor(const Group* gr) { return gr->supervisor == getpid(); }
 
@@ -97,7 +106,7 @@ static void group_free(Group* gr) {
         if (gr->core[i].end_read >= 0) { avra_fiber_fd_closing(gr->core[i].end_read); close(gr->core[i].end_read); }
         if (gr->core[i].end_write >= 0) close(gr->core[i].end_write);
     }
-    if (gr->slots) munmap(gr->slots, (size_t)gr->n * sizeof(Slot));
+    if (gr->slots) munmap(gr->slots, (size_t)(gr->n + 1) * sizeof(Slot));
     free(gr);
 }
 
@@ -111,7 +120,7 @@ int64_t avra_cores_group(int64_t n) {
     gr->supervisor = getpid();
     gr->stop_read = gr->stop_write = -1;
     for (int64_t i = 0; i < n; i++) gr->core[i].end_read = gr->core[i].end_write = -1;
-    void* slots = mmap(NULL, (size_t)n * sizeof(Slot), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
+    void* slots = mmap(NULL, (size_t)(n + 1) * sizeof(Slot), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
     if (slots == MAP_FAILED) { int64_t e = -errno; group_free(gr); return e; }
     gr->slots = slots;
     int64_t err = piped(&gr->stop_read, &gr->stop_write);
@@ -161,6 +170,7 @@ static void close_all_but(const int* keep, int n) {
 static void became_core(Group* gr, int64_t i, int64_t serving) {
     int keep[] = { 0, 1, 2, (int)serving, gr->stop_read, gr->core[i].end_write, avra_fiber_trace_fd() };
     avra_pool_forked();
+    avra_mem_forked();
     avra_descriptors_forgotten();
     close_all_but(keep, 7);
     avra_fiber_forked();
@@ -221,6 +231,14 @@ int64_t avra_cores_fork(int64_t g, int64_t serving) {
     return gr->n;
 }
 
+// THE NEXT TURN OF THE GROUP'S WORK, claimed by the core that asks: 0, then 1, and on, each
+// answered to one core alone, whichever asks first. Cores sharing a list of work each take the
+// item at the turn they claim, so none waits while another still holds items.
+int64_t avra_cores_claimed(int64_t g) {
+    Group* gr = group_at(g);
+    return __atomic_fetch_add(&gr->slots[gr->n].live, 1, __ATOMIC_SEQ_CST);
+}
+
 // A core's end of the stop pipe, to park on.
 int64_t avra_cores_stop_fd(int64_t g) { return group_at(g)->stop_read; }
 
@@ -275,6 +293,7 @@ int64_t avra_cores_heard(int64_t g, int64_t core) {
     avra_clock_hold(-1);
     gr->core[core].status = status;
     gr->core[core].ended = 1;
+    core_marked_gone((int64_t)gr->core[core].pid);
     avra_fiber_fd_closing(gr->core[core].end_read);
     close(gr->core[core].end_read);
     gr->core[core].end_read = -1;
@@ -377,6 +396,276 @@ int64_t avra_cores_heir(int64_t quiet) {
     // the test hook that holds an heir back, so a witness meets its work unfinished
     const char* lingers = getenv("AVRA_HEIR_LINGERS_MS");
     if (lingers && *lingers) usleep((useconds_t)atoll(lingers) * 1000);
+    return 0;
+}
+
+// ── What a wave's cores share while they work ───────────────────
+//
+// A SHARED TABLE is memory every core of a wave maps: octets one core
+// kept, found by the others by a 128-bit key, and the claims of the
+// keys being worked. It is made before the fork and is each core's to
+// read and append; nothing in it is ever changed once it can be found.
+//
+// OCTETS ARE WRITTEN BEFORE THEY CAN BE FOUND: a writer takes its room
+// by one atomic add, copies into it, and only then takes a slot, so a
+// slot that names octets names whole ones. A slot is taken by one
+// compare-and-swap to BUSY, filled, and made READY; a reader that meets
+// a BUSY slot waits for it, and one whose writer died in between
+// reads it as dead, never as a key. A CLAIM is a slot whose state is
+// the claimant's process id: it stands while that process lives.
+
+enum { SHARED_KINDS = 3, SHARED_CLAIMS = 2 };
+enum { SLOT_FREE = 0, SLOT_READY = -1, SLOT_BUSY_BASE = -1000000000, SLOT_DEAD = -2, SLOT_LET_GO = -3 };
+
+typedef struct {
+    int64_t state;   // FREE, READY, DEAD, LET_GO, a claimant's pid, or BUSY_BASE - the writer's pid
+    uint64_t hi, lo;
+    int64_t from, to;
+} SharedSlot;
+
+typedef struct {
+    int64_t slots;       // per kind, a power of two
+    int64_t room;        // octets
+    int64_t used;        // octets taken, by atomic add
+    SharedSlot* table;   // SHARED_KINDS * slots
+    char* octets;
+    AvraSharedView view; // what a reader maps the octets as
+} Shared;
+
+// The words every process of a table shares beside its slots: the octets used, the claims counted,
+// how many processes are known gone, and their ids.
+enum { SHARED_GONE_MOST = 4096, SHARED_WORDS = 3 + SHARED_GONE_MOST };
+
+// The table this process's wave shares, once one is made: what the supervisor marks an ended core in.
+static void* g_shared = NULL;
+
+// WHETHER A PROCESS HAS ENDED AND WAITS ONLY TO BE REAPED: it holds its id until then, and answers
+// a signal as a living one does, so its state is read from the system's own record of it.
+static int pid_is_zombie(int64_t pid) {
+#if defined(__linux__)
+    char path[64], line[512];
+    snprintf(path, sizeof path, "/proc/%lld/stat", (long long)pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t got = read(fd, line, sizeof line - 1);
+    close(fd);
+    if (got <= 0) return 0;
+    line[got] = 0;
+    const char* after = strrchr(line, ')');
+    return after && after[1] == ' ' && (after[2] == 'Z' || after[2] == 'X');
+#elif defined(__APPLE__)
+    struct proc_bsdinfo info;
+    if (proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0, &info, sizeof info) != (int)sizeof info) return 0;
+    return info.pbi_status == SZOMB;
+#else
+    (void)pid;
+    return 0;
+#endif
+}
+
+static int pid_lives(int64_t pid);
+
+
+// A table of `slots` slots a kind (rounded up to a power of two) and `room` octets; null where the
+// machine gives none.
+void* avra_shared_made(int64_t slots, int64_t room) {
+    int64_t n = 1024;
+    while (n < slots) n <<= 1;
+    Shared* sh = calloc(1, sizeof(Shared));
+    if (!sh) return NULL;
+    size_t table_bytes = (size_t)SHARED_KINDS * (size_t)n * sizeof(SharedSlot);
+    void* table = mmap(NULL, table_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    void* octets = mmap(NULL, (size_t)room, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    int64_t* used = mmap(NULL, SHARED_WORDS * sizeof(int64_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (table == MAP_FAILED || octets == MAP_FAILED || used == MAP_FAILED) {
+        if (table != MAP_FAILED) munmap(table, table_bytes);
+        if (octets != MAP_FAILED) munmap(octets, (size_t)room);
+        if (used != MAP_FAILED) munmap(used, SHARED_WORDS * sizeof(int64_t));
+        free(sh);
+        return NULL;
+    }
+    sh->slots = n;
+    sh->room = room;
+    sh->used = (int64_t)(intptr_t)used;
+    sh->table = table;
+    sh->octets = octets;
+    sh->view.base = octets;
+    sh->view.len = room;
+    g_shared = sh;
+    return sh;
+}
+
+static int64_t* shared_used(Shared* sh) { return (int64_t*)(intptr_t)sh->used; }
+
+// A process of the table's wave marked gone by the supervisor that reaped it: its id is never
+// again a living holder's here, whoever the system gives the id to next.
+static void shared_gone(Shared* sh, int64_t pid) {
+    int64_t* words = shared_used(sh);
+    int64_t at = __atomic_fetch_add(words + 2, 1, __ATOMIC_ACQ_REL);
+    if (at < SHARED_GONE_MOST) __atomic_store_n(words + 3 + at, pid, __ATOMIC_RELEASE);
+}
+
+static int shared_knows_gone(Shared* sh, int64_t pid) {
+    int64_t* words = shared_used(sh);
+    int64_t n = __atomic_load_n(words + 2, __ATOMIC_ACQUIRE);
+    if (n > SHARED_GONE_MOST) n = SHARED_GONE_MOST;
+    for (int64_t i = 0; i < n; i++) if (__atomic_load_n(words + 3 + i, __ATOMIC_ACQUIRE) == pid) return 1;
+    return 0;
+}
+
+static void core_marked_gone(int64_t pid) { if (g_shared) shared_gone(g_shared, pid); }
+
+// WHETHER THE PROCESS `pid` STILL RUNS, as a holder of a claim must: not one the supervisor reaped,
+// not one the system no longer knows, and not one that has ended and waits to be reaped.
+static int pid_lives(int64_t pid) {
+    if (pid <= 0) return 0;
+    if (g_shared && shared_knows_gone(g_shared, pid)) return 0;
+    if (kill((pid_t)pid, 0) != 0 && errno != EPERM) return 0;
+    return !pid_is_zombie(pid);
+}
+
+// The table unmapped and gone, in the process that made it once its cores have ended.
+void avra_shared_ended(void* h) {
+    Shared* sh = h;
+    if (!sh) return;
+    munmap(sh->table, (size_t)SHARED_KINDS * (size_t)sh->slots * sizeof(SharedSlot));
+    munmap(sh->octets, (size_t)sh->room);
+    munmap(shared_used(sh), SHARED_WORDS * sizeof(int64_t));
+    if (g_shared == sh) g_shared = NULL;
+    free(sh);
+}
+
+// The octets of the table, as a mapping a reader reads in place.
+void* avra_shared_view(void* h) { return &((Shared*)h)->view; }
+
+// The state of a slot once it is no longer being written: a slot whose writer died is made dead.
+static int64_t slot_settled(SharedSlot* s) {
+    for (int spins = 0;; spins++) {
+        int64_t st = __atomic_load_n(&s->state, __ATOMIC_ACQUIRE);
+        if (st > SLOT_BUSY_BASE / 2) return st;
+        if (spins > 64 && !pid_lives(SLOT_BUSY_BASE - st)) {
+            __atomic_compare_exchange_n(&s->state, &st, SLOT_DEAD, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+            continue;
+        }
+        if (spins > 64) sched_yield();
+    }
+}
+
+// The slot of `kind` that holds the key, or the free one it would take; null where the table is full.
+static SharedSlot* slot_for(Shared* sh, int64_t kind, uint64_t hi, uint64_t lo, int* found) {
+    SharedSlot* base = sh->table + kind * sh->slots;
+    uint64_t mask = (uint64_t)sh->slots - 1;
+    *found = 0;
+    for (uint64_t i = 0; i < (uint64_t)sh->slots; i++) {
+        SharedSlot* s = base + ((lo + i) & mask);
+        int64_t st = slot_settled(s);
+        if (st == SLOT_FREE) return s;
+        if (st == SLOT_DEAD) continue;
+        if (s->hi == hi && s->lo == lo) { *found = 1; return s; }
+    }
+    return NULL;
+}
+
+// A free slot of `kind` taken for the key and left BUSY, or the slot another took for it first
+// (`*found`); null where the table is full.
+static SharedSlot* slot_taken(Shared* sh, int64_t kind, uint64_t hi, uint64_t lo, int* found) {
+    for (;;) {
+        SharedSlot* s = slot_for(sh, kind, hi, lo, found);
+        if (!s || *found) return s;
+        int64_t free_state = SLOT_FREE;
+        if (!__atomic_compare_exchange_n(&s->state, &free_state, SLOT_BUSY_BASE - (int64_t)getpid(), 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) continue;
+        s->hi = hi;
+        s->lo = lo;
+        return s;
+    }
+}
+
+// `n` octets at `p` kept under the key in `kind` (0 or 1), found by every core from here on: 0 kept,
+// 1 already kept by another, -1 no room. The first to keep a key keeps it.
+int64_t avra_shared_kept(void* h, int64_t kind, int64_t hi, int64_t lo, const char* p, int64_t n) {
+    Shared* sh = h;
+    if (kind < 0 || kind >= SHARED_CLAIMS) return -1;
+    int found = 0;
+    if (slot_for(sh, kind, (uint64_t)hi, (uint64_t)lo, &found) && found) return 1;
+    int64_t from = __atomic_fetch_add(shared_used(sh), (n + 7) & ~(int64_t)7, __ATOMIC_ACQ_REL);
+    if (from + n > sh->room) return -1;
+    memcpy(sh->octets + from, p, (size_t)n);
+    SharedSlot* s = slot_taken(sh, kind, (uint64_t)hi, (uint64_t)lo, &found);
+    if (!s) return -1;
+    if (found) return 1;
+    s->from = from;
+    s->to = from + n;
+    __atomic_store_n(&s->state, SLOT_READY, __ATOMIC_RELEASE);
+    return 0;
+}
+
+// Where the octets kept under the key in `kind` start, or -1 where none are; `avra_shared_end` then
+// answers where they end.
+int64_t avra_shared_start(void* h, int64_t kind, int64_t hi, int64_t lo) {
+    int found = 0;
+    SharedSlot* s = slot_for(h, kind, (uint64_t)hi, (uint64_t)lo, &found);
+    return s && found ? s->from : -1;
+}
+
+int64_t avra_shared_end(void* h, int64_t kind, int64_t hi, int64_t lo) {
+    int found = 0;
+    SharedSlot* s = slot_for(h, kind, (uint64_t)hi, (uint64_t)lo, &found);
+    return s && found ? s->to : -1;
+}
+
+// THE WITNESS'S HOOKS: the process that takes the table's `AVRA_SHARED_KILL_AT`-th claim is killed
+// holding it, and the one that takes its `AVRA_SHARED_TRAP_AT`-th traps holding it, so a witness
+// meets a claim whose holder is gone.
+static void claim_counted(Shared* sh) {
+    static int64_t kill_at = -1, trap_at = -1;
+    if (kill_at < 0) {
+        const char* k = getenv("AVRA_SHARED_KILL_AT");
+        const char* t = getenv("AVRA_SHARED_TRAP_AT");
+        kill_at = k && *k ? atoll(k) : 0;
+        trap_at = t && *t ? atoll(t) : 0;
+    }
+    if (kill_at == 0 && trap_at == 0) return;
+    int64_t nth = __atomic_add_fetch(shared_used(sh) + 1, 1, __ATOMIC_ACQ_REL);
+    if (nth == kill_at) raise(SIGKILL);
+    if (nth == trap_at) avra_trap("a witness trapped the holder of a claim");
+}
+
+// THE KEY CLAIMED by this process: 0 where it now holds the claim — nobody held it, or the process
+// that did has let it go or died — else the id of the living process that holds it.
+int64_t avra_shared_claimed(void* h, int64_t hi, int64_t lo) {
+    Shared* sh = h;
+    int64_t mine = (int64_t)getpid();
+    int found = 0;
+    SharedSlot* s = slot_taken(sh, SHARED_CLAIMS, (uint64_t)hi, (uint64_t)lo, &found);
+    if (!s) return 0;
+    if (!found) { __atomic_store_n(&s->state, mine, __ATOMIC_RELEASE); claim_counted(sh); return 0; }
+    for (;;) {
+        int64_t st = __atomic_load_n(&s->state, __ATOMIC_ACQUIRE);
+        if (st == mine) return 0;
+        if (st > 0 && pid_lives(st)) return st;
+        if (__atomic_compare_exchange_n(&s->state, &st, mine, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { claim_counted(sh); return 0; }
+    }
+}
+
+// This process's claim of the key let go.
+int64_t avra_shared_let_go(void* h, int64_t hi, int64_t lo) {
+    int found = 0;
+    SharedSlot* s = slot_for(h, SHARED_CLAIMS, (uint64_t)hi, (uint64_t)lo, &found);
+    int64_t mine = (int64_t)getpid();
+    if (s && found) __atomic_compare_exchange_n(&s->state, &mine, SLOT_LET_GO, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    return 0;
+}
+
+// Waits while the process `holder` holds the claim of the key and lives: it answers once the claim
+// is let go or its holder is dead, never by the clock.
+int64_t avra_shared_awaited(void* h, int64_t hi, int64_t lo, int64_t holder) {
+    int found = 0;
+    SharedSlot* s = slot_for(h, SHARED_CLAIMS, (uint64_t)hi, (uint64_t)lo, &found);
+    if (!s || !found) return 0;
+    struct timespec nap = { 0, 100000 };
+    avra_clock_hold(1);
+    while (__atomic_load_n(&s->state, __ATOMIC_ACQUIRE) == holder && pid_lives(holder)) nanosleep(&nap, NULL);
+    avra_clock_hold(-1);
     return 0;
 }
 

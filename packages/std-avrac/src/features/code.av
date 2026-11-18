@@ -813,14 +813,27 @@ impl Code {
             mp? -> self.method_call_roots(mp.subject, mp.name, mp.args)
             null -> []
         }
-        call_roots.concat(method_roots)
+        let applied_roots = match self.of.view.store.applied_parts(e) {
+            ap? -> self.valued_call_roots(self.analysed().facts.type_at(ap.subject), ap.args)
+            null -> []
+        }
+        call_roots.concat(method_roots).concat(applied_roots)
     }
 
+    /// A call by name: a declared fn's seats say where it writes; a fn
+    /// VALUE the name binds writes where its own fn type's marks say.
     fn named_call_roots(e: ExprId, args: List<ExprId>) -> List<ExprId> {
         match bound_decl_of(self.analysed().names, e) {
             callee? -> self.marked_arg_roots(callee, args, 0)
-            null -> []
+            null -> self.valued_call_roots(self.bound_value_type(e), args)
         }
+    }
+
+    /// The type of the binding the call `e` names, when it names one
+    /// that holds a value.
+    fn bound_value_type(e: ExprId) -> TypeId? {
+        let b? = self.analysed().names.binding(e) else { return null }
+        declared_ty(self.analysed(), At.Expr(e), b)?.id
     }
 
     fn method_call_roots(subject: ExprId, name: string, args: List<ExprId>) -> List<ExprId> {
@@ -869,10 +882,11 @@ impl Code {
     }
 
     /// A call THROUGH a fn value writes where its fn type's own marks
-    /// say, exactly as a declared callee's seats do.
+    /// say, exactly as a declared callee's seats do — a named type
+    /// read as the fn type it stands over.
     fn valued_call_roots(callee: TypeId?, args: List<ExprId>) -> List<ExprId> {
         let t? = callee else { return [] }
-        match self.analysed().view.types.shape_of(t) {
+        match self.analysed().view.types.shape_of(self.analysed().view.types.seen_through(t)) {
             .Fn(_, marks, _) -> flatten(
                 [some_list(self.of.view.store.place_root(a)) for j, a in args if mark_at(marks, j).mutable || mark_at(marks, j).state],
             ),

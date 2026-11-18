@@ -57,7 +57,7 @@ program    test packages/std-program and std-relation; make runtime-tests
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
-sound      AVRA_SOUND_CHECK=1 check packages/cli (old path), 0 `defect: in` lines
+sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
@@ -67,7 +67,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace
+witness-b  witness_program_runs, heir_save_attack, share_merge_attack, wave_share_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -330,10 +330,8 @@ idioms_on() {
 }
 
 slice_sound() {
-    old_row sound-check-run env AVRA_PROGRAM=0 AVRA_SOUND_CHECK=1 build/avra check packages/cli
-    if [ "$OLD_PATH" = 1 ]; then
-        judged sound-check-defects "$(grep -c 'defect: in' "$out/sound-check-run.log")"
-    fi
+    row sound-check-run env AVRA_SOUND_CHECK=1 build/avra check packages/cli
+    judged sound-check-defects "$(grep -c 'language.defect' "$out/sound-check-run.log")"
 }
 
 doors() { for p in "$@"; do cold "$p"; tested "test-$p" "packages/$p"; done; }
@@ -371,6 +369,8 @@ refusal_third() {
 slice_witness_b() {
     row runs-witness sh tools/witness_program_runs.sh build/avra
     row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
+    row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
+    row wave-share-attack env WAVE_ATTACK_AVRA="$root/build/avra" sh tools/wave_share_attack.sh
     row flow-trace make -s -o avra flow-trace
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra

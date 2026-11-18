@@ -7,7 +7,7 @@ use @std.io.{IoError, exists, list_dir, write_bytes}
 use @std.time.{stamp}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{ContentHash}
-use disk_store.{DiskStore, KeptSpan, PACK_SEAL, disk_store_at, index_runs}
+use disk_store.{key_shares, DiskStore, KeptSpan, PACK_SEAL, disk_store_at, index_runs}
 use pack_collection.{QuestionRecords}
 use sorted.{sorted_by}
 use query_engine.{QueryEngine, query_engine}
@@ -123,6 +123,31 @@ spec "a store's records, streamed and compacted" {
             two == 2 &&
                 packs_in(directory).length == 1 &&
                 spelled(lengths_found(directory, "c.av")) == "5"
+        }
+    }
+    given "two processes' packs merged a share of the keys at a time, each share by a store of its own" {
+        then "every answer stands in the shares, and the packs they were merged from are gone" {
+            let directory = directory_named("shares")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let one_engine = engine_on(one)
+            let other_engine = engine_on(other)
+            for i in 0..200 { let _ = kept_echo(one_engine, "one ${i}") }
+            for i in 0..200 { let _ = kept_echo(other_engine, "other ${i}") }
+            let _ = one.saved_alone()
+            let _ = other.saved_alone()
+            let asking = disk_store_at(directory)
+            let _ = engine_on(asking)
+            for share in key_shares(4) {
+                let merging = disk_store_at(directory)
+                let _ = engine_on(merging)
+                let _ = merging.share_merged(share)
+            }
+            asking.shares_taken()
+            let after = engine_on(disk_store_at(directory))
+            for i in 0..200 { let _ = kept_echo(after, "one ${i}") }
+            for i in 0..200 { let _ = kept_echo(after, "other ${i}") }
+            packs_in(directory).length == 4 && after.computed_count() == 0
         }
     }
     given "a root answered more ways than a question keeps, then compacted" {

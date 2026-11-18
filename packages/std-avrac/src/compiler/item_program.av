@@ -72,8 +72,16 @@ use compiler.static_symbols.{module_spelled}
 use compiler.backend.{Owned, WasmCall, body_lines, in_symbol_order, program_closed, program_opens}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{MovedRead, QueryDefinition, QueryEngine}
-use @std.program.saved_query.{ListedQuery, definitions_of, folded_query, query, query_definition}
+use @std.program.saved_query.{
+    cut_query,
+    definitions_of,
+    folded_query,
+    ListedQuery,
+    query,
+    query_definition,
+}
 use @std.program.saved_derive.{Saved}
+use @std.program.sorted.{order_by_words}
 use @std.meta.{derive}
 use @std.program.query_times.{TimedSide}
 use @std.program.answer_record.{ContentHash, Question, content_hash}
@@ -125,13 +133,17 @@ export fn made_program(
 export fn program_reached(engine: QueryEngine, file: SourceFileAddress) -> ProgramReach {
     let entry? = entry_lowered(engine, file) else { return ProgramReach.Unmade(runs_nothing(), spelled_file(file)) }
     if !entry.whole() { return ProgramReach.Unmade(entry.missing[0], "the entry") }
-    let survey = task_survey(engine)
-    let checks = scheduled_by(survey, entry)
-    let kept = survey.kept(entry, checks)
+    let walked = match program_walked(engine, file) {
+        .Walked(w) -> w,
+        .Unmade(why, at) -> { return ProgramReach.Unmade(why, at) },
+    }
+    let checks = if walked.scheduled { TaskChecks.Scheduled } else { TaskChecks.Tested }
+    let kept = walked.entry_kept
     let root = entry.placed_keeping(kept)
-    let walk = match walked_from(survey, root, checks, null, true, file.package_name, false, file) {
-        .Met(w) -> in_name_order(w),
-        .Stopped(why, at) -> { return ProgramReach.Unmade(why, at) },
+    let walk = Walked {
+        met: [Met { called: u.called, facts: unit_facts(engine, u.called)!, kept: u.kept } for u in walked.units],
+        externs: walked.externs,
+        unlowered: walked.unlowered,
     }
     let wrappers = distinct_wrappers(
         root.wrappers.concat(flatten([m.facts.wrappers for m in walk.met])),
@@ -179,6 +191,91 @@ export fn program_reached(engine: QueryEngine, file: SourceFileAddress) -> Progr
             },
         )
 }
+
+/// A BODY A PROGRAM'S WALK MET: the call it was met by, the tests it keeps, and what a fold of the
+/// walk reads without a survey: the question its facts answer, which names the body whatever calls
+/// it and wherever it stands among the others; the same of each met body it calls, two words
+/// each; and whether a call of it may reach a cancel point and links a scheduler.
+@derive(Saved)
+export type WalkedUnit = {
+    called: CalledFn,
+    kept: TestsKept,
+    facts_high: int,
+    facts_low: int,
+    callees: List<int>,
+    reaches: bool,
+    links: bool,
+}
+
+/// WHAT A PROGRAM'S ENTRY REACHES: each body met, in name order, and where each stands in the
+/// order of its facts' questions, so one is found by its question by halving; the externs met and
+/// the bodies gone past, each in name order; the tests the entry keeps; and whether the program
+/// links a scheduler.
+@derive(Saved)
+export type WalkedProgram = {
+    units: List<WalkedUnit>,
+    by_question: List<int>,
+    externs: List<CalledFn>,
+    unlowered: List<Missed>,
+    entry_kept: TestsKept,
+    scheduled: bool,
+}
+
+/// A program's walk, or why its entry is no program yet.
+@derive(Saved)
+export enum ProgramWalk {
+    Walked(walk: WalkedProgram)
+    Unmade(why: string, at: string)
+}
+
+/// THE WALK OF THE PROGRAM `file` RUNS, read from its bodies' facts alone: no body's code is read,
+/// so it stands wherever every met body's facts do, and a process that holds it knows each body's
+/// placement before any is placed.
+@query
+export fn program_walked(engine: QueryEngine, file: SourceFileAddress) -> ProgramWalk {
+    let entry? = entry_lowered(engine, file) else { return ProgramWalk.Unmade(runs_nothing(), spelled_file(file)) }
+    if !entry.whole() { return ProgramWalk.Unmade(entry.missing[0], "the entry") }
+    let survey = task_survey(engine)
+    let checks = scheduled_by(survey, entry)
+    let kept = survey.kept(entry, checks)
+    let walk = match walked_from(
+        survey,
+        entry.placed_keeping(kept),
+        checks,
+        null,
+        true,
+        file.package_name,
+        false,
+        file,
+    ) { .Met(w) -> in_name_order(w), .Stopped(why, at) -> { return ProgramWalk.Unmade(why, at) } }
+    let questions = [facts_question(engine, m.called) for m in walk.met]
+    mut at_symbol: Map<string, int> = {}
+    for i, m in walk.met { at_symbol.set(m.called.symbol, i) }
+    ProgramWalk
+        .Walked(
+            WalkedProgram {
+                units: [WalkedUnit {
+                    called: m.called,
+                    kept: m.kept,
+                    facts_high: questions[i].high_word,
+                    facts_low: questions[i].low_word,
+                    callees: flatten(
+                        [[questions[at!].high_word, questions[at!].low_word] for c in m.facts.callees for at in [at_symbol.get(c.symbol)] if at != null],
+                    ),
+                    reaches: survey.reaches(m.called),
+                    links: survey.links(body_at(m.called)),
+                } for i, m in walk.met],
+                by_question: order_by_words([q.high_word for q in questions], [q.low_word for q in questions]),
+                externs: walk.externs,
+                unlowered: walk.unlowered,
+                entry_kept: kept,
+                scheduled: checks.ticks(),
+            },
+        )
+}
+
+/// The question the facts of the body a call of `c` runs answer.
+fn facts_question(engine: QueryEngine, c: CalledFn) -> ContentHash { body_facts_question(engine, body_asked(engine, c)).known_as }
 
 /// The files a body reaches holds a node a seat refused in, `first` before them, each once.
 fn distinct_files(all: List<SourceFileAddress>) -> List<SourceFileAddress> {
@@ -228,7 +325,7 @@ export fn program_refused(engine: QueryEngine, file: SourceFileAddress, package:
 
 /// Whether `file` runs a statement at its top, which only a program's entry may: one answer a file,
 /// which an edit to another file leaves standing.
-@query
+@cut_query
 fn strays_in(engine: QueryEngine, file: SourceFileAddress) -> bool { !strays_of(engine, file).is_empty() }
 
 /// Where each statement `file` runs at its top stands: what a file other than its program's entry
@@ -473,8 +570,10 @@ fn program_reached_again(
         rows: rt_sigs().concat(extern_rows(engine, shape.externs)),
     }
     if !moved.all((m) -> fold.read_folds(m)) { return null }
+    let rekept? = fold.rekept() else { return null }
     let symbols = distinct(
-        [c!.symbol for m in moved for c in [unit_facts_c_in(m.question) ?? placed_names_c_in(m.question)] if fold.unit_named(c!.symbol) != null],
+        [c!.symbol for m in moved for c in [unit_facts_c_in(m.question) ?? placed_names_c_in(m.question)] if fold.unit_named(c!.symbol) != null]
+            .concat(rekept),
     )
     let units = [fold.unit_named(s) for s in symbols]
     let fresh = [fold.unit_again(u!) for u in units]
@@ -501,6 +600,7 @@ impl ShapeFold {
     /// Whether the moved read `m` is one a fold works through: a body's facts that keep its cancel
     /// evidence, of a body met or of none gone past, or a met body's names.
     fn read_folds(m: MovedRead) -> bool {
+        if program_walked_file_in(m.question) != null { return true }
         let c = unit_facts_c_in(m.question)
         if c != null { return self.cancels_kept(m, c!) && !self.shape.unlowered.any(it.symbol == c!.symbol) }
         let named? = placed_names_c_in(m.question) else { return false }
@@ -515,6 +615,37 @@ impl ShapeFold {
         cancels_text(was) == cancels_text(now)
     }
 
+    /// The walk as it stands now, where it is among the reads that moved.
+    fn walked_now() -> WalkedProgram? {
+        let m? = self.moved.find((m) -> program_walked_file_in(m.question) != null) else { return null }
+        let file? = program_walked_file_in(m.question) else { return null }
+        match program_walked(self.engine, file) { .Walked(w) -> w, .Unmade(_why, _at) -> null }
+    }
+
+    /// The met bodies whose kept tests the walk moved, by symbol: none where the walk stands; absent
+    /// where it moved anything a fold doesn't work through — a body met or no longer met, a call
+    /// met otherwise, an extern, a body gone past, the entry's tests or the scheduler.
+    fn rekept() -> List<string>? {
+        if !self.moved.any((m) -> program_walked_file_in(m.question) != null) { return [] }
+        let now? = self.walked_now() else { return null }
+        let shape = self.shape
+        if now.units.length != shape.units.length ||
+            now.scheduled != shape.scheduled ||
+            kept_text(now.entry_kept) != kept_text(shape.entry_kept) { return null }
+        if ![i for i, u in now.units if called_text(u.called) != called_text(shape.units[i].called)]
+            .is_empty() { return null }
+        if [called_text(c) for c in now.externs].join(",") != [called_text(c) for c in shape.externs].join(",") { return null }
+        if [content_text(m.saved_bytes()) for m in now.unlowered].join(",") != [content_text(m.saved_bytes()) for m in shape.unlowered].join(",") { return null }
+        [u.called.symbol for i, u in now.units if kept_text(u.kept) != kept_text(shape.units[i].kept)]
+    }
+
+    /// The tests the met body `symbol` keeps: as the walk says where it moved, else as `facts` place
+    /// them.
+    fn kept_of(symbol: string, facts: UnitFacts) -> TestsKept {
+        let now? = self.walked_now() else { return self.survey.kept_in(facts, self.checks) }
+        now.units.find(it.called.symbol == symbol)?.kept ?? self.survey.kept_in(facts, self.checks)
+    }
+
     /// The met body `symbol` names, absent where none is.
     fn unit_named(symbol: string) -> ReachedUnit? { self.shape.units.find(it.called.symbol == symbol) }
 
@@ -526,7 +657,7 @@ impl ShapeFold {
             .moved
             .find((m) -> unit_facts_c_in(m.question)?.symbol == u.called.symbol)
         let before? = (if facts_moved == null { facts } else { unit_facts_was(self.engine, facts_moved!) }) else { return null }
-        let kept = self.survey.kept_in(facts, self.checks)
+        let kept = self.kept_of(u.called.symbol, facts)
         if unit_unmade(facts, kept) != null { return null }
         if !self.calls_alike(before, facts) { return null }
         if seen_text(before.declared) != seen_text(facts.declared) ||
@@ -631,20 +762,79 @@ export type TestHeld = { site: TestSite, noted: Noted }
 /// The facts of the body a call of `c` runs, lowered with its tests held; absent where its declaration
 /// gives none.
 @query
-export fn unit_facts(engine: QueryEngine, c: CalledFn) -> UnitFacts? {
-    let f? = reached_body(engine, c) else { return null }
+export fn unit_facts(engine: QueryEngine, c: CalledFn) -> UnitFacts? { facts_read(engine, c) }
+
+/// The facts of the body a call of `c` runs, read where a walk or a survey reads them: the body's
+/// own (`body_facts`), its declaration named as `c` names it. No answer is kept of the read, so two
+/// calls of one body, however each spells it, read one answer.
+export fn facts_read(engine: QueryEngine, c: CalledFn) -> UnitFacts? {
+    let facts? = body_facts(engine, body_asked(engine, c)) else { return null }
+    facts with { declared: [facts.declared[0] with { name: c.symbol }].concat(facts.declared.drop(1)) }
+}
+
+/// THE FACTS OF A BODY, BY THE QUERY THAT LOWERS IT: what `unit_facts` answers of every call that
+/// runs the body, its own declaration unnamed, since a call names it. The process that lowers a
+/// body asks this of it while it holds the lowering, so a walk reads a body's facts and never its
+/// code; absent where the query gives no body.
+@query
+fn body_facts(engine: QueryEngine, asked: BodyAsked) -> UnitFacts? {
+    let f? = asked_body(engine, asked) else { return null }
     UnitFacts {
         missing: f.missing,
         tests: [TestHeld { site: t.site, noted: Noted { at: t.missed_at, notes: t.missing } } for t in f.tests],
         lift_sites: [[t.site for t in l.tests] for l in f.lifts],
         callees: every_callee_of(f),
         cancels: lowered_cancels(f),
-        declared: [BodySeen { name: c.symbol, seats: f.params, answer: f.answer }]
+        declared: [BodySeen { name: "", seats: f.params, answer: f.answer }]
             .concat([lifted_seen(l) for l in f.lifts]),
         wrappers: f.wrappers,
         refused: f.refused,
         unread: f.unread,
     }
+}
+
+/// The facts of the fn `file` declares as `name`, lowered with no layouts, asked as a walk asks
+/// them; absent where it gives no body.
+export fn fn_facts_asked(engine: QueryEngine, file: SourceFileAddress, name: string) -> UnitFacts? { body_facts(engine, BodyAsked.Under(file, name, null)) }
+
+/// The facts of the method or static `name` of the impl `at`, lowered with no layouts, asked as a
+/// walk asks them; absent where it gives no body.
+export fn method_facts_asked(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> UnitFacts? { body_facts(engine, BodyAsked.Method(at, name, statics, null)) }
+
+/// THE BODIES ONLY A CALL NAMES, WORKED BY THE PROCESS THAT LOWERED THE CALLER: each body the body
+/// with `facts` calls that no declaration lowers by itself — a generic unit under the layouts its
+/// caller fills it with, a default, a body a trait gives — its facts asked, which lowers it, and
+/// then those such a body calls in turn, each once a process. A walk then finds them answered,
+/// where it would lower each itself. Whether there were facts.
+export fn called_units_worked(engine: QueryEngine, facts: UnitFacts?) -> bool {
+    let held? = facts else { return false }
+    let worked = units_worked()
+    mut queue = held.callees
+    mut at = 0
+    while at < queue.length {
+        let c = queue[at]
+        at = at + 1
+        if !named_by_call_alone(c) || worked.get().has(c.symbol) { continue }
+        worked.put(c.symbol, true)
+        let called? = facts_read(engine, c) else { continue }
+        // LICENSED loops.push_loop: the worklist grows while it is walked
+        for x in called.callees { queue.push(x) }
+    }
+    true
+}
+
+/// Whether the body a call of `c` runs is one no declaration lowers by itself, and one any program
+/// reads alike: a generic unit, a default or a trait's body, never an extern or a collect gathering
+/// over a program's own closure.
+fn named_by_call_alone(c: CalledFn) -> bool {
+    if c.external || c.gathers_closure { return false }
+    !c.parameters.is_empty() || c.given_by != null || !(c.defaulted is .Not)
+}
+
+/// The bodies only a call names that this process has worked, by symbol.
+once fn units_worked() -> Cell<Map<string, bool>> {
+    let worked: Cell<Map<string, bool>> = Cell.new({})
+    worked
 }
 
 /// Every name the body a call of `c` runs names, its tests placed as `kept` says: what it, its
@@ -1520,7 +1710,7 @@ fn walked(
             deferred.push(c)
             continue
         }
-        let facts = unit_facts(engine, c)
+        let facts = facts_read(engine, c)
         let kept = survey.kept_where(facts, checks)
         let why = unit_unmade(facts, kept)
         if why != null {
@@ -1917,6 +2107,7 @@ export fn reached_body(engine: QueryEngine, c: CalledFn) -> LoweredFn? { asked_b
 /// program's closure; or none. One dispatch, read two
 /// ways: the body (`asked_body`), and the question whose answer it is (`asked_question`), so a build
 /// keys a body by that answer's hash without reading the body.
+@derive(Saved)
 enum BodyAsked {
     Under(file: SourceFileAddress, name: string, under: List<ParameterLayout>?)
     FieldDefault(

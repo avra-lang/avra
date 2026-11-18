@@ -52,14 +52,14 @@ trapped() {
     verdict "$1" "$2" "$3" "$got" "$status"
 }
 
-# AN EVALUATED row, which `trapped` cannot reach: it builds and runs a
+# AN EVALUATED row (`avra run --eval`), which `trapped` cannot reach: it builds and runs a
 # BINARY, so a law belonging to `avra run` — the frame that hosts a
 # package's C inside the compiler's own process — has no row there at
 # all. A nested watchdog's own lines are not the program's words.
 trapped_run() {
     rows=$((rows + 1))
     scaffold "$1" "$4" "$5"
-    ./avra run "$dir" > "$dir/run.out" 2>&1 && status=0 || status=$?
+    ./avra run --eval "$dir" > "$dir/run.out" 2>&1 && status=0 || status=$?
     verdict "$1" "$2" "$3" "$(grep -v '^watch: ' "$dir/run.out")" "$status"
 }
 

@@ -33,7 +33,7 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash, content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 use @std.program.source_facts.{PlacedTape}
 use @std.relation.engine.{map_cell}
 use compiler.lower.{Lowered}
@@ -419,7 +419,7 @@ export fn wrapping(
     name: string,
     method: MethodSite? = null,
 ) -> Wrapping {
-    let made = if method == null { fn_generated(engine, file, name) } else { method_generated(engine, method!, name) }
+    let made = body_generated(engine, file, name, method)
     let wrap? = made.items.find(it.wraps) else { return Wrapping { wrapper: null, said: made.said } }
     let tape = wrap.wrapper ?? wrap.tape
     let store = new_node_store()
@@ -429,6 +429,21 @@ export fn wrapping(
         said: made.said,
     }
 }
+
+/// What the generators the fn `file` writes as `name` wears make, or with `method` those the method
+/// of that name the impl writes wears.
+fn body_generated(engine: QueryEngine, file: SourceFileAddress, name: string, method: MethodSite?) -> GeneratedItems {
+    if method == null { fn_generated(engine, file, name) } else { method_generated(engine, method!, name) }
+}
+
+/// Whether a wrap stands on the body of the fn `file` writes as `name`, or with `method` of the
+/// method of that name the impl writes: what `wrapping` answers of it, its wrapper never read back.
+export fn wraps_body(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: MethodSite? = null,
+) -> bool { body_generated(engine, file, name, method).items.any(it.wraps) }
 
 /// How many fields `@std/meta`'s `Fn` declares: the slots a crossed `Fn` is written with.
 fn fn_slots(engine: QueryEngine) -> int {
@@ -608,7 +623,7 @@ type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt> }
 type DerivedGatherings = { each: List<DerivedGathering> }
 
 /// The gatherings a package's written `collect enum`s make, each read where it's written.
-@query
+@cut_query
 fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
     let enums = [d for p in package_sources(engine, package, "src") for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
     DerivedGatherings { each: [g! for d in enums for g in [gathering(engine, d)] if g != null] }

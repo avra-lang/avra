@@ -28,11 +28,15 @@ impl Checks for NullLit {
 }
 
 impl Checks for Coalesce {
-    /// `a ?? b` is what `a` holds when present, joined with `b`.
+    /// `a ?? b` is what `a` holds when present, joined with `b`, or itself where `b` stands in a
+    /// seat of it, as a literal fills a named type; a `b` that says nothing of its own type (a bare
+    /// variant) hears what `a` holds.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let left = cx.check(self.left, Expected.Free)
-        let right? = cx.check(self.right, Expected.Free) else { return null }
-        left?.unwrapped()?.joined_with(right)
+        let held = left?.unwrapped()
+        let right? = cx.check(self.right, Expected.Free) ?? cx.heard(self.right, held) else { return null }
+        let carried? = held else { return null }
+        carried.joined_with(right) ?? if cx.stands_in(self.right, right, carried) { carried } else { null }
     }
 
     /// Its sides are typed as they stand, so its meaning is typed so too; a value nothing reads stays
@@ -79,6 +83,7 @@ impl Checks for Propagate {
     /// `v?` is what `v` holds when it carries on: a `Result`'s ok side, an optional's value.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let s? = cx.check(self.subject, Expected.Free) else { return null }
+        cx.propagated(self.subject, s)
         cx.payload_of(s, "Ok") ?? present(s)
     }
 }

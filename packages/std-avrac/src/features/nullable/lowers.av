@@ -19,6 +19,7 @@ use core.{
     StmtId,
     StmtLowers,
     own_row_of,
+    own_shape,
     owned_type,
     rt_sig_of,
 }
@@ -107,6 +108,7 @@ impl Lowers for Chain {
         if self.name.of == NAMED_FIELD && cx.named_over(inner) != null { return cx.lower(self.subject) }
         let row = answering_row(inner, self.name.of)
         if row != null { return owned_chain(cx, row!, self.subject, held, answer) }
+        if awaits(inner, self.name.of) { return awaited_chain(cx, self.subject, held, answer) }
         let variants = cx.variants_of(inner)
         if variants != null {
             return enum_chain(cx, variants!, self.name.of, self.subject, held, answer) ?? cx
@@ -159,6 +161,24 @@ fn owned_chain(mut cx: Lowering, row: RtSig, subject: ExprId, held: SignedType, 
     cx
         .region(cx.present(v, held), l) { cx ->
             cx.lifted(cx.call_words(cx.laid_out(read), row, [cx.carried(v, held)]), read, answer)
+        } else { cx -> cx.absent_of(answer, l) }
+}
+
+/// Whether the property `name` of a value of `ty` is a task's answer, joined.
+fn awaits(ty: SignedType, name: string) -> bool {
+    let verb? = own_shape(ty, name) else { return false }
+    match verb { .Awaited -> true, rest -> false }
+}
+
+/// `x?.await` where `x` holds a task: a region on the subject's presence, what the task it carries
+/// answered, joined, lifted into the chain's answer, else that answer's absence.
+fn awaited_chain(mut cx: Lowering, subject: ExprId, held: SignedType, answer: SignedType) -> Reg {
+    let read = answer.unwrapped()
+    let v = cx.lower(subject)
+    let l = cx.laid_out(answer)
+    cx
+        .region(cx.present(v, held), l) { cx ->
+            cx.lifted(cx.awaited_reg(cx.laid_out(read), cx.carried(v, held)), read, answer)
         } else { cx -> cx.absent_of(answer, l) }
 }
 

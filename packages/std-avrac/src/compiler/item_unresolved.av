@@ -1,7 +1,7 @@
 //! WHERE A NAME IS READ THAT NOTHING ANSWERS: no binding in the body, and no declaration — written,
 //! imported, or a generator's — where the read stands. Kept by the walk that types an item's bodies
 //! (`item_refusals`); a build fails on any body it reaches that reads one.
-use core.{ReadAs, Span}
+use core.{ParseRefusal, ReadAs, Span}
 use compiler.laws.{Aside, Found, law}
 use diagnostics.{Voice, guessed}
 use features.{apart_read}
@@ -22,8 +22,7 @@ use @std.program.query_engine.{QueryEngine}
 
 /// Every name the written item `at` of `file` reads that nothing answers, read as `read`: a word that
 /// can be no name aside, which the naming laws refuse, a name its module's files keep apart, and one
-/// a re-export with nothing behind it binds. None where a generator over the file's declarations
-/// failed: the names it would make are unknown, and its failure is what a build says.
+/// a re-export with nothing behind it binds.
 fn unread_in(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs) -> List<
     UnreadName,
 > {
@@ -31,14 +30,28 @@ fn unread_in(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs
 }
 
 /// Every name the written item `at` of `file` reads as `read` that nothing answers, a word that can
-/// be no name among them: a record literal's name is refused by no naming law.
+/// be no name among them: a record literal's name is refused by no naming law. None where a generator
+/// over the file's declarations failed, or a builder refused a statement of the file: the names they
+/// would make are unknown, and their failure is what a build says.
 fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs) -> List<
     UnreadName,
 > {
-    if !file_generated(engine, file).said.is_empty() { return [] }
+    if !file_generated(engine, file).said.is_empty() || read_refused(engine, file) { return [] }
     [u for u in item_refusals(engine, file, at).unread if u.read == read &&
         apart_files(engine, file, u.name).is_empty() &&
         !reexport_unreached_read(engine, file, u.name)]
+}
+
+/// Whether a statement of `file` failed to build what it read: a builder refused its shape, so the
+/// names it would make are unknown. A statement the grammar refused is read past.
+fn read_refused(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    (0..item_count(engine, file))
+        .any((i: int) -> read_item(engine, file, i).store.refusals().any(builder_refused(it)))
+}
+
+/// Whether `r` is a builder's refusal of what the grammar read.
+fn builder_refused(r: ParseRefusal) -> bool {
+    match r { .Builder(_, _, _, _) -> true, .Grammar(cause, _, _, _, _) -> cause is .Builder }
 }
 
 /// A name nothing answers, its voice handed the name and, where the read is written here, the names

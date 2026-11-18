@@ -575,16 +575,7 @@ impl TypeCx {
     }
 
     mut fn reads_a_guarantee(e: ExprId, shown: string, name: string) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.mismatch",
-                    self.loc_of(e),
-                    "`.${name}` reads a guarantee, this is `${shown}`",
-                    this_is(shown),
-                    "`?.${name}` reaches through the absence — or answer it first with `??`",
-                ),
-            )
+        self.spoken(said_as("type.mismatch", self.loc_of(e), guarantee_read(name, shown)))
     }
 
     mut fn no_such_property(e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
@@ -995,16 +986,7 @@ impl TypeCx {
     /// means refused.
     mut fn refuses_void_value(e: ExprId) -> bool {
         if !(self.shape_at(e) is .Void) { return false }
-        self
-            .spoken(
-                refusal(
-                    "type.mismatch",
-                    self.loc_of(e),
-                    "this answers nothing — there is nothing to bind",
-                    "answers nothing",
-                    "a mutation is a statement; drop the binding",
-                ),
-            )
+        self.spoken(said_as("type.mismatch", self.loc_of(e), void_bound()))
         true
     }
 
@@ -1319,11 +1301,10 @@ impl TypeCx {
             )
     }
 
-    /// Where a call's written arguments stand, as its refusal says it
-    /// — a piped call's first one stands left of the `|>`.
-    fn arguments_from(e: ExprId) -> string {
-        let sugar? = self.view.store.minted_for(e) else { return parentheses_give() }
-        if self.view.store.expr(sugar) is .Pipe { "the pipe and the parentheses give" } else { parentheses_give() }
+    /// Whether a pipe writes the first argument of the call at `e`, left of the `|>`.
+    fn piped(e: ExprId) -> bool {
+        let sugar? = self.view.store.minted_for(e) else { return false }
+        self.view.store.expr(sugar) is .Pipe
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
@@ -1331,12 +1312,10 @@ impl TypeCx {
     mut fn block_unseated(e: ExprId, callee: string, want: int, written: int, blocks: int) {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.mismatch",
                     self.loc_of(e),
-                    "`${callee}` takes ${want} arguments, and ${self.arguments_from(e)} ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}",
-                    "this call",
-                    "a trailing block is the call's LAST argument: declare a fn seat for it, or move the value into the parentheses",
+                    block_seatless(callee, want, self.piped(e), written, blocks),
                 ),
             )
     }
@@ -1525,18 +1504,14 @@ impl TypeCx {
     /// refusal in the block's words: a block is a fn, and a fn seat
     /// says which.
     mut fn block_misseated(callee: string, j: int, want: TypeId, n: string, a: ExprId) {
-        let seat = self.view.types.name_of(want)
-        let help = if self.view.types.arrow_parts(want) == null { "a trailing block is a fn — move the value into the parentheses, or declare seat ${j + 1} as a fn" } else { "match the seat's parameters — `{ x -> … }` names them, `{ … }` takes none (or `it`)" }
-        self
-            .emit(
-                refusal(
-                    "type.mismatch",
-                    self.loc_of(a),
-                    "the trailing block fills seat ${j + 1} of `${callee}`, which takes `${seat}`, and the block is `${n}`",
-                    this_is(n),
-                    help,
-                ),
-            )
+        let voice = block_misfit(
+            callee,
+            j,
+            self.view.types.name_of(want),
+            n,
+            self.view.types.arrow_parts(want) != null,
+        )
+        self.emit(said_as("type.mismatch", self.loc_of(a), voice))
     }
 
     mut fn type_not_place(e: ExprId, name: string) -> bool {
@@ -2125,33 +2100,19 @@ impl TypeCx {
     }
 
     mut fn bound_unheld(e: ExprId, tname: string, ty: TypeId, site: string) {
-        let tn = self.view.types.name_of(ty)
         self
             .emit(
-                refusal(
+                said_as(
                     "type.mismatch",
                     self.loc_of(e),
-                    "`${tn}` does not implement `${tname}`",
-                    site,
-                    "write `impl ${tname} for ${tn} { … }`",
+                    bound_unimplemented(self.view.types.name_of(ty), tname, site),
                 ),
             )
     }
 
     /// A map has no single element — the shared voice for a `for` and
     /// a comprehension whose head names one binder over a map.
-    mut fn map_unpaired(subject: ExprId) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.mismatch",
-                    self.loc_of(subject),
-                    "a map walks as key and value — `for k, v in m` binds both",
-                    "this map",
-                    "pair the head — `for k, v in m`",
-                ),
-            )
-    }
+    mut fn map_unpaired(subject: ExprId) -> TypeId { self.spoken(said_as("type.mismatch", self.loc_of(subject), map_walked_unpaired())) }
 }
 
 /// A settled seat's word for a voice — its written name, or `seat N`.
@@ -2210,6 +2171,69 @@ export fn variadic_short_of(callee: string, k: int, found: int) -> Voice {
 
 fn defaulted_seats(n: int) -> string {
     if n == 1 { "the last seat has a default, and a call may leave it unwritten" } else { "the last ${n} seats have defaults, and a call may leave them unwritten" }
+}
+
+/// A call of `callee`, whose seats take `want` arguments, writing `written` in its parentheses —
+/// and left of its pipe where `piped` — then `blocks` trailing blocks no seat is left for.
+export fn block_seatless(callee: string, want: int, piped: bool, written: int, blocks: int) -> Voice {
+    Voice {
+        message: "`${callee}` takes ${want} arguments, and ${arguments_from(piped)} ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}",
+        label: "this call",
+        help: "a trailing block is the call's LAST argument: declare a fn seat for it, or move the value into the parentheses",
+    }
+}
+
+/// A trailing block of type `found` filling seat `j` of `callee`, which takes `seat`, a fn where
+/// `takes_fn`.
+export fn block_misfit(callee: string, j: int, seat: string, found: string, takes_fn: bool) -> Voice {
+    Voice {
+        message: "the trailing block fills seat ${j + 1} of `${callee}`, which takes `${seat}`, and the block is `${found}`",
+        label: this_is(found),
+        help: if takes_fn { "match the seat's parameters — `{ x -> … }` names them, `{ … }` takes none (or `it`)" } else { "a trailing block is a fn — move the value into the parentheses, or declare seat ${j + 1} as a fn" },
+    }
+}
+
+/// A type parameter filled, at `site`, with `ty`, which doesn't implement the trait `bound` it's
+/// bound by.
+export fn bound_unimplemented(ty: string, bound: string, site: string) -> Voice {
+    Voice {
+        message: "`${ty}` does not implement `${bound}`",
+        label: site,
+        help: "write `impl ${bound} for ${ty} { … }`",
+    }
+}
+
+/// The property `name` read on a value of `shown`, which may be absent.
+export fn guarantee_read(name: string, shown: string) -> Voice {
+    Voice {
+        message: "`.${name}` reads a guarantee, this is `${shown}`",
+        label: this_is(shown),
+        help: "`?.${name}` reaches through the absence — or answer it first with `??`",
+    }
+}
+
+/// A map walked by a head that names one binder.
+export fn map_walked_unpaired() -> Voice {
+    Voice {
+        message: "a map walks as key and value — `for k, v in m` binds both",
+        label: "this map",
+        help: "pair the head — `for k, v in m`",
+    }
+}
+
+/// A binding of a value that answers nothing.
+export fn void_bound() -> Voice {
+    Voice {
+        message: "this answers nothing — there is nothing to bind",
+        label: "answers nothing",
+        help: "a mutation is a statement; drop the binding",
+    }
+}
+
+/// Where a call's written arguments stand, as its refusal says it: a piped call's first one stands
+/// left of the `|>`.
+fn arguments_from(piped: bool) -> string {
+    if piped { "the pipe and the parentheses give" } else { parentheses_give() }
 }
 
 /// One block, or two: how the arity voice counts them.

@@ -34,7 +34,7 @@ fn applied_signed(engine: QueryEngine, written: TypeRef, signed: SignedType) -> 
     if written.arrow || !written.alternatives.is_empty() { return signed }
     let takes? = match signed.head {
         .Owned(name) -> if name == written.name { type_row(avra().rows.types, name)?.arity ?? 0 } else { null },
-        .Declared(file, name) -> if name == written.name { declared_params(engine, file, name).length } else { null },
+        .Declared(file, name) -> if name == written.name && !declared_gathered(engine, file, name) { AppliedScope { engine: engine, file: file, params: [] }.takes(name) } else { null },
         rest -> null,
     } else { return signed }
     let keyed = written.name != MAP ||
@@ -43,6 +43,11 @@ fn applied_signed(engine: QueryEngine, written: TypeRef, signed: SignedType) -> 
         keys_by_text(signed.args[0])
     if takes == written.applied.length && keyed { signed } else { headed_type(TypeHead.Unnamed(written.name)) }
 }
+
+/// Whether `file` declares `name` as a gathered enum, whose type parameters are its members' to give:
+/// asking them while a member's own record is signed would ask that record of itself, so its count
+/// is its declaration's law, never a signing's.
+fn declared_gathered(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { declaring_item(engine, file, name, ItemKind.CollectEnum) != null }
 
 /// Whether a map keyed by `key` is keyed by text, or by a name no type stands behind, whose own law
 /// says it.

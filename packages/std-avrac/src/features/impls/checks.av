@@ -2,7 +2,7 @@
 //! arguments; else the method's first seat takes the subject and each argument its own seat, as a
 //! call's do, and the call is what the method answers; else a static fn of the subject's type is
 //! called through it.
-use core.{Checking, Checks, ExprId, Expected, Seating, SignedType}
+use core.{Checking, Checks, ExprId, Expected, FOLD, GRAMMAR_PARSE, Seating, SignedType}
 use core.expr.{MethodCall}
 
 impl Checks for MethodCall {
@@ -12,7 +12,8 @@ impl Checks for MethodCall {
             return null
         }
         let described? = subject.described() else { return value_called(cx, self, e, subject, expected) }
-        let statics? = cx.static_of(described, self.name.of) ?? cx
+        let reached = static_reached(cx, described, self)
+        let statics? = cx.static_of(described, reached) ?? cx
             .chosen_among(cx.statics_among(described, self.name.of), self.args, 0) else {
             return cx.variant_built(e, described, self.name.of, self.args, true, expected)
         }
@@ -22,10 +23,32 @@ impl Checks for MethodCall {
                 statics,
                 self.args,
                 expected,
-                (at: int) -> Seating.Method(described.spelled(), self.name.of, at),
-                self_pinned(described),
+                (at: int) -> member_seat(cx, described, self.name.of, at, true),
+                pinned_for(statics, described, expected),
             )
     }
+}
+
+/// What a static called through `described` has filled before any argument: the body's own
+/// parameter pinned to itself; and through the bare name of a generic type it answers, the type the
+/// seat wants, as a variant's is — the want fills that type's parameters.
+fn pinned_for(statics: SignedType, described: SignedType, expected: Expected) -> Map<
+    string,
+    SignedType,
+> {
+    let own = self_pinned(described)
+    let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return own }
+    let answer? = statics.answer else { return own }
+    if !described.args.is_empty() || !answer.names_as(described) || !wanted.names_as(described) { return own }
+    mut pins = own
+    if answer.unifies(wanted, pins) { pins } else { own }
+}
+
+/// The static the call `m` through `described` reaches: the one it names, or a grammar's reading of
+/// octets where its `parse` is handed them.
+fn static_reached(mut cx: Checking, described: SignedType, m: MethodCall) -> string {
+    if m.name.of != GRAMMAR_PARSE || m.args.length != 1 { return m.name.of }
+    cx.program.static_reached(described, m.name.of, cx.read_ahead(m.args[0]))
 }
 
 /// A static called through the body's own type parameter `described` answers that parameter where
@@ -35,8 +58,8 @@ fn self_pinned(described: SignedType) -> Map<string, SignedType> {
 }
 
 /// A declared method's call: its receiver written where the method writes, its arguments held to its
-/// seats. A verb the language owns is called by position, one that writes its receiver is handed a
-/// place a write lands in, and a
+/// seats — against nothing where the receiver is refused. A verb the language owns is called by
+/// position, one that writes its receiver is handed a place a write lands in, and a
 /// list's walk names its fn's seat as the walk's.
 fn method_called(
     mut cx: Checking,
@@ -54,15 +77,19 @@ fn method_called(
         cx.unplaced(named!, m.name.of, cx.store.arg_label(named!) ?? "")
         return null
     }
+    let before = cx.refused.get().length
     if subject.head is .Owned && method.seats.first()?.mutable ?? false { cx.place_written(e, m.subject, subject, m.name.of) }
+    if cx.refused.get().length != before { return cx.unfilled(m.args) }
+    if folds(cx, subject, m.name.of) { return fold_called(cx, m, e, subject, method, expected) }
     let walks = walk_verb(subject, method)
+    if walks && cx.walk_misseated(m.name.of, m.args) { return null }
     cx
         .applied(
             method,
             subject,
             m.args,
             expected,
-            (at: int) -> if walks { Seating.Walk(subject.spelled(), m.name.of, at, e.index) } else { Seating.Method(subject.spelled(), m.name.of, at) },
+            (at: int) -> if walks { Seating.Walk(subject.spelled(), m.name.of, at, e.index) } else { member_seat(cx, subject, m.name.of, at, false) },
         )
 }
 
@@ -83,6 +110,36 @@ fn value_called(mut cx: Checking, m: MethodCall, e: ExprId, subject: SignedType,
     }
     cx
         .called(through, m.args, expected, (at: int) -> Seating.Method(subject.spelled(), m.name.of, at))
+}
+
+/// The seat argument `at` of a call of the member `name` of `owner` fills, a static where `statics`:
+/// a fn's where the language itself gives the member, named as its calls say it — a static of a type
+/// the language owns beside that type, any other bare — else the method's of its type.
+fn member_seat(cx: Checking, owner: SignedType, name: string, at: int, statics: bool) -> Seating {
+    if !(cx.program.own_member)(owner, name, statics) { return Seating.Method(owner.spelled(), name, at) }
+    Seating
+        .Argument(if statics && owner.head is .Owned { "${owner.spelled()}.${name}" } else { name }, at)
+}
+
+/// Whether a call of `name` on a value of `subject` is the list's own `fold`.
+fn folds(cx: Checking, subject: SignedType, name: string) -> bool { name == FOLD && subject.listed() != null && (cx.program.own_member)(subject, name, false) }
+
+/// A list's `fold`: refused in its own words where its arguments are no seed and fn of two seats,
+/// and where its fn, its seats filled, is no fn of the accumulator and the element.
+fn fold_called(
+    mut cx: Checking,
+    m: MethodCall,
+    e: ExprId,
+    subject: SignedType,
+    method: SignedType,
+    expected: Expected,
+) -> SignedType? {
+    if cx.fold_refused(e, m.args, expected) { return null }
+    let before = cx.refused.get().length
+    let answer = cx
+        .applied(method, subject, m.args, expected, (at: int) -> Seating.Argument(m.name.of, at))
+    if m.args.length == 2 { cx.fold_misfit(m.args[1], before) }
+    answer
 }
 
 /// `ty` where it is a fn a field holds; absent for any other.

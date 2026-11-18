@@ -436,8 +436,9 @@ fn typed_breach(store: SyntaxArena, typing: ItemTyping, e: ExprId) -> BreachAt? 
 
 /// What a null check of `subject` breaks — `?` where `propagates`, else `!`: a subject always absent,
 /// or one of a type never absent, neither a `Result` for `?` nor a task's awaited answer, a name a
-/// test narrowed aside.
+/// test narrowed aside, and a null check already refused, which is said once.
 fn checked_absence(store: SyntaxArena, typing: ItemTyping, subject: ExprId, propagates: bool) -> BreachAt? {
+    if refused_check(store, typing, subject) { return null }
     let ty? = typing.type_at(subject) else { return null }
     let place = kept_at(store.expr_span(subject))
     if ty.absence() {
@@ -453,6 +454,17 @@ fn checked_absence(store: SyntaxArena, typing: ItemTyping, subject: ExprId, prop
     BreachAt {
         at: place,
         breach: if propagates { Breach.Propagated(named) } else { Breach.Forced(named) },
+    }
+}
+
+/// Whether `e` is a null check refused itself, or over one refused.
+fn refused_check(store: SyntaxArena, typing: ItemTyping, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Force(subject) -> refused_check(store, typing, subject) ||
+            checked_absence(store, typing, subject, false) != null,
+        .Propagate(subject) -> refused_check(store, typing, subject) ||
+            checked_absence(store, typing, subject, true) != null,
+        rest -> false,
     }
 }
 
@@ -488,16 +500,26 @@ fn fail_breach(store: SyntaxArena, typing: ItemTyping, s: StmtId) -> BreachAt? {
     BreachAt { at: kept_at(store.stmt_span(s)), breach: breach }
 }
 
-/// What a `fail` raising `value` lacks of a failure channel; absent where it has one, or stands
-/// where no typing reached it.
+/// What a `fail` raising `value` lacks of a failure channel; absent where it has one, or stands in
+/// a fn no typing reached. One among the statements an entry runs has none, whatever it raises.
 fn fail_channel(store: SyntaxArena, typing: ItemTyping, value: ExprId) -> Breach? {
     let lambda = enclosing_lambda(store, [], value)
     if lambda != null { return lambda_channel(store, typing, lambda!) }
     let held = typing.holding(value)
-    if held == null && typing.entry_type(value) != null { return Breach.FailUnenclosed }
+    if held == null && typing.base != null && !fn_encloses(store, value) { return Breach.FailUnenclosed }
     let body? = held else { return null }
     let promise? = body.promise else { return Breach.FailUnenclosed }
     if promise.owns(OwnType.Result) { null } else { Breach.FailUnfallible(promise.spelled()) }
+}
+
+/// Whether a fn the store declares holds the node `e` in its body.
+fn fn_encloses(store: SyntaxArena, e: ExprId) -> bool {
+    store
+        .stmt_ids()
+        .any(
+            (s) -> store.every_expr(store.fn_parts(s)?.body ?? e).contains(e) &&
+                store.fn_parts(s) != null,
+        )
 }
 
 /// The two operators the binary node `e` mixes in one run of the bitwise band: its left operand's,
@@ -726,12 +748,22 @@ fn enclosing_lambda(store: SyntaxArena, aside: List<ExprId>, e: ExprId) -> ExprI
 }
 
 /// What a `fail` the lambda `l` encloses lacks of a failure channel: the lambda answers itself, so
-/// one whose answer is only inferred — answering nothing, or bound by a `let` that writes no type —
-/// promises none; one a seat gives an answer promises it, which must be a `Result`.
+/// one whose answer is only inferred — answering nothing, taking no seat, which hears none, or bound
+/// by a `let` that writes no type — promises none; one a seat gives an answer promises it, which
+/// must be a `Result`.
 fn lambda_channel(store: SyntaxArena, typing: ItemTyping, l: ExprId) -> Breach? {
     let answer? = typing.type_at(l)?.answer else { return Breach.FailUnenclosed }
-    if answer.bottom() || inferred_lambda(store, l) { return Breach.FailUnenclosed }
+    if answer.bottom() || seatless(store, l) || inferred_lambda(store, l) { return Breach.FailUnenclosed }
     if answer.owns(OwnType.Result) { null } else { Breach.FailUnfallible(answer.spelled()) }
+}
+
+/// Whether the lambda `l` takes no seat: it writes none, and a block's body rides no pronoun.
+fn seatless(store: SyntaxArena, l: ExprId) -> bool {
+    match store.expr(l) {
+        .Lambda(params, _) -> params.is_empty(),
+        .BlockLambda(params, body) -> params.is_empty() && !store.pronoun_rides(body),
+        rest -> false,
+    }
 }
 
 /// Whether the lambda `l` is the value a `let` binds without writing its type, so that only its body

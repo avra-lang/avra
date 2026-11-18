@@ -28,7 +28,9 @@ fn bound_to(
     shared: bool = false,
 ) {
     let declared: SignedType? = if annotation == null { null } else { cx.written(annotation!) }
+    let before = cx.refused.get().length
     let read = cx.check_seated(value, declared, Seating.Binding(name))
+    if cx.nothing_bound(value, read, before) { return cx.bind(name, null) }
     if shared { return cx.bind_shared(name, declared ?? read) }
     if writes { cx.bind_cell(name, declared ?? read) } else { cx.bind(name, declared ?? read, narrowable) }
 }
@@ -39,6 +41,7 @@ impl Checks for LetPattern {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
         if self.otherwise != null { let _ = cx.check(self.otherwise!, Expected.Dropped) } else { cx.let_covers(e, subject, self.pat) }
+        cx.pattern_shaped(e, self.pat, subject, true)
         cx.opened()
         cx.check_pat(self.pat, subject)
         let rest = if self.rest == null { null } else { cx.check(self.rest!, expected) }

@@ -54,7 +54,7 @@ fn inherent_fns(engine: QueryEngine, file: SourceFileAddress, at: int, item: Rea
 }
 
 /// The `mut` seats the fn `s` of `item` writes, as written.
-fn marked_seats(item: ReadItem, s: StmtId) -> List<Param> { [p for p in item.store.fn_parts(s)?.params ?? [] if p.promises.mutable] }
+fn marked_seats(item: ReadItem, s: StmtId) -> List<Param> { [p for p in item.store.fn_parts(s)?.params ?? [] if p.promises.mutable && p.seated()] }
 
 /// Each `mut` seat of the fn `s` its body never writes through, read by `cx` from `package`.
 fn unwritten_seats(engine: QueryEngine, cx: Copies, file: SourceFileAddress, s: StmtId) -> List<
@@ -64,6 +64,7 @@ fn unwritten_seats(engine: QueryEngine, cx: Copies, file: SourceFileAddress, s: 
     let span? = cx.store.stmt_span(s) else { return [] }
     let at = kept_at(span)
     [UnwrittenSeat { at: at, seat: p.name.of, fn_name: parts.name } for p in parts.params if p.promises.mutable &&
+        p.seated() &&
         !written_through(engine, seat_body_evidence(engine, cx, file, p.name.of, span.lo, span.hi))]
 }
 

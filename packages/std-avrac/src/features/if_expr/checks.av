@@ -12,7 +12,10 @@ impl Checks for If {
         let yes = cx.check_proven(self.on_true, expected, cx.proof_when(self.cond, true))
         let other? = self.on_false else { return if expected is .Dropped && yes != null { owned_type("void") } else { null } }
         let no = cx.check_proven(other, expected, cx.proof_when(self.cond, false))
-        if !(expected is .Dropped) { return cx.branches_met([self.on_true, other], [yes, no], expected) }
+        if !(expected is .Dropped) {
+            return cx.branches_whole([self.on_true, other], [yes, no], expected) ?? cx
+                .branches_met([self.on_true, other], [yes, no], expected)
+        }
         if yes == null || no == null { null } else { owned_type("void") }
     }
 }

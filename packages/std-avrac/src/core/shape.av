@@ -139,6 +139,16 @@ impl SyntaxArena {
         }
     }
 
+    /// A node's children AS A LAW WALKS THEM: its kids, and under a `spec`, each case's body — a case's
+    /// body is a body as a fn's is, and what a law finds in one it finds there. A rule's reach is
+    /// `kids_at`'s alone.
+    fn kids_walked(at: At) -> List<At> {
+        match at {
+            .Stmt(id) -> self.kids_at(at).concat([At.Expr(c.body) for c in self.spec_parts(id)?.cases ?? []]),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> self.kids_at(at),
+        }
+    }
+
     /// A node's own content fingerprint, span-blind — what a
     /// binder's repeated occurrence is checked against.
     fn subtree_fp(at: At) -> int {

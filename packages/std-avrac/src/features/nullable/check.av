@@ -157,12 +157,7 @@ fn propagate_type(mut cx: TypeCx, v: ExprId) -> TypeId {
     }
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        return no_caller(
-            cx,
-            v,
-            "absence",
-            "answer the absence here — `?? value`, or ask with `== null`",
-        )
+        return no_caller(cx, v, false)
     }
     let promised = ret!
     if cx.errored_ty(promised) { return cx.error_type }
@@ -176,7 +171,7 @@ fn propagate_type(mut cx: TypeCx, v: ExprId) -> TypeId {
 fn propagate_res_type(mut cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        return no_caller(cx, v, "the failure", "handle it here — `match` the `.Ok`/`.Err`")
+        return no_caller(cx, v, true)
     }
     let promised = ret!
     if cx.errored_ty(promised) { return cx.error_type }
@@ -365,80 +360,73 @@ const MATCH_OPT_REMEDY: string = "write the absent arm's answer alone"
 const LET_ELSE_REMEDY: string = "the else always runs — write its statements alone"
 
 fn absence_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId) -> TypeId {
-    let promise = cx.view.types.name_of(promised)
-    cx
-        .spoken(
-            refusal(
-                "type.propagate",
-                cx.loc_of(v),
-                "`?` makes this fn answer `null`, but it promises `${promise}`",
-                "propagates here",
-                propagate_remedy(cx, promised, promise),
-            ),
-        )
+    let voice = absence_unanswered(
+        cx.view.types.name_of(promised),
+        cx.view.types.shape_of(promised) is .Res,
+    )
+    cx.spoken(said_as("type.propagate", cx.loc_of(v), voice))
 }
 
-/// The nullable channel's remedy — shape-aware: a fn promising a
-/// RESULT wants the failure channel, not a nullable answer.
-fn propagate_remedy(cx: TypeCx, ret: TypeId, promise: string) -> string {
-    if cx.view.types.shape_of(ret) is .Res {
-        return "a nullable propagates `null` — to ride the failure channel, the subject must be a `Result`; answer the absence here with `??`"
+/// `?` over a nullable in a fn promising `promise`, which is never absent; `fallible` where the
+/// promise is a `Result`, whose channel a nullable doesn't ride.
+export fn absence_unanswered(promise: string, fallible: bool) -> Voice {
+    Voice {
+        message: "`?` makes this fn answer `null`, but it promises `${promise}`",
+        label: "propagates here",
+        help: if fallible { "a nullable propagates `null` — to ride the failure channel, the subject must be a `Result`; answer the absence here with `??`" } else { "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`" },
     }
-    "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`"
 }
 
 /// `?` with no enclosing fn to pass to — the top level, or a lambda,
 /// whose answer is inferred and so promises nothing.
-fn no_caller(mut cx: TypeCx, v: ExprId, what: string, help: string) -> TypeId {
-    if cx.behind_lambda() {
-        return cx
-            .spoken(
-                refusal(
-                    "type.propagate",
-                    cx.loc_of(v),
-                    "`?` passes ${what} to a caller, and a lambda promises none — its answer is inferred",
-                    "inside this lambda",
-                    help,
-                ),
-            )
-    }
+fn no_caller(mut cx: TypeCx, v: ExprId, failing: bool) -> TypeId {
     cx
-        .spoken(
-            refusal(
-                "type.propagate",
-                cx.loc_of(v),
-                "`?` passes ${what} to a caller, and the top level has none",
-                "at the top level",
-                help,
-            ),
-        )
+        .spoken(said_as("type.propagate", cx.loc_of(v), propagate_uncalled(failing, cx.behind_lambda())))
+}
+
+/// `?` passing a failure where `failing`, else absence, to no caller: inside a lambda whose answer
+/// is inferred where `lambda`, else at the top level.
+export fn propagate_uncalled(failing: bool, lambda: bool) -> Voice {
+    Voice {
+        message: "`?` passes ${if failing { "the failure" } else { "absence" }} to a caller, and ${if lambda { "a lambda promises none — its answer is inferred" } else { "the top level has none" }}",
+        label: if lambda { "inside this lambda" } else { "at the top level" },
+        help: if failing { "handle it here — `match` the `.Ok`/`.Err`" } else { "answer the absence here — `?? value`, or ask with `== null`" },
+    }
 }
 
 fn failure_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId, sides: ResSides) -> TypeId {
-    let promise = cx.view.types.name_of(promised)
-    cx
-        .spoken(
-            refusal(
-                "type.propagate",
-                cx.loc_of(v),
-                "`?` makes this fn answer the failure, but it promises `${promise}`",
-                "propagates here",
-                "declare the answer fallible — `-> Result<${promise}, ${cx.view.types.name_of(sides.err)}>`",
-            ),
-        )
+    let voice = failure_unanswered(
+        cx.view.types.name_of(promised),
+        cx.view.types.name_of(sides.err),
+    )
+    cx.spoken(said_as("type.propagate", cx.loc_of(v), voice))
+}
+
+/// `?` over a `Result` raising `err` in a fn promising `promise`, no `Result`.
+export fn failure_unanswered(promise: string, err: string) -> Voice {
+    Voice {
+        message: "`?` makes this fn answer the failure, but it promises `${promise}`",
+        label: "propagates here",
+        help: "declare the answer fallible — `-> Result<${promise}, ${err}>`",
+    }
 }
 
 fn failures_disagree(mut cx: TypeCx, v: ExprId, sides: ResSides, promised: ResSides) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.propagate",
-                cx.loc_of(v),
-                "the failures disagree: this raises `${cx.view.types.name_of(sides.err)}`, the fn promises `${cx.view.types.name_of(promised.err)}`",
-                "propagates here",
-                "the promise must COVER what this raises — widen it to a union, or `catch` what does not fit",
-            ),
-        )
+    let voice = failures_apart(
+        cx.view.types.name_of(sides.err),
+        cx.view.types.name_of(promised.err),
+    )
+    cx.spoken(said_as("type.propagate", cx.loc_of(v), voice))
+}
+
+/// `?` over a `Result` raising `raised` in a fn whose promise, failing with `promised`, doesn't
+/// cover it.
+export fn failures_apart(raised: string, promised: string) -> Voice {
+    Voice {
+        message: "the failures disagree: this raises `${raised}`, the fn promises `${promised}`",
+        label: "propagates here",
+        help: "the promise must COVER what this raises — widen it to a union, or `catch` what does not fit",
+    }
 }
 
 /// A `??` whose left side, of `n`, is never absent.

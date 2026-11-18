@@ -159,6 +159,12 @@ fn appended(path: string) -> int {
     0
 }
 
+/// A file made at `path` that wasn't there: one coming to stand while it's read.
+fn arrived(path: string) -> int {
+    let _ = write_text(path, "came")
+    0
+}
+
 /// The tool `name` run on `args`.
 fn ran_tool(name: string, at: string, args: List<string>) { let _ = cmd(tool_at(name, at), args).run() }
 
@@ -230,6 +236,38 @@ spec "input stamps — attacked" {
             let again = ran_in(store, base, file).reads
             let reads = [n for p in others for n in [ran_in(store, p, file).reads, ran_in(store, base, file).reads]]
             "${again} ${["${n}" for n in reads].join(" ")}" == "0 1 1 1 1 1 1 1 1"
+        }
+    }
+    given "a file that isn't there" {
+        then "its absence is held by the stamp of the directory it would stand in: the next process reads nothing" {
+            let place = settled("absent", "abc")
+            let first = ran("${place}/store", "${place}/gone")
+            let second = ran("${place}/store", "${place}/gone")
+            "${first.answer} ${first.reads} ${second.answer} ${second.reads}" == "[] 1 [] 0"
+        }
+        then "a file that comes to stand there is read" {
+            let place = settled("comes", "abc")
+            let _ = ran("${place}/store", "${place}/gone")
+            let _ = ran("${place}/store", "${place}/gone")
+            let _ = write_text("${place}/gone", "new")
+            let after = ran("${place}/store", "${place}/gone")
+            "${after.answer} ${after.reads}" == "[new] 1"
+        }
+        then "below a directory that isn't there either, the nearest that stands holds it, and what is made below it is read" {
+            let place = settled("deep", "abc")
+            let _ = ran("${place}/store", "${place}/d/e/gone")
+            let stood = ran("${place}/store", "${place}/d/e/gone")
+            let _ = make_dirs("${place}/d/e") catch ""
+            let _ = write_text("${place}/d/e/gone", "deep")
+            let after = ran("${place}/store", "${place}/d/e/gone")
+            "${stood.reads} ${after.answer} ${after.reads}" == "0 [deep] 1"
+        }
+        then "a file that comes to stand while it's read keeps no stamp, and the next process reads it" {
+            let place = settled("arrives", "abc")
+            let during = ran_with("${place}/store", "shown", "${place}/gone", arrived)
+            waited()
+            let after = ran("${place}/store", "${place}/gone")
+            "${during.answer} ${after.answer} ${after.reads}" == "[] [came] 1"
         }
     }
     given "a directory read by a stamp" {

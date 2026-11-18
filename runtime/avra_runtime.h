@@ -117,6 +117,7 @@ int64_t avra_clock_jumped(int64_t at);
 // waited on the world has waited — its count of clock reads begins
 // again.
 void avra_clock_hold(int64_t by);
+void avra_mem_forked(void);
 // The memory pool's slots this process no longer fills, given back.
 void avra_mem_settle(void);
 void avra_descriptors_forgotten(void);

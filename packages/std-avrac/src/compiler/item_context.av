@@ -30,7 +30,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
 use @std.program.syntax_tape.{SyntaxTape}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 
 /// A component word as a parse needs it.
 @derive(Saved)
@@ -82,12 +82,12 @@ export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<Item
 }
 
 /// How many items a file has.
-@query
+@cut_query
 export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { file_items(engine, file).length }
 
 /// A file's item `at`, with the context it reads under; past the file's items, no text. A saved
 /// answer is asked again with the place it was asked at, which an edit may have taken away.
-@query
+@cut_query
 export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnder {
     let items = file_items(engine, file)
     let item = if at < items.length { items[at] } else { ItemText { start: 0, text: "", print: fp_str("") } }
@@ -157,6 +157,8 @@ type ItemAbout = {
     instance_words: List<string>,
     block_words: List<string>,
     impls: List<ItemImpl>,
+    /// Whether a statement of the item runs, beside what it declares.
+    runs: bool = false,
 }
 
 /// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
@@ -220,6 +222,7 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
                     implements: null,
                 } for s in stmts for c in [store.component_parts(s)] if c != null],
             ),
+        runs: stmts.any((s) -> !store.is_declaration(s)),
     }
         .saved_bytes()
 }
@@ -232,16 +235,29 @@ export type ItemText = { start: int, text: string, print: int }
 
 /// A file's items (`item_spans`), each as its text; a file with no text has none. Its text is
 /// lexed here alone.
-@query
+@cut_query
 export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemText> {
     let text? = source_text(engine, file) else { return [] }
     [ItemText { start: span.start, text: t, print: fp_str(t) } for span in item_spans(avra_columns(text), text.length) for t in [text.substring(span.start, span.end)]]
 }
 
-/// What each item of a file keeps for its words, read with no words of its own.
+/// What each item of a file keeps for its words, read with no words of its own: what an edit inside
+/// a body leaves as it was.
+@cut_query
 fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
     [about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, no_context()))) for item in file_items(engine, file)]
 }
+
+/// What the written item `at` of `file` keeps for its file as its meaning's tape says it, read
+/// where the tape lies: nothing of the item is read back.
+fn item_tape_about(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemAbout {
+    about_of(SyntaxTape.about_in(meant_tape(engine, file, item_under(engine, file, at))))
+}
+
+/// Whether each written item of `file` runs a statement, beside what it declares, by place: read
+/// from each item's tape where it lies, once for the file.
+@query
+fn file_running(engine: QueryEngine, file: SourceFileAddress) -> List<bool> { [item_tape_about(engine, file, at).runs for at in 0..item_count(engine, file)] }
 
 fn about_of(octets: Bytes?) -> ItemAbout {
     let held? = octets else {
@@ -276,11 +292,13 @@ fn item_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Ite
 /// The impls each written item of a file holds, by the item's place.
 fn written_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<ItemImpl>> { [a.impls for a in file_abouts(engine, file)] }
 
-/// The impls the written item `at` of `file` holds, read from that item's tape alone.
+/// The impls the written item `at` of `file` holds, read from that item's tape alone; none past the
+/// file's items, which a question kept from an older state of the file may name.
 fn item_written_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
+    if at < 0 || at >= item_count(engine, file) { return [] }
     about_of(
         SyntaxTape
-            .about_in(item_tape_saved(engine, file_items(engine, file)[at].text, no_context())),
+            .about_in(item_tape_saved(engine, item_under(engine, file, at).text, no_context())),
     )
         .impls
 }
@@ -371,7 +389,7 @@ fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> Line
 
 /// The named instances a file's bodies may list by name alone: its own top-level ones, read off its
 /// tokens against its words, then those each `use` line imports.
-@query
+@cut_query
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
     let own = [i.listed() for item in items_under(engine, file) for i in about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, item.context))).instances]
     own
@@ -403,7 +421,7 @@ fn own_module_words(engine: QueryEngine, file: SourceFileAddress) -> List<Declar
 @derive(Saved)
 type ModuleWords = { files: List<string>, components: List<DeclaredWord> }
 
-@query
+@cut_query
 fn module_declared(engine: QueryEngine, package: string, local: List<string>) -> ModuleWords {
     let files = module_files(engine, package, local, true)
     ModuleWords {

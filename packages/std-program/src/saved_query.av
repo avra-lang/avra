@@ -93,24 +93,33 @@ export type ListedQuery = { definition: fn() -> QueryDefinition }
 export fn definitions_of(listed: List<ListedQuery>) -> List<QueryDefinition> { [(q.definition)() for q in listed] }
 
 /// `@query`: remembered across processes.
-export fn query(f: Fn) -> Declared { remembered(f, false, [], false) }
+export fn query(f: Fn) -> Declared { remembered(f, false, [], false, false) }
 
 /// `@input`: reads the outside world, so it runs once in every process, and its readers stand
 /// when it comes out the same.
-export fn input(f: Fn) -> Declared { remembered(f, true, [], false) }
+export fn input(f: Fn) -> Declared { remembered(f, true, [], false, false) }
+
+/// `@cut_query`: a query that cuts a change off — a projection near the inputs, worked out as the
+/// frontier opens wherever a change reaches it, and past which a change reaches nothing where it
+/// comes out the same. It answers a file's address, or what one names, so asking it then is
+/// asking what the build would.
+export fn cut_query(f: Fn) -> Declared { remembered(f, false, [], false, true) }
+
+/// `@cut_parted_query`: a parted query that cuts a change off, as `@cut_query` does.
+export fn cut_parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, true) }
 
 /// `@parted_query`: a query answering `AnswerParts`, which also answers one part at a time through
 /// `<name>_part(engine, …, part_name)`. A reader of one part stands when other parts change.
-export fn parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false) }
+export fn parted_query(f: Fn) -> Declared { remembered(f, false, part_door(f), false, false) }
 
 /// `@folded_query(step)`: a query whose answer is folded forward from its last one by `step`.
 export fn folded_query(f: Fn, step: Fn) -> Declared {
     let problems = step_problems(f, step)
     if !problems.is_empty() { return nothing_made(problems) }
-    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true)
+    remembered(f, false, [declares(fold_door(f), f.at, folding_door(f, step))], true, false)
 }
 
-fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool) -> Declared {
+fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool, cuts: bool) -> Declared {
     let problems = problems_of(f)
     if !problems.is_empty() { return nothing_made(problems) }
     let made = [
@@ -123,7 +132,7 @@ fn remembered(f: Fn, is_input: bool, also_made: List<Directive>, folds: bool) ->
                 declares(arguments_door(f), f.at, arguments_writer(f)),
                 declares(compute_door(f), f.at, computing_door(f)),
                 declares(encoded_door(f), f.at, encoding_door(f)),
-                declares(definition_door(f), f.at, definition_of(f, is_input, folds)),
+                declares(definition_door(f), f.at, definition_of(f, is_input, folds, cuts)),
                 declares(known_door(f), f.at, known_answer_door(f)),
                 declares(question_door(f), f.at, asked_question_door(f)),
             ],
@@ -435,7 +444,7 @@ fn fold_kept(f: Fn) -> Stmts {
     quote { if answers_held() { ${fresh_door(f)}().set([FreshAnswer { arguments: arguments, value: answer }]) } }
 }
 
-fn definition_of(f: Fn, is_input: bool, folds: bool) -> Decls {
+fn definition_of(f: Fn, is_input: bool, folds: bool, cuts: bool) -> Decls {
     let folding = if folds { quote { Folding.By(${name(fold_door(f))}) } } else { quote { Folding.Full } }
     quote {
         @query_definition
@@ -446,6 +455,7 @@ fn definition_of(f: Fn, is_input: bool, folds: bool) -> Decls {
                 is_input: ${as_code(bool_node(is_input))},
                 compute: ${name(compute_door(f))},
                 folding: ${folding},
+                cuts: ${as_code(bool_node(cuts))},
             }
         }
     }

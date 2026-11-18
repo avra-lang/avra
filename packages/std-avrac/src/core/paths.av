@@ -91,7 +91,8 @@ impl Lowering {
     /// written in the lambda's own box, which every copy of the lambda shares; a `state` field's cell
     /// stored; a boxed record's
     /// field written over in its opened box; a flat record's field written as the record it holds with
-    /// that field replaced, written where the record stands; a list's element set in its opened box.
+    /// that field replaced, written where the record stands; a list's element set in its opened box;
+    /// what an unwrap carries written present where the nullable stands.
     mut fn written_to(target: ExprId, v: Reg) {
         let step? = self.store.place_step(target) else { return self.missed("a write to a value") }
         match step {
@@ -125,7 +126,11 @@ impl Lowering {
                 let list = self.opened_place(subject)
                 self.slot_written(list, self.lower(index), v, false)
             },
-            .Unwrap(_) -> self.missed(unwrap_written()),
+            .Unwrap(subject) -> {
+                let ty? = self.type_at(subject) else { return self.missed(unwrap_written()) }
+                if !ty.nullable() { return self.written_to(subject, v) }
+                self.written_to(subject, self.adopted(v, ty.unwrapped(), ty))
+            },
         }
     }
 

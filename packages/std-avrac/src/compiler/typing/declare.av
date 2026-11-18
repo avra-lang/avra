@@ -31,6 +31,7 @@ use core.{
     faceted,
 }
 use diagnostics.{refusal, Diag, Voice, said_as, unread_behind}
+use features.fns.{param_typeless}
 use features.{
     TypeCx,
     slot_help,
@@ -672,16 +673,7 @@ impl TypeCx {
     }
 
     fn typeless_param(s: StmtId, name: string) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.mismatch",
-                    self.stmt_loc(s),
-                    "parameter `${name}` declares no type",
-                    "declared here",
-                    "write `${name}: <type>`",
-                ),
-            )
+        self.emit(said_as("type.mismatch", self.stmt_loc(s), param_typeless(name)))
         self.error_type
     }
 
@@ -724,16 +716,7 @@ impl TypeCx {
     fn spread_cycle(s: StmtId, of: TypeRef) { self.emit(said_as("type.spread", self.stmt_loc(s), spreads_back(spelled(of)))) }
 
     fn spread_no_record(s: StmtId, of: TypeRef) {
-        self
-            .emit(
-                refusal(
-                    "type.spread",
-                    self.stmt_loc(s),
-                    "`..${spelled(of)}` spreads no record",
-                    "spread here",
-                    "a spread places a record's fields — `${spelled(of)}` is not a record with fields",
-                ),
-            )
+        self.emit(said_as("type.spread", self.stmt_loc(s), spreads_no_record(spelled(of))))
     }
 
     fn named_is_generic(s: StmtId, name: string) { self.emit(said_as("type.named", self.stmt_loc(s), named_with_params(name))) }
@@ -1407,6 +1390,15 @@ export fn alias_given_no_value(name: string, arg: string) -> Voice {
         message: "`${name}<...>` is given `${arg}`, which is no value",
         label: "applied here",
         help: "an alias's type arguments are the types of values",
+    }
+}
+
+/// A spread of `of`, as written, which is no record.
+export fn spreads_no_record(of: string) -> Voice {
+    Voice {
+        message: "`..${of}` spreads no record",
+        label: "spread here",
+        help: "a spread places a record's fields — `${of}` is not a record with fields",
     }
 }
 

@@ -1,30 +1,111 @@
-//! The typing rules of failure: `fail`'s value is checked for what it is; a `catch` is its subject's
+//! The typing rules of failure: `fail`'s value is checked against what its fn promises to fail with; a `catch` is its subject's
 //! ok side, and over a task's `.await`, what the task answers, its failure the prelude's `Cancelled`.
-use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId}
+use core.{
+    CatchArm,
+    CatchFault,
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    Seating,
+    SignedType,
+    StmtChecks,
+    StmtId,
+}
 use core.expr.{Catch}
 use core.stmt.{Fail}
 
 impl StmtChecks for Fail {
-    fn stmt_checked(mut cx: Checking, s: StmtId) { let _ = cx.check(self.value, Expected.Free) }
+    /// The value is held to the failure its fn promises; read as what it means, it is what it is, and
+    /// the `fail` carries it into the promise.
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        let _ = if cx.meanings { cx.check(self.value, Expected.Free) } else { cx.check_seated(self.value, cx.raised_as(), Seating.Raised(s.index)) }
+    }
 }
 
 impl Checks for Catch {
     /// `r catch { … }` is `r`'s ok side: each arm binds the failure it names — the whole failure for a
-    /// catch-all, a variant's payload or a union's member — and checks against the ok side.
+    /// catch-all, a variant's payload or a union's member — and answers the ok side; arms that name
+    /// only some of the failures let the rest pass to a fn that promises to carry them.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        if self.arms.is_empty() {
+            cx.caught(e, CatchFault.Armless)
+            let _ = cx.check(self.subject, Expected.Free)
+            return null
+        }
         let subject = cx.check(self.subject, Expected.Free)
         let awaits = cx.store.awaited_task(self.subject) != null
         let answer = if awaits { subject } else { cx.payload_of(subject, "Ok") }
         let err = if awaits { cx.toolchain_type("@std.prelude", "Cancelled") } else { cx.payload_of(subject, "Err") }
+        let total = awaits || err == null || arms_recover(cx, e, err!, self.arms)
         for arm in self.arms {
             cx.opened()
             if !arm.bind.of.is_empty() { cx.bind(arm.bind.of, caught(cx, err, arm.variant.of)) }
-            let _ = cx
-                .check(arm.value, if answer == null { Expected.Free } else { Expected.Exactly(answer!) })
+            let _ = cx.check_seated(arm.value, answer, Seating.CaughtArm)
             cx.closed()
         }
+        if !total { rest_carried(cx, e, err!, [a.variant.of for a in self.arms]) }
         answer
     }
+}
+
+/// Whether the arms `arms` of the `catch` at `e` recover every failure of `err`, each arm that names
+/// what `err` doesn't have refused: a union's arm a member it isn't, or one named before; an enum's a
+/// variant it lacks, or a bind of one that carries nothing; a variant of a type that has none. Arms
+/// refused, or naming every failure, or a catch-all among them, let nothing pass.
+fn arms_recover(mut cx: Checking, e: ExprId, err: SignedType, arms: List<CatchArm>) -> bool {
+    if err.generic() || err.inferred() || err.unknown() { return true }
+    let names = [a.variant.of for a in arms]
+    if !err.alternatives.is_empty() && !names.contains("") { return members_named(cx, e, err, names) }
+    let shape = cx.enum_of(err)
+    let before = cx.refused.get().length
+    for a in arms {
+        let vn = a.variant.of
+        if vn.is_empty() { continue }
+        let variant = shape?.variants?.find(it.name == vn)
+        if shape == null {
+            cx.caught(e, CatchFault.Variantless(vn, err.spelled()))
+        } else if variant == null {
+            cx.caught(e, CatchFault.NoFailure(err.spelled(), vn, [v.name for v in shape!.variants]))
+        } else if variant!.payloads.is_empty() && !a.bind.of.is_empty() {
+            cx.caught(e, CatchFault.NothingHeld(vn, a.bind.of))
+        }
+    }
+    names.contains("") ||
+        shape == null ||
+        cx.refused.get().length != before ||
+        shape!.variants.all((v) -> names.contains(v.name))
+}
+
+/// Whether arms naming `names` recover every member of the union `err`, each naming no member or one
+/// named before refused; refused arms alone let nothing pass.
+fn members_named(mut cx: Checking, e: ExprId, err: SignedType, names: List<string>) -> bool {
+    let members = [m.word() for m in err.alternatives]
+    for j, vn in names {
+        if !members.contains(vn) {
+            cx.caught(e, CatchFault.NoMember(vn, err.spelled()))
+        } else if names.take(j).contains(vn) {
+            cx.caught(e, CatchFault.Twice(vn))
+        }
+    }
+    let named = names.filter((n) -> members.contains(n))
+    named.is_empty() || members.all((m) -> named.contains(m))
+}
+
+/// The failures of `err` the arms naming `names` let pass, held to the fn around the `catch` at `e`:
+/// refused where it promises no `Result` that carries them — an enum's whole, a union's rest.
+fn rest_carried(mut cx: Checking, e: ExprId, err: SignedType, names: List<string>) {
+    if err.alternatives.is_empty() {
+        if !cx.carries_rest((promised: SignedType) -> promised.spelled() == err.spelled()) { cx.caught(e, CatchFault.Rest(err.spelled())) }
+        return
+    }
+    let rest = err.alternatives.filter((m) -> !names.contains(m.word()))
+    if cx
+        .carries_rest(
+            (promised: SignedType) -> rest
+                .all((m) -> m.reaches(promised) || promised.alternatives.any((a) -> m.reaches(a))),
+        ) { return }
+    cx.caught(e, CatchFault.UnionRest([m.spelled() for m in rest].join(" or ")))
 }
 
 /// What an arm catching `variant` binds of the failure `err`: all of it for a catch-all, the member a

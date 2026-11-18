@@ -11,7 +11,14 @@ use @std.program.layered_store.{LayeredStore}
 use @std.program.query_engine.{QueryDefinition, QueryEngine, query_engine}
 use @std.program.query_times.{QueryTimes, TimedSide, query_times}
 use @std.program.sorted.{sorted_by}
-use @std.program.worked_ahead.{WorkAhead, Worked, engine_worked_ahead}
+use @std.program.source_facts.{source_text}
+use @std.program.worked_ahead.{
+    WorkAhead,
+    Worked,
+    asked_across,
+    engine_worked_ahead,
+    has_worked_ahead,
+}
 use @std.io.{env}
 
 /// Where work ahead is kept and how it's done: the store's directory, the queries every process
@@ -71,6 +78,50 @@ export fn program_worked(
     clock.closed()
     if at.timed { eprintln(phases_said(clock, filed)) }
     lowered
+}
+
+/// EVERY BODY A PROGRAM'S WALK MET, PLACED ACROSS PROCESSES before the program's shape asks for any:
+/// the walk, read from the bodies' facts, says which tests each body keeps, and each process
+/// places the bodies it takes, reading each one's code once, so the asking process reads no
+/// body's code at all. Only a build that worked ahead places ahead; whether any process ran.
+export fn program_placed(
+    worked: Worked,
+    directory: string,
+    entry: SourceFileAddress,
+    process_count: int,
+    timed: bool,
+) -> bool {
+    if process_count < 2 || !has_worked_ahead() { return false }
+    let walked = match program_walked(worked.engine, entry) {
+        .Walked(w) -> w,
+        .Unmade(_why, _at) -> { return false },
+    }
+    asked_across<WalkedUnit, int>(
+        worked.store,
+        worked.engine,
+        directory,
+        WorkAhead {
+            items: (_engine: QueryEngine) -> walked.units,
+            is_known: unit_placed_is_known,
+            ask: unit_placed,
+            process_count: process_count,
+            timed: timed,
+        },
+    )
+}
+
+/// Whether anything is kept about the placing of the met body `u`.
+fn unit_placed_is_known(engine: QueryEngine, u: WalkedUnit) -> bool {
+    placed_names_is_known(engine, u.called, u.kept) &&
+        placed_code_is_known(engine, u.called, u.kept)
+}
+
+/// The met body `u` placed, and its facts answered as the call that met it reads them: how many
+/// names it names.
+fn unit_placed(engine: QueryEngine, u: WalkedUnit) -> int {
+    let _ = unit_facts(engine, u.called)
+    let _ = placed_code(engine, u.called, u.kept)
+    placed_names(engine, u.called, u.kept).length
 }
 
 /// At most this many moved inputs are walked in this process alone: an edit re-asks a handful of
@@ -183,9 +234,10 @@ fn impls_filed_in(engine: QueryEngine, package: string) -> bool {
     !written.parts.is_empty() || !generated.parts.is_empty()
 }
 
-/// `files`, the one declaring the most bodies first, so processes taking turns share them evenly.
+/// `files`, the longest first, so processes taking turns share the work about evenly: a file's
+/// length is read off its text, which costs nothing a build has not already read.
 fn widest_first(engine: QueryEngine, files: List<SourceFileAddress>) -> List<SourceFileAddress> {
-    let widths = [declared_bodies(engine, f).length for f in files]
+    let widths = [source_text(engine, f)?.length ?? 0 for f in files]
     [files[at] for at in sorted_by([at for at in 0..files.length], (a, b) -> widths[a] > widths[b])]
 }
 
@@ -204,10 +256,15 @@ fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declare
 fn file_worked_is_known(engine: QueryEngine, file: SourceFileAddress) -> bool { bodies_known(engine, file) && file_erring_is_known(engine, file) }
 
 /// Every body `file` declares lowered, then what every law finds in its written items, in one process
-/// so the laws read the typing the lowering held: how many lowered.
+/// so the laws read the typing the lowering held, then what a program's whole shape reads of the
+/// file alone: the host fns it declares, the fns its hosts are judged against, and whether it
+/// runs a statement at its top. How many lowered.
 fn file_worked(engine: QueryEngine, file: SourceFileAddress) -> int {
     let lowered = bodies_lowered(engine, file)
     let _ = file_erring(engine, file)
+    let _ = file_host_fns(engine, file)
+    let _ = file_bound_fns(engine, file)
+    let _ = strays_in(engine, file)
     lowered
 }
 
@@ -256,11 +313,13 @@ fn body_is_known(engine: QueryEngine, b: DeclaredBody) -> bool {
     }
 }
 
-/// Whether `b` lowered, asked as the walk asks it; a generic fn is left to the walk.
+/// Whether `b` lowered, its facts asked as the walk asks them, which lowers it, and then those of
+/// each body only its calls name; a generic fn is left to the calls that fill it.
 fn body_lowered(engine: QueryEngine, b: DeclaredBody) -> bool {
     match b {
-        .Free(file, name) -> !is_generic_fn(engine, file, name) && lowered_under(engine, file, name, null) != null,
-        .Method(at, name, statics) -> lowered_method_under(engine, at, name, statics, null) != null,
+        .Free(file, name) -> !is_generic_fn(engine, file, name) &&
+            called_units_worked(engine, fn_facts_asked(engine, file, name)),
+        .Method(at, name, statics) -> called_units_worked(engine, method_facts_asked(engine, at, name, statics)),
     }
 }
 
@@ -271,9 +330,9 @@ fn is_generic_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> 
 }
 
 /// What process `core` of `of` lowers when a program rooted at `package` is worked ahead, lowered in
-/// this one process instead, in the order that process asks: the files `asking` finds with a body
-/// it knows nothing of, widest first, each whose turn is `core`'s, then a fresh engine over `store`
-/// asking each of their bodies. Answers how many lowered.
+/// this one process instead, in the order that process asks: the program's files, widest first,
+/// each whose turn is `core`'s and that holds a body a fresh engine over `store` knows nothing of,
+/// that engine asking each of their bodies. Answers how many lowered.
 export fn share_replayed(
     store: LayeredStore,
     asking: QueryEngine,
@@ -281,9 +340,9 @@ export fn share_replayed(
     core: int,
     of: int,
 ) -> int {
-    let unknown = widest_first(asking, program_files(asking, package))
-        .filter((f) -> !bodies_known(asking, f))
+    let files = widest_first(asking, program_files(asking, package))
     let _ = store.saved()
     let engine = query_engine(store, avra_fact_definitions())
-    [bodies_lowered(engine, f) for at, f in unknown if at % of == core].sum()
+    [bodies_lowered(engine, f) for at, f in files if at % of == core && !bodies_known(engine, f)]
+        .sum()
 }

@@ -94,7 +94,8 @@ fn clause_checked(mut cx: Checking, c: CompClause) {
 impl Checks for Collect {
     /// A collection's statements check in a scope of their own, each value standing as one (or a list of them) against
     /// the element its seat wants; it is the list its seat wants, else the list of the first value
-    /// they keep that is no list, else of a kept list's elements.
+    /// they keep that is no list, else of a kept list's elements; a value no seat typed is checked
+    /// again as one of what the collection then holds.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let wanted = match expected {
             .Exactly(ty) -> (ty with { nulls: 0 }).listed(),
@@ -105,11 +106,20 @@ impl Checks for Collect {
             let value = cx.store.answer_of(s)
             if value == null { cx.check_stmt(s) } else { let _ = cx.kept_checked(value!, wanted) }
         }
-        cx.closed()
-        let kept = flatten([kept_types(cx, At.Stmt(s)) for s in self.stmts])
+        let values = [v! for s in self.stmts for v in [cx.store.answer_of(s)] if v != null]
+        let typed = flatten([kept_types(cx, At.Stmt(s)) for s in self.stmts])
+        let kept = if typed.is_empty() && wanted == null { read_alone(cx, values) } else { typed }
         let held = wanted ?? kept.find(it.listed() == null) ?? kept.first()?.listed()
+        if wanted == null && held != null { for v in values { if cx.type_of(v) == null { let _ = cx.kept_checked(v, held) } } }
+        cx.closed()
         if held == null { null } else { owned_type("List") with { args: [held!] } }
     }
+}
+
+/// The types `values` have read under no seat, each that holds a value: what a collection none of
+/// whose statements a seat typed holds.
+fn read_alone(mut cx: Checking, values: List<ExprId>) -> List<SignedType> {
+    [t! for v in values for t in [cx.check(v, Expected.Free)] if t != null && t!.holds_value()]
 }
 
 /// The types of the values the statements at `at` keep: a statement's value that is one, else what

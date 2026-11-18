@@ -69,13 +69,15 @@ fn through_type(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> R
     }
 }
 
-/// A static fn of a type the program declares applied to nothing: a call of its symbol, each
-/// argument into the seat it fills, a `mut` one handed the place it writes through.
+/// A static fn of a type the program declares applied to nothing: a call of the symbol the call
+/// reaches, each argument into the seat it fills, a `mut` one handed the place it writes through.
 fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> Reg {
-    let written? = cx.static_fn(ty, m.name.of) ?? cx.static_among(ty, m.name.of, m.args) else {
+    let first = if m.args.is_empty() { null } else { cx.type_at(m.args[0]) }
+    let reached = cx.program.checked.static_reached(ty, m.name.of, first)
+    let written? = cx.static_fn(ty, reached) ?? cx.static_among(ty, m.name.of, m.args) else {
         return cx.missed_as(static_unlowered(ty, m.name.of))
     }
-    let callee? = static_unit(cx, m, e, ty, written) else { return cx.missed_as(generic_static_unlaid(ty)) }
+    let callee? = static_unit(cx, m, e, ty, written, reached) else { return cx.missed_as(generic_static_unlaid(ty)) }
     let mark = cx.handing_mark()
     let args? = cx.call_args(callee, m.args) else { return cx.missed_as(static_unlowered(ty, m.name.of)) }
     let r = cx.call_fn(cx.layout_at(e), callee, args)
@@ -83,12 +85,19 @@ fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> 
     r
 }
 
-/// The unit a call of the static `written` of `ty` reaches: itself on a type of no type parameters;
+/// The unit a call of the static `written` of `ty`, reached as `reached`, is: itself on a type of no type parameters;
 /// on a generic type, the unit its arguments and the call's own type lay out the type's parameters
 /// in. Absent where they don't.
-fn static_unit(cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType, written: CalledFn) -> CalledFn? {
+fn static_unit(
+    cx: Lowering,
+    m: MethodCall,
+    e: ExprId,
+    ty: SignedType,
+    written: CalledFn,
+    reached: string,
+) -> CalledFn? {
     if !cx.generic_declared(ty) { return written }
-    let signed? = (cx.program.checked.static_of)(ty, m.name.of) else { return null }
+    let signed? = (cx.program.checked.static_of)(ty, reached) else { return null }
     cx.instantiated_as(written, signed, [], m.args, e)
 }
 

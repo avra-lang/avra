@@ -71,8 +71,6 @@ permissions:
 # The machine store stands inside the job's own workspace, so no two jobs (or steps of other
 # trees) share one and a row is only ever read by the run that wrote it.
 env:
-  # THE OLD PATH, PINNED UNTIL CI IS FLIPPED: `AVRA_PROGRAM=0` is the one switch (shared.av `program_door`).
-  AVRA_PROGRAM: "0"
   # A job saves, restores and uploads stores between steps, so each build saves its own before it answers.
   AVRA_STORE_KEPT_HERE: "1"
   AVRA_CACHE_DIR: ${{ github.workspace }}/.avra-machine
@@ -796,7 +794,10 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            # std-avrac's suite stands on the old path: its spec harness (testing/mod.av) checks programs
+            # through the old Workspace, which the program layer does not answer yet.
+            pin=""; case $p in std-avrac*) pin="AVRA_PROGRAM=0" ;; esac
+            python3 tools/step_cpu.py --state "$p" -- env $pin AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,

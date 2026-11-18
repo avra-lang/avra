@@ -4,7 +4,7 @@
 //! recovers to the ok side; a SELECTIVE one stays the Result, and
 //! the unmatched keep propagating — which needs the same channel
 //! `?` needs.
-use core.{ExprId, Type, TypeId, ResSides, TypeRegistry, same_type}
+use core.{CatchFault, ExprId, Type, TypeId, ResSides, TypeRegistry, same_type}
 use features.{TypeCx, EnumSig, this_is, variant_meant, TypeArgs, res_enum_sig, Refusal}
 use diagnostics.{Voice, refusal, said_as}
 
@@ -191,17 +191,52 @@ export fn res_variants(args: TypeArgs) -> EnumSig? {
 
 // ── The voices ──
 
-fn catch_without_arms(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "a `catch` needs at least one arm",
-                "no arm here",
-                "write the failure it recovers from: `catch e -> …`, or `catch { .Variant -> … }`",
-            ),
-        )
+fn catch_without_arms(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("type.catch", cx.loc_of(e), catch_fault(CatchFault.Armless))) }
+
+/// What a `catch` is refused for, as `fault` says.
+export fn catch_fault(fault: CatchFault) -> Voice {
+    match fault {
+        .Armless -> Voice {
+            message: "a `catch` needs at least one arm",
+            label: "no arm here",
+            help: "write the failure it recovers from: `catch e -> …`, or `catch { .Variant -> … }`",
+        },
+        .Rest(err) -> Voice {
+            message: "a selective `catch` lets the other failures pass, and this fn cannot carry them",
+            label: "the rest propagate",
+            help: "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${err}>`",
+        },
+        .UnionRest(remaining) -> Voice {
+            message: "a selective `catch` lets the other members pass, and this fn cannot carry them",
+            label: "the rest propagate",
+            help: "name every member (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${remaining}>`",
+        },
+        .NoMember(vn, err) -> Voice {
+            message: "`${vn}` names no member of `${err}`",
+            label: "in this arm",
+            help: "catch by one of its members' own type names",
+        },
+        .Twice(vn) -> Voice {
+            message: "`${vn}` is named twice in this catch",
+            label: "in this arm",
+            help: "each member answers once",
+        },
+        .Variantless(vn, err) -> Voice {
+            message: "`.${vn}` names a variant, but `${err}` has none",
+            label: "in this arm",
+            help: "bind the whole error instead — `catch e ->`",
+        },
+        .NoFailure(err, vn, variants) -> Voice {
+            message: "`${err}` has no variant `${vn}`",
+            label: "in this arm",
+            help: variant_meant(vn, variants),
+        },
+        .NothingHeld(vn, bind) -> Voice {
+            message: "`.${vn}` carries nothing, so `${bind}` has nothing to hold",
+            label: "in this arm",
+            help: "drop the parentheses",
+        },
+    }
 }
 
 fn not_a_result(mut cx: TypeCx, subject: ExprId) -> TypeId {
@@ -221,96 +256,28 @@ fn failure_unloaded(mut cx: TypeCx, subject: ExprId, said: Refusal) -> TypeId {
     cx.spoken(refusal("type.catch", cx.loc_of(subject), said.message, "caught here", said.help))
 }
 
-fn uncarried_rest(mut cx: TypeCx, e: ExprId, err: TypeId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "a selective `catch` lets the other failures pass, and this fn cannot carry them",
-                "the rest propagate",
-                "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(err)}>`",
-            ),
-        )
-}
+fn uncarried_rest(mut cx: TypeCx, e: ExprId, err: TypeId) -> TypeId { caught(cx, e, CatchFault.Rest(cx.view.types.name_of(err))) }
 
-fn uncarried_union_rest(mut cx: TypeCx, e: ExprId, remaining: TypeId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "a selective `catch` lets the other members pass, and this fn cannot carry them",
-                "the rest propagate",
-                "name every member (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(remaining)}>`",
-            ),
-        )
-}
+fn uncarried_union_rest(mut cx: TypeCx, e: ExprId, remaining: TypeId) -> TypeId { caught(cx, e, CatchFault.UnionRest(cx.view.types.name_of(remaining))) }
 
 fn no_such_member(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string) {
-    cx
-        .emit(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "`${vn}` names no member of `${cx.view.types.name_of(err)}`",
-                "in this arm",
-                "catch by one of its members' own type names",
-            ),
-        )
+    let _ = caught(cx, e, CatchFault.NoMember(vn, cx.view.types.name_of(err)))
 }
 
-fn duplicate_member(mut cx: TypeCx, e: ExprId, vn: string) {
-    cx
-        .emit(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "`${vn}` is named twice in this catch",
-                "in this arm",
-                "each member answers once",
-            ),
-        )
-}
+fn duplicate_member(mut cx: TypeCx, e: ExprId, vn: string) { let _ = caught(cx, e, CatchFault.Twice(vn)) }
 
 fn no_variants_to_name(mut cx: TypeCx, e: ExprId, vn: string, err: TypeId) {
-    cx
-        .emit(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "`.${vn}` names a variant, but `${cx.view.types.name_of(err)}` has none",
-                "in this arm",
-                "bind the whole error instead — `catch e ->`",
-            ),
-        )
+    let _ = caught(cx, e, CatchFault.Variantless(vn, cx.view.types.name_of(err)))
 }
 
 fn no_such_failure(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string, sig: EnumSig) {
-    cx
-        .emit(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "`${cx.view.types.name_of(err)}` has no variant `${vn}`",
-                "in this arm",
-                variant_meant(vn, sig.names),
-            ),
-        )
+    let _ = caught(cx, e, CatchFault.NoFailure(cx.view.types.name_of(err), vn, sig.names))
 }
 
-fn nothing_to_hold(mut cx: TypeCx, e: ExprId, vn: string, bind: string) {
-    cx
-        .emit(
-            refusal(
-                "type.catch",
-                cx.loc_of(e),
-                "`.${vn}` carries nothing, so `${bind}` has nothing to hold",
-                "in this arm",
-                "drop the parentheses",
-            ),
-        )
-}
+fn nothing_to_hold(mut cx: TypeCx, e: ExprId, vn: string, bind: string) { let _ = caught(cx, e, CatchFault.NothingHeld(vn, bind)) }
+
+/// The `catch` at `e` refused as `fault` says.
+fn caught(mut cx: TypeCx, e: ExprId, fault: CatchFault) -> TypeId { cx.spoken(said_as("type.catch", cx.loc_of(e), catch_fault(fault))) }
 
 fn arm_not_ok(mut cx: TypeCx, value: ExprId, t: TypeId) {
     let gn = cx.name_at(value)

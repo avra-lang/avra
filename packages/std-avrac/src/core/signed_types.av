@@ -269,13 +269,14 @@ impl SignedType {
     }
 
     /// Whether this fn type fits the fn seat `seat` but for its seats' marks: a seat that permits
-    /// writing takes a fn that doesn't write through it, and never the reverse.
+    /// writing takes a fn that doesn't write through it, a seat that promises settling one that
+    /// settles nothing, and never the reverse of either.
     fn fits_written(seat: SignedType) -> bool {
         if !(self.head is .Function) ||
             !(seat.head is .Function) ||
             self.seats.length != seat.seats.length { return false }
         unmarked(self).reaches(unmarked(seat)) &&
-            [j for j, s in self.seats if s.mutable && !seat.seats[j].mutable].is_empty()
+            [j for j, s in self.seats if s.asks_past(seat.seats[j])].is_empty()
     }
 
     /// Whether a value of this type is a value of `seat` as it is: the same type, or one holding
@@ -298,7 +299,21 @@ impl SignedType {
 }
 
 impl SignedSeat {
-    fn spelled() -> string { seat_spelled(self.mutable, self.settled, self.ty.spelled()) }
+    /// The seat as its fn type writes it: `const`, `mut`, `state` and `isolated`, in the order the
+    /// grammar takes them, before its type.
+    fn spelled() -> string {
+        let inner = if self.unshared { "isolated ${self.ty.spelled()}" } else { self.ty.spelled() }
+        seat_spelled(self.mutable, self.settled, if self.state { "state ${inner}" } else { inner })
+    }
+
+    /// Whether a fn asking this of its seat asks more than the seat `seat` grants: to write through
+    /// it, to hold it settled, to reach its place, or to run apart, where `seat` doesn't say so.
+    fn asks_past(seat: SignedSeat) -> bool {
+        self.mutable && !seat.mutable ||
+            self.settled && !seat.settled ||
+            self.state && !seat.state ||
+            self.unshared && !seat.unshared
+    }
 }
 
 /// A fn type's answer as it follows its seats: nothing for `void`.
@@ -457,7 +472,7 @@ fn head_word(h: TypeHead) -> string {
 
 /// The list type of `elem`.
 /// A fn type with no promise on any seat.
-fn unmarked(f: SignedType) -> SignedType { f with { seats: [s with { mutable: false, settled: false } for s in f.seats] } }
+fn unmarked(f: SignedType) -> SignedType { f with { seats: [s with { mutable: false, settled: false, state: false, unshared: false } for s in f.seats] } }
 
 export fn list_of(elem: SignedType) -> SignedType { owned_type("List") with { args: [elem] } }
 

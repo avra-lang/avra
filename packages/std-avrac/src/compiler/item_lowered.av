@@ -833,41 +833,46 @@ fn toolchain_callee(engine: QueryEngine, module: string, name: string) -> Called
 
 /// The fn `d` names, as a call reaches it: an extern by the symbol C knows it by, its `mut` seats
 /// handed the places they write through; a declared fn by the one its body is known by.
-fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? {
-    let item = read_item(engine, d.file, d.item)
+fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? { callee_at(engine, d.file, d.item, d.name) }
+
+/// The fn the item `at` of `file` declares as `name`, as a call reaches it: read from its item once,
+/// so a call of it elsewhere reads this answer and never its item.
+@query
+fn callee_at(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> CalledFn? {
+    let item = read_item(engine, file, at)
     let host = item
         .stmts
-        .find((s) -> item.store.is_host_fn(s) && item.store.fn_parts(s)?.name == d.name)
+        .find((s) -> item.store.is_host_fn(s) && item.store.fn_parts(s)?.name == name)
     if host != null {
         return CalledFn {
-            file: d.file,
-            name: d.name,
-            symbol: d.name,
+            file: file,
+            name: name,
+            symbol: name,
             external: false,
             hosted: true,
             plain: item.store.fn_parts(host!)!.params.all(plain_seat),
-            params: signed_seats(fn_signature(engine, d.file, d.name)?.params ?? []),
+            params: signed_seats(fn_signature(engine, file, name)?.params ?? []),
         }
     }
-    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == d.name]
+    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == name]
         .first()
     if external != null {
         return CalledFn {
-            file: d.file,
-            name: d.name,
-            symbol: d.name,
+            file: file,
+            name: name,
+            symbol: name,
             external: true,
             plain: external!.params.all(plain_seat),
-            params: signed_seats(fn_signature(engine, d.file, d.name)?.params ?? []),
+            params: signed_seats(fn_signature(engine, file, name)?.params ?? []),
         }
     }
-    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == d.name]
+    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
         .first() else { return null }
-    let signed = fn_signature(engine, d.file, d.name)
+    let signed = fn_signature(engine, file, name)
     CalledFn {
-        file: d.file,
-        name: d.name,
-        symbol: declared_symbol(d.file, d.name),
+        file: file,
+        name: name,
+        symbol: declared_symbol(file, name),
         external: false,
         plain: declared.params.all(plain_seat),
         type_params: declared.tparams.length,
@@ -1086,11 +1091,21 @@ fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
     } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
 }
 
-/// The symbol the type `ty` names is known by, absent for one the program doesn't declare.
+/// The symbol the type `ty` names is known by: a declared type's, or a word the language owns under
+/// the language's own name; absent for any other.
 fn type_symbol(ty: SignedType) -> string? {
-    let at? = declared_at(ty) else { return null }
+    let at? = declared_at(ty) else { return own_symbol(ty) }
     declared_symbol(at.file, at.name)
 }
+
+/// The symbol a type the language owns, taking no arguments, is known by; absent for any other.
+fn own_symbol(ty: SignedType) -> string? {
+    if ty.nullable() || ty.dynamic || !ty.args.is_empty() || ty.own() == null { return null }
+    "${OWN_TYPES}${ty.spelled()}"
+}
+
+/// What the symbol of a type the language owns begins with, which no declared type's does.
+const OWN_TYPES: string = "@own."
 
 /// The fn whose body is the default the record `ty` writes for its field `field`, as a call reaches
 /// it. Absent for a field whose type names the record's type parameters, a field it doesn't write

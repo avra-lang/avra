@@ -116,7 +116,7 @@ fn declared_signature(engine: QueryEngine, file: SourceFileAddress, written: Wri
     }
     FnSignature {
         type_params: written.type_params,
-        params: [signing.param(p) for p in written.params],
+        params: [signing.param(p) for p in written.params if p.seated()],
         answer: signing.signed(widthless(written.ret)!),
         answer_width: width_of(written.ret),
         bounds: signing.bounds(written),
@@ -204,7 +204,10 @@ fn name_over(engine: QueryEngine, file: SourceFileAddress, parts: NamedParts) ->
 /// The shape the named type `ty` stands over, bound to the arguments it's applied to, through every
 /// named type between; absent for any other type, a dynamic one among them. A name over a nullable is
 /// as absent as its shape, so it stands over it under the nulls it carries.
-export fn named_over(engine: QueryEngine, ty: SignedType) -> SignedType? { shape_under(engine, ty, NAMED_DEPTH) }
+export fn named_over(engine: QueryEngine, ty: SignedType) -> SignedType? {
+    let shape? = shape_under(engine, ty, NAMED_DEPTH) else { return null }
+    if ty.under == null && shape.spelled() == ty.spelled() { null } else { shape }
+}
 
 /// The shape the named type `ty` is written over, one name down: what a value crossing into it
 /// (`Name(value)`) is, another named type where it names one.
@@ -587,7 +590,20 @@ export fn writes_specs(engine: QueryEngine, file: SourceFileAddress) -> bool {
         )
 }
 
-fn read_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {
+/// `read`, the item at `at` in `file` as another reader read it back, for whoever is asking now: each
+/// query a held item stands on asked, and nothing read back.
+fn item_asked(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadItem) -> ReadItem {
+    let made = generated_at(engine, file, at)
+    if made != null {
+        let _ = generated_expanded(engine, file, made!.tape)
+        return read
+    }
+    let _ = item_under(engine, file, at)
+    read
+}
+
+/// The item at `at` in `file`, read back, each query it stands on asked.
+fn item_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> ReadItem {
     let made = generated_at(engine, file, at)
     if made != null {
         let tape = generated_expanded(engine, file, made!.tape)
@@ -780,8 +796,12 @@ impl Signing {
     }
 
     /// A written type with every name in it resolved, an alias standing for what it names, and a
-    /// union's members in one order whatever order they were written in.
-    fn signed(written: TypeRef) -> SignedType {
+    /// union's members in one order whatever order they were written in; unknown where it is applied
+    /// to another count of type arguments than it takes, refused where it's written.
+    fn signed(written: TypeRef) -> SignedType { applied_signed(self.engine, written, self.resolved_as_written(written)) }
+
+    /// `signed`, as written, whatever it is applied to.
+    fn resolved_as_written(written: TypeRef) -> SignedType {
         if written.spliced && self.writer != null { return (self with { writer: null }).signed(written with { spliced: false }) }
         if written.name == "Self" && self.self_type != null && written.applied.is_empty() {
             return self.self_type! with { nulls: if written.optional { 1 } else { 0 }, dynamic: written.dynamic }

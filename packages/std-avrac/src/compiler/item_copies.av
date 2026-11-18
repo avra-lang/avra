@@ -68,25 +68,57 @@ fn same_kind(a: CopyKind, b: CopyKind) -> bool {
 }
 
 /// Every write the written item `at` of `file` makes through a `mut` local that stays in it, the
-/// first through each local, in node order; an item that declares no `mut` local typing nothing.
+/// first through each local, in node order; an item that declares no `mut` local typing nothing. An
+/// item among the statements its file runs adds what they make read as one body (`entry_copies`): a
+/// local one statement binds is written through by another.
 @query
 fn item_copies(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCopies {
     if at >= item_count(engine, file) { return ItemCopies { writes: [] } }
+    let own = own_copies(engine, file, at)
+    let across = [c.write for c in entry_copies(engine, file).found if c.item == at && !own.any(it.local == c.write.local && it.place == c.write.place)]
+    ItemCopies { writes: own.concat(across) }
+}
+
+/// Every write the written item `at` of `file` makes through a `mut` local its own bodies declare.
+fn own_copies(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<CopyWrite> {
     let item = read_item(engine, file, at)
-    let locals = [s for s in item.store.stmt_ids() if item.store.stmt(s) is .MutLet]
-    if locals.is_empty() { return ItemCopies { writes: [] } }
-    let cx = copies_in(engine, file, at, item)
-    let writes = sorted_by(cx.writes(), (a: Write, b: Write) -> cx.lo(a.at) < cx.lo(b.at))
-    mut warned: List<int> = []
-    mut out: List<CopyWrite> = []
-    for w in writes {
-        let s? = cx.declaring(w.place, w.at, locals) else { continue }
-        if warned.contains(s.index) { continue }
-        let found? = cx.copy_write(w, s) else { continue }
-        warned.push(s.index)
-        out.push(found)
+    if !item.store.stmt_ids().any((s) -> item.store.stmt(s) is .MutLet) { return [] }
+    [w.write for w in copies_in(engine, file, at, item).stayed()]
+}
+
+/// A write that stays in its local, and the node it stands at in the store it was read in.
+type Stayed = { node: int, write: CopyWrite }
+
+/// A write among the statements a file runs that stays in its local, and the written item it stands in.
+@derive(Saved)
+type EntryCopy = { item: int, write: CopyWrite }
+
+/// The items a file's running statements stand in, and every write among them that stays in its
+/// local.
+@derive(Saved)
+type EntryCopies = { items: List<int>, found: List<EntryCopy> }
+
+/// Every write the statements `file` runs make through a `mut` local that stays in it, each with the
+/// written item it stands in: the statements read and typed once, as one body, so a local and the
+/// write through it need not share an item.
+@query
+fn entry_copies(engine: QueryEngine, file: SourceFileAddress) -> EntryCopies {
+    let read = entry_read(engine, file)
+    let items = [i.at for i in read.items]
+    if !read.store.stmt_ids().any((s) -> read.store.stmt(s) is .MutLet) { return EntryCopies { items: items, found: [] } }
+    let types = entry_types(engine, file).types
+    let package = file.package_name
+    let cx = Copies {
+        store: read.store,
+        type_at: (k: int) -> node_type(types, k),
+        writes_receiver: (ty: SignedType, name: string) -> receiver_written(engine, ty, name, package),
+        method_marks: (ty: SignedType, name: string) -> [s.mutable for s in (method_type(engine, ty, name, package)?.seats ?? []).drop(1)],
+        call_marks: (callee: string) -> named_marks(engine, file, callee),
     }
-    ItemCopies { writes: out }
+    EntryCopies {
+        items: items,
+        found: [EntryCopy { item: item_holding(read, w.node), write: w.write } for w in cx.stayed()],
+    }
 }
 
 /// What the writes of the written item `at` of `file`, read back as `item`, read.
@@ -136,6 +168,23 @@ fn named_marks(engine: QueryEngine, file: SourceFileAddress, callee: string) -> 
 }
 
 impl Copies {
+    /// Every write through a `mut` local of the store that stays in it, the first through each
+    /// local, in node order.
+    fn stayed() -> List<Stayed> {
+        let locals = [s for s in self.store.stmt_ids() if self.store.stmt(s) is .MutLet]
+        let writes = sorted_by(self.writes(), (a: Write, b: Write) -> self.lo(a.at) < self.lo(b.at))
+        mut warned: List<int> = []
+        mut out: List<Stayed> = []
+        for w in writes {
+            let s? = self.declaring(w.place, w.at, locals) else { continue }
+            if warned.contains(s.index) { continue }
+            let found? = self.copy_write(w, s) else { continue }
+            warned.push(s.index)
+            out.push(Stayed { node: w.at.index, write: found })
+        }
+        out
+    }
+
     /// Every write a call in the item makes: a writing method's receiver, and each argument a `mut`
     /// seat is handed.
     fn writes() -> List<Write> {
@@ -157,7 +206,19 @@ impl Copies {
     /// The writes the call by name at `e` makes, none for any other node.
     fn called_writes(e: ExprId) -> List<Write> {
         let call? = self.store.call_parts(e) else { return [] }
-        self.handed((self.call_marks)(call.callee), call.args)
+        self.handed(self.local_marks(call.callee, e) ?? (self.call_marks)(call.callee), call.args)
+    }
+
+    /// Which seats of the fn value the local `callee` holds at the call `e` are `mut`: the last
+    /// binding of the name before the call in the fn that holds it, by its seed's type; absent for a
+    /// name no statement there binds to a typed fn value.
+    fn local_marks(callee: string, e: ExprId) -> List<bool>? {
+        let from = self.fn_lo(e)
+        let bound = [s for s in self.store.stmt_ids() if self.store.let_name(s) == callee && self.stmt_lo(s) < self.lo(e) && self.stmt_lo(s) > from]
+        let last? = bound.last() else { return null }
+        let seed? = self.store.stmt_value(last) else { return null }
+        let ty? = (self.type_at)(seed.index) else { return null }
+        if ty.seats.is_empty() { null } else { [it.mutable for it in ty.seats] }
     }
 
     /// Each argument among `args` a `mut` seat of `marks` is handed, a write at itself.

@@ -68,12 +68,23 @@ impl Checks for Match {
         for a in self.arms { for p in a.pats { cx.pattern_shaped(e, p, subject, true) } }
         cx.alternatives_alike(self.arms)
         cx.arms_bind_once(e, self.arms)
+        for a in self.arms { for p in a.pats { cx.pattern_typed(e, p, subject) } }
         let before = cx.refused.get().length
         let first = [cx.arm_checked(a, subject, expected, proofs[at]) for at, a in self.arms]
         let again? = cx.pinning(first, expected) else { return cx.match_arms_met(e, values, first, expected, before) }
         let pinned = [t ?? cx.arm_checked(self.arms[at], subject, Expected.Exactly(again), proofs[at]) for at, t in first]
         cx.match_arms_met(e, values, pinned, expected, before)
     }
+}
+
+/// Whether the pattern `p` an `is` asks tests a variant, which only an enum has.
+fn asks_variant(cx: Checking, p: PatId) -> bool {
+    match cx.store.pat(p) { .Variant(_, _) or .Member(_, _) -> true, rest -> false }
+}
+
+/// Whether the pattern `p` an `is` asks names a variant's payloads, which makes it the `match` it means.
+fn payloads_asked(cx: Checking, p: PatId) -> bool {
+    match cx.store.pat(p) { .Variant(_, args) -> !args.is_empty(), rest -> false }
 }
 
 /// The truth of its subject each arm of a match stands under, so a match on a condition proves
@@ -109,6 +120,7 @@ fn the_other(before: List<bool?>) -> bool? {
 impl Checks for Is {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.left, Expected.Free)
+        if asks_variant(cx, self.right) { cx.asked_of_enum(self.left, subject, payloads_asked(cx, self.right)) }
         cx.variants_named(e, self.right, subject, true)
         cx.pattern_shaped(e, self.right, subject, true)
         cx.is_placed(e)
@@ -125,8 +137,10 @@ impl Checks for VariantLit {
             cx.payload_spread(self.args, wanted!, ".${self.name.of}") { return null }
         let payloads? = all_known(cx.payloads_of(wanted, self.name.of), self.args.length) else {
             cx.checked_free(self.args)
+            cx.unenumed(e, self.name.of, expected)
             return null
         }
+        cx.enumed(e)
         for at, a in self.args { let _ = cx.check(a, Expected.Exactly(payloads[at])) }
         wanted
     }

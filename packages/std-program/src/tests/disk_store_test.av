@@ -7,7 +7,7 @@ use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{question}
 use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
-use worked_ahead.{WorkAhead, engine_worked_ahead}
+use worked_ahead.{WorkAhead, asked_across_while, engine_worked_ahead}
 use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
 
 once fn disk_world() -> Cell<Map<string, string>> {
@@ -38,6 +38,12 @@ collect disk_queries: List<ListedQuery> = @query_definition in self as ListedQue
 
 fn definitions_listed() -> List<QueryDefinition> { definitions_of(disk_queries) }
 
+/// The world's text at `path` made `text`: its length.
+fn edited_world(path: string, text: string) -> int {
+    disk_world().put(path, text)
+    text.length
+}
+
 fn numbered(count: int) -> List<string> { ["text ${i}" for i in 0..count] }
 
 fn work_on(items: List<string>, process_count: int) -> WorkAhead<string, string> {
@@ -49,7 +55,8 @@ fn work_on(items: List<string>, process_count: int) -> WorkAhead<string, string>
     }
 }
 
-/// The text asked about, or a trap for the first numbered one, whose share is core 0's.
+/// The text asked about, or a trap for the first numbered one, which ends the process whose turn
+/// it is.
 fn echo_or_trap(engine: QueryEngine, text: string) -> string {
     if text == "text 0" { return [text][1] }
     disk_echo(engine, text)
@@ -385,8 +392,36 @@ spec "disk_store — answers outlive the process" {
                 engine.computed_count() == 0
         }
     }
-    given "a process that traps before finishing its share" {
-        then "the share it held is answered by the asking process, and every answer comes out right" {
+    given "an input no process had read, edited once the cores of a wave within a build are forked" {
+        then "the core that read it is refused, and the asking process answers from the edit" {
+            let directory = fresh_directory("within")
+            let worked = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on([], 1),
+            )
+            let paths = ["w${i}.av" for i in 0..32]
+            for path in paths { disk_world().put(path, "before") }
+            let forked = asked_across_while<string, int>(
+                worked.store,
+                worked.engine,
+                directory,
+                WorkAhead {
+                    items: (_engine: QueryEngine) -> paths,
+                    is_known: disk_length_is_known,
+                    ask: disk_length,
+                    process_count: 4,
+                },
+                () -> edited_world("w7.av", "after the fork"),
+            )
+            forked &&
+                disk_length(worked.engine, "w7.av") == 14 &&
+                disk_length(worked.engine, "w8.av") == 6 &&
+                worked.engine.computed_queries().contains("disk_length")
+        }
+    }
+    given "a process that traps at its first turn" {
+        then "the item it held is answered by the asking process, and every answer comes out right" {
             let directory = fresh_directory("trapped")
             let store = engine_worked_ahead<string, string>(
                 directory,
@@ -397,7 +432,7 @@ spec "disk_store — answers outlive the process" {
                 .own
             let engine = engine_over(store)
             numbered(64).all((text) -> disk_echo(engine, text) == text) &&
-                engine.computed_count() == 16
+                engine.computed_count() == 1
         }
     }
     given "a second run over what was worked ahead" {

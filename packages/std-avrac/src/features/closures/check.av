@@ -260,17 +260,15 @@ fn offered_list(names: List<string>) -> string {
     names.map("`${it}`").join(", ")
 }
 
-fn never_heard(mut cx: TypeCx, e: ExprId, name: string) {
-    cx
-        .emit(
-            refusal(
-                "type.lambda",
-                cx.loc_of(e),
-                "`${name}` needs a type — this lambda's slot tells it nothing",
-                "in this lambda",
-                "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats",
-            ),
-        )
+fn never_heard(mut cx: TypeCx, e: ExprId, name: string) { cx.emit(said_as("type.lambda", cx.loc_of(e), lambda_seat_unheard(name))) }
+
+/// A lambda's seat `name` wearing no type, where no slot gives it one.
+export fn lambda_seat_unheard(name: string) -> Voice {
+    Voice {
+        message: "`${name}` needs a type — this lambda's slot tells it nothing",
+        label: "in this lambda",
+        help: "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats",
+    }
 }
 
 fn pronoun_starved(mut cx: TypeCx, e: ExprId, seat: TypeId) {
@@ -293,17 +291,15 @@ export fn pronoun_without_element(seat: string) -> Voice {
     }
 }
 
-fn seat_named_twice(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.lambda",
-                cx.loc_of(e),
-                "`${name}` names two of this lambda's seats",
-                "in this lambda",
-                "seats have distinct names — rename one",
-            ),
-        )
+fn seat_named_twice(mut cx: TypeCx, e: ExprId, name: string) -> TypeId { cx.spoken(said_as("type.lambda", cx.loc_of(e), lambda_seat_twice(name))) }
+
+/// A lambda two of whose seats wear the name `name`.
+export fn lambda_seat_twice(name: string) -> Voice {
+    Voice {
+        message: "`${name}` names two of this lambda's seats",
+        label: "in this lambda",
+        help: "seats have distinct names — rename one",
+    }
 }
 
 fn pronoun_unseated(mut cx: TypeCx, e: ExprId, seat: TypeId) {
@@ -333,29 +329,29 @@ fn misfit_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId) {
 }
 
 fn lambda_at_scalar(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx
-        .emit(
-            refusal(
-                "type.lambda",
-                cx.loc_of(e),
-                "a lambda cannot sit here — this seat takes `${cx.view.types.name_of(seat)}`",
-                "in this lambda",
-                "hand it to a fn-typed slot, or call it",
-            ),
-        )
+    cx.emit(said_as("type.lambda", cx.loc_of(e), lambda_unseated(cx.view.types.name_of(seat))))
+}
+
+/// A lambda standing in a seat of `seat`, which takes no fn.
+export fn lambda_unseated(seat: string) -> Voice {
+    Voice {
+        message: "a lambda cannot sit here — this seat takes `${seat}`",
+        label: "in this lambda",
+        help: "hand it to a fn-typed slot, or call it",
+    }
 }
 
 fn block_at_scalar(mut cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx
-        .emit(
-            refusal(
-                "type.lambda",
-                cx.loc_of(e),
-                "a trailing block fills a fn seat, and this seat takes `${cx.view.types.name_of(seat)}`",
-                "this block",
-                "a trailing block is the call's last argument, `(…) -> …` in a `fn` seat — pass the value in the parentheses instead",
-            ),
-        )
+    cx.emit(said_as("type.lambda", cx.loc_of(e), block_unseated(cx.view.types.name_of(seat))))
+}
+
+/// A trailing block standing in a seat of `seat`, which takes no fn.
+export fn block_unseated(seat: string) -> Voice {
+    Voice {
+        message: "a trailing block fills a fn seat, and this seat takes `${seat}`",
+        label: "this block",
+        help: "a trailing block is the call's last argument, `(…) -> …` in a `fn` seat — pass the value in the parentheses instead",
+    }
 }
 
 fn uncapturable(mut cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {

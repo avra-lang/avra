@@ -6,6 +6,7 @@ use core.{
     Checks,
     ExprId,
     Expected,
+    LiteralFault,
     PatChecks,
     PatId,
     ReadAs,
@@ -16,21 +17,36 @@ use core.{
 use core.expr.{StructLit, With}
 use core.pat.{Fields}
 
+/// Whether a literal's name `named` reads as names nothing a program declares: no name at all, a
+/// type the language owns, or the hole a type is left to.
+fn undeclared(named: SignedType) -> bool {
+    match named.head {
+        .Unnamed(_) or .Owned(_) or .Inferred -> true,
+        .Declared(_, _) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> false,
+    }
+}
+
 impl Checks for StructLit {
     /// The record the literal names, its values seated in its fields, and each node it is extended by
-    /// checked on its own.
+    /// checked on its own. A name nothing declares, a type the language owns among them, is read as
+    /// no record.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         for v in cx.store.extended_by(e) { let _ = cx.check(v, Expected.Free) }
         let named = cx.type_named(self.name.of, cx.home_of(e))
-        if named.head is .Unnamed { cx.unbound_read(e, self.name.of, ReadAs.Record) }
+        if undeclared(named) { cx.unbound_record(e, self.name.of) }
         let record? = cx.record_of(named) else {
+            fieldless(cx, e, self.name.of, named)
             cx.checked_free(self.values)
             return null
         }
         let _ = cx.seals(e, named, "built here")
+        if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return null }
         if self.fields.any(it.of == spread_entry) { return spread_checked(cx, self, named, record.params) }
         let seats = [record.fields.find(it.name == f.of)?.ty for f in self.fields]
         if seats.any(it == null) {
+            let fields = [f.name for f in record.fields]
+            for at, f in self.fields { if seats[at] == null && at < self.values.length { cx
+                        .literal_refused(self.values[at], LiteralFault.Unknown(self.name.of, f.of, fields)) } }
             cx.checked_free(self.values)
             return null
         }
@@ -58,6 +74,14 @@ impl Checks for StructLit {
         let args = [found.get("${at}") for at in 0..record.params]
         if args.any(it == null) { null } else { named with { args: [a! for a in args] } }
     }
+}
+
+/// The literal at `e` naming `name`, which resolves to `named`, no record: refused where that is an
+/// enum, or another type an alias names.
+fn fieldless(mut cx: Checking, e: ExprId, name: string, named: SignedType) {
+    if named.head is .Unnamed || named.generic() || named.inferred() { return }
+    if cx.enum_of(named) != null { return cx.literal_refused(e, LiteralFault.Enum(name)) }
+    if named.word() != name { cx.literal_refused(e, LiteralFault.Fieldless(name, named.spelled())) }
 }
 
 /// A literal that spreads records, of the record `named` declaring `params` type parameters: each
@@ -97,6 +121,7 @@ impl Checks for With {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
         let _ = cx.seals(e, subject, "copied with new fields here")
+        if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return subject }
         for at, v in self.values {
             let field = if subject == null { null } else { cx.field_of(subject!, self.fields[at].of) }
             let _ = cx

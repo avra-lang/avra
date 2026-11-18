@@ -5,7 +5,7 @@
 //! pattern whose field patterns refuse nothing covers its subject.
 use core.{PatId, TypeId, Reg, Type, FieldsParts, flatten}
 use features.{PatSemantics, TypeCx, LowerCx, StructSig, slot_want, pat_semantics_of}
-use diagnostics.{Voice, refusal, said_as}
+use diagnostics.{Voice, said_as}
 
 export type FieldPatSemantics = {}
 
@@ -164,15 +164,22 @@ export fn record_pattern_unrecorded(name: string, found: string) -> Voice {
 fn other_record(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> List<TypeId> {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.record_pattern",
                 cx.pat_loc(p),
-                "`${name} { … }` names another record than the subject's `${cx.view.types.name_of(expected)}`",
-                "this pattern",
-                "name the subject's record — `${cx.view.types.name_of(expected)} { … }`",
+                record_pattern_other(name, cx.view.types.name_of(expected)),
             ),
         )
     []
+}
+
+/// A record pattern `name { … }` over a value of the record `found`, another one.
+export fn record_pattern_other(name: string, found: string) -> Voice {
+    Voice {
+        message: "`${name} { … }` names another record than the subject's `${found}`",
+        label: "this pattern",
+        help: "name the subject's record — `${found} { … }`",
+    }
 }
 
 fn no_such_field(mut cx: TypeCx, p: PatId, name: string, field: string, sig: StructSig) -> List<
@@ -180,69 +187,76 @@ fn no_such_field(mut cx: TypeCx, p: PatId, name: string, field: string, sig: Str
 > {
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.record_pattern",
                 cx.pat_loc(p),
-                "`${name}` has no field `${field}` to look at",
-                "this pattern",
-                "the fields are ${sig.names.join(", ")}",
+                record_pattern_fieldless(name, field, sig.names.join(", ")),
             ),
         )
     []
+}
+
+/// A record pattern looking at `field`, which the record `name`, whose fields are `fields`, has not.
+export fn record_pattern_fieldless(name: string, field: string, fields: string) -> Voice {
+    Voice {
+        message: "`${name}` has no field `${field}` to look at",
+        label: "this pattern",
+        help: "the fields are ${fields}",
+    }
 }
 
 fn field_twice(mut cx: TypeCx, p: PatId, field: string) -> List<TypeId> {
-    cx
-        .emit(
-            refusal(
-                "type.record_pattern",
-                cx.pat_loc(p),
-                "field `${field}` is looked at more than once",
-                "this pattern",
-                "look at each field once",
-            ),
-        )
+    cx.emit(said_as("type.record_pattern", cx.pat_loc(p), record_pattern_twice(field)))
     []
+}
+
+/// A record pattern looking at `field` twice.
+export fn record_pattern_twice(field: string) -> Voice {
+    Voice {
+        message: "field `${field}` is looked at more than once",
+        label: "this pattern",
+        help: "look at each field once",
+    }
 }
 
 fn field_unlisted(mut cx: TypeCx, p: PatId, name: string, field: string) -> List<TypeId> {
-    cx
-        .emit(
-            refusal(
-                "type.record_pattern",
-                cx.pat_loc(p),
-                "this `${name}` pattern leaves field `${field}` out",
-                "this pattern",
-                "name `${field}`, or end the pattern with `..` — `${name} { …, .. }`",
-            ),
-        )
+    cx.emit(said_as("type.record_pattern", cx.pat_loc(p), record_pattern_unlisted(name, field)))
     []
+}
+
+/// A record pattern of `name` with no `..` that leaves `field` out.
+export fn record_pattern_unlisted(name: string, field: string) -> Voice {
+    Voice {
+        message: "this `${name}` pattern leaves field `${field}` out",
+        label: "this pattern",
+        help: "name `${field}`, or end the pattern with `..` — `${name} { …, .. }`",
+    }
 }
 
 fn rest_twice(mut cx: TypeCx, p: PatId) -> List<TypeId> {
-    cx
-        .emit(
-            refusal(
-                "type.record_pattern",
-                cx.pat_loc(p),
-                "a record pattern has one `..` — it ends the fields",
-                "two `..` here",
-                "keep one `..`, after the last field",
-            ),
-        )
+    cx.emit(said_as("type.record_pattern", cx.pat_loc(p), record_pattern_rests()))
     []
 }
 
+/// A record pattern with more than one `..`.
+export fn record_pattern_rests() -> Voice {
+    Voice {
+        message: "a record pattern has one `..` — it ends the fields",
+        label: "two `..` here",
+        help: "keep one `..`, after the last field",
+    }
+}
+
 fn named_after_rest(mut cx: TypeCx, p: PatId) -> List<TypeId> {
-    cx
-        .emit(
-            refusal(
-                "type.record_pattern",
-                cx.pat_loc(p),
-                "`..` ends a record pattern — nothing is named after it",
-                "a field after `..`",
-                "move the `..` after the last field",
-            ),
-        )
+    cx.emit(said_as("type.record_pattern", cx.pat_loc(p), record_pattern_after_rest()))
     []
+}
+
+/// A record pattern naming a field after its `..`.
+export fn record_pattern_after_rest() -> Voice {
+    Voice {
+        message: "`..` ends a record pattern — nothing is named after it",
+        label: "a field after `..`",
+        help: "move the `..` after the last field",
+    }
 }

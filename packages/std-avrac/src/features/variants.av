@@ -224,26 +224,16 @@ impl TypeCx {
     /// record is built.
     mut fn no_static_fn(e: ExprId, tname: string, name: string, statics: List<string>) -> TypeId {
         self
-            .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "`${tname}` has no static fn `${name}`",
-                    "called here",
-                    if statics.is_empty() { build_a_record(tname) } else { "its static fns are ${["`${s}`" for s in statics].join(", ")}" },
-                ),
-            )
+            .spoken(said_as("type.unknown_prop", self.loc_of(e), static_unknown(tname, name, statics)))
     }
 
     mut fn no_such_variant(e: ExprId, tname: string, variant: string, sig: EnumSig) -> TypeId {
         self
             .spoken(
-                refusal(
+                said_as(
                     "type.unknown_prop",
                     self.loc_of(e),
-                    "`${tname}` has no variant `${variant}`",
-                    "built here",
-                    variant_meant(variant, sig.names),
+                    variant_uncalled(tname, variant, sig.names),
                 ),
             )
     }
@@ -341,5 +331,23 @@ export fn variant_given_nothing(tname: string, variant: string, carried: string)
         message: "`${tname}.${variant}` carries `${carried}`, given nothing",
         label: "built empty here",
         help: "write `${tname}.${variant}(<value>)`",
+    }
+}
+
+/// A call of `name` through the record `owner`, whose static fns are `statics`, none so named.
+export fn static_unknown(owner: string, name: string, statics: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no static fn `${name}`",
+        label: "called here",
+        help: if statics.is_empty() { build_a_record(owner) } else { "its static fns are ${["`${s}`" for s in statics].join(", ")}" },
+    }
+}
+
+/// A call of `variant` through the enum `owner`, whose `variants` hold no such name.
+export fn variant_uncalled(owner: string, variant: string, variants: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no variant `${variant}`",
+        label: "built here",
+        help: variant_meant(variant, variants),
     }
 }

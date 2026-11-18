@@ -11,7 +11,17 @@
 //! the one segment, and a store another binary wrote is never read.
 use @std.io.{IoError}
 use answer_record.{AnswerRecord, ContentHash, KeptRecord, Question}
-use disk_store.{DiskStore, disk_store_at}
+use disk_store.{
+    DiskStore,
+    KeyShare,
+    disk_store_at,
+    wave_answer,
+    wave_awaited,
+    wave_claimed,
+    wave_let_go,
+    wave_question,
+    wave_records,
+}
 use frontier.{Frontier, FrontierLearned}
 use input_stamps.{InputStamp}
 use query_engine.{AnswerStore}
@@ -64,11 +74,37 @@ impl LayeredStore {
     /// The directory of each layer a save writes.
     fn directories() -> List<string> { [self.own.directory].concat(if self.shared == null { [] } else { [self.shared!.directory] }) }
 
+    /// How many answers and questions the packs of both layers hold.
+    fn entries_published() -> int { self.own.entries_published() + (self.shared?.entries_published() ?? 0) }
+
+    /// One share of each layer's packs published as a pack of its own: whether each was.
+    fn share_merged(share: KeyShare) -> bool {
+        let shared = if self.shared == null { true } else { published(self.shared!.share_merged(share)) }
+        shared && published(self.own.share_merged(share))
+    }
+
+    /// Every share of each layer's packs stands published: the packs they were merged from go.
+    fn shares_taken() {
+        self.shared?.shares_taken()
+        self.own.shares_taken()
+    }
+
+    /// Each layer reads the packs its directory holds now.
+    fn packs_read_again() {
+        self.shared?.packs_read_again()
+        self.own.packs_read_again()
+    }
+
     /// Whether saving now compacts the own store.
     fn compacts_on_saving() -> bool { self.own.compacts_on_saving() }
 
     /// Whether this process learned anything it hasn't published, in either layer.
     fn has_news() -> bool { self.own.has_news() || self.shared?.has_news() ?? false }
+}
+
+/// Whether a publishing answered that it published.
+fn published(wrote: Result<int, IoError>) -> bool {
+    match wrote { .Ok(_) -> true, .Err(_) -> false }
 }
 
 /// Whether `path` lies under `root`.
@@ -80,13 +116,39 @@ impl AnswerStore for LayeredStore {
         self.shared?.answering_for(self.shared_print)
     }
 
-    fn records_of(question: ContentHash) -> List<KeptRecord> { self.own.records_of(question).concat(self.shared?.records_of(question) ?? []) }
+    fn records_of(question: ContentHash) -> List<KeptRecord> {
+        self
+            .own
+            .records_of(question)
+            .concat(self.shared?.records_of(question) ?? [])
+            .concat(wave_records(question))
+    }
 
     fn keep_record(asked: Question, record: AnswerRecord) { self.own.keep_record(asked, record) }
 
-    fn question_known_as(question: ContentHash) -> Question? { self.own.question_known_as(question) ?? self.shared?.question_known_as(question) }
+    fn question_known_as(question: ContentHash) -> Question? {
+        self.own.question_known_as(question) ?? self.shared?.question_known_as(question) ?? wave_question(
+            question,
+        )
+    }
 
-    fn answer_bytes(answer: ContentHash) -> SavedBytes? { self.own.answer_bytes(answer) ?? self.shared?.answer_bytes(answer) }
+    fn answer_bytes(answer: ContentHash) -> SavedBytes? { self.own.answer_bytes(answer) ?? self.shared?.answer_bytes(answer) ?? wave_answer(answer) }
+
+    fn claimed(question: ContentHash) -> int { wave_claimed(question) }
+
+    fn claim_awaited(question: ContentHash, holder: int) { wave_awaited(question, holder) }
+
+    fn claim_let_go(question: ContentHash) { wave_let_go(question) }
+
+    /// A record of `asked` that stands, found in the wave's table alone, kept as this process's
+    /// own with its answer: the process that kept it there may end before it publishes either.
+    fn adopted(asked: Question, record: KeptRecord) {
+        if self.own.answer_bytes(record.answer) != null ||
+            self.shared?.answer_bytes(record.answer) != null { return }
+        let bytes? = wave_answer(record.answer) else { return }
+        self.own.keep_answer_bytes(record.answer, bytes.copied())
+        self.own.keep_record(asked, record.held())
+    }
 
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) { self.own.keep_answer_bytes(answer, bytes) }
 

@@ -25,6 +25,10 @@ export LLVM_PREFIX
 # An archive is its members alone, never the hour it was made: a check reads it as an
 # input, so two checkouts' archives must be the same bytes (macOS `ar` stamps the clock).
 export ZERO_AR_DATE = 1
+# A TARGET REPLACES, COPIES AND EMPTIES WHAT A BUILD JUST WROTE — the compiler a build ran from, the
+# stores it saved — so every build `make` runs saves its store before it answers, leaving no heir
+# running the binary a recipe is about to replace.
+export AVRA_STORE_KEPT_HERE = 1
 # THE C++ RUNTIME AND THE SYSTEM LIBRARY DIRECTORY the static LLVM link names
 # (packages/std-avrac/avra.toml), per platform.
 ifeq ($(shell uname -s),Darwin)
@@ -512,7 +516,7 @@ avra: $(COMPILER_OBJS)
 	@# climbs with reads this spelling, where only today's knows `--release`.
 	@sh tools/capped.sh build/avra-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
-	@cp packages/cli/src/main build/avra
+	@cp packages/cli/src/main build/avra.next && mv -f build/avra.next build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@# what this binary was built from, for a worktree that wants to start from it
@@ -561,7 +565,7 @@ compiler:
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
 	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
-	  cp "$$product" build/avra-ladder && cp "$$product" build/avra; \
+	  cp "$$product" build/avra-ladder && cp "$$product" build/avra.next && mv -f build/avra.next build/avra; \
 	  sh tools/ladder.sh --clean "$${AVRA_LADDER_DIR:-$${RUNNER_TEMP:-/tmp}/ladder}"; \
 	  gens || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
 	elif [ -x build/avra ] && gens; then :; else \
@@ -578,7 +582,7 @@ compiler:
 try: $(COMPILER_OBJS)
 	@sh tools/capped.sh build/avra-try-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
 	@grep '^time: ast' build/avra-try-build.out | grep -oE 'held [0-9]+/[0-9]+' || true
-	@cp packages/cli/src/main build/avra-try
+	@cp packages/cli/src/main build/avra-try.next && mv -f build/avra-try.next build/avra-try
 	@codesign -f -s - build/avra-try 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "try: build/avra-try — ./avra-try runs it"
@@ -594,7 +598,7 @@ edit-loop:
 PREFIX ?= /usr/local
 install: avra
 	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
-	@cp build/avra $(PREFIX)/bin/avra
+	@cp build/avra $(PREFIX)/bin/avra.next && mv -f $(PREFIX)/bin/avra.next $(PREFIX)/bin/avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
@@ -804,6 +808,16 @@ cutoff-witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # back, waited for, killed, its store emptied under it, and the save kept in the build.
 heir-save-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/heir_save_attack.sh
+
+# A WAVE'S PACKS MERGED BY SHARES ARE THE PACKS MERGED HERE: one package built cold merged in the
+# asking process, by shares, and with a share left unpublished; one binary, each store stood on.
+share-merge-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/share_merge_attack.sh
+
+# WHAT A WAVE'S PROCESSES SHARE NEVER COSTS AN ANSWER: one package built cold sharing, each process
+# alone, with a claim's holder killed and trapped, and across one, two and three processes.
+wave-share-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/wave_share_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
@@ -1279,7 +1293,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,

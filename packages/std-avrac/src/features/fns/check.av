@@ -720,17 +720,15 @@ fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, go
         )
 }
 
-fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.lambda",
-                cx.loc_of(e),
-                "`${callee}` is a fn VALUE — it takes no type arguments",
-                "pinned here",
-                "drop the `<…>` — a fn value is already pinned to one signature",
-            ),
-        )
+fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId { cx.spoken(said_as("type.lambda", cx.loc_of(e), fn_value_pinned(callee))) }
+
+/// A call pinning type arguments on `callee`, a fn value.
+export fn fn_value_pinned(callee: string) -> Voice {
+    Voice {
+        message: "`${callee}` is a fn VALUE — it takes no type arguments",
+        label: "pinned here",
+        help: "drop the `<…>` — a fn value is already pinned to one signature",
+    }
 }
 
 /// Whether an argument names a declared fn — what `code_hash` hashes.
@@ -811,28 +809,24 @@ fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId, kind: EmbedKind, base: Emb
 fn not_callable(mut cx: TypeCx, e: ExprId, callee: string, bound: TypeId) -> TypeId {
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.lambda",
                 cx.loc_of(e),
-                "`${callee}` is not callable — it holds a `${cx.view.types.name_of(bound)}`",
-                "called here",
-                "only fns and fn-typed values take arguments",
+                name_uncallable(callee, cx.view.types.name_of(bound)),
             ),
         )
 }
 
-fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) {
-    cx
-        .emit(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`${callee}` takes no type arguments",
-                "pinned here",
-                "drop the `<…>` — this fn declares no type parameters",
-            ),
-        )
+/// A call of the name `callee`, which holds a value of `held`, no fn.
+export fn name_uncallable(callee: string, held: string) -> Voice {
+    Voice {
+        message: "`${callee}` is not callable — it holds a `${held}`",
+        label: "called here",
+        help: "only fns and fn-typed values take arguments",
+    }
 }
+
+fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) { cx.emit(said_as("type.mismatch", cx.loc_of(e), pins_refused(callee, 0, 1))) }
 
 fn unpinned_by_arguments(mut cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
     cx
@@ -861,16 +855,32 @@ fn side_unholdable(mut cx: TypeCx, e: ExprId, offender: TypeId) {
 }
 
 fn wrong_pin_count(mut cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
-    cx
-        .emit(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`${callee}` takes ${want} type arguments, found ${found}",
-                "pinned here",
-                "write exactly ${want} type argument(s) — `${callee}<…>`",
-            ),
-        )
+    cx.emit(said_as("type.mismatch", cx.loc_of(e), pins_refused(callee, want, found)))
+}
+
+/// The seat `name` of a fn, written with no type.
+export fn param_typeless(name: string) -> Voice {
+    Voice {
+        message: "parameter `${name}` declares no type",
+        label: "declared here",
+        help: "write `${name}: <type>`",
+    }
+}
+
+/// A call of `callee`, which declares `want` type parameters, pinning `found` type arguments.
+export fn pins_refused(callee: string, want: int, found: int) -> Voice {
+    if want == 0 {
+        return Voice {
+            message: "`${callee}` takes no type arguments",
+            label: "pinned here",
+            help: "drop the `<…>` — this fn declares no type parameters",
+        }
+    }
+    Voice {
+        message: "`${callee}` takes ${want} type arguments, found ${found}",
+        label: "pinned here",
+        help: "write exactly ${want} type argument(s) — `${callee}<…>`",
+    }
 }
 
 fn null_cannot_pin(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId) {

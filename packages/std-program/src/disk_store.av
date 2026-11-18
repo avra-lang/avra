@@ -18,6 +18,7 @@ use @std.io.{
     IoError,
     abandoned_drafts,
     drafted,
+    env,
     exists,
     list_dir,
     make_dirs,
@@ -77,6 +78,15 @@ use sorted.{sorted_by}
 extern fn avra_mmap_open(path: string) -> ptr?
 extern fn avra_mmap_len(mapping: ptr) -> int
 extern fn avra_mmap_close(mapping: ptr)
+extern fn avra_shared_made(slots: int, room: int) -> ptr?
+extern fn avra_shared_ended(shared: ptr)
+extern fn avra_shared_view(shared: ptr) -> ptr
+extern fn avra_shared_kept(shared: ptr, kind: int, high: int, low: int, octets: Bytes, count: int) -> int
+extern fn avra_shared_start(shared: ptr, kind: int, high: int, low: int) -> int
+extern fn avra_shared_end(shared: ptr, kind: int, high: int, low: int) -> int
+extern fn avra_shared_claimed(shared: ptr, high: int, low: int) -> int
+extern fn avra_shared_let_go(shared: ptr, high: int, low: int) -> int
+extern fn avra_shared_awaited(shared: ptr, high: int, low: int, holder: int) -> int
 
 /// A pack's last octets. It names the format, and a pack that lost its tail doesn't have it.
 export const PACK_SEAL: string = "avrapak6"
@@ -123,6 +133,12 @@ type MappedPack = {
     questions: SavedList,
     generation: int,
     kept_octets: int,
+    /// The least and the greatest high word its answers' keys carry, and its questions'; where a
+    /// table is empty, a least past its greatest.
+    answers_from: int,
+    answers_to: int,
+    questions_from: int,
+    questions_to: int,
 }
 
 /// The pack at `path`, absent when it can't be read or isn't a whole pack. A process maps each pack
@@ -172,6 +188,41 @@ fn pack_in(path: string, source: SavedSource, length: int) -> MappedPack? {
         questions: questions,
         generation: PackIndex.generation_in(index),
         kept_octets: PackIndex.kept_octets_in(index),
+        answers_from: least_of(answer_high_words),
+        answers_to: greatest_of(answer_high_words),
+        questions_from: least_of(question_high_words),
+        questions_to: greatest_of(question_high_words),
+    }
+}
+
+/// The first number of a list sorted ascending; one where it holds none.
+fn least_of(numbers: SavedList) -> int { if numbers.length == 0 { 1 } else { numbers.number_at(0) } }
+
+/// The last number of a list sorted ascending; zero where it holds none.
+fn greatest_of(numbers: SavedList) -> int { if numbers.length == 0 { 0 } else { numbers.number_at(numbers.length - 1) } }
+
+/// A SHARE OF THE KEYS: every hash whose high word is at least `from` and, where there is a `to`,
+/// below it. A table sorted by hash holds a share's keys in one run.
+export type KeyShare = { from: int, to: int? }
+
+/// The keys cut into `count` shares of one width, in order, which together hold every key.
+export fn key_shares(count: int) -> List<KeyShare> {
+    let width = GREATEST_WORD / count * 2
+    [KeyShare {
+        from: if k == 0 { LEAST_WORD } else { LEAST_WORD + k * width },
+        to: if k == count - 1 { null } else { LEAST_WORD + (k + 1) * width },
+    } for k in 0..count]
+}
+
+const GREATEST_WORD: int = 9223372036854775807
+const LEAST_WORD: int = -9223372036854775807 - 1
+
+impl KeyShare {
+    /// The places of a table's entries this share holds, its keys' high words in `high_words`:
+    /// the first, and one past the last.
+    fn run_in(high_words: SavedList) -> List<int> {
+        let to? = self.to else { return [high_words.first_at_or_after(self.from), high_words.length] }
+        [high_words.first_at_or_after(self.from), high_words.first_at_or_after(to)]
     }
 }
 
@@ -198,6 +249,7 @@ impl MappedPack {
 
     /// The records `question` has here, where they lie.
     fn question_entry(question: ContentHash) -> SavedRecord? {
+        if question.high_word < self.questions_from || question.high_word > self.questions_to { return null }
         let span? = self.span_keyed(self.question_high_words, self.questions, question) else { return null }
         self.saved_at(span).root()
     }
@@ -213,6 +265,7 @@ impl MappedPack {
     }
 
     fn answer_bytes(answer: ContentHash) -> SavedBytes? {
+        if answer.high_word < self.answers_from || answer.high_word > self.answers_to { return null }
         let span? = self.span_keyed(self.answer_high_words, self.answers, answer) else { return null }
         self.saved_at(span)
     }
@@ -223,11 +276,18 @@ impl MappedPack {
     /// How many answers and questions the pack holds.
     fn entries() -> int { self.answers.length + self.questions.length }
 
-    /// Every answer the pack keeps that lies within it, in its order.
-    fn answer_spans() -> List<KeptSpan> { [span! for i in 0..self.answers.length for span in [self.span_at(self.answers, i)] if span != null] }
+    /// Every answer the pack keeps that lies within it, in its order; with a `share`, those it holds.
+    fn answer_spans(share: KeyShare?) -> List<KeptSpan> {
+        let run = share?.run_in(self.answer_high_words) ?? [0, self.answers.length]
+        [span! for i in run[0]..run[1] for span in [self.span_at(self.answers, i)] if span != null]
+    }
 
-    /// Every question the pack keeps that lies within it, in its order.
-    fn question_spans() -> List<KeptSpan> { [span! for i in 0..self.questions.length for span in [self.span_at(self.questions, i)] if span != null] }
+    /// Every question the pack keeps that lies within it, in its order; with a `share`, those it
+    /// holds.
+    fn question_spans(share: KeyShare?) -> List<KeptSpan> {
+        let run = share?.run_in(self.question_high_words) ?? [0, self.questions.length]
+        [span! for i in run[0]..run[1] for span in [self.span_at(self.questions, i)] if span != null]
+    }
 }
 
 /// What a draft keeps of one kind: where each lies in it, and the octets not yet mapped, held.
@@ -360,6 +420,99 @@ fn oldest_reaching(views: List<DraftView>, end: int) -> DraftView? {
         if views[mid].length >= end { hi = mid } else { lo = mid + 1 }
     }
     if lo < views.length { views[lo] } else { null }
+}
+
+// ── What a wave's processes share while they work ──
+
+/// How many questions, and how many answers, a wave's processes share at most, and in how many
+/// octets: past either, a process keeps what it learns to itself and the others work it out.
+const WAVE_SLOTS: int = 2097152
+const WAVE_OCTETS: int = 4294967296
+
+/// The kinds a wave's table keeps: a question's records, and an answer's octets.
+const WAVE_RECORDS: int = 0
+const WAVE_ANSWERS: int = 1
+
+/// The table the processes of the wave this process is of share, while there is one.
+once fn wave_table() -> Cell<List<ptr>> {
+    let held: Cell<List<ptr>> = Cell.new([])
+    held
+}
+
+/// WHAT A WAVE'S PROCESSES LEARN IS SHARED AS THEY LEARN IT, from here until `wave_sharing_ended`:
+/// asked before a wave forks, so every process of it maps one table. Each keeps there the records
+/// and the answers it keeps in its own draft, finds there what another kept, and claims there the
+/// question it is working out, so another that needs the answer waits for it and no two work one
+/// out. A record found there is checked like any kept record, read by read, by the process that
+/// takes it. Whether there is a table; with none, each process works alone, as before.
+export fn wave_sharing_begun() -> bool {
+    if wave_alone() != null || !wave_table().get().is_empty() { return false }
+    let shared? = avra_shared_made(WAVE_SLOTS, WAVE_OCTETS) else { return false }
+    wave_table().set([shared])
+    true
+}
+
+/// The table forgotten by this process; with `gone`, unmapped as well, which the process that made
+/// it asks once its wave has ended.
+export fn wave_sharing_ended(gone: bool) {
+    let shared? = wave_table().get().first() else { return }
+    wave_table().set([])
+    if gone { avra_shared_ended(shared) }
+}
+
+/// `AVRA_WAVE_ALONE`: a wave's processes share nothing while they work.
+once fn wave_alone() -> string? { env("AVRA_WAVE_ALONE") }
+
+/// `bytes` kept under `key` in the wave's table, for every process of the wave to find.
+fn wave_kept(kind: int, key: ContentHash, bytes: Bytes) {
+    let shared? = wave_table().get().first() else { return }
+    let _ = avra_shared_kept(shared, kind, key.high_word, key.low_word, bytes, bytes.length)
+}
+
+/// What the wave's table keeps under `key`, read where it lies; absent where it keeps nothing.
+fn wave_found(kind: int, key: ContentHash) -> SavedBytes? {
+    let shared? = wave_table().get().first() else { return null }
+    let from = avra_shared_start(shared, kind, key.high_word, key.low_word)
+    if from < 0 { return null }
+    SavedBytes {
+        source: SavedSource.Mapped(avra_shared_view(shared)),
+        from: from,
+        to: avra_shared_end(shared, kind, key.high_word, key.low_word),
+    }
+}
+
+/// The records another process of the wave kept of `question`.
+export fn wave_records(question: ContentHash) -> List<KeptRecord> {
+    let found? = wave_found(WAVE_RECORDS, question) else { return [] }
+    records_in(found.root())
+}
+
+/// `question` as another process of the wave asked it.
+export fn wave_question(question: ContentHash) -> Question? {
+    let found? = wave_found(WAVE_RECORDS, question) else { return null }
+    QuestionRecords.asked_in(found.root())
+}
+
+/// The octets another process of the wave kept of `answer`.
+export fn wave_answer(answer: ContentHash) -> SavedBytes? { wave_found(WAVE_ANSWERS, answer) }
+
+/// `question` claimed by this process to work out: zero where it holds the claim now, else the
+/// living process that does.
+export fn wave_claimed(question: ContentHash) -> int {
+    let shared? = wave_table().get().first() else { return 0 }
+    avra_shared_claimed(shared, question.high_word, question.low_word)
+}
+
+/// Waits while the process `holder` holds the claim of `question` and lives.
+export fn wave_awaited(question: ContentHash, holder: int) {
+    let shared? = wave_table().get().first() else { return }
+    let _ = avra_shared_awaited(shared, question.high_word, question.low_word, holder)
+}
+
+/// This process's claim of `question` let go.
+export fn wave_let_go(question: ContentHash) {
+    let shared? = wave_table().get().first() else { return }
+    let _ = avra_shared_let_go(shared, question.high_word, question.low_word)
 }
 
 /// A store over a directory, plus what this process has learned and hasn't published yet. An
@@ -543,7 +696,7 @@ export fn packs_listed(directory: string) -> List<PackListed> {
 /// them; absent where no whole pack stands there.
 export fn pack_questions(directory: string, name: string) -> List<Question>? {
     let pack? = mapped_pack("${directory}/${name}") else { return null }
-    [q! for span in pack.question_spans() for q in [pack.question_known_as(span.key)] if q != null]
+    [q! for span in pack.question_spans(null) for q in [pack.question_known_as(span.key)] if q != null]
 }
 
 /// How many binaries' frontiers a store keeps.
@@ -663,6 +816,7 @@ impl AnswerStore for DiskStore {
             written_in: self.generation.get(),
         }
             .saved_bytes()
+        wave_kept(WAVE_RECORDS, asked.known_as, bytes)
         if self.held_questions.get(asked.known_as) != null { return self.held_questions.put(asked.known_as, bytes) }
         let segment? = self.writing() else { return self.held_questions.put(asked.known_as, bytes) }
         segment.keep(segment.questions, asked.known_as, bytes)
@@ -686,6 +840,7 @@ impl AnswerStore for DiskStore {
     /// full disk costs the next process work and never this one an answer.
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) {
         if self.unpublished_answer(answer) != null { return }
+        wave_kept(WAVE_ANSWERS, answer, bytes)
         let segment? = self.writing() else { return self.held_answers.put(answer, bytes) }
         segment.keep(segment.answers, answer, bytes)
     }
@@ -917,6 +1072,47 @@ impl DiskStore {
         self.published(packs, false)
     }
 
+    /// How many answers and questions the store's packs hold: what merging them works through.
+    fn entries_published() -> int { self.packs.get().fold(0, (sum, pack) -> sum + pack.entries()) }
+
+    /// ONE SHARE OF EVERY PACK AS ONE PACK, published beside them by a process that learned
+    /// nothing: what the packs hold under the keys `share` holds, the packs left where they lie
+    /// for the process that asked every share merged to drop (`shares_taken`). Each share says it
+    /// keeps what all the packs held between them, so the shares together are no more outgrown
+    /// than the one pack a merge here would have made. Answers how many octets it wrote, or why
+    /// nothing was published.
+    fn share_merged(share: KeyShare) -> Result<int, IoError> {
+        let segment? = self.writing() else { fail IoError.Failed(self.directory, 0) }
+        let packs = sorted_by(self.packs.get(), (a, b) -> a.generation < b.generation)
+        let questions = questions_merged(segment, packs, null, share)
+        let answers = answers_merged(segment, packs, null, share)
+        let runs = index_runs(
+            questions,
+            answers,
+            self.generation.get(),
+            packs.fold(0, (sum, pack) -> sum + max_of(pack.kept_octets, pack.length)),
+        )
+        for run in runs { let _ = segment.appended(run) }
+        let _ = segment.appended(PACK_SEAL.bytes())
+        segment.written()
+        let spoiled? = segment.spoiled_by.get().first() else { return self.sealed(segment, [], runs_hash(runs)) }
+        fail spoiled
+    }
+
+    /// Every share of the packs this store read stands published as a pack of its own: the packs
+    /// it read are dropped, and it reads the directory's packs afresh.
+    fn shares_taken() {
+        for pack in self.packs.get() { let _ = remove(pack.path) }
+        self.packs_read_again()
+    }
+
+    /// The store reads the packs its directory holds now.
+    fn packs_read_again() {
+        let print? = self.print.get() else { return }
+        self.print.set(null)
+        self.answering_for(print)
+    }
+
     /// What this process learned and what `absorbed` holds, sealed as one pack, which the store
     /// then reads in place of `absorbed`, and has nothing new. Collecting, it keeps only what the
     /// newest frontiers reach. Answers how many octets it wrote.
@@ -998,8 +1194,14 @@ fn placed_runs(
 
 /// What `live` keeps of every pack's questions and the draft's, each question once: one source's
 /// records are carried as they lie, and several sources' merged, oldest first, each record once.
-fn questions_merged(segment: Segment, packs: List<MappedPack>, live: Live?) -> List<KeptSpan> {
-    let runs = placed_runs(packs, segment.questions.spans.values(), (pack) -> pack.question_spans())
+fn questions_merged(segment: Segment, packs: List<MappedPack>, live: Live?, share: KeyShare? = null) -> List<
+    KeptSpan,
+> {
+    let runs = placed_runs(
+        packs,
+        segment.questions.spans.values(),
+        (pack) -> pack.question_spans(share),
+    )
     [span! for run in runs if live == null || live!.questions.get(run[0].span.key) != null for span in [question_written(segment, packs, run, live != null)] if span != null]
 }
 
@@ -1045,8 +1247,14 @@ fn merged_records(entries: List<SavedRecord>) -> List<KeptRecord> {
 
 /// What `live` keeps of every pack's answers and the draft's, each answer once, from its newest
 /// source: the draft's stand where they are, a pack's are copied in.
-fn answers_merged(segment: Segment, packs: List<MappedPack>, live: Live?) -> List<KeptSpan> {
-    let runs = placed_runs(packs, segment.answers.spans.values(), (pack) -> pack.answer_spans())
+fn answers_merged(segment: Segment, packs: List<MappedPack>, live: Live?, share: KeyShare? = null) -> List<
+    KeptSpan,
+> {
+    let runs = placed_runs(
+        packs,
+        segment.answers.spans.values(),
+        (pack) -> pack.answer_spans(share),
+    )
     [carried(segment, packs, run.last()!) for run in runs if live == null || live!.answers.get(run[0].span.key) != null]
 }
 

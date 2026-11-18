@@ -318,7 +318,7 @@ fn place_key(place: int) -> ContentHash { ContentHash { high_word: place, low_wo
 
 /// A place's newest entry where it lies: the columns holding it and its index there, whether it's
 /// stale, and how many places its frontier holds, one of which each of its reads names.
-type EntryAt = { columns: LaidColumns, index: int, stale: bool, extent: int }
+export type EntryAt = { columns: LaidColumns, index: int, stale: bool, extent: int }
 
 impl EntryAt {
     fn question() -> ContentHash { self.columns.question_at(self.index) }
@@ -335,6 +335,12 @@ impl EntryAt {
     /// How many places it read.
     fn read_count() -> int { self.columns.read_count_at(self.index) }
 }
+
+/// How a walk of what a change reaches decides a place: a cutting answer that stands, which the walk
+/// stops at; one that moved, whose readers are decided in turn; any other.
+export const CUT_STANDS: int = 1
+export const CUT_MOVED: int = 2
+export const NOT_CUT: int = 3
 
 /// What one binary last knew to hold, read where it lies: its newest base, the chain of deltas over
 /// it, and where the chain moved each place it wrote or found stale.
@@ -392,6 +398,14 @@ impl Frontier {
     /// How many places the answer at `at` read.
     fn read_count_at(at: int) -> int { self.entry_at(at).read_count() }
 
+    /// Each place's staleness, as the chain left it: one pass over the places a delta wrote or found
+    /// stale, so a reader asks no table per place.
+    fn stale_places() -> List<bool> {
+        mut stale = [false for _i in 0..self.extent]
+        for o in self.overlaid.values() { if o.stale { stale.set(o.place, true) } }
+        stale
+    }
+
     /// Whether the entry at `at` still stands: a stale one is never answered from here.
     fn stands(at: int) -> bool { !self.entry_at(at).stale }
 
@@ -418,9 +432,11 @@ impl Frontier {
     /// EVERY PLACE REACHED FROM `changed` BY READING: each answer that read one, and each that read
     /// one of those, each once — walked forward along the base's readers and the reads of each place
     /// a delta wrote, so only what a change reaches is read. A base reader a delta since rewrote is
-    /// reached as well, which only checks it. Absent when a delta's entry's reads, or a reader the walk
+    /// reached as well, which only checks it. Each reader of a changed place, and of a place `decide`
+    /// called a cut that moved, is decided as the walk meets it: a cut that stands (`CUT_STANDS`) is
+    /// neither reached nor walked past. Absent when a delta's entry's reads, or a reader the walk
     /// meets, don't lie within the frontier.
-    fn readers_of(changed: List<int>) -> List<bool>? {
+    fn readers_of(changed: List<int>, decide: fn(int) -> int) -> List<bool>? {
         mut written: List<List<int>> = [[] for _i in 0..self.extent]
         for o in self.overlaid.values() {
             if o.delta == null { continue }
@@ -429,6 +445,8 @@ impl Frontier {
         }
         let base = self.base.columns
         mut reached = [false for _i in 0..self.extent]
+        mut deciding = [false for _i in 0..self.extent]
+        for c in changed { deciding.set(c, true) }
         mut pending = changed
         while !pending.is_empty() {
             let at = pending.pop()
@@ -436,7 +454,15 @@ impl Frontier {
             reached.set(at, true)
             let readers = if at < base.length() { base.readers_at(at).concat(written[at]) } else { written[at] }
             if !readers.all((r) -> place_below(r, self.extent)) { return null }
-            for r in readers { if !reached[r] { pending.push(r) } }
+            for r in readers {
+                if reached[r] { continue }
+                if deciding[at] {
+                    let decided = decide(r)
+                    if decided == CUT_STANDS { continue }
+                    if decided == CUT_MOVED { deciding.set(r, true) }
+                }
+                pending.push(r)
+            }
         }
         reached
     }

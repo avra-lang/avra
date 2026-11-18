@@ -18,6 +18,7 @@ use core.{
     rt_sig_of,
 }
 use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{RecordedRead}
 use @std.program.query_engine.{QueryEngine}
 
 /// The unit a program file's entry is known by.
@@ -30,7 +31,7 @@ fn entry_signed(read: EntryRead) -> SignedBody? {
     SignedBody {
         signature: FnSignature { type_params: [], params: [], answer: owned_type("void"), answer_width: null },
         item: ReadItem { store: read.store, stmts: read.stmts, written: read.store.expr_count() },
-        body: read.store.block_over(read.stmts, null),
+        body: read.body ?? read.store.block_over(read.stmts, null),
         stmt: shown,
         want: Expected.Free,
         fnless: true,
@@ -91,7 +92,8 @@ const PROJECTED: List<string> = ["int", "float", "bool", "string", "List", "Map"
 
 /// The entry's answer of type `shown`, where no text projection spells it: its type and the
 /// statement that answers, the last of `read` that holds a value; absent where one spells it,
-/// where it never arrives, or where its type names none, refused where it's written.
+/// where it never arrives, or where its type names none, refused where it's written. A list that
+/// says nothing of what it holds, `[]`'s own type, is spelled by none.
 fn answer_unprojected(read: EntryRead, shown: SignedType?) -> Unprojected? {
     let ty? = shown else { return null }
     let spelled = match ty.head {
@@ -99,14 +101,20 @@ fn answer_unprojected(read: EntryRead, shown: SignedType?) -> Unprojected? {
         .Never or .Unnamed(_) -> true,
         rest -> false,
     }
-    if spelled && !ty.nullable() && !ty.dynamic { return null }
+    if spelled && !ty.nullable() && !ty.dynamic && !(ty.listed()?.partial() ?? false) { return null }
     let answering? = read.stmts.filter((s) -> read.store.stmt_value(s) != null).last() else { return null }
     let span? = read.store.stmt_span(answering) else { return null }
     Unprojected { name: ty.spelled(), lo: span.lo, hi: span.hi }
 }
 
 /// A file's running statements read back into one store, and where each item's nodes begin in it.
-type EntryRead = { store: SyntaxArena, stmts: List<StmtId>, items: List<ItemBase> }
+type EntryRead = {
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+    items: List<ItemBase>,
+    /// The statements that run as one block, made as the store was read; absent where none runs.
+    body: ExprId?,
+}
 
 /// An item of the file, by its place, and the index its first node has in the entry's store.
 type ItemBase = { at: int, base: int }
@@ -138,9 +146,58 @@ impl EntryRead {
     }
 }
 
+/// A file's entry read back for one engine, the engine reads that reading made, and each reader
+/// they have reached.
+type EntryHeld = { engine: int, file: SourceFileAddress, read: EntryRead, reads: List<RecordedRead>, reached: Cell<List<int>> }
+
+/// The entry read back last: a file's laws each read its entry, one after another.
+once fn entry_held() -> Cell<EntryHeld?> {
+    let held: Cell<EntryHeld?> = Cell.new(null)
+    held
+}
+
 /// Every item of `file` that runs a statement, read back into one store, and the statements among
-/// them that run.
+/// them that run: the reading held for `file`, its reads made again by a reader they haven't
+/// reached, else read and held. The store is read, never written: a body that elaborates forks it.
 fn entry_read(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
+    let held? = entry_held_for(engine, file) else { return entry_read_held(engine, file) }
+    let reader = engine.reader()
+    if !held.reached.get().contains(reader) {
+        engine.reads_made_again(held.reads)
+        held.reached.push(reader)
+    }
+    held.read
+}
+
+/// The reading held for `file` in `engine`, absent where the one held is another's or none is.
+fn entry_held_for(engine: QueryEngine, file: SourceFileAddress) -> EntryHeld? {
+    let held? = entry_held().get() else { return null }
+    if held.engine == engine.serial &&
+        held.file.path_in_package == file.path_in_package &&
+        held.file.package_name == file.package_name { held } else { null }
+}
+
+/// `file`'s entry read back and held with the reads its reading made, in place of the one held.
+fn entry_read_held(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
+    engine.reads_begun()
+    let read = entry_read_back(engine, file)
+    let reads = engine.reads_gathered()
+    entry_held()
+        .set(
+            EntryHeld {
+                engine: engine.serial,
+                file: file,
+                read: read,
+                reads: reads,
+                reached: Cell.new([engine.reader()]),
+            },
+        )
+    read
+}
+
+/// Every item of `file` that runs a statement, read back into one store, each query it stands on
+/// asked.
+fn entry_read_back(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
     let declaring = [d.item for d in file_declares(engine, file).names]
     let store = new_node_store()
     mut items: List<ItemBase> = []
@@ -150,14 +207,23 @@ fn entry_read(engine: QueryEngine, file: SourceFileAddress) -> EntryRead {
         items.push(ItemBase { at: at, base: store.exprs.count() })
         stmts = stmts.concat(read_into(engine, file, store, at).filter((s) -> runs(store, s)))
     }
-    EntryRead { store: store, stmts: stmts, items: items }
+    EntryRead {
+        store: store,
+        stmts: stmts,
+        items: items,
+        body: if stmts.is_empty() { null } else { store.block_over(stmts, null) },
+    }
 }
 
 /// Whether the item `at` of `file` holds a statement that runs, beside what it declares: a `let`
 /// whose value an expansion made declares what the expansion hoists, and still runs.
 fn runs_in(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool {
-    let item = read_item(engine, file, at)
-    item.stmts.any(runs(item.store, it))
+    if generated_at(engine, file, at) != null {
+        let item = read_item(engine, file, at)
+        return item.stmts.any(runs(item.store, it))
+    }
+    let running = file_running(engine, file)
+    at < running.length && running[at]
 }
 
 /// Whether a top-level statement runs: one that declares nothing.

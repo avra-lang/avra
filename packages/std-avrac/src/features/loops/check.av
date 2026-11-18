@@ -1,8 +1,8 @@
 //! The loops' typing laws: a while condition is a bool; a for walks a
 //! walk source or a range; a jump ends the turn of a loop around it.
-use core.{StmtId, ExprId, TypeId, Type, jump_word, Decision}
-use features.{TypeCx, nothing, this_is}
-use diagnostics.{Diag, Voice, refusal, said_as}
+use core.{StmtId, ExprId, TypeId, Type, WalkFault, jump_word, Decision}
+use features.{TypeCx, map_walked_unpaired, nothing, this_is}
+use diagnostics.{Diag, Voice, said_as}
 
 export fn check_while(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
@@ -144,44 +144,41 @@ export fn jump_unaimed(word: string, name: string) -> Voice {
     }
 }
 
-fn nothing_to_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(subject),
-                "`for` walks an empty literal — nothing to bind",
-                "always empty",
-                "the loop would never run; drop it, or walk a named list",
-            ),
-        )
-}
+fn nothing_to_walk(mut cx: TypeCx, subject: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(subject), for_fault(WalkFault.Empty))) }
 
 fn not_walkable(mut cx: TypeCx, subject: ExprId) -> TypeId {
-    let n = cx.name_at(subject)
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.mismatch",
                 cx.loc_of(subject),
-                "`for … in` walks a `List`, this is `${n}`",
-                this_is(n),
-                "ranges spell `for i in lo..hi`",
+                for_fault(WalkFault.Other(cx.name_at(subject))),
             ),
         )
 }
 
 /// A `string` has no element of its own — a byte, a code point, a
 /// grapheme — so the walk names its view.
-fn not_walkable_string(mut cx: TypeCx, subject: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(subject),
-                "`for … in` walks a `List`, and a `string` names no element without a view",
-                "this is `string`",
-                "iterate its octets with `s.bytes()`, or its code points with `s.chars()`",
-            ),
-        )
+fn not_walkable_string(mut cx: TypeCx, subject: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(subject), for_fault(WalkFault.Text))) }
+
+/// What a `for` is refused its subject for, as `fault` says.
+export fn for_fault(fault: WalkFault) -> Voice {
+    match fault {
+        .Empty -> Voice {
+            message: "`for` walks an empty literal — nothing to bind",
+            label: "always empty",
+            help: "the loop would never run; drop it, or walk a named list",
+        },
+        .Text -> Voice {
+            message: "`for … in` walks a `List`, and a `string` names no element without a view",
+            label: "this is `string`",
+            help: "iterate its octets with `s.bytes()`, or its code points with `s.chars()`",
+        },
+        .Unpaired -> map_walked_unpaired(),
+        .Other(found) -> Voice {
+            message: "`for … in` walks a `List`, this is `${found}`",
+            label: this_is(found),
+            help: "ranges spell `for i in lo..hi`",
+        },
+    }
 }

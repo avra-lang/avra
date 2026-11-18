@@ -3,7 +3,13 @@
 //! method's, a seat's or a field's default, a const's value — and in the statements an entry runs.
 //! The same walk keeps every name those bodies read that nothing answers.
 use core.{
+    FoldFault,
+    LiteralFault,
+    WalkFault,
+    CatchFault,
+    Meeting,
     BindSite,
+    LambdaFault,
     NameBound,
     ConstSeed,
     Expected,
@@ -29,6 +35,14 @@ use core.{
 use compiler.laws.{Aside, Found, FoundFix, law}
 use diagnostics.{Voice}
 use features.{
+    bound_unimplemented,
+    guarantee_read,
+    void_bound,
+    arms_disagreement,
+    arity_missed,
+    block_misfit,
+    block_seatless,
+    defaulted_arity_missed,
     kept_arm_listed,
     isolated_captures,
     isolated_unknowable,
@@ -59,10 +73,27 @@ use features.{
     valued_seat,
     stateless_seat,
 }
-use features.fns.{cellless_seat, return_bare, return_fnless}
+use features.fns.{
+    cellless_seat,
+    fn_value_pinned,
+    name_uncallable,
+    pins_refused,
+    return_bare,
+    return_fnless,
+}
+use features.if_expr.{branches_apart}
+use features.impls.{method_arity_missed, static_arity_missed}
 use features.consts.{const_written}
 use features.specs.{CASE_ANSWER_HELP, CASE_ANSWER_LABEL, case_answers_said}
-use features.closures.{offer_typed, offer_unnamed, pronoun_without_element}
+use features.closures.{
+    block_unseated,
+    lambda_seat_twice,
+    lambda_seat_unheard,
+    lambda_unseated,
+    offer_typed,
+    offer_unnamed,
+    pronoun_without_element,
+}
 use features.expr_spine.{
     variant_named_bare,
     always_absent,
@@ -75,6 +106,10 @@ use features.expr_spine.{
     unplaced_index,
 }
 use features.lists.{
+    fold_fault,
+    walk_unpredicated,
+    walk_misseated,
+    walk_takes_one_fn,
     comp_walks_list,
     elements_share,
     list_holds,
@@ -84,13 +119,29 @@ use features.lists.{
     walk_fnless,
     walk_unseated,
 }
+use features.loops.{for_fault}
 use features.narrows.{narrow_absent, narrow_plain}
-use features.structs.{record_pattern_unrecorded}
+use features.results.{catch_fault}
+use features.ranges.{range_bound_said}
+use features.nullable.{absence_unanswered, failure_unanswered, failures_apart, propagate_uncalled}
+use features.structs.{
+    field_repeated,
+    literal_fault,
+    record_pattern_after_rest,
+    record_pattern_fieldless,
+    record_pattern_other,
+    record_pattern_rests,
+    record_pattern_twice,
+    record_pattern_unlisted,
+    record_pattern_unrecorded,
+}
 use features.maps.{map_holds, map_keyed, map_spread_unmapped}
 use features.select_expr.{arm_binder_said, arm_spent_said, arm_unwaited, select_refused_voice}
 use features.cells.{cell_unmapped}
 use features.components.{fate_unnamed}
 use features.enums.{
+    variant_asked_of,
+    pattern_unmatched,
     variants_unlistable,
     alternatives_bind_apart,
     catchless_match,
@@ -320,15 +371,16 @@ fn refusals_placed(store: SyntaxArena, rows: List<RefusedAt>) -> List<RefusedSea
         seat: r.seat,
         want: r.want.spelled(),
         found: r.found.spelled(),
-        note: sugar_noted(store, r.seat),
+        note: sugar_noted(store, r.seat, r.at),
     } for r in rows]
 }
 
 /// The note a refusal inside the meaning of a sugar says beside it: the sugar's own words, where it
-/// stands; absent for any other.
-fn sugar_noted(store: SyntaxArena, seat: Seating) -> SugarNote? {
+/// stands — an operand's sugar, or the sugar whose pattern is refused at `node`; absent for any other.
+fn sugar_noted(store: SyntaxArena, seat: Seating, node: int) -> SugarNote? {
     let at? = match seat {
         .Operand(_, sugar) -> if sugar < 0 { null } else { ExprId { index: sugar } },
+        .Misshapen(_, _, _) -> ExprId { index: node },
         rest -> null,
     } else { return null }
     let label? = store.means_note(at) else { return null }
@@ -495,9 +547,9 @@ fn asked_variant(seat: Seating) -> bool { match seat { .Unvaried(_, _, _, asked)
 fn refused_place(store: SyntaxArena, r: RefusedAt) -> Span? {
     if r.pat != null && !asked_variant(r.seat) { return store.pat_span(PatId { index: r.pat! }) }
     match r.seat {
-        .Return(stmt) or .Fnless(stmt) or .Bare(stmt) -> store.stmt_span(StmtId { index: stmt }),
-        .Unwalked(_, _, call) -> store.expr_span(ExprId { index: call }),
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> store.expr_span(ExprId { index: r.at }),
+        .Return(stmt) or .Fnless(stmt) or .Bare(stmt) or .Assigned(_, stmt) or .Raised(stmt) -> store.stmt_span(StmtId { index: stmt }),
+        .Unwalked(_, _, call) or .Unpredicated(_, _, call) -> store.expr_span(ExprId { index: call }),
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> store.expr_span(ExprId { index: r.at }),
     }
 }
 
@@ -522,7 +574,7 @@ fn arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
 fn argument_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Argument(callee, place) -> [found_in(r, [callee, "${place + 1}"])],
-        .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -534,7 +586,7 @@ fn method_arguments_refused(engine: QueryEngine, file: SourceFileAddress, at: in
 fn method_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Method(owner, name, place) -> [found_in(r, [owner, name, "${place + 1}"])],
-        .Argument(_, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -546,7 +598,7 @@ fn fields_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
 fn field_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Field(name) -> [found_in(r, [name])],
-        .Argument(_, _) or .Method(_, _, _) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -558,7 +610,7 @@ fn payloads_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
 fn payload_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Payload(owner, variant) -> [found_in(r, [owner, variant])],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -570,7 +622,7 @@ fn bindings_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
 fn binding_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Binding(name) -> [found_in(r, [name])],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -582,7 +634,7 @@ fn returns_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 fn return_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Return(_) -> [found_in(r, [])],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -624,7 +676,7 @@ export law case_mismatch {
 fn body_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Body(name) -> if name == CASE_SEAT { [] } else { [found_in(r, [name])] },
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -748,7 +800,7 @@ fn field_defaults_refused(engine: QueryEngine, file: SourceFileAddress, at: int)
 fn field_default_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .FieldDefault(name) -> [found_in(r, [name])],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -760,7 +812,7 @@ fn seat_defaults_refused(engine: QueryEngine, file: SourceFileAddress, at: int) 
 fn seat_default_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .SeatDefault(name) -> [found_in(r, [name])],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -792,7 +844,7 @@ fn holes_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 fn hole_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Hole(kind) -> [Found { at: span_of(r.at), args: [kind.position_word(), kind.takes_word(), r.found] }],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -820,7 +872,7 @@ fn conditions_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
 fn condition_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Condition(of) -> [Found { at: span_of(r.at), args: [of.subject(), of.decides(), r.found] }],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -888,6 +940,142 @@ export law pronoun_starved {
 
 fn starved_words(a: List<string>) -> Voice { pronoun_without_element(a[0]) }
 
+/// Each lambda, and each call of a value, the written item `at` of `file` holds refused for a fault
+/// `chosen` takes: at the node, its voice handed the words `chosen` gives.
+fn lambdas_faulted(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    chosen: fn(LambdaFault) -> List<string>?,
+) -> List<Found> {
+    [Found { at: span_of(r.at), args: words! } for r in refused_in(engine, file, at) for f in some_list(lambda_fault(r.seat)) for words in [chosen(f)] if words != null]
+}
+
+/// The fault a lambda's refusal names; absent for any other seat.
+fn lambda_fault(seat: Seating) -> LambdaFault? {
+    match seat { .Lambda(fault) -> fault, rest -> null }
+}
+
+fn lambda_seats_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    lambdas_faulted(
+        engine,
+        file,
+        at,
+        (f: LambdaFault) -> match f { .SeatTwice(name) -> [name], rest -> null },
+    )
+}
+
+fn seats_unheard(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    lambdas_faulted(
+        engine,
+        file,
+        at,
+        (f: LambdaFault) -> match f { .Unheard(name) -> [name], rest -> null },
+    )
+}
+
+fn lambdas_unseated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    lambdas_faulted(
+        engine,
+        file,
+        at,
+        (f: LambdaFault) -> match f {
+            .Unseated(seat, block) -> if block { null } else { [seat] },
+            rest -> null,
+        },
+    )
+}
+
+fn blocks_unseated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    lambdas_faulted(
+        engine,
+        file,
+        at,
+        (f: LambdaFault) -> match f {
+            .Unseated(seat, block) -> if block { [seat] } else { null },
+            rest -> null,
+        },
+    )
+}
+
+fn values_called(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    lambdas_faulted(
+        engine,
+        file,
+        at,
+        (f: LambdaFault) -> match f { .Uncallable(callee, held) -> [callee, held], rest -> null },
+    )
+}
+
+fn values_pinned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    lambdas_faulted(
+        engine,
+        file,
+        at,
+        (f: LambdaFault) -> match f { .Pinned(callee) -> [callee], rest -> null },
+    )
+}
+
+/// a lambda names each seat once
+export law lambda_seat_named_twice {
+    kind: "type.lambda"
+    reads: lambda_seats_twice
+    voice: seat_twice_words
+    witness: "let f = (a: int, a: int) -> a\n"
+}
+
+/// a lambda under no seat writes each seat's type
+export law lambda_seat_typed {
+    kind: "type.lambda"
+    reads: seats_unheard
+    voice: seat_unheard_words
+    witness: "let f = (x) -> x + 1\n"
+}
+
+/// a lambda stands in a seat that takes a fn
+export law lambda_in_fn_seat {
+    kind: "type.lambda"
+    reads: lambdas_unseated
+    voice: lambda_unseated_words
+    witness: "let n: int = (x: int) -> x + 1\n"
+}
+
+/// a trailing block stands in a seat that takes a fn
+export law block_in_fn_seat {
+    kind: "type.lambda"
+    reads: blocks_unseated
+    voice: block_unseated_words
+    witness: "fn one(v: int) -> int { v }\none { x -> x }\n"
+}
+
+/// a call's callee holds a fn
+export law value_called_holds_fn {
+    kind: "type.lambda"
+    reads: values_called
+    voice: uncallable_words
+    witness: "let n = 5\nn(1)\n"
+}
+
+/// a fn value takes no type arguments
+export law fn_value_unpinned {
+    kind: "type.lambda"
+    reads: values_pinned
+    voice: pinned_words
+    witness: "let f = (x: int) -> x\nf<int>(1)\n"
+}
+
+fn seat_twice_words(a: List<string>) -> Voice { lambda_seat_twice(a[0]) }
+
+fn seat_unheard_words(a: List<string>) -> Voice { lambda_seat_unheard(a[0]) }
+
+fn lambda_unseated_words(a: List<string>) -> Voice { lambda_unseated(a[0]) }
+
+fn block_unseated_words(a: List<string>) -> Voice { block_unseated(a[0]) }
+
+fn uncallable_words(a: List<string>) -> Voice { name_uncallable(a[0], a[1]) }
+
+fn pinned_words(a: List<string>) -> Voice { fn_value_pinned(a[0]) }
+
 /// Each `select` shape no lowering stands for: what it is.
 fn selects_unwaited(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [Found { at: span_of(r.at), args: [what] } for r in refused_in(engine, file, at) for what in some_list(unwaited_what(r.seat))]
@@ -918,7 +1106,7 @@ fn receiver_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Unwritten(root, verb) -> [Found { at: span_of(r.at), args: [root, verb] }],
         .Valued(verb) -> [Found { at: span_of(r.at), args: [verb] }],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -941,7 +1129,7 @@ fn variants_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
 fn variant_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Unvaried(owner, variant, variants, asked) -> [Found { at: span_of(r.at), args: [owner, variant, "${asked}"].concat(variants) }],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -963,7 +1151,7 @@ fn walks_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 fn walk_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Walk(_, name, _, _) -> [Found { at: span_of(r.at), args: [name, r.found] }],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -985,7 +1173,7 @@ fn walk_elements_refused(engine: QueryEngine, file: SourceFileAddress, at: int) 
 fn walk_element_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
         .Unwalked(name, element, _) -> [Found { at: span_of(r.at), args: [name, element, r.found] }],
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> [],
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> [],
     }
 }
 
@@ -1498,6 +1686,559 @@ export law handler_fated {
 
 fn fateless_refused(a: List<string>) -> Voice { fate_unnamed(a[0]) }
 
+/// A call whose count of arguments its seats refused, as `spoken` picks its words, where the member
+/// law says nothing of it: a count is said once.
+fn miscounts_in(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    spoken: fn(Seating) -> List<string>,
+) -> List<Found> {
+    let said = [m.at! for m in item_misses(engine, file, at).rows if m.miss.counts() && m.at != null]
+    [Found { at: span_of(r.at), args: a } for r in refused_in(engine, file, at) if !said.any(it.lo == r.at?.lo && it.hi == r.at?.hi) for a in [spoken(r.seat)] if !a.is_empty()]
+}
+
+/// A fn's or a verb's call miscounted, or a member's whose seats have defaults: the callee, the
+/// least and the most it takes, what it's handed, the trailing blocks among them, and whether piped.
+fn calls_miscounted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    miscounts_in(
+        engine,
+        file,
+        at,
+        (s: Seating) -> match s {
+            .Miscounted(owner, name, _, least, most, found, blocks, piped) -> if owner != "" && least == most {
+                []
+            } else {
+                [
+                    if owner == "" { name } else { "${owner}.${name}" },
+                    "${least}",
+                    "${most}",
+                    "${found}",
+                    "${blocks}",
+                    if piped { "piped" } else { "" },
+                ]
+            },
+            _ -> [],
+        },
+    )
+}
+
+/// A declared type's method or static miscounted, each of its seats written: the type, the member,
+/// whether it's a static, what it takes and what it's handed.
+fn members_miscounted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    miscounts_in(
+        engine,
+        file,
+        at,
+        (s: Seating) -> match s {
+            .Miscounted(owner, name, statics, least, most, found, _, _) -> if owner == "" || least != most { [] } else { [owner, name, if statics { "static" } else { "" }, "${most}", "${found}"] },
+            _ -> [],
+        },
+    )
+}
+
+/// a call writes as many arguments as its seats take
+export law call_miscounted {
+    kind: "type.mismatch"
+    reads: calls_miscounted
+    voice: call_miscounted_words
+    witness: "fn g(xs: List<int>) -> int? { xs.get() }\n"
+}
+
+fn call_miscounted_words(a: List<string>) -> Voice {
+    let least = count_at(a, 1)
+    let most = count_at(a, 2)
+    let found = count_at(a, 3)
+    let blocks = count_at(a, 4)
+    when {
+        least != most -> defaulted_arity_missed(a[0], least, most, found)
+        blocks > 0 -> block_seatless(a[0], most, a[5] == "piped", found - blocks, blocks)
+        _ -> arity_missed(a[0], most, found)
+    }
+}
+
+/// A fn's argument written as a trailing block its seat refused: the fn, the seat's place, whether
+/// the seat takes a fn.
+fn blocks_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat {
+            .Block(callee, place, takes_fn) -> [found_in(r, [callee, "${place}", if takes_fn { "fn" } else { "" }])],
+            _ -> [],
+        } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a trailing block fills a fn seat of its type
+export law block_mismatch {
+    kind: "type.mismatch"
+    reads: blocks_refused
+    voice: block_refused
+    witness: "fn run(f: fn() -> int) -> int { f() }\n\nfn g() -> int { run { \"s\" } }\n"
+}
+
+fn block_refused(a: List<string>) -> Voice { block_misfit(a[0], count_at(a, 1), a[3], a[4], a[2] == "fn") }
+
+/// A predicate walk's fn answering no `bool`: the walk, what the fn answers.
+fn walks_unpredicated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Unpredicated(name, got, _) -> found_saying(r, [name, got]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a predicate walk's fn answers a `bool`
+export law walk_fn_tests {
+    kind: "type.mismatch"
+    reads: walks_unpredicated
+    voice: unpredicated_words
+    witness: "fn g(xs: List<int>) -> List<int> { xs.filter((x: int) -> x + 1) }\n"
+}
+
+fn unpredicated_words(a: List<string>) -> Voice { walk_unpredicated(a[0], a[1]) }
+
+/// An assignment's value its place refused: the place as it's named.
+fn assignments_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Assigned(spot, _) -> [found_in(r, [spot])], _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// an assignment writes a value of its place's type
+export law assignment_mismatch {
+    kind: "type.mismatch"
+    reads: assignments_refused
+    voice: assignment_refused
+    witness: "fn g() -> int {\n    mut n = 1\n    n = \"s\"\n    n\n}\n"
+}
+
+fn assignment_refused(a: List<string>) -> Voice { refused_voice("assignment changes ${a[0]}: `${a[1]}` to `${a[2]}`", a[1], a[2]) }
+
+/// An arm its construct's seat refused, where the construct is one `spoken` names: whose arms.
+fn arms_apart(engine: QueryEngine, file: SourceFileAddress, at: int, spoken: fn(Meeting) -> string) -> List<
+    Found,
+> {
+    [found_in(r, [whose!]) for r in refused_in(engine, file, at) for whose in [match r.seat { .ArmApart(of) -> spoken(of), _ -> null }] if whose != null]
+}
+
+fn branches_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    arms_apart(
+        engine,
+        file,
+        at,
+        (of: Meeting) -> match of { .If -> "an `if`'s branches", .When -> "a `when`'s arms" },
+    )
+}
+
+/// the branches of an `if` and the arms of a `when` answer what their seat wants
+export law branches_answer_the_seat {
+    kind: "type.mismatch"
+    reads: branches_disagreeing
+    voice: arm_apart_refused
+    witness: "fn f(c: bool) -> int { if c { \"a\" } else { 1 } }\n"
+}
+
+fn arm_apart_refused(a: List<string>) -> Voice { refused_voice(arms_disagreement(a[0], a[2], "the seat", a[1]), a[1], a[2]) }
+
+/// An `if` no seat judges whose branches answer two types: the first's, the second's.
+fn ifs_apart(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .BranchesApart -> found_saying(r, [r.want, r.found]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// the branches of an `if` answer one type
+export law branches_share_a_type {
+    kind: "type.mismatch"
+    reads: ifs_apart
+    voice: ifs_apart_words
+    witness: "fn g(n: int) -> int { n }\n\nfn f(c: bool) -> int { g(if c { \"a\" } else { 1 }) }\n"
+}
+
+fn ifs_apart_words(a: List<string>) -> Voice { branches_apart(a[0], a[1]) }
+
+/// A field a literal writes a second time: the field.
+fn fields_written_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .FieldRepeated(name) -> found_saying(r, [name]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a literal writes each field once
+export law field_written_once {
+    kind: "type.struct_fields"
+    reads: fields_written_twice
+    voice: field_twice_words
+    witness: "type P = { x: int }\n\nfn f() -> P { P { x: 1, x: 2 } }\n"
+}
+
+fn field_twice_words(a: List<string>) -> Voice { field_repeated(a[0]) }
+
+/// A `?` its caller can't carry: how, and the words its voice is handed.
+fn propagates_uncarried(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [found_saying(r, a) for r in refused_in(engine, file, at) for a in [passed_words(r.seat)] if !a.is_empty()],
+    )
+}
+
+fn passed_words(seat: Seating) -> List<string> {
+    match seat {
+        .Uncalled(failing, lambda) -> ["uncalled", if failing { "failing" } else { "" }, if lambda { "lambda" } else { "" }],
+        .FailureUnpromised(promise, err) -> ["failure", promise, err],
+        .AbsenceUnpromised(promise, fallible) -> ["absence", promise, if fallible { "fallible" } else { "" }],
+        .FailuresApart(raised, promised) -> ["apart", raised, promised],
+        _ -> [],
+    }
+}
+
+/// a `?` passes to a caller whose promise carries it
+export law propagate_carried {
+    kind: "type.propagate"
+    reads: propagates_uncarried
+    voice: passed_refused
+    witness: "fn a() -> int? { null }\n\nfn b() -> int { a()? }\n"
+}
+
+fn passed_refused(a: List<string>) -> Voice {
+    match a[0] {
+        "uncalled" -> propagate_uncalled(a[1] == "failing", a[2] == "lambda"),
+        "failure" -> failure_unanswered(a[1], a[2]),
+        "absence" -> absence_unanswered(a[1], a[2] == "fallible"),
+        _ -> failures_apart(a[1], a[2]),
+    }
+}
+
+/// A `fail`'s value its fn's promise refused.
+fn fails_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Raised(_) -> [found_in(r, [])], _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a `fail` raises what its fn promises to fail with
+export law fail_mismatch {
+    kind: "type.fail"
+    reads: fails_refused
+    voice: fail_refused
+    witness: "enum E {\n    boom\n}\n\nfn f() -> Result<int, E> {\n    fail 5\n}\n"
+}
+
+fn fail_refused(a: List<string>) -> Voice { refused_voice("`fail` raises a `${a[0]}`, this is `${a[1]}`", a[0], a[1]) }
+
+/// A range's bound that is no `int`: where it stands, what it is.
+fn range_bounds_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat {
+            .RangeBound(ends) -> found_saying(r, [if ends { "ends" } else { "starts" }, r.found]),
+            _ -> [],
+        } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a range counts between `int`s
+export law range_bound_mismatch {
+    kind: "type.mismatch"
+    reads: range_bounds_refused
+    voice: range_bound_words
+    witness: "fn f() -> int {\n    for i in 0..\"x\" { }\n    1\n}\n"
+}
+
+fn range_bound_words(a: List<string>) -> Voice { range_bound_said(a[0], a[1]) }
+
+/// A `catch` refused, as its fault's own words.
+fn catches_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Caught(fault) -> found_saying(r, fault_words(fault)), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+fn fault_words(fault: CatchFault) -> List<string> {
+    match fault {
+        .Armless -> ["armless"],
+        .Rest(err) -> ["rest", err],
+        .UnionRest(remaining) -> ["union", remaining],
+        .NoMember(vn, err) -> ["member", vn, err],
+        .Twice(vn) -> ["twice", vn],
+        .Variantless(vn, err) -> ["variantless", vn, err],
+        .NoFailure(err, vn, variants) -> ["failure", err, vn].concat(variants),
+        .NothingHeld(vn, bind) -> ["held", vn, bind],
+    }
+}
+
+fn fault_of(a: List<string>) -> CatchFault {
+    match a[0] {
+        "armless" -> CatchFault.Armless,
+        "rest" -> CatchFault.Rest(a[1]),
+        "union" -> CatchFault.UnionRest(a[1]),
+        "member" -> CatchFault.NoMember(a[1], a[2]),
+        "twice" -> CatchFault.Twice(a[1]),
+        "variantless" -> CatchFault.Variantless(a[1], a[2]),
+        "failure" -> CatchFault.NoFailure(a[1], a[2], a.drop(3)),
+        _ -> CatchFault.NothingHeld(a[1], a[2]),
+    }
+}
+
+/// a `catch` names failures its subject has, and lets pass only what its fn carries
+export law catch_arms_lawful {
+    kind: "type.catch"
+    reads: catches_refused
+    voice: catch_words
+    witness: "enum E {\n    boom\n    small(int)\n}\n\nfn a() -> Result<int, E> {\n    1\n}\n\nfn b() -> int {\n    a() catch {\n        .boom -> 0\n    }\n}\n"
+}
+
+fn catch_words(a: List<string>) -> Voice { catch_fault(fault_of(a)) }
+
+/// A `catch` arm's value its subject's ok side refused.
+fn catch_arms_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .CaughtArm -> [found_in(r, [])], _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a `catch` arm answers the ok side
+export law catch_arm_mismatch {
+    kind: "type.catch"
+    reads: catch_arms_refused
+    voice: catch_arm_refused
+    witness: "fn a() -> Result<int, string> {\n    1\n}\n\nfn b() -> int {\n    a() catch e -> \"s\"\n}\n"
+}
+
+fn catch_arm_refused(a: List<string>) -> Voice { refused_voice("a `catch` arm answers the ok side: `${a[0]}`, this is `${a[1]}`", a[0], a[1]) }
+
+/// A binding of a value that answers nothing.
+fn nothings_bound(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Voided -> found_saying(r, ["nothing"]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a binding names a value
+export law binding_names_a_value {
+    kind: "type.mismatch"
+    reads: nothings_bound
+    voice: nothing_bound_words
+    witness: "fn g(mut xs: List<int>) -> int {\n    let n = xs.push(2)\n    1\n}\n"
+}
+
+fn nothing_bound_words(_a: List<string>) -> Voice { void_bound() }
+
+/// A property read on a value that may be absent: the property.
+fn guarantees_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Guarantee(name) -> found_saying(r, [name, r.found]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a property is read on a value that is there
+export law property_reads_a_guarantee {
+    kind: "type.mismatch"
+    reads: guarantees_read
+    voice: guarantee_words
+    witness: "type U = { age: int }\n\nfn f(u: U?) -> int { u.age }\n"
+}
+
+fn guarantee_words(a: List<string>) -> Voice { guarantee_read(a[0], a[1]) }
+
+/// A `for` whose subject walks nothing: how, and what it is.
+fn fors_unwalked(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .ForUnwalked(fault) -> found_saying(r, walk_fault_words(fault)), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+fn walk_fault_words(fault: WalkFault) -> List<string> {
+    match fault {
+        .Empty -> ["empty"],
+        .Text -> ["text"],
+        .Unpaired -> ["unpaired"],
+        .Other(found) -> ["other", found],
+    }
+}
+
+/// a `for` walks a value that holds elements
+export law for_walks_elements {
+    kind: "type.mismatch"
+    reads: fors_unwalked
+    voice: for_unwalked_words
+    witness: "fn f() -> int {\n    mut t = 0\n    for x in 5 {\n        t = t + x\n    }\n    t\n}\n"
+}
+
+fn for_unwalked_words(a: List<string>) -> Voice {
+    for_fault(
+        match a[0] {
+            "empty" -> WalkFault.Empty,
+            "text" -> WalkFault.Text,
+            "unpaired" -> WalkFault.Unpaired,
+            _ -> WalkFault.Other(a[1]),
+        },
+    )
+}
+
+/// A record literal refused, as its fault's own words.
+fn literals_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Literal(fault) -> found_saying(r, literal_words(fault)), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+fn literal_words(fault: LiteralFault) -> List<string> {
+    match fault {
+        .Unknown(record, field, fields) -> ["unknown", record, field].concat(fields),
+        .Enum(name) -> ["enum", name],
+        .Fieldless(name, of) -> ["fieldless", name, of],
+    }
+}
+
+/// a record literal names a record and writes its fields
+export law literal_fills_a_record {
+    kind: "type.struct_fields"
+    reads: literals_refused
+    voice: literal_refused_words
+    witness: "type T = { tone: int }\n\nfn f() -> T { T { tone: 1, hue: 2 } }\n"
+}
+
+fn literal_refused_words(a: List<string>) -> Voice {
+    literal_fault(
+        match a[0] {
+            "unknown" -> LiteralFault.Unknown(a[1], a[2], a.drop(3)),
+            "enum" -> LiteralFault.Enum(a[1]),
+            _ -> LiteralFault.Fieldless(a[1], a[2]),
+        },
+    )
+}
+
+/// A call filling a type parameter with a type that doesn't implement its bound: the type, the bound.
+fn bounds_unmet(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .Unimplemented -> found_saying(r, [r.found, r.want]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a type parameter is filled with a type that implements its bound
+export law bound_implemented {
+    kind: "type.mismatch"
+    reads: bounds_unmet
+    voice: bound_unmet_words
+    witness: "trait Show {\n    fn show() -> int\n}\n\ntype Q = { y: int }\n\nfn f<T: Show>(v: T) -> int { v.show() }\n\nfn g() -> int { f(Q { y: 1 }) }\n"
+}
+
+fn bound_unmet_words(a: List<string>) -> Voice { bound_unimplemented(a[0], a[1], "in this call") }
+
+/// A `fold` refused, its fault's own words, where `seedless` picks the seed's law or the others'.
+fn folds_refused(engine: QueryEngine, file: SourceFileAddress, at: int, seedless: bool) -> List<
+    Found,
+> {
+    flatten(
+        [match r.seat {
+            .Folded(fault) -> if (fault is .Seedless) == seedless { found_saying(r, fold_words(fault)) } else { [] },
+            _ -> [],
+        } for r in refused_in(engine, file, at)],
+    )
+}
+
+fn folds_misshapen(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { folds_refused(engine, file, at, false) }
+
+fn folds_seedless(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { folds_refused(engine, file, at, true) }
+
+fn fold_words(fault: FoldFault) -> List<string> {
+    match fault {
+        .Count(found) -> ["count", "${found}"],
+        .Seedless(acc) -> ["seedless", acc],
+        .Seats(seats) -> ["seats", "${seats}"],
+        .Misfit(wanted, found) -> ["misfit", wanted, found],
+    }
+}
+
+fn fold_refused_words(a: List<string>) -> Voice {
+    fold_fault(
+        match a[0] {
+            "count" -> FoldFault.Count(count_at(a, 1)),
+            "seedless" -> FoldFault.Seedless(a[1]),
+            "seats" -> FoldFault.Seats(count_at(a, 1)),
+            _ -> FoldFault.Misfit(a[1], a[2]),
+        },
+    )
+}
+
+/// a `fold` takes a seed and a fn of the accumulator and the element
+export law fold_takes_seed_and_fn {
+    kind: "type.mismatch"
+    reads: folds_misshapen
+    voice: fold_refused_words
+    witness: "fn g(xs: List<int>) -> int { xs.fold(0) }\n"
+}
+
+/// a `fold`'s seed names what it accumulates
+export law fold_seed_typed {
+    kind: "type.list_element"
+    reads: folds_seedless
+    voice: fold_refused_words
+    witness: "fn g(xs: List<int>) -> int {\n    let n = xs.fold([], (acc, x) -> acc)\n    1\n}\n"
+}
+
+/// A call pinning a count of type arguments its fn doesn't declare: the fn, what it declares, what is pinned.
+fn pins_miscounted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat {
+            .Pinned(callee, want, found) -> found_saying(r, [callee, "${want}", "${found}"]),
+            _ -> [],
+        } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a call pins as many type arguments as its fn declares
+export law type_arguments_counted {
+    kind: "type.mismatch"
+    reads: pins_miscounted
+    voice: pins_words
+    witness: "fn plain(x: int) -> int { x }\n\nfn g() -> int { plain<int>(5) }\n"
+}
+
+fn pins_words(a: List<string>) -> Voice { pins_refused(a[0], count_at(a, 1), count_at(a, 2)) }
+
+/// A walk handed other than its one fn: the walk, what it's handed.
+fn walks_miscounted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .OneFn(name, found) -> found_saying(r, [name, "${found}"]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a list's walk takes one fn
+export law walk_takes_a_fn {
+    kind: "type.mismatch"
+    reads: walks_miscounted
+    voice: one_fn_words
+    witness: "fn g(xs: List<int>) -> List<int> { xs.map((x: int) -> x, (y: int) -> y) }\n"
+}
+
+fn one_fn_words(a: List<string>) -> Voice { walk_takes_one_fn(a[0], count_at(a, 1)) }
+
+/// A walk's lambda taking other than one param: the walk, what the lambda takes.
+fn walks_misseated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [match r.seat { .WalkSeats(name, seats) -> found_saying(r, [name, "${seats}"]), _ -> [] } for r in refused_in(engine, file, at)],
+    )
+}
+
+/// a walk's lambda takes the element
+export law walk_lambda_takes_the_element {
+    kind: "type.mismatch"
+    reads: walks_misseated
+    voice: walk_seats_words
+    witness: "fn g(xs: List<int>) -> List<int> { xs.map((a, b) -> a) }\n"
+}
+
+fn walk_seats_words(a: List<string>) -> Voice { walk_misseated(a[0], count_at(a, 1)) }
+
+/// a member's call writes as many arguments as its seats take
+export law member_miscounted {
+    kind: "type.method"
+    reads: members_miscounted
+    voice: member_miscounted_words
+    witness: "type P = { n: int }\n\nimpl P {\n    fn add(k: int) -> int { self.n + k }\n}\n\nfn g(p: P) -> int { p.add(1) { 2 } }\n"
+}
+
+fn member_miscounted_words(a: List<string>) -> Voice {
+    if a[2] == "static" { static_arity_missed(a[0], a[1], count_at(a, 3), count_at(a, 4)) } else { method_arity_missed(a[0], a[1], count_at(a, 3), count_at(a, 4)) }
+}
 /// How a call names a seat of a fn that takes the rest of its arguments.
 const REST_NAMED: string = "rest"
 
@@ -1516,6 +2257,42 @@ fn map_unlike_refused(a: List<string>) -> Voice { map_spread_unmapped(a[0]) }
 fn pattern_variant_unshaped_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     Found,
 > { misshapen_found(engine, file, at, ["variant"]) }
+
+/// Each pattern of the written item `at` of `file` comparing its subject with a value of another
+/// type: at the pattern, its voice handed the value's type, then the subject's.
+fn patterns_unmatched(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [found_saying(r, [r.found, r.want]) for r in refused_in(engine, file, at) if r.seat is .Unmatched],
+    )
+}
+
+/// Each `is` of the written item `at` of `file` asking a value that is no enum for a variant: at the
+/// value, its voice handed the value's type.
+fn variants_asked_of(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten(
+        [found_saying(r, [r.found]) for r in refused_in(engine, file, at) if r.seat is .Unasked],
+    )
+}
+
+/// an `is` asks an enum for its variant
+export law is_asks_an_enum {
+    kind: "type.match"
+    reads: variants_asked_of
+    voice: asked_of_words
+    witness: "fn f(n: int) -> bool { n is .a }\n"
+}
+
+fn asked_of_words(a: List<string>) -> Voice { variant_asked_of(a[0]) }
+
+/// a pattern compares its subject with a value of the subject's type
+export law pattern_of_subject_type {
+    kind: "type.pattern"
+    reads: patterns_unmatched
+    voice: unmatched_words
+    witness: "fn f(n: int) -> int {\n    match n {\n        \"x\" -> 1\n        _ -> 0\n    }\n}\n"
+}
+
+fn unmatched_words(a: List<string>) -> Voice { pattern_unmatched(a[0], a[1]) }
 
 /// a variant pattern over a value that is no enum
 export law pattern_variant_unshaped {
@@ -1557,6 +2334,43 @@ export law pattern_record_unrecorded {
 
 fn pattern_record_unrecorded_words(a: List<string>) -> Voice { record_pattern_unrecorded(a[1], a[2]) }
 
+/// A record pattern refused as `kind` names it (`record_misshapen`): the kind, the name the pattern
+/// names, then what the kind keeps.
+fn record_patterns_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    misshapen_found(
+        engine,
+        file,
+        at,
+        [
+            "record.rests",
+            "record.after",
+            "record.other",
+            "record.field",
+            "record.twice",
+            "record.unlisted",
+        ],
+    )
+}
+
+/// a record pattern names the subject's record and its fields
+export law pattern_record_fields {
+    kind: "type.record_pattern"
+    reads: record_patterns_found
+    voice: record_pattern_words
+    witness: "type P = { x: int, y: int }\n\nfn f(p: P) -> int {\n    match p {\n        P { x } -> x,\n    }\n}\n"
+}
+
+fn record_pattern_words(a: List<string>) -> Voice {
+    match a[0] {
+        "record.rests" -> record_pattern_rests(),
+        "record.after" -> record_pattern_after_rest(),
+        "record.other" -> record_pattern_other(a[1], a[2]),
+        "record.field" -> record_pattern_fieldless(a[1], a[2].split("\n")[0], a[2].split("\n").drop(1).join("\n")),
+        "record.twice" -> record_pattern_twice(a[2]),
+        _ -> record_pattern_unlisted(a[1], a[2]),
+    }
+}
+
 /// A list pattern over a value that is no list: the name it names, then the value's type.
 fn pattern_list_unlisted_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { misshapen_found(engine, file, at, ["list"]) }
 
@@ -1594,7 +2408,7 @@ fn misshapen_found(engine: QueryEngine, file: SourceFileAddress, at: int, kinds:
 
 fn misshapen_words(r: RefusedSeat, kinds: List<string>) -> List<Found> {
     match r.seat {
-        .Misshapen(kind, name, found) -> if kinds.contains(kind) { found_saying(r, [kind, name, found]) } else { [] },
+        .Misshapen(kind, name, found) -> if kinds.contains(kind) { [Found { at: span_of(r.at), args: [kind, name, found], aside: noted_aside(r.note) }] } else { [] },
         rest -> [],
     }
 }
@@ -1937,7 +2751,7 @@ fn handed_refused(engine: QueryEngine, file: SourceFileAddress, at: int, how: Un
 fn handed_words(r: RefusedSeat, how: Unhanded) -> Found? {
     match r.seat {
         .Handed(callee, place, root, why) -> if why == how { Found { at: span_of(r.at), args: [callee, "${place}", root] } } else { null },
-        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) -> null,
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .Condition(_) or .FieldDefault(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) -> null,
     }
 }
 

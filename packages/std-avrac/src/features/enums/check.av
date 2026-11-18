@@ -628,16 +628,16 @@ export fn payload_is_outside() -> Voice {
 
 fn not_askable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    cx
-        .spoken(
-            refusal(
-                "type.match",
-                cx.loc_of(subject),
-                "`is` asks an enum for its variant, found `${n}`",
-                this_is(n),
-                "`is` asks an enum for its variant — a nullable is asked with `!= null`, any other value with `==` or a `match`",
-            ),
-        )
+    cx.spoken(said_as("type.match", cx.loc_of(subject), variant_asked_of(n)))
+}
+
+/// An `is` asking a value of `found`, no enum, for a variant.
+export fn variant_asked_of(found: string) -> Voice {
+    Voice {
+        message: "`is` asks an enum for its variant, found `${found}`",
+        label: this_is(found),
+        help: "`is` asks an enum for its variant — a nullable is asked with `!= null`, any other value with `==` or a `match`",
+    }
 }
 
 fn no_variant_asked(mut cx: TypeCx, e: ExprId, sname: string, v: string, sig: EnumSig) {
@@ -679,30 +679,36 @@ export fn variant_unenumed(name: string) -> Voice {
 }
 
 fn unenumerated_want(mut cx: TypeCx, e: ExprId, name: string, want: TypeId) -> TypeId {
-    let n = cx.view.types.name_of(want)
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.variant_lit",
                 cx.loc_of(e),
-                "`.${name}` builds a variant, and `${n}` has none",
-                this_is(n),
-                "a bare `.${name}` takes the enum its seat names — qualify it (`Enum.${name}`), or declare the variant on an enum",
+                variant_unwanted(name, cx.view.types.name_of(want)),
             ),
         )
 }
 
+/// A bare `.name` in a seat of `want`, which is no enum.
+export fn variant_unwanted(name: string, want: string) -> Voice {
+    Voice {
+        message: "`.${name}` builds a variant, and `${want}` has none",
+        label: this_is(want),
+        help: "a bare `.${name}` takes the enum its seat names — qualify it (`Enum.${name}`), or declare the variant on an enum",
+    }
+}
+
 fn no_variant_wanted(mut cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.variant_lit",
-                cx.loc_of(e),
-                "`${tname}` has no variant `${name}`",
-                "built here",
-                variant_meant(name, sig.names),
-            ),
-        )
+    cx.spoken(said_as("type.variant_lit", cx.loc_of(e), variant_unbuilt(tname, name, sig.names)))
+}
+
+/// A bare `.name` in a seat of the enum `owner`, whose `variants` hold no such name.
+export fn variant_unbuilt(owner: string, name: string, variants: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no variant `${name}`",
+        label: "built here",
+        help: variant_meant(name, variants),
+    }
 }
 
 fn unknown_arm(mut cx: TypeCx, p: PatId, sname: string, v: string, sig: EnumSig) -> List<TypeId> {
@@ -881,17 +887,23 @@ export fn fraction_unmatched(written: string) -> Voice {
 }
 
 fn literal_mismatch(mut cx: TypeCx, p: PatId, got: TypeId, expected: TypeId) {
-    let g = cx.view.types.name_of(got)
     cx
         .emit(
-            refusal(
+            said_as(
                 "type.pattern",
                 cx.pat_loc(p),
-                "a `${g}` never matches `${cx.view.types.name_of(expected)}`",
-                this_is(g),
-                "a pattern is of the subject's type — write a `${cx.view.types.name_of(expected)}` pattern",
+                pattern_unmatched(cx.view.types.name_of(got), cx.view.types.name_of(expected)),
             ),
         )
+}
+
+/// A pattern comparing a value of `found` with a subject of `subject`, another type.
+export fn pattern_unmatched(found: string, subject: string) -> Voice {
+    Voice {
+        message: "a `${found}` never matches `${subject}`",
+        label: this_is(found),
+        help: "a pattern is of the subject's type — write a `${subject}` pattern",
+    }
 }
 
 fn or_names_differ(mut cx: TypeCx, value: ExprId, names: List<string>, k: int, own: List<string>) {

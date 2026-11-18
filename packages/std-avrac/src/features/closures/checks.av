@@ -8,9 +8,11 @@ use core.{Checking, Checks, ExprId, Expected, SignedType}
 use core.expr.{Lambda}
 
 impl Checks for Lambda {
-    /// The pronoun's own lambda in a seat that takes no fn is refused, and is nothing.
+    /// The pronoun's own lambda in a seat that takes no fn, and a lambda no seat can hold as written,
+    /// is refused, and is nothing.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         if cx.pronoun_starved(e, self.params, expected) ||
+            cx.lambda_refused(e, self.params, expected) ||
             cx.offer_refused(e, self.params, expected) { return null }
         cx.lambda_checked(self.params, self.body, expected)
     }
@@ -19,6 +21,16 @@ impl Checks for Lambda {
 impl Checks for ArmsBody {
     /// A body of arms, a lambda of one parameter matched by them: under a fn seat of one parameter,
     /// each arm binds against that parameter and answers the seat's answer, and the body is the
-    /// seat's fn type; under any other seat each binds against what isn't known.
-    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.arms_lambda_checked(self.arms, expected) }
+    /// seat's fn type; under any other seat each binds against what isn't known, and in a seat that
+    /// takes no fn it is refused, and is nothing. Its arms cover what the seat hands them, as a
+    /// `match`'s cover its subject, where each names a variant it holds and the seat's
+    /// answer leaves no variant a default.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        if cx.block_unseated(e, expected) { return null }
+        let held = cx.arms_held(expected)
+        let before = cx.refused.get().length
+        for a in self.arms { for p in a.pats { cx.variants_named(e, p, held, false) } }
+        if cx.refused.get().length == before && cx.arms_total(expected, held) { cx.arms_cover(e, e, held, self.arms) }
+        cx.arms_lambda_checked(self.arms, expected)
+    }
 }

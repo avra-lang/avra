@@ -165,8 +165,10 @@ impl Lowering {
     /// `r`, a fn of `from`, as a seat of `into` that `reseats` it holds it: a box of the code that
     /// takes `into`'s seats, then the fn; under a `?`, present.
     mut fn reseated(r: Reg, from: SignedType, into: SignedType) -> Reg {
-        if from.generic() || into.generic() { return self
-                .missed_as("a fn value under type parameters in a seat that writes where it doesn't") }
+        if from.generic() || into.generic() {
+            return self
+                .missed_as("a fn value under type parameters in a seat that writes where it doesn't")
+        }
         let seat = into.unwrapped()
         let made = self.fn_box(self.laid_out(seat), self.reseating_code(from, seat), [r], seat)
         if into.nullable() { self.adopted(made, seat, into) } else { made }
@@ -235,13 +237,11 @@ impl Lowering {
 }
 
 /// THE OFFER: whether a lambda of `params`, filling a fn seat of `seats` seats, takes the fields of the
-/// one record that seat holds by name, `fields` that record's field names: it writes no seat's type,
-/// and each seat names a field, `it` never.
+/// one record that seat holds by name, `fields` that record's field names — any subset, none
+/// included: it writes no seat's type, and each seat names a field, `it` never.
 export fn takes_by_name(params: List<Param>, seats: int, fields: List<string>?) -> bool {
     let names? = fields else { return false }
-    seats == 1 &&
-        !params.is_empty() &&
-        params.all((p) -> p.ty == null && p.name.of != "it" && names.contains(p.name.of))
+    seats == 1 && params.all((p) -> p.ty == null && p.name.of != "it" && names.contains(p.name.of))
 }
 
 /// Why the lambda `lam` of type `ty` isn't lifted yet, absent when it is: each of its seats is one

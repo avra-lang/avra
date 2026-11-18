@@ -1,6 +1,6 @@
 //! WHERE A FN ASKS A VALUE OF ITS TYPE PARAMETER A METHOD THE BOUND DOESN'T GIVE: the bound decides
 //! what the parameter can do, and a parameter with no bound has no methods at all.
-use core.{Expr, ExprId, MethodParts, SignedType, Span, SyntaxArena, TypeHead, flatten}
+use core.{Expr, ExprId, MethodParts, SignedType, Span, SyntaxArena, TypeHead, flatten, headed_type}
 use compiler.laws.{Aside, Found, law}
 use diagnostics.{Voice}
 use features.impls.{bound_lacks_method, bound_written, typewide_remedy, unbounded_method}
@@ -80,8 +80,16 @@ fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<Ungiv
     [r! for k in 0..typed.types.length for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
 }
 
-/// The node `e` as a method call on a value of one of `sig`'s type parameters that its bound doesn't
-/// give, `own` the parameters the body's fn writes itself; absent for any other node.
+/// The type parameter of `sig` the node `e` names, where it is written as a bare name: a static
+/// called through the parameter itself.
+fn parameter_named(store: SyntaxArena, sig: FnSignature, e: ExprId) -> SignedType? {
+    let name? = store.ident_name(e) else { return null }
+    let at = sig.type_params.index_of(name)
+    if at < 0 { null } else { headed_type(TypeHead.Parameter(at, name)) }
+}
+
+/// The node `e` as a method call on a value of one of `sig`'s type parameters, or a static called
+/// through one, that its bound doesn't give, `own` the parameters the body's fn writes itself; absent for any other node.
 fn ungiven(
     engine: QueryEngine,
     store: SyntaxArena,
@@ -92,8 +100,8 @@ fn ungiven(
     e: ExprId,
 ) -> UngivenAt? {
     let call? = called_on(store, e) else { return null }
-    let subject? = typed_at(types, call.subject.index) else { return null }
-    let held = subject with { nulls: 0 }
+    let subject? = typed_at(types, call.subject.index) ?? parameter_named(store, sig, call.subject) else { return null }
+    let held = (subject.described() ?? subject) with { nulls: 0 }
     let param? = match held.head { .Parameter(_, name) -> name, rest -> null } else { return null }
     if held.dynamic { return null }
     let index = sig.type_params.index_of(param)
@@ -107,6 +115,7 @@ fn ungiven(
         chained: chain_said(store, text, e, span),
     }
     let trait_bound? = typed_at(sig.bounds, index) else { return row }
+    if subject.described() != null || typed_at(types, call.subject.index) == null { return null }
     let declared? = declared_at(trait_bound) else { return null }
     if bound_signature(engine, trait_at(declared), call.name, held, trait_bound.args) != null { return null }
     row with { bound: trait_bound.spelled() }

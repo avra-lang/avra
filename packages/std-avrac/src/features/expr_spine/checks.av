@@ -352,15 +352,23 @@ impl Checks for Prop {
         let subject? = cx.check(self.subject, Expected.Free) else { return null }
         let described = subject.described()
         if described != null { return cx.variant_built(e, described!, self.name.of, [], false, expected) }
+        if cx.guarantee_read(e, subject, self.name.of) { return null }
         cx.member_read(subject, self.name.of)
     }
 }
 
+/// Whether a value of `subject` is known to be no list, which no index reads.
+fn unindexed(subject: SignedType?) -> bool {
+    let s? = subject else { return false }
+    s.listed() == null && !s.generic() && !s.inferred()
+}
+
 impl Checks for Index {
-    /// `xs[i]` is the list's element, `i` an `int`.
+    /// `xs[i]` is the list's element, `i` an `int`; an index into what is no list is judged by that
+    /// alone.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.seen(cx.check(self.subject, Expected.Free))
-        let _ = cx.check_seated(self.index, owned_type("int"), Seating.Index)
+        let _ = if unindexed(subject) { cx.check(self.index, Expected.Free) } else { cx.check_seated(self.index, owned_type("int"), Seating.Index) }
         subject?.listed()
     }
 }

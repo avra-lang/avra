@@ -2,6 +2,7 @@
 //! each name it reads asked of the names layer and that declaration's signature alone. The answer is
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
+    MethodParts,
     flatten,
     At,
     TypeMemos,
@@ -87,12 +88,27 @@ export type RefusedAt = { at: int, want: SignedType, found: SignedType, seat: Se
 fn kept_body(cx: Checking) -> TypedBody {
     TypedBody {
         types: cx.types.get(),
-        refused: [RefusedAt { at: r.at.index, want: r.want, found: r.found, seat: r.seat, pat: r.pat?.index } for r in cx.refused.get()],
+        refused: refused_once(
+            [RefusedAt {
+                at: r.at.index,
+                want: r.want,
+                found: r.found,
+                seat: r.seat,
+                pat: r.pat?.index,
+            } for r in cx.refused.get()],
+        ),
         unread: unread_kept(cx),
         reads: reads_kept(cx),
         binds: [b for j, b in cx.names_bound.get() if !cx.names_bound.get().take(j).any((c) -> c.name == b.name && same_binder(c.site, b.site))],
         seats_read: [SeatReadAt { stmt: r.stmt, name: r.name, at: r.at.index } for r in cx.seat_reads.get()],
     }
+}
+
+/// Each refusal of `rows` once: a node checked again, under a want it then knows, is refused as it
+/// was. Two refusals of one node by different seats — a `match` owing two variants — are two.
+fn refused_once(rows: List<RefusedAt>) -> List<RefusedAt> {
+    let keys = [r.saved_bytes() for r in rows]
+    [r for j, r in rows if keys.index_of(keys[j]) == j]
 }
 
 /// Each name a body's checking read, as it resolved it, in the order of the nodes reading them.
@@ -280,7 +296,7 @@ fn program_answered(
             signed_said,
         ),
         declared_value: (f: SourceFileAddress, n: string) -> value_type(engine, f, n, true),
-        written: (written: TypeRef) -> applied_signed(engine, written, signing.signed(written)),
+        written: (written: TypeRef) -> signing.signed(written),
         type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
         record_of: (ty: SignedType) -> kept_answer(
             memos,
@@ -325,8 +341,25 @@ fn program_answered(
         methods_among: (subject: SignedType, m: string) -> [g.ty for g in impls_giving(engine, subject, m, false, file.package_name)],
         statics_among: (described: SignedType, s: string) -> [g.ty for g in impls_giving(engine, described, s, true, file.package_name)],
         toolchain_type: (module: string, n: string) -> toolchain_declared(engine, module, n),
+        own_member: (owner: SignedType, member: string, statics: bool) -> language_gives(
+            engine,
+            owner,
+            member,
+            statics,
+        ),
         external: (n: string, home: string?) -> read_from(engine, file, home)
             .any((f) -> names_extern(engine, f, n)),
+        type_params_named: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> fn_type_params(engine, f, n)),
+        implements: (ty: SignedType, bound: SignedType) -> bound_met(
+            engine,
+            file.package_name,
+            signing,
+            ty,
+            bound,
+        ),
+        bounds_named: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> fn_bounds(engine, f, n)) ?? [],
         memos: memos,
     }
 }
@@ -371,6 +404,37 @@ fn value_type(engine: QueryEngine, file: SourceFileAddress, name: string, answer
     }
 }
 
+/// The bounds the fn `file` reads as `name` declares for its type parameters, one for each; absent
+/// where it reads no fn so.
+fn fn_bounds(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType?>? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    if d.kind != ItemKind.Fn { return null }
+    declared_signature_of(engine, d)?.bounds
+}
+
+/// How many type parameters the fn `file` reads as `name` declares; absent where it reads no fn so.
+fn fn_type_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> int? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    if d.kind != ItemKind.Fn { return null }
+    declared_signature_of(engine, d)?.type_params?.length
+}
+
+/// Whether a value of `ty` meets the bound `bound` in a body signed by `signing`, read from
+/// `reader`: a `dyn` of the bound's trait and a type parameter bound by it do; any other type as the
+/// program's impls say. Absent where nothing says.
+fn bound_met(
+    engine: QueryEngine,
+    reader: string,
+    signing: Signing,
+    ty: SignedType,
+    bound: SignedType,
+) -> bool? {
+    if ty.dynamic { return if ty.names_as(bound) { true } else { null } }
+    let own = signing.bound_of(ty)
+    if own != null { return if own!.spelled() == bound.spelled() { true } else { null } }
+    implements(engine, reader, ty, bound)
+}
+
 /// The type the unwritten const or collection `d` has from its value, absent where that value reads
 /// back to `d` itself: a type asked for its own answer.
 fn settled_value_type(engine: QueryEngine, d: DeclaredName) -> SignedType? {
@@ -397,6 +461,13 @@ export fn const_value_loop(engine: QueryEngine, file: SourceFileAddress, name: s
     const_reach(engine, declared_place(file, name), declared_place(file, name), [], true)
 }
 
+/// Whether the const `here` writes a type its value isn't asked for: one that names a type, a name
+/// nothing declares being no type at all.
+fn types_itself(engine: QueryEngine, here: DeclaredAt) -> bool {
+    let written? = binding_type(engine, here.file, here.name) else { return false }
+    !(written.head is .Unnamed)
+}
+
 /// The consts the value of the const `here` reads on its way to `home`, `here` first, through none
 /// among `seen` — and, unless `through_written`, through none whose type is written; absent where it
 /// never gets there.
@@ -407,52 +478,156 @@ fn const_reach(
     seen: List<DeclaredAt>,
     through_written: bool,
 ) -> List<DeclaredAt>? {
-    if !through_written && binding_type(engine, here.file, here.name) != null ||
-        seen.any((x) -> same_declared(x, here)) { return null }
-    let item? = declaring_item(engine, here.file, here.name, ItemKind.Const) else { return null }
+    if !through_written && types_itself(engine, here) || seen.any((x) -> same_declared(x, here)) { return null }
+    let at? = declared_item(engine, here.file, here.name, ItemKind.Const) else { return null }
+    let item = read_item(engine, here.file, at)
     let value? = [v! for s in item.stmts if item.store.let_name(s) == here.name for v in [item.store.const_value(s)] if v != null]
         .first() else { return null }
-    let read = consts_read(engine, here.file, item.store, value, through_written)
+    let read = consts_read(
+        engine,
+        RunBody {
+            file: here.file,
+            at: at,
+            item: item,
+            root: value,
+            seats: [],
+            key: "",
+            settles: here.name,
+        },
+        through_written,
+    )
     if read.any((d) -> same_declared(d, home)) { return [here] }
     let rest? = read
         .find_map((d) -> const_reach(engine, d, home, seen.concat([here]), through_written)) else { return null }
     [here].concat(rest)
 }
 
-/// The consts the value at `root`, written in `file`, reads: each it names, and each the body of a fn
-/// it names or calls reads in turn where `through_fns`, every fn's body walked once. A value's type
-/// is read off a fn's signature, so only its settling runs through a fn's body.
-fn consts_read(
-    engine: QueryEngine,
+/// A body a const's settling runs: the written item `at` of `file` that holds it, read as `item`,
+/// its root, the seats it binds, and what tells it from every other.
+type RunBody = {
     file: SourceFileAddress,
-    store: SyntaxArena,
+    at: int,
+    item: ReadItem,
     root: ExprId,
-    through_fns: bool,
-) -> List<DeclaredAt> {
-    let first = declared_read(engine, file, store, root, [])
-    mut consts = [d for d in first if d.kind == ItemKind.Const]
-    mut fns = [d for d in first if through_fns && d.kind == ItemKind.Fn]
+    seats: List<string>,
+    key: string,
+    /// For a const's own value, the const: its nodes are typed as its settling types them.
+    settles: string? = null,
+}
+
+/// The written item of `file` declaring `name` as a `kind`, what generators make where nothing is
+/// written; absent where none does.
+fn declared_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> int? {
+    let written = file_declares(engine, file).names.filter(it.name == name)
+    let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
+    made.find(it.kind == kind)?.item
+}
+
+/// The consts the value `first` is reads: each it names, and where `through_bodies`, each the body
+/// of a fn it names or calls, or of a method or static it calls on a declared type, reads in turn,
+/// every body walked once. A value's type is read off a signature, so only its settling runs
+/// through a body.
+fn consts_read(engine: QueryEngine, first: RunBody, through_bodies: bool) -> List<DeclaredAt> {
+    mut consts: List<DeclaredName> = []
+    mut bodies = [first]
     mut walked: Map<string, bool> = {}
     mut at = 0
-    while at < fns.length {
-        let f = fns[at]
+    while at < bodies.length {
+        let b = bodies[at]
         at = at + 1
-        let key = "${f.file.package_name}/${f.file.path_in_package}/${f.name}"
-        if walked.has(key) { continue }
-        walked.set(key, true)
-        let read = body_read(engine, f)
+        if walked.has(b.key) { continue }
+        walked.set(b.key, true)
+        let read = declared_read(engine, b.file, b.item.store, b.root, b.seats)
         consts = consts.concat([d for d in read if d.kind == ItemKind.Const])
-        fns = fns.concat([d for d in read if d.kind == ItemKind.Fn])
+        if through_bodies {
+            bodies = bodies
+                .concat(
+                    [f! for d in read if d.kind == ItemKind.Fn for f in [fn_body(engine, d)] if f != null],
+                )
+                .concat(methods_run(engine, b))
+        }
     }
     [declared_place(d.file, d.name) for d in consts]
 }
 
-/// The consts and fns the body of the fn `f` names, none where it has no body here.
-fn body_read(engine: QueryEngine, f: DeclaredName) -> List<DeclaredName> {
-    let item? = declaring_item(engine, f.file, f.name, ItemKind.Fn) else { return [] }
+/// The body of the fn `f`, absent where it has none here.
+fn fn_body(engine: QueryEngine, f: DeclaredName) -> RunBody? {
+    let item = read_item(engine, f.file, f.item)
     let parts? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null]
-        .find(it.name == f.name) else { return [] }
-    declared_read(engine, f.file, item.store, parts.body, [p.name.of for p in parts.params])
+        .find(it.name == f.name) else { return null }
+    RunBody {
+        file: f.file,
+        at: f.item,
+        item: item,
+        root: parts.body,
+        seats: [p.name.of for p in parts.params],
+        key: "${f.file.package_name}/${f.file.path_in_package}/${f.name}",
+    }
+}
+
+/// The bodies of the methods and statics the calls under `b`'s root run: a method's on the declared
+/// type its receiver is typed as, a static's on the type its receiver names. A call whose receiver's
+/// type isn't declared runs no body read here.
+fn methods_run(engine: QueryEngine, b: RunBody) -> List<RunBody> {
+    let types = body_types(engine, b)
+    let nodes = under(b.item.store, At.Expr(b.root))
+    let bound = b.seats.concat(flatten([bound_at(b.item.store, k) for k in nodes]))
+    flatten(
+        [called_bodies(engine, b, types, bound, m!) for k in nodes for m in [called_method(b.item.store, k)] if m != null],
+    )
+}
+
+/// The type each node of `b` has: a const's value as its settling types it, any other body as its
+/// item does.
+fn body_types(engine: QueryEngine, b: RunBody) -> fn(int) -> SignedType? {
+    let held = item_node_types(engine, b.file, b.at, b.item)
+    let name? = b.settles else { return held }
+    let typed = match const_body_at(engine, b.file, name, b.at) {
+        .Ok(body) -> typed_under(engine, b.file, body).types,
+        .Err(_) -> [],
+    }
+    (k: int) -> first_typed([typed], k) ?? held(k)
+}
+
+/// The method call the node `k` is, where it's one.
+fn called_method(store: SyntaxArena, k: At) -> MethodParts? {
+    match k { .Expr(e) -> store.method_parts(e), rest -> null }
+}
+
+/// The bodies the method call `m` of `b` runs: the static `m` names on the type its receiver names,
+/// else the method on the declared type its receiver is typed as.
+fn called_bodies(
+    engine: QueryEngine,
+    b: RunBody,
+    types: fn(int) -> SignedType?,
+    bound: List<string>,
+    m: MethodParts,
+) -> List<RunBody> {
+    let named = b.item.store.ident_name(m.subject)
+    let owner = if named == null || bound.contains(named!) { null } else { resolved(engine, b.file, Space.Type, named!).named() }
+    if owner != null { return impl_bodies(engine, declared_place(owner!.file, owner!.name), m.name, true) }
+    let d? = declared_at(types(m.subject.index)?.unwrapped() ?? headed_type(TypeHead.Inferred)) else { return [] }
+    impl_bodies(engine, d, m.name, false)
+}
+
+/// The bodies the impls of the type `d` give `method`, as a method or, when `statics`, a static.
+fn impl_bodies(engine: QueryEngine, d: DeclaredAt, method: string, statics: bool) -> List<RunBody> {
+    flatten(
+        [impl_body(engine, i, d, method) for i in impls_with(engine, d.file, d.name, method, statics)],
+    )
+}
+
+/// The body the impl `i` of the type `d` writes as `method`, none where it writes none.
+fn impl_body(engine: QueryEngine, i: ImplAt, d: DeclaredAt, method: string) -> List<RunBody> {
+    let item = read_item(engine, i.file, i.item)
+    [RunBody {
+        file: i.file,
+        at: i.item,
+        item: item,
+        root: p!.body,
+        seats: [x.name.of for x in p!.params],
+        key: "${i.file.package_name}/${i.file.path_in_package}/${i.item}/${i.nth}/${d.name}.${method}",
+    } for s in impl_fns_at(item, i) for p in [item.store.fn_parts(s)] if p != null && p!.name == method]
 }
 
 /// The consts and fns the nodes under `root`, written in `file`, name: a name read or called that

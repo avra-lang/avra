@@ -8,6 +8,7 @@ use core.{
     ExprId,
     MarkedStatic,
     NAMED_FIELD,
+    distinct,
     flatten,
     enum_property_named,
     filled,
@@ -26,7 +27,14 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
-use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, query_definition}
+use @std.program.saved_query.{
+    cut_parted_query,
+    definitions_of,
+    ListedQuery,
+    parted_query,
+    query,
+    query_definition,
+}
 
 /// Where an impl stands: its file, its item there, which of the item's impls it is (its impls in
 /// order, then its components), and its target's type parameters as it names them.
@@ -70,11 +78,11 @@ type Filed = { impls: List<FiledImpl> }
 /// Every impl a package's written items hold, one part per name of the type its target resolves to
 /// from the impl's own file, so an import's other name files with the type it names, and a reader of
 /// one type's impls stands when another's move.
-@parted_query
+@cut_parted_query
 export fn package_impls(engine: QueryEngine, package: string) -> AnswerParts { impls_filed(engine, package, false) }
 
 /// Every impl a package's generators made, filed as `package_impls` files the written ones.
-@parted_query
+@cut_parted_query
 export fn package_generated_impls(engine: QueryEngine, package: string) -> AnswerParts { impls_filed(engine, package, true) }
 
 /// The impls of a package's generated items when `generated`, else of its written ones, one part
@@ -240,7 +248,7 @@ export fn impls_given(
 }
 
 /// The written impls the package `package` holds of the type `file` declares as `name` that write
-/// `method`.
+/// `method`, impls written alike once, as `impls_with` keeps its own.
 fn foreign_impls(
     engine: QueryEngine,
     package: string,
@@ -249,7 +257,10 @@ fn foreign_impls(
     method: string,
     statics: bool,
 ) -> List<ImplAt> {
-    [i.at for i in impls_in(package_impls_part(engine, package, name), file) if gives(i, method, statics)]
+    copies_once(
+        engine,
+        [i for i in impls_in(package_impls_part(engine, package, name), file) if gives(i, method, statics)],
+    )
 }
 
 /// The traits the written impls of the type `file` declares as `name` implement, by name.
@@ -774,6 +785,57 @@ fn own_verb(engine: QueryEngine, path: string, name: string, subject: SignedType
     let typed = [f! for s in fn_signatures(engine, file, name) for f in [fn_typed([], s)] if f != null]
     let s? = subject else { return typed.first() }
     typed.find((f) -> takes_receiver(f, s))
+}
+
+/// Whether the language itself gives `owner` the member `name`, a static where `statics`: a verb
+/// `@std/prelude` declares on a type the language owns, or what a grammar's declaration gives it.
+export fn language_gives(engine: QueryEngine, owner: SignedType, name: string, statics: bool) -> bool {
+    match owner.head {
+        .Owned(word) -> own_verb(
+            engine,
+            if statics { "verbs/statics/${word}.av" } else { "verbs/${word}.av" },
+            name,
+            if statics { null } else { owner },
+        ) != null,
+        .Declared(file, declared) -> statics && FORMAT_STATICS.contains(name) && format_declared(engine, file, declared),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+    }
+}
+
+/// Whether a value of `ty` implements the trait `bound` names, applied as `bound` applies it: as an
+/// impl says, written or generated, in the type's own package, in `reader`, or in any package
+/// `reader` reaches — the whole program a build of `reader` holds. Absent where `ty` is no declared
+/// or owned type known whole, or `bound` names no declared trait.
+export fn implements(engine: QueryEngine, reader: string, ty: SignedType, bound: SignedType) -> bool? {
+    if ty.nullable() || ty.dynamic || ty.generic() || ty.inferred() { return null }
+    let held? = declared_at(bound) else { return null }
+    let d? = declared_at(ty) ?? own_declared(ty.owned() ?? "") else { return null }
+    let packages = distinct(
+        [d.file.package_name, reader].concat(package_reach(engine, reader).packages),
+    )
+    let impls = [i for p in packages for i in impls_in(package_impls_part(engine, p, d.name), d.file)
+        .concat(impls_in(package_generated_impls_part(engine, p, d.name), d.file))]
+    impls
+        .any(
+            (i) -> i.implements != null &&
+                i.implements!.name == held.name &&
+                same_file(i.implements!.file, held.file) &&
+                applied_alike(impl_trait_args(engine, i.at), bound.args),
+        )
+}
+
+/// Whether an impl applying its trait to `written` answers a bound applying it to `asked`: each
+/// argument the same type, one either leaves to a parameter aside.
+fn applied_alike(written: List<SignedType>, asked: List<SignedType>) -> bool {
+    asked.is_empty() ||
+        written.length == asked.length &&
+            (0..asked.length)
+                .all(
+                    written[it].generic() ||
+                        asked[it].generic() ||
+                        asked[it].inferred() ||
+                        written[it].spelled() == asked[it].spelled(),
+                )
 }
 
 /// Whether a verb's receiver seat takes a value of `subject`'s type.

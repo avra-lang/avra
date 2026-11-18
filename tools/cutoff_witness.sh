@@ -1,12 +1,12 @@
 #!/bin/sh
-# WHAT A CHANGE COSTS TO PROVE, AS A SHARE OF WHAT IT REACHES. One literal in one body of the cli
+# WHAT A CHANGE COSTS TO PROVE, AS A SHARE OF WHAT THE STORE HOLDS. One literal in one body of the cli
 # edited and built warm: the changed input reaches most of the program's answers by reading, and each
 # reached answer this build asks is proved — its reads read — before it is taken as it stands. The
-# warm build's `cutoff:` line (`AVRA_QUERY_TIMES`) says how many answers the change reached, how many
-# were proved and how many reads that read. The ceilings in tools/cutoff.ceiling are shares of the
-# reach, never counts, so they hold as the program grows: per hundred reached answers, at most
-# `proved` proved and at most `reads` reads checked. They pin what a cut-off costs now, and are
-# lowered as it tightens.
+# warm build's `cutoff:` line (`AVRA_QUERY_TIMES`) says how many answers the frontier held, how many
+# the change reached past the cuts that stood, how many were proved and how many reads that read. The
+# ceilings in tools/cutoff.ceiling are shares of what the frontier held, never counts, so they hold
+# as the program grows: per ten thousand answers held, at most `proved` proved and at most `reads`
+# reads checked. They pin what a cut-off costs now, and are lowered as it tightens.
 #
 #   sh tools/cutoff_witness.sh [compiler]   (default build/avra)
 set -u
@@ -18,8 +18,8 @@ rm -rf "$R" && mkdir -p "$R"
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE AVRA_WORK_AHEAD_OFF AVRA_QUERY_TIMES
 export AVRA_PROGRAM_NET=0 AVRA_STORE_KEPT_HERE=1
 F=packages/cli/src/commands/cache.av
-before='"avra cache clean: shared store kept ${shared.kept}'
-after='"avra cache clean: shared store holds ${shared.kept}'
+before='println("avra cache log: no pack")'
+after='println("avra cache log: no packs")'
 cp "$F" "$R/orig.av"
 trap 'cp "$R/orig.av" "$F"' EXIT
 
@@ -35,17 +35,17 @@ AVRA_QUERY_TIMES=1 "$A" build packages/cli > "$R/warm.log" 2>&1 || fail "the war
 cp "$R/orig.av" "$F"
 
 said=$(grep '^cutoff: ' "$R/warm.log" | tail -1)
-reached=$(echo "$said" | sed -n 's/^cutoff: \([0-9]*\) answers reached, .*/\1/p')
+held=$(echo "$said" | sed -n 's/^cutoff: \([0-9]*\) answers held, .*/\1/p')
 proved=$(echo "$said" | sed -n 's/.* reached, \([0-9]*\) proved, .*/\1/p')
 reads=$(echo "$said" | sed -n 's/.* proved, \([0-9]*\) reads checked$/\1/p')
 steps=$((steps + 1))
-if [ -z "$reached" ] || [ -z "$proved" ] || [ -z "$reads" ]; then
+if [ -z "$held" ] || [ -z "$proved" ] || [ -z "$reads" ]; then
     fail "the warm build said no cutoff line: '$said'"
 else
     per_proved=$(sed -n 's/^proved \([0-9]*\)$/\1/p' "$CEILING")
     per_reads=$(sed -n 's/^reads \([0-9]*\)$/\1/p' "$CEILING")
-    [ "$reached" -gt 0 ] || fail "the edit reached no answer: '$said'"
-    [ $((proved * 100)) -le $((reached * per_proved)) ] || fail "$proved proved for $reached reached answers: past $per_proved a hundred"
-    [ $((reads * 100)) -le $((reached * per_reads)) ] || fail "$reads reads checked for $reached reached answers: past $per_reads a hundred"
+    [ "$held" -gt 0 ] || fail "the frontier held no answer: '$said'"
+    [ $((proved * 10000)) -le $((held * per_proved)) ] || fail "$proved proved of $held answers held: past $per_proved in ten thousand"
+    [ $((reads * 10000)) -le $((held * per_reads)) ] || fail "$reads reads checked for $held answers held: past $per_reads in ten thousand"
 fi
 verdict "cutoff-witness: $said" "one literal edited"

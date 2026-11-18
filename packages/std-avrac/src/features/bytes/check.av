@@ -2,7 +2,7 @@
 //! of its own is that `[ints].bytes()` reads a list of `int`.
 use core.{Type, TypeId, ExprId, TypeRegistry}
 use features.{TypeCx, MethodCall, this_is}
-use diagnostics.{refusal}
+use diagnostics.{Voice, said_as}
 
 fn on_bytes(t: Type) -> bool { t is .Bytes }
 fn on_str(t: Type) -> bool { t is .Str }
@@ -56,16 +56,13 @@ fn check_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId { cx.type(int) }
 
 // ── voices ──────────────────────────────────────────────────────
 
-fn not_octets(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let name = cx.name_at(e)
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `${name}`",
-                this_is(name),
-                "an element is one byte, 0..255, or a Bytes to gather",
-            ),
-        )
+fn not_octets(mut cx: TypeCx, e: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(e), unoctetted(cx.name_at(e)))) }
+
+/// `bytes` on a list of `found`, which holds neither bytes nor octets.
+export fn unoctetted(found: string) -> Voice {
+    Voice {
+        message: "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `${found}`",
+        label: this_is(found),
+        help: "an element is one byte, 0..255, or a Bytes to gather",
+    }
 }

@@ -2,7 +2,7 @@
 //! fn argument's seats and answer before any loop exists), the
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
-use core.{ExprId, TypeId, Type, TypeRegistry, Arrow, LambdaParts, no_marks, same_type}
+use core.{FoldFault, ExprId, TypeId, Type, TypeRegistry, Arrow, LambdaParts, no_marks, same_type}
 use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs, PipeStage}
 use diagnostics.{Voice, refusal, said_as}
 
@@ -576,70 +576,71 @@ fn scans_by_value(mut cx: TypeCx, mc: MethodCall, name: string, elem: TypeId) ->
         )
 }
 
-fn fold_seats(mut cx: TypeCx, e: ExprId, found: int) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`fold` takes a seed and a fn, found ${found} arguments",
-                "this call",
-                "write `xs.fold(0, (acc, x) -> acc + x)`",
-            ),
-        )
-}
+fn fold_seats(mut cx: TypeCx, e: ExprId, found: int) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(e), fold_fault(FoldFault.Count(found)))) }
 
 fn seedless_fold(mut cx: TypeCx, seed: ExprId, acc: TypeId) -> TypeId {
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.list_element",
                 cx.loc_of(seed),
-                "`fold`'s seed names what it accumulates, and `${cx.view.types.name_of(acc)}` names no type",
-                "this seed",
-                "bind the seed under a typed let first — `let seed: List<int> = []`",
+                fold_fault(FoldFault.Seedless(cx.view.types.name_of(acc))),
             ),
         )
 }
 
-fn misseated_fold(mut cx: TypeCx, f: ExprId, seats: int) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(f),
-                "`fold` seats two params — the accumulator, then the element — and this lambda takes ${seats}",
-                "this lambda",
-                "write `(acc, x) -> …`",
-            ),
-        )
-}
+fn misseated_fold(mut cx: TypeCx, f: ExprId, seats: int) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(f), fold_fault(FoldFault.Seats(seats)))) }
 
 fn fold_fn_misfit(mut cx: TypeCx, f: ExprId, acc: TypeId, elem: TypeId) -> TypeId {
     let a = cx.view.types.name_of(acc)
+    let wanted = "fn(${a}, ${cx.view.types.name_of(elem)}) -> ${a}"
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.mismatch",
                 cx.loc_of(f),
-                "`fold`'s fn takes the accumulator and the element and answers the accumulator — `fn(${a}, ${cx.view.types.name_of(elem)}) -> ${a}` — and this is `${cx.name_at(f)}`",
-                "this fn",
-                "write the fn `(acc, x) -> …` — it answers the next accumulator",
+                fold_fault(FoldFault.Misfit(wanted, cx.name_at(f))),
             ),
         )
 }
 
+/// What a `fold` is refused for, as `fault` says.
+export fn fold_fault(fault: FoldFault) -> Voice {
+    match fault {
+        .Count(found) -> Voice {
+            message: "`fold` takes a seed and a fn, found ${found} arguments",
+            label: "this call",
+            help: "write `xs.fold(0, (acc, x) -> acc + x)`",
+        },
+        .Seedless(acc) -> Voice {
+            message: "`fold`'s seed names what it accumulates, and `${acc}` names no type",
+            label: "this seed",
+            help: "bind the seed under a typed let first — `let seed: List<int> = []`",
+        },
+        .Seats(seats) -> Voice {
+            message: "`fold` seats two params — the accumulator, then the element — and this lambda takes ${seats}",
+            label: "this lambda",
+            help: "write `(acc, x) -> …`",
+        },
+        .Misfit(wanted, found) -> Voice {
+            message: "`fold`'s fn takes the accumulator and the element and answers the accumulator — `${wanted}` — and this is `${found}`",
+            label: "this fn",
+            help: "write the fn `(acc, x) -> …` — it answers the next accumulator",
+        },
+    }
+}
+
 fn joins_text(mut cx: TypeCx, e: ExprId, elem: TypeId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.list_element",
-                cx.loc_of(e),
-                "`join` reads a list of text, this one holds `${cx.view.types.name_of(elem)}`",
-                "joined here",
-                "map the elements to strings first",
-            ),
-        )
+    cx.spoken(said_as("type.list_element", cx.loc_of(e), unjoined(cx.view.types.name_of(elem))))
+}
+
+/// `join` on a list holding `elem`, which is no text.
+export fn unjoined(elem: string) -> Voice {
+    Voice {
+        message: "`join` reads a list of text, this one holds `${elem}`",
+        label: "joined here",
+        help: "map the elements to strings first",
+    }
 }
 
 /// A walk on `[]` cannot know its elements.
@@ -657,16 +658,16 @@ fn unknowable_walk(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
 }
 
 fn misseated_walk(mut cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(a),
-                "`${name}` seats one param — the element — and this lambda takes ${seats}",
-                "this lambda",
-                "write the lambda with one parameter — `(x) -> …` — or use `it`",
-            ),
-        )
+    cx.spoken(said_as("type.mismatch", cx.loc_of(a), walk_misseated(name, seats)))
+}
+
+/// The walk `name` handed a lambda taking `seats` params, where it hands one: the element.
+export fn walk_misseated(name: string, seats: int) -> Voice {
+    Voice {
+        message: "`${name}` seats one param — the element — and this lambda takes ${seats}",
+        label: "this lambda",
+        help: "write the lambda with one parameter — `(x) -> …` — or use `it`",
+    }
 }
 
 fn uncollectable(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
@@ -728,25 +729,32 @@ fn unprojected(mut cx: TypeCx, e: ExprId, got: TypeId) -> TypeId {
 fn unpredicated(mut cx: TypeCx, e: ExprId, name: string, got: TypeId) -> TypeId {
     cx
         .spoken(
-            refusal(
+            said_as(
                 "type.mismatch",
                 cx.loc_of(e),
-                "`${name}`'s fn must answer `bool`, this one answers `${cx.view.types.name_of(got)}`",
-                "this call",
-                "make the fn a test — it answers `true` or `false` for each element",
+                walk_unpredicated(name, cx.view.types.name_of(got)),
             ),
         )
 }
 
+/// The predicate walk `name` handed a fn answering `got`, no `bool`.
+export fn walk_unpredicated(name: string, got: string) -> Voice {
+    Voice {
+        message: "`${name}`'s fn must answer `bool`, this one answers `${got}`",
+        label: "this call",
+        help: "make the fn a test — it answers `true` or `false` for each element",
+    }
+}
+
 fn one_fn_wanted(mut cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(e),
-                "`${name}` takes one fn, found ${found} arguments",
-                "this call",
-                "pass the one fn — `${name}((x) -> …)`",
-            ),
-        )
+    cx.spoken(said_as("type.mismatch", cx.loc_of(e), walk_takes_one_fn(name, found)))
+}
+
+/// The walk `name` handed `found` arguments, where it takes one fn.
+export fn walk_takes_one_fn(name: string, found: int) -> Voice {
+    Voice {
+        message: "`${name}` takes one fn, found ${found} arguments",
+        label: "this call",
+        help: "pass the one fn — `${name}((x) -> …)`",
+    }
 }

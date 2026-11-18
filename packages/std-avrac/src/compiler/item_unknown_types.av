@@ -5,6 +5,7 @@
 //! a build asks it of every file it reaches for nothing more than the walk.
 use core.{
     At,
+    seat_worn_twice,
     ExprId,
     INFERRED,
     StmtId,
@@ -76,17 +77,18 @@ fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
 
 /// Every expression at and under the node `at`, a quote's own left out.
 fn exprs_under(store: SyntaxArena, at: At) -> List<ExprId> {
-    let below = flatten([exprs_under(store, k) for k in store.kids_at(at)])
+    let below = flatten([exprs_under(store, k) for k in store.kids_walked(at)])
     match at { .Expr(e) -> if quoted(store, e) { [] } else { [e].concat(below) }, rest -> below }
 }
 
 /// Every name the seats of the lambda or trailing block `e` write as a type that names none, where
-/// `e` stands; none for any other node.
+/// `e` stands; none for any other node, nor for one naming a seat twice, which is refused whole.
 fn seats_unnamed(scope: TypeScope, store: SyntaxArena, e: ExprId) -> List<UnnamedAt> {
     let seats = match store.expr(e) {
         .Lambda(params, _) or .BlockLambda(params, _) -> params,
         rest -> [],
     }
+    if seat_worn_twice(seats) != null { return [] }
     [UnnamedAt { at: kept_at(store.expr_span(e)), name: n, width: width_named(n) != null } for p in seats for t in some_list(p.ty) for n in scope.unnamed(t, false)]
 }
 
@@ -112,7 +114,7 @@ fn stmts_under(store: SyntaxArena, at: At) -> List<StmtId> {
 }
 
 /// Every statement under the node `at`'s children.
-fn stmts_below(store: SyntaxArena, at: At) -> List<StmtId> { flatten([stmts_under(store, k) for k in store.kids_at(at)]) }
+fn stmts_below(store: SyntaxArena, at: At) -> List<StmtId> { flatten([stmts_under(store, k) for k in store.kids_walked(at)]) }
 
 /// Whether `e` is a quote.
 fn quoted(store: SyntaxArena, e: ExprId) -> bool {
@@ -129,7 +131,30 @@ fn unnamed_in(scope: TypeScope, store: SyntaxArena, s: StmtId) -> List<UnnamedAt
     let signed = roots.take(first).concat(roots.drop(first + bounds))
     let applied = flatten([b.type_args() for b in store.bound_roots(s)])
     [UnnamedAt { at: kept_at(store.stmt_span(s)), name: n, width: width_named(n) != null } for t in signed.concat(applied) for n in scope.unnamed(t, seats)]
+        .concat(
+            [UnnamedAt { at: kept_at(store.stmt_span(s)), name: INFERRED, width: false } for _t in uninferred(store, s, signed)],
+        )
 }
+
+/// Each `_` the statement `s` writes in its signature, `signed`, where nothing infers it: a fn's
+/// anywhere in a seat's type, and in its answer anywhere but as the whole failure side of a
+/// `Result`, which its `fail`s give; any other statement's wherever it stands.
+fn uninferred(store: SyntaxArena, s: StmtId, signed: List<TypeRef>) -> List<TypeRef> {
+    let parts? = store.fn_parts(s) else { return flatten([holes_in(t) for t in signed]) }
+    let seats = flatten([holes_in(p.ty!) for p in parts.params if p.ty != null])
+    let failure = if parts.ret.name == RESULT && parts.ret.type_args().length == 2 { parts.ret.type_args()[1] } else { null }
+    let answer = if failure != null && failure!.name == INFERRED { flatten([holes_in(a) for a in parts.ret.type_args().take(1)]) } else { holes_in(parts.ret) }
+    seats.concat(answer)
+}
+
+/// `t` and every type written inside it that is the hole `_`.
+fn holes_in(t: TypeRef) -> List<TypeRef> {
+    let inside = flatten([holes_in(a) for a in t.type_args().concat(t.alternatives)])
+    if t.name == INFERRED && !t.arrow { [t].concat(inside) } else { inside }
+}
+
+/// The type whose failure side a fn's `fail`s infer.
+const RESULT: string = "Result"
 
 impl TypeScope {
     /// Every name in `t`, its arguments and its alternatives among them, that names no type; a

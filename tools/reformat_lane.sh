@@ -9,6 +9,8 @@
 # `fmt --write`, the lexer fix) and R a72146d (the tree reformat); with no
 # arguments the script carries a lane across exactly that pair.
 set -eu
+# a compiler is replaced here by the build it just ran, so each build saves its store before it answers
+export AVRA_STORE_KEPT_HERE=1
 P=${1:-2b5cb3c86b258861c653575b11a50bcabcecc0d1}
 R=${2:-a72146de86bdba68d4e941c33c78d40a5d068072}
 export LLVM_PREFIX=${LLVM_PREFIX:-/opt/homebrew/opt/llvm} AVRA_WATCH_HELD=1

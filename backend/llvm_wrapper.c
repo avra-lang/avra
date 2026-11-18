@@ -21,6 +21,7 @@
 void avra_trap(const char* msg);
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <time.h>
@@ -1238,6 +1239,42 @@ int64_t avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
     return 0;
 }
 
+// A FILE WRITTEN WHOLE, OR WHY NOT IN WORDS: `bytes` written to `tmp` and
+// flushed; a disk that fills mid-write is named — the file it was writing,
+// how many of its bytes did not reach it, and what the disk had free —
+// never left to the stream's own fatal error, which says no path at all.
+static int file_put(const char* tmp, const char* path, const char* bytes, size_t n) {
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "avra: %s couldn't be written — %s\n", path, strerror(errno));
+        return 1;
+    }
+    size_t done = 0;
+    int err = 0;
+    while (done < n) {
+        ssize_t w = write(fd, bytes + done, n - done);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            err = errno;
+            break;
+        }
+        done += (size_t)w;
+    }
+    if (!err && fsync(fd) != 0 && errno != EINVAL) err = errno;
+    if (close(fd) != 0 && !err) err = errno;
+    if (!err) return 0;
+    if (err == ENOSPC || err == EDQUOT) {
+        struct statvfs fs;
+        long long left = statvfs(tmp, &fs) == 0 ? (long long)fs.f_bavail * (long long)fs.f_frsize : -1;
+        fprintf(stderr, "avra: the disk is full: %s needed %zu bytes and %zu of them could not be written (%lld bytes free there)\n",
+            path, n, n - done, left);
+    } else {
+        fprintf(stderr, "avra: %s couldn't be written — %s\n", path, strerror(err));
+    }
+    remove(tmp);
+    return 1;
+}
+
 // THE SAME MODULE, AS BITCODE: what clang parses far faster than text, and what the
 // build path hands it. Atomic the same way — a temp, then rename.
 int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
@@ -1246,10 +1283,10 @@ int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
             >= (int)sizeof(tmp)) {
         return 1;
     }
-    if (LLVMWriteBitcodeToFile(m, tmp) != 0) {
-        remove(tmp);
-        return 1;
-    }
+    LLVMMemoryBufferRef held = LLVMWriteBitcodeToMemoryBuffer(m);
+    int bad = file_put(tmp, path, LLVMGetBufferStart(held), LLVMGetBufferSize(held));
+    LLVMDisposeMemoryBuffer(held);
+    if (bad) return 1;
     if (rename(tmp, path) != 0) {
         remove(tmp);
         return 1;
@@ -1559,10 +1596,15 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
     // is the host linker's and names sections wasm has no use for.
     if (!failed && !off_host) sectioned_by_definition(m);
     double g0 = emit_timed() ? clock_seconds(CLOCK_THREAD_CPUTIME_ID) : 0;
-    if (!failed && LLVMTargetMachineEmitToFile(tm, m, tmp, LLVMObjectFile, &error)) {
+    LLVMMemoryBufferRef object = NULL;
+    if (!failed && LLVMTargetMachineEmitToMemoryBuffer(tm, m, LLVMObjectFile, &error, &object)) {
         fprintf(stderr, "avra: no object for %s — %s\n", path, error ? error : "");
         if (error) LLVMDisposeMessage(error);
         failed = 1;
+    }
+    if (object) {
+        if (!failed) failed = file_put(tmp, path, LLVMGetBufferStart(object), LLVMGetBufferSize(object));
+        LLVMDisposeMemoryBuffer(object);
     }
     if (emit_timed()) {
         double t = clock_seconds(CLOCK_THREAD_CPUTIME_ID) - g0;

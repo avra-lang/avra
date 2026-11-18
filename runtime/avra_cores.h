@@ -54,6 +54,18 @@ void avra_cores_stop(int64_t g);
 int64_t avra_cores_result(int64_t g);
 int64_t avra_cores_finished(int64_t g);
 int64_t avra_cores_stderr_to(const char* path);
+int64_t avra_cores_claimed(int64_t g);
+// What a reader maps a shared table's octets as: the shape `avra_mmap_word_at` reads.
+typedef struct { const char* base; int64_t len; } AvraSharedView;
+void* avra_shared_made(int64_t slots, int64_t room);
+void avra_shared_ended(void* h);
+void* avra_shared_view(void* h);
+int64_t avra_shared_kept(void* h, int64_t kind, int64_t hi, int64_t lo, const char* p, int64_t n);
+int64_t avra_shared_start(void* h, int64_t kind, int64_t hi, int64_t lo);
+int64_t avra_shared_end(void* h, int64_t kind, int64_t hi, int64_t lo);
+int64_t avra_shared_claimed(void* h, int64_t hi, int64_t lo);
+int64_t avra_shared_let_go(void* h, int64_t hi, int64_t lo);
+int64_t avra_shared_awaited(void* h, int64_t hi, int64_t lo, int64_t holder);
 int64_t avra_cores_heir(int64_t quiet);
 int64_t avra_cores_heir_gone(void);
 

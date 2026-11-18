@@ -11,18 +11,19 @@
 use core.{
     At,
     CollectEnumParts,
+    CompClause,
     ImplParts,
     Span,
     SyntaxParts,
     Type,
     some_list,
-    CompClause,
     ExprId,
     distinct,
     NamedParts,
     Param,
     SignedType,
     StmtId,
+    StructParts,
     SyntaxArena,
     TypeRef,
     flatten,
@@ -37,6 +38,7 @@ use compiler.typing.{
     shape_named,
     spreads_back,
     spreads_itself,
+    spreads_no_record,
     foreign_trait_on_builtin,
     impl_away_from_type,
     impl_heading,
@@ -77,8 +79,10 @@ use features.sublang.{
     grammar_unparsed,
 }
 use features.impls.{no_method}
+use features.lists.{range_unindexed}
 use features.enums.{declares_no_variants}
 use features.fns.{
+    param_typeless,
     default_before_plain,
     default_marked,
     default_opened,
@@ -134,10 +138,12 @@ fn enum_variants(store: SyntaxArena, s: StmtId) -> OwnNames? {
 }
 
 /// Every field a record or a component the written item `at` of `file` declares takes again among
-/// its signature's: its own, a spread's in its place, and what it carries.
+/// its signature's: its own, a spread's in its place, and what it carries; none where the item failed
+/// to read, whose failure is what a build says.
 fn fields_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
     flatten(
         [again_in(item.store, s, OwnNames { owner: n!, names: [f.name for f in sig!.fields] }) for s in item.stmts for n in [item.store.struct_parts(s)?.name ?? item.store.component_parts(s)?.name] if n != null for sig in [record_signature(engine, file, n!)] if sig != null],
     )
@@ -182,6 +188,28 @@ fn rests_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
     let store = read_item(engine, file, at).store
     [Found { at: store.stmt_span(f.stmt), args: [f.params[r!].name.of, f.name] } for f in seated_fns(engine, file, at) for r in [f.params.find_index(it.is_rest())] if r != null && (r! != f.params.length - 1 || f.params.filter(it.is_rest()).length > 1)]
 }
+
+/// Every seat written with no type in the written item `at` of `file`: a fn's at its top level, and a
+/// method's or a static's in an impl it holds; the receiver's word written bare, which the naming law
+/// refuses, is no seat.
+fn seats_typeless(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    let fns = item
+        .stmts
+        .concat([f for s in item.stmts for f in item.store.impl_parts(s)?.fns ?? []])
+    [Found { at: item.store.stmt_span(f), args: [p.name.of] } for f in fns for p in item.store.fn_parts(f)?.params ?? [] if p.ty == null && p.seated()]
+}
+
+/// a fn's seat declares its type
+export law seat_declares_a_type {
+    kind: "type.mismatch"
+    reads: seats_typeless
+    voice: typeless_words
+    witness: "fn f(x) -> int { 1 }\n"
+}
+
+fn typeless_words(a: List<string>) -> Voice { param_typeless(a[0]) }
 
 /// Every fn of the written item `at` of `file` whose one last `..` seat is written as no list.
 fn rests_unlisted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
@@ -408,10 +436,40 @@ fn records_spreading_themselves(engine: QueryEngine, file: SourceFileAddress, at
 > {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
-    [Found { at: item.store.stmt_span(s), args: [p!.name] } for s in item.stmts for p in [item.store.struct_parts(s)] if p != null &&
-        p!
-            .spreads
-            .any((x) -> same_declared_opt(spread_record(engine, file, x.of.name), file, p!.name))]
+    [Found { at: item.store.stmt_span(r.stmt), args: [r.parts.name] } for r in records_written(item) if r
+        .parts
+        .spreads
+        .any((x) -> same_declared_opt(spread_record(engine, file, x.of.name), file, r.parts.name))]
+}
+
+/// A record an item declares, beside the statement declaring it.
+type RecordWritten = { stmt: StmtId, parts: StructParts }
+
+/// Each record the item `item` declares, in the order written.
+fn records_written(item: ReadItem) -> List<RecordWritten> {
+    [RecordWritten { stmt: s, parts: p! } for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
+}
+
+/// Every spread a record of the written item `at` of `file` writes of what is no record — a type the
+/// language owns, an enum, a nullable, a `dyn`, a type parameter, an alias over one of these; handed
+/// the spread as written. A name that names no type is the naming law's.
+fn spreads_of_no_record(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(r.stmt), args: [x.of.text()] } for r in records_written(item) for x in r.parts.spreads if spreads_nothing(engine, file, r.parts.tparams, x.of)]
+}
+
+/// Whether the written type `of`, read in `file` under the type parameters `tparams`, names a type
+/// with no fields to place.
+fn spreads_nothing(engine: QueryEngine, file: SourceFileAddress, tparams: List<string>, of: TypeRef) -> bool {
+    let ty = signing_in(engine, file, tparams).signed(of)
+    if ty.unknown() || ty.inferred() { return false }
+    ty.nullable() ||
+        ty.dynamic ||
+        match ty.head {
+            .Declared(home, name) -> record_signature(engine, home, name) == null,
+            rest -> true,
+        }
 }
 
 /// Whether `d` is the declaration `file` makes as `name`.
@@ -792,6 +850,31 @@ fn head_paired_alike(c: CompClause) -> List<string> {
     }
 }
 
+/// Every comprehension head the written item `at` of `file` writes naming an index over a range, at
+/// the range's low bound.
+fn ranges_indexed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.expr_span(lo), args: [] } for top in item.stmts for e in exprs_under(item.store, At.Stmt(top)) for lo in indexed_ranges(item.store, e)]
+}
+
+/// The low bound of each head of the comprehension `e` that names an index over a range; none for any
+/// other node.
+fn indexed_ranges(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    match store.expr(e) {
+        .Comp(_, clauses) -> flatten([indexed_range(c) for c in clauses]),
+        rest -> [],
+    }
+}
+
+/// The low bound of the head `c` where it names an index over a range.
+fn indexed_range(c: CompClause) -> List<ExprId> {
+    match c {
+        .Head(index, _, source, hi) -> if index != null && hi != null { [source] } else { [] },
+        .Filter(_) -> [],
+    }
+}
+
 /// Every `collect enum` the written item `at` of `file` declares that gathers no member.
 fn enums_gathering_nothing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
@@ -817,6 +900,22 @@ export law record_spreads_itself {
     reads: records_spreading_themselves
     voice: spreads_itself_words
     witness: "type P = { ..P, a: int }\n"
+}
+
+/// a spread places the fields of a record
+export law spread_of_no_record {
+    kind: "type.spread"
+    reads: spreads_of_no_record
+    voice: no_record_words
+    witness: "type A = { ..int, a: int }\n"
+}
+
+/// a range's counter is its position
+export law range_indexed {
+    kind: "type.list"
+    reads: ranges_indexed
+    voice: range_unindexed_words
+    witness: "[i for j, i in 0..3]\n"
 }
 
 /// spreads form no cycle
@@ -1250,6 +1349,10 @@ fn foreign_words(a: List<string>) -> Voice { foreign_trait_on_builtin(a[0], a[1]
 fn orphan_words(a: List<string>) -> Voice { impl_away_from_type(a[0], a[1], a[2]) }
 
 fn spreads_itself_words(a: List<string>) -> Voice { spreads_itself(a[0]) }
+
+fn no_record_words(a: List<string>) -> Voice { spreads_no_record(a[0]) }
+
+fn range_unindexed_words(_a: List<string>) -> Voice { range_unindexed() }
 
 fn spreads_back_words(a: List<string>) -> Voice { spreads_back(a[0]) }
 

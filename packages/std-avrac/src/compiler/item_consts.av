@@ -30,6 +30,7 @@ use features.{
     Unsettled,
     new_meta_heap,
     unsettled_kind,
+    unsettled_voice,
     unsettled_label,
 }
 use features.fns.{embed_unread_words}
@@ -216,9 +217,12 @@ fn per_program() -> string { "a const whose value each program gathers over its 
 const UNTYPED_LOOP: string = "a const whose value asks for its own type"
 
 /// The const `name` whose value reads itself, through other consts and fns or none: settling it asks
-/// for the value being settled, the trap its run ends in.
+/// for the value being settled, the trap its run ends in: the read of it inside its own run traps
+/// asking for the value, and that trap is what its settling is refused with.
 fn settles_from_itself(name: string) -> ConstSettlement {
-    let why = Unsettled.Trap("asks for its own value while settling")
+    let asked = Unsettled.Trap("asks for its own value while settling")
+    let said = unsettled_voice(name, asked)?.message ?? ""
+    let why = Unsettled.Trap("${said}: ${unsettled_label(name, asked)}")
     unsettled_as(unsettled_label(name, why)) with { broken: broken_of(why) }
 }
 

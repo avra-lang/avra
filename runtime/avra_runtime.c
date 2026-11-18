@@ -805,7 +805,12 @@ int64_t avra_mem_live(void) { return g_live_bytes; }
 static int64_t g_mem_ceiling = (int64_t)6000 << 20;
 static int64_t g_mem_next = (int64_t)6000 << 20;
 
-static int64_t mem_in_use(void) {
+// WHAT A FORKED CORE HELD WHEN IT WAS FORKED IS ITS PARENT'S: the parent answers to the pool and
+// to its ceiling for that memory, which the two share until one writes it, so a core answers for
+// what it adds. Zero in a process no group forked.
+static int64_t g_mem_inherited = 0;
+
+static int64_t mem_held(void) {
 #ifdef __APPLE__
     malloc_statistics_t st;
     malloc_zone_statistics(NULL, &st);
@@ -814,6 +819,11 @@ static int64_t mem_in_use(void) {
     struct mallinfo2 mi = mallinfo2();
     return (int64_t)(mi.uordblks + mi.hblkhd) + g_slab_held;
 #endif
+}
+
+static int64_t mem_in_use(void) {
+    int64_t own = mem_held() - g_mem_inherited;
+    return own > 0 ? own : 0;
 }
 
 // What the allocator keeps of freed memory, handed back to the system: a slot given back is
@@ -867,6 +877,14 @@ static void mem_ceiling_measure(int64_t taking) {
     mem_looks(g_live_bytes + taking, used, allowed);
 }
 #endif
+
+// A core, just forked: what it holds now is its parent's to answer for.
+void avra_mem_forked(void) {
+#if AVRA_MEASURES_MEMORY
+    g_mem_inherited = 0;
+    g_mem_inherited = mem_held();
+#endif
+}
 
 // THE POOL IS HELD FOR WHAT IS IN USE, NEVER FOR A PEAK: the slots this process's memory no
 // longer fills go back to the machine. Asked when the ledger falls past its low look, and
@@ -3028,7 +3046,6 @@ void avra_slot_put_logged(void* arr, int64_t i, int64_t v) {
 __attribute__((noinline, cold, noreturn))
 static void avra_wrote_static(void) {
     avra_trap("defect: a write landed in the binary's own data — a box never opened for writing"); // LICENSED traps.defect: a writer skipped the open of a static box
-    abort();
 }
 
 // A slot write into a box with a flag set: the binary's own data
@@ -4921,7 +4938,7 @@ static void sw_room(SavedWriter* w, size_t more) {
     size_t cap = w->cap ? w->cap : 256;
     while (cap < w->len + more) cap *= 2;
     w->buf = realloc(w->buf, cap);
-    if (!w->buf) avra_trap("a saved answer's writer could not grow");
+    if (!w->buf) avra_trap("a saved answer's writer could not grow"); // LICENSED traps.process_limit: the allocator ran out of memory
     w->cap = cap;
 }
 
@@ -4957,7 +4974,7 @@ static void sw_label(SavedWriter* w, int width, int64_t variant, int64_t length)
 
 void* avra_sw_new(int64_t room) {
     SavedWriter* w = calloc(1, sizeof *w);
-    if (!w) avra_trap("a saved answer's writer could not be made");
+    if (!w) avra_trap("a saved answer's writer could not be made"); // LICENSED traps.process_limit: the allocator ran out of memory
     sw_room(w, room > 0 ? (size_t)room : 256);
     return w;
 }
@@ -4969,7 +4986,7 @@ void avra_sw_push(void* h, int64_t held, int64_t word) {
     if (w->height + 2 > w->slot_cap) {
         size_t cap = w->slot_cap ? w->slot_cap * 2 : 64;
         w->slots = realloc(w->slots, cap * sizeof *w->slots);
-        if (!w->slots) avra_trap("a saved answer's writer could not grow");
+        if (!w->slots) avra_trap("a saved answer's writer could not grow"); // LICENSED traps.process_limit: the allocator ran out of memory
         w->slot_cap = cap;
     }
     w->slots[w->height++] = held;

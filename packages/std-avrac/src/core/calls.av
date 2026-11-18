@@ -17,11 +17,14 @@ impl Lowering {
     /// The registers a call of `callee` hands its seats, in the seats' order; absent for a call this
     /// layer doesn't seat yet: one whose callee takes a `state` or `const` argument, one spreading a
     /// record, a generic unit handed a rest or left to a default its type parameters type, and a `mut`
-    /// seat's argument standing where no write reaches back.
+    /// seat's argument standing where no write reaches back; nor one writing more arguments than a
+    /// generic unit has seats, which typing refuses.
     mut fn call_args(callee: CalledFn, args: List<ExprId>) -> List<Reg>? {
         let named = args.any((a) -> self.store.arg_label(a) != null)
         let spreads = args.any((a) -> self.store.spread_operand(a) != null)
-        if callee.plain && !named && !spreads { return self.seated_args(callee, args) }
+        if callee.plain && !named && !spreads {
+            return if !callee.parameters.is_empty() && args.length > callee.seats.length { null } else { self.seated_args(callee, args) }
+        }
         if callee.params.is_empty() { return null }
         let rest = callee.params.find_index(it.rest)
         if spreads && rest == null { return self.spread_args(callee, args) }

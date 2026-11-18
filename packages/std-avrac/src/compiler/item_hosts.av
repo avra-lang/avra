@@ -8,7 +8,7 @@ use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
 
 /// A host fn that owes the program what it doesn't pay: where it's declared, its name, its package,
 /// and what it owes.
@@ -145,7 +145,7 @@ fn package_host_fns(engine: QueryEngine, package: string) -> HostFns {
 
 /// The paths of `package`'s sources, its tests aside: its listings settled on the names of its sources,
 /// so a name a listing gains that is no source — a binary placed beside them, an asset — moves no reader.
-@query
+@cut_query
 fn package_source_paths(engine: QueryEngine, package: string) -> SourcePaths {
     SourcePaths { paths: [p for p in package_sources(engine, package, "src") if !in_tests(p)] }
 }
@@ -207,7 +207,7 @@ type HostFns = { fns: List<HostFn> }
 /// Every fn `file` declares that C defines or a host answers, read from its own items alone: what a
 /// program's host fns are judged against, which an edit to another file, or to a body here, leaves
 /// standing.
-@query
+@cut_query
 fn file_bound_fns(engine: QueryEngine, file: SourceFileAddress) -> BoundFns {
     BoundFns {
         fns: [ReadFn { declared: d, called: c } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in some_list(callee_of(engine, d)) if c.external || c.hosted],
@@ -215,7 +215,7 @@ fn file_bound_fns(engine: QueryEngine, file: SourceFileAddress) -> BoundFns {
 }
 
 /// Every host fn `file` declares, read from its own items alone.
-@query
+@cut_query
 fn file_host_fns(engine: QueryEngine, file: SourceFileAddress) -> HostFns {
     HostFns {
         fns: [HostFn { called: c!, host: host_mark(read_item(engine, d.file, d.item), d.name) } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in [callee_of(engine, d)] if c?.hosted ?? false],

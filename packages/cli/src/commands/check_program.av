@@ -10,6 +10,7 @@ use @std.avrac.compiler.{
     file_rule_rows,
     file_warned,
     finding_diag,
+    made_program,
     program_erring,
     program_files,
     phased,
@@ -19,7 +20,8 @@ use @std.avrac.compiler.{
     said_diag,
 }
 use @std.avrac.core.{distinct}
-use @std.avrac.diagnostics.{Diag, SourceFile, new_source_file, render}
+use @std.avrac.compiler.memory.{sound_checked}
+use @std.avrac.diagnostics.{Diag, SourceFile, defect_kind, new_source_file, render, rendered_among}
 use @std.io.{write_text}
 use @std.path.{joined_path, relative_path, under_dir}
 use @std.program.layered_store.{program_store_at}
@@ -47,7 +49,7 @@ fn disk_checked(
     // LICENSED input.clock: a check's duration is timing, never an input of what is found
     let t0 = now_ns()
     let root = disk.root
-    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let store = program_store_at(joined_path(root, checks_kept_at()))
     let engine = query_engine(store, avra_fact_definitions())
     if timed { engine.time_queries() }
     let refused = manifests_door(engine, disk)
@@ -64,8 +66,11 @@ fn disk_checked(
     )
     let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
     let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
+    let proved = if erring.is_empty() && sound_checked() { phased(engine, "the proof", () -> program_proved(engine, disk)) } else { [] }
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
-    let _ = phased(engine, "the store saved", () -> store.saved())
+    let saved = phased(engine, "the store saved", () -> store.saved())
+    let unsaved = unsaved_said(store, saved)
+    if unsaved != null { eprintln("avra: ${unsaved!}") }
     if timed {
         eprintln(program_time_line(files.length, t0, engine.worked_count() == 0))
         eprintln(time_rows_said(engine, CHECK_ROWS))
@@ -76,6 +81,10 @@ fn disk_checked(
         println(refused)
         return 1
     }
+    if !proved.is_empty() {
+        println(rendered_among(proved, []))
+        return 1
+    }
     let sites = [s for f in found for s in f.sites]
     if pruning { return program_pruned(root, baseline, files, sites) }
     if baseline != "" {
@@ -84,6 +93,23 @@ fn disk_checked(
     }
     if warned != "" { println(warned) }
     0
+}
+
+/// Where a check keeps what it worked out: under the sound check, a store of its own, since its memory
+/// pass proves what it lowers and a lowering kept without the proof never answers one asked with it.
+fn checks_kept_at() -> string { if sound_checked() { ".avra-cache/tapes-sound" } else { ".avra-cache/tapes" } }
+
+/// THE MEMORY PASS'S OWN PROOF, where `AVRA_SOUND_CHECK=1` asks it: the program the package's entry
+/// runs, made — its memory pass proving its own output as it makes it — and each defect the proof
+/// finds, in the words the old path's check says them. None for a package that runs nothing. Its
+/// answers are kept in the sound check's own store (`checks_kept_at`).
+fn program_proved(engine: QueryEngine, disk: Disk) -> List<Diag> {
+    let entry? = entry_written(disk.root) else { return [] }
+    match made_program(engine, disk.file_at(entry)) {
+        .Made(l) -> [d for d in l.diagnostics if d.kind == defect_kind],
+        .Unmade(_why, _at) -> [],
+        .Refused(_files) -> [],
+    }
 }
 
 /// What `check` says of a file a law refuses: everything its laws find there, warnings among the
@@ -145,19 +171,20 @@ type FileFound = { sites: List<SiteAt>, said: string }
 /// each rendered over its text.
 fn file_found(engine: QueryEngine, program: string, h: ProgramFile) -> FileFound {
     let rules = file_rule_rows(engine, program, h.file)
-    let src = new_source_file(h.full, text_at(h.full) ?? "")
     let laws = [d! for f in file_warned(engine, h.file).findings for d in [finding_diag(f, h.full)] if d != null]
     FileFound {
         sites: [SiteAt { finding: Finding { rule: r.rule, file: h.full, text: r.text }, line: r.line } for r in rules.rows],
-        said: spoken(
-            [warned_among(laws, src), warned_among([said_diag(k, h.full) for k in rules.said], src)],
-        ),
+        said: warned_among(laws.concat([said_diag(k, h.full) for k in rules.said]), h.full),
     }
 }
 
-/// The warnings among `found`, rendered over `src` — "" when none spoke.
-fn warned_among(found: List<Diag>, src: SourceFile) -> string {
-    [render(d, src) for d in found if !(d.severity is .Error)].join("\n\n")
+/// The warnings among `found`, rendered over the text of the file `full` — "" when none spoke, and
+/// the file then never read.
+fn warned_among(found: List<Diag>, full: string) -> string {
+    let warned = found.filter(!(it.severity is .Error))
+    if warned.is_empty() { return "" }
+    let src = new_source_file(full, text_at(full) ?? "")
+    [render(d, src) for d in warned].join("\n\n")
 }
 
 /// What a clean program's files say, in their order.

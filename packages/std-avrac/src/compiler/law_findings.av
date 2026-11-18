@@ -27,6 +27,9 @@ export type LawEntry = {
 /// EVERY LAW, by name — gathered, never listed by hand.
 export collect laws: List<LawEntry> = law in closure as LawEntry { name: it.name, kind: it.kind, reads: it.reads, voice: it.voice, warns: it.warns, witness: it.witness, witness_files: it.witness_files, doc: it.doc } by it.name
 
+/// Every law, gathered once a process.
+once fn held_laws() -> List<LawEntry> { laws }
+
 /// Where a finding stands in its file.
 @derive(Saved)
 export type FindingAt = { lo: int, hi: int }
@@ -77,7 +80,7 @@ export fn law_findings(engine: QueryEngine, file: SourceFileAddress, at: int) ->
                     sure: x.sure,
                 } for x in s.fixes],
                 local: s.local,
-            } for l in laws for s in (l.reads)(engine, file, at)],
+            } for l in held_laws() for s in (l.reads)(engine, file, at)],
             stands_before,
         ),
     }
@@ -105,7 +108,7 @@ export fn file_erring(engine: QueryEngine, file: SourceFileAddress) -> FileErrin
 }
 
 /// Whether the finding `f` fails a build: its law refuses rather than warns.
-fn fails_build(f: LawFinding) -> bool { !(laws.find(it.name == f.by)?.warns ?? true) }
+fn fails_build(f: LawFinding) -> bool { !(held_laws().find(it.name == f.by)?.warns ?? true) }
 
 /// The files the build of the program whose entry is `entry`, in `package`, reads that a law's
 /// finding refuses — what the entry reaches, never a file of its package nothing it reaches
@@ -149,7 +152,7 @@ export fn file_warned(engine: QueryEngine, file: SourceFileAddress) -> FileWarne
 fn same_site(a: LawFinding, b: LawFinding) -> bool { kind_of(a) == kind_of(b) && a.at?.lo == b.at?.lo }
 
 /// The kind a finding's law speaks under.
-fn kind_of(f: LawFinding) -> string { laws.find(it.name == f.by)?.kind ?? f.by }
+fn kind_of(f: LawFinding) -> string { held_laws().find(it.name == f.by)?.kind ?? f.by }
 
 /// THE WARNINGS A BUILD OF THE PROGRAM ROOTED AT `package` SAYS: each file it reads that a law
 /// warns of, with what it finds there. Kept as one answer, so a build nothing moved reads no file's
@@ -180,7 +183,7 @@ fn placed_args(f: LawFinding, path: string) -> List<string> {
 /// A finding as a diagnostic in the file `path` names: its law's kind, worded by its law's voice, the
 /// fix its guess offers at the name it stands on; absent for a law this compiler doesn't hold.
 export fn finding_diag(f: LawFinding, path: string) -> Diag? {
-    let l? = laws.find(it.name == f.by) else { return null }
+    let l? = held_laws().find(it.name == f.by) else { return null }
     let v = (l.voice)(placed_args(f, path))
     let loc = loc_at(path, span_of(f.at))
     let d = said_as(f.kind ?? l.kind, loc, v) with { suggestions: guessed_fixes(v.guess, f.named ?? f.at, path).concat(offered(f.fixes, path)), secondary: [Frame { label: a.label, loc: loc_at(path, span_of(a.at)) } for a in some_list(f.aside)] }

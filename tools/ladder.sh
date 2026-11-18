@@ -20,6 +20,8 @@
 # whose branch began before the base moved is read with the base's sources, not its stale ones. A rung
 # the base already holds is no rung: the starting compiler, built from the base, already reads it.
 set -eu
+# a compiler is replaced here by the build it just ran, so each build saves its store before it answers
+export AVRA_STORE_KEPT_HERE=1
 # A ladder's scratch: each rung's worktree (registered in the repository) and its logs, all gone.
 ladder_clean() {
     [ -d "$1" ] || return 0

@@ -82,7 +82,7 @@ use @std.avrac.core.{
 }
 use @std.avrac.compiler.lower.{Body, LinkedPackage, Lowered, Unit}
 use @std.avrac.compiler.memory.{rc_reasons_said}
-use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of}
+use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of, settling_kind}
 use @std.avrac.compiler.backend.{
     wasm_missing,
     calls_waiting,
@@ -108,8 +108,6 @@ use @std.avrac.compiler.{
     keyed_objects,
     bucket_asked,
     bucket_lowered,
-    asked_size,
-    BucketAsked,
     program_code_hashes,
     HashAnswer,
     unhashed,
@@ -132,6 +130,7 @@ use @std.avrac.compiler.{
     file_meant,
     package_read,
     package_worked,
+    program_placed,
     program_worked,
     share_replayed,
     package_sources,
@@ -139,7 +138,6 @@ use @std.avrac.compiler.{
     manifest_link_words,
     manifest_library,
     native_link_head,
-    native_link_tail,
     wasm_link_head,
     wasm_link_tail,
     manifest_wasm_words,
@@ -208,6 +206,7 @@ use @std.avrac.compiler.{
     statement_difference,
 }
 use @std.io.{
+    IoError,
     env,
     list_dir,
     make_dirs,
@@ -468,6 +467,13 @@ fn disk_built(
     if timed || env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return .Err(refused!) }
+    let _ = program_placed(
+        worked,
+        joined_path(root, ".avra-cache/tapes"),
+        disk.file_at(bin),
+        ahead_count(),
+        env("AVRA_QUERY_TIMES") == "1",
+    )
     let asked = binary_asked(engine, disk, bin, stem, mode, tools)
     let refusing = phased(
         engine,
@@ -704,7 +710,7 @@ fn kept_and_said(engine: QueryEngine, store: LayeredStore) -> string? {
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
     let saved = phased(engine, "the store saved", () -> store.saved())
     if env("AVRA_QUERY_TIMES") == "1" { eprintln("kept by an heir: ${engine.kept_times()?.phases_spoken() ?? ""}") }
-    match saved { .Ok(_) -> null, .Err(e) -> e.describe().message }
+    unsaved_cause(store, saved)
 }
 
 /// `AVRA_STORE_KEPT_HERE`: a build keeps its store before it answers.
@@ -716,11 +722,28 @@ once fn kept_here() -> string? {
 /// The engine's frontier and its store, kept for the next build to read.
 fn store_kept(engine: QueryEngine, store: LayeredStore) {
     phased(engine, "the frontier kept", () -> engine.frontier_kept())
-    let _ = phased(
+    let saved = phased(
         engine,
         if store.compacts_on_saving() { "the store compacted" } else { "the store saved" },
         () -> store.saved(),
     )
+    let why? = unsaved_said(store, saved) else { return }
+    eprintln("avra: ${why}")
+}
+
+/// Why `store` kept nothing, as `saved` answered, said by the build that saves it; absent where it
+/// kept all.
+export fn unsaved_said(store: LayeredStore, saved: Result<int, IoError>) -> string? {
+    let cause? = unsaved_cause(store, saved) else { return null }
+    "the store at ${store.directories().first() ?? ""} wasn't saved — ${cause}; what this build learned is worked out again"
+}
+
+/// What kept `store` from saving, as `saved` answered: the file it couldn't write and why, and what
+/// the disk holding the store had free; absent where it kept all.
+fn unsaved_cause(store: LayeredStore, saved: Result<int, IoError>) -> string? {
+    let e = match saved { .Ok(_) -> { return null }, .Err(e) -> e }
+    let free = disk_free_at(store.directories().first() ?? "")
+    "${e.describe().message}${if free == null { "" } else { " (${free!} bytes free there)" }}"
 }
 
 /// How many processes a build lowers its declared bodies across: `AVRA_WORK_AHEAD_CORES`, else at
@@ -980,7 +1003,8 @@ fn binary_refused(disk: Disk, built: BuiltBinary, entry_path: string) -> string?
 /// What the laws find in each of `files` of the program whose entry is `entry`, a seat's refusal
 /// among them, said as `check` says it, its errors failing the build: 1. A file whose refusal no law
 /// finds is said as such. Where the net accepted the program (`net`), it is said as the program
-/// layer's defect.
+/// layer's defect, unless every refusal is a const's settling, which runs past what the net reads:
+/// a trap there is the program's own.
 fn refusals_said(
     engine: QueryEngine,
     disk: Disk,
@@ -988,10 +1012,10 @@ fn refusals_said(
     entry: SourceFileAddress,
     net: bool = false,
 ) -> int {
-    if net { eprintln(false_refusal_header()) }
     let held = [program_file(disk, f) for f in files]
     let entered = program_file(disk, entry)
     let said = [file_refusals(engine, h, entered) for h in held]
+    if net && !flatten(said).all((d) -> settling_kind(d.kind)) { eprintln(false_refusal_header()) }
     for j, ds in said { if ds.is_empty() { eprintln(refusal_unworded(held[j].full)) } }
     let sources = [new_source_file(h.full, text_at(h.full) ?? "") for h in held]
     let all = flatten(said)
@@ -3572,19 +3596,23 @@ fn bucket_kept(
     if exists_at(kept) { return BuiltBinary.Linked(kept, shape.unlowered()) }
     let owed = [o for o in made if !exists_at(o.obj)]
     if !owed.is_empty() {
-        let parts = phased(
-            engine,
-            "the buckets asked",
-            () -> [bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o)) for o in owed],
-        )
-        if parts.any(it == null) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
         let _ = make_dirs(joined_path(asked.dir, "obj"))
         let emitted = timed_phase(
             engine,
             "emit",
-            () -> objects_owed([p! for p in parts], owed, opt_level(asked.opt), asked.target),
+            () -> written_across(
+                (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i]),
+                owed,
+                bucket_weights(shape, owed),
+                opt_level(asked.opt),
+                asked.target,
+            ),
         )
-        if emitted != null { return BuiltBinary.Unlinked(emitted!) }
+        if emitted != null {
+            if owed
+                .any((o) -> bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o)) == null) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
+            return BuiltBinary.Unlinked(emitted!)
+        }
     }
     let staged = staged_beside(kept)
     let linked = timed_phase(
@@ -3645,17 +3673,25 @@ fn bucket_of(m: Made) -> int {
     match m.which { .Bucket(i, _of) -> i, rest -> 0 }
 }
 
-/// Why the objects `owed` weren't made at `opt`, `parts[i]` making `owed[i]`; absent when each now
-/// stands where it is named. Each is written beside its name and renamed onto it whole, so a name
-/// never holds half an object.
-fn objects_owed(parts: List<BucketAsked>, owed: List<Made>, opt: int, target: string) -> string? {
-    written_across(
-        (i: int) -> bucket_lowered(parts[i]),
-        owed,
-        [asked_size(p) for p in parts],
-        opt,
-        target,
-    )
+/// The bucket the object `o` holds, asked and lowered by the process that emits it, so each
+/// process reads the bodies of its own buckets alone; a bucket whose bodies no longer lower is
+/// one no object is written for, which fails the emit.
+fn bucket_made_whole(
+    engine: QueryEngine,
+    asked: BinaryAsked,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    o: Made,
+) -> Lowered {
+    bucket_lowered(bucket_asked(engine, asked.entry, shape, hashes, bucket_of(o))!)
+}
+
+/// How heavy each of `owed` is to emit, without reading a body: how many of the shape's bodies its
+/// bucket is home to, one for a bucket that is home to none.
+fn bucket_weights(shape: ShapeAt, owed: List<Made>) -> List<int> {
+    mut homed: Map<string, int> = {}
+    for home in shape.homes() { homed.set("${home}", (homed.get("${home}") ?? 0) + 1) }
+    [(homed.get("${bucket_of(o)}") ?? 0) + 1 for o in owed]
 }
 
 /// The binary linked at `staged` kept at `kept`, the only one kept beside it; absent when it was, else

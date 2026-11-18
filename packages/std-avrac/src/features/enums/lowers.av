@@ -233,7 +233,7 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
 }
 
 /// A match on a nullable: each arm in turn, taken where it accepts the subject — a `null` pattern its
-/// absence, a name or `_` whatever it is, a name binding the subject as it stands — under its guard.
+/// absence, a const's name the value it is, a name or `_` whatever it is, a name binding the subject as it stands — under its guard.
 /// One whose patterns are anything else, or whose unguarded arms leave a value to none, isn't lowered
 /// yet.
 fn presence_matched(mut cx: Lowering, e: ExprId, m: Match, ty: SignedType) -> Reg {
@@ -268,11 +268,22 @@ fn catches_all(a: Planned) -> bool { a.guard == null && a.pats.any(takes_rest) }
 /// Whether a pattern of the arm `a` is a quote.
 fn arm_quotes(cx: Lowering, a: Arm) -> bool { a.pats.any((p) -> quotes(cx, p)) }
 
-/// What a pattern takes of a nullable: `null` its absence, `_` or a name that binds whatever it is.
+/// What a pattern takes of a nullable: `null` its absence, a const's name the value the const is,
+/// `_` or a name that binds whatever it is.
 fn presence_taken(cx: Lowering, p: PatId) -> Taken? {
     if absence_pattern(cx, p) { return Taken.Absent }
+    let compared = compared_name(cx, p)
+    if compared != null { return Taken.Compared(compared!, cx.store.pat_home(p)) }
     let name? = rest_name(cx, p) else { return null }
     Taken.Whole(if name.is_empty() { null } else { name })
+}
+
+/// The const a pattern's bare name compares the subject with; absent for any other pattern.
+fn compared_name(cx: Lowering, p: PatId) -> string? {
+    match cx.store.pat(p) {
+        .Bind(name) -> if compares(cx, p, name.of) { name.of } else { null },
+        .Wild or .Rest or .Lit(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+    }
 }
 
 /// Whether a pattern is `null`.
