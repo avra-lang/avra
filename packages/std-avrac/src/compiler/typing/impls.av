@@ -519,30 +519,13 @@ impl TypeCx {
 
     fn alias_target(s: StmtId, target: string, d: DeclId) {
         let of = self.view.types.name_of(self.view.decls.alias_of(d) ?? self.error_type)
-        self
-            .emit(
-                refusal(
-                    "type.impl",
-                    self.stmt_loc(s),
-                    "`impl ${target}` is written on an alias — `${target}` names `${of}`",
-                    "this impl",
-                    "write the impl on the type itself: `impl ${of}`",
-                ),
-            )
+        self.emit(said_as("type.impl", self.stmt_loc(s), impl_on_alias(target, of)))
     }
 
     fn concrete_target(s: StmtId, of: string, target: string, params: List<string>) {
         let written = params.join(", ")
         self
-            .emit(
-                refusal(
-                    "type.impl",
-                    self.stmt_loc(s),
-                    "`impl ${of} for ${target}<...>` names a specific instantiation — a trait impl lands for the WHOLE generic",
-                    "this impl",
-                    "write `impl ${of} for ${target}<${written}>`",
-                ),
-            )
+            .emit(said_as("type.impl", self.stmt_loc(s), impl_of_instantiation(of, target, written)))
     }
 
     fn no_such_trait(s: StmtId, of: string) {
@@ -562,42 +545,15 @@ impl TypeCx {
     fn beyond_the_trait(f: StmtId, of: string, target: string, mn: string) { self.emit(said_as("type.trait", self.stmt_loc(f), beyond_trait(mn, of, target))) }
 
     fn unanswered(s: StmtId, of: string, target: string, mn: string) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`impl ${of} for ${target}` must answer `${mn}`",
-                    "this impl",
-                    "add `fn ${mn}(self, …)`",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), impl_unanswered(of, target, mn)))
     }
 
     fn trait_args_miscounted(s: StmtId, of: string, takes: int, gave: int) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`${of}` takes ${counted(takes, "type argument")}, and this impl gives ${gave}",
-                    "this impl",
-                    "an impl names its trait at every parameter the trait declares",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), impl_miscounts_trait(of, takes, gave)))
     }
 
     fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`${target}.${mn}` does not wear `${of}.${mn}`'s signature",
-                    "this impl",
-                    "match the trait's parameters and return exactly",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), signature_unworn(of, target, mn)))
     }
 
     /// THE SEATS' CONTRACT: a `mut` seat the body never writes
@@ -633,12 +589,10 @@ impl TypeCx {
         let root: ExprId? = self.view.decls.decl(d).root
         self
             .emit(
-                refusal(
+                said_as(
                     "type.trait_member",
                     if root == null { self.stmt_loc(self.view.decls.decl(d).stmt) } else { self.loc_of(root!) },
-                    "`${self.view.decls.decl(d).name}`'s default is `${of}.${name}`'s — an impl's method takes its trait's",
-                    "a second default",
-                    "drop this default: `${of}.${name}` writes the seat's for every impl",
+                    default_is_the_traits(self.view.decls.decl(d).name, of, name),
                 ),
             )
     }
@@ -697,6 +651,60 @@ export fn impl_heading(of: string?, target: string) -> string {
 /// A trait at the arguments one impl gives it: `Self` first, then the
 /// trait's own parameters, by ordinal.
 type TraitAt = { decl: DeclId, args: List<TypeId> }
+
+/// An impl written on the alias `target`, which names `of`.
+export fn impl_on_alias(target: string, of: string) -> Voice {
+    Voice {
+        message: "`impl ${target}` is written on an alias — `${target}` names `${of}`",
+        label: "this impl",
+        help: "write the impl on the type itself: `impl ${of}`",
+    }
+}
+
+/// A trait impl naming one instantiation of the generic `target`, whose parameters are `written`.
+export fn impl_of_instantiation(of: string, target: string, written: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}<...>` names a specific instantiation — a trait impl lands for the WHOLE generic",
+        label: "this impl",
+        help: "write `impl ${of} for ${target}<${written}>`",
+    }
+}
+
+/// An impl of `of` for `target` that answers no `mn`.
+export fn impl_unanswered(of: string, target: string, mn: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}` must answer `${mn}`",
+        label: "this impl",
+        help: "add `fn ${mn}(self, …)`",
+    }
+}
+
+/// An impl naming the trait `of`, which takes `takes` type arguments, at `gave`.
+export fn impl_miscounts_trait(of: string, takes: int, gave: int) -> Voice {
+    Voice {
+        message: "`${of}` takes ${counted(takes, "type argument")}, and this impl gives ${gave}",
+        label: "this impl",
+        help: "an impl names its trait at every parameter the trait declares",
+    }
+}
+
+/// `target`'s method `mn`, whose signature isn't the one `of` declares for it.
+export fn signature_unworn(of: string, target: string, mn: string) -> Voice {
+    Voice {
+        message: "`${target}.${mn}` does not wear `${of}.${mn}`'s signature",
+        label: "this impl",
+        help: "match the trait's parameters and return exactly",
+    }
+}
+
+/// The seat `seat` of an impl's method `name` writing a default its trait `of` writes already.
+export fn default_is_the_traits(seat: string, of: string, name: string) -> Voice {
+    Voice {
+        message: "`${seat}`'s default is `${of}.${name}`'s — an impl's method takes its trait's",
+        label: "a second default",
+        help: "drop this default: `${of}.${name}` writes the seat's for every impl",
+    }
+}
 
 /// A `mut` seat the fn `name` never writes through.
 export fn unwritten_seat_said(seat: string, name: string) -> Voice {

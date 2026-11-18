@@ -47,11 +47,6 @@ fn ran(tail: string) -> string? {
     match packaged(runs_program(tail), runs_provider()).run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
-fn expanded(tail: string) -> string {
-    let p = packaged(runs_program(tail), runs_provider())
-    p.expanded_source(p.ws.file_id("/w/src/main.av"))
-}
-
 spec "features/quote — run holes in field lists" {
     given "the written form" {
         then "a spread in a type's fields prints back as written" {
@@ -68,18 +63,8 @@ spec "features/quote — run holes in field lists" {
         then "an empty run declares a type of no fields" {
             ran("let e = PEmpty {}\n1") == "1"
         }
-        then "a run beside written fields keeps every field's place" {
-            expanded("1")
-                .contains(
-                    "type PBeside = {\n    first: int,\n    x: int,\n    y: int,\n    z: int,\n    last: int,\n}",
-                )
-        }
         then "a trailing comma after a run is a trailing comma" {
             ran("let t = PTrail { x: 1, y: 2, z: 3 }\nt.z") == "3"
-        }
-        then "a spliced field keeps its marks" {
-            expanded("1")
-                .contains("type PKeys = {\n    @key x: int,\n    @key y: int,\n    @key z: int,\n}")
         }
         then "a spliced field keeps its default" {
             ran("let t = PTwo { z: 1 }\nt.x + t.y + t.mid + t.z") == "18"

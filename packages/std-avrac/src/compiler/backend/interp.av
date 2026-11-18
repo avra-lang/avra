@@ -273,8 +273,8 @@ type Machine = {
 
 /// Whether the memory a door's answer costs the compiler is the run's.
 enum Billing {
-    /// the answer is the run's own data
-    Billed
+    /// the answer is the run's own data: `bytes` of it, whatever answering cost the compiler
+    Handed(bytes: int)
     /// the compiler's state, built to answer and kept
     Unbilled
 }
@@ -1305,7 +1305,8 @@ impl Machine {
     fn embed_door(path: string, kind: EmbedKind) -> Result<Bytes, string> {
         let before = avra_mem_live()
         let r = (self.embed)(path, kind)
-        self.past_door(Billing.Billed, before)
+        self
+            .past_door(Billing.Handed(match r { .Ok(octets) -> octets.length, .Err(_) -> 0 }), before)
         r
     }
 
@@ -1320,10 +1321,9 @@ impl Machine {
 
     /// Where a door's call left the heap, from `before`.
     fn past_door(billing: Billing, before: int) {
-        match billing {
-            .Billed -> nothing(),
-            .Unbilled -> { self.mem_base = self.mem_base + (avra_mem_live() - before) },
-        }
+        let spent = avra_mem_live() - before
+        self.mem_base = self.mem_base +
+            match billing { .Handed(bytes) -> spent - bytes, .Unbilled -> spent }
     }
 
     fn trapped(msg: string) {

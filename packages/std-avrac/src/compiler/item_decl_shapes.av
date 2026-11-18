@@ -16,6 +16,7 @@ use core.{
     SyntaxParts,
     Type,
     some_list,
+    CompClause,
     ExprId,
     distinct,
     NamedParts,
@@ -40,6 +41,7 @@ use compiler.typing.{
     impl_away_from_type,
     impl_heading,
     alias_given_no_value,
+    alias_naming_itself,
     builtin_type_name,
     inherent_on_builtin,
     mut_without_receiver,
@@ -76,7 +78,13 @@ use features.sublang.{
 }
 use features.impls.{no_method}
 use features.enums.{declares_no_variants}
-use features.fns.{default_before_plain, default_marked, default_opened, rest_not_last}
+use features.fns.{
+    default_before_plain,
+    default_marked,
+    default_opened,
+    rest_not_last,
+    rest_unlisted,
+}
 use features.structs.{literal_targs_counted, literal_targs_ungeneric}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -174,6 +182,15 @@ fn rests_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
     let store = read_item(engine, file, at).store
     [Found { at: store.stmt_span(f.stmt), args: [f.params[r!].name.of, f.name] } for f in seated_fns(engine, file, at) for r in [f.params.find_index(it.is_rest())] if r != null && (r! != f.params.length - 1 || f.params.filter(it.is_rest()).length > 1)]
 }
+
+/// Every fn of the written item `at` of `file` whose one last `..` seat is written as no list.
+fn rests_unlisted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let store = read_item(engine, file, at).store
+    [Found { at: store.stmt_span(f.stmt), args: [p.name.of, f.name] } for f in seated_fns(engine, file, at) for p in some_list(f.params.last()) if p.is_rest() && f.params.filter(it.is_rest()).length == 1 && p.ty != null && p.ty!.name != LIST]
+}
+
+/// The type a `..` seat collects its arguments into.
+const LIST: string = "List"
 
 /// Every fn of the written item `at` of `file` with a seat that has no default after one that has,
 /// found at the first default.
@@ -632,6 +649,26 @@ fn aliases_given_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
     [Found { at: item.store.stmt_span(s), args: [t.name, NO_VALUE] } for top in item.stmts for s in stmts_under(item.store, At.Stmt(top)) for r in item.store.type_roots(s) for t in written_in(r) if t.type_args().any(it.name == NO_VALUE) && names_alias(engine, file, t.name)]
 }
 
+/// Every alias the written item `at` of `file` declares that names, in what it stands for, the
+/// first declared alias of a loop of aliases it's on: where the loop comes back; handed that alias.
+fn aliases_looping(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(s), args: [h.name] } for s in item.stmts for a in [item.store.alias_parts(s)] if a != null for h in aliases_named(engine, declared_place(file, a!.name)) if first_alias(engine, h, declared_place(file, a!.name))]
+}
+
+/// Whether the alias `h`, which the alias `closing` names, comes back to itself through `closing`,
+/// every other alias of that loop declared after it.
+fn first_alias(engine: QueryEngine, h: DeclaredAt, closing: DeclaredAt) -> bool {
+    let between? = alias_path(engine, h, closing, []) else { return false }
+    let h_at = file_declares(engine, h.file)
+        .names
+        .find(it.name == h.name && it.kind == ItemKind.Alias)?.item ?? -1
+    between
+        .concat(if same_declared(h, closing) { [] } else { [closing] })
+        .all((d) -> declared_after(engine, d, ItemKind.Alias, h.file, h_at))
+}
+
 /// The type written that no value has.
 const NO_VALUE: string = "void"
 
@@ -730,12 +767,29 @@ fn stray_members(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     [Found { at: item.store.stmt_span(m!), args: [] } for s in item.stmts for fns in [item.store.impl_parts(s)?.fns ?? item.store.trait_parts(s)?.fns] if fns != null for m in [fns!.find((f) -> !item.store.holds_a_member(f) && !(item.store.stmt(f) is .Error))] if m != null]
 }
 
-/// Every loop the written item `at` of `file` writes naming its index as its element; handed the
-/// name.
+/// Every loop and comprehension head the written item `at` of `file` writes naming its index as its
+/// element; handed the name.
 fn paired_alike(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [i!] } for top in item.stmts for s in stmts_under(item.store, At.Stmt(top)) for i in [item.store.loop_index(s)] if i != null && i! == item.store.let_name(s)]
+        .concat(
+            [Found { at: item.store.expr_span(e), args: [n] } for j in 0..item.store.expr_count() for e in [ExprId { index: j }] if item.store.home_of(e) == null for n in heads_paired_alike(item.store, e)],
+        )
+}
+
+/// The names the comprehension `e` binds as both a head's index and its element; none for any other
+/// node.
+fn heads_paired_alike(store: SyntaxArena, e: ExprId) -> List<string> {
+    let clauses = match store.expr(e) { .Comp(_, clauses) -> clauses, rest -> [] }
+    flatten([head_paired_alike(c) for c in clauses])
+}
+
+fn head_paired_alike(c: CompClause) -> List<string> {
+    match c {
+        .Head(index, name, _, _) -> if index?.of == name.of { [name.of] } else { [] },
+        .Filter(_) -> [],
+    }
 }
 
 /// Every `collect enum` the written item `at` of `file` declares that gathers no member.
@@ -925,6 +979,16 @@ export law rest_seat_misplaced {
     witness: "fn h(..r: List<int>, a: int) -> int { a }\n"
 }
 
+/// a `..` seat collects its arguments into a list
+export law rest_seat_unlisted {
+    kind: "type.variadic"
+    reads: rests_unlisted
+    voice: unlisted_rest_words
+    witness: "fn n(..r: int) -> int { 1 }\n"
+}
+
+fn unlisted_rest_words(a: List<string>) -> Voice { rest_unlisted(a[0], a[1]) }
+
 /// defaulted seats come last
 export law default_before_plain_seat {
     kind: "type.param_default"
@@ -1031,6 +1095,14 @@ export law literal_targs_on_plain {
     reads: targs_ungeneric
     voice: targs_plain_words
     witness: "type P = { v: int }\n\nfn g() -> int { P<int> { v: 1 }.v }\n"
+}
+
+/// an alias names a type that is not itself
+export law alias_names_itself {
+    kind: "type.alias"
+    reads: aliases_looping
+    voice: alias_loop_words
+    witness: "alias A = List<A>\n"
 }
 
 /// an alias's type arguments are the types of values
@@ -1154,6 +1226,8 @@ fn targs_counted_words(a: List<string>) -> Voice { literal_targs_counted(a[0], a
 fn targs_plain_words(a: List<string>) -> Voice { literal_targs_ungeneric(a[0], parse_int(a[1]) ?? 0) }
 
 fn alias_words(a: List<string>) -> Voice { alias_given_no_value(a[0], a[1]) }
+
+fn alias_loop_words(a: List<string>) -> Voice { alias_naming_itself(a[0]) }
 
 fn nested_fn_words(_a: List<string>) -> Voice { nested_fns() }
 

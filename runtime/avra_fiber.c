@@ -550,32 +550,55 @@ static void traced_join(const Fiber* f, int64_t on) {
 
 // The program's site table (avra_box.h): its rows and their count.
 #if defined(__APPLE__)
-static const AvraSiteRow* site_rows(size_t* n) {
+static const AvraSiteRow* site_rows_of(uint32_t image, size_t* n) {
     unsigned long bytes = 0;
-    const struct mach_header_64* image = (const struct mach_header_64*)_dyld_get_image_header(0);
-    const uint8_t* at = getsectiondata(image, AVRA_SITES_MACHO_SEGMENT, AVRA_SITES_MACHO_SECTION, &bytes);
+    const struct mach_header_64* header = (const struct mach_header_64*)_dyld_get_image_header(image);
+    const uint8_t* at = header ? getsectiondata(header, AVRA_SITES_MACHO_SEGMENT, AVRA_SITES_MACHO_SECTION, &bytes) : NULL;
     *n = at ? bytes / sizeof(AvraSiteRow) : 0;
     return (const AvraSiteRow*)at;
 }
 #else
 extern const AvraSiteRow __start_avra_sites[] __attribute__((weak));
 extern const AvraSiteRow __stop_avra_sites[] __attribute__((weak));
-static const AvraSiteRow* site_rows(size_t* n) {
-    *n = __start_avra_sites ? (size_t)(__stop_avra_sites - __start_avra_sites) : 0;
-    return __start_avra_sites;
-}
 #endif
 
-// Where a task's body was written — the row that names its entry — or
-// NULL for code no row names.
-static const char* site_of(void* body) {
-    const void* code = (const void*)(uintptr_t)((AvraArray*)body)->data[0];
-    size_t n = 0;
-    const AvraSiteRow* rows = site_rows(&n);
+// THE SITE TABLES OF A PROGRAM LINKED IN LAYERS: each image's own, handed
+// over as it loads by a constructor its objects carry (backend/llvm_wrapper.c
+// `sites_registered`), every object of one image handing the same table.
+enum { SITE_TABLES = 16 };
+static struct { const AvraSiteRow* rows; size_t n; } g_site_tables[SITE_TABLES];
+static size_t g_site_tables_n;
+
+void avra_sites_register(const AvraSiteRow* rows, size_t n) {
+    for (size_t t = 0; t < g_site_tables_n; t++) {
+        if (g_site_tables[t].rows == rows) return;
+    }
+    if (g_site_tables_n < SITE_TABLES) g_site_tables[g_site_tables_n++] = (typeof(g_site_tables[0])){ rows, n };
+}
+
+static const char* site_in(const AvraSiteRow* rows, size_t n, const void* code) {
     for (size_t i = 0; i < n; i++) {
         if (rows[i].code == code) return rows[i].site;
     }
     return NULL;
+}
+
+// Where a task's body was written — the row that names its entry, in the
+// image's own table or any layer's — or NULL for code no row names.
+static const char* site_of(void* body) {
+    const void* code = (const void*)(uintptr_t)((AvraArray*)body)->data[0];
+    const char* found = NULL;
+#if defined(__APPLE__)
+    for (uint32_t i = 0, images = _dyld_image_count(); i < images && !found; i++) {
+        size_t n = 0;
+        const AvraSiteRow* rows = site_rows_of(i, &n);
+        found = site_in(rows, n, code);
+    }
+#else
+    if (__start_avra_sites) found = site_in(__start_avra_sites, (size_t)(__stop_avra_sites - __start_avra_sites), code);
+#endif
+    for (size_t t = 0; t < g_site_tables_n && !found; t++) found = site_in(g_site_tables[t].rows, g_site_tables[t].n, code);
+    return found;
 }
 
 // A spawn, and where its body was written.

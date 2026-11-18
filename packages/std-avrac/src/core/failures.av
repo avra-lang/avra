@@ -35,15 +35,18 @@ impl Lowering {
     }
 
     /// `r`, a value of `ty`, as the error `err` holds it: itself where it is that error or both are
-    /// unions; boxed behind its type's tag where it's a member of the union `err`; absent otherwise.
+    /// unions; boxed behind its type's tag, or its spelling's where the program doesn't declare it, where
+    /// it's a member of the union `err`; absent otherwise.
     mut fn as_error(err: SignedType, ty: SignedType, r: Reg) -> Reg? {
         if ty.spelled() == err.spelled() ||
             !ty.alternatives.is_empty() && !err.alternatives.is_empty() { return r }
         if !err.alternatives.any(it.spelled() == ty.spelled()) { return null }
-        let tag? = self.type_tag(ty) else { return null }
-        self.tagged_value(self.laid_out(err), tag, [r])
+        self.tagged_value(self.laid_out(err), self.type_tag(ty) ?? spelled_tag(ty), [r])
     }
 }
+
+/// The tag a union's box holds for a member the program doesn't declare: its spelling's fingerprint.
+fn spelled_tag(ty: SignedType) -> int { fp_str(ty.spelled()) }
 
 // ── Voices ──────────────────────────────────────────────────────────
 

@@ -1049,6 +1049,7 @@ fn times_said(engine: QueryEngine) {
     eprintln("time: ${times.spoken(15)}")
     eprintln("phases: ${times.phases_spoken()}")
     eprintln("split: ${times.split()}")
+    eprintln("cutoff: ${engine.cutoff_said()}")
 }
 
 /// The workspace's lowering of the want `w`, timed as its own phase.
@@ -1129,6 +1130,9 @@ type Disk = {
     deps: Map<string, string> = {},
     lone: string = "",
     admitted: AdmittedSaid = NOTHING_ADMITTED,
+    /// Files the named package holds that no disk does, by where each would stand: a command's own
+    /// text, read as a source beside the ones written.
+    over: Map<string, string> = {},
 }
 
 /// What admitting a package graph's rows said, and the manifests it read them off.
@@ -1153,8 +1157,10 @@ impl Disk {
 
     /// The names in a package's directory: a lone file's package holds that file alone.
     fn listed(package: string, dir: string) -> List<string>? {
-        if !self.lone.is_empty() && package == self.name { return if dir == "src" { [self.lone] } else { [] } }
-        names_at(self.on_disk(package, dir))
+        let over = if package == self.name { [file_name(p) for p, _text in self.over if dir_of(p) == self.on_disk(package, dir)] } else { [] }
+        if !self.lone.is_empty() && package == self.name { return if dir == "src" { distinct([self.lone].concat(over)) } else { [] } }
+        let names? = names_at(self.on_disk(package, dir)) else { return if over.is_empty() { null } else { over } }
+        distinct(names.concat(over))
     }
 
     /// What decides where each of its packages lies: its root and name, the toolchain's std, and each
@@ -1173,7 +1179,7 @@ impl Disk {
         use_machine_store(machine_layer())
         use_source_world(
             avra_source_world(
-                (f) -> text_at(self.on_disk(f.package_name, f.path_in_package)),
+                (f) -> self.text_of(self.on_disk(f.package_name, f.path_in_package)),
                 (d) -> self.listed(d.package_name, d.path_in_package),
                 "avra-tapes",
                 (f) -> disk_octets(self.package_root(f.package_name), f.path_in_package),
@@ -1185,6 +1191,9 @@ impl Disk {
             ),
         )
     }
+
+    /// The text of the file at `path`: one the disk holds, or one laid over it.
+    fn text_of(path: string) -> string? { self.over.get(path) ?? text_at(path) }
 
     /// Where a package stands: a path dependency's directory, a std package's in the toolchain, else
     /// the root's.
@@ -3203,34 +3212,32 @@ fn children_wrong(engine: QueryEngine, disk: Disk, children: List<RefusesCall>) 
 
 /// A child-run program test's eval leg on the program layer: the program the file `path` of the
 /// package at `root` runs, made there and evaluated in this process, ending as `avra run` ends it —
-/// `live`, every line printed as it is printed, as `avra run --eval` runs it; one not made yet says so
-/// and ends 3, no end a test asks for.
+/// `live`, every line printed as it is printed, as `avra run --eval` runs it; one its laws refuse is
+/// refused in their words as a build refuses it, and one not made yet says so: each ends 3, no end
+/// a test asks for.
 export fn program_refuse_evaluated(root: string, path: string, live: bool = false) -> int {
     let disk? = disk_at(root, "") else { return std_unfound() }
     let engine = query_engine(
         program_store_at(joined_path(root, ".avra-cache/tapes")),
         avra_fact_definitions(),
     )
-    let lowered = match made_program(
-        engine,
-        disk.file_at(path.substring(root.length + 1, path.length)),
-    ) {
+    let entry = disk.file_at(path.substring(root.length + 1, path.length))
+    let refusing = program_refused(engine, entry, disk.name)
+    if !refusing.is_empty() {
+        let _ = refusals_said(engine, disk, refusing, entry)
+        return 3
+    }
+    let lowered = match made_program(engine, entry) {
         .Made(l) -> l,
         .Unmade(why, at) -> {
             eprintln(not_made_yet(why, at, path))
             return 3
         },
         .Refused(files) -> {
-            let _ = refusals_said(
-                engine,
-                disk,
-                files,
-                disk.file_at(path.substring(root.length + 1, path.length)),
-            )
+            let _ = refusals_said(engine, disk, files, entry)
             return 3
         },
     }
-    let entry = disk.file_at(path.substring(root.length + 1, path.length))
     match program_ended(
         lowered with { libraries: linked_libraries(engine, disk, entry) },
         ENTRY_SYMBOL,
@@ -3276,7 +3283,9 @@ fn suite_ran(
 }
 
 /// The suite of every case `files` write, made on the program layer and linked at `kept`, the one
-/// suite binary its directory keeps; absent when it was, else the exit its refusal spoke.
+/// suite binary its directory keeps; absent when it was, else the exit its refusal spoke. A file of
+/// cases a law refuses is refused first, in the law's words, as a check of it says them: a case is
+/// judged before it is made.
 fn suite_made(
     engine: QueryEngine,
     disk: Disk,
@@ -3284,6 +3293,8 @@ fn suite_made(
     kept: string,
     packaged: Linking,
 ) -> int? {
+    let refusing = [f for f in files if file_law_diags(engine, program_file(disk, f)).any(refuses(it))]
+    if !refusing.is_empty() { return refusals_said(engine, disk, refusing, refusing[0]) }
     let made = match made_suite(
         engine,
         files,

@@ -213,6 +213,11 @@ export type QueryEngine = {
     /// holding each path it read; any other's, every package its reads read. Known by what was read,
     /// never by who asked first or which way it settled.
     read_sets: HashKeyedTable<int>,
+    /// How many answers the changed inputs reached, how many of them were proved to stand by reading
+    /// what they read, and how many reads that read.
+    reached: Cell<int>,
+    proved: Cell<int>,
+    reads_checked: Cell<int>,
     sets: NameSets,
     /// Whether each set's every package is one the store shares, by the set's id.
     sets_shared: Cell<Map<string, bool>>,
@@ -243,6 +248,9 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
     let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
     let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
     let read_sets: HashKeyedTable<int> = hash_keyed_table()
+    let reached: Cell<int> = Cell.new(0)
+    let proved: Cell<int> = Cell.new(0)
+    let reads_checked: Cell<int> = Cell.new(0)
     let sets_shared: Cell<Map<string, bool>> = Cell.new({})
     let engine = QueryEngine {
         store: store,
@@ -260,6 +268,9 @@ export fn query_engine(store: dyn AnswerStore, definitions: List<QueryDefinition
         stamps_kept: stamps_kept,
         stamps_seen: stamps_seen,
         read_sets: read_sets,
+        reached: reached,
+        proved: proved,
+        reads_checked: reads_checked,
         sets: name_sets(),
         sets_shared: sets_shared,
         serial: next_serial(),
@@ -405,6 +416,8 @@ impl QueryEngine {
     /// change reaches holds where it stands, and one a change reaches is settled and compared.
     fn reads_hold(open: OpenFrontier, at: int) -> bool {
         let reads? = open.frontier.reads_at(at) else { return false }
+        self.proved.set(self.proved.get() + 1)
+        self.reads_checked.set(self.reads_checked.get() + reads.length)
         reads.all((r) -> self.read_holds(open, r))
     }
 
@@ -452,6 +465,7 @@ impl QueryEngine {
         let inputs = f.standing_inputs()
         let changed = inputs.filter((at) -> !self.input_holds(f, at))
         let suspects? = self.suspects_of(f, changed) else { return self.frontier.set(FrontierState.Unusable) }
+        self.reached.set(suspects.filter(it).length)
         for at in inputs { if !suspects[at] { let _ = self.stood(f, at) } }
         self
             .frontier
@@ -480,6 +494,12 @@ impl QueryEngine {
         let way? = open.frontier.way_to(open.changed, at) else { return null }
         let asked = [self.store.question_known_as(open.frontier.question_at(p)) for p in way]
         if asked.any(it == null) { null } else { [q! for q in asked] }
+    }
+
+    /// How many answers the changed inputs reached, how many of them were proved to stand read by
+    /// read, and how many reads that read.
+    fn cutoff_said() -> string {
+        "${self.reached.get()} answers reached, ${self.proved.get()} proved, ${self.reads_checked.get()} reads checked"
     }
 
     /// Whether a change in `changed` reaches each answer of `f`; absent when its reads don't lie

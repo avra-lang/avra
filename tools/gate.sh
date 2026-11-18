@@ -59,7 +59,7 @@ idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
 sound      AVRA_SOUND_CHECK=1 check packages/cli (old path), 0 `defect: in` lines
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
-doors-b    test std-ui std-http
+doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 findings-a tapes --findings on std-avrac and cli, 0 refusals; std-avrac built, 0 program-layer false refusals
 findings-b the same on a third of every other package, dealt in turn
 findings-c the next third
@@ -67,7 +67,7 @@ findings-d the last third
 refusal-a  witness_program_refusal over a third of its cases, dealt in turn
 refusal-b  the next third
 refusal-c  the last third
-witness-b  witness_program_runs, heir_save_attack, _ledger, _suites, _doors; witness_program_differential
+witness-b  witness_program_runs, heir_save_attack, _ledger, _suites, _doors; witness_program_differential; make flow-trace
 warnings-a witness_program_warnings — the cli built cold and again with no change, on both paths
 warnings-b witness_program_warnings — the cli's check on both paths, and the cases under tools/program-warnings/
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
@@ -338,7 +338,11 @@ slice_sound() {
 
 doors() { for p in "$@"; do cold "$p"; tested "test-$p" "packages/$p"; done; }
 slice_doors_a() { doors $DOORS_A; }
-slice_doors_b() { doors $DOORS_B; }
+slice_doors_b() {
+    doors $DOORS_B
+    row ui-host-test make -s -o avra ui-host-test
+    row ui-host make -s -o avra ui-host
+}
 
 # each package named: tapes --findings with no refusal; built — a library stops at "declares no entry
 # point", which is no refusal — with no program-layer false refusal; the cli's builds are the build slice's
@@ -367,6 +371,7 @@ refusal_third() {
 slice_witness_b() {
     row runs-witness sh tools/witness_program_runs.sh build/avra
     row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
+    row flow-trace make -s -o avra flow-trace
     old_row ledger-witness sh tools/witness_program_ledger.sh build/avra
     old_row suites-witness sh tools/witness_program_suites.sh build/avra
     old_row doors-witness sh tools/witness_program_doors.sh build/avra

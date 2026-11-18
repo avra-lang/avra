@@ -73,8 +73,10 @@ impl Lowering {
         if own != null { return own }
         let root? = self.store.place_root(a) else { return null }
         if self.bound_cell(root) == null { return null }
+        let pins = self.pins.get().length
+        self.path_pinned(a)
         let cell = self.seeded_cell(self.laid_out(ty), self.lower(a))
-        self.handing.push(HandedPlace { box: cell, place: a, ty: ty, cell: true })
+        self.handing.push(HandedPlace { box: cell, place: a, ty: ty, cell: true, pins: pins })
         cell
     }
 
@@ -127,8 +129,30 @@ impl Lowering {
 }
 
 /// A place handed to a written seat: the box it was handed over in, the place, absent for a value
-/// that stands nowhere, and its type; `cell` where the box is a cell C writes through.
-export type HandedPlace = { box: Reg, place: ExprId?, ty: SignedType, cell: bool = false }
+/// that stands nowhere, and its type; `cell` where the box is a cell C writes through; `pins` how
+/// many index operands were pinned before its own.
+export type HandedPlace = { box: Reg, place: ExprId?, ty: SignedType, cell: bool = false, pins: int = 0 }
+
+/// An index operand pinned: its node and the register it was lowered into.
+export type Pin = { node: int, reg: Reg }
+
+impl Lowering {
+    /// The register `e` is pinned to, absent for a node that isn't.
+    fn pinned(e: ExprId) -> Reg? { self.pins.get().find(it.node == e.index)?.reg }
+
+    /// Each index operand along the place `s` lowered once, root first, and pinned: a place read and
+    /// then written back runs its operands once.
+    mut fn path_pinned(s: ExprId) {
+        let step? = self.store.place_step(s) else { return }
+        let subject? = match step {
+            .Root(_) -> null,
+            .Field(below, _) or .Unwrap(below) or .At(below, _) -> below,
+        } else { return }
+        self.path_pinned(subject)
+        let index? = match step { .At(_, at) -> at, rest -> null } else { return }
+        if self.pinned(index) == null { self.pins.push(Pin { node: index.index, reg: self.lower(index) }) }
+    }
+}
 
 impl Lowering {
     /// Whether a written seat of `ty` is handed its place: a value that rides no pointer, whose
@@ -140,20 +164,17 @@ impl Lowering {
 
     /// The place `a`, of `ty`, handed to a written seat: a seat of the fn's own that was handed its
     /// place hands the same box on; any other the box a value read from it is put in, written back
-    /// along its path once the call returns.
+    /// along its path once the call returns, the path's index operands run once.
     mut fn handed(a: ExprId, ty: SignedType) -> Reg {
         let held = self.held_box(a)
         if held != null { return held! }
+        let reaches = self.write_reaches(a)
+        let pins = self.pins.get().length
+        if reaches { self.path_pinned(a) }
         let made = self.celled(self.lower(a), ty, self.laid_out(cell_of(ty)))
         self
             .handing
-            .push(
-                HandedPlace {
-                    box: made,
-                    place: if self.write_reaches(a) { a } else { null },
-                    ty: ty,
-                },
-            )
+            .push(HandedPlace { box: made, place: if reaches { a } else { null }, ty: ty, pins: pins })
         made
     }
 
@@ -181,7 +202,7 @@ impl Lowering {
     fn handing_mark() -> int { self.handing.get().length }
 
     /// Each place handed since `mark` written back from its box along its path, in the order handed,
-    /// once the call they were handed to has returned.
+    /// once the call they were handed to has returned, and its pins let go.
     mut fn handed_back(mark: int) {
         let all = self.handing.get()
         for h in all.drop(mark) {
@@ -189,6 +210,8 @@ impl Lowering {
             let back = if h.cell { self.loaded(self.laid_out(h.ty), h.box) } else { self.proven_read(self.laid_out(h.ty), h.box, 0) }
             self.written_to(place, back)
         }
+        let pins = all.drop(mark).first()?.pins
+        if pins != null { self.pins.set(self.pins.get().take(pins!)) }
         self.handing.set(all.take(mark))
     }
 }

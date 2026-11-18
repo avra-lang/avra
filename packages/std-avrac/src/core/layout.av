@@ -269,10 +269,11 @@ impl CheckedProgram {
         )
     }
 
-    /// `ty`'s layout while the enums `laying` are being laid out, each read meanwhile as boxed.
+    /// `ty`'s layout while the enums `laying` are being laid out, each read meanwhile as boxed, and
+    /// the named types among them followed to their shapes: one that stands over itself has none.
     fn laid(ty: SignedType, laying: List<SignedType>) -> Layout? {
         let shape = self.named_shape(ty)
-        if shape != null { return self.laid(shape!, laying) }
+        if shape != null { return if laying.any(it.spelled() == ty.spelled()) { null } else { self.laid(shape!, laying.concat([ty])) } }
         if ty.nullable() { return self.nullable_laid(ty.unwrapped(), laying) }
         if ty.dynamic { return Layout.Boxed(BoxKind.Dyn) }
         match ty.head {

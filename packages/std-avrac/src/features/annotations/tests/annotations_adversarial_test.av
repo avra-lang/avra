@@ -232,30 +232,6 @@ spec "features/annotations — the compile-time call's laws" {
             )
             p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>\n\nThe trace directive's decoder: `@traced(\"label\")` on `fn sum`\nasks for a sibling named `sum_traced`."
         }
-        then "a generated twin lists with its provenance" {
-            mut p = packaged(
-                directive_use() +
-                    "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
-            )
-            let lines = p.generated_lines(p.entry_file()!.view.file)
-            lines.length == 1 &&
-                lines[0] == "fn sum_traced(a: int, b: int) -> int {\n    let sum_traced__v = sum(a, b)\n    sum_traced__v\n}   // from @traced on sum"
-        }
-        then "the expanded file inlines the generated body after its origin" {
-            mut p = packaged(
-                directive_use() +
-                    "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
-            )
-            let source = p.expanded_source(p.entry_file()!.view.file)
-            source == "use @std.meta.{Fn, Directive, traced}\n\n@traced(\"x\")\nfn sum(a: int, b: int) -> int {\n    a + b\n}\n\n// from @traced on sum\nfn sum_traced(a: int, b: int) -> int {\n    let sum_traced__v = sum(a, b)\n    sum_traced__v\n}\n\nsum(1, 2)"
-        }
-        then "the expanded file parses" {
-            mut p = packaged(
-                directive_use() +
-                    "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
-            )
-            parse_source(p.expanded_source(p.entry_file()!.view.file)).voices.list.is_empty()
-        }
         then "a declaration-making annotation fn in the same file is refused, not ignored" {
             refused_n(
                 packaged(
@@ -283,7 +259,7 @@ spec "features/annotations — the compile-time call's laws" {
                 directive_use() +
                     "const Label = \"x\"\n@traced(Label)\nfn sum(a: int, b: int) -> int { a + b }\nsum_traced(1, 2)",
             )
-            said(p).is_empty() && p.generated_lines(p.entry_file()!.view.file).length == 1
+            said(p).is_empty()
         }
         then "a const computed from more than a literal is refused at the argument" {
             refused_in(

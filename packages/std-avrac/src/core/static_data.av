@@ -80,16 +80,11 @@ impl Lowering {
     }
 
     /// The value the const `named` is, read as a value of `ty`: the literal it's written as, or what it
-    /// settles to. A literal read as another type, and a const that doesn't settle yet, aren't lowered
-    /// yet.
+    /// settles to, a literal lifted into the type it's read as. A const that doesn't settle yet isn't
+    /// lowered yet.
     mut fn const_read(named: NamedValue, ty: SignedType) -> Reg {
         match named {
-            .Literal(value) -> if ty.spelled() != value.type().spelled() {
-                self
-                    .missed_as("a const read as `${ty.spelled()}`, written as `${value.type().spelled()}`")
-            } else {
-                self.constant(value)
-            },
+            .Literal(value) -> self.lifted(self.constant(value), value.type(), ty),
             .Settled(kept_words, data) -> self.settled_value(self.laid_out(ty), kept_words, data),
             .Unsettled(why) -> self.missed_as(why),
             .Fn(callee) -> self.missed_as("the fn `${callee.name}` read as a const"),

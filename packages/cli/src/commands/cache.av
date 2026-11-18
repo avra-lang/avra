@@ -1,26 +1,14 @@
-//! `avra cache` — the store's own verbs (DB 05c, §6.7). `clean` reclaims by the
-//! design's rule: compaction IS clean, so the reachable rows (the merged index,
-//! the latest command's answers) fold into a fresh sealed body, then the
-//! time-travel window and the size/age limits evict the oldest history. `log`
-//! lists the sealed revisions. `show <rev>` answers one — the time-travel read,
-//! loaded by name from that body's own index, never a second format.
+//! `avra cache` — the program layer's store of the package the command stands
+//! in, its own verbs. The store is a directory of immutable packs, each the
+//! answers one compiler learned (`@std/program`'s disk_store): `clean`
+//! compacts them — every pack as one for each compiler the store keeps,
+//! holding only what that compiler's frontier still reaches, the packs of a
+//! compiler past the ones kept let go; `log` lists the packs, oldest first;
+//! `show <n>` names the questions one pack answers.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{build_cache_root}
-use @std.avrac.compiler.store.{
-    Store,
-    Keeping,
-    store_with,
-    store_print,
-    store_dir_of,
-    store_file_bytes,
-    all_body_names,
-    body_rev_of,
-    cas_live,
-    cas_collect,
-    cas_readers,
-    prints_collected,
-}
-use @std.avrac.core.{sorted_by}
+use @std.path.{joined_path}
+use @std.program.disk_store.{PackListed, disk_store_at, pack_questions, packs_listed}
+use @std.avrac.core.{distinct}
 use @std.text.{parse_int}
 
 type CacheCmd = {}
@@ -28,93 +16,83 @@ type CacheCmd = {}
 impl Runnable for CacheCmd {
     fn run(args: CliResult) -> int {
         let action = args.arg("action")
-        let store = cache_store()
-        if action == "clean" { return cache_clean(store) }
-        if action == "log" { return cache_log(store) }
-        if action == "show" { return cache_show(store, args.arg("rev")) }
-        eprintln("avra cache: `clean`, `log` or `show <rev>`")
+        let dir = cache_dir()
+        if action == "clean" { return cache_clean(dir) }
+        if action == "log" { return cache_log(dir) }
+        if action == "show" { return cache_show(dir, args.arg("rev")) }
+        eprintln("avra cache: `clean`, `log` or `show <n>`")
         2
     }
 }
 
 export command cache {
-    description: "The compiler store: reclaim it and sweep the shared content store (`clean`), list its sealed revisions (`log`), answer one (`show <rev>`)"
+    description: "The program layer's store of this package: compact it (`clean`), list its packs (`log`), name the questions one answers (`show <n>`)"
     arg action {
         description: "`clean`, `log` or `show`"
         required: true
     }
     arg rev {
-        description: "the revision `show` answers, as `log` lists it"
+        description: "the pack `show` reads, by the number `log` lists it under"
     }
     run: CacheCmd {}
 }
 
-/// The tree's store, standing where the command does — the root `build_cache_root`
-/// names, and the print the newest body was made under, so a reclaim folds under
-/// the store's own compiler rather than renaming it.
-fn cache_store() -> Store {
-    let root = build_cache_root(root_workspace(here()))
-    store_with(root, store_print(store_dir_of(root)) ?? "", Keeping.Disk)
-}
+/// Where the store of the package the command stands in lies: under the nearest package root at or
+/// above it, else where it stands.
+fn cache_dir() -> string { joined_path(package_root(here()) ?? here(), ".avra-cache/tapes") }
 
-/// The store directory under the cache root.
-fn store_dir(store: Store) -> string { store_dir_of(store.root) }
-
-/// `clean` prints what it reclaimed, or that another process holds the lock.
-fn cache_clean(store: Store) -> int {
-    let rep = store.clean()
-    if rep.skipped {
-        println("avra cache clean: another process holds the compaction lock — nothing reclaimed")
-        return 0
-    }
-    let evicted = if rep.evicted.is_empty() { "none" } else { ["${r}" for r in rep.evicted].join(",") }
-    println(
-        "avra cache clean: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
-    )
-    println("avra cache clean: bytes ${rep.bytes_before} → ${rep.bytes_after}")
-    println(
-        "avra cache clean: let go ${prints_collected()} compiler(s) nobody ran lately from the machine store",
-    )
-    let shared = cas_collect(cas_live())
-    println(
-        "avra cache clean: shared store kept ${shared.kept} blob(s) (${shared.kept_bytes} bytes) · freed ${shared.freed} blob(s) (${shared.freed_bytes} bytes) · ${cas_readers().length} live store(s)",
-    )
+/// `clean` compacts the store and says what it held before and holds after; the machine's shared
+/// store after it, where this process uses one.
+fn cache_clean(dir: string) -> int {
+    println("avra cache clean: ${compacted_said(dir)}")
+    let shared? = machine_layer() else { return 0 }
+    println("avra cache clean: the machine's store — ${compacted_said(shared.directory)}")
     0
 }
 
-fn yesno(b: bool) -> string { if b { "yes" } else { "no" } }
+/// The store at `dir` compacted, said: its packs and octets before and after, and the compilers it
+/// keeps answers for; or why it couldn't be.
+fn compacted_said(dir: string) -> string {
+    let before = packs_listed(dir)
+    match disk_store_at(dir).compacted() {
+        .Ok(_) -> {
+            let after = packs_listed(dir)
+            "packs ${before.length} → ${after.length} · bytes ${octets_of(before)} → ${octets_of(after)} · ${distinct([p.print for p in after]).length} compiler(s) kept"
+        },
+        .Err(e) -> "not compacted: ${e.describe().message}",
+    }
+}
 
-/// `log` lists every sealed revision, oldest first, with what it costs on disk.
-fn cache_log(store: Store) -> int {
-    let dir = store_dir(store)
-    let revs = sorted_by([body_rev_of(n) for n in all_body_names(dir)], (a, b) -> a < b)
-    if revs.is_empty() {
-        println("avra cache log: no sealed revision")
+fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }
+
+/// `log` lists every pack, oldest first, numbered, with the compiler whose answers it holds and what
+/// it weighs on disk.
+fn cache_log(dir: string) -> int {
+    let packs = packs_listed(dir)
+    if packs.is_empty() {
+        println("avra cache log: no pack")
         return 0
     }
-    for rev in revs {
+    for j, p in packs {
         println(
-            "rev ${rev} · pack ${store_file_bytes(dir, "body-${rev}.pack") ?? 0} · idx ${store_file_bytes(dir, "body-${rev}.idx") ?? 0}",
+            "pack ${j + 1} · generation ${p.generation} · compiler ${p.print} · ${p.octets} bytes",
         )
     }
     0
 }
 
-/// `show <rev>` answers a sealed revision's rows from its own body and index —
-/// the time-travel read. A revision no body holds, or a torn one, refuses.
-fn cache_show(store: Store, raw: string) -> int {
-    let rev? = parse_int(raw) else {
-        eprintln("avra cache show: `${raw}` is no revision number — write one `log` lists")
+/// `show <n>` names each question the pack `log` numbers `n` answers: its query, and what the
+/// question is known by. A number no pack wears, or a pack that isn't whole, refuses.
+fn cache_show(dir: string, raw: string) -> int {
+    let n? = parse_int(raw) else {
+        eprintln("avra cache show: `${raw}` is no pack's number — write one `log` lists")
         return 2
     }
-    let rows = store.rows_at(rev)
-    if rows.is_empty() {
-        eprintln(
-            "avra cache show: revision ${rev} holds nothing — no body stands there, or it is torn",
-        )
+    let packs = packs_listed(dir)
+    let questions? = (if n < 1 || n > packs.length { null } else { pack_questions(dir, packs[n - 1].name) }) else {
+        eprintln("avra cache show: pack ${n} holds nothing — no pack stands there, or it is torn")
         return 1
     }
-    for h in rows { println("${h.family}\t${h.key}\t${h.digest}") }
+    for q in questions { println("${q.query_name}\t${q.known_as.high_word}_${q.known_as.low_word}") }
     0
 }
-

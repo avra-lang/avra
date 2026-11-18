@@ -4,7 +4,7 @@ use @std.avrac.compiler.{digest_of_binary}
 use @std.avrac.compiler.store.{machine_cache}
 use @std.avrac.core.{qtrace, traced, EmbedKind}
 use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
-use @std.path.{dir_of, joined_path, file_name}
+use @std.path.{dir_of, joined_path, file_name, normalized}
 use @std.process.{tool as process_tool, exit, Exit}
 use @std.io.{
     read_text,
@@ -193,10 +193,21 @@ fn write_file(path: string, text: string) -> string? {
 
 /// THE TOOLCHAIN'S STD ROOT, found from the binary's own directory: a
 /// checkout keeps its packages beside `build/`, an install keeps them
-/// under `lib/avra/std/`. Null when neither stands — a bare binary
-/// with no std beside it, which resolves what its manifests declare
-/// and nothing more.
+/// under `lib/avra/std/`, and a binary a checkout's own package built —
+/// a suite, a tool — stands beneath that checkout's `packages/`. Null
+/// when none stands — a bare binary with no std beside it, which
+/// resolves what its manifests declare and nothing more.
 fn std_root() -> string? { std_roots().find(is_dir(it)) }
 
-/// Where the toolchain's std may stand, beside this binary: a checkout's, then an install's.
-fn std_roots() -> List<string> { toolchain_files(["../packages", "../lib/avra/std"]) }
+/// Where the toolchain's std may stand for this binary: beside a checkout's `build/`, under an
+/// install's `lib/`, then each `packages` directory above it.
+fn std_roots() -> List<string> {
+    toolchain_files(["../packages", "../lib/avra/std"])
+        .concat(packages_above(normalized(avra_self_dir())))
+}
+
+/// Each directory named `packages` at or above `dir`, nearest first.
+fn packages_above(dir: string) -> List<string> {
+    if dir.length <= 1 { return [] }
+    if file_name(dir) == "packages" { [dir] } else { [] }.concat(packages_above(dir_of(dir)))
+}

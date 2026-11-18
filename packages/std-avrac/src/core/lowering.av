@@ -370,6 +370,9 @@ export type Lowering = {
     /// The places handed to written seats of the calls being lowered, innermost last, each written
     /// back once its call returns.
     handing: Cell<List<HandedPlace>>,
+    /// Each index operand of a place being handed and the register it was lowered into, once, which
+    /// every read of it answers until the place is written back.
+    pins: Cell<List<Pin>>,
     /// Each register holding a fn value's box and the type the box is of, where one is known: what a
     /// code hash reads to tell a call through a value apart by the value's type.
     boxed: Cell<List<BoxedValue>>,
@@ -432,6 +435,7 @@ export fn lowering(
     let gathers: Cell<List<Gathering>> = Cell.new([])
     let withins: Cell<List<WithinMark>> = Cell.new([])
     let handing: Cell<List<HandedPlace>> = Cell.new([])
+    let pins: Cell<List<Pin>> = Cell.new([])
     let boxed: Cell<List<BoxedValue>> = Cell.new([])
     let celled_lets: Cell<List<int>> = Cell.new([])
     let settled_consts: Cell<Map<string, ConstSeed>> = Cell.new({})
@@ -458,6 +462,7 @@ export fn lowering(
         gathers: gathers,
         withins: withins,
         handing: handing,
+        pins: pins,
         boxed: boxed,
         celled_lets: celled_lets,
         settled_consts: settled_consts,
@@ -482,12 +487,15 @@ impl Lowering {
     /// `e` as a value nothing reads, emitted: what it does.
     mut fn dropped(e: ExprId) -> Reg { self.lowered_as(e, true) }
 
-    /// `e` emitted, then lifted into what its seat takes; a dropped value is lifted nowhere.
+    /// `e` emitted, then lifted into what its seat takes; a dropped value is lifted nowhere, and a
+    /// pinned one is the register it was lowered into.
     mut fn lowered_as(e: ExprId, dropped: bool) -> Reg {
         if dropped {
             let core = self.meaning_of(e)
             return self.store.expr(core).lowered_dropped(self, core)
         }
+        let pinned = self.pinned(e)
+        if pinned != null { return pinned! }
         let born = self.born(e)
         let seat? = self.seat_at(e) else { return born }
         let ty? = self.type_at(self.meaning_of(e)) else { return born }
@@ -1131,6 +1139,15 @@ impl Lowering {
         let floors = self.loop_floors.get()
         self.loop_floors.set_at(floors.length - 1, self.endings.get().length)
         self.opened()
+    }
+
+    /// The condition `cond` the open loop tests each turn: a jump the program wrote in it aims at the
+    /// loop around this one, whose turn begins only once its condition holds.
+    mut fn loop_tested(cond: ExprId) {
+        self.unwritten()
+        let more = self.lower(cond)
+        self.labelled([])
+        self.loop_cond(more)
     }
 
     mut fn loop_end() {

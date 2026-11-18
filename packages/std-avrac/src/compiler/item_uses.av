@@ -20,6 +20,8 @@ use @std.program.query_engine.{QueryEngine}
 
 /// What a `use` line names that isn't there.
 enum UseFault {
+    /// Its file stands in no package: no manifest roots it.
+    Unpackaged
     /// Its path names no package.
     Packageless
     /// Its package is none its own package declares, beside the manifest that would, as a path from
@@ -67,6 +69,7 @@ fn line_faults(
 ) -> List<UseFaultAt> {
     let m = module_path(path)
     let fault = (f: UseFault) -> UseFaultAt { at: at, path: path, fault: f }
+    if !rooted(engine, file.package_name) { return [fault(UseFault.Unpackaged)] }
     if m.malformed() { return [fault(UseFault.Packageless)] }
     let provider = m.package() ?? file.package_name
     if provider == file.package_name && m.local().join(".") == module_segments(file).join(".") { return [] }
@@ -116,6 +119,10 @@ fn faults_said(
     [Found { at: f.at, args: [f.path.join(".")].concat(w) } for f in use_faults(engine, file, at) for w in [words(f.fault)] if !w.is_empty()]
 }
 
+fn unpackaged_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    faults_said(engine, file, at, (f: UseFault) -> match f { .Unpackaged -> ["-"], rest -> [] })
+}
+
 fn packageless_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     faults_said(engine, file, at, (f: UseFault) -> match f { .Packageless -> ["-"], rest -> [] })
 }
@@ -161,6 +168,16 @@ fn apart_uses(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fou
         (f: UseFault) -> match f { .Apart(item, files) -> [item].concat(files), rest -> [] },
     )
 }
+
+/// a `use` stands in a file a package roots
+export law use_stands_in_a_package {
+    kind: "resolve.unpackaged"
+    reads: unpackaged_uses
+    voice: unpackaged_words
+    witness: "use util.{twice}\n1\n"
+}
+
+fn unpackaged_words(_a: List<string>) -> Voice { use_unpackaged() }
 
 /// a `use` names a package as `@scope.name`
 export law use_names_a_package {

@@ -40,7 +40,7 @@ type BoundFns = { fns: List<ReadFn> }
 /// the program what it doesn't pay.
 @query
 export fn program_hosts_owed(engine: QueryEngine, package: string) -> HostsOwed {
-    let read = [f for f in package_closure(engine, package).files if !(f.package_name == package && f.path_in_package.starts_with(TESTS_DIR))]
+    let read = [f for f in package_closure(engine, package).files if !(f.package_name == package && in_tests(f.path_in_package))]
     let fns = flatten([file_bound_fns(engine, f).fns for f in read])
     let asked = [m.package for f in read if f.package_name == package for u in file_words(engine, f).uses for m in some_list(imported_module(engine, f, u))]
     let bodiless = [r for r in fns if r.called.external]
@@ -121,10 +121,15 @@ export fn hosted_in(engine: QueryEngine, file: SourceFileAddress?, program: stri
 }
 
 /// THE HOST FNS A PROGRAM ANSWERS FOR ITS HOST, whatever reaches them: every one its own package
-/// `program`'s sources declare, its tests aside (`package_host_fns`). A host calls each by name, so the
-/// program carries it though none of the program's own code does.
-export fn package_hosted(engine: QueryEngine, program: string?) -> List<CalledFn> {
+/// `program`'s sources declare, its tests aside (`package_host_fns`), for a program whose entry `home`
+/// is one of the package's own. A host calls each by name, so the program carries it though none of
+/// the program's own code does. A program test is no program a host loads: it carries the host fns it
+/// reaches, its own file's among them, and no other.
+export fn package_hosted(engine: QueryEngine, program: string?, home: SourceFileAddress?) -> List<
+    CalledFn,
+> {
     let package? = program else { return [] }
+    if home != null && in_tests(home!.path_in_package) { return [] }
     [h.called for h in package_host_fns(engine, package).fns]
 }
 
@@ -142,9 +147,7 @@ fn package_host_fns(engine: QueryEngine, package: string) -> HostFns {
 /// so a name a listing gains that is no source — a binary placed beside them, an asset — moves no reader.
 @query
 fn package_source_paths(engine: QueryEngine, package: string) -> SourcePaths {
-    SourcePaths {
-        paths: [p for p in package_sources(engine, package, "src") if !p.starts_with(TESTS_DIR)],
-    }
+    SourcePaths { paths: [p for p in package_sources(engine, package, "src") if !in_tests(p)] }
 }
 
 /// A package's source paths, in listing order.
@@ -232,8 +235,9 @@ fn host_mark(item: ReadItem, name: string) -> string? {
 /// The mark a host fn names its host by.
 const HOST_MARK: string = "host"
 
-/// Where a package's program tests stand, under its sources.
-const TESTS_DIR: string = "src/tests/"
+/// Whether the package path `path` stands in a directory named `tests`, at any depth under its sources:
+/// a test's own, never the package's.
+fn in_tests(path: string) -> bool { "/${path}".contains("/tests/") }
 
 collect listed_host_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 

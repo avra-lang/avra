@@ -1,7 +1,8 @@
 //! A `mut` SEAT THE FN NEVER WRITES THROUGH: every caller of a fn hands a `mut` seat a place, so a
 //! seat the body never writes lies at each call. A write is an assignment to a place rooted in the
 //! seat, a method on one that writes its receiver or can't be read to say, a verb whose receiver seat
-//! is `mut`, or the place handed to a seat that is `mut` or can't be read. A free fn's seats and an
+//! is `mut`, or the place handed to a seat that is `mut` or can't be read, of a declared fn or of a
+//! fn value. A free fn's seats and an
 //! inherent method's are judged; a trait's contract keeps its seats. Read over a written item's
 //! bodies as the program layer types them.
 use core.{ExprId, Param, SignedType, StmtId, flatten}
@@ -155,7 +156,7 @@ fn rooted_in(cx: Copies, e: ExprId, name: string) -> bool {
 /// `mut` seat.
 fn writes_seat(engine: QueryEngine, cx: Copies, file: SourceFileAddress, e: ExprId, name: string) -> SeatEvidence {
     let mp? = cx.store.method_parts(e) else {
-        let call? = cx.store.call_parts(e) else { return seat_untouched() }
+        let call? = cx.store.call_parts(e) else { return applied_with_seat(cx, e, name) }
         return called_with_seat(engine, cx, file, call.callee, call.args, name)
     }
     let ty? = (cx.type_at)(mp.subject.index) else {
@@ -170,6 +171,15 @@ fn writes_seat(engine: QueryEngine, cx: Copies, file: SourceFileAddress, e: Expr
         direct: receiver || hands_seat(cx, (cx.method_marks)(ty, mp.name), mp.args, name),
         handed: [],
     }
+}
+
+/// What the call through a fn value at `e` does with places rooted in `name`: one handed to a seat
+/// the value's type marks `mut`, or to a value whose type isn't read, a write; any other node
+/// nothing.
+fn applied_with_seat(cx: Copies, e: ExprId, name: string) -> SeatEvidence {
+    let applied? = cx.store.applied_parts(e) else { return seat_untouched() }
+    let marks = [s.mutable for s in (cx.type_at)(applied.subject.index)?.seats ?? []]
+    SeatEvidence { direct: hands_seat(cx, marks, applied.args, name), handed: [] }
 }
 
 /// What the call of `callee` with `args` does with places rooted in `name`: each handed to a `mut`

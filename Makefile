@@ -795,6 +795,11 @@ ahead-edit-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 held-store-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/held_store_attack.sh
 
+# WHAT A CHANGE COSTS TO PROVE: one literal of the cli edited and built warm proves and reads no
+# more than the shares of the change's reach tools/cutoff.ceiling holds.
+cutoff-witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/cutoff_witness.sh
+
 # A BUILD ANSWERS BEFORE ITS STORE IS SAVED, AND THE NEXT BUILD READS THE SAVE WHOLE: an heir held
 # back, waited for, killed, its store emptied under it, and the save kept in the build.
 heir-save-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
@@ -1274,7 +1279,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack heir-save-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,

@@ -1,452 +1,196 @@
-//! `avra explain` — each form over a package of two files, every refusal in
-//! its own words, and the two properties an inspection owes: asked twice it
-//! prints the same thing, and it leaves the store as it found it.
-use @std.io.{make_dirs, write_text, list_dir}
+//! `avra explain` — each form over a package of two files, as the command runs
+//! where the package stands: every refusal whose words are about the argument,
+//! a file's, a declaration's and one answer's page, the table, the calls of a
+//! body, and the two properties an inspection owes — asked twice it prints the
+//! same thing, and it leaves the store as it found it. `avra_ran`,
+//! `avra_ran_in`, `scratch_dir` and `exit_is_zero` are the neighbouring tests'
+//! own: this module shares one namespace.
+use @std.io.{list_dir, make_dirs, write_text}
 use @std.time.{stamp}
-use @std.avrac.core.{flatten}
 use @std.text.{parse_int}
-use commands.{explain_answer, Asked, checked_at, decl_unanswered}
 
-/// A form's printed lines, or none when it refused.
-fn explain_lines(a: Asked) -> List<string> {
-    match explain_answer(a) { .Ok(lines) -> lines, .Err(_) -> [] }
+/// A package of an entry and a module it imports, nothing built or checked yet.
+fn probe(name: string) -> string {
+    let root = "${scratch_dir()}/explain_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"probe\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/lib/a.av", "export fn twice(n: int) -> int { n + n }\n")
+    let _ = write_text(
+        "${root}/src/main.av",
+        "use lib.{twice}\n\nfn shown(n: int) -> string { \"\${twice(n)}\" }\n\nprintln(shown(4))\n",
+    )
+    root
 }
 
-/// A form's refusal as one text, or nothing when it answered.
-fn explain_refusal(a: Asked) -> string {
-    match explain_answer(a) { .Ok(_) -> "", .Err(lines) -> lines.join("\n") }
+/// The probe, checked: its store holds a check's answers.
+fn checked(name: string) -> string {
+    let root = probe(name)
+    let _ = avra_ran(["check", root])
+    root
 }
 
-/// Whether a line ends in a digest: two spaces, then sixteen hex digits.
-fn ends_digested(line: string) -> bool {
-    line.length > 18 &&
-        line.substring(line.length - 18, line.length - 16) == "  " &&
-        [line.substring(i, i + 1) for i in line.length - 16..line.length]
-            .all((c: string) -> "0123456789abcdef".contains(c))
-}
-
-/// A line with its digest named rather than spelled, so a golden pins the
-/// page and not one build's hashes.
-fn undigested(line: string) -> string {
-    if ends_digested(line) { "${line.substring(0, line.length - 16)}<digest>" } else { line }
-}
-
-/// The table's rows, each cell a single space from the next.
-fn table_rows(a: Asked) -> List<string> {
-    [[w for w in l.split(" ") if w != ""].join(" ") for l in explain_lines(a)]
-}
-
-/// The label explain gives a file's source, read off its text's page.
-fn source_label(root: string) -> string {
-    let line = explain_lines(Asked { target: "src/lib/a.av", from: root })
-        .find(it.starts_with("    source_of(")) ?? ""
-    line.trim().split("  ").first() ?? ""
-}
-
-fn page(a: Asked) -> string { [undigested(l) for l in explain_lines(a)].join("\n") }
-
-/// What a check of a lib probe reads from the world, by label: its three
-/// texts; the asks that place its manifest and its module; its two
-/// listings; the running compiler, which keys what a check keeps; the
-/// prelude's, when the host carries one; and the checkout walk's two
-/// asks at each ancestor below the filesystem's root.
-fn probe_inputs(root: string) -> List<string> {
-    let ups = [[".." for _j in 0..i + 1].join("/") for i in 0..[s for s in root.split("/") if s != ""].length - 1]
-    [
-        "text avra.toml",
-        "text src/main.av",
-        "text src/lib/a.av",
-        "exists avra.toml",
-        "exists src/lib.av",
-        "exists src/lib/avra.toml",
-        "listing src",
-        "listing src/lib",
-        "compiler",
-    ]
-        .concat(prelude_inputs(root))
-        .concat(flatten([["exists ${up}/.git", "exists ${up}/avra.toml"] for up in ups]))
-        .map("Input(${it})")
-}
-
-/// The prelude's manifest, listing and file, as a page shows them from
-/// `root` — none when the host carries no prelude, so no check analyses
-/// one.
-fn prelude_inputs(root: string) -> List<string> {
-    let file? = explain_lines(Asked { target: "src/lib/a.av", from: root })
-        .find(it.ends_with("/src/prelude.av")) else {
-        return []
+/// What a form prints where it answers, absent where it refuses.
+fn said(root: string, args: List<string>) -> string? {
+    match avra_ran_in(root, ["explain"].concat(args)) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null },
+        .Err(_) -> null,
     }
-    let shown = file.trim()
-    let std = shown.substring(0, shown.length - "/src/prelude.av".length)
-    [
-        "text ${std}/avra.toml",
-        "text ${std}/src/prelude.av",
-        "exists ${std}/avra.toml",
-        "listing ${std}/src",
-    ]
 }
 
-/// A directory with no package at or above it.
-fn bare_dir(name: string) -> string {
-    let dir = "/tmp/avra-explain-test/${name}-${stamp()}"
-    let _ = make_dirs(dir)
-    dir
+/// A form's refusal: what it says on stderr where it exits 1, absent where it answers.
+fn refusal(root: string, args: List<string>) -> string? {
+    match avra_ran_in(root, ["explain"].concat(args)) {
+        .Ok(o) -> if exit_is_zero(o.exit) { null } else { o.out.stderr },
+        .Err(_) -> null,
+    }
 }
 
-/// The names a package's store holds, to its second level — what an
-/// inspection must leave as it found.
-fn store_names(root: string) -> string {
-    let top = list_dir("${root}/.avra-cache") catch []
-    ["${d}:${(list_dir("${root}/.avra-cache/${d}") catch []).join(",")}" for d in top].join(";")
-}
+fn lines_of(text: string?) -> List<string> { [l for l in (text ?? "").split("\n") if !l.is_empty()] }
 
-spec "commands/explain" {
-    given "a target's spelling" {
+/// The numbers a table row ends in: its answers, then its reads.
+fn counts_of(row: string) -> List<int> { [n! for w in row.split(" ") for n in [parse_int(w)] if n != null] }
+
+/// The files a package's store holds, in name order.
+fn held(root: string) -> string { (list_dir("${root}/.avra-cache/tapes") catch []).join("\n") }
+
+spec "avra explain — refusals the words alone decide" {
+    given "a package nothing has checked" {
         then "no target and no form is refused, naming every form" {
-            explain_refusal(Asked { target: "", from: lib_probe("bare") }) == "avra: `explain` needs a file, `@name` or `Family(subject)` — or `--stats` or `--why` for the whole package"
+            refusal(probe("bare"), []) == "avra: `explain` needs a file, `@name` or `query(subject)` — or `--stats` or `--why` for the whole package\n"
         }
         then "`@` alone names no declaration" {
-            explain_refusal(Asked { target: "@", from: lib_probe("at_alone") }) == "avra: `explain @` names no declaration — write `@name` or `@Owner.name`"
+            refusal(probe("at"), ["@"]) == "avra: `explain @` names no declaration — write `@name`\n"
         }
         then "an answer's subject left open is refused, never read as a path" {
-            explain_refusal(Asked { target: "Syntax(one", from: lib_probe("unclosed") }) == "avra: `Syntax(one` opens an answer's subject and never closes it — write `Family(subject)`"
+            refusal(probe("open"), ["file_items(src/main.av"]) == "avra: `file_items(src/main.av` opens an answer's subject and never closes it — write `query(subject)`\n"
         }
         then "a path that is not there is refused by the words it was given" {
-            explain_refusal(Asked { target: "src/nope.av", from: lib_probe("no_path") }) == "avra: no `src/nope.av` — `explain` reads a file, a package's directory, `@name` or `Family(subject)`"
+            refusal(probe("gone"), ["src/nope.av"]) == "avra: no `src/nope.av` — `explain` reads a file, a package's directory, `@name` or `query(subject)`\n"
         }
         then "a directory under no package is refused, naming it" {
-            let dir = bare_dir("unpackaged")
-            explain_refusal(Asked { target: "", from: dir, why: true }) == "avra: no `avra.toml` at or above ${dir} — `explain` answers for a package"
+            (refusal("/tmp", ["--stats"]) ?? "").contains("no `avra.toml` at or above /tmp")
         }
-    }
-    given "two forms asked at once" {
         then "`--stats` with `--why` is refused" {
-            explain_refusal(Asked { target: "", from: lib_probe("both"), stats: true, why: true }) == "avra: `explain` takes `--stats` or `--why`, never both — one counts answers, the other says what moved"
+            (refusal(probe("both"), ["--stats", "--why"]) ?? "")
+                .contains("takes `--stats` or `--why`, never both")
         }
-        then "`--time` without `--stats` is refused" {
-            explain_refusal(
-                Asked { target: "src/main.av", from: lib_probe("time_alone"), time: true },
-            ) == "avra: `explain --time` times the derivation `--stats` counts — it goes with `--stats`"
+        then "`--sites` with another form is refused" {
+            (refusal(probe("sites_both"), ["--sites", "--stats", "@shown"]) ?? "")
+                .contains("is a form of its own")
         }
         then "`--stats` of one file is refused, since it counts a package" {
-            explain_refusal(
-                Asked { target: "src/main.av", from: lib_probe("stats_file"), stats: true },
-            ) == "avra: `explain --stats` counts a whole package — `src/main.av` names one thing in it"
+            (refusal(probe("stats_file"), ["--stats", "src/main.av"]) ?? "")
+                .contains("counts a whole package — `src/main.av` names one thing in it")
+        }
+        then "`--sites` of anything but a declaration is refused" {
+            (refusal(probe("sites_file"), ["--sites", "src/main.av"]) ?? "")
+                .contains("`src/main.av` is not a `@name`")
+        }
+        then "a file the store keeps nothing of is refused, saying what to do first" {
+            (refusal(probe("cold"), ["src/main.av"]) ?? "")
+                .contains("keeps no answer keyed by probe/src/main.av — build or check the package first")
+        }
+        then "`--why` before any build is refused, naming the build" {
+            (refusal(probe("why_cold"), ["--why"]) ?? "")
+                .contains("has kept why it was built — build it with `avra build`")
         }
     }
-    given "a target that names nothing in the package" {
-        then "a file no check reads is refused" {
-            let root = lib_probe("unread")
-            let _ = write_text("${root}/notes.av", "let a = 1\na\n")
-            explain_refusal(Asked { target: "notes.av", from: root }) == "avra: `explain`: this package's check never reads notes.av"
+    given "a checked package" {
+        then "a name no kept answer is keyed by is refused" {
+            (refusal(checked("noname"), ["@nothing_here"]) ?? "")
+                .contains("no answer this package's store keeps is keyed by `nothing_here`")
         }
-        then "a name no declaration wears is refused" {
-            explain_refusal(Asked { target: "@nowhere", from: lib_probe("no_decl") }) == "avra: `explain`: no declaration is named `nowhere` in what this package's check reads"
+        then "a query the store keeps nothing of is refused, and the queries it keeps are named" {
+            let r = refusal(checked("noquery"), ["nope(src/main.av)"]) ?? ""
+            r.contains("keeps no answer of a query `nope` — it keeps these:") &&
+                r.contains("\n  file_items\n")
         }
-        then "an answer the check never derives is refused" {
-            explain_refusal(
-                Asked { target: "Syntax(nowhere · src/main.av)", from: lib_probe("no_answer") },
-            ) == "avra: `explain`: this package's check derives no answer `Syntax(nowhere · src/main.av)`"
-        }
-        then "an answer with no subject is refused as one the check never derives" {
-            explain_refusal(Asked { target: "Syntax()", from: lib_probe("no_subject") }) == "avra: `explain`: this package's check derives no answer `Syntax()`"
-        }
-        then "a family no answer belongs to is refused, and the form that names each one is named" {
-            explain_refusal(
-                Asked { target: "Sog(one · src/lib/a.av)", from: lib_probe("no_family") },
-            ) == "avra: `explain`: no family of answers is named `Sog` — `explain --stats` names each one a check derives"
-        }
-        then "a name two declarations wear is refused, each named as the answer to ask for" {
-            let root = lib_probe("two_decls")
-            let _ = make_dirs("${root}/src/more")
-            let _ = write_text("${root}/src/more/a.av", "export fn one() -> int { 2 }\n")
-            explain_refusal(Asked { target: "@one", from: root }) == "avra: 2 declarations are named `one` — name one answer exactly, as `Family(subject)`:\n  one · src/lib/a.av\n  one · src/more/a.av"
+        then "an answer its query never gave is refused by its label" {
+            (refusal(checked("noanswer"), ["file_items(nowhere)"]) ?? "")
+                .contains("keeps no answer `file_items(nowhere)`")
         }
     }
-    given "a declaration no answer is keyed by" {
-        then "the refusal says it is declared, and that nothing is keyed by it" {
-            decl_unanswered("one") == "avra: `explain`: `one` is declared, and no answer is keyed by it"
+}
+
+spec "avra explain — what the store keeps" {
+    given "a file" {
+        then "each answer keyed by it has a page: its question, its digest, and what it read" {
+            let page = said(checked("file"), ["src/lib/a.av"]) ?? ""
+            page.contains("file_items(probe/src/lib/a.av)  ") &&
+                page.contains("\n  reads 1\n    source_text(probe/src/lib/a.av)  ")
+        }
+        then "the file's text is an input: it reads nothing" {
+            lines_of(said(checked("input"), ["source_text(src/lib/a.av)"])).take(2).last() == "  reads 0"
         }
     }
-    given "a file of a package of two" {
-        then "its text is an input: it reads nothing, and the page leads with it" {
-            page(Asked { target: "src/lib/a.av", from: lib_probe("file_page") })
-                .starts_with(
-                    "Input(text src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  1 directly, ",
-                )
+    given "one answer, named by its question" {
+        then "it says who reads it, after what it read" {
+            let page = said(checked("readers"), ["source_text(src/lib/a.av)"]) ?? ""
+            page.contains("\n  read by ") && page.contains("\n    file_items(probe/src/lib/a.av)\n")
         }
-        then "the text's direct reader is its source, a query named by its fn, digested" {
-            let lines = explain_lines(
-                Asked { target: "src/lib/a.av", from: lib_probe("file_readers") },
-            )
-            lines.any(it.starts_with("    source_of(") && ends_digested(it))
-        }
-        then "the file's source reads one thing, its text" {
-            let root = lib_probe("source_page")
-            let label = source_label(root)
-            page(Asked { target: label, from: root })
-                .starts_with(
-                    "${label}  <digest>\n  reads    1 directly, 1 at any depth\n    Input(text src/lib/a.av)  <digest>\n",
-                )
-        }
-        then "its analysis follows, with what it read directly and how far down that goes" {
-            let lines = explain_lines(
-                Asked { target: "src/main.av", from: lib_probe("analysis_page") },
-            )
-            lines.any(it.starts_with("analysis_in(src/main.av)  ")) &&
-                lines.any(it.starts_with("  reads    ") && it.ends_with(" at any depth")) &&
-                lines.any(undigested(it) == "    parsed_in(src/main.av)  <digest>") &&
-                lines.last() ?? "" == "  read by  nothing"
-        }
-        then "the files a check analyses again when it moves are named, in path order" {
-            let lines = explain_lines(
-                Asked { target: "src/lib/a.av", from: lib_probe("files_page") },
-            )
-            let at = lines.index_of("    src/lib/a.av")
-            at > 0 &&
-                lines[at - 1].ends_with(" a check analyses read it") &&
-                lines[at + 1] == "    src/main.av"
-        }
-        then "without `--why` no page says what moved" {
-            !explain_lines(Asked { target: "src/main.av", from: edited_lib("no_why") })
-                .any(it.starts_with("  moved"))
+        then "a file named as the program names it answers the same" {
+            let root = checked("spelled")
+            said(root, ["file_items(src/lib/a.av)"]) == said(root, ["file_items(probe/src/lib/a.av)"])
         }
     }
-    given "a declaration by its name" {
-        then "every answer keyed by it is explained, its signature among them" {
-            let lines = explain_lines(Asked { target: "@one", from: lib_probe("decl_page") })
-            lines.any(it.starts_with("Names(one · src/lib/a.av)  ")) &&
-                lines.any(it.starts_with("Syntax(one · src/lib/a.av)  ")) &&
-                lines.any(it.starts_with("Typed(one · src/lib/a.av)  "))
+    given "a declaration" {
+        then "every answer keyed by its name is explained, its signature among them" {
+            (said(checked("decl"), ["@twice"]) ?? "")
+                .contains("fn_signature(probe/src/lib/a.av, twice)  ")
         }
     }
     given "`--stats`" {
-        then "the table opens with its columns and closes with its total, the hold's rows nowhere in it" {
-            let rows = table_rows(
-                Asked { target: "", from: edited_lib("stats_table"), stats: true },
-            )
-            rows.first() ?? "" == "family cells served computed edges p50 p99 longest" &&
-                (rows.last() ?? "").starts_with("total ") &&
-                !rows
-                    .any(
-                        it.starts_with("files ") ||
-                            it.starts_with("moved ") ||
-                            it.starts_with("attempts "),
-                    )
+        then "the table opens with its columns and closes with its total" {
+            let rows = lines_of(said(checked("table"), ["--stats"]))
+            (rows.first() ?? "").starts_with("query") &&
+                (rows.first() ?? "").ends_with("reads") &&
+                (rows.last() ?? "").starts_with("total")
         }
-        then "the input family holds what a check of the probe reads, each answering, none reading" {
-            let root = lib_probe("stats_input")
-            let inputs = probe_inputs(root)
-            let rows = table_rows(Asked { target: "", from: root, stats: true })
-            let input_row = rows.find(it.starts_with("Input ")) ?? ""
-            input_row.ends_with(" 0 0 0 0") &&
-                parse_int(input_row.split(" ")[1]) ?? -1 >= inputs.length &&
-                inputs
-                    .all(
-                        (l) -> (explain_lines(Asked { target: l, from: root }).first() ?? "")
-                            .starts_with("${l}  "),
-                    )
-        }
-        then "a source reads its text alone: one read a cell, in every column" {
-            let rows = table_rows(
-                Asked { target: "", from: lib_probe("stats_source"), stats: true },
-            )
-            let cols = (rows.find(it.starts_with("source_of ")) ?? "").split(" ")
-            cols.length == 8 &&
-                cols[1] != "0" &&
-                cols[4] == cols[1] &&
-                cols[5] == "1" &&
-                cols[6] == "1" &&
-                cols[7] == "1"
-        }
-        then "each family says how many of its asks were served and how many computed" {
-            let rows = table_rows(
-                Asked { target: "", from: lib_probe("stats_served"), stats: true },
-            )
-            let typed = (rows.find(it.starts_with("Typed ")) ?? "").split(" ")
-            typed.length == 8 && parse_int(typed[3]) ?? 0 >= parse_int(typed[1]) ?? 1
-        }
-        then "`--time` adds each family's own milliseconds to the table, and each phase's mints and settles to the time row" {
-            let lines = explain_lines(
-                Asked { target: "", from: lib_probe("stats_ms"), stats: true, time: true },
-            )
-            (lines.first() ?? "").ends_with("ms") &&
-                (lines.find(it.starts_with("time")) ?? "").contains(" mints ")
-        }
-        then "the total row sums the families above it" {
-            table_rows(Asked { target: "", from: lib_probe("stats_total"), stats: true })
-                .any(it.starts_with("total "))
-        }
-        then "no row tells the time unless `--time` asks" {
-            let root = lib_probe("stats_time")
-            !explain_lines(Asked { target: "", from: root, stats: true })
-                    .any(it.starts_with("time")) &&
-                explain_lines(Asked { target: "", from: root, stats: true, time: true })
-                    .any(it.starts_with("time"))
-        }
-        then "the store's traffic is a row under `--time` and nowhere else" {
-            let root = lib_probe("stats_store")
-            !explain_lines(Asked { target: "", from: root, stats: true })
-                    .any(it.starts_with("store ")) &&
-                explain_lines(Asked { target: "", from: root, stats: true, time: true })
-                    .any(it.starts_with("store ") && it.contains("hits ") && it.contains("values "))
+        then "the total row sums the queries above it" {
+            let rows = lines_of(said(checked("total"), ["--stats"]))
+            let body = [counts_of(r) for r in rows.slice(1, rows.length - 1)]
+            let total = counts_of(rows.last() ?? "")
+            total.length == 2 &&
+                total[0] == [c[0] for c in body].sum() &&
+                total[1] == [c[1] for c in body].sum()
         }
         then "a package named by its directory is the package counted" {
-            let root = lib_probe("stats_dir")
-            explain_lines(Asked { target: root, from: bare_dir("elsewhere"), stats: true })
-                .join("\n") == explain_lines(Asked { target: "", from: root, stats: true }).join("\n")
-        }
-        then "a package with no source still answers, its total last" {
-            let root = bare_dir("empty")
-            let _ = write_text(
-                "${root}/avra.toml",
-                "[package]\nname = \"empty\"\nversion = \"0.0.1\"\n",
-            )
-            (table_rows(Asked { target: "", from: root, stats: true }).last() ?? "")
-                .starts_with("total ")
+            let root = checked("named")
+            said(root, ["--stats"]) == said(root, ["--stats", root])
         }
     }
-    given "`--json`" {
-        then "an answer is one object, its fields in the text's order" {
-            let said = explain_lines(
-                Asked { target: "src/lib/a.av", from: lib_probe("json_page"), json: true },
-            )
-            said.length == 1 &&
-                said[0]
-                    .starts_with("{\"answers\":[{\"answer\":\"Input(text src/lib/a.av)\",\"digest\":\"") &&
-                said[0]
-                    .contains("\",\"reads\":[],\"reads_at_any_depth\":0,\"read_by\":[{\"answer\":\"")
+    given "`--sites`" {
+        then "each call of the body is named by what it was resolved to" {
+            let page = said(checked("sites"), ["--sites", "@shown"]) ?? ""
+            page.starts_with("shown calls ") &&
+                page.contains("probe/src/lib/a.av.twice — a declared fn of probe/src/lib/a.av")
         }
-        then "the package's holds are one object: files, held, moved, read" {
-            let said = explain_lines(
-                Asked { target: "", from: edited_lib("json_why"), why: true, json: true },
-            )
-                .join("")
-            let head = said.split(",\"why\"")
-            head.first() ?? "" == "{\"files\":2,\"held\":0,\"moved\":[\"src/lib/a.av\"],\"read\":[{\"file\":\"src/lib/a.av\",\"held\":false"
-        }
-        then "and the package's holds close with the attempts that judged them" {
-            explain_lines(
-                Asked { target: "", from: lib_probe("json_why_tail"), why: true, json: true },
-            )
-                .join("")
-                .ends_with(",\"attempts\":1,\"discarded\":0}")
-        }
-        then "the table is one object, families first and the source query's row counted, one read a cell" {
-            let said = explain_lines(
-                Asked { target: "", from: lib_probe("json_stats"), stats: true, json: true },
-            )
-                .join("")
-            let row = (said.split("{\"family\":\"source_of\",").get(1) ?? "").split("}").first() ?? ""
-            said.starts_with("{\"families\":[{\"family\":\"") &&
-                row.starts_with("\"cells\":") &&
-                row.ends_with(",\"p50\":1,\"p99\":1,\"longest\":1")
-        }
-        then "and closes with its totals, nothing of the hold after them" {
-            let said = explain_lines(
-                Asked { target: "", from: lib_probe("json_stats_tail"), stats: true, json: true },
-            )
-                .join("")
-            let tail = said.split("],\"cells\":")
-            tail.length == 2 && tail[1].contains(",\"edges\":") && tail[1].split(",\"").length == 2
+        then "a name no source declares as a fn is refused" {
+            (refusal(checked("sites_none"), ["--sites", "@nothing_here"]) ?? "")
+                .contains("no source of this package declares a fn `nothing_here`")
         }
     }
-    given "`--why` of a package never checked" {
-        then "its second line is the attempts that judged the hold, one that stood and none discarded" {
-            let lines = explain_lines(
-                Asked { target: "", from: lib_probe("why_attempts"), why: true },
-            )
-            lines.length > 1 && lines[1] == "1 attempt judged the hold, 0 discarded"
-        }
-    }
-    given "a package checked, and nothing edited since" {
-        then "`--why` of a file opens with its hold, then its answers, and leaves the store as it stood" {
-            let root = lib_probe("held_why")
-            let _ = checked_at(root)
-            let before = store_names(root)
-            let lines = explain_lines(Asked { target: "src/lib/a.av", from: root, why: true })
-            lines.first() ?? "" == "src/lib/a.av — held" &&
-                lines.any(it.starts_with("Input(text src/lib/a.av)  ")) &&
-                before != "" &&
-                store_names(root) == before
-        }
-    }
-    given "a package checked, then a module's file edited" {
-        then "`--why` counts the edited file as the one input that moved, with its text then and now" {
-            let lines = explain_lines(
-                Asked { target: "", from: edited_lib("why_package"), why: true },
-            )
-            lines.any(it == "1 input moved since the kept state") &&
-                lines.any(it.starts_with("  src/lib/a.av: its text ")) &&
-                lines.any(it.starts_with("src/main.av — read"))
-        }
-        then "`--why` of the reader runs from its analysis down to the moved input's text" {
-            let lines = explain_lines(
-                Asked { target: "src/main.av", from: edited_lib("why_reader"), why: true },
-            )
-            lines.any(it == "  moved    src/lib/a.av, read by way of:") &&
-                lines.any(it == "    analysis_in(src/main.av)") &&
-                lines.any(it.ends_with("reads Input(text src/lib/a.av)"))
-        }
-        then "`--why` of an answer names the moved input it reads" {
-            let lines = explain_lines(
-                Asked {
-                    target: "Syntax(one · src/lib/a.av)",
-                    from: edited_lib("why_answer"),
-                    why: true,
-                },
-            )
-            (lines.first() ?? "").starts_with("Syntax(one · src/lib/a.av)  ") &&
-                lines.any(it == "  moved    src/lib/a.av, read by way of:")
-        }
-        then "the edited file's text is read by the file a check analyses again" {
-            let lines = explain_lines(Asked { target: "src/lib/a.av", from: edited_lib("readers") })
-            (lines.first() ?? "").starts_with("Input(text src/lib/a.av)  ") &&
-                lines.any(it == "  reads    nothing — it stands always") &&
-                lines.any(it.starts_with("    source_of(")) &&
-                lines.any(it == "    src/main.av")
-        }
-        then "`--why` after every other form still reads the edited file" {
-            let root = edited_lib("why_after")
-            let _ = explain_lines(Asked { target: "", from: root, stats: true })
-            let _ = explain_lines(Asked { target: "src/main.av", from: root, why: true })
-            explain_lines(Asked { target: "", from: root, why: true })
-                .any(it.starts_with("src/lib/a.av — read"))
-        }
-        then "a check after the forms keeps the edit, and only then has nothing moved" {
-            let root = edited_lib("checked_after")
-            let _ = explain_lines(Asked { target: "", from: root, why: true })
-            let _ = checked_at(root)
-            explain_lines(Asked { target: "", from: root, why: true })
-                .any(it == "no input moved since the kept state")
+    given "`--why`" {
+        then "after a build it says how the build came to be worked out" {
+            let root = probe("why")
+            let _ = avra_ran(["build", root])
+            (said(root, ["--why"]) ?? "").contains("the build ")
         }
     }
     given "an inspection" {
         then "every form asked twice prints the same thing" {
-            let root = edited_lib("twice")
-            [
-                Asked { target: "", from: root, stats: true },
-                Asked { target: "", from: root, stats: true, json: true },
-                Asked { target: "", from: root, why: true },
-                Asked { target: "src/main.av", from: root },
-                Asked { target: "src/main.av", from: root, why: true },
-                Asked { target: "src/main.av", from: root, why: true, json: true },
-                Asked { target: "@one", from: root },
-                Asked { target: "Syntax(one · src/lib/a.av)", from: root, why: true },
-            ]
-                .all(
-                    !explain_lines(it).is_empty() &&
-                        explain_lines(it).join("\n") == explain_lines(it).join("\n"),
-                )
+            let root = checked("twice")
+            [["--stats"], ["src/lib/a.av"], ["@twice"], ["file_items(src/lib/a.av)"]]
+                .all((form) -> said(root, form) != null && said(root, form) == said(root, form))
         }
-        then "no form writes the store it reads" {
-            let root = edited_lib("store_stands")
-            let before = store_names(root)
-            let _ = explain_lines(Asked { target: "", from: root, stats: true })
-            let _ = explain_lines(Asked { target: "", from: root, why: true })
-            let _ = explain_lines(Asked { target: "src/main.av", from: root, why: true })
-            let _ = explain_lines(Asked { target: "@one", from: root })
-            before != "" && store_names(root) == before
+        then "no form that reads the store writes it" {
+            let root = checked("readonly")
+            let before = held(root)
+            let _ = said(root, ["--stats"])
+            let _ = said(root, ["src/lib/a.av"])
+            let _ = said(root, ["@twice"])
+            let _ = said(root, ["source_text(src/lib/a.av)"])
+            !before.is_empty() && held(root) == before
         }
     }
 }

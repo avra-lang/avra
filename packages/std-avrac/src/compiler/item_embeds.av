@@ -26,6 +26,29 @@ fn embeds_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
     [j! for k in 0..store.expr_count() for j in [embed_judged(engine, file, store, ExprId { index: k })] if j != null]
 }
 
+/// Each file the written items of `file` read as data: the one each embedding call's literal names,
+/// where it names one — what a build of `file` reads besides its sources.
+export fn file_embedded(engine: QueryEngine, file: SourceFileAddress) -> List<SourceFileAddress> {
+    [a for at in 0..item_count(engine, file) for a in item_embedded(engine, file, read_item(engine, file, at).store)]
+}
+
+fn item_embedded(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena) -> List<
+    SourceFileAddress,
+> {
+    [a for k in 0..store.expr_count() for a in embedded_at(engine, file, store, ExprId { index: k })]
+}
+
+/// The file the embedding call `e` names, none where `e` is no such call or names none.
+fn embedded_at(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> List<
+    SourceFileAddress,
+> {
+    let call? = store.call_parts(e) else { return [] }
+    if call.args.length != 1 { return [] }
+    let base? = embedding_base(engine, file, store, e, call.callee) else { return [] }
+    let rel? = store.expr(call.args[0]).text_of() else { return [] }
+    match embed_file(file, rel, base) { .Ok(a) -> [a], .Err(_) -> [] }
+}
+
 /// The call `e` judged as an embedded file's: absent where it calls no embedding fn of `@std/meta`,
 /// or its literal names a file a const may read.
 fn embed_judged(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> EmbedJudged? {

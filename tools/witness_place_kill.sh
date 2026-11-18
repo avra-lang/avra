@@ -33,7 +33,7 @@ built() { "$avra" build packages/cli >"$tmp/log" 2>&1 || { echo "witness_place_k
 # reads and the next store opened removes once its process is gone, left out
 held() { (cd "$store" && find . -type f ! -path './tapes-build/*' ! -name '*.draft' -exec cksum {} + | sort -k3); }
 drafts() { find "$store" -name '*.draft' ! -path '*/tapes-build/*' | wc -l | tr -d ' '; }
-edit() { sed 's/shared store kept ${shared.kept} blob(s)/shared store holds ${shared.kept} blob(s)/' "$tmp/orig.av" >"$file"; }
+edit() { sed 's/compiler(s) kept/compiler(s) held/' "$tmp/orig.av" >"$file"; }
 
 afresh
 built "the cold build"

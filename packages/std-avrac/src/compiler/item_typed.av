@@ -2,6 +2,7 @@
 //! each name it reads asked of the names layer and that declaration's signature alone. The answer is
 //! a column of types beside the item's tape, by each node's place in the item read back.
 use core.{
+    flatten,
     At,
     TypeMemos,
     ConstSeed,
@@ -14,6 +15,7 @@ use core.{
     NameBound,
     NameRead,
     same_binder,
+    same_expr,
     kept_by_key,
     signed_said,
     enum_said,
@@ -96,9 +98,11 @@ fn kept_body(cx: Checking) -> TypedBody {
 /// Each name a body's checking read, as it resolved it, in the order of the nodes reading them.
 fn reads_kept(cx: Checking) -> List<NameRead> { sorted_by([r for _k, r in cx.names_read.get()], (a: NameRead, b: NameRead) -> a.at < b.at) }
 
-/// Each name a body's checking read that nothing binds and the program gives no type, as kept.
+/// Each name a body's checking read that nothing binds and the program gives no type, as kept: a
+/// node checked more than once is one read.
 fn unread_kept(cx: Checking) -> List<UnreadAt> {
-    [UnreadAt { at: u.at.index, name: u.name, read: u.read, home: u.home } for u in cx.unread.get()]
+    let all = cx.unread.get()
+    [UnreadAt { at: u.at.index, name: u.name, read: u.read, home: u.home } for j, u in all if !all.take(j).any(same_expr(it.at, u.at) && it.name == u.name)]
 }
 
 /// The body of the fn `file` declares as `name`, typed; absent when it declares none with a body.
@@ -158,7 +162,7 @@ fn signed_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> Si
 }
 
 /// The body checked under its signature in `file`: each sugar by its own rule, or as the core it
-/// means when `meanings`.
+/// means when `meanings`. A method's seat written `self` binds nothing: the receiver stands.
 fn body_checked(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -181,6 +185,7 @@ fn body_checked(
     ) with { meanings: meanings, fnless: signed.fnless }
     if signed.receiver != null { cx.bind(RECEIVER, signed.receiver, true, true, BindSite.Receiver) }
     for j, p in signed.signature.params {
+        if signed.receiver != null && p.name == RECEIVER { continue }
         cx
             .bind_seat(p.name, p.ty, p.mutable || p.state, p.settled, BindSite.Seat(j), p.state, p.unshared)
     }
@@ -286,6 +291,7 @@ fn program_answered(
             record_said,
         ),
         named_of: (ty: SignedType) -> named_over(engine, ty),
+        named_next: (ty: SignedType) -> named_next_over(engine, ty),
         owner: (ty: SignedType) -> marked_owner(engine, ty),
         sealed_home: (ty: SignedType) -> sealed_home(engine, file, ty),
         declared_here: (ty: SignedType) -> declared_in(ty, file),
@@ -406,16 +412,66 @@ fn const_reach(
     let item? = declaring_item(engine, here.file, here.name, ItemKind.Const) else { return null }
     let value? = [v! for s in item.stmts if item.store.let_name(s) == here.name for v in [item.store.const_value(s)] if v != null]
         .first() else { return null }
-    let read = [DeclaredAt { file: d!.file, name: d!.name } for k in under(item.store, At.Expr(value)) for n in [read_name(item.store, k)] if n != null for d in [resolved(engine, here.file, Space.Value, n!).named()] if d != null && d!.kind == ItemKind.Const]
+    let read = consts_read(engine, here.file, item.store, value, through_written)
     if read.any((d) -> same_declared(d, home)) { return [here] }
     let rest? = read
         .find_map((d) -> const_reach(engine, d, home, seen.concat([here]), through_written)) else { return null }
     [here].concat(rest)
 }
 
-/// The name the node `k` reads, where it's a name read.
+/// The consts the value at `root`, written in `file`, reads: each it names, and each the body of a fn
+/// it names or calls reads in turn where `through_fns`, every fn's body walked once. A value's type
+/// is read off a fn's signature, so only its settling runs through a fn's body.
+fn consts_read(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    root: ExprId,
+    through_fns: bool,
+) -> List<DeclaredAt> {
+    let first = declared_read(engine, file, store, root, [])
+    mut consts = [d for d in first if d.kind == ItemKind.Const]
+    mut fns = [d for d in first if through_fns && d.kind == ItemKind.Fn]
+    mut walked: Map<string, bool> = {}
+    mut at = 0
+    while at < fns.length {
+        let f = fns[at]
+        at = at + 1
+        let key = "${f.file.package_name}/${f.file.path_in_package}/${f.name}"
+        if walked.has(key) { continue }
+        walked.set(key, true)
+        let read = body_read(engine, f)
+        consts = consts.concat([d for d in read if d.kind == ItemKind.Const])
+        fns = fns.concat([d for d in read if d.kind == ItemKind.Fn])
+    }
+    [declared_place(d.file, d.name) for d in consts]
+}
+
+/// The consts and fns the body of the fn `f` names, none where it has no body here.
+fn body_read(engine: QueryEngine, f: DeclaredName) -> List<DeclaredName> {
+    let item? = declaring_item(engine, f.file, f.name, ItemKind.Fn) else { return [] }
+    let parts? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null]
+        .find(it.name == f.name) else { return [] }
+    declared_read(engine, f.file, item.store, parts.body, [p.name.of for p in parts.params])
+}
+
+/// The consts and fns the nodes under `root`, written in `file`, name: a name read or called that
+/// neither `seats` nor a node under `root` binds, as the file resolves it.
+fn declared_read(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    root: ExprId,
+    seats: List<string>,
+) -> List<DeclaredName> {
+    let nodes = under(store, At.Expr(root))
+    let bound = seats.concat(flatten([bound_at(store, k) for k in nodes]))
+    [d! for k in nodes for n in [read_name(store, k)] if n != null && !bound.contains(n!) for d in [resolved(engine, file, Space.Value, n!).named()] if d != null && (d!.kind == ItemKind.Const || d!.kind == ItemKind.Fn)]
+}
+
+/// The name the node `k` reads or calls, where it does.
 fn read_name(store: SyntaxArena, k: At) -> string? {
-    match k { .Expr(e) -> store.ident_name(e), rest -> null }
+    match k { .Expr(e) -> store.ident_name(e) ?? store.call_parts(e)?.callee, rest -> null }
 }
 
 /// The signature of the fn `d` names: the one its own item declares, where its file declares
@@ -449,7 +505,7 @@ fn names_declaration(engine: QueryEngine, file: SourceFileAddress, name: string,
     match read {
         .Record -> typed,
         .Value or .Call -> typed || resolved(engine, file, Space.Value, name).named() != null,
-        .Pronoun -> false,
+        .Pronoun or .Receiver -> false,
     }
 }
 

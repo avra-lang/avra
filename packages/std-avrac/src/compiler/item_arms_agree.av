@@ -1,9 +1,8 @@
 //! WHERE A `match`'S ARMS MEET AT NO TYPE: an arm answering what the others' answer can't join,
-//! judged as the old path's arms law judges them — a `match` standing as a statement against its
-//! first arm joined with each arm in turn, one a `void` fn ends on against the seat. A build that let
-//! them through would join values of two types, or a value with nothing. Read off the item's typed
-//! nodes; an arm typing doesn't know whole, one that leaves, and one of a type the language doesn't
-//! own — whose acceptance a declaration's own laws decide — are left alone.
+//! judged as the old path's arms law judges them — against the seat where one plants its want on
+//! the arms, else against the first arm joined with each arm in turn, as the body's typing refused
+//! it; one a `void` fn ends on against the seat, read off the item's typed nodes. A build that let
+//! them through would join values of two types, or a value with nothing.
 use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten}
 use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
@@ -15,15 +14,54 @@ use @std.program.source_facts.{source_text}
 /// What a `match`'s arms are judged against: its first arm's answer, or the seat's.
 type ArmsAnchor = { name: string, want: SignedType }
 
-/// Every arm of a `match` in the written item `at` of `file` that disagrees with its anchor over
-/// answering `void`.
+/// Every arm of a `match` in the written item `at` of `file` that its anchor can't join: each the
+/// body's typing refused as an arm, and each of a `match` a `void` fn ends on.
 fn arms_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let void_tails = [b! for s in item.stmts for b in void_fn_bodies(engine, file, item, s) if b != null]
     let text = source_text(engine, file) ?? ""
-    flatten([disagreeing_in(t, void_tails, text) for t in item_typed_nodes(engine, file, at, item)])
+    flatten([arm_refused(r, text) for r in refused_in(engine, file, at)])
+        .concat(
+            flatten(
+                [void_disagreeing(t, void_tails, text) for t in item_typed_nodes(engine, file, at, item)],
+            ),
+        )
+}
+
+/// The arm the body's typing refused as `r`, against the anchor it names; none for any other refusal.
+fn arm_refused(r: RefusedSeat, text: string) -> List<Found> {
+    match r.seat {
+        .Arm(seated) -> [
+            said_apart(
+                span_of(r.at),
+                r.found,
+                if seated { SEAT } else { FIRST_ARM },
+                r.want,
+                conversion_spelled(r.found, r.want, text_at(r.at, text)),
+            ),
+        ],
+        rest -> [],
+    }
+}
+
+const SEAT: string = "the seat"
+
+const FIRST_ARM: string = "the first arm"
+
+/// The text standing at `at`; absent where the file doesn't hold it.
+fn text_at(at: FindingAt?, text: string) -> string? {
+    let held? = at else { return null }
+    if held.hi > text.length { null } else { text.substring(held.lo, held.hi) }
+}
+
+/// The conversion the old path offers of a value spelled `found`, written `shown`, into a seat
+/// spelled `want`: the value as a list's one element, or a scalar interpolated into text.
+fn conversion_spelled(found: string, want: string, shown: string?) -> Conversion? {
+    let s? = shown else { return null }
+    if want == "List<${found}>" { return wrapped(s) }
+    if want == "string" && ["int", "float", "bool"].contains(found) { interpolation(s) } else { null }
 }
 
 /// The body of the fn `s` declares where it answers `void`; none for any other statement.
@@ -35,14 +73,11 @@ fn void_fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
     if sig.answer.spelled() == "void" { [parts.body] } else { [] }
 }
 
-/// Every disagreeing arm among the nodes `t` reads: of each `match` a block holds as a statement,
-/// and of each a `void` fn's body, among `void_tails`, ends on.
-fn disagreeing_in(t: TypedNodes, void_tails: List<ExprId>, text: string) -> List<Found> {
-    let blocks = [e for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null && t.store.block_stmts(e) != null]
-    let stated = [x! for b in blocks for st in [t.store.block_stmts(b)!] if st.length > 1 for s in st.slice(0, st.length - 1) for x in [t.store.answer_of(s)] if x != null]
+/// Every disagreeing arm of each `match` a `void` fn's body, among `void_tails`, ends on, among the
+/// nodes `t` reads.
+fn void_disagreeing(t: TypedNodes, void_tails: List<ExprId>, text: string) -> List<Found> {
     let tails = [x! for b in void_tails for x in [t.store.tail_of(b)] if x != null && x!.index >= t.lo && x!.index < t.hi]
-    flatten([arms_against(t, m, null, text) for m in stated])
-        .concat(flatten([arms_against(t, m, void_seat(t, m), text) for m in tails]))
+    flatten([arms_against(t, m, void_seat(t, m), text) for m in tails])
 }
 
 /// The seat a `void` fn's tail `m` is judged against, `void` as `m`'s first arm types it; absent
@@ -98,18 +133,29 @@ fn arms_against(t: TypedNodes, m: ExprId, seat: ArmsAnchor?, text: string) -> Li
 /// The arm `v` of type `ty` refused against `anchor`, offering the conversion the old path offers
 /// where there is one, over the arm's written text.
 fn disagreeing(t: TypedNodes, v: ExprId, ty: SignedType, anchor: ArmsAnchor, text: string) -> Found {
-    let args = [ty.spelled(), anchor.name, anchor.want.spelled()]
-    let span = arm_span(t, v)
-    let c? = conversion_of(ty, anchor.want, written(t, v, text)) else { return Found { at: span, args: args.concat([""]) } }
+    said_apart(
+        arm_span(t, v),
+        ty.spelled(),
+        anchor.name,
+        anchor.want.spelled(),
+        conversion_of(ty, anchor.want, written(t, v, text)),
+    )
+}
+
+/// An arm spelled `found`, standing at `span`, refused against the anchor `name` wanting `want`,
+/// offering `c` where there is one.
+fn said_apart(span: Span?, found: string, name: string, want: string, c: Conversion?) -> Found {
+    let args = [found, name, want]
+    let offered? = c else { return Found { at: span, args: args.concat([""]) } }
     Found {
         at: span,
-        args: args.concat([c.help]),
+        args: args.concat([offered.help]),
         fixes: [
             FoundFix {
-                description: c.how,
+                description: offered.how,
                 at: span,
-                replacement: c.text,
-                sure: c.confidence is .High,
+                replacement: offered.text,
+                sure: offered.confidence is .High,
             },
         ],
     }

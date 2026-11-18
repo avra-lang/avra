@@ -44,7 +44,7 @@ KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__bu
 # the runtime is a call out, which may trap.
 SAFE = set("""
 __atomic_add_fetch __atomic_load_n __atomic_store_n __builtin_add_overflow __builtin_ctzll __builtin_memcpy
-__builtin_mul_overflow __builtin_return_address __builtin_sub_overflow _dyld_get_image_header
+__builtin_mul_overflow __builtin_return_address __builtin_sub_overflow _dyld_get_image_header _dyld_image_count
 _dyld_get_image_vmaddr_slide atoi atoll calloc clock_gettime close closedir confstr dirfd
 dl_iterate_phdr epoll_wait fclose fcntl fflush flock fopen fork fprintf fputc fputs fread free fseek
 fstat fstatat ftell ftruncate fwrite getenv geteuid getpid getsectiondata isfinite kevent longjmp

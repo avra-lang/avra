@@ -163,10 +163,9 @@ fn impl_params(engine: QueryEngine, i: ItemImpl, d: DeclaredAt) -> List<string> 
 }
 
 /// The type parameters the type `file` declares as `name` stands over: a record's or a component's,
-/// an enum's; none for any other. An impl that names none stands over these.
-fn declared_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
-    record_signature(engine, file, name)?.type_params ?? enum_signature(engine, file, name)?.type_params ?? []
-}
+/// an enum's; none for any other. An impl that names none stands over these. Read as written, so
+/// asking them signs no field and asks nothing a generator makes.
+fn declared_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> { written_params(engine, file, name) ?? [] }
 
 /// The impls the type `file` declares as `name` has in its package: the written, then the generated.
 fn impls_of(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<FiledImpl> {
@@ -626,11 +625,12 @@ fn through_shape(m: SignedType?, shape: SignedType, subject: SignedType) -> Sign
 /// Whether `ty`, its parameters filled by `found`, is `shape`.
 fn wears(ty: SignedType, found: Map<string, SignedType>, shape: SignedType) -> bool { ty.filled(found).spelled() == shape.spelled() }
 
-/// The property every named type has, as a fn of the receiver: `of`, the shape it stands over. Absent
+/// The property every named type has, as a fn of the receiver: `of`, the shape it is written over,
+/// one name down. Absent
 /// for a type that isn't a named type.
 fn named_property(engine: QueryEngine, subject: SignedType, name: string) -> SignedType? {
     if name != NAMED_FIELD { return null }
-    let shape? = named_over(engine, subject) else { return null }
+    let shape? = named_next_over(engine, subject) else { return null }
     property_typed(subject, shape)
 }
 

@@ -3,8 +3,9 @@
 //! (written along a path, never replaced), the receiver, a pattern's bind, a pairing loop's index, a
 //! capture, a const, a fn. Read off each body's names as its surface typing resolved them, over the
 //! store it was read into — an assignment is a statement its source writes — judged as the old
-//! path's assignment rule judges a whole root; a path under a root waits for its fields there, and is
-//! left alone here.
+//! path's assignment rule judges a root: whole, by its binding; under a path, by its binding too
+//! unless a step of the path is a `state` field, whose cell takes the write and asks nothing of the
+//! root — a path under the receiver or a `mut` seat is a place.
 use core.{
     At,
     BindSite,
@@ -13,13 +14,16 @@ use core.{
     NameRead,
     NamedValue,
     NamesRead,
+    SignedType,
     Span,
     StmtId,
     SyntaxArena,
     flatten,
+    some_list,
 }
 use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
+use features.{measured_slot, type_no_place}
 use features.mutation.{
     captured_copy_said,
     immutable_bind_said,
@@ -52,7 +56,7 @@ enum Unplaced {
 
 /// A body whose assignments are judged: the store it was read into, its root, the names its typing
 /// read, and its seats' marks by their index; the node range of it the item writes.
-type AssignedBody = { store: SyntaxArena, root: ExprId, reads: List<NameRead>, signed: SignedBody, lo: int, hi: int }
+type AssignedBody = { store: SyntaxArena, root: ExprId, reads: List<NameRead>, types: List<SignedType?>, signed: SignedBody, lo: int, hi: int }
 
 /// Every assignment of the written item `at` of `file` that lands on no place.
 fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
@@ -79,6 +83,7 @@ fn whole(signed: SignedBody) -> AssignedBody {
         store: store,
         root: signed.body,
         reads: signed.typed?.reads ?? [],
+        types: signed.typed?.types ?? [],
         signed: signed,
         lo: 0,
         hi: store.expr_count(),
@@ -100,6 +105,7 @@ fn entry_share(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<As
             store: signed.item.store,
             root: signed.body,
             reads: types.reads,
+            types: types.types,
             signed: signed,
             lo: mine.base,
             hi: hi,
@@ -114,8 +120,7 @@ fn assignments_in(engine: QueryEngine, file: SourceFileAddress, b: AssignedBody)
     [found! for s in every_stmt(store, At.Expr(b.root)) for t in [store.assign_target(s)] if t != null && t!.index >= b.lo && t!.index < b.hi && store.stmt_origins.at(s.index) == null for found in [judged(engine, file, b, names, s, t!)] if found != null]
 }
 
-/// The assignment `s` to `t`, refused where it lands on no place; absent where it does, or where its
-/// root is a path's, which waits for its fields.
+/// The assignment `s` to `t`, refused where it lands on no place; absent where it does.
 fn judged(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -129,10 +134,9 @@ fn judged(
     let root = store.place_root(t)
     if root == null || store.forced(t) != null { return said(at, Unplaced.NoPlace, "") }
     let r = root!
-    if !same_expr(r, t) { return null }
     let read? = names.at(r) else { return null }
     let n = read.name
-    let why? = unplaced_root(engine, file, b, read) else { return null }
+    let why? = (if same_expr(r, t) { unplaced_root(engine, file, b, read) } else { unplaced_under(engine, file, b, read, t) }) else { return null }
     let found = said(at, why, n)
     if why is .NotMut { found with { fixes: mut_fix(store, read, n) } } else { found }
 }
@@ -147,8 +151,47 @@ fn unplaced_root(engine: QueryEngine, file: SourceFileAddress, b: AssignedBody, 
         .Receiver -> Unplaced.Receiver,
         .Pat(_) -> Unplaced.Bind,
         .Seat(i) -> seat_place(b.signed, i),
-        .Expr(i) -> lambda_seat_place(store, ExprId { index: i }, read.name),
+        .Expr(i) -> expr_place(store, ExprId { index: i }, read.name),
         .Stmt(i) -> stmt_place(store, StmtId { index: i }, read.name),
+    }
+}
+
+/// Why the root `read` reads is no place for a write along the path `t` under it; absent where it is
+/// one: a declaration never is; any other root is where a step of the path is a `state` field, or
+/// isn't read; the receiver and a `mut` or `state` seat are.
+fn unplaced_under(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    b: AssignedBody,
+    read: NameRead,
+    t: ExprId,
+) -> Unplaced? {
+    let store = b.store
+    let site? = read.binder else { return program_place(engine, file, read) }
+    if state_bound(store, site) || crosses_state(engine, b, t) ?? true { return null }
+    if !read.crossed.is_empty() { return Unplaced.Capture }
+    match site {
+        .Receiver -> null,
+        .Pat(_) -> Unplaced.Bind,
+        .Seat(i) -> seat_under(b.signed, i),
+        .Expr(i) -> expr_place(store, ExprId { index: i }, read.name),
+        .Stmt(i) -> stmt_place(store, StmtId { index: i }, read.name),
+    }
+}
+
+/// Whether a step of the place `e` is a `state` field of the record it is read on; absent where a
+/// holder along the path isn't typed, or is no record the program declares.
+fn crosses_state(engine: QueryEngine, b: AssignedBody, e: ExprId) -> bool? {
+    let step? = b.store.place_step(e) else { return false }
+    match step {
+        .Root(_) -> false,
+        .Field(subject, name) -> {
+            if subject.index >= b.types.length { return null }
+            let holder? = b.types[subject.index] else { return null }
+            let shape? = record_shape(engine, holder with { nulls: 0 }) else { return null }
+            if shape.fields.any(it.name == name.of && it.state) { true } else { crosses_state(engine, b, subject) }
+        },
+        .At(subject, _) or .Unwrap(subject) -> crosses_state(engine, b, subject),
     }
 }
 
@@ -166,19 +209,33 @@ fn seat_place(signed: SignedBody, i: int) -> Unplaced? {
     if p.mutable { Unplaced.SeatWhole } else { Unplaced.Param }
 }
 
-/// What a lambda's seat named `n` is as a place: none, unless it is `mut`; a binding no lambda
-/// makes — a walk's turn — is left alone.
-fn lambda_seat_place(store: SyntaxArena, e: ExprId, n: string) -> Unplaced? {
-    let parts? = store.lambda_parts(e) else { return null }
-    let p? = parts.params.find(it.name.of == n) else { return null }
-    if p.promises.mutable || p.state { null } else { Unplaced.Param }
+/// What the seat `i` of a body is as the root of a path: a `mut` or a `state` seat is a place; any
+/// other is none.
+fn seat_under(signed: SignedBody, i: int) -> Unplaced? {
+    if i >= signed.signature.params.length { return null }
+    let p = signed.signature.params[i]
+    if p.state || p.mutable { null } else { Unplaced.Param }
 }
 
-/// What the statement `s` binds as `n` is as a place: a plain `let` none, a pairing loop's index none,
+/// What the expression `e` binds as `n` is as a place: a lambda's seat or a trailing block's none,
+/// unless it is `mut` or a `state`; a present value a match over what may be absent names none; a
+/// binding any other expression makes — a walk's turn — is left alone.
+fn expr_place(store: SyntaxArena, e: ExprId, n: string) -> Unplaced? {
+    match store.expr(e) {
+        .Lambda(params, _) or .BlockLambda(params, _) -> {
+            let p? = params.find(it.name.of == n) else { return null }
+            if p.promises.mutable || p.state { null } else { Unplaced.Param }
+        },
+        .MatchOpt(_, bind, _, _) -> if bind.of == n { Unplaced.Bind } else { null },
+        rest -> null,
+    }
+}
+
+/// What the statement `s` binds as `n` is as a place: a plain `let` and a `let … else` none, a pairing loop's index none,
 /// a `const` and a local fn none; a `mut` one is; any other binding is left alone.
 fn stmt_place(store: SyntaxArena, s: StmtId, n: string) -> Unplaced? {
     match store.stmt(s) {
-        .Let(_, _, _) -> Unplaced.NotMut,
+        .Let(_, _, _) or .LetElse(_, _, _) -> Unplaced.NotMut,
         .ConstDecl(_, _, _) -> Unplaced.Const,
         .FnDecl(_, _, _, _, _) -> Unplaced.Fn,
         .ForEach(_, _, _, _) -> if store.loop_index(s) == n { Unplaced.Index } else { null },
@@ -228,6 +285,61 @@ fn said(at: Span?, why: Unplaced, n: string) -> Found {
     }
     Found { at: at, args: [word, n], kind: if why is .NoPlace { "resolve.place" } else { null } }
 }
+
+/// Every assignment of the written item `at` of `file` through a member a type the language owns
+/// measures and doesn't store, or rooted in a type's name.
+fn unslotted(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    flatten(
+        [slots_missed(b).concat(types_written(engine, file, b)) for b in bodies_of(engine, file, at, item)],
+    )
+}
+
+/// Every assignment in `b` rooted in a name that names a type and no value, said at the root.
+fn types_written(engine: QueryEngine, file: SourceFileAddress, b: AssignedBody) -> List<Found> {
+    let store = b.store
+    let names = NamesRead { reads: b.reads }
+    [Found { at: store.expr_span(r), args: [n] } for s in every_stmt(store, At.Expr(b.root)) for t in some_list(store.assign_target(s)) if t.index >= b.lo && t.index < b.hi && store.stmt_origins.at(s.index) == null for r in some_list(store.place_root(t)) for n in some_list(store.ident_name(r)) if names.at(r) == null &&
+        resolved(engine, file, Space.Type, n).named() != null &&
+        resolved(engine, file, Space.Value, n).named() == null]
+}
+
+/// Every assignment in `b` whose path reads a member that is no slot, where the member is read.
+fn slots_missed(b: AssignedBody) -> List<Found> {
+    let store = b.store
+    [found! for s in every_stmt(store, At.Expr(b.root)) for t in [store.assign_target(s)] if t != null && t!.index >= b.lo && t!.index < b.hi && store.stmt_origins.at(s.index) == null for found in [slot_missed(b, t!)] if found != null]
+}
+
+/// The first step of the place `e`, from its root, that reads a member of a value of a type the
+/// language owns, which holds no slot a write lands in; absent where every step is a slot.
+fn slot_missed(b: AssignedBody, e: ExprId) -> Found? {
+    let step? = b.store.place_step(e) else { return null }
+    match step {
+        .Root(_) -> null,
+        .Field(subject, name) -> slot_missed(b, subject) ?? measured(b, e, subject, name.of),
+        .At(subject, _) or .Unwrap(subject) -> slot_missed(b, subject),
+    }
+}
+
+/// The member `name` read at `e` on `subject`, where `subject` is typed as a type the language owns.
+fn measured(b: AssignedBody, e: ExprId, subject: ExprId, name: string) -> Found? {
+    if subject.index >= b.types.length { return null }
+    let holder? = b.types[subject.index] else { return null }
+    if holder.nullable() || holder.dynamic || holder.owned() == null { return null }
+    Found { at: b.store.expr_span(e), args: [name, holder.spelled()] }
+}
+
+/// an assignment's path reads slots
+export law assignment_names_a_slot {
+    kind: "type.place"
+    reads: unslotted
+    voice: unslotted_words
+    witness: "fn f() -> int {\n    mut xs = [1]\n    xs.length = 3\n    2\n}\n"
+}
+
+fn unslotted_words(a: List<string>) -> Voice { if a.length == 1 { type_no_place(a[0]) } else { measured_slot(a[0], a[1]) } }
 
 /// an assignment lands on a place a write may replace
 export law assignment_lands {

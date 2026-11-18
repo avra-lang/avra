@@ -22,14 +22,16 @@ export fn const_formed(engine: QueryEngine, file: SourceFileAddress, ty: SignedT
 /// Whether every part a value of `ty` holds has a compile-time form: a record's fields, an enum's
 /// payloads, a list's elements, a map's values, a result's sides, an option's carried value — each
 /// declared type judged once, so a recursive one ends. A fn or a `dyn` anywhere inside is behaviour,
-/// which only a run can build.
+/// which only a run can build; a name that names no type is refused where it's written, and judged
+/// no further.
 fn formed(engine: QueryEngine, ty: SignedType, seen: List<string>) -> bool {
     if ty.dynamic { return false }
     if ty.nullable() { return formed(engine, ty.unwrapped(), seen) }
     match ty.head {
         .Owned(word) -> owned_formed(engine, word, ty.args, seen),
         .Declared(at, name) -> declared_formed(engine, at, name, ty, seen),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+        .Unnamed(_) -> true,
+        .Parameter(_, _) or .Inferred or .Function or .Union or .Never or .Meta -> false,
     }
 }
 

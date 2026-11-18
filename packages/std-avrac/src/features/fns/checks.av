@@ -34,7 +34,10 @@ impl Checks for Call {
         let seat_of = (at: int) -> Seating.Argument(self.callee.of, at)
         if cx.local(self.callee.of) != null {
             let held? = cx.program.called_as(written) else { return cx.unfilled(self.args) }
-            return cx.rigidly_called(held, self.args, seat_of)
+            if cx.seats_named(e, held, self.args, 0, self.callee.of) { return null }
+            let answer = cx.rigidly_called(held, self.args, seat_of)
+            seats_written(cx, e, self, held)
+            return answer
         }
         if !(written.head is .Function) { return cx.unfilled(self.args) }
         mut pinned: Map<string, SignedType> = {}
@@ -57,7 +60,8 @@ fn named_into_extern(mut cx: Checking, e: ExprId, call: Call) -> bool {
 
 /// Each argument `call` hands a `mut` or a `state` seat of the declared fn of type `f`, by the seat
 /// it fills — its name's, else its place's — judged as the place the seat writes through, an
-/// extern's as the cell C writes through, a `state` seat's as the `state` it shares.
+/// extern's as the cell C writes through, a `state` seat's as the `state` it shares; a place one
+/// call hands two `mut` seats is refused at the call.
 fn seats_written(mut cx: Checking, e: ExprId, call: Call, f: SignedType) {
     if !f.seats.any(it.mutable || it.state || it.settled || it.unshared) { return }
     if call.args.any((a) -> cx.store.spread_operand(a) != null) { return spread_seats(cx, call, f) }
@@ -65,12 +69,16 @@ fn seats_written(mut cx: Checking, e: ExprId, call: Call, f: SignedType) {
     let names = [s.name ?? "" for s in f.seats]
     let plan = if names.any(it.is_empty()) { [if j < call.args.length { j } else { 0 - 1 } for j in 0..f.seats.length] } else { cx.store.seat_plan(call.args, names) }
     let external = (cx.program.external)(call.callee.of, cx.home_of(e))
+    mut roots: List<string> = []
     for j, at in plan {
         if at >= 0 && f.seats[j].state {
             cx.state_seat_handed(cx.store.unnamed(call.args[at]), f.seats[j].ty, call.callee.of, j)
         } else if at >= 0 && f.seats[j].mutable {
-            cx
-                .seat_written(cx.store.unnamed(call.args[at]), f.seats[j].ty, call.callee.of, j, external)
+            let a = cx.store.unnamed(call.args[at])
+            cx.seat_written(a, f.seats[j].ty, call.callee.of, j, external)
+            let root? = cx.written_root(a) else { continue }
+            if roots.contains(root) { cx.handed_twice(e, call.callee.of, root) }
+            roots = roots.concat([root])
         }
     }
 }
@@ -133,12 +141,12 @@ fn returned_refused(mut cx: Checking, seat: Seating, want: SignedType?) {
     cx.refused.push(Refused { at: ExprId { index: 0 }, want: ty, found: ty, seat: seat })
 }
 
-/// `Name(value)`: a value crossing into the named type `Name`, checked against the shape it stands
-/// over; absent, nothing checked, for a call of any other name.
+/// `Name(value)`: a value crossing into the named type `Name`, checked against the shape it is
+/// written over, one name down; absent, nothing checked, for a call of any other name.
 fn crossed(mut cx: Checking, e: ExprId, callee: string, args: List<ExprId>) -> SignedType? {
     if cx.local(callee) != null || args.length != 1 { return null }
     let named? = cx.type_value(callee, cx.home_of(e))?.described() else { return null }
-    let shape? = cx.named_over(named) else { return null }
+    let shape? = cx.named_next(named) else { return null }
     let _ = cx.check(args[0], Expected.Exactly(shape))
     named
 }

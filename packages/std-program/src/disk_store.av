@@ -28,7 +28,7 @@ use @std.io.{
     write_text,
 }
 use @std.meta.{derive}
-use @std.text.{parse_int}
+use @std.text.{parse_int, text_before}
 use answer_record.{
     AnswerRecord,
     ContentHash,
@@ -518,6 +518,32 @@ fn pack_named(name: string) -> PackName? {
     if parts.length != 3 { return null }
     let generation? = parse_int(parts[1]) else { return null }
     PackName { name: name, print: parts[0], generation: generation }
+}
+
+/// A pack as a listing names it: its file, the binary whose answers it holds, when it was written,
+/// and what it weighs on disk.
+export type PackListed = { name: string, print: string, generation: int, octets: int }
+
+/// Every pack in `directory` a binary of this format wrote, oldest first, a generation's packs in
+/// name order.
+export fn packs_listed(directory: string) -> List<PackListed> {
+    sorted_by(
+        [PackListed {
+            name: p.name,
+            print: p.print,
+            generation: p.generation,
+            octets: octets_in("${directory}/${p.name}"),
+        } for p in pack_names_in(directory)],
+        (a, b) -> a.generation < b.generation ||
+            a.generation == b.generation && text_before(a.name, b.name),
+    )
+}
+
+/// The questions the pack `name` in `directory` holds records of, in the order its index keeps
+/// them; absent where no whole pack stands there.
+export fn pack_questions(directory: string, name: string) -> List<Question>? {
+    let pack? = mapped_pack("${directory}/${name}") else { return null }
+    [q! for span in pack.question_spans() for q in [pack.question_known_as(span.key)] if q != null]
 }
 
 /// How many binaries' frontiers a store keeps.

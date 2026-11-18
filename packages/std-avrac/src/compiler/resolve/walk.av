@@ -497,44 +497,11 @@ impl ResolveCx {
 
     fn refuse_keyword(name: string, at: Loc?, remedy: string?) { self.emit(unnamed(at, keyword_named(name, remedy))) }
 
-    fn no_receiver(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.receiver",
-                    at,
-                    "`self` names a method's receiver — this is not a method",
-                    "no receiver here",
-                    "move this into `impl <Type> { … }`",
-                ),
-            )
-    }
+    fn no_receiver(at: Loc?) { self.emit(said_as("resolve.receiver", at, receiverless(Receiverless.Fn))) }
 
-    fn default_has_none(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.receiver",
-                    at,
-                    "`self` names a method's receiver — a default is a body of its own, and has none",
-                    "no receiver here",
-                    "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`",
-                ),
-            )
-    }
+    fn default_has_none(at: Loc?) { self.emit(said_as("resolve.receiver", at, receiverless(Receiverless.Default))) }
 
-    fn static_has_none(at: Loc?) {
-        self
-            .emit(
-                refusal(
-                    "resolve.receiver",
-                    at,
-                    "`self` names a method's receiver — a `static fn` has none",
-                    "no receiver here",
-                    "drop `static`, or take what this needs as a parameter",
-                ),
-            )
-    }
+    fn static_has_none(at: Loc?) { self.emit(said_as("resolve.receiver", at, receiverless(Receiverless.Static))) }
 
     fn emit(d: Diag) { self.facts.voices.speak(d) }
 
@@ -678,6 +645,37 @@ export fn reserved_named(name: string) -> Voice {
         message: "`${name}` is reserved for a future Avra feature",
         label: "cannot be a name",
         help: "pick another name — `${name}` becomes a keyword",
+    }
+}
+
+/// Where `self` is read and no receiver stands.
+export enum Receiverless {
+    /// In a fn that is no method.
+    Fn
+    /// In a `static fn`.
+    Static
+    /// In a seat's default.
+    Default
+}
+
+/// `self` read where no method's receiver stands.
+export fn receiverless(where: Receiverless) -> Voice {
+    match where {
+        .Fn -> Voice {
+            message: "`self` names a method's receiver — this is not a method",
+            label: "no receiver here",
+            help: "move this into `impl <Type> { … }`",
+        },
+        .Static -> Voice {
+            message: "`self` names a method's receiver — a `static fn` has none",
+            label: "no receiver here",
+            help: "drop `static`, or take what this needs as a parameter",
+        },
+        .Default -> Voice {
+            message: "`self` names a method's receiver — a default is a body of its own, and has none",
+            label: "no receiver here",
+            help: "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`",
+        },
     }
 }
 

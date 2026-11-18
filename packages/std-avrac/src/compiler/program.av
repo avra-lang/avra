@@ -22,7 +22,6 @@ use core.{
     FileId,
     joined,
     is_user_kind,
-    same_decl,
     user_kind,
     touch,
     qtrace,
@@ -68,7 +67,6 @@ use compiler.backend.{run_lowered, run_kept, run_live, Ended, Kept}
 use compiler.lower.{Lowered}
 use compiler.memory.{memory}
 use compiler.host.{no_target}
-use compiler.format.{render_statement, render_expression}
 
 /// One parsed source: the tree (holes included), the SourceFile it
 /// came from, and every diagnostic from lexing and parsing, in
@@ -315,92 +313,6 @@ impl Program {
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
         let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file)
         if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
-    }
-
-    /// A file's generated declarations, each in canonical source
-    /// with its origin — the compact listing API retained for tools
-    /// that want only generated declarations.
-    fn generated_lines(f: FileId) -> List<string> {
-        [self.decl_line(d) for d in self.ws.expanded(f)]
-    }
-
-    /// A file as compiled: written nodes in source order, each
-    /// component instance's expansion and each sugar's meaning noted
-    /// under its statement, and
-    /// every generated declaration immediately after the declaration
-    /// its annotation wrapped.
-    fn expanded_source(f: FileId) -> string {
-        let made = self.ws.expanded(f)
-        let parsed = self.ws.parsed(f)
-        mut chunks: List<string> = []
-        mut attached: List<DeclId> = []
-        for s in parsed.stmts {
-            chunks.push(render_statement(parsed.store, s))
-            chunks = chunks
-                .concat([self.expansion_note(parsed.store, e) for e in parsed.store.instances_in(s)])
-                .concat(["// ${n}" for n in parsed.store.means_in(s)])
-            let written: DeclId? = self.ws.decls.decl_of(f, s)
-            if written != null {
-                let name = self.ws.decls.decl(written!).name
-                for d in made {
-                    let provenance = self.ws.decls.provenance_of(d)
-                    if provenance != null && provenance!.original == name {
-                        chunks.push(self.decl_block(d))
-                        attached.push(d)
-                    }
-                }
-            }
-        }
-        // A malformed declaration table must not make a generated
-        // node invisible. Clean programs attach every declaration;
-        // recovery output keeps any orphan at the end.
-        for d in made {
-            if !attached.any(same_decl(it, d)) { chunks.push(self.decl_block(d)) }
-        }
-        joined(chunks, "\n\n")
-    }
-
-    /// What an instance became — its expansion as source, under the
-    /// module its names resolve in. A comment, since those names are
-    /// the provider's: a template may call what this file cannot name.
-    fn expansion_note(store: SyntaxArena, e: ExprId) -> string {
-        let x? = store.expansion_of(e) else { return "" }
-        let word? = store.instance_word(e) else { return "" }
-        let home: string? = store.foreign_of(x)?.path
-        let module = if home == null { "" } else { " (from ${self.ws.module_of(home!)})" }
-        let lines = ["// `${word}`${module} expands to:"]
-            .concat(["//     ${l}" for l in render_expression(store, x).split("\n")])
-        joined(lines, "\n")
-    }
-
-    /// One generated declaration as source with provenance appended.
-    fn decl_line(d: DeclId) -> string {
-        let source = render_statement(self.ws.decls.store(d), self.ws.decls.decl(d).stmt)
-        let provenance = self.provenance_line(d)
-        if provenance.is_empty() { source } else { "${source}   ${provenance}" }
-    }
-
-    fn decl_block(d: DeclId) -> string {
-        let source = render_statement(self.ws.decls.store(d), self.ws.decls.decl(d).stmt)
-        let provenance = self.provenance_line(d)
-        if provenance.is_empty() { source } else { "${provenance}\n${source}" }
-    }
-
-    /// `// from @derive on Point — template …/derive.av:24`: who asked,
-    /// what it names, and the quote the declaration was copied from.
-    fn provenance_line(d: DeclId) -> string {
-        let provenance? = self.ws.decls.provenance_of(d) else { return "" }
-        let template: string? = self.template_word(provenance.template)
-        "// from @${provenance.ann} on ${provenance.original}${template ?? ""}"
-    }
-
-    /// The template's file and line, when the file is loaded.
-    fn template_word(template: Loc?) -> string? {
-        if template == null || template!.file == null { return null }
-        let site = template!
-        let path = site.file!
-        let f? = self.ws.decls.known_file_id(path) else { return null }
-        " — template ${path}:${self.ws.source(f).linecol(site.lo).line}"
     }
 
     /// Every source file of the program, by path.

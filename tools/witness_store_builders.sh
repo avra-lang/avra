@@ -51,7 +51,7 @@ for c in "$@"; do
 done
 n=0
 for c in "$@"; do
-    sed -i.bak 's/shared store kept/shared store holds/' "$edited"
+    sed -i.bak 's/compiler(s) kept/compiler(s) held/' "$edited"
     built "$c" "$tmp/maps$n"
     cp "$tmp/edited.av" "$edited"
     built "$c" "$tmp/maps$n"

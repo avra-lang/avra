@@ -3,6 +3,7 @@
 //! (`manifest_read`). Each manifest is judged on its own, so an edit to one re-judges it alone; the
 //! walk over them reads only what each one's rows name.
 use compiler.host.{manifest_read}
+use features.{Budgets, budgets_of}
 use diagnostics.{Diag, new_source_file}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
@@ -21,19 +22,44 @@ export type ManifestRow = { key: string, dev: bool }
 /// One manifest judged: whether a voice of it refuses, whether one warns, and the rows the walk
 /// follows from it.
 @derive(Saved)
-export type ManifestJudged = { refuses: bool, warns: bool, rows: List<ManifestRow> }
+export type ManifestJudged = {
+    refuses: bool,
+    warns: bool,
+    rows: List<ManifestRow>,
+    /// What a compile-time run in the package is held to: its `[lifted]` rows, the defaults where
+    /// it writes none.
+    steps: int,
+    bytes: int,
+}
 
 /// The manifest of `package` judged by its own laws: one with no text says nothing and names nothing.
 @query
 export fn manifest_judged(engine: QueryEngine, package: string) -> ManifestJudged {
     let file = manifest_file(package)
-    let text? = source_text(engine, file) else { return ManifestJudged { refuses: false, warns: false, rows: [] } }
+    let text? = source_text(engine, file) else {
+        return ManifestJudged {
+            refuses: false,
+            warns: false,
+            rows: [],
+            steps: budgets_of().steps,
+            bytes: budgets_of().bytes,
+        }
+    }
     let read = manifest_read(new_source_file("${package}/${MANIFEST}", text))
     ManifestJudged {
         refuses: read.voices.any(refuses),
         warns: read.voices.any((d) -> !refuses(d)),
         rows: [ManifestRow { key: d.key, dev: d.dev } for d in read.manifest.deps],
+        steps: read.manifest.budgets.steps,
+        bytes: read.manifest.budgets.bytes,
     }
+}
+
+/// The budgets a compile-time run in `package` is held to, as its manifest's `[lifted]` rows raise
+/// them.
+export fn lifted_budgets(engine: QueryEngine, package: string) -> Budgets {
+    let judged = manifest_judged(engine, package)
+    Budgets { steps: judged.steps, bytes: judged.bytes }
 }
 
 /// THE MANIFESTS OF THE PROGRAM ROOTED AT `package` THAT REFUSE IT: its own, then each package its

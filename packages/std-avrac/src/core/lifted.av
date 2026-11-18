@@ -1,7 +1,7 @@
 //! A VALUE LIFTED INTO ITS SEAT: what `SignedType.reaches` judges, made. A seat that takes a value
-//! as more than it is (a nullable of it, a `Result` it's the `Ok` of) is where that value takes its
-//! wider layout, at the one edge every node passes through. A fn seat that hands a place where the fn
-//! takes a value is where the fn is boxed behind the code that reads the place.
+//! as more than it is (a nullable of it, a union it's a member of, a `Result` it's the `Ok` of) is
+//! where that value takes its wider layout, at the one edge every node passes through. A fn seat that
+//! hands a place where the fn takes a value is where the fn is boxed behind the code that reads the place.
 
 impl Lowering {
     /// `r`, a value of `from`, as a seat of `into` holds it: itself where the seat takes it as it is
@@ -9,10 +9,22 @@ impl Lowering {
     mut fn lifted(r: Reg, from: SignedType, into: SignedType) -> Reg {
         if self.program.checked.rewrites(from, into.unwrapped()) { return if into.nullable() { self.adopted(r, from, into) } else { self.rewritten(r, into) } }
         if self.reseats(from, into) { return self.reseated(r, from, into) }
-        if from.stands_as(into) || from.bottom() || !from.reaches(into) { return r }
+        if from.stands_as(into) || from.bottom() { return r }
+        if !from.reaches(into) { return self.unreached(r, from, into) }
         if into.dynamic && !into.nullable() { return self.dyn_boxed(r, from, into) }
         if into.nullable() { return self.adopted(r, from, into) }
+        if into.holds_member(from) { return self.as_error(into, from, r) ?? self.missed_as("a lift into `${into.spelled()}`") }
         self.okayed(into, self.lifted(r, from, into.args[0]))
+    }
+
+    /// `r`, a value of `from` in a seat of `into` it doesn't reach: itself where the two are one thing
+    /// to the machine, either isn't laid out, or the seat is `void`, which nothing reads; a value laid
+    /// out otherwise makes no program.
+    mut fn unreached(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        if into.owns(OwnType.Void) { return r }
+        let has? = self.program.checked.layout(from) else { return r }
+        let wants? = self.program.checked.layout(into) else { return r }
+        if has.same(wants) { r } else { self.missed_as(misseated(from, into)) }
     }
 
     /// The template `r` as the rule's `Fix` `into`, its `Rewrite`.
@@ -96,3 +108,8 @@ impl Lowering {
         dst
     }
 }
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+/// A value of `from` in a seat of `into` it doesn't reach and isn't laid out as.
+fn misseated(from: SignedType, into: SignedType) -> string { "a value of `${from.spelled()}` in a seat of `${into.spelled()}`, which it doesn't reach" }

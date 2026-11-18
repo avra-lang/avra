@@ -275,8 +275,8 @@ fn wait_arm(store: SyntaxArena, e: ExprId) -> ArmGuard? {
 type Turn = { at: Span, names: List<string>, walks: bool }
 
 /// What the jump `s` breaks: no turn of a loop around it, a lambda between it and the turn it ends,
-/// a label naming no `for` around it, or a comprehension's walk between; absent for any other
-/// statement.
+/// a label naming no `for` around it — a `for` outside a lambda that holds the jump is a capture
+/// there, no loop's name — or a comprehension's walk between; absent for any other statement.
 fn jump_breach(store: SyntaxArena, s: StmtId) -> BreachAt? {
     if !written_here(store, s) { return null }
     let jump? = jump_of(store, s) else { return null }
@@ -291,7 +291,11 @@ fn jump_breach(store: SyntaxArena, s: StmtId) -> BreachAt? {
     let in_lambda = BreachAt { at: place, breach: Breach.JumpInLambda(word) }
     let innermost? = turns.first() else { return BreachAt { at: place, breach: Breach.Unlooped(word) } }
     if lambdas.any((l) -> spanned_in(l, innermost.at)) { return in_lambda }
-    let aimed = aimed_turn(store, turns, jump.label)
+    let aimed = aimed_turn(
+        store,
+        turns.filter((t) -> !lambdas.any((l) -> spanned_in(l, t.at))),
+        jump.label,
+    )
     let target? = aimed.turn else {
         return BreachAt { at: aimed.at, breach: Breach.Unaimed(word, aimed.name) }
     }
@@ -331,11 +335,22 @@ fn jump_of(store: SyntaxArena, s: StmtId) -> Jumped? {
 fn written_here(store: SyntaxArena, s: StmtId) -> bool { store.spanned_here(s) && store.seat_home(s, LandedSeat.Names) == null }
 
 /// Every turn of a loop spanned in its own file whose span holds `at`: each `while`, each `for` with
-/// the names it binds, and each comprehension's walk.
+/// the names it binds, and each comprehension's walk. A loop's head — a `while`'s condition, a
+/// `for`'s subject — runs outside its turns.
 fn turns_around(store: SyntaxArena, at: Span) -> List<Turn> {
-    let loops = [Turn { at: span!, names: loop_names(store, st), walks: false } for st in store.stmt_ids() if written_here(store, st) && is_loop(store, st) for span in [store.stmt_span(st)] if span != null && holds(span!, at)]
+    let loops = [Turn { at: span!, names: loop_names(store, st), walks: false } for st in store.stmt_ids() if written_here(store, st) && is_loop(store, st) for span in [store.stmt_span(st)] if span != null && holds(span!, at) && !in_head(store, st, at)]
     let walks = [Turn { at: span, names: [], walks: true } for span in spans_of(store, (e) -> walks_whole(store, e)) if holds(span, at)]
     loops.concat(walks)
+}
+
+/// Whether `at` stands in the head of the loop `s`: its condition, or the subject it walks.
+fn in_head(store: SyntaxArena, s: StmtId, at: Span) -> bool {
+    let head? = match store.stmt(s) {
+        .While(cond, _) -> store.expr_span(cond),
+        .ForEach(_, _, subject, _) -> store.expr_span(subject),
+        rest -> null,
+    } else { return false }
+    spanned_in(at, head)
 }
 
 /// Whether the statement `s` is a loop.
@@ -1227,13 +1242,18 @@ export law jump_in_comprehension_law {
 
 fn jump_comprehension_words(a: List<string>) -> Voice { jump_in_comprehension(a[0]) }
 
+/// Every jump whose label names no `for` around it; a label nothing binds is the naming law's,
+/// said where it is read.
 fn jumps_unaimed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    breaches_said(
+    let unaimed = breaches_said(
         engine,
         file,
         at,
         (b) -> match b { .Unaimed(word, name) -> [word, name], rest -> null },
     )
+    if unaimed.is_empty() { return [] }
+    let unread = [u.at!.lo for u in item_refusals(engine, file, at).unread if u.at != null]
+    [f for f in unaimed if !unread.contains(f.at?.lo ?? -1)]
 }
 
 /// a jump whose label names no enclosing `for`

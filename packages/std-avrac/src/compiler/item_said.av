@@ -1,7 +1,7 @@
 //! WHAT A BUILD SAYS OF A FILE, as diagnostics: each refusal its laws or its manifest find, and
 //! what only the program's entry may hold.
 use core.{some_list}
-use diagnostics.{Diag}
+use diagnostics.{Diag, has_errors}
 use compiler.lower.{entry_only_refused, no_projection_refused}
 use @std.errors.{Loc}
 use @std.program.address.{SourceFileAddress}
@@ -13,12 +13,12 @@ export type ProgramFile = { file: SourceFileAddress, full: string }
 
 /// What fails a build in the file `h` of the program whose entry is `entry`: each refusal its laws,
 /// or its manifest's, find, then each statement it runs where it isn't the entry, or where it is, an
-/// answer no text spells.
+/// answer no text spells — said only of a file its laws refuse nothing in, as lowering is reached.
 export fn file_refusals(engine: QueryEngine, h: ProgramFile, entry: ProgramFile) -> List<Diag> {
     let found = if is_manifest(h.file) { manifest_diags(engine, h) } else { file_law_diags(engine, h) }
     let own = !is_manifest(h.file) && h.full == entry.full
     let strays = if is_manifest(h.file) || own { [] } else { strays_of(engine, h.file) }
-    let unspelled = if own { entry_lowered(engine, h.file)?.unprojected } else { null }
+    let unspelled = if own && !has_errors(found) { entry_lowered(engine, h.file)?.unprojected } else { null }
     [d for d in found if !(d.severity is .Warning)]
         .concat([entry_only_refused(Loc { file: h.full, lo: s.lo, hi: s.hi }, entry.full) for s in strays])
         .concat(

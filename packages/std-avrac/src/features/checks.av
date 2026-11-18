@@ -1112,12 +1112,10 @@ impl TypeCx {
     mut fn variadic_named(a: ExprId, callee: string) -> Placed? {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.variadic",
                     self.loc_of(a),
-                    "`${callee}` takes the rest of its arguments in a `..` seat, which a call writes by position — `${self.view.store.arg_label(a) ?? ""}:` names a seat",
-                    "named here",
-                    "write the arguments in order",
+                    rest_seats_named(callee, self.view.store.arg_label(a) ?? ""),
                 ),
             )
         null
@@ -1235,43 +1233,16 @@ impl TypeCx {
     mut fn spread_unreadable(a: ExprId, callee: string) -> Placed? {
         let n = self.name_at(a)
         if self.shape_at(a) is .Opt {
-            self
-                .emit(
-                    refusal(
-                        "type.spread_nullable",
-                        self.loc_of(a),
-                        "`..` spreads `${n}`, which may be null",
-                        "spread here",
-                        "unwrap it first — `..(opts ?? defaults)`",
-                    ),
-                )
+            self.emit(said_as("type.spread_nullable", self.loc_of(a), call_spreads_absent(n)))
             return null
         }
         if self.view.types.element(self.view.types.seen_through(self.type_at(a))) != null { return self.spread_into_fixed(a, callee) }
-        self
-            .emit(
-                refusal(
-                    "type.spread_value",
-                    self.loc_of(a),
-                    "`..` spreads `${n}`, which has no fields",
-                    "spread here",
-                    "a call spreads a record into the seats of its fields' names — `f(..opts)`",
-                ),
-            )
+        self.emit(said_as("type.spread_value", self.loc_of(a), call_spreads_fieldless(n)))
         null
     }
 
     mut fn spread_no_seat(a: ExprId, callee: string, name: string) -> bool {
-        self
-            .emit(
-                refusal(
-                    "type.spread_field",
-                    self.loc_of(a),
-                    "this spread carries `${name}`, and `${callee}` has no seat of that name",
-                    "spread here",
-                    "spread a record of `${callee}`'s seats, or write the arguments",
-                ),
-            )
+        self.emit(said_as("type.spread_field", self.loc_of(a), spread_seatless(callee, name)))
         false
     }
 
@@ -1283,12 +1254,15 @@ impl TypeCx {
     mut fn spread_field_type(a: ExprId, callee: string, name: string, have: TypeId, want: TypeId) -> bool {
         self
             .emit(
-                refusal(
+                said_as(
                     "type.spread_field",
                     self.loc_of(a),
-                    "this spread's field `${name}` is `${self.view.types.name_of(have)}`, and `${callee}`'s seat of that name wants `${self.view.types.name_of(want)}`",
-                    "spread here",
-                    "spread a record whose `${name}` is `${self.view.types.name_of(want)}`, or write `${name}: …` after the spread",
+                    spread_seat_otherwise(
+                        callee,
+                        name,
+                        self.view.types.name_of(have),
+                        self.view.types.name_of(want),
+                    ),
                 ),
             )
         false
@@ -1297,13 +1271,7 @@ impl TypeCx {
     mut fn dead_argument(a: ExprId, name: string) {
         self
             .emit(
-                warning(
-                    "type.spread_dead",
-                    self.loc_of(a),
-                    "the argument for seat `${name}` is overwritten by a spread after it",
-                    "overwritten",
-                    "write it after the spread to keep it",
-                ),
+                said_as("type.spread_dead", self.loc_of(a), argument_overwritten(name)) with { severity: Severity.Warning },
             )
     }
 
@@ -1572,30 +1540,12 @@ impl TypeCx {
     }
 
     mut fn type_not_place(e: ExprId, name: string) -> bool {
-        let _ = self
-            .spoken(
-                refusal(
-                    "type.place",
-                    self.loc_of(e),
-                    "`${name}` is a type — a mutation lands on a `mut` binding",
-                    "a type",
-                    "mutate a binding — `mut x = …` declares one, `x = …` writes it",
-                ),
-            )
+        let _ = self.spoken(said_as("type.place", self.loc_of(e), type_no_place(name)))
         false
     }
 
     mut fn measured_not_stored(e: ExprId, name: string, subject: string) -> bool {
-        let _ = self
-            .spoken(
-                refusal(
-                    "type.place",
-                    self.loc_of(e),
-                    "`${name}` is measured, not stored — `${subject}` has no such slot",
-                    "not a slot",
-                    "a place is a field a struct declares, or an index into a list",
-                ),
-            )
+        let _ = self.spoken(said_as("type.place", self.loc_of(e), measured_slot(name, subject)))
         false
     }
 
@@ -2084,16 +2034,7 @@ impl TypeCx {
     }
 
     mut fn shared_root(e: ExprId, callee: string, root: string) {
-        self
-            .emit(
-                refusal(
-                    "type.seat",
-                    self.loc_of(e),
-                    "`${root}` is handed `mut` twice in one call to `${callee}`",
-                    "this call",
-                    "bind `mut b = ${root}…` first, and write it back after",
-                ),
-            )
+        self.emit(said_as("type.seat", self.loc_of(e), twice_handed_seat(root, callee)))
     }
 
     /// THE SETTLEMENT LAW: a call refused as a whole absorbs its
@@ -2502,6 +2443,42 @@ export fn unwritten_seat(root: string, callee: string, j: int) -> Voice {
     }
 }
 
+/// A call of `callee`, which takes the rest of its arguments, naming a seat `label`.
+export fn rest_seats_named(callee: string, label: string) -> Voice {
+    Voice {
+        message: "`${callee}` takes the rest of its arguments in a `..` seat, which a call writes by position — `${label}:` names a seat",
+        label: "named here",
+        help: "write the arguments in order",
+    }
+}
+
+/// A write through `name`, which names a type.
+export fn type_no_place(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is a type — a mutation lands on a `mut` binding",
+        label: "a type",
+        help: "mutate a binding — `mut x = …` declares one, `x = …` writes it",
+    }
+}
+
+/// A write to `name` of a value of `subject`, which measures it and stores none.
+export fn measured_slot(name: string, subject: string) -> Voice {
+    Voice {
+        message: "`${name}` is measured, not stored — `${subject}` has no such slot",
+        label: "not a slot",
+        help: "a place is a field a struct declares, or an index into a list",
+    }
+}
+
+/// A place rooted in `root` handed two `mut` seats of `callee` in one call.
+export fn twice_handed_seat(root: string, callee: string) -> Voice {
+    Voice {
+        message: "`${root}` is handed `mut` twice in one call to `${callee}`",
+        label: "this call",
+        help: "bind `mut b = ${root}…` first, and write it back after",
+    }
+}
+
 /// The verb `verb`, which writes its receiver, called on a place rooted in `root`, which isn't `mut`.
 export fn unwritten_receiver(root: string, verb: string) -> Voice {
     Voice {
@@ -2643,6 +2620,52 @@ export fn spread_restless(callee: string) -> Voice {
         message: "`..` spreads into a seat that takes the rest of the arguments, and `${callee}` declares none",
         label: "spread here",
         help: "declare `..rest: List<T>` on `${callee}`, or pass each element",
+    }
+}
+
+/// A call's `..` over a value of `found`, which may be null.
+export fn call_spreads_absent(found: string) -> Voice {
+    Voice {
+        message: "`..` spreads `${found}`, which may be null",
+        label: "spread here",
+        help: "unwrap it first — `..(opts ?? defaults)`",
+    }
+}
+
+/// A call's `..` over a value of `found`, which has no fields.
+export fn call_spreads_fieldless(found: string) -> Voice {
+    Voice {
+        message: "`..` spreads `${found}`, which has no fields",
+        label: "spread here",
+        help: "a call spreads a record into the seats of its fields' names — `f(..opts)`",
+    }
+}
+
+/// A call's spread carrying the field `name`, which names no seat of `callee`.
+export fn spread_seatless(callee: string, name: string) -> Voice {
+    Voice {
+        message: "this spread carries `${name}`, and `${callee}` has no seat of that name",
+        label: "spread here",
+        help: "spread a record of `${callee}`'s seats, or write the arguments",
+    }
+}
+
+/// A call's spread carrying the field `name` as `have`, where `callee`'s seat of that name wants
+/// `want`.
+export fn spread_seat_otherwise(callee: string, name: string, have: string, want: string) -> Voice {
+    Voice {
+        message: "this spread's field `${name}` is `${have}`, and `${callee}`'s seat of that name wants `${want}`",
+        label: "spread here",
+        help: "spread a record whose `${name}` is `${want}`, or write `${name}: …` after the spread",
+    }
+}
+
+/// An argument for the seat `name` that a spread after it overwrites.
+export fn argument_overwritten(name: string) -> Voice {
+    Voice {
+        message: "the argument for seat `${name}` is overwritten by a spread after it",
+        label: "overwritten",
+        help: "write it after the spread to keep it",
     }
 }
 

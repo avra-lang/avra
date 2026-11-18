@@ -43,6 +43,9 @@ export type SignedType = {
     seats: List<SignedSeat>,
     answer: SignedType?,
     alternatives: List<SignedType>,
+    /// For a name over a nullable, the shape it stands over: that shape's nulls are the name's own,
+    /// counted in `nulls` and never spelled, and a present value of it is the shape's.
+    under: SignedType? = null,
 }
 
 /// A type the language owns.
@@ -130,7 +133,7 @@ impl SignedType {
     /// This type with each of its declaration's type parameters bound to `args`, in order.
     fn bound(args: List<SignedType>) -> SignedType {
         if args.is_empty() || !self.mentions_parameter() { return self }
-        let inner = self with { args: [a.bound(args) for a in self.args], seats: [s with { ty: s.ty.bound(args) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.bound(args) }, alternatives: [a.bound(args) for a in self.alternatives] }
+        let inner = self with { args: [a.bound(args) for a in self.args], seats: [s with { ty: s.ty.bound(args) } for s in self.seats], answer: if self.answer == null { null } else { self.answer!.bound(args) }, alternatives: [a.bound(args) for a in self.alternatives], under: self.under?.bound(args) }
         let at? = match self.head { .Parameter(index, _) -> index, rest -> null } else { return inner }
         if at >= args.length { return inner }
         args[at] with { nulls: args[at].nulls + self.nulls, dynamic: args[at].dynamic || self.dynamic }
@@ -141,7 +144,14 @@ impl SignedType {
     fn spelled() -> string {
         if !self.alternatives.is_empty() { return self.word() }
         if self.head is .Never && self.nulls > 0 { return "null${["?" for _i in 1..self.nulls].join("")}" }
-        "${self.word()}${["?" for _i in 0..self.nulls].join("")}"
+        "${self.word()}${["?" for _i in 0..self.written_nulls()].join("")}"
+    }
+
+    /// How many of its nulls are written after its name: all but those a name over a nullable carries
+    /// as its own.
+    fn written_nulls() -> int {
+        let own = self.under?.nulls ?? 0
+        if self.nulls > own { self.nulls - own } else { 0 }
     }
 
     /// The type as it's written when present.
@@ -232,8 +242,13 @@ impl SignedType {
     /// Whether the value may be null.
     fn nullable() -> bool { self.nulls > 0 }
 
-    /// The type with its outermost null taken off: what a present value of it holds.
-    fn unwrapped() -> SignedType { if self.nulls > 0 { self with { nulls: self.nulls - 1 } } else { self } }
+    /// The type with its outermost null taken off: what a present value of it holds, which for a name
+    /// over a nullable with no null written after it is what its shape holds.
+    fn unwrapped() -> SignedType {
+        if self.nulls == 0 { return self }
+        let shape? = self.under else { return self with { nulls: self.nulls - 1 } }
+        if self.nulls > shape.nulls { self with { nulls: self.nulls - 1 } } else { shape with { nulls: self.nulls - 1 } }
+    }
 
     /// Whether a value of this type stands in a seat of `seat`'s: as it is, as nothing (`never`),
     /// boxed into a `dyn` (whether it holds the trait is the seat law's), widened into a nullable, or
@@ -242,7 +257,15 @@ impl SignedType {
         if self.stands_as(seat) || self.bottom() { return true }
         if seat.dynamic && seat.nulls == 0 && !self.dynamic && !self.nullable() { return true }
         if seat.nullable() && (self.head is .Never || self.reaches(seat.unwrapped())) { return true }
+        if seat.holds_member(self) { return true }
         seat.resulted() && self.reaches(seat.args[0])
+    }
+
+    /// Whether this is a union one of whose members a value of `found`, itself no union, is.
+    fn holds_member(found: SignedType) -> bool {
+        self.nulls == 0 &&
+            found.alternatives.is_empty() &&
+            self.alternatives.any(it.spelled() == found.spelled())
     }
 
     /// Whether this fn type fits the fn seat `seat` but for its seats' marks: a seat that permits

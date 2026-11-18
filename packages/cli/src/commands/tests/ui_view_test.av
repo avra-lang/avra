@@ -57,7 +57,6 @@ const owed = [
     "error[@std/ui:unnamed-mark]: `@style` names what it marks its member as, and this one names nothing",
     "error[@std/ui:two-marks]: a member projects to one thing, and `both` says more than one",
     "error[@std/ui:marked-event]: an event is heard by its own word, and `press` is marked `@attr` too",
-    "error[@std/ui:host]: `hover` is an event no platform delivers, and a primitive's event can fire only from one",
     "error[@std/ui:unsayable]: a control says nothing, text, a flag or a number, and `input` says `amount: float`",
     "error[@std/ui:prim]: a view is a primitive or is made of views, and `loose` is neither",
     "error[@std/ui:boxed-composition]: a composition wears its view's box, and `made` spreads one of its own",
@@ -69,18 +68,12 @@ const owed = [
     "error[@std/ui:said-twice]: a node says its own words once, and another member already says them — `Label` would be lost",
     "error[@std/ui:said-twice]: a node carries an attribute once, and `Title` is already another member's",
     "error[@std/ui:said-twice]: a node's style holds `color` once, and another member already fills it",
-    "error[@std/ui:host]: no DOM event `Clik`",
-    "error[@std/ui:host]: no terminal key `Entr`",
-    "error[@std/ui:host]: `@host` has no setting `mobile`",
-    "error[@std/ui:host]: `@host` names its platform: `Click` has none",
-    "error[@std/ui:host]: `prevent` is `true` or `false`, not `maybe`",
-    "error[@std/ui:host]: `dismiss` says `@host` twice",
 ]
 
 spec "@derive(View) — a component that is no primitive" {
     given "one mistake per member, and per component" {
         then "is refused once per mistake, in these words and no others" { spoken().join("\n") == owed.join("\n") }
-        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 31 }
+        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 24 }
     }
     given "a member that says nothing" {
         then "is told the ways to say it" {
@@ -91,11 +84,6 @@ spec "@derive(View) — a component that is no primitive" {
         then "is told the attributes there are, from their own declaration" {
             help_under("error[@std/ui:attribute]")
                 .starts_with("help: the attributes are `Text`, `Label`, `Level`, `Value`, `Amount`")
-        }
-    }
-    given "an event a platform does not fire" {
-        then "is told the near one, and the enum that lists them" {
-            help_under("error[@std/ui:host]: no DOM event") == "help: did you mean `Click`? its events are `DomEvent`"
         }
     }
     given "a primitive `Prim` does not have" {
@@ -143,8 +131,8 @@ fn knob_package() -> string {
 
 spec "@derive(View) — a user's own primitive" {
     given "a component that says what every member is, and declares an event" {
-        then "is a control under its label: its attribute, its property, and all four events heard by their own words" {
-            clean_stdout(avra_ran(["run", knob_package()])) == "create 0 label\ncreate 0/+words span\ntext 0/+words/+text Volume\nplace 0/+words/+text in 0/+words after -\nplace 0/+words in 0 after -\ncreate 0/+control input\nattr 0/+control type=range\nattr 0/+control aria-label=Volume\nprop 0/+control value=\"0\"\nlisten 0/+control change number\nlisten 0/+control press\nlisten 0/+control input text\nlisten 0/+control submit\nplace 0/+control in 0 after 0/+words\nplace 0 in - after -\n"
+        then "is a control under its label: its attribute, its property, and its event heard by what the page's table says delivers a slider's change" {
+            clean_stdout(avra_ran(["run", knob_package()])) == "create 0 label\ncreate 0/+words span\ntext 0/+words/+text Volume\nplace 0/+words/+text in 0/+words after -\nplace 0/+words in 0 after -\ncreate 0/+control input\nattr 0/+control type=range\nattr 0/+control aria-label=Volume\nprop 0/+control value=\"0\"\nlisten 0/+control change number\nplace 0/+control in 0 after 0/+words\nplace 0 in - after -\n"
         }
         then "stands canonical as written — marks, events and handlers round-trip" {
             match avra_ran(["fmt", "--check", knob_package()]) {
@@ -152,6 +140,37 @@ spec "@derive(View) — a user's own primitive" {
                 .Err(_) -> false,
             }
         }
+    }
+}
+
+/// A user's own primitive declaring an event no row of the page's table
+/// delivers, and a program drawing it on a page.
+const undelivered_parts: string = embed("ui_view/undelivered_parts.txt")
+
+const undelivered_main: string = embed("ui_view/undelivered_main.txt")
+
+/// What `avra check` says about that program, once.
+once fn undelivered() -> string {
+    let root = "${scratch_dir()}/ui_undelivered_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"ui_undelivered\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/parts.av", undelivered_parts)
+    let _ = write_text("${root}/src/main.av", undelivered_main)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> never_ran }
+}
+
+spec "an event no target's table delivers" {
+    given "a slider of a user's own that declares `press`, drawn on a page" {
+        then "is refused as the program builds, naming the target, the primitive and the event" {
+            undelivered()
+                .contains(
+                    "a page names nothing that delivers a `slider`'s `press` (`knob.press`): a target's table says what delivers every event a primitive declares, or that nothing does",
+                )
+        }
+        then "is refused once" { [l for l in undelivered().split("\n") if l.starts_with("error[")].length == 1 }
     }
 }
 

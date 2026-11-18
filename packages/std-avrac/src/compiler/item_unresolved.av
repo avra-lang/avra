@@ -9,6 +9,8 @@ use compiler.resolve.{
     call_unbound,
     member_unbound,
     pronoun_unbound,
+    Receiverless,
+    receiverless,
     record_names_fn,
     record_unbound,
     runtime_bound,
@@ -25,9 +27,16 @@ use @std.program.query_engine.{QueryEngine}
 fn unread_in(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs) -> List<
     UnreadName,
 > {
+    [u for u in unread_as(engine, file, at, read) if !cannot_name(u.name)]
+}
+
+/// Every name the written item `at` of `file` reads as `read` that nothing answers, a word that can
+/// be no name among them: a record literal's name is refused by no naming law.
+fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs) -> List<
+    UnreadName,
+> {
     if !file_generated(engine, file).said.is_empty() { return [] }
     [u for u in item_refusals(engine, file, at).unread if u.read == read &&
-        !cannot_name(u.name) &&
         apart_files(engine, file, u.name).is_empty() &&
         !reexport_unreached_read(engine, file, u.name)]
 }
@@ -49,12 +58,13 @@ fn values_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 }
 
 /// Every value read nothing answers that a binding of the file's top level makes, in a declaration
-/// where `declared` — a run-time value a body only declarations reach reads — else in a statement
+/// or an impl where `declared` — a run-time value a body only declarations reach reads — else in a statement
 /// the file runs before the one that binds it.
 fn top_level_reads(engine: QueryEngine, file: SourceFileAddress, at: int, declared: bool) -> List<
     Found,
 > {
-    if file_declares(engine, file).names.any(it.item == at) != declared { return [] }
+    if (file_declares(engine, file).names.any(it.item == at) ||
+        !impls_at(engine, file, at).is_empty()) != declared { return [] }
     let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
     if unread.is_empty() { return [] }
     let defined = top_level_defined(engine, file)
@@ -73,6 +83,35 @@ fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Spa
         .first()
 }
 
+/// Every `self` read in the written item `at` of `file` where no method's receiver stands, beside
+/// where: a seat's default, else a `static fn`, else a fn that is no method.
+fn receivers_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unread = [u for u in item_refusals(engine, file, at).unread if u.read is .Receiver]
+    if unread.is_empty() { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: span_of(u.at), args: [receiverless_word(item, u.at)] } for u in unread]
+}
+
+/// Where the `self` at `read` stands in `item` with no receiver, as its voice's word.
+fn receiverless_word(item: ReadItem, read: FindingAt?) -> string {
+    let lo? = read?.lo else { return FN_WORD }
+    let fns = [s for s in item.store.stmt_ids() if item.store.fn_parts(s) != null]
+    let defaulted = fns
+        .any(
+            (s) -> item.store.fn_parts(s)!
+                .params
+                .any((p) -> p.default != null && item.store.expr_span(p.default!)?.holds(lo) ?? false),
+        )
+    if defaulted { return DEFAULT_WORD }
+    if fns.any((s) -> item.store.is_static(s) && item.store.stmt_span(s)?.holds(lo) ?? false) { STATIC_WORD } else { FN_WORD }
+}
+
+const FN_WORD: string = "fn"
+
+const STATIC_WORD: string = "static"
+
+const DEFAULT_WORD: string = "default"
+
 /// Every member of a record the file declares, read bare in an impl the written item `at` holds.
 fn members_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Value) if member_read_bare(engine, file, at, u.name)]
@@ -89,7 +128,7 @@ fn calls_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<F
 /// Every record literal of a type nothing declares, beside the types the file's names hold; one
 /// whose name declares a fn is that law's.
 fn records_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    let unread = [u for u in unread_in(engine, file, at, ReadAs.Record) if !names_fn(engine, file, u.name)]
+    let unread = [u for u in unread_as(engine, file, at, ReadAs.Record) if !names_fn(engine, file, u.name)]
     if unread.is_empty() { return [] }
     let names = names_seen(engine, file, Space.Type)
     [unread_found(u, names) for u in unread]
@@ -221,6 +260,14 @@ export law pronoun_unresolved {
     witness: "fn f() -> int { it }\n"
 }
 
+/// `self` read where no method's receiver stands
+export law receiver_unresolved {
+    kind: "resolve.receiver"
+    reads: receivers_unread
+    voice: receiver_words
+    witness: "fn f() -> int { self.n }\n"
+}
+
 /// a member of the receiver read bare
 export law member_unresolved {
     kind: "resolve.unresolved"
@@ -244,5 +291,15 @@ fn record_words(a: List<string>) -> Voice { guessed(record_unbound(a[0]), a[0], 
 fn record_fn_words(a: List<string>) -> Voice { record_names_fn(a[0]) }
 
 fn pronoun_words(_a: List<string>) -> Voice { pronoun_unbound() }
+
+fn receiver_words(a: List<string>) -> Voice {
+    receiverless(
+        when {
+            a[0] == DEFAULT_WORD -> Receiverless.Default
+            a[0] == STATIC_WORD -> Receiverless.Static
+            _ -> Receiverless.Fn
+        },
+    )
+}
 
 fn member_words(a: List<string>) -> Voice { member_unbound(a[0]) }

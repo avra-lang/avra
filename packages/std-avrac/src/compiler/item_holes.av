@@ -38,7 +38,7 @@ type Cover = {
     store: SyntaxArena,
     type_at: fn(int) -> SignedType?,
     enum_of: fn(SignedType) -> EnumShape?,
-    compares: fn(string) -> bool,
+    compares: fn(PatId, string) -> bool,
 }
 
 /// A row of patterns, one per column, absence standing for a hole.
@@ -73,7 +73,7 @@ fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> Item
         store: item.store,
         type_at: typed,
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
-        compares: (n: string) -> compared_value(engine, file, n) ?? true,
+        compares: (p: PatId, n: string) -> pattern_compares(engine, file, at, item.store, p, n),
     }
     ItemHoles { holes: [h! for e in matches for h in [cover.hole_in(e)] if h != null] }
 }
@@ -159,7 +159,7 @@ impl Cover {
         let ty? = (self.type_at)(m.subject.index) else { return null }
         if ty.nullable() { return null }
         let shape? = (self.enum_of)(ty) else { return null }
-        let k? = m.arms.find_index((a) -> a.guard == null && self.hole_of(a.pats) != null) else { return null }
+        let k? = self.catching(m.arms) else { return null }
         let hole = self.hole_of(m.arms[k].pats)!
         if self.store.pat(hole) is .Rest || self.answering(m.arms.take(k)) < 2 { return null }
         let before = flatten([a.pats for a in m.arms.take(k) if a.guard == null])
@@ -176,6 +176,9 @@ impl Cover {
     /// How many arms test a variant.
     fn answering(arms: List<Arm>) -> int { [a for a in arms if a.pats.any((p) -> tests_variant(self.store, p))].length }
 
+    /// The first of `arms` that, unguarded, takes every value, by its place; absent where none does.
+    fn catching(arms: List<Arm>) -> int? { arms.find_index((a) -> a.guard == null && self.hole_of(a.pats) != null) }
+
     /// The first pattern among `pats` that takes every value.
     fn hole_of(pats: List<PatId>) -> PatId? { pats.find((p) -> self.catches(p)) }
 
@@ -189,7 +192,7 @@ impl Cover {
     /// Whether a bare name in a pattern names a value it compares with.
     fn compared(p: PatId) -> bool {
         match self.store.pat(p) {
-            .Bind(n) -> (self.compares)(n.of),
+            .Bind(n) -> (self.compares)(p, n.of),
             .Wild or .Rest or .Variant(_, _) or .Member(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
         }
     }

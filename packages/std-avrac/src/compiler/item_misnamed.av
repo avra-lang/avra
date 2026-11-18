@@ -2,7 +2,7 @@
 //! reserves, written where a declaration, a seat or a binding names something, or read as a name.
 //! Read off a written item's syntax alone, so a build asks it of every file it reaches for nothing
 //! more than the walk.
-use core.{At, CompClause, ExprId, Span, StmtId, SyntaxArena, flatten, some_list}
+use core.{At, CompClause, ExprId, Span, StmtId, SyntaxArena, TypeRef, flatten, some_list}
 use core.expr.{Comp}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
@@ -97,19 +97,54 @@ fn stmt_names(store: SyntaxArena, s: StmtId) -> List<WrittenName> {
         )
 }
 
-/// A name read, and a call's callee, where it's read; a lambda's seats, where the lambda stands; each
+/// A name read, and a call's callee, where it's read; a lambda's seats and a trailing block's, where
+/// it stands; a type literal's type, where it's written; each
 /// binder of a `match` arm's patterns, where the arm's value stands.
 fn expr_names(store: SyntaxArena, e: ExprId) -> List<WrittenName> {
     let place = store.expr_span(e)
     let arms = store.match_arms(e) ?? []
     [written_name(n!, place) for n in [store.ident_name(e), store.callee_name(e)] if n != null]
-        .concat([written_name(p.name.of, place) for p in store.lambda_parts(e)?.params ?? []])
+        .concat([written_name(n, place) for n in seat_words(store, e)])
+        .concat([written_name(t.name, t.span ?? place) for t in literal_type(store, e)])
+        .concat(present_names(store, e))
         .concat(
             [written_name(n, store.expr_span(c.elem)) for c in some_list(comp_of(store, e)) for n in comp_binders(c)],
         )
         .concat(
             [written_name(b.name, store.expr_span(a.value)) for a in arms for p in a.pats for b in store.pattern_binds(p)],
         )
+}
+
+/// The name the node `e` binds a present value under, where its present side stands; none for any
+/// node but a match over what may be absent.
+fn present_names(store: SyntaxArena, e: ExprId) -> List<WrittenName> {
+    match store.expr(e) {
+        .MatchOpt(_, bind, present, _) -> [written_name(bind.of, value_span(store, present))],
+        rest -> [],
+    }
+}
+
+/// Where the value of `e` stands: a block's last statement, else `e` itself.
+fn value_span(store: SyntaxArena, e: ExprId) -> Span? {
+    let last? = match store.expr(e) { .Block(stmts) -> stmts.last(), rest -> null } else { return store.expr_span(e) }
+    store.stmt_span(last)
+}
+
+/// The type the node `e` writes as a type literal, whose word is a name — a fn type's `fn` is no
+/// name; none for any other.
+fn literal_type(store: SyntaxArena, e: ExprId) -> List<TypeRef> {
+    match store.expr(e) {
+        .TypeLiteral(_, ty) or .ChainType(_, ty) -> if ty.arrow { [] } else { [ty] },
+        rest -> [],
+    }
+}
+
+/// The names of the seats the node `e` writes as a lambda or a trailing block; none for any other.
+fn seat_words(store: SyntaxArena, e: ExprId) -> List<string> {
+    match store.expr(e) {
+        .Lambda(params, _) or .BlockLambda(params, _) -> [p.name.of for p in params],
+        rest -> [],
+    }
 }
 
 /// The comprehension `e` is; absent for any other node.

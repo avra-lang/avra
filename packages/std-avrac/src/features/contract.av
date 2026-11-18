@@ -46,7 +46,7 @@ use core.{
     Minting,
     minting,
 }
-use core.{SeatMark, SideTable, Fingerprint, StaticBox, nothing_bound}
+use core.{SeatMark, SideTable, Fingerprint, StaticBox, closest, nothing_bound}
 use core.{fp, fp_list, fp_str}
 // LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use diagnostics.{Diag, Voice, refusal, said_as}
@@ -695,9 +695,22 @@ export fn zip_defect_of(what: string) -> string {
 export const zip_defect: string = zip_defect_of("names and values")
 
 /// The help EVERY "no such variant" refusal gives — what there IS.
-/// Construction and `match` both name a variant, so both offer the
-/// same list, in the same words.
-export fn variants_are(sig: EnumSig) -> string { variants_named(sig.names) }
+/// Construction, a read and `match` each name a variant, so each offers the same help, in the same
+/// words. The help for the variant `written`, which an enum declaring `names` doesn't have: the one near
+/// name it was likely meant as, else every variant the enum declares.
+export fn variant_meant(written: string, names: List<string>) -> string {
+    let near? = closest(written, names) else { return variants_named(names) }
+    "did you mean `${near.name}`?"
+}
+
+/// A variant `name` read off the name of the enum `owner`, which declares only `names`.
+export fn no_variant_read_of(owner: string, name: string, names: List<string>) -> Voice {
+    Voice {
+        message: "`${owner}` has no variant `${name}`",
+        label: "read here",
+        help: variant_meant(name, names),
+    }
+}
 
 /// The help naming the variants `names` an enum declares.
 export fn variants_named(names: List<string>) -> string { "the variants are ${named_list(names)}" }

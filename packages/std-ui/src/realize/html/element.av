@@ -13,7 +13,7 @@
 use tree.identity.{NodeId, Step, root as root_step, steps, unplaced, under}
 use tree.controls.{by_order}
 use tree.node.{Node, Attribute, Prim, Action, submits_among, masked_among}
-use tree.seats.{always_seat_of}
+use realize.html.delivery.{always_seat_of, web_event}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names, box_vars, drawn_box, CssVar}
 use tree.sites.{Reading}
@@ -276,7 +276,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 tag: tag_of(n),
                 attrs: element_attrs(n),
                 rests: rests_of(n.attrs),
-                hears: n.events,
+                hears: heard(n),
                 crowded: at.crowded,
             },
         )
@@ -302,15 +302,16 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
 
 fn unheard() {}
 
-/// What a node's element hears: its own events, and the one its
-/// primitive always hears, doing nothing, when no handler does. The page
-/// listens for that event handler or none: its own answer to it would undo
-/// what the program drew — a form's submit leaves the page, a dialog's
-/// dismissal closes it. The seat says so itself (`@host(…, always: true)`).
+/// What a node's element hears: its own events a page delivers, and the
+/// one its primitive always hears, doing nothing, when no handler does. The
+/// page listens for that event handler or none: its own answer to it would
+/// undo what the program drew — a form's submit leaves the page, a dialog's
+/// dismissal closes it. The page's table says so (`WebRow.always`).
 fn heard(n: Node) -> List<Action> {
-    let seat? = always_seat_of(n.prim) else { return n.events }
-    if n.events.any(it.seat == seat) { return n.events }
-    n.events.concat([Action { seat: seat, handler: .Nothing(unheard) }])
+    let delivered = n.events.filter(web_event(it.seat) != null)
+    let seat? = always_seat_of(n.prim) else { return delivered }
+    if delivered.any(it.seat == seat) { return delivered }
+    delivered.concat([Action { seat: seat, handler: .Nothing(unheard) }])
 }
 
 /// The node itself as one element holding `kids`.

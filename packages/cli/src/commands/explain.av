@@ -1,56 +1,46 @@
-//! `avra explain` — the compiler's own answers, made visible (P7). Three
-//! forms, one walk (compiler/cache_walk.av): `--stats` counts every answer a
-//! check of the package derives, a target names answers and says what each
-//! read and who reads it, and `--why` adds what moved since the kept state
-//! and the way down to it. `--stats` and a target derive the program once,
-//! with nothing held; only `--why` asks the hold, first. Every form keeps
-//! NOTHING, so a second asking answers what the first did. This file is
-//! wiring and text alone.
+//! `avra explain` — the program layer's own answers, made visible (P7): a thin
+//! read of what its store keeps for the package the command stands in. A
+//! target names answers — a file's, a declaration's, or one by its question
+//! `query(subject)` — and each says what it read; one answer named exactly
+//! says who reads it too. `--stats` counts the answers per query, `--why`
+//! says why the last build was worked out again, and `--sites @name` says
+//! what each call of a fn's body was resolved to. Every form but `--sites`
+//! reads the store and keeps nothing, so a second asking answers what the
+//! first did. This file is wiring and text alone.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{
-    Workspace,
-    CacheWalk,
-    Trail,
-    FileHold,
-    PartMoved,
-    Explained,
-    Changed,
-    Digested,
-    FamilyCount,
-    Counted,
-    Subject,
-    Graphed,
-    Phase,
-}
-use @std.avrac.compiler.store.{Traffic}
-use @std.avrac.core.{joined, counted, flatten, hex_word}
-use @std.relation.engine.{count_reads, read_calls, abandoned_frames, time_frames}
-use @std.json.{Json, Field, field, to_text}
-use @std.path.{relative_path}
-use @std.relation.engine.{Key}
-use @std.text.{pad_left, pad_right}
-use @std.time.{now_ns}
+use @std.avrac.compiler.{ItemKind, avra_fact_definitions, file_declares, lowered_fn}
+use @std.avrac.core.{CalledFn, distinct, hex_word}
+use @std.path.{is_absolute, joined_path, normalized, relative_path}
+use @std.program.answer_record.{ContentHash, KeptRecord, Question, content_hash}
+use @std.program.disk_store.{DiskStore, disk_store_at, pack_questions, packs_listed}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.sorted.{sorted_by}
+use @std.text.{pad_left, pad_right, parse_int, text_before}
 
 type ExplainCmd = {}
 
 /// What `avra explain` was asked: about what, in which form, and the
 /// directory a relative target is read from.
-export type Asked = {
-    target: string,
-    from: string,
-    stats: bool = false,
-    why: bool = false,
-    sites: bool = false,
-    json: bool = false,
-    time: bool = false,
-}
+type Asked = { target: string, from: string, stats: bool = false, why: bool = false, sites: bool = false }
 
 /// What an answer or a refusal prints, line by line.
 alias Lines = Result<List<string>, List<string>>
 
+/// What a target names, by its spelling alone: the whole package, a file, a
+/// declaration by name, or an answer by its question, `query(subject)`.
+enum Subject {
+    Package
+    File(at: string)
+    Decl(name: string)
+    Query(label: string)
+}
+
+/// A subject and the package it is asked of.
+type Aim = { root: string, subject: Subject }
+
 impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
-        if args.has_flag("why") && program_door() { return rebuild_explained(rooted(args.arg("target") ?? here())) }
         printed(
             explain_answer(
                 Asked {
@@ -59,27 +49,11 @@ impl Runnable for ExplainCmd {
                     stats: args.has_flag("stats"),
                     why: args.has_flag("why"),
                     sites: args.has_flag("sites"),
-                    json: args.has_flag("json"),
-                    time: args.has_flag("time"),
                 },
             ),
         )
     }
 }
-
-/// Why the program layer last built the package holding `path` again, as that build kept it: 0 with
-/// its words, or 1 where no build of it kept any.
-fn rebuild_explained(path: string) -> int {
-    let root = package_holding(path) ?? path
-    let said? = last_rebuild_said(root) else {
-        eprintln(no_rebuild_kept(root))
-        return 1
-    }
-    for line in said.split("\n") { println(line) }
-    0
-}
-
-fn no_rebuild_kept(root: string) -> string { "avra: no program-layer build of ${root} has kept why it was built — build it with `avra build`" }
 
 /// An answer's lines to stdout and 0, a refusal's to stderr and 1.
 fn printed(said: Lines) -> int {
@@ -96,516 +70,354 @@ fn printed(said: Lines) -> int {
 }
 
 /// What a form answers: the lines it prints, or the lines of its refusal.
-/// Every refusal the words alone decide is spoken before anything is derived.
-export fn explain_answer(a: Asked) -> Lines {
-    let aim = match aimed("explain", a.target, a.from) {
-        .Ok(aim) -> aim,
-        .Err(why) -> { return .Err([why]) },
-    }
+/// Every refusal the words alone decide is spoken before anything is read.
+fn explain_answer(a: Asked) -> Lines {
+    let aim = match aimed(a.target, a.from) { .Ok(aim) -> aim, .Err(why) -> { return .Err([why]) } }
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.sites && (a.stats || a.why) { return .Err([sites_alone()]) }
-    if a.time && !a.stats { return .Err([time_wants_stats()]) }
-    let ws = root_workspace(aim.root)
-    let subject = match placed("explain", a.target, aim.subject, ws) {
+    let subject = match placed(a.target, aim.subject) {
         .Ok(subject) -> subject,
         .Err(why) -> { return .Err([why]) },
     }
-    if a.sites { return sites_answer(a, subject, ws) }
+    if a.why { return why_answer(aim.root) }
+    if a.sites { return sites_answer(a, aim.root, subject) }
     match subject {
-        .Package -> if a.stats || a.why { package_answer(a, ws) } else { .Err([needs_target()]) },
-        .File(_) or .Decl(_) or .Query(_) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { subject_answer(a, subject, ws) },
+        .Package -> if a.stats { stats_answer(kept_at(aim.root)) } else { .Err([needs_target()]) },
+        .File(at) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { file_answer(kept_at(aim.root), aim.root, at) },
+        .Decl(name) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { decl_answer(kept_at(aim.root), name) },
+        .Query(label) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { query_answer(kept_at(aim.root), aim.root, a.from, label) },
     }
-}
-
-/// The mechanism of each site of a declaration's body, and why (`--sites`).
-fn sites_answer(a: Asked, subject: Subject, ws: Workspace) -> Lines {
-    match subject {
-        .Decl(name) -> {
-            let lines = ws.walk_graph().ws.site_lines(name)
-            if lines.is_empty() { .Err([no_sites(name)]) } else { lines }
-        },
-        .Package or .File(_) or .Query(_) -> .Err([sites_wants_decl(a.target)]),
-    }
-}
-
-/// A workspace's hold against the kept state, its refusal as lines.
-fn walk_of(ws: Workspace) -> Result<CacheWalk, List<string>> {
-    match ws.cache_walk() { .Ok(walk) -> walk, .Err(why) -> .Err([why]) }
 }
 
 // ── what a target names ──
 
-/// The answers a subject names in the walked graph, or its refusal's lines.
-fn answers_named(g: Workspace, subject: Subject) -> Result<List<Key>, List<string>> {
-    match g.meant(subject) {
-        .Answers(keys) -> keys,
-        .FileUnread(unread) -> .Err([file_unread(unread)]),
-        .NoDecl(name) -> .Err([no_such_decl(name)]),
-        .ManyDecls(name, shown) -> .Err([many_decls(shown.length, name)].concat(["  ${d}" for d in shown])),
-        .DeclUnanswered(name) -> .Err([decl_unanswered(name)]),
-        .NoFamily(word) -> .Err([no_such_family(word)]),
-        .NoAnswer(label) -> .Err([no_such_answer(label)]),
+/// A target read by its spelling alone, and the package it is asked of:
+/// nothing is the package, `@name` a declaration, `query(subject)` an answer —
+/// each asked of the package above `from` — and anything else a path, asked of
+/// the package at or above it.
+fn aimed(target: string, from: string) -> Result<Aim, string> {
+    if target == "" { return under(from, Subject.Package) }
+    if target.starts_with("@") {
+        if target.length == 1 { return .Err(decl_unnamed()) }
+        return under(from, Subject.Decl(target.substring(1, target.length)))
+    }
+    if target.contains("(") {
+        if !target.ends_with(")") { return .Err(query_unclosed(target)) }
+        return under(from, Subject.Query(target))
+    }
+    let path = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
+    under(path, Subject.File(path))
+}
+
+fn under(dir: string, subject: Subject) -> Result<Aim, string> {
+    let root? = package_root(dir) else { return .Err(no_package_above(dir)) }
+    Aim { root: root, subject: subject }
+}
+
+/// A subject against the disk: a path nothing stands at is refused, and one a
+/// directory stands at is its package.
+fn placed(target: string, subject: Subject) -> Result<Subject, string> {
+    match subject {
+        .File(at) -> {
+            if !exists_at(at) { return .Err(no_such_path(target)) }
+            if is_a_dir(at) { Subject.Package } else { subject }
+        },
+        .Package or .Decl(_) or .Query(_) -> subject,
     }
 }
+
+// ── the store, read ──
+
+/// What a package's store keeps, read with no engine: a store answering for
+/// each compiler that wrote packs there, newest first, and every question a
+/// pack holds, each once — a question two compilers answered, as the newest
+/// pack asks it.
+type Kept = { stores: List<DiskStore>, questions: List<Question> }
+
+fn kept_at(root: string) -> Kept {
+    let dir = joined_path(root, ".avra-cache/tapes")
+    let packs = sorted_by(packs_listed(dir), (a, b) -> a.generation > b.generation)
+    mut seen: Map<string, bool> = {}
+    mut questions: List<Question> = []
+    for p in packs {
+        for q in pack_questions(dir, p.name) ?? [] {
+            let asked = "${q.query_name} ${named(content_hash(q.arguments))}"
+            if seen.has(asked) { continue }
+            seen.set(asked, true)
+            questions.push(q)
+        }
+    }
+    Kept {
+        stores: [answering(dir, print) for print in distinct([p.print for p in packs])],
+        questions: sorted_by(questions, (a, b) -> text_before(spoken(a), spoken(b))),
+    }
+}
+
+/// The store at `dir` answering for the compiler printed `print`.
+fn answering(dir: string, print: string) -> DiskStore {
+    let store = disk_store_at(dir)
+    store.answering_for(print)
+    store
+}
+
+fn named(h: ContentHash) -> string { "${h.high_word}_${h.low_word}" }
+
+/// One thing an answer read: the question, and the answer it saw.
+type Read = { question: ContentHash, saw: ContentHash }
+
+impl Kept {
+    /// The newest record the store keeps of `question`, absent where it keeps none.
+    fn record_of(question: ContentHash) -> KeptRecord? { self.stores.find_map(it.records_of(question).last()) }
+
+    /// The question a hash names, absent where no pack holds it.
+    fn asked_as(question: ContentHash) -> Question? { self.stores.find_map(it.question_known_as(question)) }
+
+    /// What the newest answer to `question` read: each whole read, then each part read.
+    fn reads_of(question: ContentHash) -> List<Read> {
+        let r? = self.record_of(question) else { return [] }
+        [Read { question: r.whole_reads.hash_at(4 * i), saw: r.whole_reads.hash_at(4 * i + 2) } for i in 0..r.whole_reads.length() / 4]
+            .concat(
+                [Read { question: r.part_reads.hash_at(8 * i), saw: r.part_reads.hash_at(8 * i + 2) } for i in 0..r.part_reads.length() / 8],
+            )
+    }
+
+    /// A read as its line says it: the question it asked, and the answer it saw.
+    fn read_line(r: Read) -> string { "    ${spoken_or_unknown(self.asked_as(r.question))}  ${digest(r.saw)}" }
+
+    /// An answer's page: its question and its answer's digest, then what it read.
+    fn page(q: Question) -> List<string> {
+        let reads = self.reads_of(q.known_as)
+        let answer = self.record_of(q.known_as)?.answer
+        [
+            "${spoken(q)}  ${if answer == null { "-" } else { digest(answer!) }}",
+            "  reads ${reads.length}",
+        ]
+            .concat([self.read_line(r) for r in reads])
+    }
+
+    /// Each question whose newest answer read `question`.
+    fn readers_of(question: ContentHash) -> List<Question> {
+        [q for q in self.questions if self.reads_of(q.known_as).any(it.question.same_as(question))]
+    }
+}
+
+/// A question as `explain` names it: its query, then its keys where its
+/// arguments are keys — a file as its package and path. Saved arguments that
+/// are no keys are never read back: only the query that wrote them knows
+/// their shape.
+fn spoken(q: Question) -> string {
+    if !q.keyed { return q.query_name }
+    "${q.query_name}(${keys_of(q).join(", ")})"
+}
+
+fn spoken_or_unknown(q: Question?) -> string { if q == null { "an answer no pack names" } else { spoken(q!) } }
+
+/// A keyed question's keys, each as it reads: a file `package/path`, a text
+/// itself, an int its digits, a bool `true` or `false`; `…` from the first key
+/// this reads no shape for.
+fn keys_of(q: Question) -> List<string> {
+    let keys = q.arguments.text() ?? ""
+    mut out: List<string> = []
+    mut at = 0
+    while at < keys.length {
+        let c = keys.substring(at, at + 1)
+        if c == "T" || c == "F" {
+            out.push(if c == "T" { "true" } else { "false" })
+            at = at + 1
+            continue
+        }
+        if c == "i" {
+            let end = at + 1 + (keys.substring(at + 1, keys.length).index_of(";") ?? -1)
+            if end <= at { break }
+            out.push(keys.substring(at + 1, end))
+            at = end + 1
+            continue
+        }
+        let texts = match c { "f" -> 2, "s" -> 1, _ -> 0 }
+        if texts == 0 {
+            out.push("…")
+            break
+        }
+        mut parts: List<string> = []
+        mut from = if c == "f" { at + 1 } else { at }
+        for _t in 0..texts {
+            let colon = from + (keys.substring(from, keys.length).index_of(":") ?? -1)
+            let size = parse_int(
+                keys.substring(from + 1, if colon < from { from + 1 } else { colon }),
+            ) ?? -1
+            if colon < from || size < 0 || colon + 1 + size > keys.length { return out.concat(["…"]) }
+            parts.push(keys.substring(colon + 1, colon + 1 + size))
+            from = colon + 1 + size
+        }
+        out.push(parts.join("/"))
+        at = from
+    }
+    out
+}
+
+fn digest(h: ContentHash) -> string { hex_word(h.high_word) }
+
+// ── a file, a declaration, one answer ──
+
+/// A file as the program names it: its package, then its path there.
+fn file_named(root: string, at: string) -> string { "${package_named(root)}/${relative_path(root, at)}" }
+
+/// Every answer keyed by the file, each with what it read.
+fn file_answer(kept: Kept, root: string, at: string) -> Lines {
+    let file = file_named(root, at)
+    let about = [q for q in kept.questions if q.keyed && keys_of(q).first() == file]
+    if about.is_empty() { return .Err([file_unanswered(file)]) }
+    flatten_lines([kept.page(q) for q in about])
+}
+
+/// Every answer one of whose keys past the first is the name.
+fn decl_answer(kept: Kept, name: string) -> Lines {
+    let about = [q for q in kept.questions if q.keyed && keys_of(q).drop(1).contains(name)]
+    if about.is_empty() { return .Err([decl_unanswered(name)]) }
+    flatten_lines([kept.page(q) for q in about])
+}
+
+/// The answers a question names: itself where it's spelled whole, else every
+/// answer of its query keyed first by its subject — a path read from where
+/// the command stands, or a file as the program names it. Each says what it
+/// read, then who reads it.
+fn query_answer(kept: Kept, root: string, from: string, label: string) -> Lines {
+    let open = label.index_of("(") ?? 0
+    let query = label.substring(0, open)
+    let subject = label.substring(open + 1, label.length - 1)
+    if !kept.questions.any(it.query_name == query) {
+        return .Err(
+            [no_such_query(query)]
+                .concat(["  ${n}" for n in distinct([q.query_name for q in kept.questions])]),
+        )
+    }
+    let path = normalized(joined_path(from, subject))
+    let first = if !subject.is_empty() && exists_at(path) { file_named(root, path) } else { subject }
+    let about = [q for q in kept.questions if q.query_name == query &&
+        (spoken(q) == label ||
+            subject.is_empty() && !q.keyed ||
+            q.keyed && keys_of(q).first() == first)]
+    if about.is_empty() { return .Err([no_such_answer(label)]) }
+    flatten_lines([kept.page(q).concat(read_by(kept, q)) for q in about])
+}
+
+fn read_by(kept: Kept, q: Question) -> List<string> {
+    let readers = kept.readers_of(q.known_as)
+    ["  read by ${readers.length}"].concat(["    ${spoken(r)}" for r in readers])
+}
+
+fn flatten_lines(pages: List<List<string>>) -> Lines { .Ok([line for page in pages for line in page]) }
 
 // ── the package: `--stats`, `--why` ──
 
-fn package_answer(a: Asked, ws: Workspace) -> Lines {
-    if a.stats {
-        count_reads()
-        // LICENSED input.clock: `--time` output only, never an input of what is built
-        if a.time { time_frames(now_ns) }
-        return stats_answer(a, ws.stats_graph())
+/// One query's row: how many answers the store keeps for it, and how many reads they made in all.
+type Row = { query: string, answers: int, reads: int }
+
+/// The table: a row a query, in name order, then their total.
+fn stats_answer(kept: Kept) -> Lines {
+    let rows = [Row {
+        query: name,
+        answers: kept.questions.filter(it.query_name == name).length,
+        reads: [kept.reads_of(q.known_as).length for q in kept.questions if q.query_name == name].sum(),
+    } for name in distinct([q.query_name for q in kept.questions])]
+    let total = Row {
+        query: "total",
+        answers: [r.answers for r in rows].sum(),
+        reads: [r.reads for r in rows].sum(),
     }
-    let walk = walk_of(ws)?
-    let changed = ws.walk_graph().ws.reached_by(walk.moved)
-    if a.json { return [to_text(holds_json(walk, changed))] }
-    let read = [h for h in walk.holds if !h.held]
-    [files_line(walk), attempts_line(walk)]
-        .concat(["  ${turn}" for turn in walk.turns])
-        .concat([moved_line(walk)])
-        .concat([line for h in walk.holds for line in text_moved(walk, h)])
-        .concat([line for h in walk.holds for line in part_moved(walk, h)])
-        .concat([line for h in read for line in hold_lines(walk, h)])
-        .concat(reached_lines(walk, changed))
-}
-
-/// How many answers a moved input's section names before the rest is a count.
-const REACHED_CAP: int = 20
-
-/// The answers each moved input reaches, named per input and capped per input.
-fn reached_lines(walk: CacheWalk, changed: List<Changed>) -> List<string> {
-    if changed.is_empty() { return [] }
-    [
-        "reached by the change (re-verified; an unchanged answer stands; through shared program tables, an unrelated file's answers can be reached):",
-    ]
-        .concat(flatten([changed_lines(walk, c) for c in changed]))
-}
-
-fn changed_lines(walk: CacheWalk, c: Changed) -> List<string> {
-    let shown = c
-        .answers
-        .slice(0, if c.answers.length < REACHED_CAP { c.answers.length } else { REACHED_CAP })
-    ["  ${at_root(walk, c.input)} — ${counted(c.answers.length, "answer")}"]
-        .concat(["    ${a.label}" for a in shown])
-        .concat(
-            if c.answers.length > REACHED_CAP { ["    +${c.answers.length - REACHED_CAP} more"] } else { [] },
-        )
-}
-
-fn files_line(walk: CacheWalk) -> string {
-    let read = [h for h in walk.holds if !h.held].length
-    "${counted(walk.holds.length, "file")} a check reads, ${walk.holds.length - read} held, ${read} read"
-}
-
-/// What judging the hold took: the attempts made, and those that did not stand.
-fn attempts_line(walk: CacheWalk) -> string { "${counted(walk.attempts, "attempt")} judged the hold, ${walk.discarded} discarded" }
-
-/// The headline counts moved INPUTS: the files whose own text or compile-time
-/// reads moved. A file's several moved parts are one input, listed part by part
-/// below; a module's interface that moved because of such a file is not one more.
-fn moved_line(walk: CacheWalk) -> string {
-    let own = [h for h in walk.holds if h.moved.any(own_part)].length
-    let reached = [h for h in walk.holds if !h.moved.is_empty()].length
-    if own > 0 { return "${counted(own, "input")} moved since the kept state" }
-    if reached == 0 { return "no input moved since the kept state" }
-    "no input of its own moved; ${counted(reached, "file")} reached by a move"
-}
-
-/// A part that is a file's own input: its text, or what its compile-time runs read.
-fn own_part(m: PartMoved) -> bool {
-    match m.part {
-        .Text or .Runs -> true,
-        .Came(_) or .Went(_) or .Interface(_) or .Gathered -> false,
-    }
-}
-
-/// A moved text part's own line: its digest then and now.
-fn text_moved(walk: CacheWalk, h: FileHold) -> List<string> {
-    ["  ${at_root(walk, h.path)}: ${m.part.says()} ${m.was} -> ${m.now}" for m in h.moved if m.part is .Text]
-}
-
-/// A moved part that is not text: its line under its file, then the contract
-/// lines it lost and gained.
-fn part_moved(walk: CacheWalk, h: FileHold) -> List<string> {
-    [line for m in h.moved if !(m.part is .Text) for line in moved_lines(at_root(walk, h.path), m)]
-}
-
-/// One file's hold: held or read with why, then the rows it lacks.
-fn hold_lines(walk: CacheWalk, h: FileHold) -> List<string> {
-    ["${at_root(walk, h.path)} — ${hold_word(h)}"].concat(["  missing ${m}" for m in h.missing])
-}
-
-/// One moved part under its file, then the contract lines it lost and gained, a field apart by two spaces.
-fn moved_lines(file: string, m: PartMoved) -> List<string> {
-    ["  ${file}: moved ${m.part.says()}: ${m.was} -> ${m.now}"]
-        .concat(["    ${l.replace("\t", "  ")}" for l in m.lines])
-}
-
-fn hold_word(h: FileHold) -> string {
-    if h.held { return "held" }
-    let why? = h.why else { return "read: no record of its module is kept — it was never built here" }
-    "read: ${why.says()}"
-}
-
-/// A file as the package's root sees it.
-fn at_root(walk: CacheWalk, file: string) -> string { relative_path(walk.root, file) }
-
-// ── `--stats` ──
-
-/// The graph's answers counted family by family — and under `--time`, what
-/// deriving them spent.
-fn stats_answer(a: Asked, g: Graphed) -> Lines {
-    let tally = g.ws.family_counts()
-    if a.json { return [to_text(stats_json(a, g.phases, tally, g.ws))] }
-    let rows = [stats_head(a)]
-        .concat([stats_row(a, f) for f in tally.families])
-        .concat([stats_total(tally)])
-    let widths = [widest(rows, column) for column in 0..rows[0].length]
-    let timed = if a.time { ["${pad_right("time", widths[0])}  ${joined([ph.counted() for ph in g.phases], ", ")}"] } else { [] }
-    let reads = if a.time {
-        [
-            table_row(["read calls", "${read_calls()}"], widths),
-            table_row(["abandoned frames", "${abandoned_frames()}"], widths),
-            store_line(g.ws.store_traffic(), widths),
-            table_row(["files loaded", "${g.ws.loaded_files()} of ${g.ws.program_files()}"], widths),
-        ]
-    } else {
-        []
-    }
-    [table_row(r, widths) for r in rows].concat(reads).concat(timed)
-}
-
-/// The table's header: the answers' counts, then their reads, and under `--time` the time each
-/// family's own frames took.
-fn stats_head(a: Asked) -> List<string> {
-    ["family", "cells", "served", "computed", "edges", "p50", "p99", "longest"]
-        .concat(if a.time { ["ms"] } else { [] })
-}
-
-fn stats_row(a: Asked, f: FamilyCount) -> List<string> {
-    [
-        f.family,
-        "${f.cells}",
-        "${f.served}",
-        "${f.computed}",
-        "${f.edges}",
-        "${f.p50}",
-        "${f.p99}",
-        "${f.longest}",
-    ]
-        .concat(if a.time { ["${f.ns / 1000000}"] } else { [] })
-}
-
-fn stats_total(tally: Counted) -> List<string> {
-    [
-        "total",
-        "${tally.cells}",
-        "${sum([f.served for f in tally.families])}",
-        "${sum([f.computed for f in tally.families])}",
-        "${tally.edges}",
-    ]
-}
-
-fn sum(xs: List<int>) -> int {
-    mut total = 0
-    for x in xs { total = total + x }
-    total
-}
-
-/// What the derivation asked of the store: rows found and not found, values read, bytes read.
-fn store_line(t: Traffic, widths: List<int>) -> string {
-    "${pad_right("store", widths[0])}  hits ${t.hits}, misses ${t.misses}, values ${t.values}, bytes ${t.bytes}"
-}
-
-/// The widest cell of one column, among the rows that reach it.
-fn widest(rows: List<List<string>>, column: int) -> int {
-    mut wide = 0
-    for r in rows { if column < r.length && r[column].length > wide { wide = r[column].length } }
-    wide
-}
-
-/// A row with its name to the left and every count to the right of its column.
-fn table_row(cells: List<string>, widths: List<int>) -> string {
-    joined(
-        [if i == 0 { pad_right(c, widths[i]) } else { pad_left(c, widths[i]) } for i, c in cells],
-        "  ",
+    let wide = [r.query.length for r in rows].fold(5, (most, n) -> if n > most { n } else { most })
+    .Ok(
+        ["${pad_right("query", wide)}  ${pad_left("answers", 8)}  ${pad_left("reads", 9)}"]
+            .concat([row_said(r, wide) for r in rows])
+            .concat([row_said(total, wide)]),
     )
 }
 
-// ── a target: what it read, who reads it, and `--why` ──
+fn row_said(r: Row, wide: int) -> string { "${pad_right(r.query, wide)}  ${pad_left("${r.answers}", 8)}  ${pad_left("${r.reads}", 9)}" }
 
-/// One answer on the page: itself explained, and under `--why` the way down
-/// from it to each moved input.
-type Shown = { said: Explained, trails: List<Trail>? }
-
-fn subject_answer(a: Asked, subject: Subject, ws: Workspace) -> Lines {
-    if a.why { why_subject(a, subject, ws, walk_of(ws)?) } else { plain_subject(a, subject, ws) }
+/// Why the program layer last built the package again, as that build kept it.
+fn why_answer(root: string) -> Lines {
+    let said? = last_rebuild_said(root) else { return .Err([no_rebuild_kept(root)]) }
+    .Ok([line for line in said.split("\n") if !line.is_empty()])
 }
 
-/// A subject's answers, each with what it read and who reads it.
-fn plain_subject(a: Asked, subject: Subject, ws: Workspace) -> Lines {
-    let g = ws.walk_graph().ws
-    let answers = [Shown { said: e, trails: null } for e in g.explained_all(answers_named(g, subject)?)]
-    if a.json { return [to_text(page_json([], answers))] }
-    [line for s in answers for line in answer_lines(s)].concat(cancel_lines(g, subject))
-}
+// ── `--sites`: what each call of a body was resolved to ──
 
-/// What a declaration subject says of the cancel points a call to it may reach.
-fn cancel_lines(g: Workspace, subject: Subject) -> List<string> {
-    match subject { .Decl(name) -> g.cancel_lines(name), rest -> [] }
-}
-
-/// A subject's answers under `--why`: its file's hold first, then each
-/// answer with the way down from it to every moved input.
-fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Lines {
-    let hold = hold_of(walk, subject)
-    let g = ws.walk_graph().ws
-    let keys = answers_named(g, subject)?
-    let answers = [Shown { said: e, trails: g.trails(keys[i], walk.moved) } for i, e in g.explained_all(keys)]
-    let held? = hold else {
-        if a.json { return [to_text(page_json([], answers))] }
-        return [line for s in answers for line in answer_lines(s)].concat(cancel_lines(g, subject))
+/// Each fn a declaration's body calls, as lowering resolved it (`CalledFn`): the symbol its code is
+/// known by, what it is, and whether it's hosted or gathers. The fn is looked up in each source of
+/// the package; the first that declares it answers.
+fn sites_answer(a: Asked, root: string, subject: Subject) -> Lines {
+    let name = match subject {
+        .Decl(name) -> name,
+        .Package or .File(_) or .Query(_) -> { return .Err([sites_wants_decl(a.target)]) },
     }
-    if a.json { return [to_text(page_json(held_json(walk, held), answers))] }
-    hold_lines(walk, held)
-        .concat(part_moved(walk, held))
-        .concat([line for s in answers for line in answer_lines(s)])
-        .concat(cancel_lines(g, subject))
-}
-
-/// The hold of the file a subject names — none for any other subject.
-fn hold_of(walk: CacheWalk, subject: Subject) -> FileHold? {
-    match subject {
-        .File(asked) -> walk.holds.find(it.path == asked),
-        .Package or .Decl(_) or .Query(_) -> null,
-    }
-}
-
-fn answer_lines(s: Shown) -> List<string> {
-    [cited_line(s.said.answer)]
-        .concat(reads_lines(s.said))
-        .concat(read_by_lines(s.said))
-        .concat(if s.trails == null { [] } else { trail_lines(s.trails!) })
-}
-
-fn cited_line(c: Digested) -> string { "${c.label}  ${digest_shown(c.digest)}" }
-
-fn reads_lines(e: Explained) -> List<string> {
-    if e.reads.is_empty() { return ["  reads    nothing — it stands always"] }
-    ["  reads    ${e.reads.length} directly, ${e.deep} at any depth"]
-        .concat(["    ${cited_line(c)}" for c in e.reads])
-}
-
-/// Who reads an answer: each direct reader, then the files a check analyses
-/// again when it moves.
-fn read_by_lines(e: Explained) -> List<string> {
-    if e.read_by.is_empty() { return ["  read by  nothing"] }
-    ["  read by  ${e.read_by.length} directly, ${e.deep_by} at any depth"]
-        .concat(["    ${cited_line(c)}" for c in e.read_by])
-        .concat(["  files    ${counted(e.files.length, "file")} a check analyses read it"])
-        .concat(["    ${f}" for f in e.files])
-}
-
-fn trail_lines(trails: List<Trail>) -> List<string> {
-    if trails.is_empty() { return ["  moved    nothing it reads, since the kept state"] }
-    [line for t in trails for line in trail_steps(t)]
-}
-
-/// One trail: the input, then each answer from this one down, one level deeper per read.
-fn trail_steps(t: Trail) -> List<string> {
-    ["  moved    ${t.input}, read by way of:"]
-        .concat(["    ${step_line(i, s)}" for i, s in t.steps])
-}
-
-fn step_line(depth: int, label: string) -> string {
-    if depth == 0 { label } else { "${["  " for _k in 0..depth].join("")}reads ${label}" }
-}
-
-/// A digest as sixteen hex digits — an answer never digested says so.
-fn digest_shown(digest: int?) -> string {
-    let d? = digest else { return "undigested" }
-    hex_word(d)
-}
-
-// ── `--json` ──
-
-fn cited_json(c: Digested) -> Json {
-    Json.Obj([field("answer", Json.Str(c.label)), field("digest", digest_json(c.digest))])
-}
-
-fn digest_json(digest: int?) -> Json { if digest == null { Json.Null } else { Json.Str(digest_shown(digest)) } }
-
-fn texts_json(texts: List<string>) -> Json { Json.Arr([Json.Str(t) for t in texts]) }
-
-fn shown_json(s: Shown) -> Json {
-    Json
-        .Obj(
-            [
-                field("answer", Json.Str(s.said.answer.label)),
-                field("digest", digest_json(s.said.answer.digest)),
-                field("reads", Json.Arr([cited_json(c) for c in s.said.reads])),
-                field("reads_at_any_depth", Json.Int(s.said.deep)),
-                field("read_by", Json.Arr([cited_json(c) for c in s.said.read_by])),
-                field("read_by_at_any_depth", Json.Int(s.said.deep_by)),
-                field("files", texts_json(s.said.files)),
-            ]
-                .concat(
-                    if s.trails == null { [] } else { [field("moved", Json.Arr([trail_json(t) for t in s.trails!]))] },
-                ),
-        )
-}
-
-fn trail_json(t: Trail) -> Json { Json.Obj([field("input", Json.Str(t.input)), field("by_way_of", texts_json(t.steps))]) }
-
-fn hold_json(walk: CacheWalk, h: FileHold) -> Json {
-    Json
-        .Obj(
-            [
-                field("file", Json.Str(at_root(walk, h.path))),
-                field("held", Json.Bool(h.held)),
-                field("why", if h.held { Json.Null } else { Json.Str(hold_word(h)) }),
-                field("missing", texts_json(h.missing)),
-                field("moved", Json.Arr([part_json(m) for m in h.moved])),
-            ],
-        )
-}
-
-fn part_json(m: PartMoved) -> Json {
-    Json
-        .Obj(
-            [
-                field("part", Json.Str(m.part.says())),
-                field("was", Json.Str(m.was)),
-                field("now", Json.Str(m.now)),
-                field("lines", texts_json(m.lines)),
-            ],
-        )
-}
-
-/// A file's hold on the page.
-fn held_json(walk: CacheWalk, hold: FileHold) -> List<Field> { [field("hold", hold_json(walk, hold))] }
-
-fn page_json(held: List<Field>, answers: List<Shown>) -> Json {
-    Json.Obj(held.concat([field("answers", Json.Arr([shown_json(s) for s in answers]))]))
-}
-
-fn holds_json(walk: CacheWalk, changed: List<Changed>) -> Json {
-    Json
-        .Obj(
-            [
-                field("files", Json.Int(walk.holds.length)),
-                field("held", Json.Int([h for h in walk.holds if h.held].length)),
-                field("moved", texts_json([at_root(walk, p) for p in walk.moved])),
-                field("read", Json.Arr([hold_json(walk, h) for h in walk.holds if !h.held])),
-                field("reached", Json.Arr([changed_json(walk, c) for c in changed])),
-                field("attempts", Json.Int(walk.attempts)),
-                field("discarded", Json.Int(walk.discarded)),
-            ],
-        )
-}
-
-fn changed_json(walk: CacheWalk, c: Changed) -> Json {
-    Json
-        .Obj(
-            [
-                field("input", Json.Str(at_root(walk, c.input))),
-                field("answers", texts_json([a.label for a in c.answers])),
-            ],
-        )
-}
-
-fn stats_json(a: Asked, phases: List<Phase>, tally: Counted, ws: Workspace) -> Json {
-    let timed = if a.time {
-        [
-            field("time_ns", Json.Obj([field(ph.name, Json.Int(ph.ns)) for ph in phases])),
-            field("mints", Json.Obj([field(ph.name, Json.Int(ph.mints)) for ph in phases])),
-            field("settles", Json.Obj([field(ph.name, Json.Int(ph.settles)) for ph in phases])),
-            store_json(ws.store_traffic()),
-        ]
-    } else {
-        []
-    }
-    Json
-        .Obj(
-            [
-                field("families", Json.Arr([family_json(a, f) for f in tally.families])),
-                field("cells", Json.Int(tally.cells)),
-                field("edges", Json.Int(tally.edges)),
-            ]
-                .concat(timed),
-        )
-}
-
-fn store_json(t: Traffic) -> Field {
-    field(
-        "store",
-        Json
-            .Obj(
-                [
-                    field("hits", Json.Int(t.hits)),
-                    field("misses", Json.Int(t.misses)),
-                    field("values", Json.Int(t.values)),
-                    field("bytes", Json.Int(t.bytes)),
-                ],
-            ),
+    let disk? = disk_at(root, "") else { return .Err(["avra: no std stands beside this compiler"]) }
+    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions())
+    let file? = [disk.file_at(p) for p in disk.held(engine)]
+        .find((f) -> file_declares(engine, f).names.any(it.kind is .Fn && it.name == name)) else { return .Err([no_such_fn(name)]) }
+    let lowered? = lowered_fn(engine, file, name) else { return .Err([no_sites(name)]) }
+    store_kept(engine, store)
+    if lowered.callees.is_empty() { return .Err([no_sites(name)]) }
+    .Ok(
+        ["${name} calls ${lowered.callees.length}"]
+            .concat(["  ${c.symbol} — ${resolved_as(c)}" for c in lowered.callees]),
     )
 }
 
-fn family_json(a: Asked, f: FamilyCount) -> Json {
-    Json
-        .Obj(
-            [
-                field("family", Json.Str(f.family)),
-                field("cells", Json.Int(f.cells)),
-                field("served", Json.Int(f.served)),
-                field("computed", Json.Int(f.computed)),
-                field("edges", Json.Int(f.edges)),
-                field("p50", Json.Int(f.p50)),
-                field("p99", Json.Int(f.p99)),
-                field("longest", Json.Int(f.longest)),
-            ]
-                .concat(if a.time { [field("ns", Json.Int(f.ns))] } else { [] }),
-        )
+/// What a call was resolved to, in a line.
+fn resolved_as(c: CalledFn) -> string {
+    let what = when {
+        c.external -> "an extern row"
+        c.owner != null && c.statics -> "a static fn of `${c.owner!}`"
+        c.owner != null -> "a method of `${c.owner!}`${if c.given_by == null { "" } else { ", its body the trait `${c.given_by!}`'s" }}"
+        !c.fills.is_empty() -> "a generic fn's instance over ${[t.spelled() for t in c.fills].join(", ")}"
+        _ -> "a declared fn of ${c.file.package_name}/${c.file.path_in_package}"
+    }
+    "${what}${if c.hosted { ", hosted" } else { "" }}${if c.gathers_closure { ", gathering in closure" } else { "" }}"
 }
 
 export command explain {
-    description: "The compiler's own answers, made visible: `--stats [package]` counts every answer a check derives, family by family; a target — a file, `@name`, or `Family(subject)` — says what its answers read and who reads them; `--why` adds what moved since the kept state and the way down to it, and with no target answers for the whole package. Every form keeps nothing"
+    description: "The program layer's own answers: what it keeps of a file, a declaration or one answer and what each read; how many answers each query holds; why the last build was worked out again"
     arg target {
-        description: "a file, a package's directory, `@name` or `@Owner.name` for a declaration, or an answer as `Family(subject)` — the package the command stands in when absent"
+        description: "a file, a package's directory, `@name` for a declaration, or an answer as `query(subject)` — the package the command stands in when absent"
     }
-    flag stats { description: "count the package's answers: cells, reads and how long one answer's reads run, per family" }
-    flag why { description: "what moved since the kept state: whether a check holds each file and why not, the way down from an answer to each moved input, and the answers each moved input reaches" }
-    flag sites { description: "for a declaration, the mechanism the compiler chose for each site of its body (hoist, direct, tree, keyed) and the places it depends on" }
-    flag json { description: "JSON instead of text, every list in the text's order" }
-    flag time { description: "with `--stats`, the time each phase of the derivation took and what it asked of the store — the rows that differ run to run" }
+    flag stats { description: "count the package's kept answers and their reads, a row a query" }
+    flag why { description: "why the last build of the package was worked out again: the way from the input that moved to the build" }
+    flag sites { description: "for a fn `@name`, what each call of its body was resolved to: a declared fn, a method, a generic instance, an extern row; hosted, gathering" }
     run: ExplainCmd {}
 }
 
 // ── voices ──
 
-fn needs_target() -> string { "avra: `explain` needs a file, `@name` or `Family(subject)` — or `--stats` or `--why` for the whole package" }
+fn needs_target() -> string { "avra: `explain` needs a file, `@name` or `query(subject)` — or `--stats` or `--why` for the whole package" }
 
 fn stats_or_why() -> string { "avra: `explain` takes `--stats` or `--why`, never both — one counts answers, the other says what moved" }
 
 fn sites_alone() -> string { "avra: `explain --sites` is a form of its own — it goes with neither `--stats` nor `--why`" }
 
-fn sites_wants_decl(target: string) -> string { "avra: `explain --sites` reads one declaration's body — `${target}` is not a `@name`" }
+fn sites_wants_decl(target: string) -> string { "avra: `explain --sites` reads one fn's body — `${target}` is not a `@name`" }
 
-fn no_sites(name: string) -> string { "avra: `explain --sites`: `${name}` has no body with sites in what this package's check reads" }
+fn no_sites(name: string) -> string { "avra: `explain --sites`: `${name}` has no lowered body that calls a fn" }
 
-fn time_wants_stats() -> string { "avra: `explain --time` times the derivation `--stats` counts — it goes with `--stats`" }
+fn no_such_fn(name: string) -> string { "avra: `explain --sites`: no source of this package declares a fn `${name}`" }
 
 fn stats_wants_package(target: string) -> string { "avra: `explain --stats` counts a whole package — `${target}` names one thing in it" }
 
-fn file_unread(file: string) -> string { "avra: `explain`: this package's check never reads ${file}" }
+fn file_unanswered(file: string) -> string { "avra: `explain`: this package's store keeps no answer keyed by ${file} — build or check the package first" }
 
-fn no_such_decl(name: string) -> string { "avra: `explain`: no declaration is named `${name}` in what this package's check reads" }
+fn decl_unanswered(name: string) -> string { "avra: `explain`: no answer this package's store keeps is keyed by `${name}`" }
 
-fn many_decls(n: int, name: string) -> string { "avra: ${n} declarations are named `${name}` — name one answer exactly, as `Family(subject)`:" }
+fn no_such_query(word: string) -> string { "avra: `explain`: the store keeps no answer of a query `${word}` — it keeps these:" }
 
-export fn decl_unanswered(name: string) -> string { "avra: `explain`: `${name}` is declared, and no answer is keyed by it" }
+fn no_such_answer(label: string) -> string { "avra: `explain`: this package's store keeps no answer `${label}`" }
 
-fn no_such_family(word: string) -> string { "avra: `explain`: no family of answers is named `${word}` — `explain --stats` names each one a check derives" }
+fn no_rebuild_kept(root: string) -> string { "avra: no program-layer build of ${root} has kept why it was built — build it with `avra build`" }
 
-fn no_such_answer(label: string) -> string { "avra: `explain`: this package's check derives no answer `${label}`" }
+fn decl_unnamed() -> string { "avra: `explain @` names no declaration — write `@name`" }
+
+fn query_unclosed(target: string) -> string { "avra: `${target}` opens an answer's subject and never closes it — write `query(subject)`" }
+
+fn no_such_path(target: string) -> string { "avra: no `${target}` — `explain` reads a file, a package's directory, `@name` or `query(subject)`" }
+
+fn no_package_above(dir: string) -> string { "avra: no `avra.toml` at or above ${dir} — `explain` answers for a package" }

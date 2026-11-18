@@ -915,17 +915,7 @@ impl TypeCx {
     }
 
     fn undeclared_contract(at: Loc?, name: string) -> TypeId {
-        self
-            .speak_unread(
-                refusal(
-                    "type.trait",
-                    at,
-                    "`dyn ${name}` names no trait",
-                    "written here",
-                    "declare it — `trait ${name} { … }`",
-                ),
-                name,
-            )
+        self.speak_unread(said_as("type.trait", at, dyn_no_trait(name)), name)
         self.error_type
     }
 
@@ -1153,16 +1143,7 @@ impl TypeCx {
     }
 
     fn alias_names_itself(at: Loc?, name: string) -> TypeId {
-        self
-            .emit(
-                refusal(
-                    "type.alias",
-                    at,
-                    "`${name}` is an alias that names itself",
-                    "named again here",
-                    "an alias is a shorthand for a type that already exists — a type that holds itself is a `type`",
-                ),
-            )
+        self.emit(said_as("type.alias", at, alias_naming_itself(name)))
         self.error_type
     }
 
@@ -1238,30 +1219,38 @@ impl TypeCx {
     }
 
     fn bound_not_a_trait(s: StmtId, written: string) {
-        self
-            .speak_unread(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "a bound names a trait, and `${written}` is not one",
-                    "this bound",
-                    "write the trait's name, and its arguments when it takes them",
-                ),
-                written,
-            )
+        self.speak_unread(said_as("type.trait", self.stmt_loc(s), bound_no_trait(written)), written)
     }
 
     fn bound_miscounted(s: StmtId, of: string, takes: int, gave: int) {
-        self
-            .emit(
-                refusal(
-                    "type.trait",
-                    self.stmt_loc(s),
-                    "`${of}` takes ${counted(takes, "type argument")}, and this bound gives ${gave}",
-                    "this bound",
-                    "a bound names its trait at every parameter the trait declares",
-                ),
-            )
+        self.emit(said_as("type.trait", self.stmt_loc(s), bound_miscounts_trait(of, takes, gave)))
+    }
+}
+
+/// A bound naming the trait `of`, which takes `takes` type arguments, at `gave`.
+export fn bound_miscounts_trait(of: string, takes: int, gave: int) -> Voice {
+    Voice {
+        message: "`${of}` takes ${counted(takes, "type argument")}, and this bound gives ${gave}",
+        label: "this bound",
+        help: "a bound names its trait at every parameter the trait declares",
+    }
+}
+
+/// A `dyn` written over `name`, which names no trait.
+export fn dyn_no_trait(name: string) -> Voice {
+    Voice {
+        message: "`dyn ${name}` names no trait",
+        label: "written here",
+        help: "declare it — `trait ${name} { … }`",
+    }
+}
+
+/// A bound written as `written`, which names no trait.
+export fn bound_no_trait(written: string) -> Voice {
+    Voice {
+        message: "a bound names a trait, and `${written}` is not one",
+        label: "this bound",
+        help: "write the trait's name, and its arguments when it takes them",
     }
 }
 
@@ -1373,6 +1362,15 @@ export fn named_with_params(name: string) -> Voice {
         message: "`${name}` is a named type with type parameters, which is recorded, not landed",
         label: "declared here",
         help: "a named type stands over ONE written shape — write the shape out, or declare a record",
+    }
+}
+
+/// An alias whose names loop back to the alias `name`.
+export fn alias_naming_itself(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is an alias that names itself",
+        label: "named again here",
+        help: "an alias is a shorthand for a type that already exists — a type that holds itself is a `type`",
     }
 }
 

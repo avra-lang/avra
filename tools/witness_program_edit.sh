@@ -46,9 +46,9 @@ mkdir -p "$AVRA_CACHE_DIR"
 
 # file|a line of it|what the line becomes, `\n` between lines; an edit of several
 # files joins its parts with ` ;; `
-edits='packages/cli/src/commands/cache.av|        "avra cache clean: shared store kept ${shared.kept} blob(s) (${shared.kept_bytes} bytes) · freed ${shared.freed} blob(s) (${shared.freed_bytes} bytes) · ${cas_readers().length} live store(s)",|        "avra cache clean: shared store holds ${shared.kept} blob(s) (${shared.kept_bytes} bytes) · freed ${shared.freed} blob(s) (${shared.freed_bytes} bytes) · ${cas_readers().length} live store(s)",
+edits='packages/cli/src/commands/cache.av|        println("avra cache log: no pack")|        println("avra cache log: no packs")
 packages/std-avrac/src/compiler/item_program.av|fn runs_nothing() -> string { "a file that runs no statement" }|fn runs_nothing() -> string { "a file that runs no statements" }
-packages/cli/src/commands/cache.av|    let root = build_cache_root(root_workspace(here()))|    let root = build_cache_root(root_workspace(here()))\n    let _ = store_dir_of(root).length
+packages/cli/src/commands/cache.av|    let before = packs_listed(dir)|    let before = packs_listed(dir)\n    let _ = packs_listed(dir).length
 packages/std-time/src/time.av|    avra_fiber_sleep(d.ms())|    avra_fiber_sleep(d.ms())\n    parked_until(avra_now_ns())
 packages/cli/src/commands/fmt.av|enum Walk { Check, Write }|enum Walk { Check, Write, Listed }
 packages/cli/src/commands/fmt.av|type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }|type Tally = { examined: int, differing: int, refused: int, diffs: List<string>, skipped: int = 0 }

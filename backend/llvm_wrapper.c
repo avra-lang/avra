@@ -405,14 +405,75 @@ static int target_is_macho(const char* triple) {
 // segment beside the section. A row is a global the module uniqued from
 // SITE_ROW (`avra.site`, `avra.site.1`, …) — no program symbol is spelled
 // so, every one of those starting `av_`.
+static void sites_registered(LLVMModuleRef m);
+
 static void sites_placed(LLVMModuleRef m, const char* triple) {
     const char* section = target_is_macho(triple) ? AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION : AVRA_SITES_ELF_SECTION;
     size_t n = strlen(SITE_ROW);
+    int any = 0;
     for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) {
         size_t len = 0;
         const char* name = LLVMGetValueName2(g, &len);
-        if (len >= n && strncmp(name, SITE_ROW, n) == 0 && (len == n || name[n] == '.')) LLVMSetSection(g, section);
+        if (len >= n && strncmp(name, SITE_ROW, n) == 0 && (len == n || name[n] == '.')) {
+            LLVMSetSection(g, section);
+            any = 1;
+        }
     }
+    if (any && !target_is_macho(triple)) sites_registered(m);
+}
+
+// AN OBJECT THAT CARRIES SITE ROWS HANDS ITS IMAGE'S TABLE TO THE SCHEDULER AS
+// THE IMAGE LOADS. A section's bounds name only the image they are linked into,
+// and a program linked in layers is several images: so a constructor, reading
+// the bounds its own image's link defines (hidden, weak), calls the
+// scheduler's `avra_sites_register` — weak too, so an image the scheduler is
+// not linked beside registers nothing. Each object of one image registers the
+// same table; the scheduler keeps it once.
+static void sites_registered(LLVMModuleRef m) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    if (LLVMGetNamedFunction(m, "avra.sites.registered")) return;
+    LLVMValueRef bound[2];
+    const char* names[2] = { "__start_" AVRA_SITES_ELF_SECTION, "__stop_" AVRA_SITES_ELF_SECTION };
+    for (int i = 0; i < 2; i++) {
+        LLVMValueRef g = LLVMGetNamedGlobal(m, names[i]);
+        if (!g) g = LLVMAddGlobal(m, i64, names[i]);
+        LLVMSetLinkage(g, LLVMExternalWeakLinkage);
+        LLVMSetVisibility(g, LLVMHiddenVisibility);
+        bound[i] = g;
+    }
+    LLVMTypeRef seats[2] = { ptr, i64 };
+    LLVMTypeRef reg_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), seats, 2, 0);
+    LLVMValueRef reg = LLVMGetNamedFunction(m, "avra_sites_register");
+    if (!reg) reg = LLVMAddFunction(m, "avra_sites_register", reg_ty);
+    LLVMSetLinkage(reg, LLVMExternalWeakLinkage);
+    LLVMValueRef fn = LLVMAddFunction(m, "avra.sites.registered", LLVMFunctionType(LLVMVoidTypeInContext(ctx), NULL, 0, 0));
+    LLVMSetLinkage(fn, LLVMInternalLinkage);
+    LLVMBuilderRef b = LLVMCreateBuilderInContext(ctx);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMBasicBlockRef call = LLVMAppendBasicBlockInContext(ctx, fn, "call");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(ctx, fn, "done");
+    LLVMPositionBuilderAtEnd(b, entry);
+    LLVMValueRef has_rows = LLVMBuildICmp(b, LLVMIntNE, bound[0], LLVMConstNull(ptr), "rows");
+    LLVMValueRef has_reg = LLVMBuildICmp(b, LLVMIntNE, reg, LLVMConstNull(ptr), "reg");
+    LLVMBuildCondBr(b, LLVMBuildAnd(b, has_rows, has_reg, "both"), call, done);
+    LLVMPositionBuilderAtEnd(b, call);
+    LLVMValueRef bytes = LLVMBuildSub(b, LLVMBuildPtrToInt(b, bound[1], i64, "stop"), LLVMBuildPtrToInt(b, bound[0], i64, "start"), "bytes");
+    LLVMValueRef args[2] = { bound[0], LLVMBuildUDiv(b, bytes, LLVMConstInt(i64, sizeof(AvraSiteRow), 0), "rows") };
+    LLVMBuildCall2(b, reg_ty, reg, args, 2, "");
+    LLVMBuildBr(b, done);
+    LLVMPositionBuilderAtEnd(b, done);
+    LLVMBuildRetVoid(b);
+    LLVMDisposeBuilder(b);
+    LLVMTypeRef ctor_fields[3] = { i32, ptr, ptr };
+    LLVMTypeRef ctor_ty = LLVMStructTypeInContext(ctx, ctor_fields, 3, 0);
+    LLVMValueRef cells[3] = { LLVMConstInt(i32, 65535, 0), fn, LLVMConstNull(ptr) };
+    LLVMValueRef entry_row = LLVMConstStructInContext(ctx, cells, 3, 0);
+    LLVMValueRef ctors = LLVMAddGlobal(m, LLVMArrayType(ctor_ty, 1), "llvm.global_ctors");
+    LLVMSetLinkage(ctors, LLVMAppendingLinkage);
+    LLVMSetInitializer(ctors, LLVMConstArray(ctor_ty, &entry_row, 1));
 }
 
 // Whether this build counts the boxes runtime rows mint, by type:

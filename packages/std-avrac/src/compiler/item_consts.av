@@ -28,7 +28,6 @@ use features.{
     MetaHeap,
     MetaVal,
     Unsettled,
-    budgets_of,
     new_meta_heap,
     unsettled_kind,
     unsettled_label,
@@ -75,7 +74,8 @@ export type BrokenSettlement = { kind: string, words: string }
 /// by every body that names the const and by the law that refuses a run that breaks a settlement's.
 @query
 fn const_settlement(engine: QueryEngine, file: SourceFileAddress, name: string, item: int) -> ConstSettlement {
-    if const_value_loop(engine, file, name) != null { return unsettled_as(settles_from_itself()) }
+    if const_loop(engine, file, name) != null { return unsettled_as(UNTYPED_LOOP) }
+    if const_value_loop(engine, file, name) != null { return settles_from_itself(name) }
     match const_body_at(engine, file, name, item) {
         .Ok(body) -> settlement_of(engine, file, body, name),
         .Err(why) -> unsettled_as(why),
@@ -102,7 +102,7 @@ fn settlement_of(engine: QueryEngine, file: SourceFileAddress, body: SignedBody,
         symbol,
         [],
         new_meta_heap(),
-        budgets_of(),
+        lifted_budgets(engine, file.package_name),
         (n: string) -> named_lifted(engine, file, n),
         EmbedReader { read: (path: string, kind: EmbedKind) -> embedded(engine, path, kind) },
         null,
@@ -211,8 +211,16 @@ fn body_const_settlement(
 /// Why a const whose value is each program's own isn't settled once.
 fn per_program() -> string { "a const whose value each program gathers over its own closure" }
 
-/// Why a const whose value reads itself, through other consts or none, doesn't settle.
-fn settles_from_itself() -> string { "a const whose value reads itself" }
+/// Why a const whose value asks for its own type doesn't settle: the cycle law refuses it where
+/// it's declared, and nothing runs it.
+const UNTYPED_LOOP: string = "a const whose value asks for its own type"
+
+/// The const `name` whose value reads itself, through other consts and fns or none: settling it asks
+/// for the value being settled, the trap its run ends in.
+fn settles_from_itself(name: string) -> ConstSettlement {
+    let why = Unsettled.Trap("asks for its own value while settling")
+    unsettled_as(unsettled_label(name, why)) with { broken: broken_of(why) }
+}
 
 fn unsettled_as(why: string) -> ConstSettlement { ConstSettlement { words: [], data: null, unsettled: why, broken: null } }
 

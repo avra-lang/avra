@@ -23,6 +23,7 @@ use core.{
 use core.expr.{Call}
 use core.stmt.{Return}
 use features.{embed_file}
+use features.nullable.{insisted}
 
 impl Lowers for Call {
     /// A call of a fn value the body binds, by position into seats that promise nothing, or of a fn
@@ -163,15 +164,17 @@ fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
 
 /// A call of a fn value the body binds, by position into seats that promise nothing or are written
 /// through: its arguments in order, a `mut` seat's the place it writes through, then the code its box
-/// holds, handed the box first, then each place handed written back.
+/// holds, handed the box first, then each place handed written back. A nullable binding's value is
+/// the fn it carries, the runtime refusing its absence.
 fn called_value(mut cx: Lowering, call: Call, e: ExprId, b: Bound) -> Reg {
-    let f? = cx.program.checked.called_as(b.type()) else { return cx.missed_as(unplain_value_call()) }
+    let held = b.type()
+    let f? = cx.program.checked.called_as(held.unwrapped()) else { return cx.missed_as(unplain_value_call()) }
     if !plain_value_call(cx, call, f) { return cx.missed_as(unplain_value_call()) }
     let seats = f.seats
     let mark = cx.handing_mark()
     let args = [if seats[at].mutable { cx.written_arg(a) } else { cx.lower(a) } for at, a in call.args]
     if args.any(it == null) { return cx.missed_as("a fn value's `mut` seat handed a place no write reaches back from") }
-    let box = cx.held(b)
+    let box = if held.nullable() { insisted(cx, cx.held(b), held) } else { cx.held(b) }
     let r = cx.called_code(cx.layout_at(e), cx.code_of(box), box, [a! for a in args], f)
     cx.handed_back(mark)
     r

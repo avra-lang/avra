@@ -61,19 +61,22 @@ type FormatArm = { at: PatId, store: SyntaxArena, parts: List<FormatPart>, subje
 fn format_arms(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<FormatArm> {
     if at >= item_count(engine, file) { return [] }
     let item = read_item(engine, file, at)
-    flatten([format_arms_in(t) for t in item_typed_nodes(engine, file, at, item)])
+    flatten([format_arms_in(engine, t) for t in item_typed_nodes(engine, file, at, item)])
 }
 
 /// Every format pattern an arm of a `match` among the nodes `t` reads writes.
-fn format_arms_in(t: TypedNodes) -> List<FormatArm> {
-    [FormatArm { at: p, store: t.store, parts: parts!, subject: subject_spelled(t, e) } for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null for arm in t.store.match_arms(e) ?? [] for p in arm.pats for parts in [format_parts(t.store, p)] if parts != null]
+fn format_arms_in(engine: QueryEngine, t: TypedNodes) -> List<FormatArm> {
+    [FormatArm { at: p, store: t.store, parts: parts!, subject: subject_spelled(engine, t, e) } for i in t.lo..t.hi for e in [ExprId { index: i }] if t.store.home_of(e) == null for arm in t.store.match_arms(e) ?? [] for p in arm.pats for parts in [format_parts(t.store, p)] if parts != null]
 }
 
-/// What the subject of the `match` `e` is, spelled, where typing knows it whole.
-fn subject_spelled(t: TypedNodes, e: ExprId) -> string? {
+/// What the subject of the `match` `e` is, spelled, where typing knows it whole: the text a named
+/// type stands over, where it stands over one.
+fn subject_spelled(engine: QueryEngine, t: TypedNodes, e: ExprId) -> string? {
     let subject? = match t.store.expr(e) { .Match(s, _) -> s, rest -> null } else { return null }
     let ty? = (t.type_at)(subject.index) else { return null }
-    if plain_known(ty) { ty.spelled() } else { null }
+    if !plain_known(ty) { return null }
+    let shape = named_over(engine, ty)?.spelled()
+    if shape != null && TEXTS.contains(shape!) { shape } else { ty.spelled() }
 }
 
 /// The holes the format pattern `p` writes; absent for any other pattern.

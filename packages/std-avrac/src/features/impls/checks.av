@@ -35,7 +35,8 @@ fn self_pinned(described: SignedType) -> Map<string, SignedType> {
 }
 
 /// A declared method's call: its receiver written where the method writes, its arguments held to its
-/// seats. A verb the language owns that writes its receiver is handed a place a write lands in, and a
+/// seats. A verb the language owns is called by position, one that writes its receiver is handed a
+/// place a write lands in, and a
 /// list's walk names its fn's seat as the walk's.
 fn method_called(
     mut cx: Checking,
@@ -47,6 +48,12 @@ fn method_called(
 ) -> SignedType? {
     if subject.head is .Declared &&
         cx.seats_named(e, method, m.args, 1, "${subject.spelled()}.${m.name.of}") { return null }
+    let named = m.args.find((a) -> cx.store.arg_label(a) != null)
+    if subject.head is .Owned && named != null {
+        cx.checked_free(m.args)
+        cx.unplaced(named!, m.name.of, cx.store.arg_label(named!) ?? "")
+        return null
+    }
     if subject.head is .Owned && method.seats.first()?.mutable ?? false { cx.place_written(e, m.subject, subject, m.name.of) }
     let walks = walk_verb(subject, method)
     cx

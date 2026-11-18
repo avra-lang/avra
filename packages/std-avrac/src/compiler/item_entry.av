@@ -40,10 +40,10 @@ fn entry_signed(read: EntryRead) -> SignedBody? {
 /// The statements of `file` that run, lowered as its entry, its task tests held: a scope
 /// holding them, the value of the last shown as text, the tasks they hold joined, then the entry's
 /// exit, which answers the process's status. The names they bind stand in a scope of their own inside
-/// the entry's seats, of which it has none. Absent when it runs none.
+/// the entry's seats, of which it has none. A file that runs none has an entry that only exits.
 export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> LoweredFn? {
     let read = entry_read(engine, file)
-    let signed? = entry_signed(read) else { return null }
+    let signed? = entry_signed(read) else { return idle_entry(engine, file, read) }
     let body = elaborated(engine, file, signed)
     mut cx = lowering(
         body.store,
@@ -55,7 +55,7 @@ export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> Lowered
     cx.scope_enter()
     cx.opened()
     let value = cx.lowered_open(body.body)
-    let shown = body.core[body.body.index]
+    let shown = shape_shown(cx, body.core[body.body.index])
     let unprojected = answer_unprojected(read, shown)
     if unprojected == null { shown_as_text(cx, shown, value) }
     cx.closed()
@@ -64,18 +64,39 @@ export fn lowered_entry(engine: QueryEngine, file: SourceFileAddress) -> Lowered
     unit_lowered(cx, 0, Layout.Word) with { refused: body.refused, unread: body.unread, unprojected: unprojected }
 }
 
+/// `ty` as an entry's answer is shown: the shape a named type stands over; any other type itself.
+fn shape_shown(cx: Lowering, ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    cx.named_over(t) ?? t
+}
+
+/// The entry of a file that runs no statement: it exits, answering the process's status.
+fn idle_entry(engine: QueryEngine, file: SourceFileAddress, read: EntryRead) -> LoweredFn {
+    mut cx = lowering(
+        read.store,
+        lowered_program(engine, file, read.store, ENTRY, [], null),
+        [],
+        {},
+        owned_type("int"),
+    )
+    cx.scope_enter()
+    cx.scope_exit(null)
+    cx.emit(Ins.Ret(0))
+    unit_lowered(cx, 0, Layout.Word)
+}
+
 /// The types an entry's answer is shown as, by the words the language spells them with: a scalar,
 /// a text, a list or a map, or nothing at all.
 const PROJECTED: List<string> = ["int", "float", "bool", "string", "List", "Map", "void"]
 
 /// The entry's answer of type `shown`, where no text projection spells it: its type and the
-/// statement that answers, the last of `read` that holds a value; absent where one spells it, or
-/// where it never arrives.
+/// statement that answers, the last of `read` that holds a value; absent where one spells it,
+/// where it never arrives, or where its type names none, refused where it's written.
 fn answer_unprojected(read: EntryRead, shown: SignedType?) -> Unprojected? {
     let ty? = shown else { return null }
     let spelled = match ty.head {
         .Owned(name) -> PROJECTED.contains(name),
-        .Never -> true,
+        .Never or .Unnamed(_) -> true,
         rest -> false,
     }
     if spelled && !ty.nullable() && !ty.dynamic { return null }
@@ -144,9 +165,10 @@ fn runs(store: SyntaxArena, s: StmtId) -> bool { !store.is_declaration(s) }
 
 /// The entry's shown value printed as text, as the type it's typed with spells it: text as itself, a
 /// number or a truth by its row, a list of them by the row that joins it. A value of any other type
-/// isn't shown yet; one of no type shows nothing.
+/// isn't shown yet; a map, and a value of no type, show nothing.
 fn shown_as_text(mut cx: Lowering, ty: SignedType?, value: Reg) {
     let shown? = ty else { return }
+    if shown.mapped() != null && !shown.nullable() && !shown.dynamic { return }
     let spelled? = spelling_of(cx, shown) else {
         if !(cx.laid_out(shown) is .Void) { cx.missed("a shown `${shown.spelled()}`, which no text spells yet") }
         return

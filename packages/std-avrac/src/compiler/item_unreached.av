@@ -37,36 +37,49 @@ fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> Item
     let item = read_item(engine, file, at)
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
     if matches.is_empty() { return ItemUnreached { arms: [] } }
-    let cover = Cover {
+    let cover = reach_cover(engine, file, at, item)
+    ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
+}
+
+/// What the arms' reach reads of the written item `at` of `file`, read as `item`: no type, and a
+/// bare name by what it is bound to where its pattern stands.
+fn reach_cover(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> Cover {
+    Cover {
         store: item.store,
         type_at: (_k: int) -> no_type(),
         enum_of: (ty: SignedType) -> enum_shape(engine, ty),
-        compares: (n: string) -> compared_value(engine, file, n) ?? true,
+        compares: (p: PatId, n: string) -> pattern_compares(engine, file, at, item.store, p, n),
     }
-    ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
 }
 
 /// No type: what the arms' reach reads of none.
 fn no_type() -> SignedType? { null }
 
-/// The arms of the `match` at `e` each right after an unguarded arm taking every value.
+/// The arm of the `match` at `e` right after its first unguarded arm taking every value.
 fn unreached_in(cover: Cover, e: ExprId) -> List<Unreached> {
     let m? = match_at(cover.store, e) else { return [] }
-    [Unreached {
-        at: kept_at(cover.store.pat_span(m.arms[k + 1].pats[0])),
-        binder: binder_of(cover, hole!),
-    } for k, a in m.arms if k + 1 < m.arms.length && a.guard == null && !m.arms[k + 1].pats.is_empty() for hole in [cover.hole_of(a.pats)] if hole != null]
+    let k? = cover.catching(m.arms) else { return [] }
+    if k + 1 >= m.arms.length || m.arms[k + 1].pats.is_empty() { return [] }
+    [
+        Unreached {
+            at: kept_at(cover.store.pat_span(m.arms[k + 1].pats[0])),
+            binder: binder_of(cover, cover.hole_of(m.arms[k].pats)!),
+        },
+    ]
 }
 
 /// The name the catch-all `hole` binds, empty for one that binds none.
 fn binder_of(cover: Cover, hole: PatId) -> string { cover.store.bind_name(hole) ?? "" }
 
-/// The last arm of each `match` the written item `at` of `file` holds that is one unguarded bare name
-/// naming a const, which compares rather than binds: the name.
+/// The last arm of each `match` the written item `at` of `file` holds, none of whose arms takes
+/// every value, that is one unguarded bare name naming a const, which compares rather than binds:
+/// the name.
 fn last_arms_comparing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
     if at >= item_count(engine, file) { return [] }
-    let store = read_item(engine, file, at).store
-    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && compared_value(engine, file, n!) ?? false]
+    let item = read_item(engine, file, at)
+    let store = item.store
+    let cover = reach_cover(engine, file, at, item)
+    [Found { at: store.pat_span(p), args: [n!] } for i in 0..store.exprs.count() for m in some_list(match_at(store, ExprId { index: i })) if cover.catching(m.arms) == null for last in some_list(m.arms.last()) if last.guard == null && last.pats.length == 1 for p in [last.pats[0]] for n in [store.bind_name(p)] if n != null && pattern_compares(engine, file, at, store, p, n!)]
 }
 
 /// the last arm of a `match` whose bare name is a const
