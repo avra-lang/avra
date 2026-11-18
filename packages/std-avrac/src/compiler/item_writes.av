@@ -449,6 +449,8 @@ impl Survey {
         }
         let ty? = self.place_type(subject) else { return self.unread(untyped_place(self.path_words(subject))) }
         if ty.dynamic { return self.contract_evidence(ty, name, args) }
+        let bound = self.owner_bound(ty)
+        if bound != null { return self.contract_evidence(bound!, name, args) }
         let seats? = self.method_seats(ty, name) else { return self.field_fn_evidence(ty, name, args) }
         let declared = declared_at(ty)
         if declared != null {
@@ -497,8 +499,19 @@ impl Survey {
         if variant_named(self.engine, d.file, d.name, name) { filled(count, false) } else { null }
     }
 
-    /// A method a `dyn` trait value has: written where the trait marks it `mut`; its arguments feed
-    /// its seats.
+    /// The trait the receiver's type parameter `ty` is bound by, where the type that declares the
+    /// receiver writes one; absent for any other type.
+    fn owner_bound(ty: SignedType) -> SignedType? {
+        if ty.nullable() { return null }
+        let i? = parameter_index(ty) else { return null }
+        let k? = self.owner.args.find_index((a) -> parameter_index(a) == i) else { return null }
+        let d? = declared_at(self.owner) else { return null }
+        let sig? = record_signature(self.engine, d.file, d.name) else { return null }
+        if k >= sig.bounds.length { null } else { sig.bounds[k] }
+    }
+
+    /// A method a `dyn` trait value has, or a value of a type parameter the trait `ty` bounds: written
+    /// where the trait marks it `mut`; its arguments feed its seats.
     mut fn contract_evidence(ty: SignedType, name: string, args: List<ExprId>) {
         let d? = declared_at(ty) else { return self.unread(no_method(ty, name)) }
         let t = TraitAt { file: d.file, name: d.name }
@@ -544,14 +557,15 @@ impl Survey {
     }
 
     /// Which seats of the fn value `name` binds are `mut`: a seat's, read off its signed type; the one
-    /// `let` binding it's, off the type its value has; absent where the body binds it otherwise, or
-    /// its type isn't a fn's.
+    /// `let` binding it's, off the type its value has, a `let ..? =` binding what's there when the
+    /// value isn't null; absent where the body binds it otherwise, or its type isn't a fn's.
     fn bound_marks(name: string) -> List<bool>? {
         let lets = [s for s in self.store.stmt_ids() if self.store.let_name(s) == name]
         if lets.is_empty() { return self.seat_marks_of(name) }
         if lets.length != 1 { return null }
         let value? = self.store.stmt_value(lets[0]) else { return null }
-        seat_marks(self.typed_at(value))
+        let ty? = self.typed_at(value) else { return null }
+        seat_marks(if self.store.stmt(lets[0]) is .LetElse { ty.unwrapped() } else { ty })
     }
 
     /// Which seats of the fn type the seat `name` holds are `mut`; absent for a seat that holds none.
@@ -736,6 +750,12 @@ fn not_one_impl(m: MethodAt) -> string { "the method `${m.name}` of `${m.owner}`
 fn generic_owner(m: MethodAt) -> string { "the method `${m.name}` of the generic `${m.owner}`" }
 
 fn untyped_place(path: string) -> string { "`${path}`, whose type isn't read" }
+
+/// The place among a fn's or a type's parameters the type parameter `ty` stands at; absent for any
+/// other type.
+fn parameter_index(ty: SignedType) -> int? {
+    match ty.head { .Parameter(i, _) -> i, rest -> null }
+}
 
 fn no_method(ty: SignedType, name: string) -> string { "the method `${name}` of `${ty.spelled()}`" }
 

@@ -1081,6 +1081,17 @@ impl SyntaxArena {
         for p in copied.params { self.param_elsewhere.set_at(p.index, true) }
     }
 
+    /// Each node of `made` a copy made from the node of `src` beside it in `from` that a sublanguage
+    /// of the template minted keeps that sublanguage's origin, not the template's: its names read
+    /// where the grammar's actions do.
+    fn note_kept_origins(made: List<ExprId>, from: List<ExprId>, src: SyntaxArena) {
+        for j, id in made {
+            if j >= from.length { break }
+            let o? = src.foreign_of(from[j]) else { continue }
+            if self.expr_origins.at(id.index) == null { self.expr_origins.set_at(id.index, o) }
+        }
+    }
+
     /// Every node minted since `since` was written in the module `module`
     /// (`@std.meta`): its bare names resolve there, whatever file they land in.
     fn note_written_in(since: ArenaMarks, module: string) {

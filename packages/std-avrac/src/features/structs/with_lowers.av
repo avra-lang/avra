@@ -1,21 +1,22 @@
 //! The lowering rule of `with`: the record, then each written value in the order written; a flat
 //! record packed afresh from what's written and what it held, a boxed one copied whole and each
-//! written field written over.
-use core.{ExprId, Lowering, Lowers, Reg}
+//! written field written over. A `state` field written is held in a cell of its own, minted here;
+//! one left unwritten is the cell the record held, shared.
+use core.{ExprId, FieldSeat, Lowering, Lowers, Reg}
 use core.expr.{With}
 
 impl Lowers for With {
-    /// A copy of a record of its own type. One writing a `state` field isn't lowered yet.
+    /// A copy of a record of its own type.
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         let ty? = cx.type_at(e) else { return cx.unlowered(e) }
         if cx.type_at(self.subject)?.spelled() != ty.spelled() { return cx.unlowered(e) }
         let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
         let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
         let written = [f.of for f in self.fields]
-        if fields.any((f) -> f.state && written.contains(f.name)) { return cx.missed_as("a `with` writing a `state` field") }
         let l = cx.laid_out(ty)
         let src = cx.lower(self.subject)
-        let values = [cx.lower(v) for v in self.values]
+        let lowered = [cx.lower(v) for v in self.values]
+        let values = [celled_as(cx, fields, w, lowered[k]) for k, w in written]
         match l {
             .Boxed(_) -> {
                 let dst = cx.record_copied(l, src, laid)
@@ -29,4 +30,10 @@ impl Lowers for With {
                 ),
         }
     }
+}
+
+/// The value written for the field `name` among `fields`: in a cell of its own for a `state` field.
+fn celled_as(mut cx: Lowering, fields: List<FieldSeat>, name: string, v: Reg) -> Reg {
+    let f? = fields.find(it.name == name) else { return v }
+    cx.seat_filled(f, v)
 }

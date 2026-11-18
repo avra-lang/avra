@@ -19,6 +19,11 @@ use core.{
     StmtId,
     StmtLowers,
     rt_sig_of,
+    Literal,
+    SettledSeat,
+    literal_of,
+    settled_seat_key,
+    settled_symbol,
 }
 use core.expr.{Call}
 use core.stmt.{Return}
@@ -37,9 +42,12 @@ impl Lowers for Call {
         if self.args.length == 1 && metas(cx, named, CODE_HASH) { return code_hash_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
-        let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
+        let reached? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
+        let settled = settled_args(cx, reached, self.args)
+        let callee = if settled == null { reached } else { settled_unit(reached, settled!) }
+        let handed = if settled == null { self.args } else { [a for j, a in self.args if !settled!.any(it.at == j)] }
         let mark = cx.handing_mark()
-        let args? = cx.call_args(callee, self.args) else { return cx.missed_as(unseated(callee)) }
+        let args? = cx.call_args(callee, handed) else { return cx.missed_as(unseated(callee)) }
         let answer = cx.layout_at(e)
         if !callee.external {
             let r = cx.call_fn(answer, callee, args)
@@ -51,6 +59,53 @@ impl Lowers for Call {
         cx.handed_back(mark)
         r
     }
+}
+
+/// The value each `const` seat of `callee` settles to under `args`, by position: a literal, or a const
+/// whose value is one — the program's, one the body declares that settled, or a seat its own unit
+/// settles. Absent for a fn C or the host defines, whose row takes every seat; where it has no such
+/// seat; where the arguments name or spread seats or leave one for its default; and where one settles
+/// to anything else, which the call hands as any value.
+fn settled_args(cx: Lowering, callee: CalledFn, args: List<ExprId>) -> List<SettledSeat>? {
+    if callee.external ||
+        callee.hosted ||
+        callee.of != null ||
+        !callee.params.any(it.settled) ||
+        args.length != callee.params.length { return null }
+    if args.any((a) -> cx.store.arg_label(a) != null || cx.store.spread_operand(a) != null) { return null }
+    mut out: List<SettledSeat> = []
+    for j, p in callee.params {
+        if !p.settled { continue }
+        let v? = settled_value(cx, args[j]) else { return null }
+        out.push(SettledSeat { at: j, value: v })
+    }
+    out
+}
+
+/// The literal the argument `a` settles to, as `settled_args` reads one.
+fn settled_value(cx: Lowering, a: ExprId) -> Literal? {
+    let written = literal_of(cx.store.expr(a))
+    if written != null { return written }
+    let name? = cx.store.ident_name(a) else { return null }
+    if cx.bound(name) == null {
+        let named? = cx.named(a, name) else { return null }
+        return match named { .Literal(v) -> v, rest -> null }
+    }
+    let site? = cx.names.at(a)?.binder else { return null }
+    let key? = match site {
+        .Stmt(i) -> "${i}",
+        .Seat(j) -> if cx.settled_seats.contains(j) { settled_seat_key(j) } else { null },
+        rest -> null,
+    } else { return null }
+    let seed? = cx.settled_consts.get().get(key) else { return null }
+    match seed.value { .Literal(v) -> v, rest -> null }
+}
+
+/// The unit of `callee` whose `const` seats settle as `settled` says: its own symbol, those seats no
+/// longer among the ones a call fills.
+fn settled_unit(callee: CalledFn, settled: List<SettledSeat>) -> CalledFn {
+    let kept = (j: int) -> !settled.any(it.at == j)
+    callee with { symbol: settled_symbol(callee.symbol, settled), settled: settled, params: [p for j, p in callee.params if kept(j)], seats: [t for j, t in callee.seats if kept(j)] }
 }
 
 /// Whether `callee` is the fn `@std/meta` declares as `name`.

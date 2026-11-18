@@ -424,14 +424,14 @@ ret 0"""
             let l = ir_of(
                 "type Db = { cells: List<int> }\nimpl Db {\n    fn tag() -> string {\n        \"ab\"\n    }\n    fn keep(at: int) {\n        while self.tag().length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length",
             )
-            let keep: Body? = l.fns.find(it.name == "Db.keep")
+            let keep: Body? = l.fns.find(it.name == "alone/src/main.av.Db.keep")
             keep != null && cond_mint_settled(keep!.ins)
         }
         then "a LENDING read in a condition borrows — the subject still holds it, so the body writes in place" {
             let l = ir_of(
                 "type Db = { cells: List<int> }\nimpl Db {\n    fn keep(at: int) {\n        while self.cells.length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length",
             )
-            let keep: Body? = l.fns.find(it.name == "Db.keep")
+            let keep: Body? = l.fns.find(it.name == "alone/src/main.av.Db.keep")
             keep != null && !keep!.ins.any(is_owned_get(it))
         }
     }
@@ -737,13 +737,13 @@ spec "a mut cell's type" {
             let l = ir_of(
                 "type Far = { cursor: int, expected: List<string> }\nfn hold(i: int) -> int {\n    mut x: Far? = null\n    x = Far { cursor: i, expected: [] }\n    if x == null { 0 } else { x!.cursor }\n}\nhold(3)",
             )
-            cell_settles(body_of(render_ir(l), "hold")) >= 2
+            cell_settles(body_of(render_ir(l), "alone/src/main.av.hold")) >= 2
         }
         then "a store of null into a managed cell releases what it held" {
             let l = ir_of(
                 "type Far = { cursor: int, expected: List<string> }\nfn drop(i: int) -> int {\n    mut x: Far? = Far { cursor: i, expected: [] }\n    x = null\n    if x == null { 0 } else { 1 }\n}\ndrop(3)",
             )
-            cell_settles(body_of(render_ir(l), "drop")) >= 2
+            cell_settles(body_of(render_ir(l), "alone/src/main.av.drop")) >= 2
         }
     }
 }
@@ -752,14 +752,14 @@ spec "a region arm that leaves the function" {
     given "a borrow read before a branch that empties the container and RETURNS" {
         then "the arm never reaches the read after it, so the borrow costs no retain" {
             let l = ir_of(early_exit_borrow())
-            let skips: Body? = l.fns.find(it.name == "skips")
+            let skips: Body? = l.fns.find(it.name == "alone/src/main.av.skips")
             skips != null && !skips!.ins.any(is_owned_get(it))
         }
     }
     given "the same branch REJOINING instead of returning" {
         then "the change now stands between the borrow and its read, so it stays owned" {
             let l = ir_of(early_exit_borrow())
-            let stays: Body? = l.fns.find(it.name == "stays")
+            let stays: Body? = l.fns.find(it.name == "alone/src/main.av.stays")
             stays != null && stays!.ins.any(is_owned_get(it))
         }
     }
@@ -777,7 +777,7 @@ spec "a parameter's consumed mark, read off ir_of's own lowering" {
             let l = ir_of(
                 "type P = { n: int, items: List<int> }\nfn always(p: P) -> List<P> { [p] }\nalways(P { n: 1, items: [] })",
             )
-            let always: Body? = l.fns.find(it.name == "always")
+            let always: Body? = l.fns.find(it.name == "alone/src/main.av.always")
             always != null && consumed_mark(always!.marks, 0)
         }
     }

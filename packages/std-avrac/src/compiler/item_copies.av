@@ -50,6 +50,7 @@ type Copies = {
     writes_receiver: fn(SignedType, string) -> WrittenBy,
     method_marks: fn(SignedType, string) -> List<bool>,
     call_marks: fn(string) -> List<bool>,
+    named: Cell<Map<string, List<StmtId>>?>,
 }
 
 fn copied_places(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, CopyKind.Place) }
@@ -117,6 +118,7 @@ fn entry_copies(engine: QueryEngine, file: SourceFileAddress) -> EntryCopies {
         writes_receiver: (ty: SignedType, name: string) -> receiver_written(engine, ty, name, package),
         method_marks: (ty: SignedType, name: string) -> [s.mutable for s in (method_type(engine, ty, name, package)?.seats ?? []).drop(1)],
         call_marks: (callee: string) -> named_marks(engine, file, callee),
+        named: unnamed(),
     }
     EntryCopies {
         items: items,
@@ -136,7 +138,14 @@ fn copies_in(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadIt
         writes_receiver: (ty: SignedType, name: string) -> receiver_written(engine, ty, name, package),
         method_marks: (ty: SignedType, name: string) -> [s.mutable for s in (method_type(engine, ty, name, package)?.seats ?? []).drop(1)],
         call_marks: (callee: string) -> named_marks(engine, file, callee),
+        named: unnamed(),
     }
+}
+
+/// The statements a store binds by name, not yet gathered.
+fn unnamed() -> Cell<Map<string, List<StmtId>>?> {
+    let held: Cell<Map<string, List<StmtId>>?> = Cell.new(null)
+    held
 }
 
 /// What writes the receiver of a call of `name` on a value of `ty`.
@@ -219,12 +228,29 @@ impl Copies {
     /// binding of the name before the call in the fn that holds it, by its seed's type; absent for a
     /// name no statement there binds to a typed fn value.
     fn local_marks(callee: string, e: ExprId) -> List<bool>? {
+        let named = self.binding(callee)
+        if named.is_empty() { return null }
         let from = self.fn_lo(e)
-        let bound = [s for s in self.store.stmt_ids() if self.store.let_name(s) == callee && self.stmt_lo(s) < self.lo(e) && self.stmt_lo(s) > from]
+        let bound = [s for s in named if self.stmt_lo(s) < self.lo(e) && self.stmt_lo(s) > from]
         let last? = bound.last() else { return null }
         let seed? = self.store.stmt_value(last) else { return null }
         let ty? = (self.type_at)(seed.index) else { return null }
         if ty.seats.is_empty() { null } else { [it.mutable for it in ty.seats] }
+    }
+
+    /// The statements of the store that bind `name`, in the order it holds them: every name's gathered
+    /// on the first ask and held from there on.
+    fn binding(name: string) -> List<StmtId> {
+        let held? = self.named.get() else {
+            mut by_name: Map<string, List<StmtId>> = {}
+            for s in self.store.stmt_ids() {
+                let n? = self.store.let_name(s) else { continue }
+                by_name.set(n, (by_name.get(n) ?? []).concat([s]))
+            }
+            self.named.set(by_name)
+            return by_name.get(name) ?? []
+        }
+        held.get(name) ?? []
     }
 
     /// Each argument among `args` a `mut` seat of `marks` is handed, a write at itself.

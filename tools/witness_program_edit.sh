@@ -12,8 +12,11 @@
 # a field, and a method given a seat: one with a default its caller in another
 # file leaves out, one that caller is changed to fill, and one with a default
 # the impls of a gathered trait in other files leave out; then a defaulted seat
-# added and renamed twice, each built over the store the one before left; and a line added to the
-# cli's manifest, which re-judges that manifest alone. Empties every
+# added and renamed twice, each built over the store the one before left; a line added to the
+# cli's manifest, which re-judges that manifest alone; a call added to a body the program already
+# reaches, a body's only call of another dropped, so that one leaves the program, and two bodies
+# calling each other called anew, so taken back, the pair is cut loose of everything reaching it
+# and must leave the program though each still calls the other. Empties every
 # `.avra-cache` under packages/ and its own machine store.
 # Then AN INFERRED ERROR FOLLOWS ITS REACH: in a package of its own, a fn a `?` reaches gains a
 # `fail` of a new type; the warm build must be the cold one, and taken back, the first cold product.
@@ -55,7 +58,10 @@ packages/cli/src/commands/fmt.av|type Tally = { examined: int, differing: int, r
 packages/cli/src/commands/idiom_baseline.av|    fn news(findings: List<Finding>) -> List<Finding> {|    fn news(findings: List<Finding>, most: int = 0) -> List<Finding> {
 packages/cli/src/commands/idiom_baseline.av|    fn news(findings: List<Finding>) -> List<Finding> {|    fn news(findings: List<Finding>, most: int) -> List<Finding> { ;; packages/cli/src/commands/check.av|        let bad = loaded_baseline(baseline).news(c.findings)|        let bad = loaded_baseline(baseline).news(c.findings, 0) ;; packages/cli/src/commands/check_program.av|        let bad = loaded_baseline(baseline).news([s.finding for s in sites])|        let bad = loaded_baseline(baseline).news([s.finding for s in sites], 0)
 packages/std-avrac/src/core/checking.av|        binder: BindSite? = null,|        binder: BindSite? = null,\n        kept: bool = false,
-packages/cli/avra.toml|description = "The avra command"|description = "The avra command"\n# a note no law reads'
+packages/cli/avra.toml|description = "The avra command"|description = "The avra command"\n# a note no law reads
+packages/cli/src/commands/cache.av|    let shared? = machine_layer() else { return 0 }|    let shared? = machine_layer() else { return 0 }\n    let _ = cache_dir().length
+packages/cli/src/commands/cache.av|            "packs ${before.length} → ${after.length} · bytes ${octets_of(before)} → ${octets_of(after)} · ${distinct([p.print for p in after]).length} compiler(s) kept"|            "packs ${before.length} → ${after.length} · ${distinct([p.print for p in after]).length} compiler(s) kept"
+packages/cli/src/commands/cache.av|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }|fn cycle_a(n: int) -> int { if n > 0 { cycle_b(n - 1) } else { 0 } }\n\nfn cycle_b(n: int) -> int { if n > 0 { cycle_a(n - 1) } else { 0 } }\n\nfn octets_of(packs: List<PackListed>) -> int { packs.fold(cycle_a(2), (sum, p) -> sum + p.octets) }'
 
 restore() {
     for p in "$tmp"/orig/*.path; do [ -e "$p" ] && cp "${p%.path}.av" "$(cat "$p")"; done

@@ -4,6 +4,9 @@ use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
+    SettledSeat,
+    settled_seat_key,
+    settled_symbol,
     ConstSeed,
     NamesRead,
     StatesAsked,
@@ -106,6 +109,9 @@ export type LoweredFn = {
     unread: List<UnreadAt> = [],
     /// An entry's answer that no text spells, so no program shows it: absent where it has one.
     unprojected: Unprojected? = null,
+    /// Each seat it consumes, by its place among its seats: one it keeps whole on every path to its
+    /// answer, which a caller hands its own reference to. Empty where it consumes none.
+    consumed: List<bool> = [],
 }
 
 /// An entry's answer whose type has no text projection: the type, spelled, and where the statement
@@ -161,6 +167,27 @@ export fn lowered_generic(
     parameters: List<ParameterLayout>,
 ) -> LoweredFn? { lowered_under(engine, file, name, parameters) }
 
+/// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic, each
+/// `const` seat `settled` names settled to its value: the unit every call settling them alike runs.
+@query
+export fn lowered_settled(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    parameters: List<ParameterLayout>?,
+    settled: List<SettledSeat>,
+) -> LoweredFn? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    lowered_signed(engine, file, answered_fn(engine, file, name, signed), name, parameters, settled)
+}
+
+/// The fn `file` declares as `name`, its body `signed` as its inference answers it, typed, and the
+/// seats it takes.
+fn answered_fn(engine: QueryEngine, file: SourceFileAddress, name: string, signed: SignedBody) -> SignedBody {
+    let answered = answered_body(engine, InferringFn { file: file, name: name }, signed)
+    answered with { typed: typed_fn(engine, file, name), seats: seats_taken(file, answered) }
+}
+
 /// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic.
 @query
 fn lowered_under(
@@ -180,15 +207,7 @@ fn lowered_under(
             null
         }
     }
-    let answered = answered_body(engine, InferringFn { file: file, name: name }, signed)
-    let typed = typed_fn(engine, file, name)
-    lowered_signed(
-        engine,
-        file,
-        answered with { typed: typed, seats: seats_taken(file, answered) },
-        name,
-        parameters,
-    )
+    lowered_signed(engine, file, answered_fn(engine, file, name, signed), name, parameters)
 }
 
 /// A signed body `file` writes, lowered as the unit `name` under `parameters` where it's generic: a
@@ -199,6 +218,7 @@ fn lowered_signed(
     signed: SignedBody,
     name: string,
     parameters: List<ParameterLayout>?,
+    settled: List<SettledSeat> = [],
 ) -> LoweredFn {
     let refused = lowering_refused(signed, parameters)
     if refused != null {
@@ -213,7 +233,7 @@ fn lowered_signed(
             statics: [],
         }
     }
-    signed_lowered(engine, file, signed, name, parameters)
+    signed_lowered(engine, file, signed, name, parameters, settled)
 }
 
 /// A signed body `file` writes, lowered as `lowered_signed` says, past its refusals; under bounded
@@ -224,6 +244,7 @@ fn signed_lowered(
     signed: SignedBody,
     name: string,
     parameters: List<ParameterLayout>?,
+    settled: List<SettledSeat> = [],
 ) -> LoweredFn {
     let body = elaborated(engine, file, signed)
     let fills = bound_fills(parameters ?? [])
@@ -236,7 +257,7 @@ fn signed_lowered(
             engine,
             file,
             body.store,
-            unit_name(name, parameters),
+            settled_unit_name(name, parameters, settled),
             signature.type_params,
             parameters,
             written_by(signed.item.store, signed.stmt),
@@ -246,11 +267,24 @@ fn signed_lowered(
         [t?.filled(fills) for t in body.core],
         seats,
         signature.answer,
-    ) with { written_seats: [p.name for p in signature.params if p.mutable], frame: unwind_frame(file, name, unit_name(name, parameters), body_written_at(engine, file, signed)), names: NamesRead { reads: body.reads }, roots: [body.body] }
+    ) with { written_seats: [p.name for p in signature.params if p.mutable], frame: unwind_frame(
+        file,
+        name,
+        settled_unit_name(name, parameters, settled),
+        body_written_at(engine, file, signed),
+    ), names: NamesRead { reads: body.reads }, roots: [body.body] }
     if signed.receiver != null { cx.seated_written(RECEIVER, signed.receiver!.filled(fills), signed.receiver_written) }
     for c in signed.consts { cx.seeded(c) }
-    for p in signature.params {
+    let seated = [p for j, p in signature.params if !settled.any(it.at == j)]
+    for p in seated {
         if p.state { cx.seated_state(p.name, p.ty!) } else { cx.seated_written(p.name, p.ty!, p.mutable) }
+    }
+    cx.settled_seats = [s.at for s in settled]
+    for s in settled {
+        let p = signature.params[s.at]
+        let seed = ConstSeed { name: p.name, ty: p.ty!, value: NamedValue.Literal(s.value) }
+        cx.settled_consts.put(settled_seat_key(s.at), seed)
+        cx.seeded(seed)
     }
     cx.scope_enter()
     let r = when {
@@ -262,7 +296,63 @@ fn signed_lowered(
     cx.scope_exit(r)
     cx.emit(Ins.RetVal(r))
     let answer = cx.laid_out(signature.answer)
-    unit_lowered(cx, signature.params.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread }
+    let eligible = [consumable(signed, name, p) && cx.laid_out(p.ty!).counted() for p in seated]
+    let names = cx.names
+    let places = seat_places(signature.params.length, settled)
+    let consumed = if eligible.any(it) { kept_seats(body.store, body.body, eligible, (e: ExprId) -> seat_read(names, places, e)) } else { [] }
+    unit_lowered(cx, seated.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread, consumed: if consumed.any(it) { consumed } else { [] } }
+}
+
+/// The name a unit of the fn `name` under `parameters`, its `const` seats settled as `settled` says,
+/// gives what it names after itself: its lambdas, its consts, its frame.
+fn settled_unit_name(name: string, parameters: List<ParameterLayout>?, settled: List<SettledSeat>) -> string {
+    let unit = unit_name(name, parameters)
+    if settled.is_empty() { unit } else { settled_symbol(unit, settled) }
+}
+
+/// Each seat's place among the registers of a unit whose seats `settled` names hold none, by its
+/// place among the fn's `n` seats; absent for a settled one.
+fn seat_places(n: int, settled: List<SettledSeat>) -> List<int?> {
+    mut at = 0
+    mut out: List<int?> = []
+    for j in 0..n {
+        if settled.any(it.at == j) {
+            out.push(null)
+        } else {
+            out.push(at)
+            at = at + 1
+        }
+    }
+    out
+}
+
+/// Whether the seat `p` of the body `signed` declares as `name` may be one it consumes: a seat of a
+/// free fn a call reaches by its symbol alone — no method, whose receiver or impl a dispatch may
+/// stand between, no host fn, which the host calls, no `once` fn and no case — taking a value by
+/// itself, no `mut`, `const`, `state`, isolated, spread or rest seat.
+fn consumable(signed: SignedBody, name: string, p: SignedParam) -> bool {
+    let store = signed.item.store
+    signed.receiver == null &&
+        !name.contains(".") &&
+        !signed.case &&
+        !store.is_host_fn(signed.stmt) &&
+        !store.is_once(signed.stmt) &&
+        p.ty != null &&
+        !p.mutable &&
+        !p.settled &&
+        !p.state &&
+        !p.unshared &&
+        !p.spread &&
+        !p.rest
+}
+
+/// The register of the seat a bare name read at `e` reads, by `places`; absent for a capture and a
+/// settled seat.
+fn seat_read(names: NamesRead, places: List<int?>, e: ExprId) -> int? {
+    let r? = names.at(e) else { return null }
+    if !r.crossed.is_empty() { return null }
+    let b? = r.binder else { return null }
+    match b { .Seat(i) -> if i < places.length { places[i] } else { null }, rest -> null }
 }
 
 /// The types the bounded parameters of a unit under `parameters` are filled by, by place: what a
@@ -936,6 +1026,7 @@ fn signed_seats(signed: List<SignedParam>) -> List<CalledSeat> {
         defaulted: s.defaulted,
         rest: s.rest,
         state: s.state,
+        settled: s.settled,
     } for s in signed]
 }
 

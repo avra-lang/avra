@@ -3,8 +3,8 @@
 //! isn't `mut`, writes where nobody looks. A `mut` local, a `mut` seat, a `state` and the method's
 //! own `self` are places. Read over the writes a written item's bodies make, as the copy laws read
 //! them; a root nothing in the fn binds is the program's, which other laws hold.
-use core.{flatten, ExprId, Param, PatId, StmtId}
-use compiler.laws.{Found, law}
+use core.{flatten, ExprId, NodeKind, Param, PatId, StmtId}
+use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.{chain_receiver_copied, receiver_a_value, receiver_captured, receiver_not_mut}
 use @std.meta.{derive}
@@ -74,9 +74,15 @@ fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: int) -> Item
         (a: Write, b: Write) -> cx.lo(a.at) < cx.lo(b.at),
     )
     if writes.is_empty() { return ItemReceivers { writes: [] } }
-    let ran = ran_before(engine, file, at)
+    let ran: Cell<List<RanBinding>?> = Cell.new(null)
+    let before = () -> ran.get() ?? {
+        let made = ran_before(engine, file, at)
+        ran.set(made)
+        made
+    }
+    let lambdas = [x.expr()! for x in item_view(engine, file, at).nodes_on([NodeKind.ExprLambda], Reach.Stored, true)]
     ItemReceivers {
-        writes: [r! for w in writes for r in [receiver_unplaced(cx, w, ran)] if r != null],
+        writes: [r! for w in writes for r in [receiver_unplaced(cx, w, before, lambdas)] if r != null],
     }
 }
 
@@ -93,8 +99,10 @@ fn ran_in(item: ReadItem) -> List<RanBinding> {
 /// A name a statement the file runs binds, and whether a write lands in it.
 type RanBinding = { name: string, mutable: bool }
 
-/// The receiver the write `w` goes through as a place it may not write, absent where it may.
-fn receiver_unplaced(cx: Copies, w: Write, ran: List<RanBinding>) -> ReceiverWrite? {
+/// The receiver the write `w` goes through as a place it may not write, absent where it may: `ran`
+/// answers what the statements the file runs before it bind, asked only where no fn binds the root,
+/// and `lambdas` are the store's lambdas.
+fn receiver_unplaced(cx: Copies, w: Write, ran: fn() -> List<RanBinding>, lambdas: List<ExprId>) -> ReceiverWrite? {
     let method = w.method ?? ""
     let at = kept_at(cx.store.expr_span(w.at))
     let value = ReceiverWrite { at: at, why: Unplaced.Value, root: "", method: method }
@@ -102,8 +110,8 @@ fn receiver_unplaced(cx: Copies, w: Write, ran: List<RanBinding>) -> ReceiverWri
     if cx.root_name(r) == null && !cx.store.is_receiver(r) { return value }
     let word = cx.root_word(r)
     if cx.store.chained_by(r) { return ReceiverWrite { at: at, why: Unplaced.Chained, root: word, method: method } }
-    let b? = receiver_binder(cx, r, w.at) ?? ran_binder(cx, r, ran) else { return null }
-    if lambda_since(cx, b.lo, w.at) { return ReceiverWrite { at: at, why: Unplaced.Captured, root: word, method: method } }
+    let b? = receiver_binder(cx, r, w.at, lambdas) ?? ran_binder(cx, r, ran()) else { return null }
+    if lambda_since(cx, b.lo, w.at, lambdas) { return ReceiverWrite { at: at, why: Unplaced.Captured, root: word, method: method } }
     if b.mutable { null } else { ReceiverWrite { at: at, why: Unplaced.Unmarked, root: word, method: method } }
 }
 
@@ -118,16 +126,16 @@ fn ran_binder(cx: Copies, root: ExprId, ran: List<RanBinding>) -> ReceiverBinder
 /// What binds the root `root` where the node `at` reads it: the latest of the fn's own `self`, its
 /// seats, the statements before `at` in it, the seats of each lambda holding `at` and the patterns
 /// before it that bind the name, none of which a write lands in; absent where nothing in the fn does.
-fn receiver_binder(cx: Copies, root: ExprId, at: ExprId) -> ReceiverBinder? {
+fn receiver_binder(cx: Copies, root: ExprId, at: ExprId, lambdas: List<ExprId>) -> ReceiverBinder? {
     let from = cx.fn_lo(at)
     if cx.store.is_receiver(root) { return ReceiverBinder { lo: from, mutable: true } }
     let name = cx.root_word(root)
     let here = cx.lo(at)
     let stated = [ReceiverBinder { lo: cx.stmt_lo(s), mutable: binds_writable(cx, s) } for s in cx.store.stmt_ids() if cx.store.let_name(s) == name && cx.stmt_lo(s) > from && cx.stmt_lo(s) < here]
     let seated = [ReceiverBinder { lo: from, mutable: p.promises.mutable } for s in cx.store.stmt_ids() if cx.stmt_lo(s) == from for f in [cx.store.fn_parts(s)] if f != null for p in f!.params if p.name.of == name]
-    let lambdas = [ReceiverBinder { lo: cx.lo(l), mutable: p.promises.mutable || heard_mut(cx, l, j) } for i in 0..cx.store.expr_count() for l in [ExprId { index: i }] if cx.holds(l, here) for parts in [cx.store.lambda_parts(l)] if parts != null for j, p in parts!.params if p.name.of == name]
+    let seats = [ReceiverBinder { lo: cx.lo(l), mutable: p.promises.mutable || heard_mut(cx, l, j) } for l in lambdas if cx.holds(l, here) for parts in [cx.store.lambda_parts(l)] if parts != null for j, p in parts!.params if p.name.of == name]
     let patterned = [ReceiverBinder { lo: span!.lo, mutable: false } for i in 0..cx.store.pat_count() for p in [PatId { index: i }] if cx.store.bind_name(p) == name for span in [cx.store.pat_span(p)] if span != null && span!.lo > from && span!.lo < here]
-    latest_binder(stated.concat(seated).concat(lambdas).concat(patterned))
+    latest_binder(stated.concat(seated).concat(seats).concat(patterned))
 }
 
 /// Whether the lambda `l`'s seat `j` heard a `mut` from the seat it fills, as its type says, or the
@@ -147,15 +155,11 @@ fn latest_binder(all: List<ReceiverBinder>) -> ReceiverBinder? {
         .fold(first, (most: ReceiverBinder, b: ReceiverBinder) -> if b.lo > most.lo { b } else { most })
 }
 
-/// Whether a lambda holding the node `at` begins after `lo`, so a binding there is its capture.
-fn lambda_since(cx: Copies, lo: int, at: ExprId) -> bool {
+/// Whether a lambda among `lambdas` holding the node `at` begins after `lo`, so a binding there is
+/// its capture.
+fn lambda_since(cx: Copies, lo: int, at: ExprId, lambdas: List<ExprId>) -> bool {
     let here = cx.lo(at)
-    (0..cx.store.expr_count())
-        .any(
-            (i) -> cx.store.lambda_parts(ExprId { index: i }) != null &&
-                cx.lo(ExprId { index: i }) > lo &&
-                cx.holds(ExprId { index: i }, here),
-        )
+    lambdas.any((l) -> cx.lo(l) > lo && cx.holds(l, here))
 }
 
 /// a declared method that writes its receiver, called on a value

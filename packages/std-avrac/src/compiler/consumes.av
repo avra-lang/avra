@@ -54,13 +54,13 @@ impl Workspace {
         let taken? = self.taken_as_value(d) else { return filled(n, false) }
         if taken { return filled(n, false) }
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
-        mut cx = Consumed {
-            store: self.decls.store(d),
-            names: self.names_of(d),
-            eligible: [self.eligible_seat(x, i, seats) for i in 0..n],
-            returned: filled(n, true),
-        }
-        cx.scan(x.root!)
+        let names = self.names_of(d)
+        kept_seats(
+            self.decls.store(d),
+            x.root!,
+            [self.eligible_seat(x, i, seats) for i in 0..n],
+            (e: ExprId) -> param_read(names, e),
+        )
     }
 
     /// A declaration's consumed seats, asked as its own answer; inside a resolve or typing,
@@ -122,10 +122,33 @@ impl Workspace {
     fn taken_as_value(d: DeclId) -> bool? { self.decls.read_found(d) }
 }
 
-/// What one body's survey reads and gathers: its file's parts, which
-/// seats are still candidates, and the seats every path that RETURNS
-/// has kept.
-type Consumed = { store: SyntaxArena, names: NameFacts, eligible: List<bool>, returned: List<bool> }
+/// The seat a bare name read at `e` names, by the old path's bindings.
+fn param_read(names: NameFacts, e: ExprId) -> int? {
+    let b? = names.binding(e) else { return null }
+    match b { .Param(i) -> i, _ -> null }
+}
+
+/// THE SEATS A BODY CONSUMES: of the `eligible` ones, each its body `root` in `store` keeps whole on
+/// every path to an answer, `seat_read` naming the seat a bare read at a node reads, absent for any
+/// other node and for a capture.
+export fn kept_seats(
+    store: SyntaxArena,
+    root: ExprId,
+    eligible: List<bool>,
+    seat_read: fn(ExprId) -> int?,
+) -> List<bool> {
+    mut cx = Consumed {
+        store: store,
+        seat_read: seat_read,
+        eligible: eligible,
+        returned: filled(eligible.length, true),
+    }
+    cx.scan(root)
+}
+
+/// What one body's survey reads and gathers: its file's parts, how a read names a seat, which seats
+/// are still candidates, and the seats every path that RETURNS has kept.
+type Consumed = { store: SyntaxArena, seat_read: fn(ExprId) -> int?, eligible: List<bool>, returned: List<bool> }
 
 impl Consumed {
     /// The ELIGIBLE seats every path through the body keeps: at its end
@@ -193,8 +216,8 @@ impl Consumed {
     /// including a capture (a lambda's copy) and a seat this survey
     /// already excluded.
     fn seat_of(e: ExprId) -> int? {
-        let b? = self.names.binding(e) else { return null }
-        match b { .Param(i) if i < self.eligible.length && self.eligible[i] -> i, _ -> null }
+        let i? = (self.seat_read)(e) else { return null }
+        if i < self.eligible.length && self.eligible[i] { i } else { null }
     }
 
     /// The values an expression KEEPS whole: a `with`'s or a method

@@ -41,6 +41,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.source_facts.{source_octets}
 use compiler.backend.{EmbedReader, run_lifted}
+use compiler.lower.{CODE_HASH_REACHED, code_hash_unheld}
 
 extern fn avra_utf8_bad_at(b: Bytes) -> int
 
@@ -95,7 +96,10 @@ fn settlement_of(engine: QueryEngine, file: SourceFileAddress, body: SignedBody,
     if reaches_gathered(survey, root) { return unsettled_as(per_program()) with { per_program: true } }
     let made = match made_reaching(survey, root, symbol, [], TaskChecks.Surveyed, lazy: true) {
         .Made(l) -> l,
-        .Unmade(why, _) -> { return unsettled_as("a const whose value reaches a body not lowered yet: ${why}") },
+        .Unmade(why, _) -> {
+            if why == unhashed() { return code_hash_trapped(name) }
+            return unsettled_as("a const whose value reaches a body not lowered yet: ${why}")
+        },
         .Refused(_) -> { return unsettled_as(const_refused()) },
     }
     let ran = match run_lifted(
@@ -226,6 +230,13 @@ fn settles_from_itself(name: string) -> ConstSettlement {
     let said = unsettled_voice(name, asked)?.message ?? ""
     let why = Unsettled.Trap("${said}: ${unsettled_label(name, asked)}")
     unsettled_as(unsettled_label(name, why)) with { broken: broken_of(why) }
+}
+
+/// A const whose value asks a code hash: its run traps, since at compile time the program is only
+/// what the const reaches.
+fn code_hash_trapped(name: string) -> ConstSettlement {
+    let words = "${code_hash_unheld()}: ${CODE_HASH_REACHED}"
+    unsettled_as(unsettled_label(name, Unsettled.Trap(words))) with { broken: broken_of(Unsettled.Trap(words)) }
 }
 
 fn unsettled_as(why: string) -> ConstSettlement { ConstSettlement { words: [], data: null, unsettled: why, broken: null } }

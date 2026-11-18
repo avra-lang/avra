@@ -215,4 +215,13 @@ spec "features/quote — a quote is `Code`" {
                 .run() { .Ok(out) -> out == "6", .Err(_) -> false }
         }
     }
+    given "a template's written types — a `let` annotation in an imported component's quote" {
+        then "names the type where the template's file stands, not where it lands" {
+            let prov = "use @std.meta.{Code}\nexport type Span = { n: int }\nexport fn span(n: int) -> Span { Span { n: n } }\nexport component limited(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            {\n                let limit: Span = \${self.limit}\n                \${self.body} + limit.n\n            }\n        }\n    }\n}\n"
+            match packaged("use @x.prov.{limited, span}\nlimited span(3) { 4 }", prov).run() {
+                .Ok(out) -> out == "7",
+                .Err(_) -> false,
+            }
+        }
+    }
 }

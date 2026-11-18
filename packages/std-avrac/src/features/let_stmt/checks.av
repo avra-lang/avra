@@ -5,21 +5,23 @@ use core.expr.{LetPattern}
 use core.stmt.{Let, MutLet}
 
 impl StmtChecks for Let {
-    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, self.name.of, self.ty, self.value, true) }
+    fn stmt_checked(mut cx: Checking, s: StmtId) { bound_to(cx, s, self.name.of, self.ty, self.value, true) }
 }
 
 impl StmtChecks for MutLet {
     fn stmt_checked(mut cx: Checking, s: StmtId) {
-        bound_to(cx, self.name.of, self.ty, self.value, false, true, cx.store.is_state_stmt(s))
+        bound_to(cx, s, self.name.of, self.ty, self.value, false, true, cx.store.is_state_stmt(s))
     }
 }
 
-/// `value` checked against `annotation` when one is written, and `name` bound to the annotation's
+/// `value` checked against `annotation` when one is written — read where the template that wrote
+/// `s` stands — and `name` bound to the annotation's
 /// type, else to the value's; a `let` narrows, a `mut` can be written again and doesn't, a write
 /// through it lands in its own cell, and a `state` is the one place every lambda that reaches it
 /// shares.
 fn bound_to(
     mut cx: Checking,
+    s: StmtId,
     name: string,
     annotation: TypeRef?,
     value: ExprId,
@@ -27,7 +29,7 @@ fn bound_to(
     writes: bool = false,
     shared: bool = false,
 ) {
-    let declared: SignedType? = if annotation == null { null } else { cx.written(annotation!) }
+    let declared: SignedType? = if annotation == null { null } else { cx.written_in(annotation!, s) }
     let before = cx.refused.get().length
     let read = cx.check_seated(value, declared, Seating.Binding(name))
     if cx.nothing_bound(value, read, before) { return cx.bind(name, null) }

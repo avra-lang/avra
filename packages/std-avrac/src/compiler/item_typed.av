@@ -340,7 +340,7 @@ fn program_answered(
             signed_said,
         ),
         declared_value: (f: SourceFileAddress, n: string) -> value_type(engine, f, n, true),
-        written: (written: TypeRef) -> signing.signed(written),
+        written: (written: TypeRef, home: string?) -> signed_from(signing, home, written),
         type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
         record_of: (ty: SignedType) -> kept_answer(
             memos,
@@ -411,6 +411,14 @@ fn program_answered(
             .find_map((f) -> fn_bounds(engine, f, n)) ?? [],
         memos: memos,
     }
+}
+
+/// The type `written` under `signing`, read where the template `home` names stands first: what that
+/// file names, else what the body's names.
+fn signed_from(signing: Signing, home: string?, written: TypeRef) -> SignedType {
+    let h? = home_file(signing.engine, home) else { return signing.signed(written) }
+    let homed = (signing with { writer: h }).signed(written)
+    if homed.head is .Unnamed { signing.signed(written) } else { homed }
 }
 
 /// The type `name` names under `signing`, read where the template `home` names stands first: what that

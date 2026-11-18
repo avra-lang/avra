@@ -75,18 +75,44 @@ export fn expr_index(b: BindSite?) -> int {
 /// value reads, by its statement, in the order first read; absent where the value reads any other
 /// binding of the body — a seat, a `let`, a pattern's name — which holds a value only while the body
 /// runs. A binding the value makes itself (a lambda's seat, a block's own `let`) is the value's.
-export fn body_const_reads(store: SyntaxArena, names: NamesRead, value: ExprId) -> List<StmtId>? {
+export fn body_const_reads(
+    store: SyntaxArena,
+    names: NamesRead,
+    value: ExprId,
+    settled: List<int> = [],
+) -> List<StmtId>? {
     let spanned? = store.expr_span(value) else { return null }
     mut consts: List<StmtId> = []
     for e in store.every_expr(value) {
         let read? = names.at(e) else { continue }
         let site? = read.binder else { continue }
-        if binder_within(store, site, spanned) { continue }
+        if binder_within(store, site, spanned) || settled_seat(site, settled) { continue }
         let s? = match site { .Stmt(i) -> StmtId { index: i }, rest -> null } else { return null }
         if store.const_value(s) == null { return null }
         if !consts.any(same_stmt(it, s)) { consts.push(s) }
     }
     consts
+}
+
+/// Whether `site` is a seat among `settled`.
+fn settled_seat(site: BindSite, settled: List<int>) -> bool {
+    match site { .Seat(j) -> settled.contains(j), rest -> false }
+}
+
+/// The seats among `settled` that `value` reads, each once.
+export fn settled_seat_reads(
+    store: SyntaxArena,
+    names: NamesRead,
+    value: ExprId,
+    settled: List<int>,
+) -> List<int> {
+    mut out: List<int> = []
+    for e in store.every_expr(value) {
+        let site? = names.at(e)?.binder else { continue }
+        let j? = match site { .Seat(j) -> j, rest -> null } else { continue }
+        if settled.contains(j) && !out.contains(j) { out.push(j) }
+    }
+    out
 }
 
 /// Whether the binding made at `site` stands inside `span`.

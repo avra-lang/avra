@@ -28,7 +28,9 @@ export type CheckedProgram = {
     value_named: fn(string, string?) -> SignedType?,
     /// A top-level value's type as the file that declares it names it: a binding's, never a name's.
     declared_value: fn(SourceFileAddress, string) -> SignedType?,
-    written: fn(TypeRef) -> SignedType,
+    /// A written type, read where the template that wrote it stands (its home, as an origin spells
+    /// it) before where the body stands.
+    written: fn(TypeRef, string?) -> SignedType,
     /// A type by its name, read where the template that wrote it stands (its home, as an origin
     /// spells it) before where the body stands.
     type_named: fn(string, string?) -> SignedType,
@@ -4028,7 +4030,13 @@ impl Checking {
     fn method_of(subject: SignedType, name: string) -> SignedType? { (self.program.method_of)(subject, name) }
 
     /// A type written in the body, resolved.
-    fn written(ty: TypeRef) -> SignedType { (self.program.written)(ty) }
+    fn written(ty: TypeRef) -> SignedType { (self.program.written)(ty, null) }
+
+    /// The type `ty` the statement `s` writes, read where the template that wrote `s` stands before
+    /// where the body stands.
+    fn written_in(ty: TypeRef, s: StmtId) -> SignedType {
+        (self.program.written)(ty, self.store.seat_home(s, LandedSeat.Names))
+    }
 }
 
 /// A scope with nothing bound in it yet.

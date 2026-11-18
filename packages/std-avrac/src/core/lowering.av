@@ -213,6 +213,8 @@ export type CalledFn = {
     given_in: string? = null,
     /// For a suite's case, the item its spec stands in and its place among the spec's cases.
     case_item: int? = null,
+    /// For a unit settling `const` seats, each seat and the value it settles to.
+    settled: List<SettledSeat> = [],
     case_index: int = 0,
 }
 
@@ -234,7 +236,32 @@ impl Defaulting {
 /// A seat of a fn a call fills: its name, its type, whether a write reaches the caller through it,
 /// whether it has a default, and whether it takes the arguments a call leaves.
 @derive(Saved)
-export type CalledSeat = { name: string, ty: SignedType, mutable: bool, defaulted: bool, rest: bool, state: bool = false }
+export type CalledSeat = { name: string, ty: SignedType, mutable: bool, defaulted: bool, rest: bool, state: bool = false, settled: bool = false }
+
+/// A `const` seat of a fn's unit, by its place among the fn's seats, and the value every call of the
+/// unit settles it to.
+@derive(Saved)
+export type SettledSeat = { at: int, value: Literal }
+
+/// The symbol of the unit of the fn known as `symbol` whose `const` seats settle as `settled` says:
+/// the digest of each seat's place and value.
+export fn settled_symbol(symbol: string, settled: List<SettledSeat>) -> string {
+    let spelled = ["${s.at}=${literal_spelled(s.value)}" for s in settled].join(";")
+    "${symbol}\$@${fp_str(spelled) & 9223372036854775807}"
+}
+
+/// The key a unit's settled seat at `at` is kept under among the consts its body settled.
+export fn settled_seat_key(at: int) -> string { "seat ${at}" }
+
+/// A literal as its kind and its value, each kind apart: text by its length first.
+fn literal_spelled(v: Literal) -> string {
+    match v {
+        .Int(n) -> "i${n}",
+        .Float(bits) -> "f${bits}",
+        .Bool(b) -> "b${b}",
+        .Text(t) -> "t${t.length}:${t}",
+    }
+}
 
 /// A register holding a fn value's box, and the key of the type the box is of: the fn type's seats'
 /// and answer, seen through a name and a `?` and with no seat's marks, so every way a program
@@ -387,9 +414,11 @@ export type Lowering = {
     /// The plain `let`s, by their statements' indices, a writing method writes through: each seeds
     /// its value in a cell.
     celled_lets: Cell<List<int>>,
-    /// Each const the body declares that settled at compile time, by its statement's index: what a
-    /// const after it that reads it is handed.
+    /// Each const the body declares that settled at compile time, by its statement's index, and each
+    /// seat its unit settles, by `settled_seat_key`: what a const after it that reads it is handed.
     settled_consts: Cell<Map<string, ConstSeed>>,
+    /// The seats, by place among the fn's, its unit settles to a value every call of it gives.
+    settled_seats: List<int> = [],
     /// The frame an unwind out of the body pushes, as the binary's data: its label and where it was
     /// written. Absent for a body no source names.
     frame: Static? = null,
@@ -590,9 +619,11 @@ impl Lowering {
     /// The type `e`'s seat wants, absent where its seat names none.
     fn seat_at(e: ExprId) -> SignedType? { self.seats.get("${e.index}") }
 
-    /// A binding's type: as it's written, else its value's.
-    fn binding_type(written: TypeRef?, value: ExprId) -> SignedType? {
-        if written == null { self.type_at(value) } else { self.written(written!) }
+    /// A binding's type: as the statement `s` writes it, read where its template stands, else its
+    /// value's.
+    fn binding_type(written: TypeRef?, value: ExprId, s: StmtId) -> SignedType? {
+        let ty? = written else { return self.type_at(value) }
+        self.written_by(ty, self.store.seat_home(s, LandedSeat.Names))
     }
 
     /// What a value of `ty` is to the machine; a type whose layout isn't known is noted.
@@ -642,10 +673,13 @@ impl Lowering {
 
     /// A type written in the body, resolved, each bounded parameter of the unit it lowers in standing
     /// for the type filling it, as the body's typed nodes do.
-    fn written(ty: TypeRef) -> SignedType {
+    fn written(ty: TypeRef) -> SignedType { self.written_by(ty, null) }
+
+    /// `written`, read where the template whose home is `home` stands before where the body stands.
+    fn written_by(ty: TypeRef, home: string?) -> SignedType {
         mut fills: Map<string, SignedType> = {}
         for j, p in self.program.checked.parameters { if p.fill != null { fills.set("${j}", p.fill!) } }
-        (self.program.checked.written)(ty).filled(fills)
+        (self.program.checked.written)(ty, home).filled(fills)
     }
 
     /// The fields of the record `ty` is, each typed under its arguments; absent for a type that's no
