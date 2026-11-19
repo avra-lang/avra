@@ -8,10 +8,12 @@ use @std.sqlite.{Db}
 use @std.sqlite.error.{Cause, SqlError, Violation}
 use @std.validate.{Issue, Issues, root}
 
-/// One `@unique` field's own name and where it was declared — enough
-/// to say which law a violation broke, never the whole `@std/meta`
-/// `Field` a model's derive already spent at compile time.
-export type UniqueField = { name: string, at: Loc? }
+/// One `@unique` mark: the field it stands on and where that was
+/// declared, the fields it is unique `among` (none: unique alone), and
+/// the `columns` its key holds, in key order — enough to say which law a
+/// violation broke, never the whole `@std/meta` `Field` a model's derive
+/// already spent at compile time.
+export type UniqueField = { name: string, at: Loc?, columns: List<string>, among: List<string> = [] }
 
 /// A `@model` operation's failure. `.cause()` always answers the
 /// original `SqlError` whole — the model-aware message is a richer
@@ -74,7 +76,15 @@ fn referenced_message(model: string) -> string {
 }
 
 fn unique_message(f: UniqueField, model: string) -> string {
+    if f.among.is_empty() { alone_voice(f, model) } else { within_voice(f, model) }
+}
+
+fn alone_voice(f: UniqueField, model: string) -> string {
     "`${f.name}` must be unique — declared @unique on `${model}.${f.name}`${at_suffix(f.at)}"
+}
+
+fn within_voice(f: UniqueField, model: string) -> string {
+    "`${f.name}` must be unique within ${["`${n}`" for n in f.among].join(", ")} — declared @unique(${f.among.join(", ")}) on `${model}.${f.name}`${at_suffix(f.at)}"
 }
 
 fn ambiguous_message(fs: List<UniqueField>, model: string) -> string {
@@ -114,7 +124,7 @@ fn is_unique_violation(cause: Cause) -> bool {
 }
 
 /// A raw `SqlError` resolved back through a model's own `@unique`
-/// fields — the derive's compile-time knowledge meeting a run-time
+/// marks — the derive's compile-time knowledge meeting a run-time
 /// failure. Zero known fields makes the violation structurally
 /// impossible; the honest answer if it somehow still happens is the
 /// plain wrap, never a fabricated field.
@@ -123,32 +133,39 @@ export fn attributed(e: SqlError, model: string, fields: List<UniqueField>) -> M
     match fields.length {
         0 -> ModelError.Other(e),
         1 -> ModelError.Unique(fields[0], model, e),
-        rest -> match named_field(e.message, model, fields) {
+        rest -> match named_key(e.message, model, fields) {
             f? -> ModelError.Unique(f, model, e)
             null -> ModelError.Ambiguous(fields, model, e)
         },
     }
 }
 
-/// The `@unique` field SQLite's own message names, when it parses as
-/// the derive's own DDL would produce it — `"table.column"`, a
-/// documented, stable part of `sqlite3_errmsg`'s text for a UNIQUE
-/// violation. Anything else (a future format, a hand-written
-/// constraint) answers null and the caller falls back honestly.
-fn named_field(message: string, model: string, fields: List<UniqueField>) -> UniqueField? {
-    fields.find((f) -> names_exact_column(message, model, f.name))
+/// The `@unique` mark SQLite's own message names, when it parses as
+/// the derive's own DDL would produce it — `"table.column"` for each
+/// column of the key, a documented, stable part of `sqlite3_errmsg`'s
+/// text for a UNIQUE violation. The mark is the one whose every column
+/// is named and that holds the most: a key's columns may hold another's.
+/// Anything else (a future format, a hand-written constraint) answers
+/// null and the caller falls back honestly.
+fn named_key(message: string, model: string, fields: List<UniqueField>) -> UniqueField? {
+    let named = [f for f in fields if f.columns.all((c) -> names_exact_column(message, model, c))]
+    named.find((f) -> named.all(it.columns.length <= f.columns.length))
 }
 
 /// `message` names `model.name` as its OWN identifier — never merely
-/// as a substring. One `@unique` field's name can prefix or suffix
+/// as a substring. One `@unique` column's name can prefix or suffix
 /// another's on the same model (`name` inside `name2`), and a model's
 /// own name can be a suffix of an unrelated table's (`User` inside
 /// `SuperUser`); either way a bare `contains` names a confident wrong
-/// field instead of falling back honestly.
+/// field instead of falling back honestly. Every place the words stand
+/// is asked: a key may hold `name2` before `name`.
 fn names_exact_column(message: string, model: string, name: string) -> bool {
-    let needle = "${model}.${name}"
-    let i = message.index_of(needle)
-    i >= 0 && !ident_char_at(message, i - 1) && !ident_char_at(message, i + needle.length)
+    let around = " ${message} ".split("${model}.${name}")
+    (1..around.length)
+        .any(
+            (i) -> !ident_char_at(around[i - 1], around[i - 1].length - 1) &&
+                !ident_char_at(around[i], 0),
+        )
 }
 
 fn ident_char_at(message: string, at: int) -> bool {

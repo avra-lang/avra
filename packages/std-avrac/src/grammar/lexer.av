@@ -94,32 +94,35 @@ export type LexResult = { tokens: List<Token>, docs: List<DocComment>, file_doc:
 /// Membership in the single-char operator set; `-`, `<`, `>`, `!`,
 /// `.`, and `|` reach here only after their two-char munches have
 /// failed.
-/// A single-character operator, by code — the scanner asks this of
-/// every character that is not a name, a number or a space.
-fn is_single_op_code(c: int) -> bool {
-    c == 61 ||
-        c == 124 ||
-        c == 40 ||
-        c == 41 ||
-        c == 42 ||
-        c == 43 ||
-        c == 63 ||
-        c == 58 ||
-        c == 44 ||
-        c == 45 ||
-        c == 60 ||
-        c == 62 ||
-        c == 123 ||
-        c == 125 ||
-        c == 47 ||
-        c == 37 ||
-        c == 33 ||
-        c == 91 ||
-        c == 93 ||
-        c == 46 ||
-        c == 38 ||
-        c == 94 ||
-        c == 126
+/// A single-character operator's text, by code, absent for any other character — the scanner asks
+/// this of every character that is not a name, a number or a space.
+fn single_op(c: int) -> string? {
+    match c {
+        61 -> "=",
+        124 -> "|",
+        40 -> "(",
+        41 -> ")",
+        42 -> "*",
+        43 -> "+",
+        63 -> "?",
+        58 -> ":",
+        44 -> ",",
+        45 -> "-",
+        60 -> "<",
+        62 -> ">",
+        123 -> "{",
+        125 -> "}",
+        47 -> "/",
+        37 -> "%",
+        33 -> "!",
+        91 -> "[",
+        93 -> "]",
+        46 -> ".",
+        38 -> "&",
+        94 -> "^",
+        126 -> "~",
+        _ -> null,
+    }
 }
 // the bitwise three: `&` and `^` reach here only after `&&`
 // failed its munch, and `~` has no two-character form at all
@@ -555,6 +558,23 @@ fn two_char_at(src: string, n: int, i: int) -> string? {
     two_char_of(src.char_code(i), src.char_code(i + 1))
 }
 
+/// The name, or the operator that is no brace, starting at `i`, whose first character is `c`: a
+/// token no context routes and no block opens, scanned as `scan_step` scans it; absent for any other
+/// start.
+fn plain_token(src: string, n: int, i: int, c: int) -> Token? {
+    if c == 98 && i + 1 < n && src.char_code(i + 1) == 34 { return null }
+    if is_name_start(c) {
+        let j = scan_while(src, n, i + 1, is_name_cont)
+        return token(TokenKind.Name, src.substring(i, j), i, j)
+    }
+    if c == 47 && i + 1 < n && src.char_code(i + 1) == 47 { return null }
+    let pair? = two_char_at(src, n, i) else {
+        let single? = single_op(c) else { return null }
+        return if c == 123 || c == 125 { null } else { token(TokenKind.Op, single, i, i + 1) }
+    }
+    token(TokenKind.Op, pair, i, i + 2)
+}
+
 /// One token (or skip, or error) starting at `i`.
 fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
     let c = src.char_code(i)
@@ -595,7 +615,7 @@ fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
         }
         // A two-char op munches before its single-char prefix.
         pair != null -> emit(token(TokenKind.Op, pair!, i, i + 2), i + 2)
-        is_single_op_code(c) -> emit(token(TokenKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
+        single_op(c) != null -> emit(token(TokenKind.Op, single_op(c)!, i, i + 1), i + 1)
         _ -> refused(
             if c < 128 { "unexpected character `${src.substring(i, i + 1)}`" } else { "unexpected character" },
             i,
@@ -662,7 +682,8 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
                 line_indent = opened_at.last()!
                 opened_at = opened_at.slice(0, opened_at.length - 1)
             }
-            open = opened(open, t)
+            if opens_bracket(t) { open.push(t.text) }
+            if closes_bracket(t) && !open.is_empty() { let _ = open.pop() }
             out.push(t)
             i = i + 1
         }
@@ -693,13 +714,6 @@ fn continued_by(raw: List<Token>, j: int, deeper: bool, last: Token) -> bool {
 fn separates(open: List<string>) -> bool {
     let top: string? = open.last()
     top == null || top! == "{"
-}
-
-/// The bracket stack after a token: an opener pushes, a closer pops.
-fn opened(open: List<string>, t: Token) -> List<string> {
-    if opens_bracket(t) { return open.concat([t.text]) }
-    if closes_bracket(t) && !open.is_empty() { return open.slice(0, open.length - 1) }
-    open
 }
 
 fn opens_bracket(t: Token) -> bool { t.kind == TokenKind.Op && (t.text == "(" || t.text == "[" || t.text == "{") }
@@ -960,8 +974,24 @@ impl Lexing {
             self.src.char_code(self.i + 1) == 123
     }
 
-    /// One scanner step, routed by what the scanner is inside.
+    /// One scanner step: a run of blanks skipped whole, a token no context routes pushed as it is
+    /// scanned, and any other step routed by what the scanner is inside.
     mut fn step() {
+        let c = self.src.char_code(self.i)
+        if is_space(c) {
+            self.i = scan_while(self.src, self.n, self.i + 1, is_space)
+            return
+        }
+        let plain? = plain_token(self.src, self.n, self.i, c) else {
+            self.scanned()
+            return
+        }
+        self.push(plain)
+        self.i = plain.span.hi
+    }
+
+    /// One scanner step through `scan_step`, routed by what the scanner is inside.
+    mut fn scanned() {
         let s = scan_step(self.src, self.n, self.i, self.interpolate)
         let routed = self.routed(s)
         if routed.token != null { self.push(routed.token!) }

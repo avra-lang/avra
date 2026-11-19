@@ -13,6 +13,7 @@ use @std.db.migrate.{
     plan_all,
     statements,
     refusals,
+    report,
 }
 
 @model
@@ -25,10 +26,14 @@ type Note = {
 const KEY: string = "id|INTEGER|null|key|-|-|-|-"
 const VERSION: string = "__avra_version__|INTEGER|notnull|-|-|1|-|-"
 const TITLE: string = "title|TEXT|notnull|-|-|-|-|-"
+const N: string = "n|INTEGER|null|-|-|-|-|-"
 
 fn shape(lines: List<string>) -> Shape { shape_read("t\n${lines.join("\n")}")! }
 
 fn base() -> List<string> { [KEY, VERSION, TITLE] }
+
+/// The base shape with an optional column and a key over it and the title.
+fn keyed() -> List<string> { base().concat([N, "unique(title,n)"]) }
 
 /// The plan from the base shape plus `before` to the base shape plus `after`.
 fn plan(after: List<string>) -> Plan { diff(shape(base()), shape(after), []) }
@@ -201,7 +206,57 @@ spec "std/db migrate" {
         }
         then "and renders to the very text it was read from" {
             let s = shape_read(Note.shape())!
-            shape_text(s.name, s.columns) == Note.shape()
+            shape_text(s) == Note.shape()
+        }
+    }
+    given "a key over several columns" {
+        then "is a line after the columns, read back in key order" {
+            shape(base().concat([N, "unique(title,n)"])).uniques[0].join(" ") == "title n"
+        }
+        then "and renders after the columns however the lines were ordered" {
+            shape_text(shape(["unique(title,n)", N, "unique(n,title)"].concat(base())))
+                .ends_with("${TITLE}\nunique(n,title)\nunique(title,n)")
+        }
+        then "of one column is no shape" { shape_read("t\n${KEY}\nunique(id)") == null }
+        then "with an unnamed column is no shape" { shape_read("t\n${KEY}\nunique(id,,n)") == null }
+        then "with no column lines is no shape" { shape_read("t\nunique(a,b)") == null }
+        then "a table that is new is made, then given its key" {
+            sql(diff(null, shape(base().concat(["unique(title,id)"])), [])) == "CREATE TABLE IF NOT EXISTS \"t\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1, \"title\" TEXT NOT NULL);CREATE UNIQUE INDEX \"t_unique(title,id)\" ON \"t\" (\"title\", \"id\")"
+        }
+        then "the same key recorded and declared plans nothing" {
+            is_current(plan_from(keyed(), keyed()))
+        }
+        then "a new key over the columns already there is one statement, and nothing moves" {
+            sql(plan_from(base().concat([N]), keyed())) == "CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\")" &&
+                moves(plan_from(base().concat([N]), keyed())) == ""
+        }
+        then "a new key over a new column follows the column" {
+            sql(plan_from(base(), keyed())) == "ALTER TABLE \"t\" ADD COLUMN \"n\" INTEGER;CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\")"
+        }
+        then "a key no longer declared is ended, and nothing moves" {
+            sql(plan_from(keyed(), base().concat([N]))) == "DROP INDEX \"t_unique(title,n)\"" &&
+                moves(plan_from(keyed(), base().concat([N]))) == ""
+        }
+        then "a key whose columns change ends and begins again" {
+            sql(plan_from(keyed(), base().concat([N, "unique(n,title)"]))) == "DROP INDEX \"t_unique(title,n)\";CREATE UNIQUE INDEX \"t_unique(n,title)\" ON \"t\" (\"n\", \"title\")"
+        }
+        then "a key that gains a column ends and begins again" {
+            sql(plan_from(keyed(), base().concat([N, "unique(title,n,id)"]))) == "DROP INDEX \"t_unique(title,n)\";CREATE UNIQUE INDEX \"t_unique(title,n,id)\" ON \"t\" (\"title\", \"n\", \"id\")"
+        }
+        then "a renamed column inside a key ends the key, renames, and begins it under the new name" {
+            sql(
+                diff(
+                    shape(keyed()),
+                    shape([KEY, VERSION, N, "name|TEXT|notnull|-|-|-|-|-", "unique(name,n)"]),
+                    [Renamed { from: "title", to: "name" }],
+                ),
+            ) == "DROP INDEX \"t_unique(title,n)\";ALTER TABLE \"t\" RENAME COLUMN \"title\" TO \"name\";CREATE UNIQUE INDEX \"t_unique(name,n)\" ON \"t\" (\"name\", \"n\")"
+        }
+        then "a dropped column inside a key still moves" {
+            moves(plan_from(keyed(), base())) == "dropped:n"
+        }
+        then "the report says a key's statements like any step's" {
+            report([plan_from(base().concat([N]), keyed())]).join("\n") == "t:\n  CREATE UNIQUE INDEX \"t_unique(title,n)\" ON \"t\" (\"title\", \"n\");"
         }
     }
     given "the whole program against a database" {

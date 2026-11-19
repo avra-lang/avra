@@ -4,7 +4,7 @@
 // larger than the socket holds, and a close repeated. Each server
 // runs as its own task, so every verb parks as it would in service.
 use @std.net.{Listener, Conn, NetError, listen, connect, timely}
-use @std.time.{Duration, secs, ms}
+use @std.time.{Duration, secs, ms, sleep}
 use @std.tls.{TlsConn, TlsError, dial, handshake, wired, tls_timely}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
@@ -112,6 +112,89 @@ fn large_transfer() -> Result<bool, TlsError> {
     sent == 1000000 && counted == 1000000 && answer?.text() == "1000000"
 }
 
+/// Two tasks writing one connection at once, each more than the
+/// socket holds, so each write's flush parks with the other's pending.
+fn two_writers(l: Listener) -> Result<bool, TlsError> {
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let big = [i % 256 for i in 0..1000000].bytes()!
+    let first = spawn c.write(big)
+    let second = spawn c.write(big)
+    first.await?
+    second.await?
+    c.shutdown_write()?
+    let answer = c.read(64)?
+    c.close()?
+    answer?.text() == "2000000"
+}
+
+fn two_writers_at_once() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn counting(l)
+    let whole = tls_timely(within secs(20) { two_writers(l) })?
+    whole && server.await? == 2000000
+}
+
+/// A server that shakes hands and reads nothing until told to end.
+fn deaf(l: Listener, done: Cell<bool>) -> Result<int, TlsError> {
+    let c = accepted_tls(l)?
+    while !done.get() { sleep(ms(10)) }
+    wired(c.conn.close())
+}
+
+/// A write a deadline ends while parked gives the flush back: the hold
+/// is the writing task's, and ends with it.
+fn an_outrun_write_frees_the_flush() -> Result<bool, TlsError> {
+    let l = bound()?
+    let done: Cell<bool> = Cell.new(false)
+    let server = spawn deaf(l, done)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let outran = tls_timely(within ms(200) { c.write([i % 256 for i in 0..4000000].bytes()!) })
+    let held = c.flushing.get()
+    done.set(true)
+    server.await?
+    let _ = c.close()
+    !held && match outran { .Err(e) -> e.timed_out(), .Ok(_) -> false }
+}
+
+/// A server that answers the first bytes it reads with their count.
+fn answering(l: Listener) -> Result<int, TlsError> {
+    let c = accepted_tls(l)?
+    let b? = c.read(64)? else { fail TlsError.Cut("read", "the test's client") }
+    c.write("${b.length}".bytes())?
+    c.close()
+}
+
+/// A fresh connection that finds its flush free, writes a word and
+/// reads the count back.
+fn asked(l: Listener) -> Result<bool, TlsError> {
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let free = !c.flushing.get()
+    c.write("hello".bytes())?
+    let answer = c.read(64)?
+    let _ = c.close()
+    free && answer?.text() == "5"
+}
+
+/// One connection's flush held by a writer parked on a peer that reads
+/// nothing, while a second connection writes and is answered.
+fn a_held_flush_is_its_own_connections() -> Result<bool, TlsError> {
+    let deaf_at = bound()?
+    let done: Cell<bool> = Cell.new(false)
+    let silent = spawn deaf(deaf_at, done)
+    let stuck = dial("localhost", deaf_at.port, secs(5), trusting_localhost()?)?
+    let parked = spawn tls_timely(within secs(10) { stuck.write([i % 256 for i in 0..4000000].bytes()!) })
+    sleep(ms(50))
+    let held = stuck.flushing.get()
+    let l = bound()?
+    let _server = spawn answering(l)
+    let answered = tls_timely(within secs(5) { asked(l) })
+    done.set(true)
+    silent.await?
+    let _ = parked.await
+    let _ = stuck.close()
+    held && answered?
+}
+
 fn closed_twice() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn served_words(l)
@@ -174,6 +257,11 @@ fn nobody_listening() -> Result<bool, TlsError> {
 spec "std.tls TlsConn" {
     given "a loopback server and a verifying client" {
         then "a megabyte crosses in records, every write parked until taken" { passes(large_transfer()) }
+        then "two megabytes written by two tasks at once arrive as whole records" { passes(two_writers_at_once()) }
+        then "a write a deadline ends while parked leaves the flush free" { passes(an_outrun_write_frees_the_flush()) }
+        then "a flush held on one connection leaves another connection writing" {
+            passes(a_held_flush_is_its_own_connections())
+        }
         then "a close is answered once, and a second never reaches the socket" { passes(closed_twice()) }
         then "a copy of a closed connection is refused as closed by every verb" { passes(a_copy_of_a_closed_tls_conn_is_closed()) }
         then "under a `within`, a refused read is `.Err`" { passes(a_refusal_under_a_within_is_a_refusal()) }

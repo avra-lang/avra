@@ -1,0 +1,33 @@
+//! proves a bury parked on a full letter keeps its hold: the lease runs
+//! out mid-park and no other take is handed the item, so it ends in the
+//! letter alone.
+use @std.queue.{open_queue, bury, key, Dead, Delivery, Order, Overflow, Queue, Terms}
+use @std.task.{open_channel, Sink}
+use @std.time.{ms, sleep}
+
+fn interred(q: Queue<int>, d: Delivery<int>, dead: Sink<Dead<int, string>>) -> bool {
+    bury(q, d, "spent", dead)
+}
+
+let q = open_queue<int>(
+    "jobs",
+    Terms {
+        capacity: 4,
+        lease: ms(0),
+        retries: 3,
+        dead: "jobs/dead",
+        overflow: Overflow.park,
+        order: Order.fifo,
+    },
+)
+let letters = open_channel<Dead<int, string>>(1)
+let _ = letters.sink.send(Dead { item: 0, error: "filler", path: [] })
+let _ = q.send(7, key("k"))
+let held = q.take()
+let burying = spawn interred(q, held!, letters.sink)
+sleep(ms(20))
+let again = q.take()
+let filler = letters.source.taken()
+let buried = burying.await
+let letter = letters.source.taken()
+"${again == null} ${buried} ${filler!.error} ${letter!.item} ${letter!.error} ${q.depth()} ${q.take() == null}"

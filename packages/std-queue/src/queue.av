@@ -74,8 +74,15 @@ fn overflow_word(o: Overflow) -> string {
 }
 
 /// Where a live item stands: waiting in the ring, held by a worker,
-/// awaiting redelivery, or settled and its id free to reuse.
-enum Stage { Pending, Held, Retry, Settled }
+/// on its way to the dead letter, awaiting redelivery, or settled and
+/// its id free to reuse.
+enum Stage { Pending, Held, Burying, Retry, Settled }
+
+/// Whether a delivery of an item at this stage is outstanding: the
+/// order term waits on it and no other take is handed it.
+fn stands(s: Stage) -> bool {
+    match s { .Held or .Burying -> true, .Pending or .Retry or .Settled -> false }
+}
 
 /// A live item's bookkeeping.
 type Live<T> = { item: T, key: Key, attempt: int, stage: Stage }
@@ -132,10 +139,17 @@ export fn release<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, 
 
 /// Move a delivery to its dead letter in one step, so it is never in
 /// both or neither — and never dropped when the letter refuses it.
-/// `false` once the hold was lost.
+/// The item is reserved while a full letter parks the send: no lease
+/// expires it and no take is handed it until the letter answers. A
+/// letter that refuses gives the hold back. `false` once the hold was
+/// lost.
 export fn bury<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>) -> bool {
     let h? = q.held(d) else { return false }
-    if !dead.send(Dead { item: h.item, error: err, path: [q.name, q.terms.dead] }) { return false }
+    q.live.put(d.id, h with { stage: Stage.Burying })
+    if !dead.send(Dead { item: h.item, error: err, path: [q.name, q.terms.dead] }) {
+        q.live.put(d.id, h)
+        return false
+    }
     q.settled(d.id, h)
     true
 }
@@ -290,7 +304,7 @@ impl Queue<T> {
     /// Whether any delivery stands this moment.
     fn any_held() -> bool {
         for id, h in self.live.get() {
-            if h.stage == Stage.Held { return true }
+            if stands(h.stage) { return true }
         }
         false
     }
@@ -298,7 +312,7 @@ impl Queue<T> {
     /// Whether a delivery of `k` stands this moment.
     fn key_held(k: string) -> bool {
         for id, h in self.live.get() {
-            if h.stage == Stage.Held && h.key.text == k { return true }
+            if stands(h.stage) && h.key.text == k { return true }
         }
         false
     }

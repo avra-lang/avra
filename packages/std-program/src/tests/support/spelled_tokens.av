@@ -33,6 +33,7 @@ fn spelled_lexeme() -> Lexeme<SpelledToken> {
         wears_kind: (token: SpelledToken, kind: int) -> kind == TERMINALS.index_of("MARK") && token.text == "@",
         text: (token: SpelledToken) -> token.text,
         loc: (token: SpelledToken) -> Loc { file: null, lo: token.at, hi: token.at + token.text.length },
+        cover: (a: SpelledToken, b: SpelledToken) -> spelled_cover(a, b),
         stated: (text: string, _loc: Loc?) -> SpelledToken { text: text, at: 0 },
     }
 }
@@ -41,4 +42,12 @@ fn spelled_lexeme() -> Lexeme<SpelledToken> {
 export fn spelled_columns(spelled: string) -> TokenColumns {
     let tokens = [SpelledToken { text: spelled.substring(at, at + 1), at: at } for at in 0..spelled.length if spelled.char_code(at) != 32 && spelled.char_code(at) != 126]
     token_columns(spelled, tokens, spelled_roles(), spelled_lexeme())
+}
+
+/// The range two spelled tokens cover.
+fn spelled_cover(a: SpelledToken, b: SpelledToken) -> Loc {
+    let lo = if a.at < b.at { a.at } else { b.at }
+    let a_hi = a.at + a.text.length
+    let b_hi = b.at + b.text.length
+    Loc { file: null, lo: lo, hi: if a_hi > b_hi { a_hi } else { b_hi } }
 }

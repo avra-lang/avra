@@ -352,8 +352,17 @@ impl Session {
 
 // ── The connection ──────────────────────────────────────────────
 
-/// A TLS stream over a connection, wearing `Conn`'s verbs.
-export type TlsConn = { conn: Conn, session: Session, fd: int }
+/// A TLS stream over a connection, wearing `Conn`'s verbs. One task
+/// at a time writes its ciphertext: `flushing` marks that task, and
+/// `shutting` a write side it is owed to shut once the ciphertext is
+/// out — cells, so every copy asks the same two.
+export type TlsConn = {
+    conn: Conn,
+    session: Session,
+    fd: int,
+    flushing: Cell<bool> = Cell.new(false),
+    shutting: Cell<bool> = Cell.new(false),
+}
 
 /// A connection to host:port, dialled and its handshake done within
 /// `timeout` — `host` the name the server's certificate must carry.
@@ -425,7 +434,9 @@ impl TlsConn {
     }
 
     /// All of `bytes`, sealed into records and written, the calling
-    /// task parked whenever the socket is full; answers how many.
+    /// task parked whenever the socket is full; answers how many. While
+    /// another task is writing this connection's ciphertext the records
+    /// are that task's to write, after its own.
     fn write(bytes: Bytes) -> Result<int, TlsError> {
         wired(self.conn.live("write"))?
         mut at = 0
@@ -435,12 +446,13 @@ impl TlsConn {
     }
 
     /// close_notify sent and the write side shut: the peer reads the
-    /// end after what was sent.
+    /// end after what was sent. Answers the descriptor.
     fn shutdown_write() -> Result<int, TlsError> {
         wired(self.conn.live("shutdown"))?
         self.session.closing()?
+        self.shutting.set(true)
         self.flushed()?
-        wired(self.conn.shutdown_write())
+        self.fd
     }
 
     /// Closed: close_notify offered without waiting, the engine's
@@ -492,11 +504,26 @@ impl TlsConn {
         self.session.fed(got)
     }
 
-    /// Everything the engine owes the peer, written.
+    /// Everything the engine owes the peer, written by ONE task at a
+    /// time, so no record lands inside another: a task that finds the
+    /// flush held answers 0 and leaves its ciphertext queued, and the
+    /// holder drains until none is owed, then shuts the write side if
+    /// that is owed too. The hold spans writes only, never a read.
     fn flushed() -> Result<int, TlsError> {
-        let out = self.session.outgoing()?
-        if out.is_empty() { return 0 }
-        wired(self.conn.write(out))
+        if self.flushing.get() { return 0 }
+        self.flushing.set(true)
+        defer self.flushing.set(false)
+        mut wrote = 0
+        while true {
+            let out = self.session.outgoing()?
+            if out.is_empty() { break }
+            wrote = wrote + wired(self.conn.write(out))?
+        }
+        if self.shutting.get() {
+            self.shutting.set(false)
+            wired(self.conn.shutdown_write())?
+        }
+        wrote
     }
 
     /// What the engine still owes offered to the peer without waiting,

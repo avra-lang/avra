@@ -33,6 +33,23 @@ type Memo = {
     @renamed_from("body") text: string,
 }
 
+@model
+type Seat = {
+    id: int = 0,
+    room: string,
+    @unique(room) n: int,
+}
+
+@model
+type Desk = {
+    id: int = 0,
+    @renamed_from("hall") room: string,
+    @unique(room) n: int,
+}
+
+/// The line `Seat`'s key adds to its shape text.
+const SEAT_KEY: string = "\nunique(room,n)"
+
 /// The line a new optional column adds to a shape text.
 const EXTRA: string = "\nnote|TEXT|null|-|-|-|-|-"
 
@@ -150,6 +167,96 @@ fn renamed() -> Result<string, SqlError> {
     "${r} ${held} ${old} ${again} ${(recorded(db, "Memo")?).contains("text|TEXT")}"
 }
 
+/// The names of the indexes a table was given, in name order.
+fn keys(db: Db, tname: string) -> Result<string, SqlError> {
+    (db
+        .scalar(
+            sql(
+                "SELECT coalesce(group_concat(name, ' '), '') FROM (SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name)",
+                [.Text(tname)],
+            ),
+        )?)
+        .text()
+}
+
+fn seat(db: Db, room: string, n: int) -> Result<int, SqlError> {
+    db.run(sql("INSERT INTO \"Seat\" (room, n) VALUES (?, ?)", [.Text(room), .Int(n)]))
+}
+
+/// A Seat table as a declaration without the key left it.
+fn seats_unkeyed() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    let _ = kind_of(grown_from_nothing(db))
+    let _ = seat(db, "a", 1)?
+    db
+}
+
+fn grown_from_nothing(db: Db) -> Result<int, MigrateError> {
+    let _ = Seat.migrate(db)?
+    grown(db, Seat.shape().replace(SEAT_KEY, ""), [], [])
+}
+
+fn keyed_at_birth() -> Result<string, SqlError> {
+    let db = Db.memory()?
+    let first = kind_of(Seat.migrate(db))
+    "${first} ${kind_of(Seat.migrate(db))} ${keys(db, "Seat")?}"
+}
+
+fn key_ended() -> Result<string, SqlError> {
+    let db = seats_unkeyed()?
+    let _ = seat(db, "a", 1)?
+    "${keys(db, "Seat")?}|${(recorded(db, "Seat")?).contains("unique(")}"
+}
+
+fn key_begun() -> Result<string, SqlError> {
+    let db = seats_unkeyed()?
+    let _ = seat(db, "a", 2)?
+    let steps = kind_of(Seat.migrate(db))
+    let again = match seat(db, "a", 2) { .Ok(_) -> "kept", .Err(e) -> e.message }
+    "${steps} ${keys(db, "Seat")?} ${(recorded(db, "Seat")?).ends_with(SEAT_KEY)} ${again}"
+}
+
+fn key_begun_over_repeats() -> Result<string, SqlError> {
+    let db = seats_unkeyed()?
+    let _ = seat(db, "a", 1)?
+    let r = Seat.migrate(db)
+    "${kind_of(r)}|${said(r)}|${keys(db, "Seat")?}|${(recorded(db, "Seat")?).contains("unique(")}"
+}
+
+fn key_reordered() -> Result<string, SqlError> {
+    let db = Db.memory()?
+    let _ = kind_of(Seat.migrate(db))
+    let steps = kind_of(grown(db, Seat.shape().replace(SEAT_KEY, "\nunique(n,room)"), [], []))
+    "${steps} ${keys(db, "Seat")?}"
+}
+
+/// A Desk table as an earlier declaration left it: the column still called
+/// `hall`, and the key over it under that name.
+fn desk_as_it_was() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    let _ = kind_of(Desk.migrate(db))
+    let _ = db.run(sql("INSERT INTO \"Desk\" (room, n) VALUES ('a', 1)"))?
+    let _ = db.run(sql("DROP INDEX \"Desk_unique(room,n)\""))?
+    let _ = db.run(sql("ALTER TABLE \"Desk\" RENAME COLUMN \"room\" TO \"hall\""))?
+    let _ = db.run(sql("CREATE UNIQUE INDEX \"Desk_unique(hall,n)\" ON \"Desk\" (\"hall\", \"n\")"))?
+    let old = (recorded(db, "Desk")?)
+        .replace("room|TEXT", "hall|TEXT")
+        .replace("unique(room,n)", "unique(hall,n)")
+    let _ = db
+        .run(sql("UPDATE \"__avra_models__\" SET shape = ? WHERE table_name = 'Desk'", [.Text(old)]))?
+    db
+}
+
+fn key_renamed() -> Result<string, SqlError> {
+    let db = desk_as_it_was()?
+    let steps = kind_of(Desk.migrate(db))
+    let again = match db.run(sql("INSERT INTO \"Desk\" (room, n) VALUES ('a', 1)")) {
+        .Ok(_) -> "kept",
+        .Err(e) -> e.message,
+    }
+    "${steps} ${keys(db, "Desk")?} ${kind_of(Desk.migrate(db))} ${again}"
+}
+
 fn shown(r: Result<string, SqlError>) -> string {
     match r { .Ok(t) -> t, .Err(e) -> "failed: ${e.message}" }
 }
@@ -171,6 +278,26 @@ spec "std/db apply" {
     given "a field that says what it was called" {
         then "continues the old column under its new name, rows and all, and records it" {
             shown(renamed()) == "ok 1 kept 0 ok 0 true"
+        }
+    }
+    given "a model with a key over several columns" {
+        then "is made with its index, and a second run does nothing" {
+            shown(keyed_at_birth()) == "ok 0 ok 0 Seat_unique(room,n)"
+        }
+        then "a key no longer declared is ended: the index goes, the shape forgets it, and rows may repeat" {
+            shown(key_ended()) == "|false"
+        }
+        then "a key newly declared over rows that keep it is begun, recorded, and held" {
+            shown(key_begun()) == "ok 1 Seat_unique(room,n) true UNIQUE constraint failed: Seat.room, Seat.n"
+        }
+        then "over rows that already repeat it is refused by the database, and nothing is kept" {
+            shown(key_begun_over_repeats()) == "sqlite.constraint.unique|UNIQUE constraint failed: Seat.room, Seat.n||false"
+        }
+        then "a key whose columns change order ends and begins again" {
+            shown(key_reordered()) == "ok 2 Seat_unique(n,room)"
+        }
+        then "a renamed column inside a key takes the key with it, under the new name" {
+            shown(key_renamed()) == "ok 3 Desk_unique(room,n) ok 0 UNIQUE constraint failed: Desk.room, Desk.n"
         }
     }
     given "a change that moves" {

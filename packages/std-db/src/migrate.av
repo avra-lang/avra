@@ -4,13 +4,26 @@
 //! opens a database.
 //!
 //! GROWTH applies by itself: a model with no table, a new column that is
-//! nullable or that carries a default, a column renamed under a hint.
+//! nullable or that carries a default, a column renamed under a hint, a
+//! several-column key ended, and one begun — the database refuses that
+//! statement over rows that already repeat, and the whole plan with it.
+//! A key is its columns in order: one whose columns change, or are renamed,
+//! ends and begins again.
 //! MOVING never does: a dropped column, a changed type, a tightened or
 //! loosened NOT NULL, a changed default, link or key, a new column that must
 //! hold a value yet has none to give the rows already there, and a new
 //! `UNIQUE` (the rows already there may break it — a runner that has looked at
 //! them may call it growth).
-use shape.{ColumnFacts, Shape, column_ddl, create_sql, quoted}
+use shape.{
+    ColumnFacts,
+    Shape,
+    column_ddl,
+    create_sql,
+    quoted,
+    unique_line,
+    unique_sql,
+    ununique_sql,
+}
 
 /// A column whose name changed: the old name, the new one.
 export type Renamed = { from: string, to: string }
@@ -20,6 +33,8 @@ export enum Step {
     Create(shape: Shape)
     Add(column: ColumnFacts)
     Rename(from: string, to: string)
+    Unique(columns: List<string>)
+    Ununique(columns: List<string>)
 }
 
 /// What an author must decide.
@@ -50,7 +65,9 @@ export fn diff(stored: Shape?, declared: Shape, renames: List<Renamed>) -> Plan 
     let pairs = [paired(had, d, renames) for d in declared.columns]
     Plan {
         name: declared.name,
-        steps: [step for p in pairs for step in steps_of(p)],
+        steps: keys_between(declared, had, (u) -> Step.Ununique(u))
+            .concat([step for p in pairs for step in steps_of(p)])
+            .concat(keys_between(had, declared, (u) -> Step.Unique(u))),
         moving: [m for p in pairs for m in moves_of(p)].concat(dropped(had, pairs)),
     }
 }
@@ -74,6 +91,11 @@ fn lines_of(p: Plan) -> List<string> {
     ["${p.name}:"]
         .concat(["  ${s};" for s in statements(p)])
         .concat(["  ! ${w}" for w in refusals(p)])
+}
+
+/// A step for each several-column key `to` holds and `from` lacks.
+fn keys_between(from: Shape, to: Shape, step: fn(List<string>) -> Step) -> List<Step> {
+    [step(u) for u in to.uniques if !from.uniques.any((v) -> unique_line(v) == unique_line(u))]
 }
 
 /// A declared column and the recorded one it continues, if any.
@@ -135,14 +157,22 @@ fn dropped(had: Shape, pairs: List<Pair>) -> List<Moving> {
 }
 
 /// The statements applying a plan's steps, in order.
-export fn statements(p: Plan) -> List<string> { [statement(p.name, s) for s in p.steps] }
+export fn statements(p: Plan) -> List<string> { [text for s in p.steps for text in said(p.name, s)] }
 
-fn statement(name: string, s: Step) -> string {
+/// One step's statements: a table is made, then each of its keys.
+fn said(name: string, s: Step) -> List<string> {
     match s {
-        .Create(shape) -> create_sql(shape.name, shape.columns),
-        .Add(c) -> "ALTER TABLE ${quoted(name)} ADD COLUMN ${column_ddl(c)}",
-        .Rename(from, to) -> "ALTER TABLE ${quoted(name)} RENAME COLUMN ${quoted(from)} TO ${quoted(to)}",
+        .Create(shape) -> made_sql(shape),
+        .Add(c) -> ["ALTER TABLE ${quoted(name)} ADD COLUMN ${column_ddl(c)}"],
+        .Rename(from, to) -> ["ALTER TABLE ${quoted(name)} RENAME COLUMN ${quoted(from)} TO ${quoted(to)}"],
+        .Unique(columns) -> [unique_sql(name, columns)],
+        .Ununique(columns) -> [ununique_sql(name, columns)],
     }
+}
+
+/// The statements that make a table whole: the table, then each several-column key.
+export fn made_sql(s: Shape) -> List<string> {
+    [create_sql(s.name, s.columns)].concat([unique_sql(s.name, u) for u in s.uniques])
 }
 
 /// A plan's moving changes in words, one per change.

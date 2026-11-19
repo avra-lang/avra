@@ -1,7 +1,12 @@
 use @std.db.error.{ModelError, UniqueField, attributed}
 use @std.sqlite.error.{Cause, SqlError, Violation}
 
-fn field(name: string) -> UniqueField { UniqueField { name: name, at: null } }
+fn field(name: string) -> UniqueField { UniqueField { name: name, at: null, columns: [name] } }
+
+/// `name` unique within `among`: the key is those columns, then its own.
+fn key(name: string, among: List<string>) -> UniqueField {
+    UniqueField { name: name, at: null, columns: among.concat([name]), among: among }
+}
 
 fn unique_failure(message: string) -> SqlError {
     SqlError {
@@ -99,6 +104,86 @@ spec "std/db ModelError attribution" {
                 ),
             )
             m.contains("`T.email`") && m.contains("`T.username`")
+        }
+    }
+    given "a key over several columns, alone on its model" {
+
+        then "it attributes without parsing, in the key's own words" {
+            message_of(attributed(unique_failure("constraint failed"), "T", [key("c", ["a", "b"])])) == "`c` must be unique within `a`, `b` — declared @unique(a, b) on `T.c`"
+        }
+    }
+    given "a key over several columns beside a unique column it holds" {
+
+        then "a message naming every column of the key attributes to the key" {
+            message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.a, T.c"),
+                    "T",
+                    [field("a"), key("c", ["a"])],
+                ),
+            ) == "`c` must be unique within `a` — declared @unique(a) on `T.c`"
+        }
+        then "a message naming the one column attributes to the column" {
+            message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.a"),
+                    "T",
+                    [field("a"), key("c", ["a"])],
+                ),
+            ) == "`a` must be unique — declared @unique on `T.a`"
+        }
+    }
+    given "two keys, one holding the other's columns" {
+
+        then "the message naming the longer key's columns attributes to the longer" {
+            message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.a, T.b, T.c"),
+                    "T",
+                    [key("b", ["a"]), key("c", ["a", "b"])],
+                ),
+            )
+                .starts_with("`c` must be unique within `a`, `b`")
+        }
+        then "the message naming the shorter key's columns attributes to the shorter" {
+            message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.a, T.b"),
+                    "T",
+                    [key("b", ["a"]), key("c", ["a", "b"])],
+                ),
+            )
+                .starts_with("`b` must be unique within `a`")
+        }
+        then "a message naming only part of every key falls back to all of them" {
+            let m = message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.a"),
+                    "T",
+                    [key("b", ["a"]), key("c", ["a", "b"])],
+                ),
+            )
+            m.contains("`T.b`") && m.contains("`T.c`")
+        }
+        then "a column whose name begins another's is not that column" {
+            let m = message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.ab, T.b"),
+                    "T",
+                    [key("b", ["a"]), key("d", ["c"])],
+                ),
+            )
+            m.contains("`T.b`") && m.contains("`T.d`")
+        }
+        then "a key holding a column and one its name begins is still named whole" {
+            message_of(
+                attributed(
+                    unique_failure("UNIQUE constraint failed: T.ab, T.a"),
+                    "T",
+                    [key("a", ["ab"]), key("d", ["c"])],
+                ),
+            )
+                .starts_with("`a` must be unique within `ab`")
         }
     }
     given "two different models sharing a field name, one violation between them" {

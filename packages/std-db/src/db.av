@@ -18,7 +18,11 @@
 //!
 //! Every model's FIRST field is `id: int = 0` — the primary key SQLite
 //! mints, held in the type itself so a found row and an inserted one
-//! are the same shape. `@unique` marks a column's own constraint.
+//! are the same shape. `@unique` marks a column's own constraint, and
+//! `@unique(board) title` a key over several: no two rows hold the same
+//! `title` within one `board`. The key's columns are the fields the mark
+//! names, in written order, then the field it stands on; a row holding
+//! nothing in one of them repeats no other.
 //!
 //! Stands ALONE with `@std/meta`, per CLAUDE.md's derive-isolation law
 //! — the file that types this trait must not also carry code the
@@ -66,7 +70,8 @@ export trait Model {
             .concat([declares(filter_name(t, f), t.at, filter_enum(t, f)) for f in filtered_fields(t)])
     }
 
-    /// The marks this derive reads: `@unique` makes a column unique,
+    /// The marks this derive reads: `@unique` makes a column unique, and
+    /// `@unique(a, b)` makes it unique within the fields named,
     /// `@soft_delete` makes `remove` keep the row, `@auto` makes a column
     /// the database's to set, `@cascade` and `@set_null` say what removing a
     /// parent does to a child, `@via(field)` names a `Many`'s link, and
@@ -93,6 +98,17 @@ fn shape_problems(t: Type) -> List<Diagnostic> {
     [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
         .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
         .concat([record_not_stored(f) for f in t.fields if unstored_record(f.kind)])
+        .concat([p for f in t.fields for p in key_problems(t, f)])
+}
+
+/// What is wrong with the several-column keys a field's marks declare: a
+/// name the model stores no column for, a field named twice in one key,
+/// one key declared twice.
+fn key_problems(t: Type, f: Field) -> List<Diagnostic> {
+    let keys = [key_fields(f, among) for among in scoped(f)]
+    [unique_unstored(t, f, n) for k in keys for n in k if !stored(t).any(it.name == n)]
+        .concat([unique_repeats(f, n) for k in keys for j, n in k if k.index_of(n) < j])
+        .concat([unique_twice(f, k) for j, k in keys if keys.slice(0, j).any(it.join(",") == k.join(","))])
 }
 
 /// A record-typed field is a `@model` link, or a flat record that stores as its one
@@ -654,6 +670,33 @@ fn soft_delete_kind(f: Field) -> Diagnostic {
     )
 }
 
+fn unique_unstored(t: Type, f: Field, n: string) -> Diagnostic {
+    refuse_as_at(
+        "unique_unstored",
+        f.at,
+        "`@unique(…)` names the fields a value is unique within, each one a column, and `${t.name}` stores none for `${n}`",
+        "name fields `${t.name}` stores: ${[g.name for g in stored(t) if g.name != f.name].join(", ")}",
+    )
+}
+
+fn unique_repeats(f: Field, n: string) -> Diagnostic {
+    refuse_as_at(
+        "unique_repeats",
+        f.at,
+        "a key holds each field once, and this one on `${f.name}` holds `${n}` twice",
+        "name `${n}` once, and never the field the mark stands on",
+    )
+}
+
+fn unique_twice(f: Field, k: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "unique_twice",
+        f.at,
+        "a key is declared once, and the key over ${["`${n}`" for n in k].join(", ")} stands on `${f.name}` twice",
+        "write the mark once",
+    )
+}
+
 fn auto_kind(f: Field) -> Diagnostic {
     refuse_as_at(
         "auto_kind",
@@ -735,28 +778,63 @@ fn on_delete(f: Field) -> string {
 
 /// A model's table as the database is told about it: the value a const folds
 /// at compile time to give the program's whole schema.
-export fn model_shape(t: Type) -> Shape { Shape { name: table_name_of(t), columns: table_columns(t) } }
+export fn model_shape(t: Type) -> Shape {
+    Shape {
+        name: table_name_of(t),
+        columns: table_columns(t),
+        uniques: [key_columns(t, f, among) for f in non_id_fields(t) for among in scoped(f)],
+    }
+}
 
-fn shape_text_of(t: Type) -> string { shape_text(table_name_of(t), table_columns(t)) }
+fn shape_text_of(t: Type) -> string { shape_text(model_shape(t)) }
 
 /// Milliseconds since the epoch, as the database reads its own clock.
 fn auto_default() -> string { "0" }
 
-fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
+/// Whether a field's column is unique by itself: the bare mark.
+fn is_unique(f: Field) -> bool { uniques(f).any(it.is_empty()) }
 
-/// The `@unique` fields' own (name, declaration site) pairs, baked
+/// A field's `@unique` marks, each as the fields it names: none for the
+/// bare mark.
+fn uniques(f: Field) -> List<List<string>> { [m.args for m in f.marks if m.name == "unique"] }
+
+/// The marks that make a field unique among others.
+fn scoped(f: Field) -> List<List<string>> { [among for among in uniques(f) if !among.is_empty()] }
+
+/// A key's fields: the ones its mark names, then the one it stands on.
+fn key_fields(f: Field, among: List<string>) -> List<string> { among.concat([f.name]) }
+
+/// A key's columns, in key order.
+fn key_columns(t: Type, f: Field, among: List<string>) -> List<string> {
+    [column_named(t, n) for n in key_fields(f, among)]
+}
+
+/// The column a model stores a field in. A name it stores nothing for is
+/// refused where it is written, and stands here as written.
+fn column_named(t: Type, n: string) -> string {
+    let f? = stored(t).find(it.name == n) else { return n }
+    column_of(f)
+}
+
+/// Every `@unique` mark's own field, declaration site and key, baked
 /// into `insert`/`update`'s generated body so a constraint violation
 /// resolves back through the schema the moment it happens — never a
 /// second lookup against `t` at run time, which the derive has no
 /// reason to keep around. The list's elements are a run, so no arity is
 /// known here.
 fn unique_fields_code(t: Type) -> Code {
-    let fs = [f for f in non_id_fields(t) if is_unique(f)]
-    quote { [..${[unique_field_code(f) for f in fs]}] }
+    quote { [..${[unique_field_code(t, f, among) for f in non_id_fields(t) for among in uniques(f)]}] }
 }
 
-fn unique_field_code(f: Field) -> Code {
-    quote { UniqueField { name: ${literal(f.name)}, at: ${loc_code(f.at)} } }
+fn unique_field_code(t: Type, f: Field, among: List<string>) -> Code {
+    quote {
+        UniqueField {
+            name: ${literal(f.name)},
+            at: ${loc_code(f.at)},
+            columns: [..${[literal(c) for c in key_columns(t, f, among)]}],
+            among: [..${[literal(n) for n in among]}],
+        }
+    }
 }
 
 fn loc_code(at: Loc?) -> Code {

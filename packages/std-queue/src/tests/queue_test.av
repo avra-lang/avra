@@ -1,6 +1,6 @@
 // The in-memory home's laws, one given at a time.
 use @std.queue.{open_queue, key, Terms, Dead, release, bury, Overflow, Order}
-use @std.task.{unbounded_channel}
+use @std.task.{open_channel, unbounded_channel}
 use @std.time.{ms}
 
 fn terms(lease: int) -> Terms {
@@ -81,6 +81,14 @@ spec "std/queue" {
             let d = q.take()
             let _ = bury(q, d!, 9, dead.sink)
             q.depth() == 0 && dead.source.taken()!.error == 9
+        }
+        then "a bury a closed letter refuses gives the hold back" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let dead = open_channel<Dead<int, int>>(1)
+            dead.sink.close()
+            let _ = q.send(1, key("a"))
+            let d = q.take()
+            !bury(q, d!, 9, dead.sink) && q.depth() == 1 && q.ack(d!)
         }
     }
     given "a key" {
