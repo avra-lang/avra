@@ -49,16 +49,18 @@ export type Placed = { ins: List<Ins>, layouts: List<Layout>, missing: List<stri
 export fn tests_chosen(tests: List<TaskTest>, kept: fn(TestSite) -> bool) -> List<bool> { [kept(t.site) for t in tests] }
 
 /// A body of `ins`, `layouts` and `missing`, holding `tests`, with the `j`th test placed where
-/// `keep[j]` says.
+/// `keep[j]` says. In a program that can't unwind, no scheduler being linked to meet a cancel or a
+/// passed limit, a test placed calls none of the rows only an unwind reads.
 export fn tests_kept(
     ins: List<Ins>,
     layouts: List<Layout>,
     missing: List<string>,
     tests: List<TaskTest>,
     keep: List<bool>,
+    unwinds: bool = true,
 ) -> Placed {
     if tests.is_empty() { return Placed { ins: ins, layouts: layouts, missing: missing } }
-    let placing = [t for j, t in tests if keep[j]]
+    let placing = [if unwinds { t } else { t with { ins: t.ins.filter((i) -> !unwind_only(i)) } } for j, t in tests if keep[j]]
     let spliced = Placed {
         ins: spliced_ins(ins, placing),
         layouts: layouts,
@@ -111,13 +113,27 @@ fn renumbering(count: int, dropped: List<TaskTest>) -> List<int> {
     index
 }
 
+/// Whether `i` calls a row only an unwind reads: the frame an unwind pushes, a shield around the
+/// deferred calls it runs.
+fn unwind_only(i: Ins) -> bool {
+    match i { .CallRtVoid(row, _) -> UNWIND_ROWS.contains(row), rest -> false }
+}
+
+/// The rows only an unwind reads.
+const UNWIND_ROWS: List<string> = [
+    "avra_unwind_push",
+    "avra_fiber_shield_enter",
+    "avra_fiber_shield_leave",
+]
+
 /// `r` as `index` renumbers it; a defect's register stands.
 fn renumbered(index: List<int>, r: Reg) -> Reg { if r.index < 0 { r } else { Reg { index: index[r.index] } } }
 
 impl LiftedBody {
-    /// The lambda's body with the `j`th test placed where `keep[j]` says.
-    fn placed_keeping(keep: List<bool>) -> LiftedBody {
-        let p = tests_kept(self.ins, self.layouts, [], self.tests, keep)
+    /// The lambda's body with the `j`th test placed where `keep[j]` says, in a program that `unwinds`
+    /// or not.
+    fn placed_keeping(keep: List<bool>, unwinds: bool) -> LiftedBody {
+        let p = tests_kept(self.ins, self.layouts, [], self.tests, keep, unwinds)
         self with { ins: p.ins, layouts: p.layouts, tests: [] }
     }
 }

@@ -221,6 +221,23 @@ fn derives_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 }
 
 /// Whether the annotation `name` names `@std/meta`'s `derive`.
+/// Whether the statement `s` of `store`, written in `file`, wears `@std/meta`'s annotation `meta`.
+export fn wears_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    meta: string,
+) -> bool {
+    store.annotations_of(s).any((a) -> meta_fn(engine, file, a.name, meta))
+}
+
+/// Whether the name `name`, read in `file`, is `@std/meta`'s fn `meta`.
+fn meta_fn(engine: QueryEngine, file: SourceFileAddress, name: string, meta: string) -> bool {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    d.file.package_name == META && d.name == meta && d.kind == ItemKind.Fn
+}
+
 fn derives_by_meta(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     let d? = resolved(engine, file, Space.Value, name).named() else { return false }
     d.file.package_name == META && d.name == DERIVING && d.kind == ItemKind.Fn

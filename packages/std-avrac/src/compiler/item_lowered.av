@@ -4,6 +4,7 @@ use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
+    NodeNotes,
     SettledSeat,
     settled_seat_key,
     settled_symbol,
@@ -152,8 +153,9 @@ impl LoweredFn {
             self.missing,
             self.tests,
             keep.keeping(self.tests),
+            keep.checks.unwinds(),
         )
-        self with { ins: p.ins, layouts: p.layouts, missing: p.missing, tests: [], lifts: [l.placed_keeping(keep.keeping(l.tests)) for l in self.lifts] }
+        self with { ins: p.ins, layouts: p.layouts, missing: p.missing, tests: [], lifts: [l.placed_keeping(keep.keeping(l.tests), keep.checks.unwinds()) for l in self.lifts] }
     }
 }
 
@@ -241,7 +243,8 @@ fn lowered_signed(
 }
 
 /// A signed body `file` writes, lowered as `lowered_signed` says, past its refusals; under bounded
-/// parameters' fills, every type it holds reads those fills.
+/// parameters' fills, every type it holds reads those fills; what it meets at each written node noted
+/// in `notes` where a law asks.
 fn signed_lowered(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -249,6 +252,7 @@ fn signed_lowered(
     name: string,
     parameters: List<ParameterLayout>?,
     settled: List<SettledSeat> = [],
+    notes: NodeNotes? = null,
 ) -> LoweredFn {
     let body = elaborated(engine, file, signed)
     let fills = bound_fills(parameters ?? [])
@@ -267,6 +271,7 @@ fn signed_lowered(
             written_by(signed.item.store, signed.stmt),
             signed.item.store.expr_span(signed.body)?.lo ?? 0,
             signed.item.at,
+            notes,
         ),
         [t?.filled(fills) for t in body.core],
         seats,
@@ -277,6 +282,7 @@ fn signed_lowered(
         settled_unit_name(name, parameters, settled),
         body_written_at(engine, file, signed),
     ), names: NamesRead { reads: body.reads }, roots: [body.body] }
+    cx.unbroken = wears_meta(engine, file, signed.item.store, signed.stmt, UNBROKEN)
     if signed.receiver != null { cx.seated_written(RECEIVER, signed.receiver!.filled(fills), signed.receiver_written) }
     for c in signed.consts { cx.seeded(c) }
     let seated = [p for j, p in signature.params if !settled.any(it.at == j)]
@@ -306,6 +312,9 @@ fn signed_lowered(
     let consumed = if eligible.any(it) { kept_seats(body.store, body.body, eligible, (e: ExprId) -> seat_read(names, places, e)) } else { [] }
     unit_lowered(cx, seated.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread, consumed: if consumed.any(it) { consumed } else { [] } }
 }
+
+/// `@std/meta`'s annotation for a fn that lets no other task run.
+const UNBROKEN: string = "unbroken"
 
 /// The name a unit of the fn `name` under `parameters`, its `const` seats settled as `settled` says,
 /// gives what it names after itself: its lambdas, its consts, its frame.
@@ -414,6 +423,7 @@ fn lowered_program(
     writer: SourceFileAddress? = null,
     from: int = 0,
     frame: int? = null,
+    notes: NodeNotes? = null,
 ) -> LoweredProgram {
     let lifts: Cell<List<LiftedBody>> = Cell.new([])
     let data: Cell<List<Static>> = Cell.new([])
@@ -482,6 +492,7 @@ fn lowered_program(
             frame,
         ),
         spins: Cell.new(false),
+        notes: notes,
         compared: (n: string, home: string?) -> compared_value(engine, home_file(engine, home) ?? file, n),
         contexts: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> held_context(engine, f, n)),

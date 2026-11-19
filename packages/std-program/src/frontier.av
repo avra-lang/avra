@@ -1229,21 +1229,27 @@ fn starts_of(lengths: List<int>) -> List<int> {
 /// reads are read.
 fn turned_round(columns: FrontierColumns) -> FrontierColumns {
     let count = columns.question_highs.length
-    let edges = [ReadEdge { reader: at, read: columns.reads[k] } for at in 0..count for k in columns.read_starts[at]..run_end(columns, at) if place_below(columns.reads[k], count)]
     mut held = [0 for _i in 0..count]
-    for e in edges { held.set(e.read, held[e.read] + 1) }
+    for at in 0..count {
+        for k in columns.read_starts[at]..run_end(columns, at) {
+            let read = columns.reads[k]
+            if place_below(read, count) { held.set(read, held[read] + 1) }
+        }
+    }
     let starts = starts_of(held)
     mut next = [s for s in starts]
-    mut readers = [0 for _i in 0..edges.length]
-    for e in edges {
-        readers.set(next[e.read], e.reader)
-        next.set(e.read, next[e.read] + 1)
+    mut readers = [0 for _i in 0..held.fold(0, (sum, n) -> sum + n)]
+    for at in 0..count {
+        for k in columns.read_starts[at]..run_end(columns, at) {
+            let read = columns.reads[k]
+            if place_below(read, count) {
+                readers.set(next[read], at)
+                next.set(read, next[read] + 1)
+            }
+        }
     }
     columns with { reader_starts: starts, readers: readers }
 }
-
-/// One read: the place that read, and the place it read.
-type ReadEdge = { reader: int, read: int }
 
 /// Where the run of reads of the answer at `at` ends among `columns`' reads.
 fn run_end(columns: FrontierColumns, at: int) -> int {

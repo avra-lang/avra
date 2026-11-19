@@ -120,9 +120,11 @@ fi
 # must be some. A case using a form only the program layer builds is skipped and counted.
 cp "$tmp/orig.av" "$file"
 if wanted cases; then
+    . tools/lib/cases.sh
+    leftovers_in tools/program-warnings | sed 's/^/witness_program_warnings: leftover /'
     alone=0
-    for d in tools/program-warnings/*/; do
-        name=$(basename "$d")
+    for name in $(cases_in tools/program-warnings); do
+        d="tools/program-warnings/$name/"
         c="$tmp/case-$name"
         cp -R "$d" "$c"
         # a case using a form only the program layer builds is never asked of the old path

@@ -361,7 +361,7 @@ impl QueryEngine {
         self.frontier_read_once()
         let settled? = self.settled_now(question) else { return null }
         let answer = settled.answer()
-        self.record_read(RecordedRead { question: question, whole_answer: answer, part: null })
+        self.whole_read(question, answer)
         answer
     }
 
@@ -369,8 +369,7 @@ impl QueryEngine {
     /// `hash_of_answer_to` records it: settled once in this engine, and read off `held` after.
     fn hash_of_answer_held(held: HeldQuestion) -> ContentHash {
         let answer = if held.settled_in.get() == self.serial { held.answer.get() } else { self.held_settled(held) }
-        self
-            .record_read(RecordedRead { question: held.question.known_as, whole_answer: answer, part: null })
+        self.whole_read(held.question.known_as, answer)
         answer
     }
 
@@ -385,8 +384,7 @@ impl QueryEngine {
     /// The hash of the answer, recorded as a read of whoever is asking. Nothing is decoded.
     fn hash_of_answer_to(asked: Question) -> ContentHash {
         let answer = self.settled_answer(asked)
-        self
-            .record_read(RecordedRead { question: asked.known_as, whole_answer: answer, part: null })
+        self.whole_read(asked.known_as, answer)
         answer
     }
 
@@ -1044,6 +1042,20 @@ impl QueryEngine {
         asker.reads.put(read.read_key(), read)
     }
 
+    /// A read of the whole answer `answer` to the question known as `question`, recorded as
+    /// `record_read` records it: a table that holds this read already is left as it stands.
+    fn whole_read(question: ContentHash, answer: ContentHash) {
+        let gathering = self.gathering.get()
+        if !gathering.is_empty() {
+            let depth = self.open_questions.get().length
+            for g in gathering {
+                if g.depth == depth { whole_read_into(g.reads, question, answer) }
+            }
+        }
+        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(question, true) }
+        whole_read_into(asker.reads, question, answer)
+    }
+
     /// `read`, made with the questions open now, gathered by each gathering begun with just those open.
     fn gathered(read: RecordedRead) {
         let gathering = self.gathering.get()
@@ -1516,3 +1528,16 @@ export fn answers_held() -> bool { held_answers_off() == null }
 once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
 
 fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }
+
+/// The whole read of `question`'s answer `answer` put in `reads`, unless `reads` holds it already.
+fn whole_read_into(reads: HashKeyedTable<RecordedRead>, question: ContentHash, answer: ContentHash) {
+    let held? = reads.get_at(question.high_word, question.low_word) else { return whole_put(reads, question, answer) }
+    if held.part != null ||
+        held.whole_answer.high_word != answer.high_word ||
+        held.whole_answer.low_word != answer.low_word { whole_put(reads, question, answer) }
+}
+
+/// The whole read of `question`'s answer `answer` put in `reads`.
+fn whole_put(reads: HashKeyedTable<RecordedRead>, question: ContentHash, answer: ContentHash) {
+    reads.put(question, RecordedRead { question: question, whole_answer: answer, part: null })
+}

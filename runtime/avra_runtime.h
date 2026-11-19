@@ -59,6 +59,10 @@ void avra_task_slot_set(int64_t key, void* v);
 void* avra_ctx_read(int64_t key);
 void avra_ctx_set(int64_t key, void* cell);
 void avra_ctx_back(void);
+void* avra_ctx_frame(void);
+int64_t avra_ctx_enter(void* frame);
+void* avra_ctx_reframed(void* box, void* frame);
+extern void* avra_ctx_now;
 // The running task's id; 0 for `main`.
 int64_t avra_task_id(void);
 

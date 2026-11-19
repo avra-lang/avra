@@ -1911,6 +1911,7 @@ static void switched_to_fresh(Fiber* self, Fiber* next) {
     __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
+    avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);
@@ -1931,6 +1932,7 @@ static inline void switch_to(Fiber* next) {
     __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
+    avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];
     self->unwinding = avra_unwinding;
     avra_unwinding = next->unwinding;
     fiber_switched(self, next);

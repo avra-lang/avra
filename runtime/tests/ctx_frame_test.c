@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "../avra_box.h"
+#include "../avra_fiber.h"
 #include "../avra_runtime.h"
 
 void* avra_array_new(void);
@@ -42,6 +44,49 @@ static _Bool ending(void* box) {
     avra_rc_release(a);
     avra_ctx_back();
     return 1;
+}
+
+typedef void* (*Code)(void*);
+
+// A task's body: it sets its own key to a cell of its own, yields so the
+// other task runs, then answers whether its read still finds its cell and
+// the other task's key reads as nothing; and the frame it started under.
+static void* tasked(void* box) {
+    int64_t mine = ((AvraArray*)box)->data[1];
+    int64_t theirs = mine == DEPTH ? WIDTH : DEPTH;
+    void* started = avra_ctx_frame();
+    void* cell = avra_array_new();
+    avra_ctx_set(mine, cell);
+    avra_fiber_yield();
+    void* got = avra_ctx_read(mine);
+    void* other = avra_ctx_read(theirs);
+    int64_t held = got == cell && other == NULL && started == NULL && avra_ctx_now != NULL;
+    avra_rc_release(got);
+    avra_rc_release(other);
+    avra_rc_release(cell);
+    avra_ctx_back();
+    void* r = avra_array_sized(1);
+    avra_array_push(r, held);
+    return r;
+}
+
+// A task whose body is `tasked`, over the key `key`.
+static void* spawned(int64_t key) {
+    void* body = avra_array_sized(2);
+    avra_array_push(body, (int64_t)(uintptr_t)(Code)tasked);
+    avra_array_push(body, key);
+    void* task = avra_task_spawn(body);
+    avra_rc_release(body);
+    return task;
+}
+
+// Whether the task `task` answered that its frame held across the switch.
+static int held_across(void* task) {
+    void* r = avra_task_join(task);
+    int ok = ((AvraArray*)r)->data[0] == 1;
+    avra_rc_release(r);
+    avra_rc_release(task);
+    return ok;
 }
 
 // A body box for the guard: its code in the first slot.
@@ -93,6 +138,63 @@ int main(void) {
     avra_ctx_back();
     CHECK(avra_ctx_read(DEPTH) == NULL, "the outer set's back leaves nothing set");
     CHECK(avra_mem_live() == live, "a caught trap's frames are released with the rest");
+
+    // THE FRAME A BODY IS MADE UNDER: entering the one in force changes
+    // nothing; entering another makes its contexts the ones in force, none
+    // of the caller's among them, and its back puts the caller's back.
+    live = avra_mem_live();
+    CHECK(avra_ctx_frame() == NULL && avra_ctx_now == NULL, "with nothing set the frame is none");
+    CHECK(avra_ctx_enter(NULL) == 0, "entering the frame in force changes nothing");
+    void* d = avra_array_new();
+    avra_ctx_set(DEPTH, d);
+    avra_rc_release(d);
+    void* made = avra_ctx_frame();
+    CHECK(made == avra_ctx_now && made != NULL, "the frame is the one in force");
+    CHECK(avra_ctx_enter(made) == 0, "entering the frame in force, set, changes nothing");
+    avra_ctx_back();
+    void* w = avra_array_new();
+    avra_ctx_set(WIDTH, w);
+    avra_rc_release(w);
+    CHECK(avra_ctx_enter(made) == 1, "entering another frame is a change");
+    CHECK(reads(DEPTH, d) && avra_ctx_read(WIDTH) == NULL, "its contexts are the ones in force, the caller's none of them");
+    avra_ctx_back();
+    CHECK(avra_ctx_read(DEPTH) == NULL && reads(WIDTH, w), "its back puts the caller's frame back");
+    CHECK(avra_ctx_enter(NULL) == 1, "entering the empty frame over a set one is a change");
+    CHECK(avra_ctx_read(WIDTH) == NULL, "and nothing is set under it");
+    avra_ctx_back();
+    avra_ctx_back();
+
+    // A BOX MADE UNDER ANOTHER FRAME: the same box where its frame is the
+    // one asked; else a copy, the frame in its slot and the rest its own.
+    void* code_only = avra_array_sized(1);
+    avra_array_push(code_only, 7);
+    void* same = avra_ctx_reframed(code_only, made);
+    CHECK(same == code_only, "a box with no frame's slot is the same box");
+    avra_rc_release(same);
+    void* lane = avra_array_new();
+    void* framed = avra_array_sized(3);
+    avra_array_push(framed, 7);
+    avra_array_push(framed, 0);
+    avra_array_push_owned(framed, lane);
+    avra_rc_release(lane);
+    void* again = avra_ctx_reframed(framed, NULL);
+    CHECK(again == framed, "a box made under the frame asked is the same box");
+    avra_rc_release(again);
+    void* moved = avra_ctx_reframed(framed, made);
+    CHECK(moved != framed && ((AvraArray*)moved)->data[1] == (int64_t)(uintptr_t)made, "else a copy holds the frame");
+    CHECK(((AvraArray*)moved)->data[2] == (int64_t)(uintptr_t)lane && ((AvraArray*)moved)->data[0] == 7, "and the rest of the box");
+    avra_rc_release(moved);
+    avra_rc_release(framed);
+    avra_rc_release(code_only);
+    avra_rc_release(made);
+    CHECK(avra_mem_live() == live, "frames, boxes and cells are released once nothing holds them");
+
+    // EACH TASK RUNS UNDER ITS OWN FRAME: a switch makes the next task's
+    // frame the one in force, and a task starts from none.
+    void* one = spawned(DEPTH);
+    void* two = spawned(WIDTH);
+    CHECK(held_across(one) && held_across(two), "each task reads its own set across the switch, from no frame of its parent's");
+    CHECK(avra_ctx_now == NULL && avra_ctx_read(DEPTH) == NULL, "and the parent's frame is its own after them");
 
     if (g_fails) {
         fprintf(stderr, "ctx_frame_test: %d of %d checks failed\n", g_fails, g_checks);

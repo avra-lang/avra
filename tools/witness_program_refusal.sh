@@ -22,6 +22,9 @@
 # the old path's: its `check`'s words where it refuses, else what its `run` prints.
 #   sh tools/witness_program_refusal.sh [compiler] [case…]   (default build/avra-try, every case)
 #   sh tools/witness_program_refusal.sh --known   (each case known to differ, and why; runs nothing)
+#   sh tools/witness_program_refusal.sh --cases   (each case's name, one a line, as the gate deals them)
+# A case is a directory holding its `avra.toml` (tools/lib/cases.sh); one that holds none is no case.
+# Every case run, each such directory is named; one named on the command line is refused.
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -30,8 +33,14 @@ cases_dir="$root/tools/program-refusals"
 # the node a wasm case's module runs under: NODE, else /opt/node24's, else the PATH's
 node=${NODE:-$( [ -x /opt/node24/bin/node ] && echo /opt/node24/bin/node || echo node )}
 
-# every case, by name: each directory under the cases
-cases() { for d in "$cases_dir"/*/; do basename "$d"; done; }
+. "$root/tools/lib/cases.sh"
+# every case, by name
+cases() { cases_in "$cases_dir"; }
+
+if [ "${1:-}" = --cases ]; then
+    cases
+    exit 0
+fi
 
 if [ "${1:-}" = --known ]; then
     n=0
@@ -164,9 +173,22 @@ judged() {
     }
 }
 
-if [ $# -gt 0 ]; then names="$*"; else names=$(cases); fi
 held=0
 failed=0
+if [ $# -gt 0 ]; then
+    names=""
+    for name in "$@"; do
+        if [ -f "$cases_dir/$name/avra.toml" ]; then
+            names="$names $name"
+        else
+            echo "$name: no case — tools/program-refusals/$name holds no avra.toml"
+            failed=$((failed + 1))
+        fi
+    done
+else
+    names=$(cases)
+    leftovers_in "$cases_dir" | sed 's/^/witness_program_refusal: leftover /'
+fi
 known=0
 untooled=0
 alone=0

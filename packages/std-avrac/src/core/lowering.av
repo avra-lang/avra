@@ -84,6 +84,28 @@ export type LoweredProgram = {
     /// Whether a `while` the body or a lambda it lifts writes was lowered: its back edge is a cancel
     /// point.
     spins: Cell<bool>,
+    /// What a law asks this lowering to note of each written node, its lambdas' included; absent for
+    /// every lowering that builds.
+    notes: NodeNotes? = null,
+}
+
+/// What a lowering notes of the written nodes of its store, the first `written` of them: the node it
+/// stands in now, and what it met at each.
+export type NodeNotes = { written: int, at: Cell<int>, met: Cell<List<NodeMet>> }
+
+/// Notes, empty, for a store whose first `written` nodes are written.
+export fn node_notes(written: int) -> NodeNotes {
+    let met: Cell<List<NodeMet>> = Cell.new([])
+    NodeNotes { written: written, at: Cell.new(-1), met: met }
+}
+
+/// What lowering met at the written node `node`: a declared fn or a default called, by its callee;
+/// a call through a value; a runtime row that may switch the task out.
+@derive(Saved)
+export enum NodeMet {
+    Calls(node: int, callee: CalledFn)
+    Value(node: int)
+    Waits(node: int, row: string)
 }
 
 /// A static of a type and one mark it wears: the static's name; the declaration the mark names, read
@@ -112,6 +134,9 @@ impl TaskChecks {
     fn ticks() -> bool {
         match self { .Surveyed or .Tested -> false, .Scheduled -> true }
     }
+
+    /// Whether the program can unwind: only a scheduler it links meets a cancel or a passed limit.
+    fn unwinds() -> bool { self.ticks() }
 
     /// Whether a test at `site` is placed, a fn's call where `reaches` says the fn may reach a cancel
     /// point.
@@ -398,6 +423,8 @@ export type Lowering = {
     holding: bool = false,
     /// Whether a call being lowered stands where no task test follows it: a deferred body's call.
     untested: bool = false,
+    /// Whether the body is an `@unbroken` fn's own: its `while`s are no cancel points and read no tick.
+    unbroken: bool = false,
     /// The probe a map write being lowered took before its value, lent to the one read of its value
     /// that reads the place and the key the write does.
     lent: LentProbe? = null,
@@ -543,7 +570,10 @@ impl Lowering {
     mut fn lowered_as(e: ExprId, dropped: bool) -> Reg {
         if dropped {
             let core = self.meaning_of(e)
-            return self.store.expr(core).lowered_dropped(self, core)
+            let was = self.standing_at(e)
+            let r = self.store.expr(core).lowered_dropped(self, core)
+            self.stood(was)
+            return r
         }
         let pinned = self.pinned(e)
         if pinned != null { return pinned! }
@@ -557,7 +587,25 @@ impl Lowering {
     /// node that hands its seat on (a block its tail) asks for.
     mut fn born(e: ExprId) -> Reg {
         let core = self.meaning_of(e)
-        self.store.expr(core).lowered(self, core)
+        let was = self.standing_at(e)
+        let r = self.store.expr(core).lowered(self, core)
+        self.stood(was)
+        r
+    }
+
+    /// The written node `e` noted as the one this lowering stands in, where a law asks; answers the
+    /// one it stood in before, for `stood`.
+    fn standing_at(e: ExprId) -> int {
+        let notes? = self.program.notes else { return -1 }
+        let was = notes.at.get()
+        if e.index < notes.written { notes.at.set(e.index) }
+        was
+    }
+
+    /// The node this lowering stood in before, stood in again.
+    fn stood(was: int) {
+        let notes? = self.program.notes else { return }
+        notes.at.set(was)
     }
 
     /// The core node `e` means: itself where it's core already; an instance's value, the literal its
@@ -883,7 +931,22 @@ impl Lowering {
     }
 
     /// `i`, emitted.
-    mut fn emit(i: Ins) { self.ins.push(i) }
+    mut fn emit(i: Ins) {
+        if self.program.notes != null { self.noted_ins(i) }
+        self.ins.push(i)
+    }
+
+    /// A call of the runtime's row `row`, noted where it may switch the task out.
+    fn noted_row(row: string) {
+        if rt_waits(row) { self.noted((at: int) -> NodeMet.Waits(at, row)) }
+    }
+
+    /// What the instruction `i` meets, noted: a call through a value, a row that may switch out.
+    fn noted_ins(i: Ins) {
+        if i is .CallPtr { return self.noted((at: int) -> NodeMet.Value(at)) }
+        let row? = hosted_symbol(i) else { return }
+        self.noted_row(row)
+    }
 
     /// What register `r` is to the machine.
     fn layout_of(r: Reg) -> Layout { self.layouts.get()[r.index] }
@@ -971,7 +1034,17 @@ impl Lowering {
     }
 
     /// `callee` among the fns the body reaches, once.
-    mut fn reached(callee: CalledFn) { if !self.callees.get().any(it.symbol == callee.symbol) { self.callees.push(callee) } }
+    mut fn reached(callee: CalledFn) {
+        self.noted((at: int) -> NodeMet.Calls(at, callee))
+        if !self.callees.get().any(it.symbol == callee.symbol) { self.callees.push(callee) }
+    }
+
+    /// What `met` says of the written node this lowering stands in, noted where a law asks.
+    fn noted(met: fn(int) -> NodeMet) {
+        let notes? = self.program.notes else { return }
+        let at = notes.at.get()
+        if at >= 0 { notes.met.push(met(at)) }
+    }
 
     /// A call of a fn C defines, answering a value of layout `l`; one answering nothing answers a
     /// void's register.
@@ -1077,7 +1150,7 @@ impl Lowering {
     /// A loop's back edge: a `while` the source writes spins, and where the program links a scheduler
     /// reads the tick, whose taken side lets others run; a walk's back edge is neither.
     mut fn back_edge(s: StmtId) {
-        if self.walks.get().contains(s.index) { return }
+        if self.walks.get().contains(s.index) || self.unbroken { return }
         self.program.spins.set(true)
         self.task_test(TestSite.Ticks) { cx -> cx.tick_test() }
     }

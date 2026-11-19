@@ -87,11 +87,10 @@ export fn file_refs_made(ws: Workspace, f: FileId) -> Uses {
 }
 
 /// Every named use of a declaration, from every file's own rows and the held files' kept
-/// ones, indexed by declaration and by file. In the process only: a reader asks the
-/// projections `refs_to` and `refs_from`, whose digests move only with their own rows.
+/// ones, indexed by declaration. In the process only: a reader asks the projection `refs_to`,
+/// whose digest moves only with its own rows.
 type RefsIndex = {
     by_decl: Cell<Map<string, Cell<List<Ref>>>>,
-    by_file: Cell<Map<string, Cell<List<Ref>>>>,
     digest: int,
 }
 
@@ -107,10 +106,13 @@ fn refs_index(ws: Workspace) -> RefsIndex { ws.indexed_references() }
 @scoped_by(decl_places)
 export fn refs_to(ws: Workspace, d: DeclId) -> Uses { Uses { rows: refs_index(ws).by_decl.get().get("${d.index}")?.get() ?? [] } }
 
-/// The references one file makes.
+/// The references one file makes: its own rows, read without the whole package's.
 @query
 @scoped_by(file_places)
-export fn refs_from(ws: Workspace, f: FileId) -> Uses { Uses { rows: refs_index(ws).by_file.get().get("${f.index}")?.get() ?? [] } }
+export fn refs_from(ws: Workspace, f: FileId) -> Uses {
+    if !ws.reads_as_source(ws.decls.file(f).path) { return Uses { rows: [] } }
+    file_refs_made(ws, f)
+}
 
 /// What a reader of `d`'s references stands on: their rows' fold, each row by durable name and
 /// the rows in any order, so an edit that moves no row of `d` moves no reader of it.
@@ -177,11 +179,7 @@ impl Workspace {
             .db
             .kernel
             .unheard(() -> digest.set(fp(43, [fp_list([ref_fp(self.decls.ids(), r) for r in rows])])))
-        RefsIndex {
-            by_decl: Cell.new(grouped(rows, true)),
-            by_file: Cell.new(grouped(rows, false)),
-            digest: digest.get(),
-        }
+        RefsIndex { by_decl: Cell.new(grouped(rows)), digest: digest.get() }
     }
 
     /// Whether a body is typing or a compile-time run is lowering: no whole-program pass
@@ -484,11 +482,11 @@ fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
     !store.spanned_elsewhere(e) && quotes.any((q: Span) -> q.lo < sp.lo && sp.hi <= q.hi)
 }
 
-/// Rows grouped by the index of their declaration, or of their file, in row order.
-fn grouped(rows: List<Ref>, by_decl: bool) -> Map<string, Cell<List<Ref>>> {
+/// Rows grouped by the index of their declaration, in row order.
+fn grouped(rows: List<Ref>) -> Map<string, Cell<List<Ref>>> {
     mut out: Map<string, Cell<List<Ref>>> = {}
     for r in rows {
-        let k = if by_decl { "${r.decl.index}" } else { "${r.file.index}" }
+        let k = "${r.decl.index}"
         let held = out.get(k)
         if held == null { out.set(k, Cell.new([r])) } else { held!.push(r) }
     }

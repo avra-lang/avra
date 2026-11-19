@@ -3,11 +3,7 @@
 //! lowering, the running channel and the order and bound laws are
 //! proved by `packages/std-task`'s program tests, which see the real
 //! `@std/task`.
-use @std.avrac.testing.{floored_beside, refused_in, refused_with, projected}
-
-/// A toolchain carrying `@std/task`'s pair — enough for the front end
-/// to type a `channel` against.
-const task_src: string = "export type Sink<T> = { send: fn(T) -> bool, close: fn() -> void }\nexport type Source<T> = { next: fn() -> T? }\nexport type Channel<T> = { sink: Sink<T>, source: Source<T> }\n"
+use @std.avrac.testing.{beside_task, refused_in, refused_with, projected}
 
 /// A task reading `ch.source` that the block never lets end: no close.
 const spawned_reader: string = "use @std.task.{Channel, Source}\n" +
@@ -61,20 +57,12 @@ spec "features/tasks.channel" {
     }
     given "what it answers" {
         then "it answers a `Channel<T>` and types clean" {
-            let p = floored_beside(
-                "use @std.task.{Channel}\nlet c: Channel<int> = channel<int>(2)\n0",
-                "task",
-                task_src,
-            )
+            let p = beside_task("use @std.task.{Channel}\nlet c: Channel<int> = channel<int>(2)\n0")
             p.said_in("/w/src/main.av").is_empty()
         }
         then "a capacity that is no `int` is refused by name" {
             refused_in(
-                floored_beside(
-                    "use @std.task.{Channel}\nlet c = channel<int>(\"x\")\n0",
-                    "task",
-                    task_src,
-                ),
+                beside_task("use @std.task.{Channel}\nlet c = channel<int>(\"x\")\n0"),
                 "a `channel` capacity is a `int`, found `string`",
             )
         }
@@ -84,10 +72,10 @@ spec "features/tasks.channel" {
     }
     given "a spawned reader the block never lets end" {
         then "no `close()` before the block ends is refused by name" {
-            refused_in(floored_beside(spawned_reader, "task", task_src), "flow.never_ends")
+            refused_in(beside_task(spawned_reader), "flow.never_ends")
         }
         then "a `close()` after the spawn lets the reader end, so nothing is refused" {
-            floored_beside(closed_reader, "task", task_src).said_in("/w/src/main.av").is_empty()
+            beside_task(closed_reader).said_in("/w/src/main.av").is_empty()
         }
     }
 }

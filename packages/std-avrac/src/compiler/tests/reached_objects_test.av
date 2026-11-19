@@ -6,9 +6,39 @@
 // for it, same as `source_stamp_adversarial_test.av` found for `Store`;
 // its `real_disk_host`/`write_file_safe` are reused here, same module.
 use @std.avrac.testing.old_path.{test_workspace}
-use @std.io.{make_dirs}
 use @std.time.{stamp}
+use @std.path.{dir_of}
+use @std.io.{exists, read_text, write_text, list_dir, is_dir, make_dirs}
+use compiler.host.{Host, unlinked, plainly, unrefusing, unset, no_print, no_tool}
 use core.{joined}
+
+fn write_file_safe(p: string, t: string) -> string? {
+    let _ = make_dirs(dir_of(p))
+    match write_text(p, t) { .Ok(_) -> null, .Err(e) -> e.describe().message }
+}
+
+fn no_read_ahead(_files: int) {}
+
+/// A REAL disk host — `build_cache_root`'s store lives under `Store`,
+/// which reads and writes real files regardless of what host a
+/// `Workspace` was built with, so a memory host cannot stand in here
+/// the way it does for pure `Host.write`-backed state.
+fn real_disk_host() -> Host {
+    Host {
+        exists: (p: string) -> exists(p),
+        refused: unrefusing,
+        peek: plainly((p: string) -> exists(p), (p: string) -> read_text(p) catch ""),
+        beneath: unlinked((p: string) -> exists(p), (p: string) -> read_text(p) catch ""),
+        write: (p: string, t: string) -> write_file_safe(p, t),
+        list: (dir: string) -> list_dir(dir) catch [],
+        is_dir: (dir: string) -> is_dir(dir),
+        reads_ahead: no_read_ahead,
+        env: unset,
+        tool: no_tool,
+        print: no_print,
+        cwd: "",
+    }
+}
 
 fn robj_root(name: string) -> string {
     let root = "/tmp/avra-robj-test/${name}-${stamp()}"

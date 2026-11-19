@@ -4769,6 +4769,19 @@ int64_t avra_task_id(void) { return avra_task_local->id; }
 // context's key and the cell holding the value a set gave it. A set
 // makes the next frame; the end of the set's block takes it back to the
 // one it replaced. An empty slot is the frame where nothing is set.
+// `avra_ctx_now` is the running task's frame, read by a load where code
+// asks whether a frame is the one in force; the slot owns the frame, and
+// a switch loads the next task's.
+void* avra_ctx_now = NULL;
+
+// The running task's frame made `frame`, the slot taking `frame`'s
+// reference; the one it replaces released.
+static void ctx_made(void* frame) {
+    void* was = avra_task_local->slot[AVRA_SLOT_CTX];
+    avra_task_local->slot[AVRA_SLOT_CTX] = frame;
+    avra_ctx_now = frame;
+    avra_rc_release(was);
+}
 
 // The cell the running task's frame holds for `key`, or NULL where
 // nothing set it.
@@ -4781,22 +4794,30 @@ void* avra_ctx_read(int64_t key) {
     return NULL;
 }
 
-// The running task's frame with `key` holding `cell`, made current.
-void avra_ctx_set(int64_t key, void* cell) {
-    AvraArray* old = (AvraArray*)avra_task_local->slot[AVRA_SLOT_CTX];
-    int64_t n = old ? old->len : 1;
+// A frame over `before`, holding `pairs`' pairs but the one of `skip`
+// (none where `skip` is 0), then `key` holding `cell` where `cell` isn't
+// NULL.
+static void* ctx_over(void* before, AvraArray* pairs, int64_t skip, int64_t key, void* cell) {
+    int64_t n = pairs ? pairs->len : 1;
     void* next = avra_array_sized(n + 2);
-    if (old) avra_array_push_owned(next, old);
+    if (before) avra_array_push_owned(next, before);
     else avra_array_push(next, 0);
     for (int64_t i = 1; i < n; i += 2) {
-        if (old->data[i] == key) continue;
-        avra_array_push(next, old->data[i]);
-        avra_array_push_owned(next, (void*)(uintptr_t)old->data[i + 1]);
+        if (skip && pairs->data[i] == skip) continue;
+        avra_array_push(next, pairs->data[i]);
+        avra_array_push_owned(next, (void*)(uintptr_t)pairs->data[i + 1]);
     }
-    avra_array_push(next, key);
-    avra_array_push_owned(next, cell);
-    avra_task_local->slot[AVRA_SLOT_CTX] = next;
-    avra_rc_release(old);
+    if (cell) {
+        avra_array_push(next, key);
+        avra_array_push_owned(next, cell);
+    }
+    return next;
+}
+
+// The running task's frame with `key` holding `cell`, made current.
+void avra_ctx_set(int64_t key, void* cell) {
+    void* old = avra_task_local->slot[AVRA_SLOT_CTX];
+    ctx_made(ctx_over(old, (AvraArray*)old, key, key, cell));
 }
 
 // The frame the running task's frame replaced made current again.
@@ -4805,17 +4826,47 @@ void avra_ctx_back(void) {
     if (!now) return;
     void* before = (void*)(uintptr_t)now->data[0];
     avra_rc_retain(before);
-    avra_task_local->slot[AVRA_SLOT_CTX] = before;
-    avra_rc_release(now);
+    ctx_made(before);
+}
+
+// The running task's frame, its reference the caller's: what a body that
+// runs later is made under.
+void* avra_ctx_frame(void) { return avra_ctx_now ? slot_retained(avra_ctx_now) : NULL; }
+
+// A body made under `frame` entered: where `frame` is the one in force,
+// nothing changes and the answer is 0; else the frame made current holds
+// `frame`'s contexts over the one in force, so the end of the body takes
+// it back as a set's end does, and the answer is 1.
+int64_t avra_ctx_enter(void* frame) {
+    if (frame == avra_ctx_now) return 0;
+    void* old = avra_task_local->slot[AVRA_SLOT_CTX];
+    ctx_made(ctx_over(old, (AvraArray*)frame, 0, 0, NULL));
+    return 1;
+}
+
+// The fn box `box` made under `frame` instead: the same box where it was
+// made under `frame` already or holds no frame; else a copy, `frame` in
+// its frame's slot. The caller holds a reference to what it answers.
+void* avra_ctx_reframed(void* box, void* frame) {
+    AvraArray* a = (AvraArray*)box;
+    if (a->len < 2 || (void*)(uintptr_t)a->data[1] == frame) return slot_retained(box);
+    void* copy = avra_array_sized(a->len);
+    avra_array_push(copy, a->data[0]);
+    if (frame) avra_array_push_owned(copy, frame);
+    else avra_array_push(copy, 0);
+    for (int64_t i = 2; i < a->len; i++) {
+        if (a->marks[i] & MARK_OWNED) avra_array_push_owned(copy, (void*)(uintptr_t)a->data[i]);
+        else avra_array_push(copy, a->data[i]);
+        ((AvraArray*)copy)->marks[i] = a->marks[i];
+    }
+    return copy;
 }
 
 // `frame` current, the one it replaces released: what a guard entered
 // under, put back where it catches.
 static void ctx_restored(void* frame) {
-    void* now = avra_task_local->slot[AVRA_SLOT_CTX];
     avra_rc_retain(frame);
-    avra_task_local->slot[AVRA_SLOT_CTX] = frame;
-    avra_rc_release(now);
+    ctx_made(frame);
 }
 
 int64_t avra_fd_read(int64_t fd, int64_t max) {

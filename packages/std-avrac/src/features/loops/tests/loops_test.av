@@ -84,41 +84,10 @@ spec "features/loops" {
 ret 0"""
             render_ir(ir_of("mut x = 0\nwhile x < 3 {\n    x = x + 1\n}\nx")) == expected
         }
-        then "a for reads its end once — a count cell stepped as the turn begins, the name's cell per turn" {
-            let expected = """scope application {
-  r0 = int 0
-  r1 = slot
-  store r1 <- r0
-  r2 = int 0
-  r3 = int 2
-  r4 = slot
-  store r4 <- r2
-  r5 = slot
-  store r5 <- r2
-  loop {
-    r6 = load r4
-    store r5 <- r6
-    r7 = load r5
-    r8 = r7 < r3
-    while r8
-    scope application {
-      r9 = load r5
-      r10 = int 1
-      r11 = r9 + r10
-      store r4 <- r11
-      r12 = load r1
-      r13 = load r5
-      r14 = r12 + r13
-      store r1 <- r14
-    }
-  }
-  r15 = load r1
-  r16 = call avra_int_text(r15)
-  call avra_puts(r16)
-  release r16
-}
-ret 0"""
-            render_ir(ir_of("mut t = 0\nfor i in 0..2 {\n    t = t + i\n}\nt")) == expected
+        then "a for reads its end once and counts past each turn as it begins, so a `continue` moves on" {
+            shown(
+                "state asked: int = 0\nfn bound() -> int {\n    asked = asked + 1\n    5\n}\nmut t = 0\nfor i in 0..bound() {\n    if i == 2 { continue }\n    t = t + i\n}\n\"\${t} \${asked}\"",
+            ) == "8 1"
         }
     }
     given "index pairing — `for i, x in xs`" {

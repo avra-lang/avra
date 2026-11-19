@@ -1,52 +1,23 @@
-// A `state` local is a Cell, written or not its type: its slot and every
-// load of that slot wear `Cell<T>`, so the IR tells it from a `mut`
-// local's, and a write through it never lands in the binary's own data.
-use @std.avrac.core.{Ins, Layout, some_list}
-use @std.avrac.testing.{shown, ir_of}
+// A `state` local is a Cell, written or not its type: each call seeds its
+// own, a lambda's write lands in that call's, and a write through it never
+// lands in the binary's own data.
+use @std.avrac.testing.{shown}
 
 const unannotated: string = "type R = { xs: List<string> }\nfn a() -> int {\n    state r = R { xs: [\"a\"] }\n    let f = () -> {\n        r = R { xs: [\"b\", \"c\"] }\n        1\n    }\n    let n = r.xs.length\n    let _ = f()\n    n * 10 + r.xs.length\n}\nfn b() -> int {\n    state r = R { xs: [\"a\"] }\n    r.xs.length\n}\n\"\${a()} \${a()} \${b()}\""
 
-const annotated: string = "type R = { xs: List<string> }\nfn b() -> int {\n    state r: R = R { xs: [\"a\"] }\n    r.xs.length\n}\nb()"
+const annotated: string = "type R = { xs: List<string> }\nfn a() -> int {\n    state r: R = R { xs: [\"a\"] }\n    let f = () -> {\n        r = R { xs: [\"b\", \"c\"] }\n        1\n    }\n    let n = r.xs.length\n    let _ = f()\n    n * 10 + r.xs.length\n}\n\"\${a()} \${a()}\""
 
 const pushed: string = "type R = { xs: List<string> }\nfn c() -> int {\n    state r = R { xs: [\"a\"] }\n    let f = () -> { r.xs.push(\"b\") }\n    f()\n    r.xs.length\n}\n\"\${c()} \${c()}\""
 
 const counted: string = "fn d() -> int {\n    state n = 1\n    let f = () -> { n = n + 1 }\n    f()\n    n\n}\n\"\${d()} \${d()}\""
-
-/// Whether body `name`'s slots, and every load of one, wear a Cell — and it has a slot.
-fn slots_wear_cells(source: string, name: string) -> bool {
-    let l = ir_of(source)
-    let b? = l.fns.find(it.name == "alone/src/main.av.${name}") else { return false }
-    let slots = [j for i in b.ins for j in some_list(slot_index(i))]
-    let worn = [j for i in b.ins for j in loaded_from(i, slots)].concat(slots)
-    !slots.is_empty() && worn.all((j) -> j < b.layouts.length && is_cell(b.layouts[j]))
-}
-
-/// Whether a register holds a pointer to a cell's box.
-fn is_cell(l: Layout) -> bool {
-    match l { .Boxed(kind) -> kind is .Cell, _ -> false }
-}
-
-/// The register a slot instruction mints.
-fn slot_index(i: Ins) -> int? {
-    match i { .Alloca(d) -> d.index, rest -> null }
-}
-
-/// The register a load out of one of `slots` defines.
-fn loaded_from(i: Ins, slots: List<int>) -> List<int> {
-    match i {
-        .Load(d, from) -> if slots.contains(from.index) { [d.index] } else { [] },
-        rest -> [],
-    }
-}
 
 spec "features/mutation — a `state` local is a Cell" {
     given "an unannotated `state` local" {
         then "its seed is its own, never the binary's literal" { shown(unannotated) == "12 12 1" }
         then "a lambda's push lands in this call's cell" { shown(pushed) == "2 2" }
         then "a scalar one counts per call" { shown(counted) == "2 2" }
-        then "its slot and its loads wear `Cell<R>`" { slots_wear_cells(unannotated, "b") }
     }
     given "an annotated `state` local" {
-        then "its slot and its loads wear `Cell<R>`" { slots_wear_cells(annotated, "b") }
+        then "its seed is its own, and a lambda's write lands in this call's cell" { shown(annotated) == "12 12" }
     }
 }

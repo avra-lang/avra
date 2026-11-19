@@ -114,8 +114,8 @@ export enum HandedArg {
     /// A quote with no holes, written in the file `home` names at `at`.
     Code(home: string, at: int, parts: List<string>)
     /// A const the argument names whose value is no literal: its settled value, run where it's
-    /// declared.
-    Settled(file: SourceFileAddress, name: string, item: int)
+    /// declared, and the print of its settlement — what a site that hands it runs again on.
+    Settled(file: SourceFileAddress, name: string, item: int, value: ContentHash)
     /// An argument the program layer doesn't cross yet, and why.
     Uncrossed(why: string)
     /// An argument naming no declaration its seat takes: the program's fault, and why.
@@ -415,7 +415,7 @@ fn meta_arg(engine: QueryEngine, h: HandedArg, mut heap: MetaHeap) -> MetaVal? {
             .Text(t) -> MetaVal.Text(t),
         },
         .Code(home, at, parts) -> meta_of_template(Node.Template(home, at, parts, []), heap),
-        .Settled(file, name, item) -> settled_handed(engine, file, name, item, heap),
+        .Settled(file, name, item, _) -> settled_handed(engine, file, name, item, heap),
         .Uncrossed(_) or .Unfit(_) -> null,
     }
 }
@@ -773,8 +773,12 @@ fn spelled_arg(
     let v? = item.store.const_value(s) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let there? = file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
     let spelled = spelled_arg(engine, there, d.file, item, v, depth + 1)
-    if spelled is .Uncrossed { HandedArg.Settled(d.file, d.name, d.item) } else { spelled }
+    if spelled is .Uncrossed { HandedArg.Settled(d.file, d.name, d.item, settled_print(engine, d)) } else { spelled }
 }
+
+/// The print of the const `d`'s settlement: its value as it settles, through whatever it reads, so
+/// it moves exactly when that value does.
+fn settled_print(engine: QueryEngine, d: DeclaredName) -> ContentHash { content_hash(const_settlement(engine, d.file, d.name, d.item).saved_bytes()) }
 
 /// The const `file` declares as `name` in its written item `item`, its value run where it's declared
 /// and laid out in `heap`; absent where it doesn't settle.

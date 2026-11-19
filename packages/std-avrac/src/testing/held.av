@@ -34,19 +34,19 @@ use compiler.{
     program_refused,
     program_warned,
 }
-use compiler.backend.{Kept, run_kept, run_program}
+use compiler.backend.{Kept, render_ir, run_kept, run_program}
 use compiler.lower.{Lowered}
 use compiler.host.{Manifest, memory_host, read_manifest}
 use core.{distinct, flatten, sorted_texts}
-use @std.io.{env}
+use @std.io.{env, is_dir, list_dir, make_dirs, read_text, write_text}
 use diagnostics.{Diag, has_errors, new_source_file, rendered_among}
 use @std.meta.{embed}
-use @std.path.{file_name, normalized}
+use @std.path.{dir_of, file_name, normalized}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.disk_store.{disk_store_at}
 use @std.program.layered_store.{use_machine_store, use_package_places}
 use @std.program.query_engine.{QueryEngine, query_engine}
-use @std.program.source_facts.{FileOctets, use_source_world}
+use @std.program.source_facts.{FileOctets, WorldPlaces, use_source_world}
 use @std.program.tests.support.store_in_memory.{StoreInMemory, store_in_memory}
 
 /// The symbol a program's entry runs under.
@@ -68,6 +68,9 @@ export type Held = {
     floored: bool = false,
     /// How many times each file's text was asked for, by its path.
     asked: Cell<Map<string, int>>,
+    /// Whether its files stand on the machine's disk, each read through its stamp as a build reads
+    /// it; else they are held in memory and every read is hashed.
+    on_disk: bool = false,
 }
 
 /// Where a held toolchain's std packages lie.
@@ -112,6 +115,11 @@ impl Held {
         )
     }
 
+    /// Whether it holds the toolchain's `@std/task`: a program over it runs under the scheduler the
+    /// process itself is compiled with, so the differential compares what is said of it and never
+    /// runs it here.
+    fn schedules() -> bool { self.files.has("${self.std}/std-task/avra.toml") }
+
     /// The manifest of a package it holds; an empty one where it holds none.
     fn manifest_of(package: string) -> Manifest {
         let path = self.standing(package, "avra.toml")
@@ -128,6 +136,22 @@ impl Held {
     fn entered() {
         use_package_places([])
         use_machine_store(null)
+        if self.on_disk {
+            use_source_world(
+                avra_source_world(
+                    (f) -> disk_text(self.standing(f.package_name, f.path_in_package)),
+                    (d) -> disk_names(self.standing(d.package_name, d.path_in_package)),
+                    "avra-held",
+                    (f) -> self.octets(f),
+                    WorldPlaces {
+                        file: (f) -> self.standing(f.package_name, f.path_in_package),
+                        directory: (d) -> self.standing(d.package_name, d.path_in_package),
+                        print: self.root,
+                    },
+                ),
+            )
+            return
+        }
         use_source_world(
             avra_source_world(
                 (f) -> self.read(f),
@@ -157,6 +181,40 @@ impl Held {
         said
     }
 
+    /// What one process over `store` makes of the program the file at `path` runs, read out
+    /// before it ends as a process ends: what its build says, what it runs to, its IR, and the
+    /// queries it worked out, inputs aside.
+    fn passed_over(path: string, store: StoreInMemory) -> Pass {
+        self.passed_with(path, query_engine(store, avra_fact_definitions()))
+    }
+
+    /// What a build of the program `entry` runs says, asked through `engine`: what its manifests
+    /// and its package graph say and, where none of those refuses, each refusal and warning of its
+    /// files.
+    fn judged_with(entry: SourceFileAddress, engine: QueryEngine) -> Judged {
+        self.entered()
+        let graph = self.manifests_said(engine)
+        let said = if has_errors(graph) { graph } else { graph.concat(self.files_said(engine, entry)) }
+        Judged { held: self, engine: engine, entry: entry, diagnostics: said }
+    }
+
+    /// What one process asking through `engine` makes of the program the file at `path` runs.
+    fn passed_with(path: string, engine: QueryEngine) -> Pass {
+        let j = self.judged_with(self.file_at(path), engine)
+        let made = j.made()
+        let pass = Pass {
+            report: j.report(),
+            ran: match made {
+                .Ok(l) -> answer_of(run_program(l, ENTRY)),
+                .Err(why) -> "refused: ${why}",
+            },
+            ir: match made { .Ok(l) -> render_ir(l), .Err(why) -> "not made: ${why}" },
+            worked: sorted_texts([name for name in engine.computed_queries() if !engine.input_named(name)]),
+        }
+        engine.frontier_kept()
+        pass
+    }
+
     /// The queries one process works out — its inputs aside — judging the program the file at
     /// `path` runs over `store`, each named once per answer, in name order: what an edit made it
     /// ask again.
@@ -168,6 +226,17 @@ impl Held {
         let _ = program_warned(engine, entry.package_name)
         engine.frontier_kept()
         sorted_texts([name for name in engine.computed_queries() if !engine.input_named(name)])
+    }
+
+    /// `passed_over` a store on disk under `directory`, opened afresh and saved as a process that
+    /// ended saves it.
+    fn passed_on_disk(path: string, directory: string) -> Pass {
+        let store = disk_store_at(directory)
+        let pass = self.passed_with(path, query_engine(store, avra_fact_definitions()))
+        match store.saved_alone() {
+            .Ok(_) -> pass,
+            .Err(_) -> pass with { report: "<the store did not save>" },
+        }
     }
 
     /// `checked_over` a store on disk under `directory`, opened afresh and saved as a process
@@ -212,18 +281,14 @@ impl Held {
     /// warning of its files.
     fn judged(entry: SourceFileAddress) -> Judged {
         let old = if differential() && self.spoken.is_empty() { self.old_said(entry) } else { null }
-        self.entered()
-        let engine = query_engine(store_in_memory(), avra_fact_definitions())
-        let graph = self.manifests_said(engine)
-        let said = if has_errors(graph) { graph } else { graph.concat(self.files_said(engine, entry)) }
-        let j = Judged { held: self, engine: engine, entry: entry, diagnostics: said }
+        let j = self.judged_with(entry, query_engine(store_in_memory(), avra_fact_definitions()))
         let told? = old else { return j }
         differing(
             self.own_text(),
             told.said,
             said_sorted(j.diagnostics),
             told.run,
-            run_said(j.run(), told.quiet),
+            if self.schedules() { UNRUN } else { run_said(j.run(), told.quiet) },
         )
         j
     }
@@ -250,7 +315,7 @@ impl Held {
         let old = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
         let said = OldSaid {
             said: said_sorted(old),
-            run: run_said(p.run(), old.is_empty()),
+            run: if self.schedules() { UNRUN } else { run_said(p.run(), old.is_empty()) },
             quiet: old.is_empty(),
         }
         one_shot_let_go()
@@ -263,6 +328,29 @@ impl Held {
             .join("\n")
     }
 }
+
+/// What one process made of a program before it ended: what its build said, what it ran to, its
+/// IR, and the queries it worked out.
+export type Pass = { report: string, ran: string, ir: string, worked: List<string> }
+
+/// A run's answer, or the words it stopped with.
+fn answer_of(r: Result<string, string>) -> string {
+    match r { .Ok(v) -> v, .Err(why) -> "refused: ${why}" }
+}
+
+/// `all` with one of each name in `less` taken away: what one process worked out past another.
+export fn beyond(all: List<string>, less: List<string>) -> List<string> {
+    mut rest = less
+    mut out: List<string> = []
+    for name in all {
+        let at = rest.index_of(name)
+        if at < 0 { out.push(name) } else { rest = rest.take(at).concat(rest.drop(at + 1)) }
+    }
+    out
+}
+
+/// What stands for a run the differential does not make.
+const UNRUN: string = "(not run here: the program holds @std/task)"
 
 /// What the old path said of one program, as text: its diagnostics sorted, what it ran to, and
 /// whether it said nothing.
@@ -391,25 +479,71 @@ export fn held_alone(source: string) -> Held {
 export fn held_at(files: Map<string, string>, root: string, std: string = STD_ROOT) -> Held {
     mut all: Map<string, string> = if std == STD_ROOT { PRELUDE_FILES } else { {} }
     for path, text in files { all.set(path, text) }
-    let graph = GraphHeld { text_at: (path) -> all.get(path), absolute: (path) -> normalized(path) }
+    graphed(all, root, std) with { floored: files.keys().any(it.starts_with("${std}/")) }
+}
+
+/// The package at `root` among `files`, its rows admitted as every reading of a package graph
+/// admits them, its toolchain under `std`.
+fn graphed(files: Map<string, string>, root: string, std: string) -> Held {
+    let graph = GraphHeld {
+        text_at: (path) -> files.get(path),
+        absolute: (path) -> normalized(path),
+    }
     let home = GraphRoot { name: graph.package_named(root, file_name(root)), dir: root }
     mut deps: Map<string, string> = {}
     mut admitted = NOTHING_ADMITTED
     graph.rows_admitted(root, true, [home.name], home, deps, admitted)
     Held {
-        files: all,
+        files: files,
         root: root,
         name: home.name,
         std: std,
         deps: deps,
         admitted: admitted,
-        floored: files.keys().any(it.starts_with("${std}/")),
         asked: no_reads(),
     }
 }
 
 /// A store with nothing saved, for the processes of one case to share.
 export fn empty_store() -> StoreInMemory { store_in_memory() }
+
+/// The package at `root` as it stands on the machine's disk, the toolchain's prelude written
+/// beside it under `root/.std`: every file read through its stamp, as a build reads it.
+export fn held_on_disk(root: string) -> Held {
+    let std = "${root}/.std"
+    for path, text in PRELUDE_FILES {
+        let at = std + path.substring(STD_ROOT.length, path.length)
+        if disk_text(at) == null {
+            let _ = make_dirs(dir_of(at))
+            let _ = write_text(at, text)
+        }
+    }
+    graphed(disk_files(root), root, std) with { on_disk: true }
+}
+
+/// A file's text on the machine's disk; absent where it can't be read.
+fn disk_text(path: string) -> string? {
+    match read_text(path) { .Ok(text) -> text, .Err(_) -> null }
+}
+
+/// The names in a directory on the machine's disk; absent where it is none.
+fn disk_names(path: string) -> List<string>? {
+    match list_dir(path) { .Ok(names) -> names, .Err(_) -> null }
+}
+
+/// Every file under `dir` on the machine's disk, by its full path, with its text.
+fn disk_files(dir: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for name in disk_names(dir) ?? [] {
+        let path = "${dir}/${name}"
+        if is_dir(path) {
+            for p, t in disk_files(path) { out.set(p, t) }
+        } else {
+            out.set(path, disk_text(path) ?? "")
+        }
+    }
+    out
+}
 
 /// A count of reads with none made.
 fn no_reads() -> Cell<Map<string, int>> {
