@@ -20,9 +20,9 @@ use @std.queue.{
 use @std.sqlite.{Db}
 use @std.task.{unbounded_channel}
 use @std.time.{Time, mins, ms, now_ns, secs, sleep, stamp}
-use durable.{db, stored}
+use durable.{db, stored_with}
 use fault.{homed}
-use queue_store.{store_home}
+use queue_store.{store_home_with}
 use waiting.{listening}
 use tests.support.wires.{int_wire}
 
@@ -55,7 +55,7 @@ fn declared() -> Result<string, HomeError> {
     let letters = unbounded_channel<Dead<int, string>>()
     queue<int> jobs {
         name: "jobs"
-        durable: stored(int_wire(), clock: ticking)
+        durable: stored_with(int_wire(), clock: ticking)
         dedupe: mins(60)
         acked: (d: Delivery<int>) -> seen.push(d.item)
     }
@@ -78,7 +78,7 @@ fn sent_and_closed(path: string) -> Result<int, HomeError> {
     ctx db = homed(Db.open(path))?
     queue<int> jobs {
         name: "jobs"
-        durable: stored(int_wire(), clock: ticking)
+        durable: stored_with(int_wire(), clock: ticking)
     }
     for i in 1..4 { let _ = jobs.send(i, id: "job-${i}")? }
     let depth = jobs.home().depth()?
@@ -93,7 +93,7 @@ fn reopened_and_run(path: string) -> Result<string, HomeError> {
     let letters = unbounded_channel<Dead<int, string>>()
     queue<int> jobs {
         name: "jobs"
-        durable: stored(int_wire(), clock: ticking)
+        durable: stored_with(int_wire(), clock: ticking)
         acked: (d: Delivery<int>) -> seen.push(d.item)
     }
     worker crew {
@@ -144,7 +144,7 @@ fn idled() -> Result<string, HomeError> {
         overflow: Overflow.park,
         order: Order.fifo,
     }
-    let store = store_home<int>(homed(Db.memory())?, "jobs", terms, int_wire())? with { clock: ticking }
+    let store = store_home_with<int>(homed(Db.memory())?, "jobs", terms, int_wire())? with { clock: ticking }
     let takes = Cell.new(0)
     let acks = Cell.new(0)
     let letters = unbounded_channel<Dead<int, string>>()

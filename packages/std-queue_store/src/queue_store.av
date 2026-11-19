@@ -3,8 +3,15 @@
 //! process that sent it, and a second process over the same file takes
 //! from the same queue.
 //!
-//!     let jobs = store_home<Job>(db, "jobs", terms, wire)?
+//!     @codec
+//!     type Job = { n: int }
+//!
+//!     let jobs = store_home<Job>(db, "jobs", terms)?
 //!     queue<Job> work { homed: jobs.home() }
+//!
+//! An item crosses as its type's own `@codec` octets, and the home keeps
+//! the shape of every build that wrote to it. `store_home_with` takes a
+//! wire written by hand, for an item no codec is derived for.
 //!
 //! Every verb is one transaction, joined to the caller's when one is
 //! open on the connection. A take leases a row: it raises the row's
@@ -12,7 +19,12 @@
 //! delivery names the epoch, so a hold that was redelivered settles
 //! nothing. A lease that ran out is found by the next take.
 //!
-//! A row no item can be read from never holds its queue: the take that
+//! A row written under another shape is judged against the reader's
+//! own (`verdict`). One that grew at its end is read as far as the
+//! reader knows it, and one that lacks trailing fields takes their
+//! defaults. One a NEWER build wrote that this one cannot read is let
+//! go for a while, no attempt counted, so a newer reader takes it. A
+//! row no item can be read from never holds its queue: the take that
 //! meets it sets it aside (`unreadable`) and hands out the next.
 //!
 //! A delivery's `id` is its row's own behind its database's mark, minted
@@ -30,11 +42,14 @@ use @std.queue.{
     Overflow,
     Parcel,
     Terms,
+    delay_terms,
     home_terms,
     key,
     letter_terms,
 }
-use @std.relation.stable.{CodecFault, Reader, Writer, decoded_with, encoded_with}
+use @std.relation.{Storable}
+use @std.relation.shape.{Descriptor, Verdict, descriptor_unspelled, verdict}
+use @std.relation.stable.{CodecFault, Reader, Writer, decoded_with, encoded_with, indexed_scope}
 use @std.sqlite.{Db, Durability, Journal, OpenConfig, Sql, SqlValue, prepared, sql}
 use @std.text.{parse_int}
 use @std.time.{Duration, Time, mins, now}
@@ -42,15 +57,30 @@ use fault.{ask_again, homed}
 use rows.{count_standing, read_mark, tables_made, take_next, waiting_index}
 use unread.{Unread, Unreadable, aside, aside_count, forget_aside, set_aside}
 
-/// How an item crosses to its row and back: the hash of its shape, a
-/// description of that shape a reader of another build can follow, and
-/// the item's stable octets each way. `decode` answers absent for
-/// octets that are no item.
+/// How an item crosses to its row and back: the hash of its shape, that
+/// shape's descriptor as a reader of another build judges it, and the
+/// item's stable octets each way. `decode` answers absent for octets
+/// that are no item. `known` reads octets written under another shape
+/// that a verdict let through, a writer of `slots` slots; a wire whose
+/// descriptor spells no shape is never asked.
 export type Wire<T> = {
     shape: int,
     descriptor: string,
     encode: fn(T) -> Bytes,
     decode: fn(Bytes) -> T?,
+    known: fn(Bytes, int) -> Result<T, CodecFault> = (_octets: Bytes, _slots: int) -> .Err(CodecFault.OtherShape),
+}
+
+/// The wire a coded type derives: its own octets, shape and descriptor.
+export fn wire<T: Storable>() -> Wire<T> {
+    let scope = indexed_scope()
+    Wire {
+        shape: T.codec_shape(),
+        descriptor: T.codec_descriptor(),
+        encode: (item: T) -> item.encoded_in(scope),
+        decode: (octets: Bytes) -> match T.decoded_in(scope, octets) { .Ok(item) -> item, .Err(_) -> null },
+        known: (octets: Bytes, slots: int) -> T.decoded_known(scope, octets, slots),
+    }
 }
 
 /// A wire over the stable byte codec: `write` puts an item's fields to
@@ -70,8 +100,11 @@ export fn wire_of<T>(
 }
 
 /// One queue in a database. `mark` is the database's own, the head of
-/// every id the home answers; `dedupe` is how long a named send is
-/// remembered; `reader` is the name a take leaves on the rows it holds;
+/// every id the home answers; `shape` is the wire's descriptor, absent
+/// when it spells none; `judged` keeps the verdict on each other shape
+/// a take met; `dedupe` is how long a named send is remembered;
+/// `yields` is how long an item a newer build wrote is let go for;
+/// `reader` is the name a take leaves on the rows it holds;
 /// `clock` is the instant every lease and backoff is measured against,
 /// the wall's unless another is given; `eases` says the verbs that file
 /// no item commit without a sync of their own (`Sync.every_send` over a
@@ -82,7 +115,10 @@ export type Store<T> = {
     terms: Terms,
     wire: Wire<T>,
     mark: string,
+    shape: Descriptor?,
+    judged: Cell<Map<string, Judged>>,
     dedupe: Duration = mins(1440),
+    yields: Duration = ask_again,
     reader: string = "",
     clock: fn() -> Time = now,
     eases: bool = false,
@@ -117,12 +153,21 @@ fn at(t: Time) -> SqlValue {
     .Int(t.ns)
 }
 
+/// The queue named `queue` in `db`, its items crossing as `T`'s own
+/// codec writes them: `store_home_with` over the wire `T` derives.
+export fn store_home<T: Storable>(db: Db, queue: string, terms: Terms, sync: Sync = Sync.every_send) -> Result<
+    Store<T>,
+    HomeError,
+> {
+    store_home_with(db, queue, terms, wire<T>(), sync)
+}
+
 /// The queue named `queue` in `db`, its tables made where they are
 /// missing, its item shape recorded, and the connection set to commit
 /// as `sync` asks. Terms that hold no item are refused. A home is
 /// opened outside a transaction: what makes
 /// it is never undone with a caller's work.
-export fn store_home<T>(
+export fn store_home_with<T>(
     db: Db,
     queue: string,
     terms: Terms,
@@ -136,12 +181,15 @@ export fn store_home<T>(
     let _ = homed(db.run(sql(count_standing, [.Text(queue)])))?
     if terms.overflow == Overflow.latest { let _ = homed(db.run(sql(waiting_index)))? }
     let _ = homed(db.run(sql(know_shape, [.Int(wire.shape), .Text(wire.descriptor)])))?
+    let judged: Cell<Map<string, Judged>> = Cell.new({})
     Store {
         db: db,
         queue: queue,
         terms: terms,
         wire: wire,
         mark: "${homed((homed(db.scalar(sql(read_mark)))?).text())?}-",
+        shape: descriptor_unspelled(wire.descriptor),
+        judged: judged,
         eases: sync == Sync.every_send && homed(db.journal())? == "wal",
     }
 }
@@ -212,6 +260,18 @@ fn eased<V>(db: Db, eases: bool, work: fn() -> Result<V, HomeError>) -> Result<V
 /// One row a take leased, as its columns.
 type Leased = { id: int, key: string, body: Bytes, shape: int, attempt: int, epoch: int }
 
+/// The reader's verdict on another shape, and how many slots a writer
+/// of that shape holds.
+type Judged = { verdict: Verdict, slots: int }
+
+/// What a take makes of a leased row: its item, a row to set aside and
+/// why, or a row a newer build wrote that this one lets go.
+enum Read<T> {
+    Item(item: T)
+    Aside(why: Unread)
+    Newer
+}
+
 /// What the terms make of one more item: it is kept, it is discarded
 /// behind an id of its own, or the send is turned away.
 enum Room { Keep, Discard, Refuse }
@@ -221,6 +281,7 @@ impl Store<T> {
     fn home() -> Home<T> {
         Home {
             send: (item: T, k: Key) -> self.send(item, k),
+            delay: (item: T, k: Key, after: Duration) -> self.send_after(item, k, after),
             send_all: (batch: List<Parcel<T>>) -> self.send_all(batch),
             take: (max: int) -> self.taken(max),
             began: (d: Delivery<T>) -> self.began(d),
@@ -235,7 +296,14 @@ impl Store<T> {
     /// Send one item under `k`, answering its id, or `null` when the
     /// terms turned it away.
     fn send(item: T, k: Key) -> Result<string?, HomeError> {
-        self.sent(item, k, null)
+        self.sent(item, k, null, null)
+    }
+
+    /// Send one item under `k` that no take reaches before `after` from
+    /// now on the home's clock. A delay of nothing or less is a plain
+    /// send; terms whose overflow gives up a waiting item are refused.
+    fn send_after(item: T, k: Key, after: Duration) -> Result<string?, HomeError> {
+        self.sent(item, k, null, self.ready_after(after)?)
     }
 
     /// Send one item by name: within the dedupe window a name is one
@@ -243,7 +311,26 @@ impl Store<T> {
     /// A send the terms turned away is not remembered: it answers
     /// `null`, and the next send of its name is a fresh one.
     fn send_as(item: T, k: Key, name: string) -> Result<string?, HomeError> {
-        self.sent(item, k, name)
+        self.sent(item, k, name, null)
+    }
+
+    /// Send one item by name that no take reaches before `after` from
+    /// now. A name already answered answers its id again, whatever the
+    /// delay.
+    fn send_as_after(item: T, k: Key, name: string, after: Duration) -> Result<string?, HomeError> {
+        self.sent(item, k, name, self.ready_after(after)?)
+    }
+
+    /// The instant an item sent now and held back `after` is due, the
+    /// last one there is when the span runs past it; absent for a delay
+    /// of nothing or less.
+    fn ready_after(after: Duration) -> Result<Time?, HomeError> {
+        if after.ns <= 0 { return .Ok(null) }
+        let _ = delay_terms(self.terms)?
+        let now = (self.clock)()
+        .Ok(
+            if after.ns > last_instant - now.ns { Time { ns: last_instant } } else { now.plus(after) },
+        )
     }
 
     /// Send many items as one transaction, answering each as `send`
@@ -329,13 +416,13 @@ impl Store<T> {
 
     // ── Sending ──
 
-    fn sent(item: T, k: Key, name: string?) -> Result<string?, HomeError> {
+    fn sent(item: T, k: Key, name: string?, ready: Time?) -> Result<string?, HomeError> {
         let body = (self.wire.encode)(item)
-        transacted(self.db, () -> self.filed(body, k, name))
+        transacted(self.db, () -> self.filed(body, k, name, ready))
     }
 
     fn filed_all(batch: List<Parcel<T>>, bodies: List<Bytes>) -> Result<List<string?>, HomeError> {
-        [self.filed(bodies[i], p.key, null)? for i, p in batch]
+        [self.filed(bodies[i], p.key, null, null)? for i, p in batch]
     }
 
     fn settled_all(held: List<Delivery<T>>) -> Result<List<bool>, HomeError> {
@@ -344,14 +431,15 @@ impl Store<T> {
 
     /// The send itself, inside its transaction: a name already answered
     /// an id answers it again; else the terms judge the room and the
-    /// row is written. Only a send answered an id is remembered.
-    fn filed(body: Bytes, k: Key, name: string?) -> Result<string?, HomeError> {
+    /// row is written, due from the first or at `ready`. Only a send
+    /// answered an id is remembered.
+    fn filed(body: Bytes, k: Key, name: string?, ready: Time?) -> Result<string?, HomeError> {
         let now = (self.clock)()
         if name != null {
             let known = self.seen(name!, now)?
             if known != null { return .Ok(known) }
         }
-        let id? = self.written(body, k, now)? else { return .Ok(null) }
+        let id? = self.written(body, k, now, ready)? else { return .Ok(null) }
         if name != null {
             let _ = homed(
                 self
@@ -405,14 +493,18 @@ impl Store<T> {
     /// absent when they turned the item away. A send into a queue with
     /// room is the one statement: the row is written only while fewer
     /// than `capacity` wait. A queue with no count has no room to
-    /// read: it is counted from its rows and asked again.
-    fn written(body: Bytes, k: Key, now: Time) -> Result<int?, HomeError> {
+    /// read: it is counted from its rows and asked again. A row with no
+    /// `ready` instant is due from the first: its `ready_at` is the least
+    /// instant there is and no sender's clock, so no reader whose clock
+    /// runs behind passes it by.
+    fn written(body: Bytes, k: Key, now: Time, ready: Time?) -> Result<int?, HomeError> {
         let row: List<SqlValue> = [
             .Text(self.queue),
             .Text(k.text),
             .Int(self.wire.shape),
             .Blob(body),
             at(now),
+            .Int(ready?.ns ?? first_instant),
         ]
         let roomy = sql(file_in_room, [..row, .Int(self.terms.capacity)])
         if homed(self.db.run(roomy))? == 1 || self.recounted()? && homed(self.db.run(roomy))? == 1 {
@@ -475,12 +567,13 @@ impl Store<T> {
 
     /// Lease the oldest item that is due, that the order term lets stand
     /// and that an item can be read from. A row no item can be read from
-    /// is set aside on the way. A lease is over once it ended by `lapse`.
+    /// is set aside on the way, and one a newer build wrote is let go.
+    /// A lease is over once it ended by `lapse`.
     fn next(now: Time, lapse: Time) -> Result<Delivery<T>?, HomeError> {
         mut row = self.reached(now, lapse)?
         while row != null {
-            match self.read(row!) {
-                .Ok(item) -> {
+            match self.read(row!)? {
+                .Item(item) -> {
                     return .Ok(
                         Delivery {
                             id: self.named(row!.id),
@@ -491,11 +584,19 @@ impl Store<T> {
                         },
                     )
                 },
-                .Err(why) -> { let _ = set_aside(self.db, row!.id, why, now)? },
+                .Aside(why) -> { let _ = set_aside(self.db, row!.id, why, now)? },
+                .Newer -> { let _ = self.yielded(row!, now)? },
             }
             row = self.reached(now, lapse)?
         }
         .Ok(null)
+    }
+
+    /// Let go a row a newer build wrote, due again once `yields` passed
+    /// and no sooner than the next instant: its attempt stands as it was.
+    fn yielded(row: Leased, now: Time) -> Result<int, HomeError> {
+        let due = Time { ns: now.ns + if self.yields.ns > 0 { self.yields.ns } else { 1 } }
+        homed(self.db.run(sql(let_go, [.Int(row.id), .Text(self.queue), .Int(row.epoch), at(due)])))
     }
 
     /// Lease the oldest row that is due and that the order term lets
@@ -531,11 +632,37 @@ impl Store<T> {
         )
     }
 
-    /// The item a leased row holds, or why none can be read from it.
-    fn read(row: Leased) -> Result<T, Unread> {
-        if row.shape != self.wire.shape { return .Err(Unread.Shape) }
-        let item? = (self.wire.decode)(row.body) else { return .Err(Unread.Octets) }
-        item
+    /// What a leased row holds. A row of the wire's own shape is its
+    /// item or no item's octets. A row of another shape is judged: one
+    /// the reader cannot follow is set aside, and every other is read
+    /// as far as the reader knows it.
+    fn read(row: Leased) -> Result<Read<T>, HomeError> {
+        if row.shape == self.wire.shape {
+            let item? = (self.wire.decode)(row.body) else { return .Ok(Read.Aside(Unread.Octets)) }
+            return .Ok(Read.Item(item))
+        }
+        let theirs? = self.judgment(row.shape)? else { return .Ok(Read.Aside(Unread.Shape)) }
+        match theirs.verdict {
+            .Moved -> .Ok(Read.Aside(Unread.Shape)),
+            .Same or .Grew or .Fills -> match (self.wire.known)(row.body, theirs.slots) {
+                .Ok(item) -> .Ok(Read.Item(item)),
+                .Err(fault) -> .Ok(unknown(theirs.verdict, fault)),
+            },
+        }
+    }
+
+    /// The verdict on the shape a row was written under, kept once it
+    /// was reached. Absent while the wire spells no shape, or the home
+    /// holds no descriptor of that one.
+    fn judgment(shape: int) -> Result<Judged?, HomeError> {
+        let mine? = self.shape else { return .Ok(null) }
+        let kept = self.judged.get().get("${shape}")
+        if kept != null { return .Ok(kept) }
+        let row? = homed(self.db.first(sql(find_shape, [.Int(shape)])))? else { return .Ok(null) }
+        let theirs? = descriptor_unspelled(homed(row.text(0))?) else { return .Ok(null) }
+        let made = Judged { verdict: verdict(mine, theirs), slots: theirs.slots.length }
+        self.judged.put("${shape}", made)
+        .Ok(made)
     }
 
     // ── The hold ──
@@ -574,6 +701,13 @@ impl Store<T> {
     }
 }
 
+/// What a take makes of octets a verdict let through and the reader
+/// could not read. A grown enum's variant the reader does not know is
+/// a newer build's item; anything else is no item.
+fn unknown<T>(v: Verdict, fault: CodecFault) -> Read<T> {
+    if v == Verdict.Grew && fault == CodecFault.NotVariant { Read.Newer } else { Read.Aside(Unread.Octets) }
+}
+
 /// Whether the order term holds the whole queue behind one standing
 /// delivery, as the take statement reads it.
 fn whole_queue(o: Order) -> int {
@@ -592,16 +726,23 @@ const keep: string = "RELEASE \"flow_step\""
 
 const back: string = "ROLLBACK TO \"flow_step\""
 
+const find_shape: string = "SELECT \"descriptor\" FROM \"FlowShape\" WHERE \"hash\" = ?1"
+
 const know_shape: string = "INSERT OR IGNORE INTO \"FlowShape\" (\"hash\", \"descriptor\") VALUES (?1, ?2)"
 
-const file_item: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, -9223372036854775807 - 1, 0, 0)"
+/// The least instant there is: the `ready_at` of an item due from the
+/// first.
+const first_instant: int = 0 - 9223372036854775807 - 1
 
-/// The row is written only while fewer than `?6` items of its queue
-/// wait, as its count says: a queue with no count takes no row. A sent
-/// item is due from the first: `ready_at` is the least instant there is
-/// and no sender's clock, so no reader whose clock runs behind passes
-/// it by.
-const file_in_room: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") SELECT ?1, ?2, ?3, ?4, ?5, -9223372036854775807 - 1, 0, 0 WHERE (SELECT \"waiting\" FROM \"FlowRoom\" WHERE \"queue\" = ?1) < ?6"
+/// The last instant there is: the `ready_at` of an item held back past
+/// the range.
+const last_instant: int = 9223372036854775807
+
+const file_item: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)"
+
+/// The row is written only while fewer than `?7` items of its queue
+/// wait, as its count says: a queue with no count takes no row.
+const file_in_room: string = "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, 0 WHERE (SELECT \"waiting\" FROM \"FlowRoom\" WHERE \"queue\" = ?1) < ?7"
 
 const drop_row: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = ?1"
 

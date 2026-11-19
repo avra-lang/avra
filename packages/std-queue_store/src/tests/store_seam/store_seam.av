@@ -2,30 +2,18 @@
 //! home through `homed:` — three jobs sent, two settled, the failing one
 //! attempted twice and buried in its letter, no row left.
 use @std.queue.{queue, worker, drain, key, Dead, Delivery, HomeError, Order, Overflow, Terms}
-use @std.queue_store.{Store, store_home, wire_of}
+use @std.queue_store.{Store, store_home}
 use @std.queue_store.fault.{homed}
-use @std.relation.stable.{CodecFault, Reader, Writer}
+use @std.relation.{codec}
 use @std.sqlite.{Db}
 use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
+@codec
 type Job = { n: int }
 
-fn job_written(w: Writer, j: Job) {
-    w.int(j.n)
-}
-
-fn job_read(r: Reader) -> Result<Job, CodecFault> {
-    Job { n: r.int()? }
-}
-
 fn made(t: Terms) -> Result<Store<Job>, HomeError> {
-    store_home<Job>(
-        homed(Db.memory())?,
-        "jobs",
-        t,
-        wire_of<Job>(7, "Job{n:int}", job_written, job_read),
-    )
+    store_home<Job>(homed(Db.memory())?, "jobs", t)
 }
 
 fn pay(d: Delivery<Job>) -> Result<int, string> {

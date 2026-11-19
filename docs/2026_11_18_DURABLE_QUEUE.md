@@ -1,6 +1,6 @@
 # The durable queue — design
 
-Status: DECIDED WITH OWNER 2026-11-18 (§10). Nothing here is probed yet; §8 lists the probes owed first.
+Status: DECIDED WITH OWNER 2026-11-18 (§10). Q0's probes ran on the batch-51 compiler; §8a holds what they found.
 Ticket `avra-8sb5.98.8`. Epic for jobs: `avra-8sb5.64.1`.
 
 This is the build design for one home of `2026_10_05_CHANNELS.md` (FLOW, decided v4):
@@ -43,8 +43,10 @@ required: a program that sends to or runs a durable queue on a path that never s
 not compile. `main` sets it once; a test sets `Db.memory()`.
 
 ```avra
-ctx db = Db.open("app.db")?
-run(sender)
+fn main() -> Result<void, SqlError> {
+    ctx db = Db.open("app.db")?      // a set stands in a fn body, never at a file's top level
+    run(sender)
+}
 ```
 
 Sending, alone and inside the caller's transaction:
@@ -82,6 +84,80 @@ job resize {
 
 resize.later(upload)?
 ```
+
+### 1a. As built (2026-11-18)
+
+What compiles today, from `packages/std-queue_store/src/tests/durable_emails`:
+
+```avra
+@codec
+type Email = { to: string, subject: string }
+
+fn main() -> Result<string, HomeError> {
+    ctx db = homed(Db.open("app.db"))?
+
+    queue<Email> emails {
+        name: "emails"
+        durable: stored<Email>()
+        retries: 5
+    }
+    queue<Dead<Email, string>> undeliverable {}
+    worker sender { reads: emails  at_once: 10  each: deliver  dead: undeliverable.sink() }
+
+    emails.send(welcome(u), id: "welcome-${u.id}")?
+    let serving = spawn run(sender)
+    …
+    sender.stop()
+}
+```
+
+Where it still differs from §1, and what closes each gap:
+
+| §1 says | Today | Closed by |
+|---|---|---|
+| `durable: true` | `durable: stored<Email>()` | a type argument inferred from the seat that wants it; `@std/queue` cannot name the store, so the setting stays a value the store hands over |
+| no `name:` | `name: "emails"` | a component reading its own instance name |
+| declared at a file's top level | declared inside the fn that sets `ctx db` | a `ctx` read charged where a fn value is called, and top-level instances as declarations (ruled, being built) |
+| `tx.send(emails, …)` | `db.begin()`, `emails.send(…)`, `db.commit()`: a send joins the open transaction | Q4 |
+| `dead: undeliverable` | `dead: undeliverable.sink()` | Q4 |
+| `every: cron("0 3 * * *")` | `at: cron("0 3 * * *")`, and `every: hours(1)` for a span | a seat that takes either a `Cron` or a `Duration`: no union type, and a trait impl cannot land on `Result<Cron, CronError>` |
+| `schedule nightly { … }` reads its name | `name: "nightly"` | a component reading its own instance name |
+| `use @std.queue.{schedule}` | `use @std.queue.schedule.{schedule}` | `export use` in the program layer (refused there as a duplicate) |
+
+Delayed and recurring work (Q5):
+
+```avra
+emails.send(reminder(u), id: "remind-${u.id}", after: hours(48))?
+
+queue<Report> reports { name: "reports"  durable: stored<Report>() }
+schedule nightly {
+    name: "nightly"
+    at: cron("0 3 * * *")        // or `every: hours(1)`
+    sends: reports
+    item: Report { kind: "daily" }
+}
+let _ = reports.home().depth()?  // a home opens where the context is set
+let ticking = spawn nightly.run()
+```
+
+- `after:` is one `ready_at` instant on the row (the home's `clock`); memory holds it in a heap
+  by its due instant. A delayed item takes room and is owed (`depth`) from its send, holds no
+  place until due, then is handed out BY ITS SEND: before anything sent after it, behind its
+  key's item that is out. A delay of nothing or less is a plain send. A delay past the range of
+  instants is held at the last one. `drop_oldest` and `latest` refuse a delayed send (no place
+  to give up); `drop_newest` discards it like any send into a full queue.
+- `cron(text) -> Result<Cron, CronError>` in `@std/time`: five fields, lists, ranges, steps,
+  month and weekday names, `7` as Sunday, the `@daily` family; classic day-field rule (both
+  written without `*`: either matches). `Cron.next_after(t)` and `Duration.next_after(t)`
+  (a whole multiple of the span past the epoch). UTC only: `@std/time` has no zones, so DST
+  is out of scope.
+- `schedule`: every process finds the same tick and sends `<name>@<tick ISO>`; dedupe makes
+  one item. On start the newest tick within `catch_up` (default `hours(1)`) is sent; one older
+  is skipped. A wait that wakes past a tick by more than `catch_up` fires `missed`. A clock
+  that steps back sends no tick twice. `check` refuses `catch_up` longer than a durable
+  queue's `dedupe`.
+- Owed: `take`'s walk of the free index steps over delayed rows not yet due (one per take,
+  each), a cost to row in ZERO_COST before a queue holds many long delays.
 
 ## 2. What it promises
 
@@ -213,13 +289,27 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 
 | Slice | What lands | Works after it |
 |---|---|---|
-| Q0 | the probes: a required `ctx db` read from a component's methods and from a spawned worker, named args on `send`, `@model` with `Bytes`, `UPDATE … RETURNING` and a registered SQL function through std-sqlite | the surface in §1 is confirmed or corrected |
+| Q0 | DONE (§8a): the probes: a required `ctx db` read from a component's methods and from a spawned worker, named args on `send`, `@model` with `Bytes`, `UPDATE … RETURNING` and a registered SQL function through std-sqlite | the surface in §1 is confirmed or corrected |
 | Q1 | BUILT: `Home<T>` under `Queue<T>`; memory home behind it; handler error generic; release with a backoff | 17 tests, 14 programs |
 | Q2 | BUILT and red-teamed (79 attacks; 13 findings, all fixed): `@std/queue_store` — rows, send, take, ack, release, bury, dedupe, batches, named sync, unreadable rows set aside | a queue survives a restart; 105 store tests, 25 shared laws and 33 attacks over both homes |
-| Q3 | `run`: `at_once`, backoff, lease deadline, shutdown, gate and poll | a long-lived worker; the two-process witness |
+| Q3 | BUILT: `run` (`at_once`, a lease deadline per handler, backoff ×2 to a cap, `stop()`), a home that waits (a bell in this process, a bounded poll across processes), `durable:` over `ctx db`, a coded item's wire derived (`@codec` writes `impl Storable`), a newer writer's item let go for a newer reader | a long-lived worker; the showcase program. Owed: the two-process witness |
 | Q4 | `tx.send`, a worker's `in_tx:` | exactly once for store writes |
-| Q5 | `after:`, `cron`, `schedule` | delayed and recurring work |
+| Q5 | BUILT and red-teamed (fuzzed cron text found one trap, fixed): `after:` on both homes, `cron`/`hours` in `@std/time`, `schedule` with `at:`/`every:` | delayed and recurring work; 14 shared delay laws over both homes, 5 store delay cases, 35 cron cases with a minute-walk oracle and 400 fuzzed lines, 20 schedule cases |
 | Q6 | `job`, the admin router, `explain flow` | the one-declaration job; operating it |
+
+### 8a. What the probes found (batch-51 compiler, 2026-11-18)
+
+| Asked | Answer |
+|---|---|
+| a library's required `ctx db`, read by its fns, a component method, an owned `spawn`, a test | works; unset is `ctx.required` at build |
+| a worker's `each: deliver` (a named fn in a top-level instance) | reads the context where it is CALLED; a lambda reads where it was made |
+| two databases | a setting that is an enum, or a fn defaulted in the library, chooses the context |
+| `send(v, id:, after:)` | named arguments work on a component method |
+| `UPDATE … RETURNING` with bound parameters | works through `@std/sqlite` |
+| a fn body naming a top-level queue (`emails.send(…)` in `fn signup`) | REFUSED today (`resolve.runtime_binding`); ruled to become a declaration nameable from any fn and importable. Until then: a parameter, or a module `state` |
+| `@model` with a `Bytes` field | REFUSED: the derive has no `Bytes` kind; a `Time` column's DDL type is a placeholder word. std-db's to fix, before or with Q2 |
+| a SQL function registered from Avra (`flow_json`) | not possible: no C callback trampoline. That projection waits; `peek` and the admin router do not |
+| `ctx db = …` when the read is through a fn value | a false `ctx.unread` warning; reported |
 
 Later, not in this run: the remote home over HTTPS (CHANNELS §6.5), effect contracts (§7.2), Postgres.
 

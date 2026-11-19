@@ -12,12 +12,13 @@ use @std.text.{parse_int}
 
 /// Every read of a generic fn as a value in the written item `at` of `file`.
 fn generic_values(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let own = flatten(
         [generics_read(engine, file, item.store, b.reads) for b in item_bodies(engine, file, at, item)],
     )
+    if !runs_in(engine, file, at) { return own }
     let read = entry_read(engine, file)
     let signed? = entry_signed(read) else { return own }
     let entry = kept_body(body_checked(engine, file, signed, false))
@@ -49,7 +50,7 @@ fn generic_declared(engine: QueryEngine, file: SourceFileAddress, name: string, 
     Found,
 > {
     let d? = resolved(engine, file, Space.Value, name).named() else { return [] }
-    if d.kind != ItemKind.Fn || d.item >= item_count(engine, d.file) { return [] }
+    if d.kind != ItemKind.Fn || !item_held(engine, d.file, d.item) { return [] }
     let sig? = fn_signature(engine, d.file, d.name) else { return [] }
     if sig.type_params.is_empty() { return [] }
     let args = [d.name, "${sig.params.length}", "${read}"]

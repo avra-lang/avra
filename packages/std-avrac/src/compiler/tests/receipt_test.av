@@ -4,6 +4,10 @@
 // the same text at the same position in the list and belongs to a
 // different scope.
 use compiler.format.{lossless_defect, remarks_and_docs_defect}
+use compiler.{canon_defect, formatted_under, write_checked_under}
+use core.{ComponentWord, Instancing}
+use diagnostics.{new_source_file}
+use features.{BlockWords}
 
 spec "the lossless receipt's brace-nesting check" {
     given "a comment written before a scope's closing brace" {
@@ -39,6 +43,60 @@ spec "the lossless receipt's brace-nesting check" {
             let before = "fn f() {\n    if true {\n        // a\n    }\n}\n"
             let after = "fn f() {\n    if true {\n    }\n    // a\n}\n"
             lossless_defect(before, after) != null
+        }
+    }
+}
+
+/// A file declaring a record and a component, and one whose body builds `box` with `layout`
+/// written as `lit`.
+fn composed_with(lit: string) -> string {
+    "type L = { a: int, b: int }\ncomponent box {\n    layout: L\n}\ncomponent outer {\n    box {\n        layout: ${lit}\n    }\n}\n0\n"
+}
+
+/// The words a file that declares `box` reads under: the component known by its shape.
+fn box_words() -> BlockWords {
+    BlockWords {
+        components: [
+            ComponentWord {
+                word: "box",
+                declared: "box",
+                form: Instancing.Shaped(false),
+                origin: "",
+            },
+        ],
+    }
+}
+
+/// What the canon receipt says of `after` as a rewrite of `before`.
+fn canon_of(before: string, after: string) -> string? {
+    canon_defect(new_source_file("/w/src/main.av", before), after, box_words())
+}
+
+/// The fields of a record written one a line, as an author lays them out.
+const LAID_OUT: string = "L {\n            a: 1\n            b: 2\n        }"
+
+spec "the canon receipt reads a component's body by what it means" {
+    given "a record literal in a component's body, its fields one a line" {
+        then "laid out on one line with commas, its meaning stands" {
+            canon_of(composed_with(LAID_OUT), composed_with("L { a: 1, b: 2 }")) == null
+        }
+        then "a field's value changed, its meaning moved" {
+            canon_of(composed_with(LAID_OUT), composed_with("L { a: 1, b: 3 }")) != null
+        }
+        then "a field's name changed, its meaning moved" {
+            canon_of(composed_with(LAID_OUT), composed_with("L { a: 1, c: 2 }")) != null
+        }
+    }
+    given "the same file written by the formatter" {
+        then "the write is accepted, and what it wrote stands canonical" {
+            let src = new_source_file("/w/src/main.av", composed_with(LAID_OUT))
+            match write_checked_under(src, box_words()) {
+                .Ok(text) -> match formatted_under(new_source_file("/w/src/main.av", "${text}\n"), box_words()) {
+                    .Ok(again) -> again == text,
+                    .Err(_) -> false,
+                },
+                .Err(_) -> false,
+            }
         }
     }
 }

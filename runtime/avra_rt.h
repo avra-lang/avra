@@ -292,6 +292,7 @@ extern const char avra_rt_held_avra_ctx_set __asm__(AVRA_RT_LABEL(avra_ctx_set))
 extern const char avra_rt_held_avra_ctx_back __asm__(AVRA_RT_LABEL(avra_ctx_back));
 extern const char avra_rt_held_avra_ctx_frame __asm__(AVRA_RT_LABEL(avra_ctx_frame));
 extern const char avra_rt_held_avra_ctx_enter __asm__(AVRA_RT_LABEL(avra_ctx_enter));
+extern const char avra_rt_held_avra_ctx_frame_pushed __asm__(AVRA_RT_LABEL(avra_ctx_frame_pushed));
 extern const char avra_rt_held_avra_ctx_reframed __asm__(AVRA_RT_LABEL(avra_ctx_reframed));
 extern const char avra_rt_held_avra_task_id __asm__(AVRA_RT_LABEL(avra_task_id));
 extern const char avra_rt_held_avra_task_ended_by __asm__(AVRA_RT_LABEL(avra_task_ended_by));
@@ -571,6 +572,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_ctx_back,
     &avra_rt_held_avra_ctx_frame,
     &avra_rt_held_avra_ctx_enter,
+    &avra_rt_held_avra_ctx_frame_pushed,
     &avra_rt_held_avra_ctx_reframed,
     &avra_rt_held_avra_task_id,
     &avra_rt_held_avra_task_ended_by,
@@ -1081,6 +1083,8 @@ _Static_assert(__builtin_classify_type(avra_ctx_frame()) == AVRA_RT_POINTER,
     "avra_ctx_frame: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_enter(AVRA_RT_PTR)), int64_t),
     "avra_ctx_enter: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_frame_pushed(AVRA_RT_PTR)), void),
+    "avra_ctx_frame_pushed: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_ctx_reframed(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_ctx_reframed: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_id()), int64_t),
@@ -1177,6 +1181,12 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_spawn_status(AVRA_RT
     "avra_spawn_status: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_spawn_in(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
     "avra_spawn_in: its row answers i64, so its C body answers int64_t");
+_Static_assert(MARK_OWNED == 1,
+    "MARK_OWNED: the compiler reads a cell's mark as bit 1, so runtime/avra_box.h gives it that bit");
+_Static_assert(MARK_ABSENT == 2,
+    "MARK_ABSENT: the compiler reads a cell's mark as bit 2, so runtime/avra_box.h gives it that bit");
+_Static_assert(MARK_FRAME == 4,
+    "MARK_FRAME: the compiler reads a cell's mark as bit 4, so runtime/avra_box.h gives it that bit");
 #endif
 
 #endif

@@ -25,7 +25,7 @@ use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 
 /// What a method does to its receiver.
 @derive(Saved)
@@ -115,6 +115,18 @@ fn chain_from(engine: QueryEngine, start: MethodAt) -> List<string>? {
 }
 
 /// The names from the walk's start to the method at `end`, each reached by the one `came_by` names.
+/// The names of the types `file` declares that write a method `name`: one answer per name.
+@derive(Saved)
+type OwnersOf = { names: List<string> }
+
+/// The types `file` declares that write a method `name`, in the order they're declared.
+@cut_query
+fn method_owners(engine: QueryEngine, file: SourceFileAddress, name: string) -> OwnersOf {
+    OwnersOf {
+        names: [d.name for d in file_declares(engine, file).names if !impls_with(engine, file, d.name, name, false).is_empty()],
+    }
+}
+
 fn hops_to(reached: List<MethodAt>, came_by: List<int>, end: int) -> List<string> {
     if end < 0 { return [] }
     hops_to(reached, came_by, came_by[end]).concat([reached[end].name])
@@ -125,7 +137,7 @@ fn hops_to(reached: List<MethodAt>, came_by: List<int>, end: int) -> List<string
 /// free fn whose first parameter is `mut`, itself. Absent where `file` declares no such fn, or its
 /// seat 0 is never written.
 export fn write_chain(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string>? {
-    let owners = [d.name for d in file_declares(engine, file).names if !impls_with(engine, file, d.name, name, false).is_empty()]
+    let owners = method_owners(engine, file, name).names
     let chained = owners
         .find_map(
             (owner) -> chain_from(
@@ -680,12 +692,17 @@ fn seat_marks(ty: SignedType?) -> List<bool>? {
 
 /// Which seats of the fn `d` names are `mut`, as written: an extern's or a declared fn's; absent for
 /// a name that's neither.
-fn written_seats(engine: QueryEngine, d: DeclaredName) -> List<bool>? {
-    let item = read_item(engine, d.file, d.item)
-    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == d.name]
+fn written_seats(engine: QueryEngine, d: DeclaredName) -> List<bool>? { seats_written(engine, d.file, d.item, d.name) }
+
+/// Which seats of the fn the item `at` of `file` declares as `name` are `mut`: one answer per name,
+/// which a new body for it leaves standing.
+@cut_query
+fn seats_written(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> List<bool>? {
+    let item = read_item(engine, file, at)
+    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == name]
         .first()
     if external != null { return [p.promises.mutable for p in external!.params] }
-    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == d.name]
+    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
         .first() else { return null }
     [p.promises.mutable for p in declared.params]
 }
@@ -697,7 +714,7 @@ const SCALARS: List<string> = ["int", "float", "bool", "string", "Bytes", "ptr"]
 /// `self` — marked `mut`, or its body writing — where the trait declares it without `mut`; handed
 /// the method and the trait.
 fn contracts_overwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     flatten(
         [overwritten_in(

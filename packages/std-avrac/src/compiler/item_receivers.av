@@ -66,7 +66,7 @@ fn same_unplaced(a: Unplaced, b: Unplaced) -> bool {
 /// may write, in node order.
 @query
 fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemReceivers {
-    if at >= item_count(engine, file) { return ItemReceivers { writes: [] } }
+    if !item_held(engine, file, at) { return ItemReceivers { writes: [] } }
     let item = read_item(engine, file, at)
     let cx = copies_in(engine, file, at, item)
     let writes = sorted_by(
@@ -89,7 +89,9 @@ fn item_receivers(engine: QueryEngine, file: SourceFileAddress, at: int) -> Item
 /// The names the statements `file` runs before its written item `at` bind, the latest last, each with
 /// whether a write lands in it.
 fn ran_before(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<RanBinding> {
-    flatten([ran_in(read_item(engine, file, i)) for i in 0..at])
+    flatten(
+        [[RanBinding { name: b.name, mutable: b.mutable } for b in item_front(engine, file, i).binds] for i in 0..at],
+    )
 }
 
 fn ran_in(item: ReadItem) -> List<RanBinding> {

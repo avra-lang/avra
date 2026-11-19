@@ -103,6 +103,17 @@ export fn letter_terms(name: string, terms: Terms) -> Result<Terms, HomeError> {
     terms
 }
 
+/// The terms a delayed send is made under, or the refusal of ones whose
+/// overflow gives up a waiting item to keep a newer one: an item that
+/// is not yet due holds no place to be given up from. Every home asks
+/// this of a delayed send.
+export fn delay_terms(terms: Terms) -> Result<Terms, HomeError> {
+    if terms.overflow == Overflow.drop_oldest || terms.overflow == Overflow.latest {
+        return .Err(delay_drops(terms.overflow))
+    }
+    terms
+}
+
 /// Why a home could not answer: it cannot be reached and may be asked
 /// again `after`, it refused and says `why`, the item is past the size
 /// it keeps, the item's shape is one it does not know, or the caller
@@ -131,9 +142,12 @@ export type Parcel<T> = { item: T, key: Key }
 /// counts the items still owed a fate. `waits` parks the caller until
 /// an item may be due or the patience it is handed is over, and answers
 /// whether one may be: a home that hears its own sends wakes at once,
-/// and one that cannot waits no longer than it says it polls.
+/// and one that cannot waits no longer than it says it polls. `delay`
+/// sends an item that is due no sooner than the duration from now; a
+/// home that keeps no instant refuses it.
 export type Home<T> = {
     send: fn(T, Key) -> Result<string?, HomeError>,
+    delay: fn(T, Key, Duration) -> Result<string?, HomeError> = (_item: T, _k: Key, _after: Duration) -> refused<string?>(HomeError.Refused(undelayed())),
     send_all: fn(List<Parcel<T>>) -> Result<List<string?>, HomeError>,
     take: fn(int) -> Result<List<Delivery<T>>, HomeError>,
     began: fn(Delivery<T>) -> Result<bool, HomeError>,
@@ -155,7 +169,15 @@ export fn asked_again(patience: Duration) -> Result<bool, HomeError> {
 /// A home that outlives the process, and its send by name: within the
 /// span the home remembers, a name is one item, and every send of it
 /// answers the id the first was answered.
-export type Lasting<T> = { home: Home<T>, send_as: fn(T, Key, string) -> Result<string?, HomeError> }
+/// `delay_as` is the named send of an item due no sooner than the
+/// duration from now.
+export type Lasting<T> = {
+    home: Home<T>,
+    send_as: fn(T, Key, string) -> Result<string?, HomeError>,
+    delay_as: fn(T, Key, string, Duration) -> Result<string?, HomeError> = (_item: T, _k: Key, _name: string, _after: Duration) -> refused<string?>(
+        HomeError.Refused(undelayed()),
+    ),
+}
 
 /// How a queue comes to stand on a home that outlives the process:
 /// `open` is asked once, at the queue's first use, for the home of the
@@ -167,6 +189,7 @@ export type Durable<T> = { open: fn(string, Terms, Duration) -> Result<Lasting<T
 fn unopened<T>(why: HomeError) -> Home<T> {
     Home {
         send: (_item: T, _k: Key) -> refused<string?>(why),
+        delay: (_item: T, _k: Key, _after: Duration) -> refused<string?>(why),
         send_all: (_batch: List<Parcel<T>>) -> refused<List<string?>>(why),
         take: (_max: int) -> refused<List<Delivery<T>>>(why),
         began: (_d: Delivery<T>) -> refused<bool>(why),
@@ -200,6 +223,13 @@ impl Queue<T> {
     /// terms turned it away.
     fn send(item: T, key: Key) -> Result<string?, HomeError> {
         (self.home.send)(item, key)
+    }
+
+    /// Send one item under `key` that is due no sooner than `after` from
+    /// now. A delay of nothing or less is a plain send.
+    fn send_after(item: T, key: Key, after: Duration) -> Result<string?, HomeError> {
+        if after.ns <= 0 { return self.send(item, key) }
+        (self.home.delay)(item, key, after)
     }
 
     /// Send many items as one step, answering each as `send` would.
@@ -297,6 +327,11 @@ fn mint() -> string {
 /// whether an item of the key is out with a worker.
 type Lane = { first: string?, last: string?, out: bool }
 
+/// A line that holds nothing and has nothing out.
+fn empty_lane() -> Lane {
+    Lane { first: null, last: null, out: false }
+}
+
 /// A memory home's answer as any home gives it.
 fn kept<V>(v: V) -> Result<V, HomeError> {
     v
@@ -316,6 +351,9 @@ fn kept<V>(v: V) -> Result<V, HomeError> {
 /// record stands until `gone` of them outnumber the rest. `turn`
 /// numbers the takes, so one take hands an item out once. `bell` holds
 /// one token while something changed that a waiting taker has not seen.
+/// A delayed item waits in `later` by the instant it is due, holding its
+/// room and no place; once due it takes its place by its send: in `dues`
+/// under `fifo`, in its key's line under `by_key`.
 export type Memory<T> = {
     terms: Terms,
     room: Channel<bool>,
@@ -326,6 +364,8 @@ export type Memory<T> = {
     open: Heap,
     wakes: Heap,
     ripe: Heap,
+    later: Heap,
+    dues: Heap,
     sends: Cell<int>,
     count: Cell<int>,
     gone: Cell<int>,
@@ -356,6 +396,8 @@ fn memory_of<T>(terms: Terms) -> Memory<T> {
         open: heap(),
         wakes: heap(),
         ripe: heap(),
+        later: heap(),
+        dues: heap(),
         sends: Cell.new(0),
         count: Cell.new(0),
         gone: Cell.new(0),
@@ -384,6 +426,7 @@ impl Memory<T> {
     fn home() -> Home<T> {
         Home {
             send: (item: T, key: Key) -> kept(self.send(item, key)),
+            delay: (item: T, key: Key, after: Duration) -> self.send_after(item, key, after),
             send_all: (batch: List<Parcel<T>>) -> kept([self.send(p.item, p.key) for p in batch]),
             take: (max: int) -> kept(self.taken(max)),
             began: (d: Delivery<T>) -> kept(self.began(d)),
@@ -411,7 +454,7 @@ impl Memory<T> {
     /// `patience`, or the span to the next lease or backoff that ends
     /// before it.
     fn until_due(patience: Duration) -> Duration {
-        let at? = self.wakes.first()?.at else { return patience }
+        let at? = earlier(self.wakes.first()?.at, self.later.first()?.at) else { return patience }
         let left = at - now_ms()
         when {
             left <= 0 -> ms(0)
@@ -432,19 +475,33 @@ impl Memory<T> {
     /// one that waits to keep this one. `null` too once the room is
     /// closed.
     fn send(item: T, key: Key) -> string? {
+        self.sent(item, key, null)
+    }
+
+    /// Send one item under `key` that is due no sooner than `after` from
+    /// now, as `send` answers. A delay of nothing or less is a plain
+    /// send; terms whose overflow gives up a waiting item are refused.
+    fn send_after(item: T, key: Key, after: Duration) -> Result<string?, HomeError> {
+        if after.ns <= 0 { return self.send(item, key) }
+        let _ = delay_terms(self.terms)?
+        self.sent(item, key, now_ms() + after.ms())
+    }
+
+    /// A send, due from the first or at the instant `due`.
+    fn sent(item: T, key: Key, due: int?) -> string? {
         let id = mint()
         if self.terms.overflow == Overflow.park {
             if !self.room.sink.send(true) { return null }
-            self.enqueue(id, item, key)
+            self.placed(id, item, key, due)
             return id
         }
         match self.room.sink.post(true) {
             .Taken -> {
-                self.enqueue(id, item, key)
+                self.placed(id, item, key, due)
                 id
             },
             .Ended -> null,
-            .Full -> self.full(id, item, key),
+            .Full -> self.full(id, item, key, due),
         }
     }
 
@@ -473,6 +530,7 @@ impl Memory<T> {
     fn next() -> Delivery<T>? {
         let again = self.lapsed()
         if again != null { return again }
+        self.ripen_later(now_ms())
         self.drain()
         let back = self.ripened()
         let fresh = self.next_waiting()
@@ -543,7 +601,7 @@ impl Memory<T> {
     /// A full home: the overflow term decides what happens to `id`.
     /// `latest` gives up the waiting item of `key`'s own, and the
     /// oldest only when the key has none.
-    fn full(id: string, item: T, key: Key) -> string? {
+    fn full(id: string, item: T, key: Key, due: int?) -> string? {
         match self.terms.overflow {
             .park or .fail -> null,
             .drop_newest -> id,
@@ -551,7 +609,7 @@ impl Memory<T> {
                 if !(self.terms.overflow == Overflow.latest && self.drop_same(key)) { self.drop_oldest() }
                 match self.room.sink.post(true) {
                     .Taken -> {
-                        self.enqueue(id, item, key)
+                        self.placed(id, item, key, due)
                         id
                     },
                     .Ended or .Full -> null,
@@ -566,8 +624,10 @@ impl Memory<T> {
         self.terms.order == Order.by_key || self.terms.overflow == Overflow.latest
     }
 
-    /// Record a waiting item at the end of the order and count it.
-    fn enqueue(id: string, item: T, key: Key) {
+    /// Record a waiting item, due from the first or at `due`, and count
+    /// it. One due from the first joins the end of the order; a later
+    /// one waits for its instant.
+    fn placed(id: string, item: T, key: Key, due: int?) {
         let sent = self.sends.get()
         self.sends.set(sent + 1)
         self
@@ -579,18 +639,73 @@ impl Memory<T> {
                     key: key,
                     attempt: 0,
                     stage: Stage.Pending,
-                    ready: 0,
+                    ready: due ?? 0,
                     sent: sent,
                     hold: Lease { at: 0, epoch: 0 },
                     turn: 0,
                     after: null,
                 },
             )
-        self.order.push(id)
         self.count.set(self.count.get() + 1)
         self.waiting.set(self.waiting.get() + 1)
-        if self.keyed() { self.joined(id, key.text, sent) }
         self.rang()
+        if due != null {
+            self.later.push(Ranked { at: due!, name: id, mark: sent })
+            return
+        }
+        self.order.push(id)
+        if self.keyed() { self.joined(id, key.text, sent) }
+    }
+
+    /// Every delayed item now due takes its place by its send.
+    fn ripen_later(now: int) {
+        mut top = self.later.first()
+        while top != null && top!.at <= now {
+            self.step()
+            let _ = self.later.pop()
+            let h = self.live.get().get(top!.name)
+            if h?.stage == Stage.Pending { self.due_now(top!.name, h!.key.text, top!.mark) }
+            top = self.later.first()
+        }
+    }
+
+    /// The delayed item `id`, sent `sent` under `k`, is due: among the
+    /// fresh ones under `fifo`, in its key's line by its send under
+    /// `by_key`.
+    fn due_now(id: string, k: string, sent: int) {
+        match self.terms.order {
+            .fifo -> self.dues.push(Ranked { at: sent, name: id, mark: 0 }),
+            .by_key -> self.slotted(id, k, sent),
+        }
+    }
+
+    /// `id`, sent `sent` under `k`, stands in its key's line before every
+    /// item sent after it. A line that is empty is joined.
+    fn slotted(id: string, k: string, sent: int) {
+        let lane = self.lanes.get().get(k) ?? empty_lane()
+        let head? = lane.first else { return self.joined(id, k, sent) }
+        if self.sent_of(head) > sent {
+            self.linked(id, head)
+            self.lanes.put(k, lane with { first: id })
+            if !lane.out { self.offer(k, sent) }
+            return
+        }
+        mut before = head
+        mut next = self.live.get().get(before)?.after
+        while next != null && self.sent_of(next!) < sent {
+            self.step()
+            before = next!
+            next = self.live.get().get(before)?.after
+        }
+        self.linked(id, next)
+        self.linked(before, id)
+        if next == null { self.lanes.put(k, lane with { last: id }) }
+    }
+
+    /// The item `id` is followed in its line by `next`.
+    fn linked(id: string, next: string?) {
+        let h? = self.live.get().get(id) else { return }
+        self.live.put(id, h with { after: next })
     }
 
     /// Give up the oldest waiting item for room: nobody is told.
@@ -642,16 +757,31 @@ impl Memory<T> {
     /// under `by_key`.
     fn next_waiting() -> string? {
         match self.terms.order {
-            .fifo -> if self.out.get() > 0 { null } else { self.order.first() },
+            .fifo -> if self.out.get() > 0 { null } else { self.oldest_fresh() },
             .by_key -> self.next_open(),
         }
+    }
+
+    /// The older send of the order's head and the oldest delayed item
+    /// now due, left where they stand. A due entry that no longer names
+    /// a waiting item is dropped.
+    fn oldest_fresh() -> string? {
+        mut due = self.dues.first()
+        while due != null && !self.waits(due!.name) {
+            self.step()
+            let _ = self.dues.pop()
+            due = self.dues.first()
+        }
+        let head = self.order.first()
+        let d? = due else { return head }
+        if head != null && self.sent_of(head!) < d.at { head } else { d.name }
     }
 
     // ── The lines ──
 
     /// `id`, sent under `k`, joins the end of its key's line.
     fn joined(id: string, k: string, sent: int) {
-        let lane = self.lanes.get().get(k) ?? Lane { first: null, last: null, out: false }
+        let lane = self.lanes.get().get(k) ?? empty_lane()
         let last? = lane.last else {
             if !lane.out && self.lanes.get().has(k) { self.idle.set(self.idle.get() - 1) }
             self.lanes.put(k, lane with { first: id, last: id })
@@ -794,6 +924,7 @@ impl Memory<T> {
         let h? = self.live.get().get(id) else { return null }
         let leads = self.order.first() == id
         if leads { let _ = self.order.pop() }
+        if self.dues.first()?.name == id { let _ = self.dues.pop() }
         self.out.set(self.out.get() + 1)
         self.unwaited(h, true)
         if !leads { self.thin() }
@@ -1004,12 +1135,18 @@ export component queue<T> {
     /// Send one item, answering its id, or `null` when the terms turned
     /// it away. `id:` names the send: on a durable queue a name is one
     /// item within `dedupe`, and every send of it answers the id the
-    /// first was answered. In memory nothing dedupes.
-    fn send(item: T, id: string = "", under: Key = key("")) -> Result<string?, HomeError> {
+    /// first was answered. In memory nothing dedupes. `after:` holds the
+    /// item back until that span from now is over; once due it takes its
+    /// place by its send. A delay of nothing or less is none.
+    fn send(item: T, id: string = "", under: Key = key(""), after: Duration = ms(0)) -> Result<
+        string?,
+        HomeError,
+    > {
         let q = self.home()
-        let lasts? = self.lasting.get() else { return q.send(item, under) }
-        if id == "" { return q.send(item, under) }
-        (lasts.send_as)(item, under, id)
+        let lasts? = self.lasting.get() else { return q.send_after(item, under, after) }
+        if id == "" { return q.send_after(item, under, after) }
+        if after.ns <= 0 { return (lasts.send_as)(item, under, id) }
+        (lasts.delay_as)(item, under, id, after)
     }
     /// A sink that sends into this queue: what a worker's `dead:` takes.
     /// It parks no sender; a send the queue refused answers `false`.
@@ -1427,6 +1564,24 @@ impl Shift<T, R, E> {
 }
 
 // ── The voices ──
+
+/// The earlier of two instants, either of which may be absent.
+fn earlier(a: int?, b: int?) -> int? {
+    let x? = a else { return b }
+    let y? = b else { return x }
+    if x < y { x } else { y }
+}
+
+fn undelayed() -> string {
+    "this home keeps no instant to send an item at, so it holds no delayed item"
+}
+
+fn delay_drops(o: Overflow) -> HomeError {
+    HomeError
+        .Refused(
+            "a delayed item holds no place to give up, and this queue overflows with `${overflow_word(o)}`",
+        )
+}
 
 fn unnamed() -> string {
     "a durable queue is named, and this has no `name:`"

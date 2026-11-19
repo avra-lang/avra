@@ -66,13 +66,12 @@ fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     let member = if nodes.any(member_placed(engine, file, item.store, it)) { [NewOnly.PlacedMember] } else { [] }
     let writes = flatten([key_writes(engine, file, item.store, e) for e in nodes])
     let keyed = if writes.is_empty() || keys_all(item_typed(engine, file, at, item), writes) { [] } else { [NewOnly.AnyKey] }
-    let contexts = if contexted(item.store, nodes) { [NewOnly.Ctx] } else { [] }
     let fielded = if fields_named(engine, file, item.store, item.stmts) { [NewOnly.FieldSeat] } else { [] }
-    flatten([stmt_new_only(item.store, s) for s in item.stmts])
+    declared_new_only(item.store, item.stmts)
         .concat(wide)
         .concat(member)
         .concat(keyed)
-        .concat(contexts)
+        .concat(contexted_new_only(item.store))
         .concat(fielded)
 }
 
@@ -102,6 +101,21 @@ fn field_seated(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena
     takes_a_declaration(first) &&
         meta_seat_of(first) != DeclSeat.Type &&
         seats_take_fields(sig.params.drop(1))
+}
+
+/// The forms only the program layer builds that a file's parse alone shows, its store `store` and
+/// its statements `stmts`: what the statements declare, and a context's form. The old path reads it
+/// to set aside a test program only the layer builds (compiler/modules.av), as the net sets one aside.
+export fn parsed_new_only(store: SyntaxArena, stmts: List<StmtId>) -> List<NewOnly> {
+    forms_once(declared_new_only(store, stmts).concat(contexted_new_only(store)))
+}
+
+/// The forms only the program layer builds that the statements `stmts` declare.
+fn declared_new_only(store: SyntaxArena, stmts: List<StmtId>) -> List<NewOnly> { flatten([stmt_new_only(store, s) for s in stmts]) }
+
+/// A context's form, where the store `store` holds one.
+fn contexted_new_only(store: SyntaxArena) -> List<NewOnly> {
+    if contexted(store, [ExprId { index: i } for i in 0..store.expr_count()]) { [NewOnly.Ctx] } else { [] }
 }
 
 /// Whether a store whose expressions are `nodes` holds a context's form: a declaration, a set or a read.

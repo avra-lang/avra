@@ -16,7 +16,7 @@
 //! suspend falls due late on the first and at once on the second.
 use @std.errors.{Frame}
 use @std.meta.{sealed}
-use @std.text.{codepoints, parse_int, repeat, TextForm}
+use @std.text.{ascii_lower, codepoints, parse_int, repeat, TextForm}
 
 extern fn avra_now_ns() -> int
 extern fn avra_time_wall_s() -> int
@@ -51,7 +51,11 @@ export fn secs(n: int) -> Duration {
 }
 
 export fn mins(n: int) -> Duration {
-    scaled(n, 60000000000, "mins")
+    scaled(n, ns_per_min, "mins")
+}
+
+export fn hours(n: int) -> Duration {
+    scaled(n, 3600000000000, "hours")
 }
 
 /// `n` units of `unit` nanoseconds; a count past the range traps.
@@ -114,6 +118,16 @@ impl Duration {
     fn text() -> string {
         duration_text(self.ms())
     }
+    /// The first instant after `t` that is a whole number of this span
+    /// past the epoch: a period's tick, the same in every process that
+    /// reads the wall alike. Absent for a span of nothing or less, and
+    /// past the range of instants.
+    fn next_after(t: Time) -> Time? {
+        if self.ns <= 0 { return null }
+        let k = floor_div(t.ns, self.ns) + 1
+        if k > farthest / self.ns { return null }
+        Time { ns: k * self.ns }
+    }
 }
 
 /// `a + b` in nanoseconds; a result past the int range traps.
@@ -143,6 +157,8 @@ export fn duration_text(total: int) -> string {
 const farthest: int = 9223372036854775807
 
 const ns_per_ms: int = 1000000
+
+const ns_per_min: int = 60000000000
 
 /// The instant `ns` after `at`: never before the clock's origin, and
 /// the farthest when that is past spelling.
@@ -407,4 +423,317 @@ fn digits(n: int, width: int) -> string {
 
 fn out_of_range(what: string) -> string {
     "${what} is past the int range of nanoseconds: 1677 to 2262 for instants, about 292 years for spans"
+}
+
+// ── Cron ────────────────────────────────────────────────────────
+
+/// A field of a cron line, in the order a line writes them.
+export enum CronField { minute, hour, day, month, weekday }
+
+/// Why a text is no cron line: it holds `found` fields where five are
+/// written, its `@` nickname is none cron knows, a field's `text` reads
+/// as no list of values, a `value` stands outside its field's `lo` to
+/// `hi`, a range runs backward, a step is not a whole number past
+/// zero, or no day of any month it names exists.
+export enum CronError {
+    Fields(found: int)
+    Nickname(text: string)
+    Unread(field: CronField, text: string)
+    Range(field: CronField, value: int, lo: int, hi: int)
+    Backward(field: CronField, from: int, to: int)
+    Step(field: CronField, text: string)
+    Never
+}
+
+/// A cron line: the minutes, hours, days of the month, months and days
+/// of the week a tick falls on, each a set of bits. Every instant is
+/// read in UTC: `@std.time` holds no zones. SEALED: `cron` is its door,
+/// so a value is always a line that ticks.
+///
+/// The two day fields follow the classic cron: when both are written
+/// without a leading `*`, a day of either kind matches (`either_day`);
+/// otherwise a day matches both.
+@sealed
+export type Cron = {
+    line: string,
+    minutes: int,
+    hours: int,
+    days: int,
+    months: int,
+    weekdays: int,
+    either_day: bool,
+}
+
+/// The cron line `text` names: five fields split by blanks — minute,
+/// hour, day of the month, month, day of the week — each `*`, a value,
+/// a range `a-b`, any of those stepped `/n`, or a list of them split by
+/// commas. Months and weekdays take their three-letter English names,
+/// and a weekday of 7 is Sunday as 0 is. The nicknames `@yearly`,
+/// `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight` and
+/// `@hourly` stand for their lines. Any other text is a `CronError`.
+export fn cron(text: string) -> Result<Cron, CronError> {
+    let words = [w for w in text.replace("\t", " ").split(" ") if w != ""]
+    if words.length == 1 && words[0].starts_with("@") {
+        let line? = nickname(words[0]) else { fail CronError.Nickname(words[0]) }
+        return cron(line)? with { line: text }
+    }
+    if words.length != 5 { fail CronError.Fields(words.length) }
+    let weekdays = field_bits(words[4], CronField.weekday)?
+    let made = Cron {
+        line: text,
+        minutes: field_bits(words[0], CronField.minute)?,
+        hours: field_bits(words[1], CronField.hour)?,
+        days: field_bits(words[2], CronField.day)?,
+        months: field_bits(words[3], CronField.month)?,
+        weekdays: (weekdays | (weekdays >> 7)) & 127,
+        either_day: !words[2].starts_with("*") && !words[4].starts_with("*"),
+    }
+    if !made.ever() { fail CronError.Never }
+    made
+}
+
+impl Cron {
+    /// The first tick strictly after `t`, on a whole minute. Absent past
+    /// the range of instants.
+    fn next_after(t: Time) -> Time? {
+        let from = floor_div(t.ns, ns_per_min) + 1
+        mut day = floor_div(from, 1440)
+        mut minute = from - day * 1440
+        let last = day + 146097
+        while day <= last {
+            let date = civil(day)
+            if !has(self.months, date.m) {
+                day = days_from(date.y, date.m, 1) + days_in(date.m, date.y)
+                minute = 0
+                continue
+            }
+            let at? = (if self.day_fits(date, weekday_of(day)) { self.minute_from(minute) } else { null }) else {
+                day = day + 1
+                minute = 0
+                continue
+            }
+            return instant_at(day * 1440 + at)
+        }
+        null
+    }
+
+    /// Whether `t` falls on a tick: its minute is one the line names.
+    fn ticks_at(t: Time) -> bool {
+        let at = floor_div(t.ns, ns_per_min)
+        self.next_after(Time { ns: (at - 1) * ns_per_min })?.ns == at * ns_per_min
+    }
+
+    /// Whether the day `date`, a `weekday`, is one the line names.
+    fn day_fits(date: Civil, weekday: int) -> bool {
+        let of_month = has(self.days, date.d)
+        let of_week = has(self.weekdays, weekday)
+        if self.either_day { of_month || of_week } else { of_month && of_week }
+    }
+
+    /// The first minute of the day at or after `minute` the line names.
+    fn minute_from(minute: int) -> int? {
+        mut h = minute / 60
+        mut m = minute % 60
+        while h < 24 {
+            if has(self.hours, h) {
+                let found? = first_bit(self.minutes, m, 59) else {
+                    h = h + 1
+                    m = 0
+                    continue
+                }
+                return h * 60 + found
+            }
+            h = h + 1
+            m = 0
+        }
+        null
+    }
+
+    /// Whether any day ever fits. A line whose day fields both match
+    /// either way always has one; one that asks both asks a day of a
+    /// month it names, and every such day falls on every weekday within
+    /// one 400-year cycle.
+    fn ever() -> bool {
+        self.either_day || (1..13).any((m) -> self.month_has_day(m))
+    }
+
+    fn month_has_day(m: int) -> bool {
+        has(self.months, m) && first_bit(self.days, 1, days_in(m, 2000)) != null
+    }
+}
+
+impl CronError {
+    /// The error as a sentence.
+    fn text() -> string {
+        match self {
+            .Fields(n) -> fields_count(n),
+            .Nickname(t) -> unknown_nickname(t),
+            .Unread(f, t) -> unread_field(f, t),
+            .Range(f, v, lo, hi) -> out_of_field(f, v, lo, hi),
+            .Backward(f, a, b) -> backward_range(f, a, b),
+            .Step(f, t) -> bad_step(f, t),
+            .Never -> never_ticks(),
+        }
+    }
+}
+
+/// The line a nickname stands for, or absent for none cron knows.
+fn nickname(word: string) -> string? {
+    match ascii_lower(word) {
+        "@yearly" or "@annually" -> "0 0 1 1 *",
+        "@monthly" -> "0 0 1 * *",
+        "@weekly" -> "0 0 * * 0",
+        "@daily" or "@midnight" -> "0 0 * * *",
+        "@hourly" -> "0 * * * *",
+        _ -> null,
+    }
+}
+
+/// The least and greatest value a field holds.
+type Reach = { lo: int, hi: int }
+
+fn reach_of(f: CronField) -> Reach {
+    match f {
+        .minute -> Reach { lo: 0, hi: 59 },
+        .hour -> Reach { lo: 0, hi: 23 },
+        .day -> Reach { lo: 1, hi: 31 },
+        .month -> Reach { lo: 1, hi: 12 },
+        .weekday -> Reach { lo: 0, hi: 7 },
+    }
+}
+
+fn field_word(f: CronField) -> string {
+    match f {
+        .minute -> "minute",
+        .hour -> "hour",
+        .day -> "day of the month",
+        .month -> "month",
+        .weekday -> "day of the week",
+    }
+}
+
+/// The bits a field's text names: a comma list, every item read.
+fn field_bits(text: string, f: CronField) -> Result<int, CronError> {
+    if text.ends_with(",") { fail CronError.Unread(f, text) }
+    mut bits = 0
+    for part in text.split(",") { bits = bits | item_bits(part, f)? }
+    bits
+}
+
+/// The bits one item names: `*`, `v`, `a-b`, each with an optional `/n`.
+/// A stepped single value runs from it to the field's end.
+fn item_bits(text: string, f: CronField) -> Result<int, CronError> {
+    let parts = text.split("/")
+    if text == "" || parts.length > 2 || text.ends_with("/") { fail CronError.Unread(f, text) }
+    let step = if parts.length == 2 { step_of(parts[1], f)? } else { 1 }
+    let r = reach_of(f)
+    let base = parts[0]
+    if base == "*" { return stepped(r.lo, r.hi, step) }
+    let ends = base.split("-")
+    if ends.length == 0 || ends.length > 2 || ends.any(it == "") || base.ends_with("-") { fail CronError.Unread(f, text) }
+    let from = value_of(ends[0], f, text)?
+    let to = when {
+        ends.length == 2 -> value_of(ends[1], f, text)?
+        parts.length == 2 -> r.hi
+        _ -> from
+    }
+    if to < from { fail CronError.Backward(f, from, to) }
+    stepped(from, to, step)
+}
+
+fn step_of(text: string, f: CronField) -> Result<int, CronError> {
+    let n? = whole(text) else { fail CronError.Step(f, text) }
+    if n < 1 { fail CronError.Step(f, text) }
+    n
+}
+
+/// A field's value: digits, or a month's or weekday's name, inside the
+/// field's reach. `item` is the text an unread value is named by.
+fn value_of(text: string, f: CronField, item: string) -> Result<int, CronError> {
+    let v? = whole(text) ?? named(text, f) else { fail CronError.Unread(f, item) }
+    let r = reach_of(f)
+    if v < r.lo || v > r.hi { fail CronError.Range(f, v, r.lo, r.hi) }
+    v
+}
+
+/// Digits alone, as a number; absent for anything else.
+fn whole(text: string) -> int? {
+    if text == "" || !codepoints(text).all(it >= 48 && it <= 57) { return null }
+    parse_int(text)
+}
+
+/// A month's or weekday's three-letter name, in any case, as its number.
+fn named(text: string, f: CronField) -> int? {
+    let names = match f {
+        .month -> ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"],
+        .weekday -> ["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
+        .minute or .hour or .day -> [],
+    }
+    let i = names.index_of(ascii_lower(text))
+    if i < 0 { return null }
+    if f == CronField.month { i + 1 } else { i }
+}
+
+/// The bits `from`, `from + step`, … up to `to`.
+fn stepped(from: int, to: int, step: int) -> int {
+    mut bits = 0
+    mut v = from
+    while v <= to {
+        bits = bits | (1 << v)
+        v = v + step
+    }
+    bits
+}
+
+fn has(bits: int, v: int) -> bool {
+    (bits >> v) & 1 == 1
+}
+
+/// The least bit set at or after `from` and no later than `to`.
+fn first_bit(bits: int, from: int, to: int) -> int? {
+    (from..to + 1).find(has(bits, it))
+}
+
+/// The day of the week of a day count since 1970-01-01, Sunday 0: that
+/// day was a Thursday.
+fn weekday_of(day: int) -> int {
+    let w = (day + 4) % 7
+    if w < 0 { w + 7 } else { w }
+}
+
+/// The instant `minutes` whole minutes past the epoch, or absent past
+/// the range.
+fn instant_at(minutes: int) -> Time? {
+    if minutes > farthest / ns_per_min { return null }
+    Time { ns: minutes * ns_per_min }
+}
+
+// ── The voices ──
+
+fn fields_count(n: int) -> string {
+    "a cron line has five fields — minute, hour, day of the month, month, day of the week — and this has ${n}"
+}
+
+fn unknown_nickname(t: string) -> string {
+    "`${t}` is no cron nickname — @yearly, @annually, @monthly, @weekly, @daily, @midnight and @hourly are"
+}
+
+fn unread_field(f: CronField, t: string) -> string {
+    "the ${field_word(f)} field reads `${t}`, which is no value, range, step or list of them"
+}
+
+fn out_of_field(f: CronField, v: int, lo: int, hi: int) -> string {
+    "a ${field_word(f)} is ${lo} to ${hi}, and this is ${v}"
+}
+
+fn backward_range(f: CronField, a: int, b: int) -> string {
+    "a range in the ${field_word(f)} field runs upward, and `${a}-${b}` runs down"
+}
+
+fn bad_step(f: CronField, t: string) -> string {
+    "a step in the ${field_word(f)} field is a whole number past zero, and this is `${t}`"
+}
+
+fn never_ticks() -> string {
+    "this cron line names no day that any month has, so it never ticks"
 }

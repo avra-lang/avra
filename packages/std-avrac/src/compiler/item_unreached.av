@@ -33,13 +33,34 @@ fn after_holes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fo
 /// arm taking every value, in node order; a `match` over a name nothing answers judged no further.
 @query
 fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnreached {
-    if at >= item_count(engine, file) { return ItemUnreached { arms: [] } }
+    if !item_held(engine, file, at) { return ItemUnreached { arms: [] } }
     let item = read_item(engine, file, at)
     let unread = [u.at for u in item_refusals(engine, file, at).unread]
-    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] for m in some_list(match_at(item.store, e)) if !reads_unanswered(item.store, m.subject, unread)]
+    let written_only = template_nodes(item.store)
+    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if !written_only.contains(e) for m in some_list(match_at(item.store, e)) if !reads_unanswered(item.store, m.subject, unread)]
     if matches.is_empty() { return ItemUnreached { arms: [] } }
     let cover = reach_cover(engine, file, at, item)
     ItemUnreached { arms: flatten([unreached_in(cover, e) for e in matches]) }
+}
+
+/// The nodes a `quote`'s template is written with — code whose `${…}` holes are values spliced later,
+/// which no value runs through, so no arm of theirs is judged.
+fn template_nodes(store: SyntaxArena) -> List<ExprId> {
+    flatten(
+        [flatten([store.every_expr(x) for x in template_roots(store, ExprId { index: i })]) for i in 0..store.exprs.count()],
+    )
+}
+
+/// The nodes the body `e` holds as a template written verbatim; none for any other node.
+fn template_roots(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    let body? = store.expr(e).body_of() else { return [] }
+    match body.view {
+        .Verbatim(stmts, arms) -> store
+            .stmts_exprs(stmts)
+            .concat([a.value for a in arms])
+            .concat(flatten([some_list(a.guard) for a in arms])),
+        .None or .Expanded(_) -> [],
+    }
 }
 
 /// Whether the subject `subject` is a name nothing answers, among `unread`: a `match` over it chooses
@@ -89,7 +110,7 @@ fn binder_of(cover: Cover, hole: PatId) -> string { cover.store.bind_name(hole) 
 /// every value, that is one unguarded bare name naming a const, which compares rather than binds:
 /// the name.
 fn last_arms_comparing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
     let cover = reach_cover(engine, file, at, item)

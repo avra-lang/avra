@@ -4907,18 +4907,30 @@ int64_t avra_ctx_enter(void* frame) {
     return 1;
 }
 
+// The frame in force pushed onto `box`, marked as the box's frame: the
+// cell a reframe replaces. The box holds a reference to it.
+void avra_ctx_frame_pushed(void* box) {
+    AvraArray* a = (AvraArray*)box;
+    if (avra_ctx_now) avra_array_push_owned(box, avra_ctx_now);
+    else avra_array_push(box, 0);
+    if (!avra_packed(a)) a->marks[a->len - 1] |= MARK_FRAME;
+}
+
 // The box `box`, whose frame is its slot `at`, made under `frame` instead:
-// the same box where that slot holds `frame` already or the box has no
-// slot `at`; else a copy, `frame` in that slot and the rest its own. The
-// caller holds a reference to what it answers.
+// the same box where that slot holds `frame` already, or isn't a frame —
+// the box has no slot `at`, or that slot isn't marked as its frame; else a
+// copy, `frame` in that slot, marked, and the rest its own. The caller
+// holds a reference to what it answers.
 void* avra_ctx_reframed(void* box, int64_t at, void* frame) {
     AvraArray* a = (AvraArray*)box;
-    if (at < 0 || a->len <= at || (void*)(uintptr_t)a->data[at] == frame) return slot_retained(box);
+    if (at < 0 || a->len <= at || avra_packed(a) || !(a->marks[at] & MARK_FRAME)) return slot_retained(box);
+    if ((void*)(uintptr_t)a->data[at] == frame) return slot_retained(box);
     void* copy = avra_array_sized(a->len);
     for (int64_t i = 0; i < a->len; i++) {
         if (i == at) {
             if (frame) avra_array_push_owned(copy, frame);
             else avra_array_push(copy, 0);
+            ((AvraArray*)copy)->marks[i] |= MARK_FRAME;
             continue;
         }
         if (a->marks[i] & MARK_OWNED) avra_array_push_owned(copy, (void*)(uintptr_t)a->data[i]);

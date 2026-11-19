@@ -1,16 +1,34 @@
-// The store home, held to the laws every home keeps.
+// The store home, held to the laws every home keeps. The laws of a
+// delayed send wait on the suite's virtual clock, and the store's clock
+// is set to it.
 use @std.queue.{HomeError, Queue, Terms}
-use @std.queue.tests.support.laws.{broken}
+use @std.queue.tests.support.laws.{broken, broken_of}
+use @std.queue.tests.support.delays.{delay_laws}
 use @std.sqlite.{Db}
+use @std.time.{Time, now_ns}
 use fault.{homed}
-use queue_store.{store_home}
+use queue_store.{store_home_with}
 use tests.support.wires.{int_wire}
 
 fn stored(t: Terms) -> Result<Queue<int>, HomeError> {
     Queue {
         name: "jobs",
         terms: t,
-        home: (store_home<int>(homed(Db.memory())?, "jobs", t, int_wire())?).home(),
+        home: (store_home_with<int>(homed(Db.memory())?, "jobs", t, int_wire())?).home(),
+    }
+}
+
+/// The suite's clock as a store reads one.
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+fn stored_ticking(t: Terms) -> Result<Queue<int>, HomeError> {
+    Queue {
+        name: "jobs",
+        terms: t,
+        home: (store_home_with<int>(homed(Db.memory())?, "jobs", t, int_wire())? with { clock: ticking })
+            .home(),
     }
 }
 
@@ -18,6 +36,9 @@ spec "std/queue_store — the home laws" {
     given "the store home" {
         then "keeps every law" {
             broken(stored).join("; ") == ""
+        }
+        then "keeps every law of a delayed send" {
+            broken_of(delay_laws(), stored_ticking).join("; ") == ""
         }
     }
 }

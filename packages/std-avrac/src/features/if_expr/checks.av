@@ -7,7 +7,8 @@ use core.expr.{If}
 
 impl Checks for If {
     /// Each branch is checked against the seat; under a seat that wants nothing, a branch whose type
-    /// isn't known for want only of a generic call's pin is checked again against the other's.
+    /// isn't known for want only of a seat's type — a generic call's pin, a bare variant's enum — is
+    /// checked again against the other's, as a `match`'s, a `when`'s and a `??`'s arms are.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         cx.conditions.push(self.cond.index)
         let _ = cx.check_seated(self.cond, owned_type("bool"), Seating.Condition(Decision.If))
@@ -18,8 +19,8 @@ impl Checks for If {
         let second = cx.check_proven(other, expected, cx.proof_when(self.cond, false))
         let after = cx.refused.get().length
         let again = cx.pinning([first, second], expected)
-        let yes = if first == null && again != null && cx.unpinned_only(before, between) { cx.check_proven(self.on_true, Expected.Exactly(again!), cx.proof_when(self.cond, true)) } else { first }
-        let no = if second == null && again != null && cx.unpinned_only(between, after) { cx.check_proven(other, Expected.Exactly(again!), cx.proof_when(self.cond, false)) } else { second }
+        let yes = if first == null && again != null && cx.seat_wanted_only(before, between) { cx.check_proven(self.on_true, Expected.Exactly(again!), cx.proof_when(self.cond, true)) } else { first }
+        let no = if second == null && again != null && cx.seat_wanted_only(between, after) { cx.check_proven(other, Expected.Exactly(again!), cx.proof_when(self.cond, false)) } else { second }
         if !(expected is .Dropped) {
             return cx.branches_whole([self.on_true, other], [yes, no], expected) ?? cx
                 .branches_met([self.on_true, other], [yes, no], expected)

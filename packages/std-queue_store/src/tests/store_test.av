@@ -8,7 +8,7 @@ use @std.sqlite.error.{SqlError}
 use @std.text.{from_codepoint, repeat}
 use @std.time.{Time, ms}
 use fault.{homed}
-use queue_store.{Store, Wire, bury_in, store_home, wire_of}
+use queue_store.{Store, Wire, bury_in, store_home_with, wire_of}
 use rows.{take_next}
 use unread.{Unread}
 use @std.queue.tests.support.laws.{terms}
@@ -43,7 +43,7 @@ fn fifo() -> Terms {
 }
 
 fn ints(db: Db, queue: string, t: Terms) -> Result<Store<int>, HomeError> {
-    store_home<int>(db, queue, t, int_wire())
+    store_home_with<int>(db, queue, t, int_wire())
 }
 
 fn fresh(t: Terms) -> Result<Store<int>, HomeError> {
@@ -58,7 +58,7 @@ fn rows(db: Db, text: string) -> Result<int, HomeError> {
 // ── The empty cases ──
 
 fn empty_body() -> Result<bool, HomeError> {
-    let q = store_home<Nothing>(homed(Db.memory())?, "jobs", fifo(), nothing_wire())?
+    let q = store_home_with<Nothing>(homed(Db.memory())?, "jobs", fifo(), nothing_wire())?
     let _ = q.send(Nothing {}, key("a"))?
     let stored = rows(
         q.db,
@@ -97,7 +97,7 @@ fn empty_name() -> Result<bool, HomeError> {
 // ── What crosses to SQLite ──
 
 fn nul_body() -> Result<bool, HomeError> {
-    let q = store_home<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
+    let q = store_home_with<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
     let holed = "a" + from_codepoint(0) + "b"
     let _ = q.send(holed, key("a"))?
     let d? = q.take()? else { return false }
@@ -105,7 +105,7 @@ fn nul_body() -> Result<bool, HomeError> {
 }
 
 fn nul_leads_body() -> Result<bool, HomeError> {
-    let q = store_home<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
+    let q = store_home_with<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
     let holed = from_codepoint(0) + "b"
     let _ = q.send(holed, key("a"))?
     let stored = rows(q.db, "SELECT length(\"body\") FROM \"FlowItem\"")?
@@ -114,7 +114,7 @@ fn nul_leads_body() -> Result<bool, HomeError> {
 }
 
 fn large_body() -> Result<bool, HomeError> {
-    let q = store_home<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
+    let q = store_home_with<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
     let big = repeat("0123456789abcdef", 65536)
     let _ = q.send(big, key("a"))?
     let stored = rows(q.db, "SELECT length(\"body\") FROM \"FlowItem\"")?
@@ -465,7 +465,7 @@ fn joins_callers_transaction() -> Result<bool, HomeError> {
 }
 
 fn letter(db: Db) -> Result<Store<string>, HomeError> {
-    store_home<string>(
+    store_home_with<string>(
         db,
         "jobs/dead",
         fifo() with { capacity: 1, overflow: Overflow.fail },
@@ -597,7 +597,7 @@ fn nothing_aside_at_first() -> Result<bool, HomeError> {
 }
 
 fn empty_body_that_decodes_is_read() -> Result<bool, HomeError> {
-    let q = store_home<Nothing>(homed(Db.memory())?, "jobs", fifo(), nothing_wire())?
+    let q = store_home_with<Nothing>(homed(Db.memory())?, "jobs", fifo(), nothing_wire())?
     let _ = q.send(Nothing {}, key("a"))?
     q.take()? != null && q.unreadable_count()? == 0
 }
@@ -606,7 +606,7 @@ fn other_shape_between() -> Result<bool, HomeError> {
     let db = homed(Db.memory())?
     let numbers = ints(db, "jobs", fifo())?
     let _ = numbers.send(1, key("a"))?
-    let texts = store_home<string>(db, "jobs", fifo(), text_wire())?
+    let texts = store_home_with<string>(db, "jobs", fifo(), text_wire())?
     let poison = texts.send("poison", key("p"))?
     let _ = numbers.send(2, key("b"))?
     let first? = numbers.take()? else { return false }

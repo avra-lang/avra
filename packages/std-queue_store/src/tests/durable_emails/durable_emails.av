@@ -4,35 +4,19 @@
 //! handlers run until its queue is settled, a failing email in the dead
 //! letter and a poison one buried unanswered.
 use @std.queue.{queue, worker, run, Dead, Delivery, DrainError, Fate, HomeError}
-use @std.queue_store.{Wire, wire_of}
 use @std.queue_store.durable.{db, stored}
 use @std.queue_store.fault.{homed}
-use @std.relation.stable.{CodecFault, Reader, Writer}
+use @std.relation.{codec}
 use @std.sqlite.{Db}
 use @std.time.{mins, ms, sleep}
 
+@codec
 type Email = { to: string, subject: string }
 
 fn deliver(d: Delivery<Email>) -> Result<string, string> {
     if d.item.to == "" { return [d.item.subject][1] }
     if !d.item.to.contains("@") { fail "no such address: ${d.item.to}" }
     "sent to ${d.item.to}"
-}
-
-fn email_wire() -> Wire<Email> {
-    wire_of<Email>(
-        1,
-        "Email{to:text,subject:text}",
-        (w: Writer, e: Email) -> {
-            w.text(e.to)
-            w.text(e.subject)
-        },
-        email_read,
-    )
-}
-
-fn email_read(r: Reader) -> Result<Email, CodecFault> {
-    Email { to: r.text()?, subject: r.text()? }
 }
 
 fn why(f: Fate<string>) -> string {
@@ -44,7 +28,7 @@ fn main() -> Result<string, HomeError> {
 
     queue<Email> emails {
         name: "emails"
-        durable: stored(email_wire())
+        durable: stored<Email>()
         retries: 2
         backoff: ms(1)
         dedupe: mins(1440)

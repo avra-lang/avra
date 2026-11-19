@@ -1,7 +1,7 @@
 //! A FILE AS CANONICAL AVRA, FROM A PARSE ALONE: its text read whole under the words its items read
 //! under, printed, and held to the receipts a rewrite owes. Formatting moves no token that typing
 //! decides, so nothing here types: a file is asked for its text and its words' shapes, and no more.
-use core.{joined}
+use core.{Expr, ExprId, StmtId, SyntaxArena, flatten, joined}
 use compiler.format.{lossless_defect, remarks_and_docs_defect, render_source_of}
 use diagnostics.{SourceFile, has_errors, new_source_file, render_among}
 use features.{BlockWords}
@@ -65,7 +65,7 @@ export fn write_checked_under(src: SourceFile, words: BlockWords) -> Result<stri
 
 /// What a rewrite `after` of `src` moved that a canon rewrite may not: a remark or a doc group, a
 /// statement, or a statement's meaning, each read under the same `words`.
-fn canon_defect(src: SourceFile, after: string, words: BlockWords) -> string? {
+export fn canon_defect(src: SourceFile, after: string, words: BlockWords) -> string? {
     let moved = remarks_and_docs_defect(src.text, after)
     if moved != null { return moved }
     let was = parse_program(avra(), src, words)
@@ -73,11 +73,41 @@ fn canon_defect(src: SourceFile, after: string, words: BlockWords) -> string? {
     let now = parse_program(avra(), new_source_file(src.file, after), words)
     if has_errors(now.voices.list) { return "the rewrite does not reparse" }
     if was.stmts.length != now.stmts.length { return "the statement count moved: ${was.stmts.length} -> ${now.stmts.length}" }
+    let before = verbatim_blanked(was.store)
+    let after_read = verbatim_blanked(now.store)
     let at? = (0..was.stmts.length)
-        .find(
-            (i) -> was.store.stmt_fingerprint(was.stmts[i]) != now.store.stmt_fingerprint(now.stmts[i]),
-        ) else { return null }
+        .find((i) -> before.stmt_fingerprint(was.stmts[i]) != after_read.stmt_fingerprint(now.stmts[i])) else {
+        return if same_prints(verbatim_prints(before), verbatim_prints(after_read)) { null } else { "a component body's meaning moved" }
+    }
     "statement ${at}'s meaning moved"
+}
+
+/// `store` with the text of each body it keeps verbatim — a component's, beside the statements it
+/// was parsed into — blanked and its prints derived again: that text is the statements' source,
+/// which a canon rewrite lays out anew, and the statements say what it means (`verbatim_prints`).
+fn verbatim_blanked(store: SyntaxArena) -> SyntaxArena {
+    for i in 0..store.expr_count() {
+        let b? = store.expr(ExprId { index: i }).body_of() else { continue }
+        if b.view is .Verbatim { store.exprs.replaced(i, Expr.Body(b.word, [], b.holes, b.view)) }
+    }
+    store.settle_prints()
+    store
+}
+
+/// The print of every statement a verbatim body of `store` was parsed into, body by body.
+fn verbatim_prints(store: SyntaxArena) -> List<int> {
+    flatten(
+        [[store.stmt_fingerprint(s) for s in verbatim_stmts(store.expr(ExprId { index: i }))] for i in 0..store.expr_count()],
+    )
+}
+
+/// Whether `a` and `b` hold the same prints in the same order.
+fn same_prints(a: List<int>, b: List<int>) -> bool { a.length == b.length && (0..a.length).all(a[it] == b[it]) }
+
+/// The statements a verbatim body `e` was parsed into; none for any other node.
+fn verbatim_stmts(e: Expr) -> List<StmtId> {
+    let b? = e.body_of() else { return [] }
+    match b.view { .Verbatim(stmts, _) -> stmts, rest -> [] }
 }
 
 /// WHETHER A FILE STANDS CANONICAL: its text printed back is its text, byte for byte. The answer is

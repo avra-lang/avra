@@ -61,7 +61,7 @@ type CollectShape = { stmt: StmtId, name: string, kind: CollectKind, scope: Coll
 type CollectShapes = { store: SyntaxArena, all: List<CollectShape> }
 
 fn collect_shapes(engine: QueryEngine, file: SourceFileAddress, at: int) -> CollectShapes {
-    if at >= item_count(engine, file) { return CollectShapes { store: read_item(engine, file, 0).store, all: [] } }
+    if !item_held(engine, file, at) { return CollectShapes { store: read_item(engine, file, 0).store, all: [] } }
     let item = read_item(engine, file, at)
     CollectShapes {
         store: item.store,
@@ -367,7 +367,7 @@ fn ties_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fou
 /// Every value the written item `at` of `file` declares that a collection it reads gathers, by the
 /// component it instantiates or a mark it wears; handed the value and the collection.
 fn own_collections_read(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.expr_span(v!), args: [n!, c!] } for s in item.stmts for v in [item.store.stmt_value(s)] if v != null for n in [item.store.let_name(s)] if n != null for words in [some_list(item.store.instance_of(s)).concat([a.name for a in item.store.annotations_of(s)])] if !words.is_empty() for c in [gathering_read(engine, file, item.store, v!, words)] if c != null]
 }

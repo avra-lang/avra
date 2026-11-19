@@ -659,7 +659,9 @@ fn state_body(engine: QueryEngine, d: DeclaredName) -> SignedBody? {
 /// The unit of the module `state` `file` declares as `name`: no seats, the box keeping it built at
 /// its first call and answered by every call. Absent where it declares none, or its type isn't known.
 fn lowered_state(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
-    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.State) else { return null }
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.State) else { return null }
     let signed? = state_body(engine, d) else { return null }
     let held = signed.signature.answer
     let body = elaborated(engine, file, signed)
@@ -697,7 +699,9 @@ fn context_body(engine: QueryEngine, d: DeclaredName) -> SignedBody? {
 /// its first call and answered by every call. Absent where it declares none with a default, or its
 /// type isn't known.
 fn lowered_context(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
-    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Ctx) else { return null }
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Ctx) else { return null }
     let signed? = context_body(engine, d) else { return null }
     let held = signed.signature.answer
     let body = elaborated(engine, file, signed)
@@ -984,7 +988,9 @@ fn unit_callee(m: DeclaredName) -> CalledFn {
 /// The unit the const `file` declares as `name` builds its value by where it's read
 /// (`built_where_read`): no seats, its value answered. Absent for any other declaration.
 fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
-    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Const) else { return null }
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Const) else { return null }
     if !built_where_read(engine, d) { return null }
     match const_body(engine, d) {
         .Ok(body) -> signed_lowered(engine, file, body, name, null),
@@ -1133,7 +1139,7 @@ fn verb_declared(engine: QueryEngine, ty: SignedType, name: string) -> CalledFn?
 /// Where `@std/prelude`'s `verbs/` declares the verb `name` on the language's own type `ty`.
 fn verb_declaring(engine: QueryEngine, ty: SignedType, name: string) -> DeclaredName? {
     let at? = owned_at(ty) else { return null }
-    file_declares(engine, at.file).names.find(it.name == name && it.kind == ItemKind.Fn)
+    file_declares_named(engine, at.file, name).names.find(it.name == name && it.kind == ItemKind.Fn)
 }
 
 /// Whether `s` declares the fn `name` with a body that holds a statement.

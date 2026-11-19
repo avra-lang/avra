@@ -177,7 +177,9 @@ export fn file_problems(engine: QueryEngine, file: SourceFileAddress) -> List<Ke
 /// What the generators the fn `file` writes as `name` wears make: what the written declaration
 /// names, never what generated items do.
 export fn fn_generated(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratedItems {
-    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return said_only([]) }
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return said_only([]) }
     gathered_items(
         [site_generated(engine, file, site) for site in declaration_sites(engine, file, d) if !validates(engine, site.generator)],
     )
@@ -383,7 +385,9 @@ fn signature_spelled(store: SyntaxArena, s: StmtId) -> string {
 /// The fn `file` writes as `name`, read into `store` under the name a wrap moves its body to, at the
 /// place it's written; absent when it writes none.
 fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store: SyntaxArena) -> StmtId? {
-    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return null }
     let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
         .find((x) -> store.fn_parts(x)?.name == name) else { return null }
     let parts = store.fn_parts(s)!
@@ -405,7 +409,9 @@ fn twin_of(
     twin: string,
     store: SyntaxArena,
 ) -> StmtId? {
-    let d? = file_declares(engine, file).names.find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return null }
     let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
         .find((x) -> store.fn_parts(x)?.name == name) else { return null }
     let parts = store.fn_parts(s)!
@@ -446,8 +452,8 @@ fn kept_problem(d: Diagnostic) -> KeptProblem {
 /// a written one, and past the generated ones: a question kept from an older state of the file may
 /// name a place it no longer has, and is answered as a written place past the file's end is.
 export fn generated_at(engine: QueryEngine, file: SourceFileAddress, at: int) -> GeneratedItem? {
+    if item_held(engine, file, at) { return null }
     let k = at - item_count(engine, file)
-    if k < 0 { return null }
     let items = file_generated(engine, file).items
     if k >= items.length { return null }
     items[k]

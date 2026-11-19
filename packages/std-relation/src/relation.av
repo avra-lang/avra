@@ -82,6 +82,7 @@ use rows.{
     bool_part,
 }
 use db.{Db, Stores, stores}
+use shape.{Descriptor, ShapeReach, ShapeSlot}
 use refused.{InsertRefused, unheld, int_text, bool_text}
 use stable.{
     Scope,
@@ -150,9 +151,30 @@ export trait Codec {
     static fn marks(t: Type) -> List<string> { stored_marks }
 }
 
+/// What `@codec` gives a type, as a bound a generic fn names: `fn kept<T: Storable>(v: T)`.
+export trait Storable {
+    /// The shape's fingerprint: the type's own declaration and every one it reaches.
+    static fn codec_shape() -> int
+
+    /// The shape as data, spelled: `descriptor_unspelled` reads it, `verdict` judges two.
+    static fn codec_descriptor() -> string
+
+    /// The value as octets, its shape's fingerprint ahead of them.
+    fn encoded_in(scope: dyn Scope) -> Bytes
+
+    /// The value octets of this very shape hold.
+    static fn decoded_in(scope: dyn Scope, b: Bytes) -> Result<Self, CodecFault>
+
+    /// The value octets of ANOTHER shape hold, one `verdict` let through: the writer's first
+    /// `slots` slots are read, a default fills each one it lacks, and what it holds past the
+    /// type's own is left unread.
+    static fn decoded_known(scope: dyn Scope, b: Bytes, slots: int) -> Result<Self, CodecFault>
+}
+
 /// `@codec` — a record or an enum, any one of them, written and read back as octets: its
 /// shape's fingerprint, then every field in declared order by the generator `@relation` writes
-/// its rows with. `encoded_in(scope)` and `decoded_in(scope, bytes)`. A dense id crosses by
+/// its rows with. `encoded_in(scope)` and `decoded_in(scope, bytes)`, which are the type's
+/// `impl Storable`, so a generic fn reaches them through that bound. A dense id crosses by
 /// the scope's spelling, a generic record of one parameter (a `SideTable<T>`) is its fields at
 /// the argument, and a `@local` field is no part of the wire and is rebuilt from its declared
 /// default. A field with no wire form is refused, named.
@@ -1735,11 +1757,15 @@ fn crosses_by_scope(shape: NamedShape) -> bool {
 /// A reached declaration: the type itself, or one the compiler names.
 fn stored_type(t: Type, n: string) -> Type? { if n == t.name { t } else { type_named(n) } }
 
-/// The helpers a stored type writes and reads by: every record and payload enum it reaches,
-/// itself among them when it is an enum.
-fn stored_helpers(s: Stored) -> List<Decls> {
-    let helpers = if s.t.variants.is_empty() { reached_kinds(s.wire, [], true) } else { s.reached }
-    [d for k in helpers for d in helper_members(s.t, k, s.owner, !s.owner.scoped)]
+/// The helpers a stored type writes and reads by: one set for every kind its wire reaches.
+fn stored_helpers(s: Stored, inner: List<Kind>) -> List<Decls> {
+    [d for k in inner for d in helper_members(s.t, k, s.owner, !s.owner.scoped)]
+}
+
+/// The records and payload enums a stored type's wire reaches: itself among them when it is
+/// an enum, or a record that reaches itself.
+fn stored_within(s: Stored) -> List<Kind> {
+    if s.t.variants.is_empty() { reached_kinds(s.wire, [], true) } else { s.reached }
 }
 
 /// Whether a declaration carries its own codec — `@codec` gives a record or an enum the write,
@@ -1810,12 +1836,13 @@ fn stored_generated(s: Stored) -> Decls {
     let t = s.t
     if !s.problems.is_empty() { return quote { impl ${t} { } } }
     let shape = stored_shape(s)
+    let inner = stored_within(s)
     let w = "w"
     quote {
-        impl ${t} {
-            ${stored_helpers(s)}
-
+        impl Storable for ${t} {
             static fn codec_shape() -> int { ${shape} }
+
+            static fn codec_descriptor() -> string { ${literal(stored_descriptor(s, shape, inner).spelled())} }
 
             fn encoded_in(scope: dyn Scope) -> Bytes {
                 let ${w} = writer()
@@ -1829,6 +1856,18 @@ fn stored_generated(s: Stored) -> Decls {
                 if !rd.done() { fail CodecFault.Trailing }
                 v
             }
+
+            static fn decoded_known(scope: dyn Scope, b: Bytes, slots: int) -> Result<${t}, CodecFault> {
+                let rd = reader(b)
+                let _ = rd.fixed()?
+                let v = ${stored_read_known(s)}
+                if ${read_whole(s)} && !rd.done() { fail CodecFault.Trailing }
+                v
+            }
+        }
+
+        impl ${t} {
+            ${stored_helpers(s, inner)}
 
             static fn written_by(${w}: Writer, scope: dyn Scope, v: ${t}) {
                 ${name(w)}.fixed(${shape})
@@ -1865,6 +1904,65 @@ fn stored_read(s: Stored) -> Code {
     if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), s.owner) }
     let inits = [quote { W { ${f.name}: ${field_value(f, s.owner)} } } for f in t.fields]
     quote { ${t} { ..${inits} } }
+}
+
+/// `stored_read` for a writer of `slots` slots: a wire field past them takes its default.
+fn stored_read_known(s: Stored) -> Code {
+    let t = s.t
+    if !t.variants.is_empty() { return stored_read(s) }
+    let inits = [quote { W { ${f.name}: ${known_value(s, f)} } } for f in t.fields]
+    quote { ${t} { ..${inits} } }
+}
+
+/// A field's value read from a writer of `slots` slots: its default where it declares one and
+/// the writer holds no such slot.
+fn known_value(s: Stored, f: Field) -> Code {
+    let read = field_value(f, s.owner)
+    let default? = f.default else { return read }
+    if marked(f, "local") { return read }
+    quote { if slots > ${[w.name for w in s.wire].index_of(f.name)} { ${read} } else { ${default} } }
+}
+
+/// Whether a writer of `slots` slots left nothing a reader passes by: an enum's value always,
+/// a record's unless the writer holds more slots than the type.
+fn read_whole(s: Stored) -> Code {
+    if !s.t.variants.is_empty() { return quote { true } }
+    quote { slots <= ${s.wire.length} }
+}
+
+/// A stored type's slots: a record's wire fields, an enum's variants each over its payload.
+fn stored_slots(s: Stored) -> List<ShapeSlot> {
+    if !s.t.variants.is_empty() { return [variant_slot(v) for v in s.t.variants] }
+    [ShapeSlot { name: f.name, ty: slot_spelled(f), defaulted: f.default != null } for f in s.wire]
+}
+
+fn variant_slot(v: Variant) -> ShapeSlot {
+    ShapeSlot {
+        name: v.name,
+        ty: [slot_spelled(f) for f in v.fields if !marked(f, "local")].join(","),
+    }
+}
+
+/// What a field carries, spelled: its type, then its marks.
+fn slot_spelled(f: Field) -> string { "${f.ty}${[" @${m.name}" for m in f.marks].join("")}" }
+
+/// A stored type's shape as data. A record's own declaration is among the reached only when
+/// its wire reaches it: a nested one is read whole, so it cannot grow.
+fn stored_descriptor(s: Stored, shape: int, inner: List<Kind>) -> Descriptor {
+    let nested = if s.t.variants.is_empty() { inner } else { s.reached.drop(1) }
+    Descriptor {
+        hash: shape,
+        format: stored_format,
+        tagged: !s.t.variants.is_empty(),
+        slots: stored_slots(s),
+        reached: [reach for k in nested for reach in reach_of(s.t, k)],
+    }
+}
+
+/// A reached kind's declaration, fingerprinted; none for a kind that names none.
+fn reach_of(t: Type, k: Kind) -> List<ShapeReach> {
+    let ty? = stored_type_of(t, k) else { return [] }
+    [ShapeReach { name: k.spelled(), shape: text_hash(described(ty)) }]
 }
 
 /// Whether an enum has a variant that carries a payload, so its codec is a helper.

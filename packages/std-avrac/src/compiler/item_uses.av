@@ -53,12 +53,20 @@ type UseFaultAt = { at: Span?, path: List<string>, fault: UseFault, unread: Unre
 /// Every fault of the `use` lines the written item `at` of `file` writes, line by line, each read
 /// after every `use` line the file writes before it.
 fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<UseFaultAt> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let lines = uses_written(item)
     if lines.is_empty() { return [] }
-    let before = flatten([uses_written(read_item(engine, file, k)) for k in 0..at])
+    let before = flatten(
+        [[UseWritten {
+            at: if l.placed { Span { lo: l.lo, hi: l.hi } } else { null },
+            path: l.path,
+            items: l.items,
+            bound: l.bound,
+            exported: l.exported,
+        } for l in item_front(engine, file, k).uses] for k in 0..at],
+    )
     flatten([line_faults(engine, file, l, before.concat(lines.take(j))) for j, l in lines])
 }
 

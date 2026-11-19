@@ -2765,6 +2765,17 @@ export once fn rt_sigs() -> List<RtSig> {
             owns_result: false,
         },
         RtSig {
+            name: "avra_ctx_frame_pushed",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+            owns_result: false,
+            writes: [true],
+        },
+        RtSig {
             name: "avra_ctx_reframed",
             ret: RtKind.Ptr,
             params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr],
@@ -3547,3 +3558,20 @@ export fn rt_reusing_twin(name: string) -> string? {
     if sig == null || !sig!.has_reusing_twin { return null }
     "${name}_reusing"
 }
+
+/// A bit a box's cell wears in its mark byte (runtime/avra_box.h's `MARK_*`), as the compiler names
+/// it: the header `avra runtime-header` writes asserts each is the C's.
+export type CellMark = { name: string, bit: int }
+
+/// The cell held a managed value the reclaim releases.
+export const MARK_OWNED: CellMark = CellMark { name: "MARK_OWNED", bit: 1 }
+
+/// The cell holds a nullable scalar that is not there.
+export const MARK_ABSENT: CellMark = CellMark { name: "MARK_ABSENT", bit: 2 }
+
+/// The cell is the frame of contexts its box was made or placed under: the one cell a reframe
+/// replaces.
+export const MARK_FRAME: CellMark = CellMark { name: "MARK_FRAME", bit: 4 }
+
+/// Every bit a cell's mark byte holds.
+export fn cell_marks() -> List<CellMark> { [MARK_OWNED, MARK_ABSENT, MARK_FRAME] }

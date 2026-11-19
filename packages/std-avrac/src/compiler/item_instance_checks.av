@@ -30,12 +30,12 @@ type ItemChecked = { rows: List<InstanceSaid> }
 /// that writes no instance reads nothing more.
 @query
 fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
-    if at >= item_count(engine, file) { return ItemChecked { rows: [] } }
+    if !item_held(engine, file, at) { return ItemChecked { rows: [] } }
     let item = read_item(engine, file, at)
     if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
     let fns = [b! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns_at(item, a) if item.store.fn_parts(s) != null for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
-    let declared = [b for d in file_declares(engine, file).names if d.item == at && built_instance(engine, d) for b in declared_body(engine, d)]
+    let declared = [b for d in file_declares_at(engine, file, at).names if d.item == at && built_instance(engine, d) for b in declared_body(engine, d)]
     let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item)).concat(declared)
     let entry = if runs_in(engine, file, at) { entry_read(engine, file) } else { null }
     let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]

@@ -20,7 +20,7 @@ const FORMAT: string = "Format"
 /// Every component of the written item `at` of `file` whose `check` isn't shaped as one: where the
 /// `check` stands, and what it answers.
 fn checks_unshaped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     [f! for a in impls_at(engine, file, at) for c in [impl_component_at(item, a)] if c != null for f in [check_found(engine, item.store, a, c!.fns)] if f != null]
@@ -44,7 +44,7 @@ fn diagnostics_answered(ty: SignedType) -> bool {
 /// Every head spelled `Format` of a component the written item `at` of `file` declares that names
 /// another type than `@std/meta`'s: where the component stands, and the head.
 fn formats_foreign(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     [Found { at: item.store.stmt_span(s), args: [n] } for s in item.stmts for c in [item.store.component_parts(s)] if c != null for sig in [record_signature(engine, file, c!.name)] if sig != null for n in formats_of(c!) for seat in sig!.fields if seat.name == n &&
@@ -77,7 +77,7 @@ fn foreign_words(a: List<string>) -> Voice { format_foreign(a[0]) }
 /// written item `at` of `file` writes — a comprehension's element, a loop's body — once each: where
 /// it stands, and its word.
 fn rows_unkeyed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
     if !store.refusals().is_empty() { return [] }
@@ -124,7 +124,7 @@ fn keeps_state(engine: QueryEngine, file: SourceFileAddress, word: string) -> bo
 /// of a field that isn't one of the component's plain inputs — a `state` one, or one itself made from
 /// the instance: where it stands, the component, the member and the field read.
 fn defaults_unmade(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     flatten([unmade_reads(engine, file, item.store, s) for s in item.stmts])
@@ -166,7 +166,7 @@ fn unmade_words(a: List<string>) -> Voice { default_unmade(a[0], a[1], a[2]) }
 /// that names a slot of that instance's component: there the slot's name wins, and the component of
 /// that name is shadowed. Where it stands, the slot, and the component around it.
 fn slots_shadowing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
     if !store.refusals().is_empty() { return [] }

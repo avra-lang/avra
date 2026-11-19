@@ -301,7 +301,13 @@ type Declared = { key: int, name: string, required: bool }
 
 /// Each context the files of the program `package` reads declare.
 fn program_contexts(engine: QueryEngine, package: string) -> List<Declared> {
-    [Declared { key: context_key(d), name: d.name, required: context_required_of(engine, d) } for f in program_files(engine, package) for d in file_declares(engine, f).names if d.kind == ItemKind.Ctx]
+    [Declared { key: c.key, name: c.name, required: c.required } for c in contexts_declared(engine, package).contexts]
+}
+
+/// Each context the files of the program `package` reads declare, worked out from every file's
+/// declarations.
+fn contexts_of(engine: QueryEngine, package: string) -> List<ContextDeclared> {
+    [ContextDeclared { key: context_key(d), name: d.name, required: context_required_of(engine, d) } for f in program_files(engine, package) for d in file_declares(engine, f).names if d.kind == ItemKind.Ctx]
 }
 
 /// Whether the context `d` is declared with no default.
@@ -312,11 +318,8 @@ fn context_required_of(engine: QueryEngine, d: DeclaredName) -> bool {
 
 /// The first statement `file` runs, where the written item `at` holds it.
 fn first_running(engine: QueryEngine, file: SourceFileAddress, at: int) -> StmtId? {
-    if at >= item_count(engine, file) { return null }
-    for k in 0..at {
-        let earlier = read_item(engine, file, k)
-        if earlier.stmts.any((s) -> !earlier.store.is_declaration(s)) { return null }
-    }
+    if !item_held(engine, file, at) { return null }
+    if (0..at).any(item_said(engine, file, it).runs) { return null }
     let item = read_item(engine, file, at)
     item.stmts.find((s) -> !item.store.is_declaration(s))
 }
@@ -355,7 +358,7 @@ fn required_words(a: List<string>) -> Voice { context_required(a[0], a[1], a[2],
 /// Each `ctx` set the fns the written item `at` of `file` declares make that nothing under it reads:
 /// where it stands, and the context.
 fn sets_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
     if !store.refusals().is_empty() || !store.stmt_ids().any((s) -> store.ctx_set(s) != null) { return [] }

@@ -109,7 +109,7 @@ fn taken_again(
     at: int,
     own: fn(SyntaxArena, StmtId) -> OwnNames?,
 ) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     flatten(
         [again_in(item.store, s, o!) for s in item.stmts for o in [own(item.store, s)] if o != null],
@@ -124,7 +124,7 @@ fn again_in(store: SyntaxArena, s: StmtId, o: OwnNames) -> List<Found> {
 /// Every type parameter a declaration of the written item `at` of `file` names as a type the
 /// language owns, found where the declaration stands.
 fn tparams_owned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n] } for s in item.stmts for o in [own_type_params(item.store, s)] if o != null for n in o!.names if builtin_type_name(avra().rows.types, n)]
 }
@@ -153,7 +153,7 @@ fn enum_variants(store: SyntaxArena, s: StmtId) -> OwnNames? {
 /// its signature's: its own, a spread's in its place, and what it carries; none where a builder
 /// refused the item, whose failure is what a build says.
 fn fields_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if item.store.refusals().any(builder_refused(it)) { return [] }
     flatten(
@@ -172,14 +172,14 @@ fn variants_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List
 /// Every member a trait the written item `at` of `file` declares names again, found where the
 /// second stands.
 fn members_again(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(m), args: [t!.name, n] } for s in item.stmts for t in [item.store.trait_parts(s)] if t != null for j, m in t!.fns for n in [item.store.fn_parts(m)?.name ?? ""] if !n.is_empty() && t!.fns.take(j).any((k) -> item.store.fn_parts(k)?.name == n)]
 }
 
 /// Every enum the written item `at` of `file` declares with no variant.
 fn enums_empty(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [e!.name] } for s in item.stmts for e in [item.store.enum_parts(s)] if e != null && e!.variants.is_empty()]
 }
@@ -189,7 +189,7 @@ type Seated = { stmt: StmtId, name: string, params: List<Param> }
 
 /// The fns the written item `at` of `file` declares at its top level, each with its seats.
 fn seated_fns(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Seated> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Seated { stmt: s, name: f!.name, params: f!.params } for s in item.stmts for f in [item.store.fn_parts(s)] if f != null]
 }
@@ -205,7 +205,7 @@ fn rests_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 /// method's or a static's in an impl it holds; the receiver's word written bare, which the naming law
 /// refuses, is no seat.
 fn seats_typeless(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let fns = item
         .stmts
@@ -341,7 +341,7 @@ fn scalar_field(engine: QueryEngine, t: SignedType) -> bool {
 /// Every method, static and trait member of the written item `at` of `file`, but a generic method,
 /// declaring a `state` seat: the seat.
 fn methods_stated(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
     let methods = [m for s in item.stmts for m in store.impl_parts(s)?.fns ?? [] if (store.fn_parts(m)?.tparams ?? []).is_empty()]
@@ -371,7 +371,7 @@ const SCALARS: List<string> = ["int", "float", "bool", "ptr", "void"]
 
 /// Every `once fn` an impl of the written item `at` of `file` declares.
 fn once_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(m), args: [f!.name] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null for m in p!.fns for f in [item.store.fn_parts(m)] if f != null && item.store.is_once(m)]
 }
@@ -384,7 +384,7 @@ fn named_generic(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 /// Every named type the written item `at` of `file` declares over a shape that holds nothing,
 /// handed its name and the shape.
 fn named_over_nothing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n!.name, of!.spelled()] } for s in item.stmts for n in [item.store.named_parts(s)] if n != null && n!.tparams.is_empty() for of in [named_shape(engine, file, n!.name)?.of] if of != null && holds_nothing(of!)]
 }
@@ -393,7 +393,7 @@ fn named_over_nothing(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
 fn named_found(engine: QueryEngine, file: SourceFileAddress, at: int, keep: fn(NamedParts) -> bool) -> List<
     Found,
 > {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n!.name] } for s in item.stmts for n in [item.store.named_parts(s)] if n != null && keep(n!)]
 }
@@ -446,7 +446,9 @@ fn declared_after(
     at: int,
 ) -> bool {
     if !same_file(d.file, file) { return text_before(file.path_in_package, d.file.path_in_package) }
-    let item = file_declares(engine, d.file).names.find(it.name == d.name && it.kind == kind)?.item ?? -1
+    let item = file_declares_named(engine, d.file, d.name)
+        .names
+        .find(it.name == d.name && it.kind == kind)?.item ?? -1
     item > at
 }
 
@@ -454,7 +456,7 @@ fn declared_after(
 fn records_spreading_themselves(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     Found,
 > {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(r.stmt), args: [r.parts.name] } for r in records_written(item) if r
         .parts
@@ -474,7 +476,7 @@ fn records_written(item: ReadItem) -> List<RecordWritten> {
 /// language owns, an enum, a nullable, a `dyn`, a type parameter, an alias over one of these; handed
 /// the spread as written. A name that names no type is the naming law's.
 fn spreads_of_no_record(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(r.stmt), args: [x.of.text()] } for r in records_written(item) for x in r.parts.spreads if spreads_nothing(engine, file, r.parts.tparams, x.of)]
 }
@@ -502,7 +504,7 @@ fn same_declared_opt(d: DeclaredAt?, file: SourceFileAddress, name: string) -> b
 /// spreads come back to it, where that record is the first of the loop declared: the record it
 /// spreads is still being signed. Handed the spread as written.
 fn spreads_looping(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [x.of.text()] } for s in item.stmts for p in [item.store.struct_parts(s)] if p != null for x in p!.spreads for t in [spread_record(engine, file, x.of.name)] if t != null && !same_declared_opt(t, file, p!.name) && first_spread(engine, t!, file, p!.name)]
 }
@@ -512,7 +514,7 @@ fn spreads_looping(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 fn first_spread(engine: QueryEngine, t: DeclaredAt, file: SourceFileAddress, name: string) -> bool {
     let home = declared_place(file, name)
     let chain? = spread_chain(engine, t, home, []) else { return false }
-    let t_at = file_declares(engine, t.file)
+    let t_at = file_declares_named(engine, t.file, t.name)
         .names
         .find(it.name == t.name && it.kind == ItemKind.Record)?.item ?? -1
     chain
@@ -525,7 +527,7 @@ const NAMED_DEPTH: int = 64
 
 /// Every impl of no trait the written item `at` of `file` writes on a type the language owns.
 fn builtin_inherents(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [p!.target] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null &&
         p!.of == null &&
@@ -536,7 +538,7 @@ fn builtin_inherents(engine: QueryEngine, file: SourceFileAddress, at: int) -> L
 /// Every impl of a trait another package declares that the written item `at` of `file` writes on a
 /// type the language owns; handed the trait and the type.
 fn builtin_foreigns(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [p!.of!, p!.target] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null &&
         p!.of != null &&
@@ -548,7 +550,7 @@ fn builtin_foreigns(engine: QueryEngine, file: SourceFileAddress, at: int) -> Li
 /// writes on a type the language owns under a name that type already answers; handed the type and
 /// the name.
 fn builtins_renamed(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let rows = avra().rows
     flatten(
@@ -588,7 +590,7 @@ fn renamed_words(a: List<string>) -> Voice { builtin_answers_already(a[0], a[1])
 /// doesn't parse, what readying it finds, and an action naming no fn of its module or handing it
 /// another count of captures than it takes; handed what its voice says, its kind first.
 fn grammars_refused(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     flatten(
         [grammar_found(engine, file, item.store.stmt_span(s), g!) for s in item.stmts for g in [item.store.syntax_parts(s)] if g != null],
@@ -640,7 +642,7 @@ fn grammar_words(a: List<string>) -> Voice {
 /// Every impl the written item `at` of `file` writes on a type another package declares, of no
 /// trait its own package declares; handed its heading, its type and the type's package.
 fn orphans(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found {
         at: item.store.stmt_span(s),
@@ -663,7 +665,7 @@ fn own_trait(engine: QueryEngine, file: SourceFileAddress, of: string?) -> bool 
 /// Every `static fn` an impl of the written item `at` of `file` declares on an enum that has a
 /// variant of its name; handed the enum and the name.
 fn statics_as_variants(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     flatten(
         [shadowing(item.store, s, p!.target, variant_names(engine, file, p!.target)) for s in item.stmts for p in [item.store.impl_parts(s)] if p != null],
@@ -713,7 +715,7 @@ fn targs_ungeneric(view: ItemView, at: At) -> List<Found> {
 /// Every alias a statement of the written item `at` of `file` applies to `void`, where the
 /// statement stands; handed the alias and the type.
 fn aliases_given_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [t.name, NO_VALUE] } for top in item.stmts for s in stmts_under(item.store, At.Stmt(top)) for r in item.store.type_roots(s) for t in written_in(r) if t.type_args().any(it.name == NO_VALUE) && names_alias(engine, file, t.name)]
 }
@@ -721,7 +723,7 @@ fn aliases_given_void(engine: QueryEngine, file: SourceFileAddress, at: int) -> 
 /// Every alias the written item `at` of `file` declares that names, in what it stands for, the
 /// first declared alias of a loop of aliases it's on: where the loop comes back; handed that alias.
 fn aliases_looping(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [h.name] } for s in item.stmts for a in [item.store.alias_parts(s)] if a != null for h in aliases_named(engine, declared_place(file, a!.name)) if first_alias(engine, h, declared_place(file, a!.name))]
 }
@@ -730,7 +732,7 @@ fn aliases_looping(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 /// every other alias of that loop declared after it.
 fn first_alias(engine: QueryEngine, h: DeclaredAt, closing: DeclaredAt) -> bool {
     let between? = alias_path(engine, h, closing, []) else { return false }
-    let h_at = file_declares(engine, h.file)
+    let h_at = file_declares_named(engine, h.file, h.name)
         .names
         .find(it.name == h.name && it.kind == ItemKind.Alias)?.item ?? -1
     between
@@ -824,7 +826,7 @@ fn nested_block_decls(view: ItemView, at: At) -> List<Found> { nested_found(view
 /// The first statement each impl or trait of the written item `at` of `file` writes among its
 /// methods that is none: no member, and no line the parse could not read.
 fn stray_members(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(m!), args: [] } for s in item.stmts for fns in [item.store.impl_parts(s)?.fns ?? item.store.trait_parts(s)?.fns] if fns != null for m in [fns!.find((f) -> !item.store.holds_a_member(f) && !(item.store.stmt(f) is .Error))] if m != null]
 }
@@ -832,7 +834,7 @@ fn stray_members(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 /// Every loop and comprehension head the written item `at` of `file` writes naming its index as its
 /// element; handed the name.
 fn paired_alike(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [i!] } for top in item.stmts for s in stmts_under(item.store, At.Stmt(top)) for i in [item.store.loop_index(s)] if i != null && i! == item.store.let_name(s)]
         .concat(
@@ -880,7 +882,7 @@ fn indexed_range(c: CompClause) -> List<ExprId> {
 
 /// Every `collect enum` the written item `at` of `file` declares that gathers no member.
 fn enums_gathering_nothing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [c!.name] } for s in item.stmts for c in [item.store.collect_enum_parts(s)] if c != null &&
         gathers_lawfully(engine, file, c!) &&
@@ -949,7 +951,7 @@ fn declared_found(
     name_of: fn(SyntaxArena, StmtId) -> string?,
     keep: fn(string) -> bool,
 ) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [n!] } for s in item.stmts for n in [name_of(item.store, s)] if n != null && keep(n!)]
 }
@@ -972,7 +974,7 @@ export law const_reads_itself_law {
 /// Every method an impl of a trait the written item `at` of `file` writes that the trait doesn't
 /// declare; handed the method, the trait and the impl's type.
 fn methods_beyond_trait(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(f), args: [n!, p!.of!, p!.target] } for s in item.stmts for p in [item.store.impl_parts(s)] if p != null && p!.of != null for members in [trait_member_names(engine, file, p!.of!)] if members != null for f in p!.fns for n in [item.store.fn_parts(f)?.name] if n != null && !members!.contains(n!)]
 }
@@ -1006,7 +1008,7 @@ fn type_named(store: SyntaxArena, s: StmtId) -> string? { store.type_decl_name(s
 /// Every case a spec the written item `at` of `file` declares names twice within one group; handed
 /// the group and the name.
 fn cases_twice(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     [Found { at: item.store.stmt_span(s), args: [case_group(p!.name, g), n] } for s in item.stmts for p in [item.store.spec_parts(s)] if p != null for g in distinct([c.group for c in p!.cases]) for names in [[c.name for c in p!.cases if c.group == g]] for j, n in names if names.index_of(n) < j]
 }

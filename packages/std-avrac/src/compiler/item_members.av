@@ -97,7 +97,7 @@ use @std.text.{parse_int}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 
 /// What a value was asked for that its type doesn't have.
 @derive(Saved)
@@ -255,7 +255,7 @@ type TypedNodes = { store: SyntaxArena, type_at: fn(int) -> SignedType?, lo: int
 /// nothing.
 @query
 fn item_misses(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemMisses {
-    if at >= item_count(engine, file) { return ItemMisses { rows: [] } }
+    if !item_held(engine, file, at) { return ItemMisses { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemMisses { rows: [] } }
     ItemMisses {
@@ -681,11 +681,13 @@ fn type_named_miss(
 }
 
 /// Whether the record `d` names is a grammar's, whose calls are its doors.
-fn declares_grammar(engine: QueryEngine, d: DeclaredName) -> bool {
-    let item = read_item(engine, d.file, d.item)
-    item
-        .stmts
-        .any((s) -> item.store.type_decl_name(s) == d.name && item.store.grammar_of(s) != null)
+fn declares_grammar(engine: QueryEngine, d: DeclaredName) -> bool { grammar_declared(engine, d.file, d.item, d.name) }
+
+/// Whether the item `at` of `file` declares the type `name` with a grammar: one answer per name.
+@cut_query
+fn grammar_declared(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
+    let item = read_item(engine, file, at)
+    item.stmts.any((s) -> item.store.type_decl_name(s) == name && item.store.grammar_of(s) != null)
 }
 
 /// The lambda that calls the static fn `name` of `owner`, of type `f`, spelled from its own seats.
@@ -909,7 +911,7 @@ fn variadic_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlac
 /// The signature of the fn `d` names where its file writes exactly one fn of that name: the one its
 /// body is typed under, asked as typing asks it. Absent where the file writes none or several.
 fn sole_signature(engine: QueryEngine, d: DeclaredName) -> FnSignature? {
-    let written = file_declares(engine, d.file)
+    let written = file_declares_named(engine, d.file, d.name)
         .names
         .filter(it.name == d.name && it.kind == ItemKind.Fn)
     if written.length != 1 { return null }
@@ -1007,7 +1009,9 @@ fn method_arity(
 /// Whether `ty` names a declared enum, whose `all` lists its variants.
 fn declares_enum(engine: QueryEngine, ty: SignedType) -> bool {
     match ty.head {
-        .Declared(file, declared) -> file_declares(engine, file).names.any(it.name == declared && it.kind == ItemKind.Enum),
+        .Declared(file, declared) -> file_declares_named(engine, file, declared)
+            .names
+            .any(it.name == declared && it.kind == ItemKind.Enum),
         rest -> false,
     }
 }
@@ -1050,14 +1054,12 @@ fn literal_named(engine: QueryEngine, t: TypedNodes, name: string) -> SignedType
 fn literal_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
     let lit? = t.store.struct_lit_parts(e) else { return [] }
     let s? = declared_value((t.type_at)(e.index)) ?? literal_named(engine, t, lit.name) else { return [] }
-    let declared? = match s.head {
-        .Declared(file, name) -> record_item(engine, file, name),
+    let parts? = match s.head {
+        .Declared(file, name) -> written_fields(engine, file, name, s.word()),
         rest -> null,
     } else { return [] }
-    let parts? = [p! for st in declared.stmts for p in [fields_written(declared.store, st)] if p != null && p!.name == s.word()]
-        .first() else { return [] }
     let filled = [f.name for f in fields_signed(engine, s) if field_role(engine, s, f.name) != null]
-    let declared_names = [f.name.of for f in parts.fields]
+    let declared_names = [f.name for f in parts.fields]
     let spreads = [lit.values[j] for j, f in lit.fields if f == spread_entry]
     let covered = [if f == spread_entry { spread_covers(engine, t, lit.values[j], declared_names) } else { [] } for j, f in lit.fields]
     let written = lit.fields.concat(flatten(covered))
@@ -1069,12 +1071,31 @@ fn literal_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlace
         .concat(
             [MissPlaced {
                 at: at,
-                miss: if spreads.is_empty() { Miss.Unwritten(parts.name, f.name.of) } else { Miss.Unset(parts.name, f.name.of) },
-            } for f in parts.fields if f.default == null &&
-                !f.state &&
-                !written.contains(f.name.of) &&
-                !filled.contains(f.name.of)],
+                miss: if spreads.is_empty() { Miss.Unwritten(parts.name, f.name) } else { Miss.Unset(parts.name, f.name) },
+            } for f in parts.fields if !f.defaulted && !f.state && !written.contains(f.name) && !filled.contains(f.name)],
         )
+}
+
+/// The fields a record is written with: its name, and each field's name and whether it's defaulted or
+/// a state.
+@derive(Saved)
+type LiteralRecord = { name: string, fields: List<LiteralField> }
+
+/// A field as a record is written with it.
+@derive(Saved)
+type LiteralField = { name: string, defaulted: bool, state: bool }
+
+/// The fields of the record `file` declares as `name` written as `word`, absent where none is: one
+/// answer per record, which an edit elsewhere in its file leaves standing.
+@cut_query
+fn written_fields(engine: QueryEngine, file: SourceFileAddress, name: string, word: string) -> LiteralRecord? {
+    let declared? = record_item(engine, file, name) else { return null }
+    let parts? = [p! for st in declared.stmts for p in [fields_written(declared.store, st)] if p != null && p!.name == word]
+        .first() else { return null }
+    LiteralRecord {
+        name: parts.name,
+        fields: [LiteralField { name: f.name.of, defaulted: f.default != null, state: f.state } for f in parts.fields],
+    }
 }
 
 /// Each field the spread `v` into a literal of `record`, whose fields are `own`, carries that the
@@ -1401,7 +1422,7 @@ fn member_answers(engine: QueryEngine, subject: SignedType, name: string, reader
 /// there, or the file reads as no items here.
 fn home_unsettled(engine: QueryEngine, subject: SignedType) -> bool {
     match subject.head {
-        .Declared(file, _) -> item_count(engine, file) == 0 || !generator_sites(engine, file).is_empty(),
+        .Declared(file, _) -> !item_held(engine, file, 0) || !generator_sites(engine, file).is_empty(),
         rest -> false,
     }
 }
@@ -1411,12 +1432,25 @@ fn home_unsettled(engine: QueryEngine, subject: SignedType) -> bool {
 /// reads as no items here.
 fn home_gives(engine: QueryEngine, subject: SignedType, name: string, statics: bool = false) -> bool {
     match subject.head {
-        .Declared(file, declared) -> item_count(engine, file) == 0 ||
-            !generator_sites(engine, file).is_empty() ||
-            (0..item_count(engine, file))
-                .any(writes_member(engine, file, it, declared, name, statics)),
+        .Declared(file, declared) -> home_gives_named(engine, file, declared, name, statics),
         rest -> false,
     }
+}
+
+/// Whether `file`, declaring `declared`, gives it `name` as written, as a static where `statics`, or
+/// may give it unwritten: one answer per name, which an item added elsewhere in the file leaves
+/// standing.
+@cut_query
+fn home_gives_named(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    declared: string,
+    name: string,
+    statics: bool,
+) -> bool {
+    !item_held(engine, file, 0) ||
+        !generator_sites(engine, file).is_empty() ||
+        (0..item_count(engine, file)).any(writes_member(engine, file, it, declared, name, statics))
 }
 
 /// Whether an impl of `declared` the written item `at` of `file` holds writes a static `name`, or

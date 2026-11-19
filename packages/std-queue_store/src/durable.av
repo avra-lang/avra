@@ -3,7 +3,7 @@
 //!
 //!     queue<Email> emails {
 //!         name: "emails"
-//!         durable: stored(email_wire())
+//!         durable: stored<Email>()
 //!         dedupe: mins(1440)
 //!     }
 //!
@@ -14,17 +14,28 @@
 use @std.queue.{Durable, HomeError, Key, Lasting, Terms}
 use @std.sqlite.{Db}
 use @std.time.{Duration, Time, ms, now}
-use queue_store.{Store, Sync, Wire, store_home}
+use @std.relation.{Storable}
+use queue_store.{Store, Sync, Wire, store_home_with, wire}
 use waiting.{listening}
 
 /// The database every durable queue of the program stands on.
 export ctx db: Db
 
+/// A queue's `durable:` for a coded item: the store home of `ctx.db`,
+/// its items crossing by their own codec.
+export fn stored<T: Storable>(
+    sync: Sync = Sync.every_send,
+    poll: Duration = ms(250),
+    clock: fn() -> Time = now,
+) -> Durable<T> {
+    stored_with(wire<T>(), sync, poll, clock)
+}
+
 /// A queue's `durable:`: the store home of `ctx.db`, its items crossing
 /// by `wire`, its commits pressed as `sync` asks. `poll` is the longest
 /// a waiting worker goes without asking the rows again, and `clock` the
 /// instant leases and backoffs are measured against.
-export fn stored<T>(
+export fn stored_with<T>(
     wire: Wire<T>,
     sync: Sync = Sync.every_send,
     poll: Duration = ms(250),
@@ -53,10 +64,11 @@ fn opened<T>(
     poll: Duration,
     clock: fn() -> Time,
 ) -> Result<Lasting<T>, HomeError> {
-    let store = store_home<T>(ctx.db, name, terms, wire, sync)? with { dedupe: dedupe, clock: clock }
+    let store = store_home_with<T>(ctx.db, name, terms, wire, sync)? with { dedupe: dedupe, clock: clock }
     let heard = listening(store, poll)
     Lasting {
         home: heard.home(),
         send_as: (item: T, k: Key, id: string) -> heard.send_as(item, k, id),
+        delay_as: (item: T, k: Key, id: string, after: Duration) -> heard.send_as_after(item, k, id, after),
     }
 }

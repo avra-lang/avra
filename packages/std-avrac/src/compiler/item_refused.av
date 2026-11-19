@@ -234,7 +234,7 @@ type StoredBody = { store: SyntaxArena, typed: TypedBody }
 /// an entry. A body that didn't parse refuses nothing.
 @query
 fn item_refusals(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemRefusals {
-    if at >= item_count(engine, file) { return ItemRefusals { rows: [] } }
+    if !item_held(engine, file, at) { return ItemRefusals { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemRefusals { rows: [] } }
     let bodies = [StoredBody { store: item.store, typed: b } for b in item_bodies(engine, file, at, item)]
@@ -424,7 +424,7 @@ fn fields_named_once(engine: QueryEngine, file: SourceFileAddress, name: string)
 fn default_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     SignedBody,
 > {
-    let names = [d for d in file_declares(engine, file).names if d.item == at]
+    let names = [d for d in file_declares_at(engine, file, at).names if d.item == at]
     let fns = [s! for d in names if d.kind == ItemKind.Fn &&
         item.stmts.any((s) -> item.store.fn_parts(s)?.name == d.name && defaults_a_seat(item, s)) for s in [signed_body(engine, file, d.name)] if s != null]
     let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns(item, a) if defaults_a_seat(item, s) for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]

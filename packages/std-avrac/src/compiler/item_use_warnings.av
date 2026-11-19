@@ -14,7 +14,7 @@ const USE_WARNING: string = "annotation.warning"
 
 /// Every use, in the written item `at` of `file`, of a declaration an annotation warns of.
 fn uses_warned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let built = flatten(
@@ -23,6 +23,7 @@ fn uses_warned(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fo
     let own = flatten(
         [reads_warned(engine, file, item.store, b.reads) for b in item_bodies(engine, file, at, item)],
     )
+    if !runs_in(engine, file, at) { return own.concat(built) }
     let read = entry_read(engine, file)
     let signed? = entry_signed(read) else { return own.concat(built) }
     let entry = kept_body(body_checked(engine, file, signed, false))
@@ -45,11 +46,13 @@ fn literals_warned(engine: QueryEngine, t: TypedNodes) -> List<Found> {
 }
 
 /// The warning `p` as the use `e`, standing in `store`, says it.
-fn warned_at(store: SyntaxArena, e: ExprId, p: KeptProblem) -> Found { Found {
+fn warned_at(store: SyntaxArena, e: ExprId, p: KeptProblem) -> Found {
+    Found {
         at: store.expr_span(e),
         args: [p.message, p.help ?? ""],
         kind: user_kind(p.from, p.kind) ?? USE_WARNING,
-    } }
+    }
+}
 
 /// Each of `reads`, standing in `store`, that names a declaration wearing a warning: one finding a
 /// warning, at the read.
@@ -68,7 +71,7 @@ fn warnings_worn(engine: QueryEngine, file: SourceFileAddress, space: Space, nam
     KeptProblem,
 > {
     let d? = resolved(engine, file, space, name).named() else { return [] }
-    if d.item >= item_count(engine, d.file) { return [] }
+    if !item_held(engine, d.file, d.item) { return [] }
     let worn? = worn_in_item(engine, d) else { return [] }
     if !worn.marked { return [] }
     [p for p in file_problems(engine, d.file) if p.warning && p.owner == d.name]

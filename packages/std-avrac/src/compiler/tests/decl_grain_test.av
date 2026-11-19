@@ -63,9 +63,15 @@ fn grain_share(before: string, after: string) -> List<string> {
 /// What main's build says with the library as `lib`.
 fn grain_report(lib: string) -> string { grain_package(grain_caller(), lib, null).judged_at(grain_main()).report() }
 
-/// The edit keeps every answer of main's, and main answers alike.
-fn grain_kept(before: string, after: string) -> bool {
-    grain_share(before, after).is_empty() && grain_report(before) == grain_report(after)
+/// The edit keeps every answer of main's, and main answers alike: past `own`, the questions the edit
+/// puts to what it edited — its declaration's own facts, and its file's, module's and package's — main
+/// works out nothing. Each of `own` is worked out once and cuts: a reader of one worked out again is
+/// main's, and keeps the share from emptying.
+fn grain_kept(before: string, after: string, own: List<string>) -> bool {
+    let share = grain_share(before, after)
+    own.all((q) -> share.filter(it == q).length <= 1) &&
+        beyond(share, own).is_empty() &&
+        grain_report(before) == grain_report(after)
 }
 
 /// The edit makes main ask again.
@@ -85,13 +91,14 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
             grain_kept(
                 grain_base(),
                 grain_lib_text("// a note\n", "one()", "// inside\n    1", "2"),
+                ["seats_written", "written_fields"],
             )
         }
         then "a new body for `one` keeps them" {
-            grain_kept(grain_base(), grain_lib_text("", "one()", "0 + 1", "2"))
+            grain_kept(grain_base(), grain_lib_text("", "one()", "0 + 1", "2"), ["seats_written"])
         }
         then "a new body for `two`, which the caller never names, keeps them" {
-            grain_kept(grain_base(), grain_lib_text("", "one()", "1", "0 + 2"))
+            grain_kept(grain_base(), grain_lib_text("", "one()", "1", "0 + 2"), [])
         }
     }
     given "the other file edited where the caller reads" {
@@ -101,10 +108,14 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
     }
     given "the other file's declarations added or renamed where the caller does not read" {
         then "a declaration added keeps every query of main's, answering alike" {
-            grain_kept(grain_base(), grain_grown("export fn three() -> int {\n    3\n}\n"))
+            grain_kept(
+                grain_base(),
+                grain_grown("export fn three() -> int {\n    3\n}\n"),
+                ["file_erring", "module_declares", "package_generated_impls"],
+            )
         }
         then "`two`, which the caller never names, renamed keeps them" {
-            grain_kept(grain_base(), grain_renamed("two", "deux"))
+            grain_kept(grain_base(), grain_renamed("two", "deux"), ["module_declares"])
         }
     }
     given "the other file's declarations added or renamed where the caller reads" {

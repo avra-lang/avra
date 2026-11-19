@@ -1,0 +1,128 @@
+//! A coded type's shape as DATA: what a reader of one build needs to
+//! judge octets a writer of another build left.
+//!
+//!     let mine = descriptor_unspelled(Email.codec_descriptor())
+//!     verdict(mine, theirs)
+//!
+//! A record's slots are its wire's fields in order; an enum's are its
+//! variants. A record crosses by POSITION and an enum by its variant's
+//! PLACE, so either may grow at its end and nowhere else.
+use @std.text.{parse_int}
+
+/// One slot: a record's field or an enum's variant. `ty` spells what
+/// it carries, marks included; `defaulted` says a reader may fill it
+/// where a writer left none.
+export type ShapeSlot = { name: string, ty: string, defaulted: bool = false }
+
+/// A named type a shape's slots reach, and its declaration's
+/// fingerprint.
+export type ShapeReach = { name: string, shape: int }
+
+/// A coded type's shape: its fingerprint, the number of the byte
+/// layout it is written in, whether it is an enum, its slots in wire
+/// order, and every type they reach.
+export type Descriptor = { hash: int, format: int, tagged: bool, slots: List<ShapeSlot>, reached: List<ShapeReach> }
+
+/// What a reader makes of a writer's shape. `Same`: decode. `Grew`:
+/// the writer holds more trailing slots — decode the ones known.
+/// `Fills`: the writer holds fewer, and a default fills each one
+/// missing. `Moved`: no item of the reader's is read from it.
+export enum Verdict { Same, Grew, Fills, Moved }
+
+/// The reader's verdict on a writer's shape.
+export fn verdict(reader: Descriptor, writer: Descriptor) -> Verdict {
+    if reader.hash == writer.hash { return Verdict.Same }
+    if reader.format != writer.format || reader.tagged != writer.tagged { return Verdict.Moved }
+    let mine = reader.slots.length
+    let theirs = writer.slots.length
+    let common = if mine < theirs { mine } else { theirs }
+    if !(0..common).all(alike(reader.slots[it], writer.slots[it])) || !reach_agrees(reader, writer) {
+        return Verdict.Moved
+    }
+    if theirs > mine { return Verdict.Grew }
+    if theirs < mine && (reader.tagged || reader.slots.drop(theirs).all(it.defaulted)) { return Verdict.Fills }
+    Verdict.Moved
+}
+
+/// Whether two slots are one: the same name over the same spelling.
+fn alike(a: ShapeSlot, b: ShapeSlot) -> bool { a.name == b.name && a.ty == b.ty }
+
+/// Whether every reached type both shapes name is declared alike.
+fn reach_agrees(reader: Descriptor, writer: Descriptor) -> bool {
+    mut theirs: Map<string, int> = {}
+    for r in writer.reached { theirs.set(r.name, r.shape) }
+    reader.reached.all((r: ShapeReach) -> theirs.get(r.name) ?? r.shape == r.shape)
+}
+
+/// The head of every spelled descriptor: the spelling's own number.
+const spelling: string = "avra.shape.1"
+
+impl Descriptor {
+    /// The descriptor as text a column keeps: its parts in order, each
+    /// run behind its count.
+    fn spelled() -> string {
+        let slots = [p for s in self.slots for p in [part(s.name), part(s.ty), flag(s.defaulted)]]
+        let reached = [p for r in self.reached for p in [part(r.name), "${r.shape}"]]
+        [spelling, "${self.hash}", "${self.format}", flag(self.tagged), "${self.slots.length}"]
+            .concat(slots)
+            .concat(["${self.reached.length}"])
+            .concat(reached)
+            .join("|")
+    }
+}
+
+/// The descriptor a text spells, or absent for any other text.
+export fn descriptor_unspelled(text: string) -> Descriptor? {
+    let parts = text.split("|")
+    if parts.length < 6 || parts[0] != spelling { return null }
+    let hash? = parse_int(parts[1]) else { return null }
+    let format? = parse_int(parts[2]) else { return null }
+    let tagged? = unflag(parts[3]) else { return null }
+    let slots? = slots_at(parts, 4) else { return null }
+    let after = 5 + slots.length * 3
+    let reached? = reached_at(parts, after) else { return null }
+    if parts.length != after + 1 + reached.length * 2 { return null }
+    Descriptor { hash: hash, format: format, tagged: tagged, slots: slots, reached: reached }
+}
+
+/// The run a count at `at` heads, `width` parts an item: where its
+/// items begin, or absent when the parts hold no such run.
+fn run_at(parts: List<string>, at: int, width: int) -> List<int>? {
+    if at >= parts.length { return null }
+    let n? = parse_int(parts[at]) else { return null }
+    if n < 0 || at + 1 + n * width > parts.length { return null }
+    [at + 1 + i * width for i in 0..n]
+}
+
+fn slots_at(parts: List<string>, at: int) -> List<ShapeSlot>? {
+    let starts? = run_at(parts, at, 3) else { return null }
+    mut out: List<ShapeSlot> = []
+    for i in starts {
+        let defaulted? = unflag(parts[i + 2]) else { return null }
+        out
+            .push(ShapeSlot { name: unpart(parts[i]), ty: unpart(parts[i + 1]), defaulted: defaulted })
+    }
+    out
+}
+
+fn reached_at(parts: List<string>, at: int) -> List<ShapeReach>? {
+    let starts? = run_at(parts, at, 2) else { return null }
+    mut out: List<ShapeReach> = []
+    for i in starts {
+        let shape? = parse_int(parts[i + 1]) else { return null }
+        out.push(ShapeReach { name: unpart(parts[i]), shape: shape })
+    }
+    out
+}
+
+/// A text as one part: the separator and the escape's own mark spelled
+/// out.
+fn part(s: string) -> string { s.replace("%", "%25").replace("|", "%7C") }
+
+fn unpart(s: string) -> string { s.replace("%7C", "|").replace("%25", "%") }
+
+fn flag(v: bool) -> string { if v { "1" } else { "0" } }
+
+fn unflag(s: string) -> bool? {
+    match s { "1" -> true, "0" -> false, _ -> null }
+}

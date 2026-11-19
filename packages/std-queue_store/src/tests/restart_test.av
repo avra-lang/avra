@@ -6,7 +6,7 @@ use @std.queue.{Delivery, HomeError, Order, Terms, key}
 use @std.sqlite.{Db, OpenConfig, sql}
 use @std.time.{Time, ms, sleep, stamp}
 use fault.{homed}
-use queue_store.{Store, Sync, open_logged, store_home}
+use queue_store.{Store, Sync, open_logged, store_home_with}
 use @std.queue.tests.support.laws.{terms}
 use tests.support.wires.{int_wire}
 
@@ -26,7 +26,7 @@ fn scratched(work: fn(string) -> Result<bool, HomeError>) -> bool {
 }
 
 fn opened(path: string, t: Terms) -> Result<Store<int>, HomeError> {
-    store_home<int>(homed(Db.open(path))?, "jobs", t, int_wire())
+    store_home_with<int>(homed(Db.open(path))?, "jobs", t, int_wire())
 }
 
 /// Three items sent and the first taken, every handle then dropped.
@@ -131,7 +131,7 @@ fn concurrent_takes_share_nothing(path: string) -> Result<bool, HomeError> {
 fn busy_asks_back(path: string) -> Result<bool, HomeError> {
     let t = terms(60000, Order.fifo)
     let writer = opened(path, t)?
-    let waiting = store_home<int>(
+    let waiting = store_home_with<int>(
         homed(Db.open_with(OpenConfig.config_at(path) with { busy: 0 }))?,
         "jobs",
         t,
@@ -155,17 +155,17 @@ fn sync_of(db: Db) -> Result<int, HomeError> {
 
 fn reopened_log_syncs_every_send(path: string) -> Result<bool, HomeError> {
     let first = open_logged(path)?
-    let _ = store_home<int>(first, "jobs", terms(60000, Order.fifo), int_wire())?
+    let _ = store_home_with<int>(first, "jobs", terms(60000, Order.fifo), int_wire())?
     let _ = first.close()
     let again = homed(Db.open(path))?
     let found = sync_of(again)?
-    let _ = store_home<int>(again, "jobs", terms(60000, Order.fifo), int_wire())?
+    let _ = store_home_with<int>(again, "jobs", terms(60000, Order.fifo), int_wire())?
     found == 2 && sync_of(again)? == 2
 }
 
 fn fresh_log_syncs_every_send(path: string) -> Result<bool, HomeError> {
     let db = open_logged(path)?
-    let q = store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire())?
+    let q = store_home_with<int>(db, "jobs", terms(60000, Order.fifo), int_wire())?
     let _ = q.send(1, key("a"))?
     sync_of(db)? == 2
 }
@@ -178,7 +178,7 @@ fn levels_through(db: Db) -> Result<string, HomeError> {
         seen.push(sync_of(db) catch 0 - 1)
         Time { ns: 1000 }
     }
-    let q = store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire())? with { clock: noting }
+    let q = store_home_with<int>(db, "jobs", terms(60000, Order.fifo), int_wire())? with { clock: noting }
     let _ = q.send(1, key("a"))?
     seen.push(sync_of(db)?)
     let _ = q.take()?
@@ -196,13 +196,19 @@ fn journal_syncs_every_commit(path: string) -> Result<bool, HomeError> {
 
 fn on_checkpoint_syncs_the_log_less(path: string) -> Result<bool, HomeError> {
     let db = open_logged(path)?
-    let q = store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire(), Sync.on_checkpoint)?
+    let q = store_home_with<int>(
+        db,
+        "jobs",
+        terms(60000, Order.fifo),
+        int_wire(),
+        Sync.on_checkpoint,
+    )?
     sync_of(db)? == 1 && q.send(1, key("a"))? != null && q.depth()? == 1
 }
 
 fn on_checkpoint_asks_a_log(path: string) -> Result<bool, HomeError> {
     let db = homed(Db.open(path))?
-    match store_home<int>(db, "jobs", terms(60000, Order.fifo), int_wire(), Sync.on_checkpoint) {
+    match store_home_with<int>(db, "jobs", terms(60000, Order.fifo), int_wire(), Sync.on_checkpoint) {
         .Err(.Refused(why)) -> why.contains("write-ahead log") && why.contains("`delete`"),
         rest -> false,
     }

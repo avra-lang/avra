@@ -14,7 +14,7 @@ use frontier.{CUT_MOVED, CUT_STANDS, EntryAt, Frontier, FrontierLearned, HeldEnt
 use package_sets.{NO_NAMES, NameSets, name_sets}
 use input_stamps.{InputStamp, places_held}
 use defect.{defect}
-use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
 use query_times.{QueryTimes, TimedSide, query_times}
 use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
 use answer_record.{
@@ -24,13 +24,11 @@ use answer_record.{
     PartSeen,
     Question,
     RecordedRead,
-    answer_record,
     content_hash,
     keyed_question,
     QUESTION_SHAPE,
     question,
     hashes_in,
-    words_of,
 }
 
 /// The package named for a path no store places in one: no store shares it.
@@ -161,18 +159,18 @@ export trait AnswerStore {
 }
 
 /// A run of a query: its answer's bytes and every read it made.
-type QueryRun = { bytes: Bytes, reads: HashKeyedTable<RecordedRead> }
+type QueryRun = { bytes: Bytes, reads: ReadTable }
 
 /// Reads gathered for work remembered outside the engine, begun while `depth` questions were open:
 /// it gathers the reads made while just those are. `reader` is its own serial as a reader.
-type ReadsGathered = { depth: int, reads: HashKeyedTable<RecordedRead>, reader: int }
+type ReadsGathered = { depth: int, reads: ReadTable, reader: int }
 
 /// A question being answered, its query, and the reads it has made so far.
 type OpenQuestion = {
     question: ContentHash,
     query_name: string,
     arguments: Bytes,
-    reads: HashKeyedTable<RecordedRead>,
+    reads: ReadTable,
     /// Its serial as a reader.
     reader: int,
 }
@@ -844,14 +842,13 @@ impl QueryEngine {
         let run = self.checked_fold(asked, self.folded_run(asked)) ?? self.full_run(asked)
         let bytes = run.bytes
         let answer = content_hash(bytes)
-        let recorded = run.reads.values()
-        let reads = words_of([r.question for r in recorded])
+        let reads = run.reads.question_words()
         let read = if self.definition_of(asked).is_input { self.read_sets.get(asked.known_as) ?? NO_NAMES } else { self.set_of_reads(reads) }
         self.read_sets.put(asked.known_as, read)
         let is_shared = self.set_shared(read)
         let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_bytes(answer) != null }
         if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
-        let record = answer_record(answer, recorded)
+        let record = run.reads.record_of(answer)
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
         self.learned(asked, answer, reads)
     }
@@ -937,7 +934,7 @@ impl QueryEngine {
 
     /// The query's answer from its body, with every question it asks recorded.
     fn full_run(asked: Question) -> QueryRun {
-        let reads: HashKeyedTable<RecordedRead> = hash_keyed_table()
+        let reads: ReadTable = read_table()
         let outer = self.opened(asked, reads)
         let definition = self.definition_of(asked)
         self.computed.push(definition.query_name)
@@ -949,7 +946,7 @@ impl QueryEngine {
 
     /// `asked` opened as the innermost question, its reads recorded in `reads`; answers the
     /// questions open before it. A question asked while it's being answered is the caller's defect.
-    fn opened(asked: Question, reads: HashKeyedTable<RecordedRead>) -> List<OpenQuestion> {
+    fn opened(asked: Question, reads: ReadTable) -> List<OpenQuestion> {
         let outer = self.open_questions.get()
         if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked, outer)) }
         self
@@ -984,14 +981,9 @@ impl QueryEngine {
         if now.any(it == null) { return null }
         let moved = [self.moved_at(f, r) for i, r in places if !now[i]!.same_as(f.answer_at(r))]
         if moved.any(it == null) { return null }
-        let reads: HashKeyedTable<RecordedRead> = hash_keyed_table()
+        let reads: ReadTable = read_table()
         for i, r in places {
-            let carried = RecordedRead {
-                question: f.question_at(r),
-                whole_answer: now[i]!,
-                part: null,
-            }
-            reads.put(carried.read_key(), carried)
+            reads.whole(f.question_at(r), now[i]!)
         }
         let outer = self.opened(asked, reads)
         self.times.get()?.opened(asked.query_name, TimedSide.Folded)
@@ -1043,7 +1035,7 @@ impl QueryEngine {
     fn record_read(read: RecordedRead) {
         self.gathered(read)
         let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
-        asker.reads.put(read.read_key(), read)
+        asker.reads.put(read)
     }
 
     /// A read of the whole answer `answer` to the question known as `question`, recorded as
@@ -1053,11 +1045,11 @@ impl QueryEngine {
         if !gathering.is_empty() {
             let depth = self.open_questions.get().length
             for g in gathering {
-                if g.depth == depth { whole_read_into(g.reads, question, answer) }
+                if g.depth == depth { g.reads.whole(question, answer) }
             }
         }
         let asker? = self.open_questions.get().last() else { return self.asked_alone.put(question, true) }
-        whole_read_into(asker.reads, question, answer)
+        asker.reads.whole(question, answer)
     }
 
     /// `read`, made with the questions open now, gathered by each gathering begun with just those open.
@@ -1066,14 +1058,14 @@ impl QueryEngine {
         if gathering.is_empty() { return }
         let depth = self.open_questions.get().length
         for g in gathering {
-            if g.depth == depth { g.reads.put(read.read_key(), read) }
+            if g.depth == depth { g.reads.put(read) }
         }
     }
 
     /// Reads made from here on with the questions open now, gathered until `reads_gathered`: what
     /// a remembered answer keeps of the work that found it.
     fn reads_begun() {
-        let reads: HashKeyedTable<RecordedRead> = hash_keyed_table()
+        let reads: ReadTable = read_table()
         self
             .gathering
             .push(
@@ -1532,16 +1524,3 @@ export fn answers_held() -> bool { held_answers_off() == null }
 once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
 
 fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }
-
-/// The whole read of `question`'s answer `answer` put in `reads`, unless `reads` holds it already.
-fn whole_read_into(reads: HashKeyedTable<RecordedRead>, question: ContentHash, answer: ContentHash) {
-    let held? = reads.get_at(question.high_word, question.low_word) else { return whole_put(reads, question, answer) }
-    if held.part != null ||
-        held.whole_answer.high_word != answer.high_word ||
-        held.whole_answer.low_word != answer.low_word { whole_put(reads, question, answer) }
-}
-
-/// The whole read of `question`'s answer `answer` put in `reads`.
-fn whole_put(reads: HashKeyedTable<RecordedRead>, question: ContentHash, answer: ContentHash) {
-    reads.put(question, RecordedRead { question: question, whole_answer: answer, part: null })
-}

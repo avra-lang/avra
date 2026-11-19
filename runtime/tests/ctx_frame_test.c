@@ -166,6 +166,7 @@ int main(void) {
 
     // A BOX MADE UNDER ANOTHER FRAME: the same box where its frame is the
     // one asked; else a copy, the frame in its slot and the rest its own.
+    // Only a slot marked as the box's frame is one.
     void* code_only = avra_array_sized(1);
     avra_array_push(code_only, 7);
     void* same = avra_ctx_reframed(code_only, 1, made);
@@ -174,7 +175,7 @@ int main(void) {
     void* lane = avra_array_new();
     void* framed = avra_array_sized(3);
     avra_array_push(framed, 7);
-    avra_array_push(framed, 0);
+    avra_ctx_frame_pushed(framed);
     avra_array_push_owned(framed, lane);
     avra_rc_release(lane);
     void* again = avra_ctx_reframed(framed, 1, NULL);
@@ -187,6 +188,36 @@ int main(void) {
     avra_rc_release(framed);
     avra_rc_release(code_only);
 
+    // A CLOSURE THAT CARRIES NO FRAME: its first lane stands where a frame
+    // would, and is no frame, so a reframe answers the box untouched.
+    void* captured = avra_array_new();
+    void* unframed = avra_array_sized(3);
+    avra_array_push(unframed, 7);
+    avra_array_push(unframed, 42);
+    avra_array_push_owned(unframed, captured);
+    void* untouched = avra_ctx_reframed(unframed, 1, made);
+    CHECK(untouched == unframed && ((AvraArray*)unframed)->data[1] == 42, "a reframe of a closure that carries no frame answers the box untouched");
+    avra_rc_release(untouched);
+    void* untouched_lane = avra_ctx_reframed(unframed, 2, made);
+    CHECK(untouched_lane == unframed && ((AvraArray*)unframed)->data[2] == (int64_t)(uintptr_t)captured, "and so does one of an owned lane");
+    avra_rc_release(untouched_lane);
+    avra_rc_release(unframed);
+    avra_rc_release(captured);
+
+    // A FRAME PUSHED UNDER A SET: the box holds the frame in force.
+    void* e = avra_array_new();
+    avra_ctx_set(DEPTH, e);
+    avra_rc_release(e);
+    void* under = avra_array_sized(2);
+    avra_array_push(under, 7);
+    avra_ctx_frame_pushed(under);
+    CHECK(((AvraArray*)under)->data[1] == (int64_t)(uintptr_t)avra_ctx_now, "a frame pushed under a set is the frame in force");
+    void* still = avra_ctx_reframed(under, 1, avra_ctx_now);
+    CHECK(still == under, "and a reframe to it changes nothing");
+    avra_rc_release(still);
+    avra_ctx_back();
+    avra_rc_release(under);
+
     // A BOX WHOSE FRAME IS ANOTHER SLOT: a value boxed with its table, the
     // frame after them; the value is shared by the copy, never moved.
     void* held = avra_array_new();
@@ -194,7 +225,7 @@ int main(void) {
     avra_array_push_owned(boxed, held);
     avra_rc_release(held);
     avra_array_push(boxed, 9);
-    avra_array_push(boxed, 0);
+    avra_ctx_frame_pushed(boxed);
     void* unslotted = avra_ctx_reframed(boxed, 3, made);
     CHECK(unslotted == boxed, "a box with no slot where its frame would be is the same box");
     avra_rc_release(unslotted);

@@ -41,7 +41,7 @@ export fn context_key(d: DeclaredName) -> int {
 /// Every read and set in the written item `at` of `file` of a name that declares no context: where it
 /// stands, and the name.
 fn contexts_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let store = read_item(engine, file, at).store
     if !store.refusals().is_empty() { return [] }
     let reads = [Found { at: store.expr_span(e), args: [n] } for e in store.expr_ids() for n in some_list(store.ctx_read(e)) if context_named(engine, file, n) == null]
@@ -62,7 +62,7 @@ fn unknown_words(a: List<string>) -> Voice { context_unknown(a[0]) }
 /// Every context the written item `at` of `file` declares inside a body, and every one it sets at its
 /// top level: where it stands, the name, and "declared" or "set".
 fn contexts_misplaced(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
-    if at >= item_count(engine, file) { return [] }
+    if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     let store = item.store
     if !store.refusals().is_empty() { return [] }

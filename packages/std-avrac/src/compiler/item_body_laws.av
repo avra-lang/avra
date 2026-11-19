@@ -215,7 +215,7 @@ type Deferral = { stmt: StmtId, body: ExprId, errs: bool }
 /// nothing.
 @query
 fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemBreaches {
-    if at >= item_count(engine, file) { return ItemBreaches { rows: [] } }
+    if !item_held(engine, file, at) { return ItemBreaches { rows: [] } }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return ItemBreaches { rows: [] } }
     let store = item.store
@@ -949,7 +949,7 @@ fn escape_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: 
         answer_label(name, m!.signed.signature.answer.spelled()),
         m!.signed.signature.answer,
     ) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for m in [signed_method(engine, a, name, item.store.is_static(s))] if m != null]
-    let names = [d for d in file_declares(engine, file).names if d.item == at]
+    let names = [d for d in file_declares_at(engine, file, at).names if d.item == at]
     let fields = [escaped(engine, record_place(item, d.name), field_label(f.name, f.ty!.spelled()), f.ty!) for d in names if d.kind == ItemKind.Record && !wears_mark(engine, d, OWNS_MARK) for f in record_signature(engine, file, d.name)?.fields ?? [] if f.ty != null]
     let payloads = [escaped(engine, enum_place(item, d.name), carried_label(v.name, p.name, p.ty!.spelled()), p.ty!) for d in names if d.kind == ItemKind.Enum for v in enum_signature(engine, file, d.name)?.variants ?? [] for p in v.payloads if p.ty != null]
     flatten(fns.concat(methods).concat(fields).concat(payloads))
@@ -973,7 +973,7 @@ fn holds_tasks(ty: SignedType) -> bool {
 fn slot_breaches(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
     BreachAt,
 > {
-    let names = [d for d in file_declares(engine, file).names if d.item == at]
+    let names = [d for d in file_declares_at(engine, file, at).names if d.item == at]
     let fields = [BreachAt {
         at: kept_at(record_place(item, d.name)),
         breach: Breach.FieldVoid(f.name, f.ty!.spelled()),

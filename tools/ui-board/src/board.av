@@ -49,6 +49,7 @@ use @std.ui.components.{
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, default_theme}
+use @std.ui.tree.view.{View}
 
 /// Which tasks the board shows.
 @json
@@ -185,26 +186,46 @@ fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-/// One filter: pressed, it is the filter in force.
-component tab(label: string) {
+/// One choice among several: pressed, the place it was handed holds what it shows.
+component tab(label: string, state chosen: Show) {
     shows: Show
     button self.label {
-        on press { filter = self.shows }
-        style: tab_style(filter == self.shows)
+        on press { self.chosen = self.shows }
+        style: tab_style(self.chosen == self.shows)
+    }
+}
+
+/// A button that turns the place it was handed on and off.
+component toggle(label: string, state on: bool) {
+    button self.label {
+        on press { self.on = !self.on }
+        style: tab_style(self.on)
+    }
+}
+
+/// A line whose content stands at one end and its controls at the other.
+component bar {
+    @default body: List<dyn View> = []
+    trailing: List<dyn View> = []
+    row {
+        layout: spread_layout()
+        self.body
+        self.trailing
     }
 }
 
 component header {
-    row {
-        layout: spread_layout()
+    bar {
         column {
             layout: Layout { gap: .Xs }
             heading title() { rank: 1 }
             text "Every task is a value; the screen is a function of state." { style: Style { color: .Muted } }
         }
-        button theme_label() {
-            on press { dark = !dark }
-            style: sunk_style()
+        trailing {
+            button theme_label() {
+                on press { dark = !dark }
+                style: sunk_style()
+            }
         }
     }
 }
@@ -212,18 +233,15 @@ component header {
 component filters {
     row {
         layout: inline_layout()
-        tab "All" { shows: .All }
-        tab "Active" { shows: .Active }
-        tab "Done" { shows: .Done }
+        tab { label: "All", chosen: filter, shows: .All }
+        tab { label: "Active", chosen: filter, shows: .Active }
+        tab { label: "Done", chosen: filter, shows: .Done }
         button "Clear done" {
             on press { for t in tasks() { if t.done { remove(t) } } }
             disabled: done_count() == 0
             style: sunk_style()
         }
-        button "Newest first" {
-            on press { newest_first = !newest_first }
-            style: tab_style(newest_first)
-        }
+        toggle { label: "Newest first", on: newest_first }
     }
 }
 
@@ -271,7 +289,7 @@ component task_rows {
         text "Nothing here yet." { style: Style { color: .Muted } }
     } else {
         list {
-            for t in visible() { task_row t { key: "${t.id}" } }
+            for t in visible() { task_row t { key: t.id } }
         }
     }
 }
@@ -327,18 +345,19 @@ fn remind() {
 }
 
 component footer {
-    row {
-        layout: spread_layout()
+    bar {
         text "${open_count()} open · ${done_count()} done of ${tasks().length}${if reminded { " · reminder" } else { "" }}${saved_words()}" {
             style: Style { color: .Muted }
         }
-        button "Remind me" {
-            on press { remind() }
-            style: sunk_style()
-        }
-        button "About" {
-            on press { dialog_open = true }
-            style: sunk_style()
+        trailing {
+            button "Remind me" {
+                on press { remind() }
+                style: sunk_style()
+            }
+            button "About" {
+                on press { dialog_open = true }
+                style: sunk_style()
+            }
         }
     }
 }

@@ -31,7 +31,15 @@ use @std.program.saved_derive.{Saved}
 use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
 use @std.program.syntax_tape.{SyntaxTape, tape_about}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
-use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
+use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
+use @std.program.saved_query.{
+    cut_parted_query,
+    cut_query,
+    definitions_of,
+    ListedQuery,
+    query,
+    query_definition,
+}
 
 /// A component word as a parse needs it.
 @derive(Saved)
@@ -88,18 +96,55 @@ export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<Item
 @cut_query
 export fn item_count(engine: QueryEngine, file: SourceFileAddress) -> int { file_items(engine, file).length }
 
+/// Whether `file` has an item `at`: what an item added or taken away past it leaves standing.
+@cut_query
+export fn item_held(engine: QueryEngine, file: SourceFileAddress, at: int) -> bool { at < item_count(engine, file) }
+
 /// A file's item `at`, with the context it reads under; past the file's items, no text. A saved
 /// answer is asked again with the place it was asked at, which an edit may have taken away.
 @cut_query
 export fn item_under(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnder {
-    let items = file_items(engine, file)
-    let item = if at < items.length { items[at] } else { ItemText { start: 0, text: "", print: fp_str("") } }
+    let part = item_parts_part(engine, file, text_part(at))
+    let item = if part == null { ItemPart { text: "", print: fp_str("") } } else { ItemPart.from_saved_bytes(part!) }
     ItemUnder {
         text: item.text,
         context: WordShapes.from_saved_bytes(file_context(engine, file)).named_in(item.text),
         print: item.print,
     }
 }
+
+/// An item of a file apart from where it stands: its text, and the text's print.
+@derive(Saved)
+type ItemPart = { text: string, print: int }
+
+/// Where an item of a file stands in the file's text: where it starts, and its length.
+@derive(Saved)
+type ItemStands = { offset: int, length: int }
+
+/// A file's items as parts: each item's text, and apart from it where it starts, so an edit inside
+/// one item moves that item's text and the starts after it, and no other item's text.
+@cut_parted_query
+fn item_parts(engine: QueryEngine, file: SourceFileAddress) -> AnswerParts {
+    let items = file_items(engine, file)
+    answer_parts(
+        [NamedValue {
+            name: text_part(at),
+            value: ItemPart { text: i.text, print: i.print }.saved_bytes(),
+        } for at, i in items]
+            .concat(
+                [NamedValue {
+                    name: start_part(at),
+                    value: ItemStands { offset: i.start, length: i.text.length }.saved_bytes(),
+                } for at, i in items],
+            ),
+    )
+}
+
+/// The part of `item_parts` holding the item `at`'s text.
+fn text_part(at: int) -> string { "t${at}" }
+
+/// The part of `item_parts` holding where the item `at` starts.
+fn start_part(at: int) -> string { "s${at}" }
 
 /// The words a parse under `context` reads by, each known by its shape alone.
 export fn context_words(context: Bytes) -> BlockWords {
@@ -202,9 +247,8 @@ fn name_worn(store: SyntaxArena, all: List<StmtId>, name: string) -> NameWorn {
 /// What the name the written declaration `d` names wears in its item, as its tape says; absent where
 /// no statement of the item declares or binds it. Asked only of a written item.
 fn worn_in_item(engine: QueryEngine, d: DeclaredName) -> NameWorn? {
-    let said = file_said_of_items(engine, d.file)
-    if d.item >= said.length { return null }
-    said[d.item].worn.find(it.name == d.name)
+    if !item_held(engine, d.file, d.item) { return null }
+    item_said(engine, d.file, d.item).worn.find(it.name == d.name)
 }
 
 /// An impl an item holds: the type it's for, as written, that type's parameters as the impl names
@@ -283,8 +327,8 @@ export type ItemText = { start: int, text: string, print: int }
 /// Where the item `at` of `file` starts in the file's text; past the file's items, at its start.
 @cut_query
 export fn item_start(engine: QueryEngine, file: SourceFileAddress, at: int) -> int {
-    let items = file_items(engine, file)
-    if at < items.length { items[at].start } else { 0 }
+    let part = item_parts_part(engine, file, start_part(at))
+    if part == null { 0 } else { ItemStands.from_saved_bytes(part!).offset }
 }
 
 /// THE ONE PLACE AN ITEM'S OWN PLACE BECOMES ITS FILE'S: `place`, counted from the start of the
@@ -356,7 +400,61 @@ export fn imports_refused(engine: QueryEngine, file: SourceFileAddress) -> List<
 /// lies, once for the file.
 @query
 fn file_said_of_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemSaid> {
-    [ItemSaid { runs: about.runs, worn: about.worn } for at in 0..item_count(engine, file) for about in [item_tape_about(engine, file, at)]]
+    [item_said(engine, file, at) for at in 0..item_count(engine, file)]
+}
+
+/// The contexts a program declares: one answer per program, which an edit declaring no context
+/// leaves standing.
+@derive(Saved)
+type ContextsDeclared = { contexts: List<ContextDeclared> }
+
+/// A context a program declares: its key, its name, and whether it is declared with no default.
+@derive(Saved)
+type ContextDeclared = { key: int, name: string, required: bool }
+
+/// Each context the files of the program `package` reads declare.
+@cut_query
+fn contexts_declared(engine: QueryEngine, package: string) -> ContextsDeclared { ContextsDeclared { contexts: contexts_of(engine, package) } }
+
+/// What a written item of a file writes that the items after it read: the names its run statements
+/// bind, each with whether a write lands in it, and its `use` lines.
+@derive(Saved)
+type ItemFront = { binds: List<BoundRun>, uses: List<FrontUse> }
+
+/// A name a run statement binds, and whether a write lands in it.
+@derive(Saved)
+type BoundRun = { name: string, mutable: bool }
+
+/// A `use` line as its item writes it: where it stands in the item, where it does, the path it
+/// names, the items it lists and binds, and whether it re-exports them.
+@derive(Saved)
+type FrontUse = { placed: bool, lo: int, hi: int, path: List<string>, items: List<string>, bound: List<string>, exported: bool }
+
+/// What the written item `at` of `file` writes that the items after it read: one answer per item,
+/// which a new body for a fn leaves standing.
+@cut_query
+fn item_front(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemFront {
+    let item = read_item(engine, file, at)
+    ItemFront {
+        binds: [BoundRun { name: r.name, mutable: r.mutable } for r in ran_in(item)],
+        uses: [FrontUse {
+            placed: u.at != null,
+            lo: u.at?.lo ?? 0,
+            hi: u.at?.hi ?? 0,
+            path: u.path,
+            items: u.items,
+            bound: u.bound,
+            exported: u.exported,
+        } for u in uses_written(item)],
+    }
+}
+
+/// What the written item `at` of `file` says of itself: one answer per item, which an edit to
+/// another item leaves standing.
+@cut_query
+fn item_said(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSaid {
+    let about = item_tape_about(engine, file, at)
+    ItemSaid { runs: about.runs, worn: about.worn }
 }
 
 fn about_of(octets: Bytes?) -> ItemAbout {
@@ -392,7 +490,7 @@ fn written_impls(engine: QueryEngine, file: SourceFileAddress) -> List<List<Item
 /// The impls the written item `at` of `file` holds, read from that item's tape alone; none past the
 /// file's items, which a question kept from an older state of the file may name.
 fn item_written_impls(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemImpl> {
-    if at < 0 || at >= item_count(engine, file) { return [] }
+    if at < 0 || !item_held(engine, file, at) { return [] }
     about_of(tape_about(item_tape_saved(engine, item_under(engine, file, at).text, no_context())))
         .impls
 }

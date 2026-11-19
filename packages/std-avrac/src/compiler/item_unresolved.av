@@ -93,7 +93,7 @@ fn values_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
 fn top_level_reads(engine: QueryEngine, file: SourceFileAddress, at: int, declared: bool) -> List<
     Found,
 > {
-    if (file_declares(engine, file).names.any(it.item == at) ||
+    if (file_declares_at(engine, file, at).names.any(it.item == at) ||
         !impls_at(engine, file, at).is_empty()) != declared { return [] }
     let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
     if unread.is_empty() { return [] }
@@ -179,6 +179,13 @@ fn pronouns_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> Lis
 /// and a record the file declares has a field of that name.
 fn member_read_bare(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
     if impls_at(engine, file, at).is_empty() { return false }
+    records_with_field(engine, file, name)
+}
+
+/// Whether a record `file` declares has a field `name`: one answer per name, which an edit that
+/// declares no record field leaves standing.
+@cut_query
+fn records_with_field(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     file_declares(engine, file)
         .names
         .any(it.kind == ItemKind.Record && field_named(engine, file, it.name, name))

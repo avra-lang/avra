@@ -48,7 +48,7 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 
 /// A body's types: each node's, by its index in the item read back, where its feature has a rule.
 /// The index runs over the item's store AS THIS TYPING LEFT IT: typing mints nodes into the store,
@@ -282,7 +282,7 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
 /// Whether `ty` is a record its package marks `@owns`.
 fn marked_owner(engine: QueryEngine, ty: SignedType) -> bool {
     let at? = declared_at(ty) else { return false }
-    let d? = file_declares(engine, at.file)
+    let d? = file_declares_named(engine, at.file, at.name)
         .names
         .find(it.name == at.name && it.kind == ItemKind.Record) else { return false }
     wears_mark(engine, d, OWNS_MARK)
@@ -292,7 +292,9 @@ fn marked_owner(engine: QueryEngine, ty: SignedType) -> bool {
 /// module than `file`'s; absent for any other type.
 fn sealed_home(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> string? {
     let at? = declared_at(ty with { nulls: 0 }) else { return null }
-    let d? = file_declares(engine, at.file).names.find(it.name == at.name && it.kind != ItemKind.Fn) else { return null }
+    let d? = file_declares_named(engine, at.file, at.name)
+        .names
+        .find(it.name == at.name && it.kind != ItemKind.Fn) else { return null }
     if !wears_mark(engine, d, SEALED_MARK) { return null }
     let home = module_segments(at.file)
     let local = home.join(".")
@@ -592,7 +594,7 @@ type RunBody = {
 /// The written item of `file` declaring `name` as a `kind`, what generators make where nothing is
 /// written; absent where none does.
 fn declared_item(engine: QueryEngine, file: SourceFileAddress, name: string, kind: ItemKind) -> int? {
-    let written = file_declares(engine, file).names.filter(it.name == name)
+    let written = file_declares_named(engine, file, name).names.filter(it.name == name)
     let made = if written.is_empty() { generated_declares(engine, file).names.filter(it.name == name) } else { written }
     made.find(it.kind == kind)?.item
 }
@@ -726,7 +728,7 @@ fn read_name(store: SyntaxArena, k: At) -> string? {
 /// The signature of the fn `d` names: the one its own item declares, where its file declares
 /// another of its name.
 fn declared_signature_of(engine: QueryEngine, d: DeclaredName) -> FnSignature? {
-    let same = [x.item for x in file_declares(engine, d.file).names if x.name == d.name && x.kind == ItemKind.Fn]
+    let same = [x.item for x in file_declares_named(engine, d.file, d.name).names if x.name == d.name && x.kind == ItemKind.Fn]
     let at = same.index_of(d.item)
     if same.length < 2 || at < 0 { return fn_signature(engine, d.file, d.name) }
     let signs = fn_signatures(engine, d.file, d.name)
@@ -737,8 +739,15 @@ fn declared_signature_of(engine: QueryEngine, d: DeclaredName) -> FnSignature? {
 fn names_extern(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     let d? = resolved(engine, file, Space.Value, name).named() else { return false }
     if d.kind != ItemKind.Fn { return false }
-    let item = read_item(engine, d.file, d.item)
-    item.stmts.any((s) -> item.store.extern_parts(s)?.name == d.name)
+    declares_extern(engine, d.file, d.item, d.name)
+}
+
+/// Whether the item `at` of `file` declares `name` as an `extern fn`: one answer per name, which a
+/// new body for any fn leaves standing.
+@cut_query
+fn declares_extern(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
+    let item = read_item(engine, file, at)
+    item.stmts.any((s) -> item.store.extern_parts(s)?.name == name)
 }
 
 /// Whether `name`, read in a body of `file`, names a module's `state`.
