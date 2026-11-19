@@ -1,10 +1,12 @@
 //! The typing rules of the literals, names and operators this feature reads.
 use core.{
-    OwnType,
     BinOp,
     Checking,
     Uncompared,
     Offered,
+    compares_by_value,
+    offered,
+    unnamed_shape,
     Checks,
     ExprId,
     PRONOUN,
@@ -122,11 +124,11 @@ fn compared(mut cx: Checking, e: ExprId, asks_present: bool, left: ExprId, right
     let rs = unnamed_shape(cx, rt)
     let carried = carried_compared(ls, rs)
     if carried != null {
-        if !compares(cx, carried!) { return compare_refused(cx, left, op, Uncompared.Uncomparable(offered(cx, ls)), lt) }
+        if !compares_by_value(cx, carried!) { return compare_refused(cx, left, op, Uncompared.Uncomparable(offered(cx, ls)), lt) }
         return owned_type("bool")
     }
-    if !compares(cx, ls) { return compare_refused(cx, left, op, Uncompared.Uncomparable(offered(cx, ls)), lt) }
-    if !compares(cx, rs) { return compare_refused(cx, right, op, Uncompared.Uncomparable(offered(cx, rs)), rt) }
+    if !compares_by_value(cx, ls) { return compare_refused(cx, left, op, Uncompared.Uncomparable(offered(cx, ls)), lt) }
+    if !compares_by_value(cx, rs) { return compare_refused(cx, right, op, Uncompared.Uncomparable(offered(cx, rs)), rt) }
     if ls.spelled() != rs.spelled() {
         cx
             .refused
@@ -177,77 +179,6 @@ fn compare_refused(mut cx: Checking, side: ExprId, op: BinOp, how: Uncompared, f
         .refused
         .push(Refused { at: side, want: ty, found: ty, seat: Seating.Compared(op_symbol(op), how) })
     null
-}
-
-/// Whether two values of `ty` compare by value: a scalar, text or octets; an enum whose variants carry
-/// nothing; a record of one field that does; a nullable of one of those; a name over one.
-fn compares(cx: Checking, t: SignedType) -> bool {
-    let ty = unnamed_shape(cx, t)
-    if ty.nullable() { return compares(cx, ty.unwrapped()) }
-    if ty.dynamic || !ty.args.is_empty() { return false }
-    match ty.head {
-        .Owned(word) -> COMPARED.contains(word),
-        .Declared(_, _) -> unit_enum(cx, ty) || one_field(cx, ty),
-        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
-    }
-}
-
-/// Whether a value of `ty` makes a key (`@std/meta`'s `Key`): it compares by value, is never absent,
-/// and holds no fraction and no bytes.
-export fn makes_key(cx: Checking, ty: SignedType) -> bool {
-    let shape = unnamed_shape(cx, ty)
-    if ty.nullable() || shape.owns(OwnType.Float) || shape.owns(OwnType.Bytes) { return false }
-    compares(cx, ty)
-}
-
-/// The types of the language's own that compare by value.
-const COMPARED: List<string> = ["int", "float", "bool", "string", "Bytes"]
-
-/// Whether `ty` names an enum whose variants carry nothing.
-fn unit_enum(cx: Checking, ty: SignedType) -> bool {
-    let shape? = cx.enum_of(ty) else { return false }
-    shape.variants.all(it.payloads.is_empty())
-}
-
-/// Whether `ty` names a record of one field that compares by value.
-fn one_field(cx: Checking, ty: SignedType) -> bool {
-    let fields = cx.record_of(ty)?.fields ?? []
-    if fields.length != 1 { return false }
-    let field? = fields[0].ty else { return false }
-    compares(cx, field)
-}
-
-/// What a value of `ty` offered where one that compares was wanted is.
-fn offered(cx: Checking, ty: SignedType) -> Offered {
-    if ty.nullable() { return Offered.Absence }
-    if ty.dynamic { return Offered.Dyn }
-    match ty.head {
-        .Owned(word) -> owned_offered(word, ty),
-        .Declared(_, _) -> when {
-            !ty.args.is_empty() -> Offered.Applied
-            cx.enum_of(ty) != null -> Offered.Enum
-            _ -> Offered.Record
-        },
-        .Parameter(_, _) -> Offered.Parameter,
-        .Function -> Offered.Fn,
-        .Union -> Offered.Union,
-        .Unnamed(_) or .Inferred or .Never or .Meta -> Offered.Scalar,
-    }
-}
-
-/// What a value of the language's own type `word`, `ty` applied, offered is.
-fn owned_offered(word: string, ty: SignedType) -> Offered {
-    match word {
-        "List" -> if ty.args.first()?.bottom() ?? false { Offered.EmptyList } else { Offered.List },
-        "Cell" -> Offered.Cell,
-        "Task" -> Offered.Task,
-        "Tasks" -> Offered.Tasks,
-        "Map" -> Offered.Map,
-        "Range" -> Offered.Range,
-        "void" -> Offered.Void,
-        "Result" -> Offered.Enum,
-        _ -> Offered.Scalar,
-    }
 }
 
 /// What an operand of `==` wants: a variant literal, the other side's type; anything else, nothing.
@@ -336,12 +267,6 @@ fn worn(cx: Checking, left: ExprId, lt: SignedType, right: ExprId, rt: SignedTyp
         rn && cx.store.expr(left).literal_form() -> rt
         _ -> null
     }
-}
-
-/// The shape `ty` stands over, through every name it wears.
-fn unnamed_shape(cx: Checking, ty: SignedType) -> SignedType {
-    let shape? = cx.named_over(ty) else { return ty }
-    unnamed_shape(cx, shape)
 }
 
 /// The name of a type the language owns with nothing applied, nothing optional; absent otherwise.

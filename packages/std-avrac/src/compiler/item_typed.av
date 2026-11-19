@@ -481,6 +481,18 @@ fn fn_type_params(engine: QueryEngine, file: SourceFileAddress, name: string) ->
     declared_signature_of(engine, d)?.type_params
 }
 
+/// Whether a type parameter bound by `own` meets `bound`: the same bound does; the same trait at
+/// other arguments, each known, doesn't; any other is left unsaid.
+fn held_by_own(own: SignedType, bound: SignedType) -> bool? {
+    if own.spelled() == bound.spelled() { return true }
+    if !own.names_as(bound) ||
+        own.generic() ||
+        bound.generic() ||
+        own.inferred() ||
+        bound.inferred() { return null }
+    false
+}
+
 /// Whether a value of `ty` meets the bound `bound` in a body signed by `signing`, read from
 /// `reader`: a `dyn` of the bound's trait and a type parameter bound by it do; any other type as the
 /// program's impls say. Absent where nothing says.
@@ -493,7 +505,7 @@ fn bound_met(
 ) -> bool? {
     if ty.dynamic { return if ty.names_as(bound) { true } else { null } }
     let own = signing.bound_of(ty)
-    if own != null { return if own!.spelled() == bound.spelled() { true } else { null } }
+    if own != null { return held_by_own(own!, bound) }
     implements(engine, reader, ty, bound)
 }
 

@@ -1,0 +1,87 @@
+//! proves the durable queue as a program writes it: one declaration
+//! that says `durable:`, a database set once in the context, a send
+//! alone, by name and inside the caller's transaction, a worker of two
+//! handlers run until its queue is settled, a failing email in the dead
+//! letter and a poison one buried unanswered.
+use @std.queue.{queue, worker, run, Dead, Delivery, DrainError, Fate, HomeError}
+use @std.queue_store.{Wire, wire_of}
+use @std.queue_store.durable.{db, stored}
+use @std.queue_store.fault.{homed}
+use @std.relation.stable.{CodecFault, Reader, Writer}
+use @std.sqlite.{Db}
+use @std.time.{mins, ms, sleep}
+
+type Email = { to: string, subject: string }
+
+fn deliver(d: Delivery<Email>) -> Result<string, string> {
+    if d.item.to == "" { return [d.item.subject][1] }
+    if !d.item.to.contains("@") { fail "no such address: ${d.item.to}" }
+    "sent to ${d.item.to}"
+}
+
+fn email_wire() -> Wire<Email> {
+    wire_of<Email>(
+        1,
+        "Email{to:text,subject:text}",
+        (w: Writer, e: Email) -> {
+            w.text(e.to)
+            w.text(e.subject)
+        },
+        email_read,
+    )
+}
+
+fn email_read(r: Reader) -> Result<Email, CodecFault> {
+    Email { to: r.text()?, subject: r.text()? }
+}
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn main() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+
+    queue<Email> emails {
+        name: "emails"
+        durable: stored(email_wire())
+        retries: 2
+        backoff: ms(1)
+        dedupe: mins(1440)
+    }
+
+    queue<Dead<Email, string>> undeliverable {}
+
+    worker sender {
+        reads: emails
+        at_once: 2
+        each: deliver
+        dead: undeliverable.sink()
+    }
+
+    let first = emails.send(Email { to: "ada@example.com", subject: "welcome" }, id: "welcome-ada")?
+    let again = emails.send(Email { to: "ada@example.com", subject: "welcome" }, id: "welcome-ada")?
+    let _ = emails.send(Email { to: "nobody", subject: "bounces" })?
+    let _ = emails.send(Email { to: "", subject: "poison" })?
+
+    let _ = homed(ctx.db.begin())?
+    let _ = emails.send(Email { to: "grace@example.com", subject: "receipt" }, id: "receipt-7")?
+    let _ = homed(ctx.db.commit())?
+
+    let sent = emails.home().depth()?
+    let serving = spawn run(sender)
+    while undeliverable.home().depth()? < 2 { sleep(ms(20)) }
+    sender.stop()
+    let settled = match serving.await { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+
+    mut letters: List<string> = []
+    mut d = undeliverable.home().take()?
+    while d != null {
+        letters.push("${d!.item.item.subject}: ${why(d!.item.fate)}")
+        let _ = undeliverable.home().ack(d!)?
+        d = undeliverable.home().take()?
+    }
+    "one id ${first == again} | sent ${sent} | settled ${settled} | left ${emails.home().depth()?} | ${letters.join(" | ")}"
+}
+
+match main() { .Ok(told) -> told, .Err(_) -> "failed" }

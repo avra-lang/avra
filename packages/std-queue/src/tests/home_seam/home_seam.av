@@ -11,8 +11,10 @@ use @std.queue.{
     Delivery,
     Home,
     Key,
+    Memory,
     Order,
     Overflow,
+    Parcel,
     Terms,
 }
 use @std.task.{unbounded_channel}
@@ -28,9 +30,11 @@ fn noted<V>(asked: Cell<List<string>>, verb: string, answer: V) -> V {
 fn noting(under: Home<Job>, asked: Cell<List<string>>) -> Home<Job> {
     Home {
         send: (item: Job, k: Key) -> noted(asked, "send", (under.send)(item, k)),
+        send_all: (batch: List<Parcel<Job>>) -> noted(asked, "send_all", (under.send_all)(batch)),
         take: (max: int) -> noted(asked, "take", (under.take)(max)),
         began: (d: Delivery<Job>) -> noted(asked, "began", (under.began)(d)),
         ack: (d: Delivery<Job>) -> noted(asked, "ack", (under.ack)(d)),
+        ack_all: (held: List<Delivery<Job>>) -> noted(asked, "ack_all", (under.ack_all)(held)),
         release: (d: Delivery<Job>, after: Duration) -> noted(asked, "release", (under.release)(d, after)),
         bury: (d: Delivery<Job>, inter: fn(Job) -> bool) -> noted(asked, "bury", (under.bury)(d, inter)),
         depth: () -> noted(asked, "depth", (under.depth)()),
@@ -46,16 +50,21 @@ fn times(asked: Cell<List<string>>, verb: string) -> int {
 }
 
 let asked: Cell<List<string>> = Cell.new([])
-let memory = open_memory<Job>(
-    Terms {
-        capacity: 8,
-        lease: ms(60000),
-        retries: 2,
-        dead: "jobs/dead",
-        overflow: Overflow.park,
-        order: Order.fifo,
-    },
-)
+fn opened() -> Memory<Job>? {
+    let made = open_memory<Job>(
+        Terms {
+            capacity: 8,
+            lease: ms(60000),
+            retries: 2,
+            dead: "jobs/dead",
+            overflow: Overflow.park,
+            order: Order.fifo,
+        },
+    )
+    match made { .Ok(m) -> m, .Err(_) -> null }
+}
+
+let memory = opened()!
 let letters = unbounded_channel<Dead<Job, string>>()
 queue<Job> jobs {
     name: "jobs"

@@ -1,0 +1,114 @@
+//! proves the seam a durable home stands behind: a queue's `durable:`
+//! is asked once, at first use, with the queue's name, terms and dedupe
+//! span; a send with an `id:` goes by the home's send by name and one
+//! without by its plain send; a home that could not be opened answers
+//! why at every verb; and the `check`s refuse a durable queue with no
+//! name and a worker of no handlers.
+use @std.queue.{
+    queue,
+    worker,
+    run,
+    key,
+    open_memory,
+    Dead,
+    Delivery,
+    DrainError,
+    Durable,
+    HomeError,
+    Key,
+    Lasting,
+    Memory,
+    Terms,
+}
+use @std.task.{Sink}
+use @std.time.{Duration, mins}
+
+fn pay(d: Delivery<int>) -> Result<int, string> { d.item }
+
+/// A durable home that is memory, each opening and each named send
+/// noted.
+fn noting(asked: Cell<List<string>>) -> Durable<int> {
+    Durable {
+        open: (name: string, terms: Terms, dedupe: Duration) -> opened(asked, name, terms, dedupe),
+    }
+}
+
+fn opened(asked: Cell<List<string>>, name: string, terms: Terms, dedupe: Duration) -> Result<
+    Lasting<int>,
+    HomeError,
+> {
+    asked.push("open ${name} retries ${terms.retries} dedupe ${dedupe.ms() / 60000}m")
+    let m = open_memory<int>(terms)?
+    Lasting {
+        home: m.home(),
+        send_as: (item: int, k: Key, id: string) -> named(asked, m, item, k, id),
+    }
+}
+
+fn named(asked: Cell<List<string>>, m: Memory<int>, item: int, k: Key, id: string) -> Result<
+    string?,
+    HomeError,
+> {
+    asked.push("send ${item} as ${id}")
+    m.send(item, k)
+}
+
+fn denied(_name: string, _terms: Terms, _dedupe: Duration) -> Result<Lasting<int>, HomeError> {
+    .Err(HomeError.Denied)
+}
+
+fn told(r: Result<string?, HomeError>) -> string {
+    match r { .Ok(_) -> "sent", .Err(e) -> why(e) }
+}
+
+fn ran(r: Result<int, DrainError>) -> string {
+    match r {
+        .Ok(n) -> "settled ${n}",
+        .Err(e) -> match e { .Home(h) -> why(h), .NoQueue or .NoLetter -> "unmanned" },
+    }
+}
+
+fn why(e: HomeError) -> string {
+    match e {
+        .Denied -> "denied",
+        .Refused(w) -> w,
+        .Unreachable(_) or .TooBig(_, _) or .Shape(_) -> "other",
+    }
+}
+
+/// The instances are built from parameters, so each check is read
+/// where it stands rather than spoken at a settled instance.
+fn checked(label: string, at_once: int, letter: Sink<Dead<int, string>>) -> string {
+    let unnamed = queue<int> {
+        name: label
+        durable: Durable { open: denied }
+    }
+    let idle = worker<int, int, string> {
+        reads: unnamed
+        each: pay
+        dead: letter
+        at_once: at_once
+    }
+    "${unnamed.check()[0].message} | ${idle.check()[0].message}"
+}
+
+let asked: Cell<List<string>> = Cell.new([])
+queue<int> kept {
+    name: "kept"
+    retries: 4
+    dedupe: mins(90)
+    durable: noting(asked)
+}
+queue<int> shut {
+    name: "shut"
+    durable: Durable { open: denied }
+}
+queue<Dead<int, string>> letters {}
+worker locked {
+    reads: shut
+    each: pay
+    dead: letters.sink()
+}
+let plain = told(kept.send(1))
+let by_name = told(kept.send(2, id: "two", under: key("k")))
+"${asked.get().join(", ")} | ${plain} ${by_name} depth ${kept.home().depth() catch 0 - 1} | ${told(shut.send(1))}, ${ran(run(locked))} | ${checked("", 0, letters.sink())}"

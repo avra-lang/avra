@@ -1,0 +1,823 @@
+//! The attacks every home withstands, each written once over a
+//! `Queue<int>`, so two homes that answer one differently are found.
+use @std.task.{open_channel, unbounded_channel}
+use @std.text.{from_codepoint, repeat}
+use @std.time.{ms}
+use queue.{
+    Dead,
+    Delivery,
+    Fate,
+    HomeError,
+    Order,
+    Overflow,
+    Parcel,
+    Queue,
+    Terms,
+    bury,
+    drain,
+    key,
+    queue,
+    worker,
+}
+
+/// One attack: the terms it runs under and whether a fresh queue
+/// withstood it.
+export type Attack = { name: string, terms: Terms, holds: fn(Queue<int>) -> bool }
+
+/// Terms of `capacity` waiting items under a lease no case outlives.
+fn held_long(capacity: int, order: Order, overflow: Overflow) -> Terms {
+    Terms {
+        capacity: capacity,
+        lease: ms(60000),
+        retries: 3,
+        dead: "failed",
+        overflow: overflow,
+        order: order,
+    }
+}
+
+fn fifo() -> Terms {
+    held_long(64, Order.fifo, Overflow.fail)
+}
+
+fn keyed() -> Terms {
+    held_long(64, Order.by_key, Overflow.fail)
+}
+
+/// Terms whose hold is over the moment it is given.
+fn lapsing() -> Terms {
+    fifo() with { lease: ms(0) }
+}
+
+/// One waiting item under `order`, full at one.
+fn one(order: Order, overflow: Overflow) -> Terms {
+    held_long(1, order, overflow)
+}
+
+/// The name of every attack a home fell to; a home that cannot be made
+/// fell to each.
+export fn beaten(make: fn(Terms) -> Result<Queue<int>, HomeError>) -> List<string> {
+    [a.name for a in attacks() if !withstood(a, make(a.terms))]
+}
+
+fn withstood(a: Attack, made: Result<Queue<int>, HomeError>) -> bool {
+    match made { .Ok(q) -> (a.holds)(q), .Err(_) -> false }
+}
+
+export fn attacks() -> List<Attack> {
+    [
+        Attack {
+            name: "a take of none or fewer hands out nothing",
+            terms: fifo(),
+            holds: takes_none,
+        },
+        Attack {
+            name: "a second ack in one ack_all answers false",
+            terms: fifo(),
+            holds: ack_all_twice,
+        },
+        Attack {
+            name: "an ack_all answers a stale hold false and a live one true",
+            terms: lapsing(),
+            holds: ack_all_mixed,
+        },
+        Attack { name: "an ack_all of nothing answers nothing", terms: fifo(), holds: ack_all_none },
+        Attack {
+            name: "one take of many hands an item out once under a hold that is over at once",
+            terms: lapsing(),
+            holds: once_a_call,
+        },
+        Attack {
+            name: "one take of many hands each key's item out once under a hold that is over at once",
+            terms: keyed() with { lease: ms(0) },
+            holds: each_once_a_call,
+        },
+        Attack {
+            name: "no verb reaches an acked delivery",
+            terms: fifo(),
+            holds: nothing_after_ack,
+        },
+        Attack {
+            name: "no verb reaches a buried delivery",
+            terms: fifo(),
+            holds: nothing_after_bury,
+        },
+        Attack {
+            name: "no verb reaches a released delivery",
+            terms: fifo(),
+            holds: nothing_after_release,
+        },
+        Attack {
+            name: "a hold under another epoch settles nothing and stays its holder's",
+            terms: fifo(),
+            holds: forged_epochs,
+        },
+        Attack {
+            name: "a delivery made up for a waiting item settles nothing",
+            terms: fifo(),
+            holds: forged_waiting,
+        },
+        Attack {
+            name: "an id spelled another way holds nothing",
+            terms: fifo(),
+            holds: respelled_id,
+        },
+        Attack {
+            name: "a settled delivery never settles a later item",
+            terms: fifo(),
+            holds: stale_never_settles,
+        },
+        Attack {
+            name: "an item's first delivery is epoch one, whatever settled before it",
+            terms: fifo(),
+            holds: first_epoch_is_one,
+        },
+        Attack {
+            name: "an id is one item's and never a later one's",
+            terms: fifo(),
+            holds: ids_never_return,
+        },
+        Attack {
+            name: "a letter that refuses is asked once and the hold stays",
+            terms: fifo(),
+            holds: refused_letter_keeps,
+        },
+        Attack {
+            name: "a full queue of one turns the next away under fail",
+            terms: one(Order.fifo, Overflow.fail),
+            holds: one_fail,
+        },
+        Attack {
+            name: "a full queue of one discards the next under drop_newest",
+            terms: one(Order.fifo, Overflow.drop_newest),
+            holds: one_drop_newest,
+        },
+        Attack {
+            name: "a full queue of one keeps the newest under drop_oldest",
+            terms: one(Order.fifo, Overflow.drop_oldest),
+            holds: one_keeps_newest,
+        },
+        Attack {
+            name: "a full queue of one keeps the newest under latest, whatever its key",
+            terms: one(Order.fifo, Overflow.latest),
+            holds: one_keeps_newest,
+        },
+        Attack {
+            name: "a held item is no room and is never given up under drop_oldest",
+            terms: one(Order.by_key, Overflow.drop_oldest),
+            holds: held_is_kept,
+        },
+        Attack {
+            name: "a held item is no room and is never given up under latest",
+            terms: one(Order.by_key, Overflow.latest),
+            holds: held_is_kept,
+        },
+        Attack {
+            name: "a backing-off item is never given up under drop_oldest",
+            terms: one(Order.by_key, Overflow.drop_oldest),
+            holds: backing_off_is_kept,
+        },
+        Attack {
+            name: "a send_all past the room answers each under fail",
+            terms: held_long(2, Order.fifo, Overflow.fail),
+            holds: batch_past_room_fail,
+        },
+        Attack {
+            name: "a send_all past the room keeps the newest under drop_oldest",
+            terms: held_long(2, Order.fifo, Overflow.drop_oldest),
+            holds: batch_past_room_drops,
+        },
+        Attack { name: "a send_all of nothing sends nothing", terms: fifo(), holds: batch_of_none },
+        Attack { name: "a hot key holds only itself back", terms: keyed(), holds: hot_and_cold },
+        Attack {
+            name: "a key whose only item backs off holds no other key",
+            terms: keyed(),
+            holds: lone_backoff,
+        },
+        Attack {
+            name: "keys of hostile text run apart and come back whole",
+            terms: keyed(),
+            holds: hostile_keys,
+        },
+        Attack {
+            name: "keys that differ only past a NUL are two keys",
+            terms: keyed(),
+            holds: nul_keys_apart,
+        },
+        Attack {
+            name: "two thousand keys each hand out their one item",
+            terms: held_long(4096, Order.by_key, Overflow.fail),
+            holds: many_keys,
+        },
+        Attack {
+            name: "a release from a hold just ended by a retake changes nothing",
+            terms: lapsing(),
+            holds: lapsed_release,
+        },
+        Attack {
+            name: "depth counts waiting, held and backing-off alike",
+            terms: keyed(),
+            holds: depth_counts_all,
+        },
+        Attack {
+            name: "an item whose starts are spent is buried unanswered and never started",
+            terms: lapsing(),
+            holds: spent_is_buried,
+        },
+    ]
+}
+
+fn send(q: Queue<int>, n: int, k: string) -> string? {
+    q.send(n, key(k)) catch null
+}
+
+fn take(q: Queue<int>) -> Delivery<int>? {
+    q.take() catch null
+}
+
+fn many(q: Queue<int>, max: int) -> List<Delivery<int>> {
+    q.take_many(max) catch []
+}
+
+fn depth(q: Queue<int>) -> int {
+    q.depth() catch 0 - 1
+}
+
+fn acked(q: Queue<int>, d: Delivery<int>) -> bool {
+    q.ack(d) catch false
+}
+
+/// Whether any verb of `d` still reaches an item: each is asked, none
+/// short-circuits another, and no letter may be asked.
+fn reaches(q: Queue<int>, d: Delivery<int>) -> bool {
+    let asked: Cell<int> = Cell.new(0)
+    let began = q.began(d) catch true
+    let released = q.release(d, ms(0)) catch true
+    let buried = (q.home.bury)(
+        d,
+        (_n: int) -> {
+            asked.set(asked.get() + 1)
+            true
+        },
+    ) catch true
+    let settled = q.ack(d) catch true
+    began || released || buried || settled || asked.get() != 0
+}
+
+fn takes_none(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    many(q, 0).is_empty() && many(q, 0 - 1).is_empty() && depth(q) == 1 && take(q)?.item == 1
+}
+
+fn ack_all_twice(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let d? = take(q) else { return false }
+    let said = q.ack_all([d, d]) catch []
+    said.length == 2 && said[0] && !said[1] && depth(q) == 0
+}
+
+fn ack_all_mixed(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let old? = take(q) else { return false }
+    let live? = take(q) else { return false }
+    let said = q.ack_all([old, live, old]) catch []
+    said.length == 3 && !said[0] && said[1] && !said[2] && depth(q) == 0
+}
+
+fn once_a_call(q: Queue<int>) -> bool {
+    for i, k in ["a", "b", "c"] { let _ = send(q, i, k) }
+    let got = many(q, 5)
+    !got.is_empty() &&
+        got[0].item == 0 &&
+        (0..got.length).all(got[it].item == it) &&
+        acked(q, got[0])
+}
+
+fn each_once_a_call(q: Queue<int>) -> bool {
+    for i, k in ["a", "b", "c"] { let _ = send(q, i, k) }
+    let got = many(q, 5)
+    got.length == 3 &&
+        (0..3).all(got[it].item == it && got[it].epoch == 1) &&
+        got.all(acked(q, it)) &&
+        depth(q) == 0
+}
+
+fn ack_all_none(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    (q.ack_all([]) catch [true]).is_empty() && depth(q) == 1
+}
+
+fn nothing_after_ack(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let _ = send(q, 2, "b")
+    let d? = take(q) else { return false }
+    acked(q, d) && !reaches(q, d) && depth(q) == 1 && take(q)?.item == 2
+}
+
+fn nothing_after_bury(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let _ = send(q, 2, "b")
+    let d? = take(q) else { return false }
+    let letters = unbounded_channel<Dead<int, string>>()
+    let buried = bury(q, d, Fate.Failed("no"), letters.sink) catch false
+    buried &&
+        !reaches(q, d) &&
+        depth(q) == 1 &&
+        letters.source.taken()?.item == 1 &&
+        take(q)?.item == 2
+}
+
+fn nothing_after_release(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let d? = take(q) else { return false }
+    let released = q.release(d, ms(60000)) catch false
+    released && !reaches(q, d) && depth(q) == 1 && take(q) == null
+}
+
+fn forged_epochs(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let d? = take(q) else { return false }
+    let forged = [d.epoch + 1, d.epoch - 1, 0, 0 - 1, d.epoch + 1000000]
+        .any(reaches(q, d with { epoch: it }))
+    !forged && depth(q) == 1 && take(q) == null && acked(q, d)
+}
+
+fn forged_waiting(q: Queue<int>) -> bool {
+    let id? = send(q, 7, "a") else { return false }
+    let forged = [0, 1, 2]
+        .any(reaches(q, Delivery { id: id, item: 7, key: key("a"), attempt: 0, epoch: it }))
+    let d? = take(q) else { return false }
+    !forged && d.item == 7 && d.attempt == 0 && d.epoch == 1 && depth(q) == 1
+}
+
+fn respelled_id(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let d? = take(q) else { return false }
+    let spelled = [
+        "0${d.id}",
+        " ${d.id}",
+        "${d.id} ",
+        "+${d.id}",
+        "${d.id}${from_codepoint(0)}",
+        "${d.id}.0",
+        "",
+    ]
+        .any(reaches(q, d with { id: it }))
+    !spelled && depth(q) == 1 && acked(q, d)
+}
+
+fn stale_never_settles(q: Queue<int>) -> bool {
+    mut gone: List<Delivery<int>> = []
+    for i in 0..40 {
+        let _ = send(q, i, "k${i % 3}")
+        let d? = take(q) else { return false }
+        if gone.any(reaches(q, it)) { return false }
+        if i % 2 == 0 {
+            if !acked(q, d) { return false }
+        } else {
+            let _ = q.release(d, ms(0))
+            let again? = take(q) else { return false }
+            if again.item != i || reaches(q, d) || !acked(q, again) { return false }
+            gone.push(again)
+        }
+        gone.push(d)
+    }
+    depth(q) == 0
+}
+
+fn first_epoch_is_one(q: Queue<int>) -> bool {
+    for i in 0..5 {
+        let _ = send(q, i, "a")
+        let d? = take(q) else { return false }
+        if d.epoch != 1 || !acked(q, d) { return false }
+    }
+    depth(q) == 0
+}
+
+fn ids_never_return(q: Queue<int>) -> bool {
+    let ids = [cycled(q, i) for i in 0..10]
+    ids.all(it != "") && (0..ids.length).all((i: int) -> ids.index_of(ids[i]) == i)
+}
+
+/// One item sent, taken and acked: the id both named it by, or no text
+/// when a step failed or the two differed.
+fn cycled(q: Queue<int>, n: int) -> string {
+    let id? = send(q, n, "a") else { return "" }
+    let d? = take(q) else { return "" }
+    if d.id != id || !acked(q, d) { return "" }
+    id
+}
+
+/// Two homes of one name and terms, each holding one delivery: whether
+/// neither's delivery reaches the other's item, and each still settles
+/// its own.
+export fn apart(make: fn(Terms) -> Result<Queue<int>, HomeError>) -> bool {
+    let a? = made(make) else { return false }
+    let b? = made(make) else { return false }
+    let _ = send(a, 1, "k")
+    let _ = send(b, 2, "k")
+    let mine? = take(a) else { return false }
+    let theirs? = take(b) else { return false }
+    !reaches(b, mine) &&
+        !reaches(a, theirs) &&
+        depth(a) == 1 &&
+        depth(b) == 1 &&
+        acked(a, mine) &&
+        acked(b, theirs)
+}
+
+fn made(make: fn(Terms) -> Result<Queue<int>, HomeError>) -> Queue<int>? {
+    match make(fifo()) { .Ok(q) -> q, .Err(_) -> null }
+}
+
+fn refused_letter_keeps(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let d? = take(q) else { return false }
+    let asked: Cell<int> = Cell.new(0)
+    let buried = (q.home.bury)(
+        d,
+        (_n: int) -> {
+            asked.set(asked.get() + 1)
+            false
+        },
+    ) catch true
+    !buried && asked.get() == 1 && depth(q) == 1 && take(q) == null && acked(q, d) && depth(q) == 0
+}
+
+fn one_fail(q: Queue<int>) -> bool {
+    let first = send(q, 1, "a")
+    let second = send(q, 2, "a")
+    first != null && second == null && depth(q) == 1 && take(q)?.item == 1
+}
+
+fn one_drop_newest(q: Queue<int>) -> bool {
+    let first = send(q, 1, "a")
+    let second = send(q, 2, "a")
+    let d? = take(q) else { return false }
+    first != null &&
+        second != null &&
+        second != first &&
+        d.item == 1 &&
+        acked(q, d) &&
+        depth(q) == 0 &&
+        take(q) == null
+}
+
+fn one_keeps_newest(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let _ = send(q, 2, "b")
+    let third = send(q, 3, "b")
+    let d? = take(q) else { return false }
+    third != null && depth(q) == 1 && d.item == 3 && acked(q, d) && take(q) == null && depth(q) == 0
+}
+
+fn held_is_kept(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let held? = take(q) else { return false }
+    let _ = send(q, 2, "b")
+    let third = send(q, 3, "a")
+    let waiting = depth(q)
+    let kept = acked(q, held)
+    let next? = take(q) else { return false }
+    third != null &&
+        waiting == 2 &&
+        kept &&
+        next.item == 3 &&
+        acked(q, next) &&
+        take(q) == null &&
+        depth(q) == 0
+}
+
+fn backing_off_is_kept(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let held? = take(q) else { return false }
+    let _ = q.release(held, ms(60000))
+    let _ = send(q, 2, "b")
+    let _ = send(q, 3, "c")
+    let next? = take(q) else { return false }
+    depth(q) == 2 && next.item == 3 && take(q) == null
+}
+
+fn parcels(n: int) -> List<Parcel<int>> {
+    [Parcel { item: i, key: key("k${i}") } for i in 1..n + 1]
+}
+
+fn batch_past_room_fail(q: Queue<int>) -> bool {
+    let ids = q.send_all(parcels(3)) catch []
+    ids.length == 3 &&
+        ids[0] != null &&
+        ids[1] != null &&
+        ids[2] == null &&
+        depth(q) == 2 &&
+        take(q)?.item == 1
+}
+
+fn batch_past_room_drops(q: Queue<int>) -> bool {
+    let ids = q.send_all(parcels(5)) catch []
+    let first? = take(q) else { return false }
+    let _ = acked(q, first)
+    ids.length == 5 && ids.all(it != null) && first.item == 4 && take(q)?.item == 5 && depth(q) == 1
+}
+
+fn batch_of_none(q: Queue<int>) -> bool {
+    let none = match q.send_all([]) { .Ok(ids) -> ids.is_empty(), .Err(_) -> false }
+    none && depth(q) == 0 && take(q) == null
+}
+
+fn hot_and_cold(q: Queue<int>) -> bool {
+    for i in 1..6 { let _ = send(q, i, "hot") }
+    let _ = send(q, 6, "cold")
+    let first = many(q, 10)
+    if first.length != 2 || first[0].item != 1 || first[1].item != 6 { return false }
+    let _ = q.release(first[0], ms(60000))
+    let _ = send(q, 7, "cold")
+    let blocked = take(q)
+    let _ = acked(q, first[1])
+    let cold? = take(q) else { return false }
+    blocked == null && cold.item == 7 && take(q) == null && depth(q) == 6
+}
+
+fn lone_backoff(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "lone")
+    let d? = take(q) else { return false }
+    let _ = q.release(d, ms(60000))
+    let _ = send(q, 2, "other")
+    let _ = send(q, 3, "lone")
+    let got = many(q, 5)
+    got.length == 1 && got[0].item == 2 && depth(q) == 3
+}
+
+fn hostile() -> List<string> {
+    [
+        "",
+        "'",
+        "\"",
+        ";",
+        "%",
+        "_",
+        "a'); DROP TABLE \"FlowItem\"; --",
+        "line\nbreak",
+        from_codepoint(0),
+        "a${from_codepoint(0)}",
+        "jobs",
+        "jobs/dead",
+        " ",
+        repeat("k", 10000),
+        "${repeat("k", 10000)}'",
+        "é",
+        from_codepoint(65533),
+    ]
+}
+
+fn hostile_keys(q: Queue<int>) -> bool {
+    let keys = hostile()
+    for i, k in keys { let _ = send(q, i, k) }
+    for i, k in keys { let _ = send(q, 100 + i, k) }
+    let got = many(q, 100)
+    got.length == keys.length &&
+        got.all(it.key.text == keys[it.item]) &&
+        take(q) == null &&
+        got.all(acked(q, it)) &&
+        many(q, 100).all(it.key.text == keys[it.item - 100]) &&
+        depth(q) == keys.length
+}
+
+fn nul_keys_apart(q: Queue<int>) -> bool {
+    let nul = from_codepoint(0)
+    let keys = ["a", "a${nul}", "a${nul}b", "a${nul}c", nul, "${nul}${nul}"]
+    for i, k in keys { let _ = send(q, i, k) }
+    let got = many(q, 10)
+    got.length == keys.length &&
+        got.all(it.key.text == keys[it.item] && it.key.text.length == keys[it.item].length)
+}
+
+fn many_keys(q: Queue<int>) -> bool {
+    for i in 0..2000 { let _ = send(q, i, "k${i}") }
+    for i in 0..2000 { let _ = send(q, 2000 + i, "k${i}") }
+    let got = many(q, 5000)
+    if got.length != 2000 || !got.all(it.item < 2000) || take(q) != null { return false }
+    let said = q.ack_all(got) catch []
+    let next = many(q, 5000)
+    said.length == 2000 &&
+        said.all(it) &&
+        next.length == 2000 &&
+        next.all(it.item >= 2000) &&
+        depth(q) == 2000
+}
+
+fn lapsed_release(q: Queue<int>) -> bool {
+    let _ = send(q, 1, "a")
+    let old? = take(q) else { return false }
+    let live? = take(q) else { return false }
+    let released = q.release(old, ms(60000)) catch true
+    !released && live.epoch == old.epoch + 1 && acked(q, live) && depth(q) == 0
+}
+
+/// Whether a home of no room is refused at its opening, in the words
+/// every home says, under each overflow term.
+export fn roomless(make: fn(Terms) -> Result<Queue<int>, HomeError>) -> bool {
+    [Overflow.park, Overflow.fail, Overflow.drop_newest, Overflow.drop_oldest, Overflow.latest]
+        .all(holds_none(make, 0, it) && holds_none(make, 0 - 1, it))
+}
+
+fn holds_none(make: fn(Terms) -> Result<Queue<int>, HomeError>, capacity: int, overflow: Overflow) -> bool {
+    match make(held_long(capacity, Order.fifo, overflow)) {
+        .Err(.Refused(why)) -> why == "a queue holds at least one item, and this holds ${capacity}",
+        rest -> false,
+    }
+}
+
+fn depth_counts_all(q: Queue<int>) -> bool {
+    for i, k in ["a", "b", "c"] { let _ = send(q, i, k) }
+    let got = many(q, 2)
+    if got.length != 2 { return false }
+    let _ = q.release(got[0], ms(60000))
+    let three = depth(q)
+    let _ = acked(q, got[1])
+    three == 3 && depth(q) == 2
+}
+
+fn started(starts: Cell<int>, d: Delivery<int>) -> Result<int, string> {
+    starts.set(starts.get() + 1)
+    d.item
+}
+
+fn unanswered(f: Fate<string>) -> bool {
+    match f { .Unanswered -> true, .Failed(_) -> false }
+}
+
+fn spent_is_buried(q: Queue<int>) -> bool {
+    let starts: Cell<int> = Cell.new(0)
+    let letters = unbounded_channel<Dead<int, string>>()
+    queue<int> jobs {
+        name: q.name
+        retries: q.terms.retries
+        homed: q.home
+    }
+    worker spent {
+        reads: jobs
+        each: (d: Delivery<int>) -> started(starts, d)
+        dead: letters.sink
+    }
+    let _ = send(q, 7, "k")
+    for _i in 0..q.terms.retries {
+        let lost? = take(q) else { return false }
+        let _ = q.began(lost)
+    }
+    if (drain(spent) catch 0 - 1) != 0 || starts.get() != 0 || depth(q) != 0 { return false }
+    let gone? = letters.source.taken() else { return false }
+    gone.item == 7 && unanswered(gone.fate)
+}
+
+// ── A run of chosen verbs ──
+
+/// The terms a run is made under: room for three, so every overflow
+/// term is met, and a lease no run outlives.
+export fn run_terms() -> List<Terms> {
+    [held_long(3, o.order, o.overflow) for o in [
+        one(Order.fifo, Overflow.fail),
+        one(Order.fifo, Overflow.drop_newest),
+        one(Order.fifo, Overflow.drop_oldest),
+        one(Order.fifo, Overflow.latest),
+        one(Order.by_key, Overflow.fail),
+        one(Order.by_key, Overflow.drop_newest),
+        one(Order.by_key, Overflow.drop_oldest),
+        one(Order.by_key, Overflow.latest),
+    ]]
+}
+
+/// The terms a long run is made under: room for two hundred, so the
+/// items a full queue gives up lie deep in it.
+export fn deep_terms() -> List<Terms> {
+    [
+        held_long(200, Order.by_key, Overflow.latest),
+        held_long(200, Order.by_key, Overflow.drop_oldest),
+        held_long(200, Order.fifo, Overflow.latest),
+    ]
+}
+
+/// What a run holds: the deliveries out with it, the ones backing off
+/// for longer than the run, the ones whose hold is over, each key's
+/// last item first handed out, each item's last epoch, and what it has
+/// seen.
+type Run = {
+    q: Queue<int>,
+    seed: Cell<int>,
+    out: Cell<List<Delivery<int>>>,
+    parked: Cell<List<Delivery<int>>>,
+    gone: Cell<List<Delivery<int>>>,
+    last: Cell<Map<string, int>>,
+    epochs: Cell<Map<string, int>>,
+    seen: Cell<List<string>>,
+}
+
+impl Run {
+    /// The next number of the run, under `below`.
+    fn pick(below: int) -> int {
+        let next = (self.seed.get() * 1103515245 + 12345) % 2147483648
+        self.seed.set(next)
+        next / 65536 % below
+    }
+
+    fn say(what: string) {
+        self.seen.push(what)
+    }
+
+    /// Take one delivery out of the ones held, or absent when none is.
+    fn held() -> Delivery<int>? {
+        let all = self.out.get()
+        if all.is_empty() { return null }
+        let at = self.pick(all.length)
+        self.out.set([d for i, d in all if i != at])
+        all[at]
+    }
+
+    /// The order's promise, judged as deliveries come: one stands at a
+    /// time under `fifo`, one a key under `by_key`, and a key's items
+    /// are first handed out in the order they were sent. Answers whether
+    /// the item was handed out before; each time it is, its epoch is
+    /// past the last.
+    fn judge(d: Delivery<int>) -> bool {
+        let standing = self.out.get().concat(self.parked.get())
+        let crowded = match self.q.terms.order {
+            .fifo -> !standing.is_empty(),
+            .by_key -> standing.any(it.key.text == d.key.text),
+        }
+        if crowded { self.say("!crowded ${d.item}") }
+        let before = self.epochs.get().get("${d.item}")
+        self.epochs.put("${d.item}", d.epoch)
+        if before != null {
+            if d.epoch <= before! { self.say("!epoch ${d.item}") }
+            return true
+        }
+        let line = if self.q.terms.order == Order.fifo { "" } else { d.key.text }
+        if d.item <= self.last.get().get(line) ?? 0 - 1 { self.say("!order ${d.item}") }
+        self.last.put(line, d.item)
+        false
+    }
+
+    fn step(n: int) {
+        let verb = self.pick(12)
+        if verb < 4 {
+            let sent = self.q.send(n, key("k${self.pick(3)}")) catch null
+            self.say(if sent == null { "s-" } else { "s+" })
+        } else if verb < 6 {
+            for d in self.q.take_many(1 + self.pick(3)) catch [] {
+                let again = self.judge(d)
+                self.out.push(d)
+                self.say("t${d.item}/${again}/${d.attempt}/${d.key.text}")
+            }
+            self.say("t.")
+        } else if verb == 10 {
+            let all = self.gone.get()
+            if !all.is_empty() { self.say("x${self.q.ack(all[self.pick(all.length)]) catch true}") }
+        } else {
+            let d? = self.held() else { return }
+            self.settle(verb, d)
+        }
+        self.say("d${self.q.depth() catch 0 - 1}")
+    }
+
+    /// One verb over a held delivery.
+    fn settle(verb: int, d: Delivery<int>) {
+        if verb == 9 {
+            self.say("b${self.q.began(d) catch false}")
+            self.out.push(d)
+            return
+        }
+        let letters = unbounded_channel<Dead<int, string>>()
+        let held = match verb {
+            6 -> self.q.ack(d) catch false,
+            7 -> self.q.release(d, ms(0)) catch false,
+            8 -> self.q.release(d, ms(60000)) catch false,
+            _ -> bury(self.q, d, Fate.Failed("no"), letters.sink) catch false,
+        }
+        self.say("v${verb}${held}")
+        if verb == 8 { self.parked.push(d) }
+        self.gone.push(d)
+    }
+}
+
+/// Everything `steps` chosen verbs over `q` answered, in order: the
+/// same seed asks the same verbs of any home. A `!` marks an answer
+/// that broke the order's promise.
+export fn transcript(q: Queue<int>, seed: int, steps: int) -> string {
+    let out: Cell<List<Delivery<int>>> = Cell.new([])
+    let parked: Cell<List<Delivery<int>>> = Cell.new([])
+    let gone: Cell<List<Delivery<int>>> = Cell.new([])
+    let last: Cell<Map<string, int>> = Cell.new({})
+    let epochs: Cell<Map<string, int>> = Cell.new({})
+    let seen: Cell<List<string>> = Cell.new([])
+    let run = Run {
+        q: q,
+        seed: Cell.new(seed),
+        out: out,
+        parked: parked,
+        gone: gone,
+        last: last,
+        epochs: epochs,
+        seen: seen,
+    }
+    for n in 0..steps { run.step(n) }
+    seen.get().join(" ")
+}

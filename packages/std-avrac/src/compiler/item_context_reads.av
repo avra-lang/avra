@@ -11,9 +11,11 @@
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use core.{
+    STATIC_FN,
     BoxMark,
     ContextMarks,
     CalledFn,
+    DynMark,
     Ins,
     Reg,
     SignedType,
@@ -36,6 +38,18 @@ type Through = { subject: string, held: string }
 /// A set in force while a body is walked: its key, and the statement that wrote it.
 type InForce = { key: int, stmt: int }
 
+/// A survey of the program `package` that has walked every entry of it: every fn value and `dyn`
+/// box the program makes is known to it before it walks one body alone.
+fn program_survey(engine: QueryEngine, package: string) -> ReadSurvey {
+    let survey = read_survey(engine, package)
+    for f in program_files(engine, package) {
+        if f.package_name != package { continue }
+        let e? = entry_plain(engine, f) else { continue }
+        let _ = survey.settled(e)
+    }
+    survey
+}
+
 /// What one walk of a body found: the reads it owes its caller, and the statements of the sets it
 /// makes that something under them read.
 type Walked = { reads: List<CtxRead>, used: List<int> }
@@ -53,6 +67,7 @@ type ReadSurvey = {
     before: Cell<Map<string, List<CtxRead>>>,
     open: Cell<List<string>>,
     met_calls: Cell<List<CalledFn>>,
+    values: Cell<List<CalledFn>>,
     boxes: Cell<List<BoxMark>>,
     unsettled: Cell<bool>,
 }
@@ -62,6 +77,7 @@ fn read_survey(engine: QueryEngine, package: string) -> ReadSurvey {
     let names: List<string> = []
     let made: List<BoxMark> = []
     let called: List<CalledFn> = []
+    let valued: List<CalledFn> = []
     ReadSurvey {
         engine: engine,
         package: package,
@@ -69,6 +85,7 @@ fn read_survey(engine: QueryEngine, package: string) -> ReadSurvey {
         before: Cell.new(none),
         open: Cell.new(names),
         met_calls: Cell.new(called),
+        values: Cell.new(valued),
         boxes: Cell.new(made),
         unsettled: Cell.new(false),
     }
@@ -119,6 +136,39 @@ impl ReadSurvey {
         self.unsettled.set(true)
     }
 
+    /// `c` among the declared fns the program takes as values; a round that meets one it hadn't is
+    /// unsettled, since a call through a fn value walked before may be it.
+    fn valued(c: CalledFn) {
+        if self.values.get().any(it.symbol == c.symbol) { return }
+        self.values.push(c)
+        self.unsettled.set(true)
+    }
+
+    /// What a value the code `code` names, made where `owner`'s instruction makes it, owes there: a
+    /// lambda `owner` lifts reads what its body reads where it is made, whose frame it runs under; a
+    /// declared fn taken as a value runs under the frame of whoever calls it, so it owes nothing here
+    /// and is kept among the program's fn values.
+    fn made_value(owner: LoweredFn, code: string) -> Walked {
+        let lift = owner.lifts.find(it.symbol == code)
+        if lift != null { return self.walk(lift!.ins, owner, lift!.marks) }
+        let target = owner.wrappers.find(it.symbol == code)?.target ?? code
+        let c = callee_named(owner, target)
+        if c != null { self.valued(c!) }
+        Walked { reads: [], used: [] }
+    }
+
+    /// What a call through a fn value may read: what any declared fn the program takes as a value
+    /// reads, each reached through itself — a lambda's own reads were owed where it was made.
+    fn value_reads() -> List<CtxRead> {
+        [r with { chain: [v.name].concat(r.chain) } for v in self.values.get() for r in self.reads_of(v)]
+    }
+
+    /// What the call through a `dyn` box `d` may read: what the method in its slot of each box of its
+    /// trait the program makes reads (rule (i)), reached through the type that holds it.
+    fn dyn_reads(d: DynMark) -> List<CtxRead> {
+        [r with { chain: [m.callee.name].concat(r.chain), through: r.through ?? Through { subject: d.subject.spelled(), held: m.held } } for m in self.held_methods(d.subject, d.slot) for r in self.reads_of(m.callee)]
+    }
+
     /// The method each `dyn` box of `subject` the program makes holds in the trait's slot `slot`, with
     /// the type of the value it holds: what a call through such a box at that slot may run.
     fn held_methods(subject: SignedType, slot: int) -> List<HeldMethod> {
@@ -158,20 +208,19 @@ impl ReadSurvey {
                     heard = [r with { chain: [c.name].concat(r.chain) } for r in self.reads_of(c)]
                 },
                 .FnAddr(_, sym) -> {
-                    let lift = owner.lifts.find(it.symbol == sym)
-                    if lift != null {
-                        let inner = self.walk(lift!.ins, owner, lift!.marks)
-                        used = used.concat(inner.used)
-                        heard = inner.reads
-                    } else {
-                        let target = owner.wrappers.find(it.symbol == sym)?.target ?? sym
-                        let c? = callee_named(owner, target) else { continue }
-                        heard = [r with { chain: [c.name].concat(r.chain) } for r in self.reads_of(c)]
-                    }
+                    let inner = self.made_value(owner, sym)
+                    used = used.concat(inner.used)
+                    heard = inner.reads
+                },
+                .StaticAddr(_, sym) -> {
+                    if !sym.starts_with(STATIC_FN) { continue }
+                    let inner = self.made_value(owner, sym.substring(STATIC_FN.length, sym.length))
+                    used = used.concat(inner.used)
+                    heard = inner.reads
                 },
                 .CallPtr(dst, _, _) -> {
-                    let d? = marks.dyns.find(it.dst == dst.index) else { continue }
-                    heard = [r with { chain: [m.callee.name].concat(r.chain), through: r.through ?? Through { subject: d.subject.spelled(), held: m.held } } for m in self.held_methods(d.subject, d.slot) for r in self.reads_of(m.callee)]
+                    let d = marks.dyns.find(it.dst == dst.index)
+                    heard = if d == null { self.value_reads() } else { self.dyn_reads(d!) }
                 },
                 .IfStart(_) or .SwitchStart(_, _) or .LoopStart -> { saved = saved.concat([force]) },
                 .ArmEnd(_) -> { force = saved.last() ?? [] },
@@ -319,7 +368,7 @@ fn sets_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Fo
 fn unread_in(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, f: LoweredFn) -> List<
     Found,
 > {
-    let walked = read_survey(engine, file.package_name).settled(f)
+    let walked = program_survey(engine, file.package_name).settled(f)
     let marked = f.marks.sets.concat(flatten([l.marks.sets for l in f.lifts]))
     [Found { at: store.stmt_span(s), args: [n] } for m in marked if m.stmt >= 0 && !walked.used.contains(m.stmt) for s in [StmtId { index: m.stmt }] for n in some_list(store.ctx_set(s))]
 }

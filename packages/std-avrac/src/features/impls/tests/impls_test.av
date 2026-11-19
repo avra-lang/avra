@@ -533,6 +533,11 @@ spec "features/impls" {
         then "a box dispatches through its own impl" {
             shown("${showed()}let d: dyn Show = P { x: 42 }\nd.show()") == "42"
         }
+        then "two instances of one generic type are told apart by `is` — the tag is the type, arguments included" {
+            shown(
+                "trait Named {\n    fn name() -> int\n}\ntype A = { a: int }\ntype B = { b: int }\ntype Model<T> = { v: T }\nimpl Named for Model<T> {\n    fn name() -> int {\n        1\n    }\n}\nfn which(d: dyn Named) -> int {\n    if d is m: Model<A> {\n        return m.v.a\n    }\n    if d is n: Model<B> {\n        return n.v.b * 10\n    }\n    0\n}\nwhich(Model { v: A { a: 3 } }) + which(Model { v: B { b: 4 } })",
+            ) == "43"
+        }
         then "two signatories ride one dyn slot" {
             shown(
                 "${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()",

@@ -10,7 +10,8 @@
 #     machine with no toolchain for the target, both paths refuse in the toolchain's same words, exit 2,
 #     and the case is said untooled, neither held nor failed;
 #   warns.expected — beside either: each path's warnings, their first lines in the order said, are
-#     exactly this text;
+#     exactly this text (for a case only the program layer builds, that layer's warnings); an
+#     empty one says no warning is said;
 #   differs.why — the paths are known to differ on it, for the reason written there: it is said
 #     and not failed while it differs, and FAILS once it holds, until the file is taken away.
 # A case that uses a form only the program layer builds (`avra tapes <case> --new-only`) is never
@@ -80,6 +81,13 @@ judged_alone() {
     said "$name" new >"$tmp/$name.new.said"
     if [ "${PIN:-}" = 1 ] && [ ! -e "$from/refuses.expected" ] && [ ! -e "$from/prints.expected" ]; then
         if [ "$new" = 1 ]; then cp "$tmp/$name.new.said" "$from/refuses.expected"; else "$tmp/$name/src/main" >"$from/prints.expected" 2>/dev/null; fi
+    fi
+    if [ -e "$from/warns.expected" ]; then
+        grep '^warning\[' "$tmp/$name.new" | cmp -s - "$from/warns.expected" || {
+            echo "$name: the program layer's warnings differ from warns.expected" >&2
+            grep '^warning\[' "$tmp/$name.new" | diff "$from/warns.expected" - >&2
+            return 1
+        }
     fi
     if [ -e "$from/refuses.expected" ]; then
         [ "$new" = 1 ] || { echo "$name: the program layer's build exited $new, not 1" >&2; cat "$tmp/$name.new.said" >&2; return 1; }

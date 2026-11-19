@@ -90,9 +90,9 @@ resize.later(upload)?
 | A sent item is never lost | a row, committed before `send` answers |
 | At least once | a lease on the row; a crashed worker's lease runs out and the item is taken again |
 | A stale worker cannot ack | every take raises the row's `epoch`; an ack with an old epoch answers `false` |
-| One send per id within `dedupe` | `flow_seen` remembers the id and its answer |
+| One send per id within `dedupe` | `flow_seen` remembers a send that was answered an id; a send the terms turned away files nothing, so a retry is a fresh send |
 | Exactly once for store writes | the handler's writes and the ack are one commit (`worker { in_tx: true }` hands the handler the transaction) |
-| A poison item ends | an attempt is counted when the handler STARTS; past `retries` it is buried, never dropped |
+| A poison item ends | an attempt is counted when the handler STARTS; an item whose starts have reached `retries` is buried without running, its letter saying `Unanswered`; never dropped |
 | Order | `fifo`, or `by_key`: keys run apart, each key in send order |
 
 No home delivers exactly once to the outside world. An effect outside the store repeats
@@ -142,11 +142,14 @@ type FlowItem = {
   Both are wanting sites for declared indexes (44.8) and composite unique (44.7).
 - `FlowSeen { queue, id, at, answer }`, pruned after `dedupe`.
 - `FlowShape { hash, descriptor }`: one row per element shape, for readers of an older or newer build.
-- A dead letter is a queue; a buried item is a `FlowItem` under the letter's name, moved in one transaction.
+- A dead letter is a queue whose overflow never drops; a buried item is a `FlowItem` under the letter's name, moved in one transaction. A letter carries `Dead<T, E> { item, fate: Fate<E>, path }`, and `Fate<E>` is `Failed(error: E)` or `Unanswered`.
+- A delivery's id is `<mark>-<row>`: the mark is the database's own (`FlowMark`, one row, minted at creation), so a delivery from another database or another home answers `false` on every verb.
+- Counts live in a `FlowRoom` row kept by triggers; a count that is missing is rebuilt from the rows, never read as zero. A home is opened outside a transaction.
+- `FlowUnread` holds rows no item could be read from, with the reason; `forget_unreadable(before)` clears them.
 
 | Verb | Statement |
 |---|---|
-| `send` | find the id in `FlowSeen`; present: answer what it answered. Absent: insert both rows |
+| `send` | find the id in `FlowSeen`; present: answer its id again. Absent: insert both rows |
 | `take` | one `UPDATE … RETURNING` over the oldest ready rows with no live lease: set `reader`, `epoch + 1`, `leased_until` |
 | `began` | `attempt + 1` where the epoch still matches; `false` if the lease was lost |
 | `ack` | delete where id and epoch match; 0 rows is `false` |
@@ -212,7 +215,7 @@ Each is one commit set on `services`, red-teamed, its own suite green.
 |---|---|---|
 | Q0 | the probes: a required `ctx db` read from a component's methods and from a spawned worker, named args on `send`, `@model` with `Bytes`, `UPDATE … RETURNING` and a registered SQL function through std-sqlite | the surface in §1 is confirmed or corrected |
 | Q1 | BUILT: `Home<T>` under `Queue<T>`; memory home behind it; handler error generic; release with a backoff | 17 tests, 14 programs |
-| Q2 | `@std/queue_store`: rows, send, take, ack, release, bury, dedupe | a queue survives a restart; the crash witness |
+| Q2 | BUILT and red-teamed (79 attacks; 13 findings, all fixed): `@std/queue_store` — rows, send, take, ack, release, bury, dedupe, batches, named sync, unreadable rows set aside | a queue survives a restart; 105 store tests, 25 shared laws and 33 attacks over both homes |
 | Q3 | `run`: `at_once`, backoff, lease deadline, shutdown, gate and poll | a long-lived worker; the two-process witness |
 | Q4 | `tx.send`, a worker's `in_tx:` | exactly once for store writes |
 | Q5 | `after:`, `cron`, `schedule` | delayed and recurring work |

@@ -13,7 +13,7 @@ use @std.validate.{Issue, Issues, root}
 /// the `columns` its key holds, in key order — enough to say which law a
 /// violation broke, never the whole `@std/meta` `Field` a model's derive
 /// already spent at compile time.
-export type UniqueField = { name: string, at: Loc?, columns: List<string>, among: List<string> = [] }
+export type UniqueField = { name: string, at: Loc?, columns: List<string>, among: List<string> = [], whole: bool = false }
 
 /// A `@model` operation's failure. `.cause()` always answers the
 /// original `SqlError` whole — the model-aware message is a richer
@@ -76,11 +76,18 @@ fn referenced_message(model: string) -> string {
 }
 
 fn unique_message(f: UniqueField, model: string) -> string {
+    if f.whole { return whole_voice(f, model) }
     if f.among.is_empty() { alone_voice(f, model) } else { within_voice(f, model) }
 }
 
 fn alone_voice(f: UniqueField, model: string) -> string {
     "`${f.name}` must be unique — declared @unique on `${model}.${f.name}`${at_suffix(f.at)}"
+}
+
+/// A key the model declares on itself, `@unique(a, b, …)`: its fields are `among`, then `name`.
+fn whole_voice(f: UniqueField, model: string) -> string {
+    let key = f.among.concat([f.name])
+    "${["`${n}`" for n in key].join(", ")} must be unique together — declared @unique(${key.join(", ")}) on `${model}`${at_suffix(f.at)}"
 }
 
 fn within_voice(f: UniqueField, model: string) -> string {

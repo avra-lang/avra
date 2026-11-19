@@ -1,0 +1,413 @@
+//! The laws every home keeps, each written once over a `Queue<int>`, so
+//! every home is held to the same cases.
+use @std.task.{open_channel, unbounded_channel}
+use @std.time.{ms}
+use queue.{Dead, Fate, HomeError, Order, Overflow, Parcel, Queue, Terms, bury, key}
+
+/// One law: the terms it runs under and whether a fresh queue keeps it.
+export type Law = {
+    name: string,
+    lease: int,
+    order: Order,
+    overflow: Overflow = Overflow.park,
+    holds: fn(Queue<int>) -> bool,
+}
+
+/// Terms of four waiting items under `lease` milliseconds.
+export fn terms(lease: int, order: Order) -> Terms {
+    Terms {
+        capacity: 4,
+        lease: ms(lease),
+        retries: 3,
+        dead: "failed",
+        overflow: Overflow.park,
+        order: order,
+    }
+}
+
+/// The name of every law a home breaks; a home that cannot be made
+/// breaks each law it was to be made for.
+export fn broken(make: fn(Terms) -> Result<Queue<int>, HomeError>) -> List<string> {
+    [l.name for l in laws() if !kept(l, make(terms(l.lease, l.order) with { overflow: l.overflow }))]
+}
+
+fn kept(l: Law, made: Result<Queue<int>, HomeError>) -> bool {
+    match made { .Ok(q) -> (l.holds)(q), .Err(_) -> false }
+}
+
+export fn laws() -> List<Law> {
+    [
+        Law {
+            name: "is empty until something is sent",
+            lease: 60000,
+            order: Order.fifo,
+            holds: empty_until_sent,
+        },
+        Law {
+            name: "sends in order and counts what it holds",
+            lease: 60000,
+            order: Order.fifo,
+            holds: sends_in_order,
+        },
+        Law {
+            name: "acks what a handler settled",
+            lease: 60000,
+            order: Order.fifo,
+            holds: acks_settled,
+        },
+        Law {
+            name: "counts handler starts across attempts",
+            lease: 60000,
+            order: Order.fifo,
+            holds: counts_starts,
+        },
+        Law {
+            name: "refuses a begun from before a redelivery",
+            lease: 0,
+            order: Order.fifo,
+            holds: stale_begun,
+        },
+        Law {
+            name: "refuses an ack for a settled delivery",
+            lease: 60000,
+            order: Order.fifo,
+            holds: ack_once,
+        },
+        Law {
+            name: "refuses an ack from before a redelivery",
+            lease: 0,
+            order: Order.fifo,
+            holds: stale_ack,
+        },
+        Law {
+            name: "redelivers a released item with a new epoch",
+            lease: 60000,
+            order: Order.fifo,
+            holds: release_redelivers,
+        },
+        Law {
+            name: "holds a released item back until its backoff ends",
+            lease: 60000,
+            order: Order.fifo,
+            holds: backoff_holds,
+        },
+        Law {
+            name: "hands a released item out once its backoff is spent",
+            lease: 60000,
+            order: Order.fifo,
+            holds: backoff_spent,
+        },
+        Law {
+            name: "keeps a backing-off item's place ahead of a later send",
+            lease: 60000,
+            order: Order.fifo,
+            holds: backoff_keeps_place,
+        },
+        Law {
+            name: "lets another key pass a backing-off item under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: other_key_passes,
+        },
+        Law {
+            name: "lets a later key pass a held key's next item under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: later_key_passes_held,
+        },
+        Law {
+            name: "lets a later key pass a backing-off key's next item under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: later_key_passes_backoff,
+        },
+        Law {
+            name: "hands out the older send first when two keys each have a due item under by_key",
+            lease: 60000,
+            order: Order.by_key,
+            holds: older_send_first,
+        },
+        Law {
+            name: "keeps a held item its own after one passed from behind settled",
+            lease: 60000,
+            order: Order.by_key,
+            holds: passed_settles_alone,
+        },
+        Law {
+            name: "refuses a release from before a redelivery",
+            lease: 0,
+            order: Order.fifo,
+            holds: stale_release,
+        },
+        Law {
+            name: "takes as many due items as it is asked for",
+            lease: 60000,
+            order: Order.by_key,
+            holds: takes_many,
+        },
+        Law {
+            name: "hands out one delivery at a time under fifo",
+            lease: 60000,
+            order: Order.fifo,
+            holds: fifo_one,
+        },
+        Law {
+            name: "gives up only the waiting item of the sender's key when full under latest",
+            lease: 60000,
+            order: Order.fifo,
+            overflow: Overflow.latest,
+            holds: latest_drops_same_key,
+        },
+        Law {
+            name: "gives up only its oldest when full under latest and the sender's key has none",
+            lease: 60000,
+            order: Order.fifo,
+            overflow: Overflow.latest,
+            holds: latest_drops_oldest,
+        },
+        Law {
+            name: "sends many in order, each answered its id",
+            lease: 60000,
+            order: Order.fifo,
+            holds: sends_many,
+        },
+        Law {
+            name: "acks many and answers which held",
+            lease: 60000,
+            order: Order.by_key,
+            holds: acks_many,
+        },
+        Law {
+            name: "a bury leaves the queue and reaches the letter",
+            lease: 60000,
+            order: Order.fifo,
+            holds: bury_reaches,
+        },
+        Law {
+            name: "a bury a closed letter refuses gives the hold back",
+            lease: 60000,
+            order: Order.fifo,
+            holds: bury_refused,
+        },
+    ]
+}
+
+fn fill(q: Queue<int>, keys: List<string>) {
+    for i, k in keys { let _ = q.send(i + 1, key(k)) }
+}
+
+fn empty_until_sent(q: Queue<int>) -> bool {
+    (q.take() catch null) == null && (q.depth() catch 1) == 0
+}
+
+fn sends_in_order(q: Queue<int>) -> bool {
+    fill(q, ["a", "b"])
+    let d? = q.take() catch null else { return false }
+    d.item == 1 && (q.depth() catch 0) == 2
+}
+
+fn acks_settled(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let d? = q.take() catch null else { return false }
+    let _ = q.began(d)
+    (q.ack(d) catch false) && (q.depth() catch 1) == 0
+}
+
+fn counts_starts(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.began(first)
+    let _ = q.release(first, ms(0))
+    (q.take() catch null)?.attempt == 1
+}
+
+fn stale_begun(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.take()
+    !(q.began(first) catch true)
+}
+
+fn ack_once(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let d? = q.take() catch null else { return false }
+    let _ = q.ack(d)
+    !(q.ack(d) catch true)
+}
+
+fn stale_ack(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let second? = q.take() catch null else { return false }
+    !(q.ack(first) catch true) && (q.ack(second) catch false)
+}
+
+fn release_redelivers(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.began(first)
+    let _ = q.release(first, ms(0))
+    let second? = q.take() catch null else { return false }
+    second.epoch == first.epoch + 1 && (q.depth() catch 0) == 1
+}
+
+fn backoff_holds(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.release(first, ms(60000))
+    (q.take() catch null) == null && (q.depth() catch 0) == 1
+}
+
+fn backoff_spent(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.release(first, ms(0 - 1))
+    (q.take() catch null)?.epoch == first.epoch + 1
+}
+
+fn backoff_keeps_place(q: Queue<int>) -> bool {
+    fill(q, ["a", "b"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.release(first, ms(60000))
+    (q.take() catch null) == null && (q.depth() catch 0) == 2
+}
+
+fn other_key_passes(q: Queue<int>) -> bool {
+    fill(q, ["a", "b", "a"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.release(first, ms(60000))
+    (q.take() catch null)?.item == 2 && (q.take() catch null) == null
+}
+
+fn later_key_passes_held(q: Queue<int>) -> bool {
+    fill(q, ["a", "a", "b"])
+    let first? = q.take() catch null else { return false }
+    let passing? = q.take() catch null else { return false }
+    let blocked = q.take() catch null
+    let _ = q.ack(first)
+    passing.item == 3 && blocked == null && (q.take() catch null)?.item == 2
+}
+
+fn later_key_passes_backoff(q: Queue<int>) -> bool {
+    fill(q, ["a", "a", "b"])
+    let first? = q.take() catch null else { return false }
+    let _ = q.release(first, ms(60000))
+    (q.take() catch null)?.item == 3 && (q.take() catch null) == null && (q.depth() catch 0) == 3
+}
+
+fn older_send_first(q: Queue<int>) -> bool {
+    fill(q, ["a", "a", "b"])
+    let first? = q.take() catch null else { return false }
+    let passing? = q.take() catch null else { return false }
+    let _ = q.release(passing, ms(0 - 1))
+    let _ = q.ack(first)
+    passing.item == 3 && (q.take() catch null)?.item == 2 && (q.take() catch null)?.item == 3
+}
+
+fn passed_settles_alone(q: Queue<int>) -> bool {
+    fill(q, ["a", "a", "b"])
+    let first? = q.take() catch null else { return false }
+    let passing? = q.take() catch null else { return false }
+    let _ = q.ack(passing)
+    let _ = q.ack(first)
+    let second? = q.take() catch null else { return false }
+    let _ = q.send(4, key("c"))
+    let _ = q.send(5, key("d"))
+    let fourth? = q.take() catch null else { return false }
+    let fifth? = q.take() catch null else { return false }
+    let _ = q.send(6, key("e"))
+    second.item == 2 &&
+        fourth.item == 4 &&
+        fifth.item == 5 &&
+        (q.ack(fourth) catch false) &&
+        (q.take() catch null)?.item == 6 &&
+        (q.depth() catch 0) == 3
+}
+
+fn stale_release(q: Queue<int>) -> bool {
+    fill(q, ["a"])
+    let first? = q.take() catch null else { return false }
+    let second? = q.take() catch null else { return false }
+    !(q.release(first, ms(0)) catch true) && (q.release(second, ms(0)) catch false)
+}
+
+fn takes_many(q: Queue<int>) -> bool {
+    fill(q, ["a", "b", "c"])
+    batch(q) == 2 && batch(q) == 1 && batch(q) == 0
+}
+
+fn fifo_one(q: Queue<int>) -> bool {
+    fill(q, ["a", "b"])
+    batch(q) == 1 && batch(q) == 0
+}
+
+/// How many items a take of two was handed.
+fn batch(q: Queue<int>) -> int {
+    ((q.home.take)(2) catch []).length
+}
+
+/// A full queue of four, sent a fifth under `k`, then taken empty:
+/// whether the fifth was answered an id, and the items left, in order.
+fn after_fifth(q: Queue<int>, k: string) -> string {
+    fill(q, ["a", "b", "c", "d"])
+    let answered = (q.send(5, key(k)) catch null) != null
+    mut left: List<string> = []
+    mut d = q.take() catch null
+    while d != null {
+        left.push("${d!.item}")
+        let _ = q.ack(d!)
+        d = q.take() catch null
+    }
+    "${answered} ${left.join(" ")}"
+}
+
+fn latest_drops_same_key(q: Queue<int>) -> bool {
+    after_fifth(q, "b") == "true 1 3 4 5"
+}
+
+fn latest_drops_oldest(q: Queue<int>) -> bool {
+    after_fifth(q, "e") == "true 2 3 4 5"
+}
+
+fn sends_many(q: Queue<int>) -> bool {
+    let ids = q.send_all([Parcel { item: 1, key: key("a") }, Parcel { item: 2, key: key("b") }]) catch []
+    ids.length == 2 &&
+        ids[0] != null &&
+        ids[1] != null &&
+        ids[0] != ids[1] &&
+        (q.take() catch null)?.item == 1 &&
+        (q.depth() catch 0) == 2
+}
+
+fn acks_many(q: Queue<int>) -> bool {
+    fill(q, ["a", "b", "c"])
+    let held = q.take_many(3) catch []
+    if held.length != 3 { return false }
+    let _ = q.ack(held[0])
+    let answers = q.ack_all(held) catch []
+    answers.length == 3 && !answers[0] && answers[1] && answers[2] && (q.depth() catch 1) == 0
+}
+
+fn bury_reaches(q: Queue<int>) -> bool {
+    let dead = unbounded_channel<Dead<int, int>>()
+    fill(q, ["a"])
+    let d? = q.take() catch null else { return false }
+    let _ = bury(q, d, Fate.Failed(9), dead.sink)
+    (q.depth() catch 1) == 0 && failure(dead.source.taken()!.fate) == 9
+}
+
+/// The error a handler failed with, or absent for an item buried
+/// unanswered.
+fn failure(f: Fate<int>) -> int? {
+    match f { .Failed(e) -> e, .Unanswered -> null }
+}
+
+fn bury_refused(q: Queue<int>) -> bool {
+    let dead = open_channel<Dead<int, int>>(1)
+    dead.sink.close()
+    fill(q, ["a"])
+    let d? = q.take() catch null else { return false }
+    !(bury(q, d, Fate.Failed(9), dead.sink) catch true) &&
+        (q.depth() catch 0) == 1 &&
+        (q.ack(d) catch false)
+}

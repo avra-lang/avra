@@ -1081,7 +1081,7 @@ _Static_assert(__builtin_classify_type(avra_ctx_frame()) == AVRA_RT_POINTER,
     "avra_ctx_frame: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_ctx_enter(AVRA_RT_PTR)), int64_t),
     "avra_ctx_enter: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_classify_type(avra_ctx_reframed(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
+_Static_assert(__builtin_classify_type(avra_ctx_reframed(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_ctx_reframed: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_id()), int64_t),
     "avra_task_id: its row answers i64, so its C body answers int64_t");

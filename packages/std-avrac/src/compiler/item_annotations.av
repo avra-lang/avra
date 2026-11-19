@@ -1,7 +1,17 @@
 //! WHERE AN ANNOTATION NAMES NO FN OVER A DECLARATION: an annotation a declaration wears names a fn,
 //! and that fn takes the declaration as its first seat. Read off the item's annotations and what
 //! their names resolve to where they're written.
-use core.{Annotation, example_marks, ExprId, SignedType, Span, StmtId, SyntaxArena}
+use core.{
+    Annotation,
+    example_marks,
+    ExprId,
+    SignedType,
+    Span,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    some_list,
+}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.annotations.{
@@ -13,6 +23,10 @@ use features.annotations.{
     names_no_fn,
     takes_another_kind,
     takes_nothing,
+    field_not_bare,
+    fields_without_type,
+    no_such_field,
+    takes_fields,
 }
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -113,7 +127,8 @@ fn stood_on(kind: ItemKind) -> string {
     match kind {
         .Component -> "a type",
         .Ctx -> "a context",
-        .Fn or .Record or .Enum or .Named or .Alias or .Trait or .Syntax or .Collect or .CollectEnum or .Const or .State -> "a ${kind_said(kind)}",
+        .Enum -> "an enum",
+        .Fn or .Record or .Named or .Alias or .Trait or .Syntax or .Collect or .CollectEnum or .Const or .State -> "a ${kind_said(kind)}",
     }
 }
 
@@ -150,8 +165,8 @@ fn seated_annotation(engine: QueryEngine, file: SourceFileAddress, kind: ItemKin
     if !takes_a_declaration(first) { return null }
     let seat = meta_seat_of(first)
     if seat != null && !seat!.takes(kind) { return null }
-    let most = sig.params.length - 1
-    let least = [j for j, p in sig.params if j > 0 && !p.defaulted].last() ?? 0
+    let most = if sig.params.last()?.rest ?? false { UNCOUNTED } else { sig.params.length - 1 }
+    let least = [j for j, p in sig.params if j > 0 && !p.defaulted && !p.rest].last() ?? 0
     SeatedAnnotation {
         name: a.name,
         at: a.span,
@@ -270,3 +285,113 @@ export law derive_names_a_deriving_trait {
 }
 
 fn derive_words(a: List<string>) -> Voice { if a[2] == "decl" { derives_no_trait(a[0], a[1]) } else { derives_nothing(a[1]) } }
+
+/// As many arguments as a rest seat takes: no count past which it refuses.
+const UNCOUNTED: int = 1000000
+
+/// An annotation a declaration of the written item `at` of `file` wears: the declaration's name and
+/// kind, the store it's written in, and the annotation.
+type WornOn = { decl: string, kind: ItemKind, store: SyntaxArena, a: Annotation }
+
+/// Every annotation a declaration of the written item `at` of `file` wears, written by its source.
+fn worn_on(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<WornOn> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [WornOn { decl: d.name, kind: d.kind, store: item.store, a: a } for d in file_declares(engine, file).names if d.item == at for s in item.stmts if source_wrote_stmt(item.store, s) && item.store.declared_name(s) == d.name for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
+}
+
+/// The words `w` writes into seats of its fn taking fields; none where it writes none.
+fn words_of(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<ExprId> {
+    seat_field_words(
+        annotation_seats(engine, file, w.a.name),
+        [e for e in w.a.args if w.store.arg_label(e) == null],
+    )
+}
+
+/// Whether a declaration of `kind` has fields an annotation may name: a record's, a component's.
+fn fielded(kind: ItemKind) -> bool { kind == ItemKind.Record || kind == ItemKind.Component }
+
+/// Every word an annotation on a record of the item `at` of `file` writes into a seat taking fields
+/// that names no field of the record: at the word, its voice handed the word, the record and its
+/// fields, the word respelled as the field it's nearest.
+fn fields_unknown(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    flatten([unknown_words(engine, file, w) for w in worn_on(engine, file, at) if fielded(w.kind)])
+}
+
+fn unknown_words(engine: QueryEngine, file: SourceFileAddress, w: WornOn) -> List<Found> {
+    let words = words_of(engine, file, w)
+    if words.is_empty() { return [] }
+    let fields = decl_fields(engine, file, w.decl)
+    [Found {
+        at: w.store.expr_span(e),
+        args: [n!, w.decl].concat(fields),
+        named: w.store.expr_span(e),
+    } for e in words for n in [w.store.ident_name(e)] if n != null && !fields.contains(n!)]
+}
+
+/// Every argument written into a seat taking fields that is no bare word.
+fn fields_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: w.store.expr_span(e), args: [w.a.name] } for w in worn_on(engine, file, at) for e in words_of(engine, file, w) if w.store.ident_name(e) == null]
+}
+
+/// Every annotation whose fn names fields on a declaration with none to name: an enum, a type over
+/// another, a `collect enum` — what its `Type` seat takes and has no fields.
+fn fieldless_annotations(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: w.a.span, args: [w.a.name, stood_on(w.kind)] } for w in worn_on(engine, file, at) if !fielded(w.kind) && seats_take_fields(annotation_seats(engine, file, w.a.name))]
+}
+
+/// Every annotation's fn the written item `at` of `file` declares with a seat taking fields past a
+/// first seat taking a declaration other than its `Type`: at its declaration.
+fn fields_unanchored(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if at >= item_count(engine, file) { return [] }
+    let item = read_item(engine, file, at)
+    [Found { at: item.store.stmt_span(s), args: [d.name] } for d in file_declares(engine, file).names if d.item == at && d.kind == ItemKind.Fn for sig in some_list(fn_signature(engine, file, d.name)) if seats_take_fields(sig.params.drop(1)) && untyped_annotation(sig) for s in item.stmts if item.store.declared_name(s) == d.name]
+}
+
+/// Whether the fn signed `sig` is an annotation's whose first seat takes a declaration other than
+/// its `Type`: one with no fields to name.
+fn untyped_annotation(sig: FnSignature) -> bool {
+    let first = sig.params.first()?.ty
+    takes_a_declaration(first) && meta_seat_of(first) != DeclSeat.Type
+}
+
+/// an annotation's word names a field of the record it stands on
+export law annotation_field_named {
+    kind: "annotation.seats"
+    reads: fields_unknown
+    voice: unknown_field_words
+    witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(entitty)\ntype F = { entity: string }\n"
+}
+
+/// an annotation's seat taking fields is written a bare field's name
+export law annotation_field_bare {
+    kind: "annotation.seats"
+    reads: fields_unwritten
+    voice: unwritten_field_words
+    witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(\"entity\")\ntype F = { entity: string }\n"
+}
+
+/// an annotation naming fields stands on a declaration with fields
+export law annotation_fields_on_fields {
+    kind: "annotation.receiver"
+    reads: fieldless_annotations
+    voice: fieldless_words
+    witness: "use @std.meta.{Type, Field, Diagnostic}\nfn keyed(t: Type, ..fields: List<Field>) -> List<Diagnostic> { [] }\n\n@keyed(a)\nenum E { A }\n"
+}
+
+/// a fn whose seat names fields takes the declaration's `Type` first
+export law field_seat_after_a_type {
+    kind: "annotation.seats"
+    reads: fields_unanchored
+    voice: unanchored_words
+    witness: "use @std.meta.{Named, Field, Diagnostic}\nfn keyed(n: Named, ..fields: List<Field>) -> List<Diagnostic> { [] }\n"
+}
+
+fn unknown_field_words(a: List<string>) -> Voice { no_such_field(a[0], a[1], a.drop(2)) }
+
+fn unwritten_field_words(a: List<string>) -> Voice { field_not_bare(a[0]) }
+
+fn fieldless_words(a: List<string>) -> Voice { takes_fields(a[0], a[1]) }
+
+fn unanchored_words(a: List<string>) -> Voice { fields_without_type(a[0]) }

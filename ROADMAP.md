@@ -3499,6 +3499,17 @@ want: `zero_of<P>()`, the type argument written at the call as a component
 instance already writes it (`box<int> { }`); today `ident<int>(…)` is
 "expected BREAK".
 
+### A generic call's `T` may be pinned by a sibling arm's type
+
+Ruled 2026-11-18: where a generic call stands as one arm of an `if`, a `match`, a `when` or a `??`
+under a seat that wants no type, the type the other arms join to pins the call's parameters, as a
+seat's type would — `if c { [1] } else { empty() }` is a `List<int>`, `a ?? none()` an `int?`. The
+program layer checks such an arm again against that join (`Checking.pinning`); a call nothing
+pins — standing alone, bound by a plain `let`, read through — is still refused, "`T` is not pinned
+by the arguments". The old path refuses the sibling form too; it is known to differ there
+(tools/program-refusals/sibling_pin_*), and the layer's answer is the law: what is written first
+just works.
+
 ### Interim record — `Cell<T>` has no spelled form in a pass
 
 A type in a pass is spelled (`cx.type(List<string?>)`), but `types.type(Cell<ty>)` is

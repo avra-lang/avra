@@ -1,6 +1,6 @@
 //! proves a handler fails in a type of its own: the worker's events and
 //! the buried letter carry the handler's variant, never its words.
-use @std.queue.{queue, worker, drain, key, Dead, Delivery}
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
 use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
@@ -15,6 +15,10 @@ fn word(f: Fault) -> string {
     match f { .Declined(code) -> "declined ${code}", .Offline -> "offline" }
 }
 
+fn why(f: Fate<Fault>) -> string {
+    match f { .Failed(e) -> word(e), .Unanswered -> "unanswered" }
+}
+
 let seen: Cell<List<string>> = Cell.new([])
 let letters = unbounded_channel<Dead<Job, Fault>>()
 queue<Job> jobs {
@@ -27,9 +31,9 @@ worker settle {
     each: pay
     dead: letters.sink
     failed: (d: Delivery<Job>, e: Fault) -> seen.push("failed ${word(e)}")
-    buried: (gone: Dead<Job, Fault>) -> seen.push("buried ${word(gone.error)}")
+    buried: (gone: Dead<Job, Fault>) -> seen.push("buried ${why(gone.fate)}")
 }
 let _ = jobs.home().send(Job { n: 7 }, key("k"))
 let settled = drain(settle) catch 0 - 1
 let letter = letters.source.taken()
-"${settled} ${word(letter!.error)} ${letter!.path[1]} | ${seen.get().join(", ")}"
+"${settled} ${why(letter!.fate)} ${letter!.path[1]} | ${seen.get().join(", ")}"

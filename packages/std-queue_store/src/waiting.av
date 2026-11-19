@@ -1,0 +1,55 @@
+//! How a taker waits on the store home. Another process's send rings
+//! nothing here, so the wait is a poll the home bounds: no longer than
+//! `poll`, however patient the taker. A send made through the same home
+//! in this process ends the wait at once.
+use @std.queue.{Home, HomeError, Key, Parcel}
+use @std.task.{Channel, open_channel}
+use @std.time.{Duration, after, ms}
+use queue_store.{Store}
+
+/// A store home that hears its own sends: `bell` holds one token while
+/// a send was made that a waiting taker has not seen, and `poll` is the
+/// longest a taker waits before it asks the rows again. Held by copy:
+/// every copy is the same home.
+export type Heard<T> = { store: Store<T>, bell: Channel<bool>, poll: Duration }
+
+/// `store`, waited on no longer than `poll` at a time.
+export fn listening<T>(store: Store<T>, poll: Duration = ms(250)) -> Heard<T> {
+    Heard { store: store, bell: open_channel<bool>(1), poll: poll }
+}
+
+impl Heard<T> {
+    /// These verbs as any home's.
+    fn home() -> Home<T> {
+        self.store.home() with { send: (item: T, k: Key) -> self.send(item, k), send_all: (batch: List<Parcel<T>>) -> rung(self.bell, self.store.send_all(batch)), waits: (patience: Duration) -> self.waits(patience) }
+    }
+
+    /// Send one item under `k`, answering its id, or `null` when the
+    /// terms turned it away.
+    fn send(item: T, k: Key) -> Result<string?, HomeError> {
+        rung(self.bell, self.store.send(item, k))
+    }
+
+    /// Send one item by name, as the store's `send_as` does.
+    fn send_as(item: T, k: Key, name: string) -> Result<string?, HomeError> {
+        rung(self.bell, self.store.send_as(item, k, name))
+    }
+
+    /// Park until a send was made here, or the shorter of `patience`
+    /// and the poll is over. An item may be due either way: the rows are
+    /// another process's to write too.
+    fn waits(patience: Duration) -> Result<bool, HomeError> {
+        let limit = after(if patience.ns < self.poll.ns { patience } else { self.poll })
+        select {
+            _ in self.bell.source -> true
+            self.bell.source.ended -> false
+            limit -> true
+        }
+    }
+}
+
+/// `answer`, with `bell` rung for a taker that waits.
+fn rung<V>(bell: Channel<bool>, answer: V) -> V {
+    let _ = bell.sink.post(true)
+    answer
+}

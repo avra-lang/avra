@@ -168,7 +168,7 @@ int main(void) {
     // one asked; else a copy, the frame in its slot and the rest its own.
     void* code_only = avra_array_sized(1);
     avra_array_push(code_only, 7);
-    void* same = avra_ctx_reframed(code_only, made);
+    void* same = avra_ctx_reframed(code_only, 1, made);
     CHECK(same == code_only, "a box with no frame's slot is the same box");
     avra_rc_release(same);
     void* lane = avra_array_new();
@@ -177,15 +177,38 @@ int main(void) {
     avra_array_push(framed, 0);
     avra_array_push_owned(framed, lane);
     avra_rc_release(lane);
-    void* again = avra_ctx_reframed(framed, NULL);
+    void* again = avra_ctx_reframed(framed, 1, NULL);
     CHECK(again == framed, "a box made under the frame asked is the same box");
     avra_rc_release(again);
-    void* moved = avra_ctx_reframed(framed, made);
+    void* moved = avra_ctx_reframed(framed, 1, made);
     CHECK(moved != framed && ((AvraArray*)moved)->data[1] == (int64_t)(uintptr_t)made, "else a copy holds the frame");
     CHECK(((AvraArray*)moved)->data[2] == (int64_t)(uintptr_t)lane && ((AvraArray*)moved)->data[0] == 7, "and the rest of the box");
     avra_rc_release(moved);
     avra_rc_release(framed);
     avra_rc_release(code_only);
+
+    // A BOX WHOSE FRAME IS ANOTHER SLOT: a value boxed with its table, the
+    // frame after them; the value is shared by the copy, never moved.
+    void* held = avra_array_new();
+    void* boxed = avra_array_sized(3);
+    avra_array_push_owned(boxed, held);
+    avra_rc_release(held);
+    avra_array_push(boxed, 9);
+    avra_array_push(boxed, 0);
+    void* unslotted = avra_ctx_reframed(boxed, 3, made);
+    CHECK(unslotted == boxed, "a box with no slot where its frame would be is the same box");
+    avra_rc_release(unslotted);
+    void* stamped = avra_ctx_reframed(boxed, 2, made);
+    CHECK(stamped != boxed && ((AvraArray*)stamped)->data[2] == (int64_t)(uintptr_t)made, "a box under no frame, asked another, is a copy holding it in that slot");
+    CHECK(((AvraArray*)stamped)->data[0] == (int64_t)(uintptr_t)held && ((AvraArray*)stamped)->data[1] == 9, "and its value and table");
+    void* kept = avra_ctx_reframed(stamped, 2, made);
+    CHECK(kept == stamped, "a box stamped with the frame asked is the same box");
+    avra_rc_release(kept);
+    void* cleared = avra_ctx_reframed(stamped, 2, NULL);
+    CHECK(cleared != stamped && ((AvraArray*)cleared)->data[2] == 0 && ((AvraArray*)cleared)->data[0] == (int64_t)(uintptr_t)held, "a stamped box asked no frame is a copy holding none");
+    avra_rc_release(cleared);
+    avra_rc_release(stamped);
+    avra_rc_release(boxed);
     avra_rc_release(made);
     CHECK(avra_mem_live() == live, "frames, boxes and cells are released once nothing holds them");
 

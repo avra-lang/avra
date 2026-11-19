@@ -456,9 +456,10 @@ fn annotation_read(
 ) -> List<SignedBody> {
     let seats = value_seats(engine, file, a.name)
     let written = [e for e in a.args if item.store.arg_label(e) == null]
+    let words = seat_field_words(annotation_seats(engine, file, a.name), written)
     [annotation_body(item, s, a.callee, null, a.name)]
         .concat(
-            [annotation_body(item, s, e, seat_filled(seats, written.index_of(e)), a.name) for e in a.args],
+            [annotation_body(item, s, e, seat_filled(seats, written.index_of(e)), a.name) for e in a.args if !words.contains(e)],
         )
 }
 
@@ -481,12 +482,18 @@ fn annotation_body(item: ReadItem, s: StmtId, e: ExprId, seat: SignedType?, name
 /// The type of each seat past the first of the fn `name` names from `file`, where that fn takes a
 /// declaration first — absent for a seat that takes a declaration or code itself, which an
 /// argument's name or quote crosses into; none for a rule, or a name that names no such fn.
-fn value_seats(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType?> {
+fn value_seats(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType?> { [if crossed_seat(p.ty) { null } else { p.ty } for p in annotation_seats(engine, file, name)] }
+
+/// Each seat past the first of the fn `name` names from `file`, where that fn takes a declaration
+/// first; none for a rule, or a name that names no such fn.
+export fn annotation_seats(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<
+    SignedParam,
+> {
     let d? = resolved(engine, file, Space.Value, name).named() else { return [] }
     if d.kind != ItemKind.Fn { return [] }
     let sig? = fn_signature(engine, d.file, d.name) else { return [] }
     if !takes_a_declaration(sig.params.first()?.ty) { return [] }
-    [if crossed_seat(p.ty) { null } else { p.ty } for p in sig.params.drop(1)]
+    sig.params.drop(1)
 }
 
 /// Whether a seat of type `ty` takes what crosses rather than a value: a type `@std/meta` declares —

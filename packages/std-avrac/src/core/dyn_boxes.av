@@ -44,13 +44,13 @@ impl Lowering {
         } for j, c in callees]
         if entries.any(it == null) { return self.missed_as("a `dyn` box over a value laid inline whose method writes a seat") }
         let tag? = self.type_tag(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
-        let symbol? = (self.program.type_symbol)(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
+        let identity? = self.type_identity(from) else { return self.missed_as("a `dyn` box over `${from.spelled()}`") }
         self.box_marked(from, into, callees)
         for c in callees { self.reached(c) }
         let methods = self
             .laid_static(
                 Layout.Boxed(BoxKind.List),
-                table_named(symbol, from, into, [e! for e in entries]),
+                table_named(identity, self.type_identity(into) ?? into.spelled()),
                 [StaticBox.Slots([Slot.Code(e!) for e in entries].concat([Slot.Int(tag)]))],
             )
         self.box_typed(methods, into)
@@ -167,8 +167,8 @@ impl Lowering {
         self.uncrossed(self.slot_read(Layout.Boxed(BoxKind.List), v, 0), l)
     }
 
-    /// The tag a `dyn` box holds for a value of `ty`: its symbol's fingerprint, the same in every unit
-    /// and every run; `ty` kept among the types tagged.
+    /// The tag a `dyn` box holds for a value of `ty`: its identity's fingerprint, the same in every
+    /// unit and every run; `ty` kept among the types tagged.
     mut fn type_tag(ty: SignedType) -> int? {
         let tag? = self.tag_of_type(ty) else { return null }
         if !self.program.tagged.get().any(it.spelled() == ty.spelled()) { self.program.tagged.push(ty) }
@@ -177,20 +177,25 @@ impl Lowering {
 
     /// The tag a `dyn` box holds for a value of `ty`, as `type_tag` names it, nothing kept.
     fn tag_of_type(ty: SignedType) -> int? {
+        let identity? = self.type_identity(ty) else { return null }
+        fp_str(identity)
+    }
+
+    /// WHICH TYPE `ty` IS, its arguments included: the symbol it is declared by, then each argument's
+    /// identity in order — what a `dyn` box's tag and its table's name both answer, so two instances
+    /// of one generic type never meet. Absent for a type no symbol names.
+    fn type_identity(ty: SignedType) -> string? {
         let symbol? = (self.program.type_symbol)(ty) else { return null }
-        fp_str(symbol)
+        if ty.args.is_empty() { return symbol }
+        "${symbol}<${[self.type_identity(a) ?? a.spelled() for a in ty.args].join(",")}>"
     }
 }
 
 /// What the name of a type's table for a trait begins with.
 export const VTABLE: string = "vt\$"
 
-/// The name of the table the type `from`, declared as `symbol`, gives the trait `into`, holding the
-/// code `entries`: what it holds, spelled whole — the type with its arguments, which its declared
-/// symbol alone leaves out, the trait, and a digest of its code — so no two tables share one.
-fn table_named(symbol: string, from: SignedType, into: SignedType, entries: List<string>) -> string {
-    "${VTABLE}${symbol}\$${from.spelled()}\$${into.spelled()}\$${fp_str(entries.join(",")) & 9223372036854775807}"
-}
+/// The name of the table the type whose identity is `from` gives the trait whose identity is `into`.
+fn table_named(from: string, into: string) -> string { "${VTABLE}${from}\$${into}" }
 
 /// Whether the static named `name` is a type's table for a trait, which only a `dyn` box of that
 /// trait holds.

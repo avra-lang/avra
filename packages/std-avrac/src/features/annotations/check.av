@@ -20,7 +20,7 @@ use core.{
 }
 use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing, fills_type_seat}
 use @std.meta.{Diagnostic}
-use diagnostics.{Voice, refusal, loc_at, said_as}
+use diagnostics.{Voice, guessed, refusal, loc_at, said_as}
 use @std.errors.{Loc}
 
 export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
@@ -308,14 +308,16 @@ export fn miscounted(name: string, least: string, most: string, written: string)
     }
 }
 
-fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) { let _ = cx
+fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
+    let _ = cx
         .spoken(
             said_as(
                 "annotation.seats",
                 cx.loc_of(e),
                 seat_takes(a.name, cx.view.types.name_of(want)),
             ),
-        ) }
+        )
+}
 
 /// An argument of `@${name}` that doesn't fit its seat, which takes `want`.
 export fn seat_takes(name: string, want: string) -> Voice {
@@ -604,3 +606,43 @@ export const receiver_law: string = "an annotation's first seat says what it tak
 export const foreign_diagnostics: string = "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`"
 
 const seats_law: string = "an annotation's arguments fill its seats"
+
+/// `word`, written into a seat taking fields of `decl`, names none of `fields`.
+export fn no_such_field(word: string, decl: string, fields: List<string>) -> Voice {
+    guessed(
+        Voice {
+            message: seats_law,
+            label: "`${word}` is no field of `${decl}`",
+            help: "its fields are ${["`${f}`" for f in fields].join(", ")}",
+        },
+        word,
+        fields,
+    )
+}
+
+/// A seat of `@${name}` taking fields, written something other than a field's bare name.
+export fn field_not_bare(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "a field seat of `${name}` takes a field's name, written bare",
+        help: "write the field's name as it is declared — `@${name}(id)`",
+    }
+}
+
+/// `@${name}`, whose seats name fields, on a declaration with none, `found` in a refusal's words.
+export fn takes_fields(name: string, found: string) -> Voice {
+    Voice {
+        message: receiver_law,
+        label: "`${name}` takes fields of a record, and this is ${found}",
+        help: "an annotation that names fields stands on a record or a component",
+    }
+}
+
+/// The fn `name`, a seat of which takes fields, whose first seat takes no `Type`.
+export fn fields_without_type(name: string) -> Voice {
+    Voice {
+        message: seats_law,
+        label: "a `Field` seat names fields of the declaration the annotation stands on, and `${name}`'s first seat takes no `Type`",
+        help: "make `${name}`'s first seat `t: Type`",
+    }
+}

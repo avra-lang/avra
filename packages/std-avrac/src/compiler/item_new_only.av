@@ -26,6 +26,8 @@ export enum NewOnly {
     AnyKey
     /// A context: `ctx name: T` declared, `ctx name = v` set, or `ctx.name` read.
     Ctx
+    /// An annotation naming fields of the record it stands on, by seats of `@std/meta`'s `Field`.
+    FieldSeat
 }
 
 impl NewOnly {
@@ -39,6 +41,7 @@ impl NewOnly {
             .DefaultSlot -> "a component's `List` field marked `@default`",
             .AnyKey -> "a field of `@std/meta`'s `Key` written in a literal",
             .Ctx -> "a context (`ctx`)",
+            .FieldSeat -> "an annotation naming fields of the record it stands on",
         }
     }
 }
@@ -64,11 +67,41 @@ fn item_new_only(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<
     let writes = flatten([key_writes(engine, file, item.store, e) for e in nodes])
     let keyed = if writes.is_empty() || keys_all(item_typed(engine, file, at, item), writes) { [] } else { [NewOnly.AnyKey] }
     let contexts = if contexted(item.store, nodes) { [NewOnly.Ctx] } else { [] }
+    let fielded = if fields_named(engine, file, item.store, item.stmts) { [NewOnly.FieldSeat] } else { [] }
     flatten([stmt_new_only(item.store, s) for s in item.stmts])
         .concat(wide)
         .concat(member)
         .concat(keyed)
         .concat(contexts)
+        .concat(fielded)
+}
+
+/// Whether `stmts` name fields as annotations do: an annotation they wear whose fn has a seat taking
+/// them, or an annotation's fn they declare that names fields with no `Type` to name them of.
+fn fields_named(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+) -> bool {
+    stmts
+        .any(
+            (s) -> store
+                    .annotations_of(s)
+                    .any((a) -> seats_take_fields(annotation_seats(engine, file, a.name))) ||
+                field_seated(engine, file, store, s),
+        )
+}
+
+/// Whether the statement `s` declares an annotation's fn whose first seat takes a declaration other
+/// than its `Type`, with a seat past its first taking fields: what only the program layer refuses.
+fn field_seated(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> bool {
+    let parts? = store.fn_parts(s) else { return false }
+    let sig? = fn_signature(engine, file, parts.name) else { return false }
+    let first = sig.params.first()?.ty
+    takes_a_declaration(first) &&
+        meta_seat_of(first) != DeclSeat.Type &&
+        seats_take_fields(sig.params.drop(1))
 }
 
 /// Whether a store whose expressions are `nodes` holds a context's form: a declaration, a set or a read.

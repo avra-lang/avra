@@ -23,6 +23,9 @@
 //! `title` within one `board`. The key's columns are the fields the mark
 //! names, in written order, then the field it stands on; a row holding
 //! nothing in one of them repeats no other.
+//! A key the model holds as a whole is declared on the type itself,
+//! `@unique(entity, property, value) type Fact = { … }`: its fields are
+//! named bare and checked against the type where they're written.
 //!
 //! Stands ALONE with `@std/meta`, per CLAUDE.md's derive-isolation law
 //! — the file that types this trait must not also carry code the
@@ -30,6 +33,7 @@
 use @std.meta.{
     Type,
     Field,
+    Annotation,
     Kind,
     Directive,
     Diagnostic,
@@ -86,6 +90,24 @@ export trait Model {
 /// should call, but it never traps the compiler on a shape it was
 /// never built for) — `problems` is what actually stops the build,
 /// spoken as real diagnostics at the declaration itself.
+/// `@unique(a, b, …)` on a `@model` type: no two rows hold the same values in those fields together —
+/// a key over several columns, declared on the model itself. Its fields are the type's own, named
+/// bare and checked where they're written; each must be a column the model stores, and named once.
+/// A key declared twice is `@model`'s to refuse, once.
+export fn unique(t: Type, ..fields: List<Field>) -> List<Diagnostic> {
+    let key = [f.name for f in fields]
+    let at = key_written(t, key)?.at
+    if key.is_empty() { return [model_key_empty(t, at)] }
+    [model_key_unstored(t, n, at) for n in key if !stored(t).any(it.name == n)]
+        .concat([model_key_repeats(t, n, at) for j, n in key if key.index_of(n) < j])
+}
+
+/// The `@unique` the type `t` wears over the fields `key`, in their order.
+fn key_written(t: Type, key: List<string>) -> Annotation? { t.annotations.find(it.name == "unique" && it.args.join(",") == key.join(",")) }
+
+/// The keys a `@model` type declares on itself, `@unique(a, b, …)`, each as the fields it names.
+fn model_keys(t: Type) -> List<List<string>> { [a.args for a in t.annotations if a.name == "unique" && !a.args.is_empty()] }
+
 export fn model(t: Type) -> Declared {
     Declared { made: Model.derive(t), problems: shape_problems(t) }
 }
@@ -99,6 +121,13 @@ fn shape_problems(t: Type) -> List<Diagnostic> {
         .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
         .concat([not_stored(f) for f in t.fields if unheld(f)])
         .concat([p for f in t.fields for p in key_problems(t, f)])
+        .concat(model_keys_twice(t))
+}
+
+/// Each key `t` declares on itself again, refused at the second `@unique` writing it.
+fn model_keys_twice(t: Type) -> List<Diagnostic> {
+    let written = [a for a in t.annotations if a.name == "unique" && !a.args.is_empty()]
+    [model_key_twice(t, a.args, a.at) for j, a in written if written.take(j).any(it.args.join(",") == a.args.join(","))]
 }
 
 /// What is wrong with the several-column keys a field's marks declare: a
@@ -696,6 +725,42 @@ fn unique_unstored(t: Type, f: Field, n: string) -> Diagnostic {
     )
 }
 
+fn model_key_unstored(t: Type, n: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "unique_unstored",
+        at,
+        "`@unique(…)` names the fields a value is unique within, each one a column, and `${t.name}` stores none for `${n}`",
+        "name fields `${t.name}` stores: ${[g.name for g in stored(t)].join(", ")}",
+    )
+}
+
+fn model_key_repeats(t: Type, n: string, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "unique_repeats",
+        at,
+        "a key holds each field once, and this one on `${t.name}` holds `${n}` twice",
+        "name `${n}` once",
+    )
+}
+
+fn model_key_twice(t: Type, k: List<string>, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "unique_twice",
+        at,
+        "a key is declared once, and the key over ${["`${n}`" for n in k].join(", ")} stands on `${t.name}` twice",
+        "write the annotation once",
+    )
+}
+
+fn model_key_empty(t: Type, at: Loc?) -> Diagnostic {
+    refuse_as_at(
+        "unique_empty",
+        at,
+        "a key names the fields a row is unique by, and this one on `${t.name}` names none",
+        "name its fields — `@unique(a, b)`",
+    )
+}
+
 fn unique_repeats(f: Field, n: string) -> Diagnostic {
     refuse_as_at(
         "unique_repeats",
@@ -799,7 +864,8 @@ export fn model_shape(t: Type) -> Shape {
     Shape {
         name: table_name_of(t),
         columns: table_columns(t),
-        uniques: [key_columns(t, f, among) for f in non_id_fields(t) for among in scoped(f)],
+        uniques: [key_columns(t, f, among) for f in non_id_fields(t) for among in scoped(f)]
+            .concat([[column_named(t, n) for n in k] for k in model_keys(t)]),
     }
 }
 
@@ -840,7 +906,23 @@ fn column_named(t: Type, n: string) -> string {
 /// reason to keep around. The list's elements are a run, so no arity is
 /// known here.
 fn unique_fields_code(t: Type) -> Code {
-    quote { [..${[unique_field_code(t, f, among) for f in non_id_fields(t) for among in uniques(f)]}] }
+    let fields = [unique_field_code(t, f, among) for f in non_id_fields(t) for among in uniques(f)]
+    let keys = [model_key_code(t, k) for k in model_keys(t)]
+    quote { [..${fields.concat(keys)}] }
+}
+
+/// A key `t` declares on itself as the field a write's failure is attributed to: its last field,
+/// within the rest, marked whole.
+fn model_key_code(t: Type, k: List<string>) -> Code {
+    quote {
+        UniqueField {
+            name: ${literal(k.last() ?? "")},
+            at: ${loc_code(key_written(t, k)?.at)},
+            columns: [..${[literal(column_named(t, n)) for n in k]}],
+            among: [..${[literal(n) for n in k.take(k.length - 1)]}],
+            whole: true,
+        }
+    }
 }
 
 fn unique_field_code(t: Type, f: Field, among: List<string>) -> Code {

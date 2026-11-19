@@ -929,19 +929,20 @@ impl Machine {
         Val.I(1)
     }
 
-    /// `avra_ctx_reframed`: the fn box `vals[0]` made under the frame `vals[1]` instead — the same box
-    /// where that is its frame or it holds none, else a copy holding it in its frame's slot.
+    /// `avra_ctx_reframed`: the box `vals[0]`, whose frame is its slot `vals[1]`, made under the frame
+    /// `vals[2]` instead — the same box where that slot holds it or the box has no such slot, else a
+    /// copy holding it there and the rest its own.
     fn ctx_reframed_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a box to reframe that is no box") }
         let held = self.arrays[id]
-        if held.length < 2 || array_id(held[1]) == array_id(vals[1]) {
+        let at = self.whole(vals[1])
+        if at < 0 || held.length <= at || array_id(held[at]) == array_id(vals[2]) {
             self.retains(vals[0])
             return vals[0]
         }
-        let rest = held.drop(2)
-        for v in rest { self.retains(v) }
-        self.retains(vals[1])
-        self.fresh_array([held[0], vals[1]].concat(rest))
+        let made = [if j == at { vals[2] } else { v } for j, v in held]
+        for v in made { self.retains(v) }
+        self.fresh_array(made)
     }
 
     /// `frame` the running task's frame, the one it replaces released: what a guard was entered

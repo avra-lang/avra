@@ -4907,17 +4907,20 @@ int64_t avra_ctx_enter(void* frame) {
     return 1;
 }
 
-// The fn box `box` made under `frame` instead: the same box where it was
-// made under `frame` already or holds no frame; else a copy, `frame` in
-// its frame's slot. The caller holds a reference to what it answers.
-void* avra_ctx_reframed(void* box, void* frame) {
+// The box `box`, whose frame is its slot `at`, made under `frame` instead:
+// the same box where that slot holds `frame` already or the box has no
+// slot `at`; else a copy, `frame` in that slot and the rest its own. The
+// caller holds a reference to what it answers.
+void* avra_ctx_reframed(void* box, int64_t at, void* frame) {
     AvraArray* a = (AvraArray*)box;
-    if (a->len < 2 || (void*)(uintptr_t)a->data[1] == frame) return slot_retained(box);
+    if (at < 0 || a->len <= at || (void*)(uintptr_t)a->data[at] == frame) return slot_retained(box);
     void* copy = avra_array_sized(a->len);
-    avra_array_push(copy, a->data[0]);
-    if (frame) avra_array_push_owned(copy, frame);
-    else avra_array_push(copy, 0);
-    for (int64_t i = 2; i < a->len; i++) {
+    for (int64_t i = 0; i < a->len; i++) {
+        if (i == at) {
+            if (frame) avra_array_push_owned(copy, frame);
+            else avra_array_push(copy, 0);
+            continue;
+        }
         if (a->marks[i] & MARK_OWNED) avra_array_push_owned(copy, (void*)(uintptr_t)a->data[i]);
         else avra_array_push(copy, a->data[i]);
         ((AvraArray*)copy)->marks[i] = a->marks[i];

@@ -1,0 +1,42 @@
+//! proves a failed item waits its backoff before each next attempt:
+//! the queue's backoff doubled for every attempt already made, never
+//! past the cap, and buried once the attempts reach the terms.
+use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError, Fate}
+use @std.task.{unbounded_channel}
+use @std.time.{mins, now_ms, secs, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+fn refused(starts: Cell<List<int>>, began: int, d: Delivery<int>) -> Result<int, string> {
+    starts.push((now_ms() - began) / 1000)
+    .Err("no ${d.attempt}")
+}
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+avra_clock_virtual(1)
+let began = now_ms()
+let starts: Cell<List<int>> = Cell.new([])
+let letters = unbounded_channel<Dead<int, string>>()
+queue<int> jobs {
+    retries: 6
+    backoff: secs(5)
+    backoff_cap: secs(30)
+}
+worker never {
+    reads: jobs
+    each: (d: Delivery<int>) -> refused(starts, began, d)
+    dead: letters.sink
+}
+let _ = jobs.home().send(7, key("k"))
+let r = spawn run(never)
+sleep(mins(5))
+never.stop()
+let gone = letters.source.taken()
+"starts at ${["${s}s" for s in starts.get()].join(" ")} | ${said(r.await)} | buried ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

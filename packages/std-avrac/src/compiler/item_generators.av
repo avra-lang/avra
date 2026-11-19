@@ -24,6 +24,7 @@ use features.{
     arg_lit,
     meta_of_fn,
     meta_of_template,
+    meta_of_field,
     meta_of_trait,
     meta_of_type,
     new_meta_heap,
@@ -116,10 +117,15 @@ export enum HandedArg {
     /// A const the argument names whose value is no literal: its settled value, run where it's
     /// declared, and the print of its settlement — what a site that hands it runs again on.
     Settled(file: SourceFileAddress, name: string, item: int, value: ContentHash)
+    /// Fields of the declaration `decl` the site stands on in `file`, by their place among its
+    /// fields: one, or a list of them where `listed`.
+    Fields(file: SourceFileAddress, decl: string, picked: List<int>, listed: bool)
     /// An argument the program layer doesn't cross yet, and why.
     Uncrossed(why: string)
     /// An argument naming no declaration its seat takes: the program's fault, and why.
     Unfit(why: string)
+    /// A word naming no field of the declaration: the program's fault, which its own law says.
+    Misnamed(why: string)
 }
 
 impl GeneratorAt {
@@ -286,7 +292,7 @@ fn print_key(print: ContentHash) -> string { "${print.high_word}:${print.low_wor
 export enum GeneratorRun {
     Ran(made: List<Directive>, problems: List<Diagnostic>)
     /// It didn't run: the program layer couldn't hand it what it takes.
-    Stopped(why: string, fault: bool)
+    Stopped(why: string, fault: bool, said: bool)
     /// It ran, and stopped before it answered: a trap, a budget spent.
     Trapped(why: string)
 }
@@ -306,7 +312,7 @@ export fn generator_run(
     method: MethodSite? = null,
 ) -> GeneratorRun {
     let values = handed_values(engine, file, name, g.kind.first_seat(), handed, method)
-    if !values.stopped.is_empty() { return GeneratorRun.Stopped(values.stopped, values.fault) }
+    if !values.stopped.is_empty() { return GeneratorRun.Stopped(values.stopped, values.fault, values.said) }
     match run_lifted(
         l,
         generator_symbol(g),
@@ -331,7 +337,7 @@ export fn generator_run(
 /// What a site hands its generator, crossed into one heap: the declaration it stands on, then each
 /// argument; none, and why, where one doesn't cross.
 @derive(Saved)
-export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string, fault: bool = false }
+export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string, fault: bool = false, said: bool = false }
 
 /// What the site over the declaration `file` writes as `name` — a method of the impl `method` where
 /// it's one — hands a generator whose first seat is `first`, past it `handed`. An answer of its own,
@@ -350,6 +356,8 @@ export fn handed_values(
     let arg? = (if method == null { meta_handed(engine, first, file, name, heap) } else { method_handed(engine, method!, name, heap) }) else { return unhanded(not_handed(first, name)) }
     let unfit = handed.find_map(match it { .Unfit(w) -> w, rest -> null })
     if unfit != null { return unhanded(unfit!) with { fault: true } }
+    let misnamed = handed.find_map(match it { .Misnamed(w) -> w, rest -> null })
+    if misnamed != null { return unhanded(misnamed!) with { said: true } }
     let why = handed.find_map(match it { .Uncrossed(w) -> w, rest -> null })
     if why != null { return unhanded(why!) }
     let rest = [v! for h in handed for v in [meta_arg(engine, h, heap)] if v != null]
@@ -416,7 +424,8 @@ fn meta_arg(engine: QueryEngine, h: HandedArg, mut heap: MetaHeap) -> MetaVal? {
         },
         .Code(home, at, parts) -> meta_of_template(Node.Template(home, at, parts, []), heap),
         .Settled(file, name, item, _) -> settled_handed(engine, file, name, item, heap),
-        .Uncrossed(_) or .Unfit(_) -> null,
+        .Fields(file, decl, picked, listed) -> fields_meta(engine, file, decl, picked, listed, heap),
+        .Uncrossed(_) or .Unfit(_) or .Misnamed(_) -> null,
     }
 }
 
@@ -702,7 +711,7 @@ fn annotation_sites(
             name: name,
             item: item,
             generator: GeneratorAt { file: named.file, name: named.name, kind: made_as },
-            handed: handed_args(engine, scope, file, read, a, named),
+            handed: handed_args(engine, scope, file, read, a, named, name),
         },
     ]
 }
@@ -716,16 +725,102 @@ fn handed_args(
     read: ReadItem,
     a: Annotation,
     named: DeclaredName,
+    decl: string,
 ) -> List<HandedArg> {
     let store = read.store
     let seats = (fn_signature(engine, named.file, named.name)?.params ?? []).drop(1)
     let args = [e for e in a.args if store.arg_label(e) == null]
-    [if j < args.length {
-        handed_arg(engine, scope, file, read, p.ty, args[j])
-    } else {
-        defaulted_arg(engine, named, j + 1)
-    } for j, p in seats]
+    [seat_handed(engine, scope, file, read, named, decl, p, j, args) for j, p in seats]
 }
+
+/// What the seat `p`, the `j`th past the first of the annotation fn `named`, is handed of `args`,
+/// the annotation standing on `decl`: the fields its words name where it takes fields, else the
+/// argument written there, else its default.
+fn seat_handed(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    read: ReadItem,
+    named: DeclaredName,
+    decl: string,
+    p: SignedParam,
+    j: int,
+    args: List<ExprId>,
+) -> HandedArg {
+    match field_take(p) {
+        .Many -> fields_handed(engine, file, decl, read.store, args.drop(j), true),
+        .One -> if j < args.length { fields_handed(engine, file, decl, read.store, [args[j]], false) } else { defaulted_arg(engine, named, j + 1) },
+        .Not -> if j < args.length { handed_arg(engine, scope, file, read, p.ty, args[j]) } else { defaulted_arg(engine, named, j + 1) },
+    }
+}
+
+/// How a seat of an annotation fn takes the words written there: as one field of the declaration
+/// the annotation stands on, as a list of them, or not as fields.
+export enum FieldTake {
+    One
+    Many
+    Not
+}
+
+/// How the seat `p` takes fields: a seat of `@std/meta`'s `Field` one, a rest seat of a list of them
+/// many.
+export fn field_take(p: SignedParam) -> FieldTake {
+    let t? = p.ty else { return FieldTake.Not }
+    if !p.rest { return if meta_named(t, META_FIELD) { FieldTake.One } else { FieldTake.Not } }
+    let element? = t.listed() else { return FieldTake.Not }
+    if meta_named(element, META_FIELD) { FieldTake.Many } else { FieldTake.Not }
+}
+
+/// Whether any of `seats` takes fields.
+export fn seats_take_fields(seats: List<SignedParam>) -> bool { seats.any(!(field_take(it) is .Not)) }
+
+/// The words among `args`, the unlabelled arguments an annotation writes, that fill a seat among
+/// `seats` (past the first) taking fields.
+export fn seat_field_words(seats: List<SignedParam>, args: List<ExprId>) -> List<ExprId> { flatten([words_filling(p, j, args) for j, p in seats]) }
+
+fn words_filling(p: SignedParam, j: int, args: List<ExprId>) -> List<ExprId> {
+    match field_take(p) {
+        .Many -> args.drop(j),
+        .One -> if j < args.length { [args[j]] } else { [] },
+        .Not -> [],
+    }
+}
+
+/// The names of the fields `file` declares `decl` with, in written order, spreads among them.
+export fn decl_fields(engine: QueryEngine, file: SourceFileAddress, decl: string) -> List<string> { [f.name for f in meta_of_decl(engine, file, decl)?.fields ?? []] }
+
+/// The fields the words `words`, in `store`, name among `decl`'s, as a site hands them; none where a
+/// word is no field's name, which the program is at fault for.
+fn fields_handed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    decl: string,
+    store: SyntaxArena,
+    words: List<ExprId>,
+    listed: bool,
+) -> HandedArg {
+    let fields = decl_fields(engine, file, decl)
+    let picked = [fields.index_of(store.ident_name(w) ?? "") for w in words]
+    if picked.any(it < 0) { return HandedArg.Misnamed(unknown_field(decl)) }
+    HandedArg.Fields(file, decl, picked, listed)
+}
+
+/// The fields `picked` of the declaration `decl` of `file` as `@std/meta`'s `Field`s, laid out in
+/// `heap`: one, or a list of them where `listed`.
+fn fields_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    decl: string,
+    picked: List<int>,
+    listed: bool,
+    mut heap: MetaHeap,
+) -> MetaVal? {
+    let t? = meta_of_decl(engine, file, decl) else { return null }
+    let vals = [meta_of_field(t.fields[i], heap) for i in picked]
+    if listed { heap.node(vals) } else { vals.first() }
+}
+
+fn unknown_field(decl: string) -> string { "an annotation's argument names no field of `${decl}`" }
 
 /// What the argument `e`, written in `file`, hands a seat of type `ty`: the declaration it names
 /// where the seat takes one, any other seat the value it spells.
@@ -944,6 +1039,9 @@ const META_TRAIT: string = "Trait"
 
 /// The record a seat taking any declaration takes.
 const META_NAMED: string = "Named"
+
+/// What a seat naming a field of the annotated declaration takes.
+const META_FIELD: string = "Field"
 
 /// `@std/meta`'s generator of a `collect enum`'s impl of one of its traits.
 const DELEGATE: string = "delegate"

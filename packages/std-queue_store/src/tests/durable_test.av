@@ -1,0 +1,192 @@
+// The durable declaration and the store home's wait: a queue that says
+// `durable:` stands on the database the context names, keeps its items
+// across a reopening, and its worker waits without spinning. The cases
+// run on the suite's virtual clock, and the store's clock is set to it.
+use @std.io.{list_dir, make_dirs, remove}
+use @std.queue.{
+    queue,
+    worker,
+    run,
+    key,
+    Dead,
+    Delivery,
+    DrainError,
+    Home,
+    HomeError,
+    Order,
+    Overflow,
+    Terms,
+}
+use @std.sqlite.{Db}
+use @std.task.{unbounded_channel}
+use @std.time.{Time, mins, ms, now_ns, secs, sleep, stamp}
+use durable.{db, stored}
+use fault.{homed}
+use queue_store.{store_home}
+use waiting.{listening}
+use tests.support.wires.{int_wire}
+
+/// The suite's clock as a store reads one.
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+fn fine(d: Delivery<int>) -> Result<int, string> {
+    d.item
+}
+
+fn settled(r: Result<int, DrainError>) -> int {
+    match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+/// Run `w` until `span` is over, then stop it; how many it settled.
+fn worked(w: worker<int, int, string>, span: int) -> int {
+    let r = spawn run(w)
+    sleep(ms(span))
+    w.stop()
+    settled(r.await)
+}
+
+/// A durable queue over a memory database: five sends, two of one
+/// name, and a worker run over them.
+fn declared() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let seen: Cell<List<int>> = Cell.new([])
+    let letters = unbounded_channel<Dead<int, string>>()
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored(int_wire(), clock: ticking)
+        dedupe: mins(60)
+        acked: (d: Delivery<int>) -> seen.push(d.item)
+    }
+    worker crew {
+        reads: jobs
+        each: fine
+        dead: letters.sink
+    }
+    let first = jobs.send(1, id: "one")?
+    let again = jobs.send(9, id: "one")?
+    for i in 2..5 { let _ = jobs.send(i)? }
+    let sent = jobs.home().depth()?
+    let n = worked(crew, 10)
+    "same id ${first == again} | sent ${sent} | settled ${n} | acked ${["${i}" for i in seen.get()].join(" ")} | left ${jobs.home().depth()?}"
+}
+
+/// Three items sent to a durable queue in the file at `path`, and the
+/// database closed.
+fn sent_and_closed(path: string) -> Result<int, HomeError> {
+    ctx db = homed(Db.open(path))?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored(int_wire(), clock: ticking)
+    }
+    for i in 1..4 { let _ = jobs.send(i, id: "job-${i}")? }
+    let depth = jobs.home().depth()?
+    let _ = ctx.db.close()
+    depth
+}
+
+/// The same declaration over the file reopened, and a worker run.
+fn reopened_and_run(path: string) -> Result<string, HomeError> {
+    ctx db = homed(Db.open(path))?
+    let seen: Cell<List<int>> = Cell.new([])
+    let letters = unbounded_channel<Dead<int, string>>()
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored(int_wire(), clock: ticking)
+        acked: (d: Delivery<int>) -> seen.push(d.item)
+    }
+    worker crew {
+        reads: jobs
+        each: fine
+        dead: letters.sink
+    }
+    let kept = jobs.home().depth()?
+    let known = jobs.send(7, id: "job-2")?
+    let still = jobs.home().depth()?
+    let n = worked(crew, 10)
+    let left = jobs.home().depth()?
+    let _ = ctx.db.close()
+    "kept ${kept} | a known id sends nothing new ${known != null && still == kept} | settled ${n} | acked ${["${i}" for i in seen.get()].join(" ")} | left ${left}"
+}
+
+/// What a restart keeps, over a database file no other case names.
+fn restarted() -> string {
+    let dir = "/tmp/avra-queue-durable/${stamp()}"
+    let _ = make_dirs(dir)
+    let before = sent_and_closed("${dir}/queue.db") catch 0 - 1
+    let after = reopened_and_run("${dir}/queue.db") catch "failed"
+    for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+    let _ = remove(dir)
+    let _ = remove("/tmp/avra-queue-durable")
+    "sent ${before} | ${after}"
+}
+
+fn counted<V>(n: Cell<int>, answer: V) -> V {
+    n.set(n.get() + 1)
+    answer
+}
+
+/// `under`, with each take counted.
+fn counting(under: Home<int>, takes: Cell<int>) -> Home<int> {
+    under with { take: (max: int) -> counted(takes, (under.take)(max)) }
+}
+
+/// A worker over the store home with nothing to do for ten seconds,
+/// then one send: how often it asked the rows, and whether the send was
+/// settled in the instant it was made.
+fn idled() -> Result<string, HomeError> {
+    let terms = Terms {
+        capacity: 8,
+        lease: secs(30),
+        retries: 3,
+        dead: "jobs/dead",
+        overflow: Overflow.park,
+        order: Order.fifo,
+    }
+    let store = store_home<int>(homed(Db.memory())?, "jobs", terms, int_wire())? with { clock: ticking }
+    let takes = Cell.new(0)
+    let acks = Cell.new(0)
+    let letters = unbounded_channel<Dead<int, string>>()
+    queue<int> jobs {
+        name: "jobs"
+        homed: counting(listening(store).home(), takes)
+        acked: (d: Delivery<int>) -> acks.set(acks.get() + 1)
+    }
+    worker crew {
+        reads: jobs
+        each: fine
+        dead: letters.sink
+    }
+    let r = spawn run(crew)
+    sleep(ms(10100))
+    let idle = takes.get()
+    let sent_at = now_ns()
+    let _ = jobs.send(7)?
+    mut yields = 0
+    while acks.get() == 0 && yields < 100 {
+        sleep(ms(0))
+        yields = yields + 1
+    }
+    let moved = now_ns() - sent_at
+    crew.stop()
+    "idle takes ${idle} | acked ${acks.get()} clock moved ${moved} | settled ${settled(r.await)}"
+}
+
+spec "std/queue_store durable" {
+    given "a queue that says durable, over a memory database" {
+        then "stands on the store, sends a name once, and a worker settles it" {
+            (declared() catch "failed") == "same id true | sent 4 | settled 4 | acked 1 2 3 4 | left 0"
+        }
+    }
+    given "a durable queue in a file reopened" {
+        then "keeps its items and its names, and a worker settles them" {
+            restarted() == "sent 3 | kept 3 | a known id sends nothing new true | settled 3 | acked 1 2 3 | left 0"
+        }
+    }
+    given "a worker over the store home with nothing to do" {
+        then "asks the rows four times a second and no oftener, and a send here wakes it at once" {
+            (idled() catch "failed") == "idle takes 41 | acked 1 clock moved 0 | settled 1"
+        }
+    }
+}

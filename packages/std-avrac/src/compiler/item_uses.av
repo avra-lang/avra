@@ -57,6 +57,7 @@ fn use_faults(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Use
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
     let lines = uses_written(item)
+    if lines.is_empty() { return [] }
     let before = flatten([uses_written(read_item(engine, file, k)) for k in 0..at])
     flatten([line_faults(engine, file, l, before.concat(lines.take(j))) for j, l in lines])
 }
@@ -135,8 +136,10 @@ fn clash(
     bound: string,
     earlier: List<UseWritten>,
 ) -> UseFault? {
+    let binding = [l for l in earlier if l.bound.contains(bound)]
+    if binding.is_empty() { return null }
     let here = module_declarations_of(engine, module, item)
-    let prior? = earlier
+    let prior? = binding
         .find(
             (l) -> (0..l.items.length)
                 .any((k) -> l.bound[k] == bound && apart_from(engine, file, l.path, l.items[k], here)),

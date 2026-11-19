@@ -1,0 +1,749 @@
+// The store home under attack: the cases every home withstands, and
+// the ones only a database can be asked.
+use @std.queue.{Delivery, HomeError, Order, Overflow, Parcel, Queue, Terms, key, open_queue}
+use @std.queue.tests.support.attacks.{apart, beaten, deep_terms, roomless, run_terms, transcript}
+use @std.relation.stable.{Reader, Writer}
+use @std.sqlite.{Db, Journal, OpenConfig, sql}
+use @std.text.{from_codepoint, repeat}
+use @std.time.{Time, ms}
+use fault.{homed}
+use queue_store.{Store, Wire, bury_in, store_home, wire_of}
+use unread.{Unread}
+use tests.support.wires.{int_wire}
+
+fn stored(t: Terms) -> Result<Queue<int>, HomeError> {
+    Queue {
+        name: "jobs",
+        terms: t,
+        home: (store_home<int>(homed(Db.memory())?, "jobs", t, int_wire())?).home(),
+    }
+}
+
+fn terms(capacity: int, order: Order, overflow: Overflow) -> Terms {
+    Terms {
+        capacity: capacity,
+        lease: ms(60000),
+        retries: 3,
+        dead: "failed",
+        overflow: overflow,
+        order: order,
+    }
+}
+
+fn fifo() -> Terms {
+    terms(64, Order.fifo, Overflow.fail)
+}
+
+fn ints(db: Db, queue: string, t: Terms) -> Result<Store<int>, HomeError> {
+    store_home<int>(db, queue, t, int_wire())
+}
+
+fn fresh(t: Terms) -> Result<Store<int>, HomeError> {
+    ints(homed(Db.memory())?, "jobs", t)
+}
+
+/// A count read straight from the database.
+fn rows(db: Db, text: string) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(text)))?).int())
+}
+
+fn parcels(n: int) -> List<Parcel<int>> {
+    [Parcel { item: i, key: key("k${i}") } for i in 0..n]
+}
+
+/// Whether every queue's counts are the counts of its rows.
+fn counts_true(db: Db) -> Result<bool, HomeError> {
+    rows(
+            db,
+            "SELECT count(*) FROM \"FlowRoom\" r WHERE r.\"owed\" <> (SELECT count(*) FROM \"FlowItem\" i WHERE i.\"queue\" = r.\"queue\") OR r.\"waiting\" <> (SELECT count(*) FROM \"FlowItem\" i WHERE i.\"queue\" = r.\"queue\" AND i.\"epoch\" = 0)",
+        )? == 0 &&
+        rows(
+            db,
+            "SELECT count(*) FROM \"FlowItem\" i WHERE NOT EXISTS (SELECT 1 FROM \"FlowRoom\" r WHERE r.\"queue\" = i.\"queue\")",
+        )? == 0
+}
+
+// ── One transaction ──
+
+fn joined_batch_failure_keeps_none() -> Result<bool, HomeError> {
+    let q = fresh(terms(2, Order.fifo, Overflow.park))?
+    let _ = homed(q.db.begin())?
+    let asked_back = match q.send_all(parcels(3)) { .Err(.Unreachable(_)) -> true, rest -> false }
+    let _ = homed(q.db.commit())?
+    asked_back && q.depth()? == 0 && rows(q.db, "SELECT count(*) FROM \"FlowItem\"")? == 0
+}
+
+fn joined_failure_keeps_callers_work() -> Result<bool, HomeError> {
+    let q = fresh(terms(2, Order.fifo, Overflow.park))?
+    let _ = homed(q.db.begin())?
+    let mine = q.send(7, key("mine"))?
+    let failed = match q.send_all(parcels(3)) { .Err(.Unreachable(_)) -> true, rest -> false }
+    let open = q.db.in_transaction()
+    let after = q.send(8, key("mine"))?
+    let _ = homed(q.db.commit())?
+    let got = q.taken(5)?
+    mine != null &&
+        failed &&
+        open &&
+        after != null &&
+        got.length == 1 &&
+        got[0].item == 7 &&
+        q.depth()? == 2 &&
+        counts_true(q.db)?
+}
+
+fn read_transaction_is_joined() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = homed(q.db.begin_read())?
+    let _ = q.depth()?
+    let sent = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    let inside = q.depth()?
+    let open = q.db.in_transaction()
+    let _ = homed(q.db.rollback())?
+    sent != null &&
+        d.item == 1 &&
+        inside == 1 &&
+        open &&
+        q.depth()? == 0 &&
+        q.take()? == null &&
+        counts_true(q.db)?
+}
+
+fn undone_drop_brings_the_oldest_back() -> Result<bool, HomeError> {
+    let q = fresh(terms(1, Order.fifo, Overflow.drop_oldest))?
+    let _ = q.send(1, key("a"))?
+    let _ = homed(q.db.begin())?
+    let _ = q.send(2, key("b"))?
+    let inside = (q.take()?)?.item
+    let _ = homed(q.db.rollback())?
+    let d? = q.take()? else { return false }
+    inside == 2 && d.item == 1 && d.epoch == 1 && q.depth()? == 1 && counts_true(q.db)?
+}
+
+fn undone_take_and_ack_leave_the_item() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = q.send(1, key("a"))?
+    let _ = homed(q.db.begin())?
+    let held? = q.take()? else { return false }
+    let acked = q.ack(held)?
+    let _ = homed(q.db.rollback())?
+    let again? = q.take()? else { return false }
+    acked &&
+        again.item == 1 &&
+        again.epoch == 1 &&
+        again.attempt == 0 &&
+        q.depth()? == 1 &&
+        counts_true(q.db)?
+}
+
+fn undone_name_is_forgotten() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = homed(q.db.begin())?
+    let first = q.send_as(1, key("a"), "n")?
+    let _ = homed(q.db.rollback())?
+    let second = q.send_as(2, key("a"), "n")?
+    first != null && second != null && (q.take()?)?.item == 2 && q.depth()? == 1
+}
+
+// ── A clock ──
+
+fn clocked(t: Terms, at: Cell<int>) -> Result<Store<int>, HomeError> {
+    fresh(t)? with { clock: () -> Time { ns: at.get() } }
+}
+
+fn skewed_send_keeps_its_place() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(5000)
+    let q = clocked(fifo(), at)?
+    let _ = q.send(1, key("a"))?
+    at.set(1000)
+    let _ = q.send(2, key("b"))?
+    (q.take()?)?.item == 1
+}
+
+fn skewed_send_keeps_its_keys_place() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(5000)
+    let q = clocked(terms(64, Order.by_key, Overflow.fail), at)?
+    let _ = q.send(1, key("a"))?
+    at.set(1000)
+    let _ = q.send(2, key("a"))?
+    let got = q.taken(2)?
+    got.length == 1 && got[0].item == 1
+}
+
+fn clock_backward_keeps_hold() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(ms(100).ns)
+    let q = clocked(fifo() with { lease: ms(10) }, at)?
+    let _ = q.send(1, key("a"))?
+    let _ = q.send(2, key("b"))?
+    let d? = q.take()? else { return false }
+    at.set(0)
+    let blocked = q.take()?
+    blocked == null &&
+        q.began(d)? &&
+        q.release(d, ms(0))? &&
+        (q.take()?)?.epoch == 2 &&
+        counts_true(q.db)?
+}
+
+fn two_takes_at_one_instant() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let q = clocked(terms(64, Order.by_key, Overflow.fail), at)?
+    let _ = q.send_all(parcels(3))?
+    let a? = q.take()? else { return false }
+    let b? = q.take()? else { return false }
+    a.item == 0 && b.item == 1 && q.ack(a)? && q.ack(b)? && (q.take()?)?.item == 2
+}
+
+fn lease_ends_at_its_instant() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let q = clocked(fifo() with { lease: ms(1) }, at)?
+    let _ = q.send(1, key("a"))?
+    let first? = q.take()? else { return false }
+    at.set(1000 + ms(1).ns - 1)
+    let early = q.take()?
+    at.set(1000 + ms(1).ns)
+    let second? = q.take()? else { return false }
+    early == null && second.epoch == first.epoch + 1
+}
+
+fn backoff_before_now_is_due() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let q = clocked(fifo(), at)?
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    q.release(d, ms(0 - 60000))? && (q.take()?)?.epoch == 2
+}
+
+// ── A name ──
+
+fn nul() -> string {
+    from_codepoint(0)
+}
+
+fn names_past_a_nul_are_apart() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let names = ["n", "n${nul()}", "n${nul()}a", "n${nul()}b", nul(), ""]
+    let ids = [q.send_as(i, key("k"), n)? for i, n in names]
+    let again = [q.send_as(100 + i, key("k"), n)? for i, n in names]
+    q.depth()? == names.length &&
+        [ids[i] == again[i] for i, _n in names].all(it) &&
+        [ids.filter(it == id).length for id in ids].all(it == 1)
+}
+
+fn name_at_the_windows_edge() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let q = clocked(fifo(), at)? with { dedupe: ms(5) }
+    let first = q.send_as(1, key("a"), "n")?
+    at.set(1000 + ms(5).ns - 1)
+    let inside = q.send_as(2, key("a"), "n")?
+    at.set(1000 + ms(5).ns)
+    let past = q.send_as(3, key("a"), "n")?
+    first != null && inside == first && past != null && past != first && q.depth()? == 2
+}
+
+fn name_outlives_a_clock_gone_backward() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(ms(100).ns)
+    let q = clocked(fifo(), at)? with { dedupe: ms(5) }
+    let first = q.send_as(1, key("a"), "n")?
+    at.set(0)
+    first != null && q.send_as(2, key("a"), "n")? == first && q.depth()? == 1
+}
+
+fn discarded_name_answers_its_id() -> Result<bool, HomeError> {
+    let q = fresh(terms(1, Order.fifo, Overflow.drop_newest))?
+    let _ = q.send(1, key("a"))?
+    let gone = q.send_as(2, key("a"), "n")?
+    let again = q.send_as(3, key("a"), "n")?
+    gone != null &&
+        again == gone &&
+        q.depth()? == 1 &&
+        rows(q.db, "SELECT count(*) FROM \"FlowItem\"")? == 1
+}
+
+// ── Queues side by side ──
+
+fn hostile() -> List<string> {
+    [
+        "jobs",
+        "jobs2",
+        "jobs%",
+        "job_",
+        "jobs/dead",
+        "jobs'",
+        "jobs\"",
+        "jobs; DROP TABLE \"FlowItem\"; --",
+        "jobs\n",
+        "jobs${nul()}",
+        "jobs${nul()}2",
+        "",
+        " ",
+        nul(),
+        repeat("q", 10000),
+        "${repeat("q", 10000)}2",
+        "JOBS",
+    ]
+}
+
+/// A row of the int shape no int can be read from.
+fn poison(db: Db, queue: string) -> Result<int, HomeError> {
+    homed(
+        db
+            .run(
+                sql(
+                    "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES (?1, 'p', 1, x'', 0, 0, 0, 0)",
+                    [.Text(queue)],
+                ),
+            ),
+    )
+}
+
+fn queues_never_mix() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let names = hostile()
+    let homes = [ints(db, n, terms(8, Order.fifo, Overflow.fail))? with { reader: n } for n in names]
+    for i, q in homes {
+        let _ = poison(db, names[i])?
+        let _ = q.send_as(i, key("k"), "same")?
+        let _ = q.send_as(100 + i, key("k"), "other")?
+        let _ = q.send(200 + i, key("k"))?
+    }
+    mut apart = true
+    for i, q in homes {
+        let full = q.depth()? == 4
+        let d? = q.take()? else { return false }
+        let aside = q.unreadable()?
+        apart = apart &&
+            full &&
+            d.item == i &&
+            q.take()? == null &&
+            q.depth()? == 3 &&
+            q.unreadable_count()? == 1 &&
+            aside.length == 1 &&
+            q.send_as(300, key("k"), "same")? == d.id
+    }
+    apart && counts_true(db)? && rows(db, "SELECT count(*) FROM \"FlowRoom\"")? == names.length
+}
+
+// ── A row no item can be read from ──
+
+fn poison_stream_is_passed_in_one_take() -> Result<bool, HomeError> {
+    let q = fresh(terms(4096, Order.fifo, Overflow.fail))?
+    for _i in 0..2000 { let _ = poison(q.db, "jobs")? }
+    let _ = q.send(1, key("a"))?
+    let before = q.depth()?
+    let d? = q.take()? else { return false }
+    let aside = q.unreadable()?
+    before == 2001 &&
+        d.item == 1 &&
+        q.depth()? == 1 &&
+        q.unreadable_count()? == 2000 &&
+        aside.length == 2000 &&
+        aside.all(it.why is .Octets) &&
+        counts_true(q.db)?
+}
+
+fn poison_held_by_a_full_queue_frees_its_room() -> Result<bool, HomeError> {
+    let q = fresh(terms(1, Order.fifo, Overflow.fail))?
+    let _ = poison(q.db, "jobs")?
+    let turned = q.send(1, key("a"))?
+    let nothing = q.take()?
+    let kept = q.send(2, key("a"))?
+    turned == null &&
+        nothing == null &&
+        kept != null &&
+        (q.take()?)?.item == 2 &&
+        counts_true(q.db)?
+}
+
+// ── Two connections to one file ──
+
+/// A connection to `path` that waits for no lock.
+fn impatient(path: string, journal: Journal, t: Terms) -> Result<Store<int>, HomeError> {
+    ints(
+        homed(Db.open_with(OpenConfig.config_at(path) with { busy: 0, journal: journal }))?,
+        "jobs",
+        t,
+    )
+}
+
+fn turned_away_name_is_sent_afresh() -> Result<bool, HomeError> {
+    let q = fresh(terms(1, Order.fifo, Overflow.fail))?
+    let _ = q.send(1, key("a"))?
+    let away = q.send_as(2, key("a"), "n")?
+    let d? = q.take()? else { return false }
+    let kept = q.send_as(3, key("a"), "n")?
+    let again = q.send_as(4, key("a"), "n")?
+    away == null &&
+        kept != null &&
+        again == kept &&
+        q.ack(d)? &&
+        (q.take()?)?.item == 3 &&
+        q.depth()? == 1
+}
+
+fn opened_inside_is_refused() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let _ = homed(db.begin())?
+    let refused = match ints(db, "jobs", fifo()) {
+        .Err(.Refused(why)) -> why == "a home is opened outside a transaction, and this connection holds one",
+        rest -> false,
+    }
+    let _ = homed(db.rollback())?
+    let q = ints(db, "jobs", fifo())?
+    refused && q.send(1, key("a"))? != null && q.depth()? == 1 && counts_true(db)?
+}
+
+fn forget_counts(db: Db) -> Result<int, HomeError> {
+    homed(db.run(sql("DELETE FROM \"FlowRoom\"")))
+}
+
+fn lost_count_is_never_zero() -> Result<bool, HomeError> {
+    let q = fresh(terms(2, Order.fifo, Overflow.fail))?
+    let _ = q.send(1, key("a"))?
+    let _ = forget_counts(q.db)?
+    let deep = q.depth()?
+    let _ = forget_counts(q.db)?
+    let second = q.send(2, key("b"))?
+    let third = q.send(3, key("c"))?
+    deep == 1 && second != null && third == null && q.depth()? == 2 && counts_true(q.db)?
+}
+
+fn lost_count_outlives_a_take_and_an_ack() -> Result<bool, HomeError> {
+    let q = fresh(terms(2, Order.fifo, Overflow.fail))?
+    let _ = q.send_all(parcels(2))?
+    let _ = forget_counts(q.db)?
+    let d? = q.take()? else { return false }
+    let _ = q.ack(d)?
+    q.depth()? == 1 &&
+        q.send(3, key("c"))? != null &&
+        q.send(4, key("d"))? == null &&
+        counts_true(q.db)?
+}
+
+fn asked_back<V>(r: Result<V, HomeError>) -> bool {
+    match r { .Err(.Unreachable(_)) -> true, rest -> false }
+}
+
+/// Every verb of a home, asked while another connection holds the
+/// write lock: each asks the caller back, none changes a row, and the
+/// hold taken before the lock is whole once it is gone.
+fn locked_out(path: string, journal: Journal) -> Result<bool, HomeError> {
+    let t = terms(64, Order.by_key, Overflow.fail)
+    let writer = impatient(path, journal, t)?
+    let q = impatient(path, journal, t)?
+    let _ = q.send_all(parcels(3))?
+    let held = q.taken(2)?
+    if held.length != 2 { return false }
+    let _ = homed(writer.db.begin())?
+    let asked: Cell<int> = Cell.new(0)
+    let back = [
+        asked_back(q.send(9, key("z"))),
+        asked_back(q.send_as(9, key("z"), "n")),
+        asked_back(q.send_all(parcels(2))),
+        asked_back(q.take()),
+        asked_back(q.began(held[0])),
+        asked_back(q.ack(held[0])),
+        asked_back(q.ack_all(held)),
+        asked_back(q.release(held[0], ms(0))),
+        asked_back(
+            q
+                .bury(
+                    held[0],
+                    (_n: int) -> {
+                        asked.set(asked.get() + 1)
+                        true
+                    },
+                ),
+        ),
+        asked_back(bury_in(q, held[0], q, 0)),
+        asked_back(impatient(path, journal, t)),
+    ]
+    let open = q.db.in_transaction()
+    let _ = homed(writer.db.commit())?
+    back.all(it) &&
+        !open &&
+        asked.get() == 0 &&
+        q.depth()? == 3 &&
+        counts_true(q.db)? &&
+        rows(q.db, "SELECT count(*) FROM \"FlowItem\" WHERE \"attempt\" <> 0 OR \"epoch\" > 1")? == 0 &&
+        rows(q.db, "PRAGMA synchronous")? == 2 &&
+        q.ack(held[0])? &&
+        q.release(held[1], ms(0))? &&
+        (q.taken(5)?).length == 2
+}
+
+fn locked_out_of_a_journal(path: string) -> Result<bool, HomeError> {
+    locked_out(path, Journal.Keep)
+}
+
+fn locked_out_of_a_log(path: string) -> Result<bool, HomeError> {
+    locked_out(path, Journal.Wal)
+}
+
+fn stale_reader_is_asked_back(path: string) -> Result<bool, HomeError> {
+    let t = terms(64, Order.fifo, Overflow.fail)
+    let other = impatient(path, Journal.Wal, t)?
+    let q = impatient(path, Journal.Wal, t)?
+    let _ = homed(q.db.begin_read())?
+    let before = q.depth()?
+    let _ = other.send(1, key("a"))?
+    let back = asked_back(q.send(2, key("b")))
+    let open = q.db.in_transaction()
+    let _ = homed(q.db.rollback())?
+    before == 0 &&
+        back &&
+        open &&
+        q.send(3, key("c"))? != null &&
+        q.depth()? == 2 &&
+        counts_true(q.db)?
+}
+
+fn one_name_from_two_connections(path: string) -> Result<bool, HomeError> {
+    let both = pair(path, Order.fifo)?
+    let first = both[0].send_as(1, key("a"), "n")?
+    let second = both[1].send_as(2, key("a"), "n")?
+    first != null && second == first && both[0].depth()? == 1 && (both[1].take()?)?.item == 1
+}
+
+// ── A restart ──
+
+fn restart_returns_every_held_item(path: string) -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let t = terms(64, Order.by_key, Overflow.fail) with { lease: ms(1) }
+    let before = opened(path, t)? with { clock: () -> Time { ns: at.get() } }
+    let _ = before.send_all(parcels(6))?
+    let held = before.taken(4)?
+    let _ = before.began(held[0])?
+    let _ = before.ack(held[1])?
+    let _ = before.release(held[2], ms(60000))?
+    let _ = before.db.close()
+    let q = opened(path, t)? with { clock: () -> Time { ns: at.get() } }
+    let early = q.taken(9)?
+    let _ = q.ack_all(early)?
+    at.set(1000 + ms(1).ns)
+    let lapsed = q.taken(9)?
+    q.depth()? == 3 &&
+        counts_true(q.db)? &&
+        early.length == 2 &&
+        early.all(it.epoch == 1 && it.item > 3) &&
+        lapsed.length == 2 &&
+        lapsed.all(it.epoch == 2) &&
+        lapsed.any(it.item == 0 && it.attempt == 1) &&
+        lapsed.any(it.item == 3 && it.attempt == 0) &&
+        !q.ack(held[0])? &&
+        !q.ack(held[1])?
+}
+
+fn restart_mid_bury_keeps_the_item(path: string) -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let t = fifo() with { lease: ms(1) }
+    let before = opened(path, t)? with { clock: () -> Time { ns: at.get() } }
+    let _ = before.send(1, key("a"))?
+    let d? = before.take()? else { return false }
+    let died = match before
+        .bury(
+            d,
+            (_n: int) -> {
+                let _ = before.db.close()
+                true
+            },
+        ) { .Err(_) -> true, .Ok(_) -> false }
+    let q = opened(path, t)? with { clock: () -> Time { ns: at.get() } }
+    let early = q.take()?
+    at.set(1000 + 2 * ms(1).ns)
+    let again? = q.take()? else { return false }
+    died &&
+        early == null &&
+        again.item == 1 &&
+        again.epoch == 2 &&
+        q.depth()? == 1 &&
+        counts_true(q.db)?
+}
+
+// ── Both homes ──
+
+/// Where the two homes first answered one run differently, for every
+/// run of terms and seed in which they did.
+fn parted_runs(all: List<Terms>, seeds: int, steps: int) -> Result<List<string>, HomeError> {
+    mut said: List<string> = []
+    for i, t in all {
+        for seed in 1..seeds + 1 {
+            let memory = transcript(open_queue<int>("jobs", t)?, seed, steps).split(" ")
+            let store = transcript(stored(t)?, seed, steps).split(" ")
+            let at = (0..memory.length).find(it >= store.length || memory[it] != store[it]) ?? memory
+                .length
+            if at < memory.length || store.length != memory.length {
+                said
+                    .push(
+                        "terms ${i} seed ${seed} step ${at}: memory ${memory.drop(at - 12).take(16).join(" ")} | store ${store.drop(at - 12).take(16).join(" ")}",
+                    )
+            }
+        }
+    }
+    said
+}
+
+/// The runs over the store home, of every term and seed, that broke
+/// the order's promise.
+fn broken_runs(all: List<Terms>, seeds: int, steps: int) -> Result<List<string>, HomeError> {
+    mut said: List<string> = []
+    for i, t in all {
+        for seed in 1..seeds + 1 {
+            let seen = transcript(stored(t)?, seed, steps)
+            if seen.contains("!") { said.push("terms ${i} seed ${seed}: ${seen}") }
+        }
+    }
+    said
+}
+
+fn clock_at(ns: int) -> Result<bool, HomeError> {
+    let q = clocked(fifo() with { lease: ms(1) }, Cell.new(ns))?
+    let _ = q.send(1, key("a"))?
+    let _ = q.send(2, key("b"))?
+    let d? = q.take()? else { return false }
+    d.item == 1 &&
+        q.take()? == null &&
+        q.release(d, ms(0))? &&
+        (q.take()?)?.epoch == 2 &&
+        q.depth()? == 2
+}
+
+spec "std/queue_store — under attack" {
+    given "the store home" {
+        then "withstands every attack" {
+            beaten(stored).join("; ") == ""
+        }
+        then "is refused at its opening under terms that hold no item" {
+            roomless(stored)
+        }
+        then "answers no delivery a home of the same name in another database handed out" {
+            apart(stored)
+        }
+    }
+    given "the memory home and the store home" {
+        then "answer forty runs of three hundred chosen verbs alike" {
+            (parted_runs(run_terms(), 5, 300) catch ["a home could not be made"]).join("\n") == ""
+        }
+        then "answer three runs of two thousand, two hundred deep, alike" {
+            (parted_runs(deep_terms(), 1, 2000) catch ["a home could not be made"]).join("\n") == ""
+        }
+    }
+    given "the store home, over runs of chosen verbs" {
+        then "keeps the order's promise over forty runs of three hundred" {
+            (broken_runs(run_terms(), 5, 300) catch ["a home could not be made"]).join("\n") == ""
+        }
+        then "keeps the order's promise over three runs of two thousand, two hundred deep" {
+            (broken_runs(deep_terms(), 1, 2000) catch ["a home could not be made"]).join("\n") == ""
+        }
+    }
+    given "two connections to one file" {
+        then "every verb asked under the other's write lock asks back and changes nothing, in a rollback journal" {
+            scratched(locked_out_of_a_journal)
+        }
+        then "every verb asked under the other's write lock asks back and changes nothing, in a write-ahead log" {
+            scratched(locked_out_of_a_log)
+        }
+        then "a send inside a read the other wrote past asks back and leaves the transaction standing" {
+            scratched(stale_reader_is_asked_back)
+        }
+        then "one name sent from each is one item" {
+            scratched(one_name_from_two_connections)
+        }
+    }
+    given "a restart" {
+        then "returns every held item at its epoch and attempt, and keeps a settled one settled" {
+            scratched(restart_returns_every_held_item)
+        }
+        then "in the middle of a bury keeps the item, handed out again once its renewed lease ran out" {
+            scratched(restart_mid_bury_keeps_the_item)
+        }
+    }
+    given "a transaction the caller holds" {
+        then "a send_all that fails inside it keeps none of its items when the caller commits" {
+            joined_batch_failure_keeps_none() catch false
+        }
+        then "a verb that fails inside it leaves the caller's own work and the transaction standing" {
+            joined_failure_keeps_callers_work() catch false
+        }
+        then "begun for reading is joined by a send and a take, and undone with them" {
+            read_transaction_is_joined() catch false
+        }
+        then "undone, brings back the item a full queue gave up inside it" {
+            undone_drop_brings_the_oldest_back() catch false
+        }
+        then "undone, leaves an item taken and acked inside it waiting and never taken" {
+            undone_take_and_ack_leave_the_item() catch false
+        }
+        then "undone, forgets the name a send inside it was given" {
+            undone_name_is_forgotten() catch false
+        }
+        then "refuses a home opened inside it, and the home opens once it ended" {
+            opened_inside_is_refused() catch false
+        }
+    }
+    given "a queue whose counts are gone" {
+        then "counts its rows again for a depth and for a send's room" {
+            lost_count_is_never_zero() catch false
+        }
+        then "counts its rows again after a take and an ack went uncounted" {
+            lost_count_outlives_a_take_and_an_ack() catch false
+        }
+    }
+    given "a clock" {
+        then "ahead of a later sender's keeps its item first under fifo" {
+            skewed_send_keeps_its_place() catch false
+        }
+        then "ahead of a later sender's keeps its item first in its key" {
+            skewed_send_keeps_its_keys_place() catch false
+        }
+        then "before the epoch sends, takes, releases and takes again" {
+            clock_at(0 - 9223372036854775807) catch false
+        }
+        then "two minutes from the int's end sends, takes, releases and takes again" {
+            clock_at(9223372036854775807 - 120000000000) catch false
+        }
+        then "gone backward keeps a hold its holder's" {
+            clock_backward_keeps_hold() catch false
+        }
+        then "read twice at one instant hands out two items" {
+            two_takes_at_one_instant() catch false
+        }
+        then "ends a lease at its instant and not a nanosecond before" {
+            lease_ends_at_its_instant() catch false
+        }
+        then "past a backoff that ended before now finds the item due" {
+            backoff_before_now_is_due() catch false
+        }
+    }
+    given "a named send" {
+        then "names that differ only past a NUL are apart, each one item" {
+            names_past_a_nul_are_apart() catch false
+        }
+        then "is one item until the window's last nanosecond and a new one at its end" {
+            name_at_the_windows_edge() catch false
+        }
+        then "is still one item when the clock went backward" {
+            name_outlives_a_clock_gone_backward() catch false
+        }
+        then "turned away by a full queue is not remembered, and its name's next send is kept" {
+            turned_away_name_is_sent_afresh() catch false
+        }
+        then "discarded by a full queue answers the same id and files nothing" {
+            discarded_name_answers_its_id() catch false
+        }
+    }
+    given "seventeen queues of hostile names in one database" {
+        then "share no item, count, name, reader or unread row" {
+            queues_never_mix() catch false
+        }
+    }
+    given "a row no item can be read from" {
+        then "two thousand of them are passed in one take and listed" {
+            poison_stream_is_passed_in_one_take() catch false
+        }
+        then "filling a queue of one frees its room once a take met it" {
+            poison_held_by_a_full_queue_frees_its_room() catch false
+        }
+    }
+}

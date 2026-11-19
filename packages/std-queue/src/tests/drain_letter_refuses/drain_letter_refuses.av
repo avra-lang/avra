@@ -1,0 +1,29 @@
+//! proves a drain whose letter refuses ends: the failed item keeps its
+//! hold, nothing is buried, and the drain answers.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery}
+use @std.task.{open_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+fn pay(d: Delivery<Job>) -> Result<int, string> { .Err("no ${d.item.n}") }
+
+let seen: Cell<List<string>> = Cell.new([])
+let letters = open_channel<Dead<Job, string>>(1)
+letters.sink.close()
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(60000)
+    retries: 1
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters.sink
+    failed: (d: Delivery<Job>, e: string) -> seen.push("failed ${e}")
+    buried: (gone: Dead<Job, string>) -> seen.push("buried ${gone.item.n}")
+}
+let _ = jobs.home().send(Job { n: 1 }, key("a"))
+let _ = jobs.home().send(Job { n: 2 }, key("b"))
+let settled = drain(settle) catch 0 - 1
+"${settled} ${jobs.home().depth() catch 0 - 1} | ${seen.get().join(", ")}"

@@ -228,7 +228,7 @@ program using it), or SQLITE (nothing can be done, document it).
 | T137 | A PRAGMA'S ANSWER IS DATA. CHECK IT; NEVER ASSUME IT | DRIVER | MEASURED |
 | T138 | `foreign_keys` IS OFF BY DEFAULT, AND MOST BINDINGS GET THIS WRONG. TURN IT ON | DRIVER | MEASURED |
 | T139 | `journal_mode` — WAL by default, checked, and disclosed |  |  |
-| T140 | `synchronous` — NORMAL under WAL ONLY, and it is a durability decision that belongs to the caller | DRIVER | MEASURED |
+| T140 | `synchronous` IS THE CONNECTION'S, NEVER THE FILE'S, AND A WAL CONNECTION ANSWERS FULL UNTIL ITS FIRST USE THEN COMMITS AT THE BUILD'S DEFAULT. STATE IT AT EVERY OPEN AND EVERY REOPEN: `Durability` on `open_with`, `Synced` unless the caller names another; `Eased` (NORMAL) under WAL only, since over a rollback journal it can tear the file; `Flushed` adds `fullfsync`, the only level that waits for the drive on Apple platforms | DRIVER | MEASURED |
 | T141 | `cache_size`'s SIGN CHANGES ITS UNIT, AND THE DEFAULT'S SIGN IS BUILD-SPECIFIC | DRIVER | MEASURED |
 | T142 | `busy_timeout` — set it, and know what it cannot do |  | MEASURED |
 | T143 | `mmap_size` TURNS AN I/O ERROR INTO A SEGFAULT | CALLER | MEASURED |
