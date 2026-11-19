@@ -29,7 +29,7 @@ type Mail = { to: string, tries: int, tags: List<string>, cc: string?, urgent: b
 @codec
 type Unit = { name: string }
 
-/// A type no descriptor here follows: it nests another.
+/// A type that nests another, which wears its own codec.
 @codec
 type Reading = { unit: Unit }
 
@@ -166,8 +166,8 @@ fn never_homed() -> Result<string, HomeError> {
 }
 
 /// Items written by other builds and other shapes, read by their own
-/// descriptors: a grown record, an enum, a type no descriptor here
-/// follows, and a row whose shape the database never recorded.
+/// descriptors: a grown record, an enum, a row whose shape the database
+/// never recorded, and a type that nests another.
 fn other_builds() -> Result<string, HomeError> {
     ctx db = homed(Db.memory())?
     queue<Notice> mixed {
@@ -414,8 +414,8 @@ spec "std/queue_store — operating a queue" {
         then "the letters are the queues whose items are letters" {
             shown(listed()).split("\n")[6] == "letters undeliverable held held@x"
         }
-        then "an item another build wrote reads by its own shape, and one no descriptor follows reads as none" {
-            shown(other_builds()) == "{\"to\":\"old@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\n{\"to\":\"new@x\",\"tries\":2,\"tags\":[],\"cc\":\"boss@x\",\"urgent\":true}\n{\"Loud\":[3]}\n\"Quiet\"\nunread\nunread"
+        then "an item another build wrote reads by its own shape, one that nests reads whole, and one with no descriptor reads as none" {
+            shown(other_builds()) == "{\"to\":\"old@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\n{\"to\":\"new@x\",\"tries\":2,\"tags\":[],\"cc\":\"boss@x\",\"urgent\":true}\n{\"Loud\":[3]}\n\"Quiet\"\nunread\n{\"unit\":{\"name\":\"f\"}}"
         }
         then "a lease that ran out reads as lapsed, and an unknown queue as none" {
             shown(lapsed()) == "lapsed 7 | unknown true 0"
