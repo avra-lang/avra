@@ -1,0 +1,134 @@
+// proves: an observation is the loop's, one entry per key. Two views asking
+// the same GET make ONE request and both show its answer; the order a query is
+// written in names no second observation; a request that writes is shared by
+// no one; an entry nobody reads is kept five minutes and under a 16 MB cap,
+// and an entry a view reads is never dropped — eval == native.
+use @std.ui.app.{Async, Fetch, fetch, fetched, running}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.http_message.message.{Body, Reply, Request}
+use @std.text.{repeat}
+use @std.time.{mins, ms}
+
+state left: Fetch<int> = fetch()
+state right: Fetch<int> = fetch()
+state sorted: Fetch<int> = fetch()
+state shuffled: Fetch<int> = fetch()
+state held: Fetch<int> = fetch()
+state path: string = "/old"
+state sent: int = 0
+state posted: int = 0
+
+fn network(r: Request) -> Result<Reply, string> {
+    sent = sent + 1
+    if r.url.starts_with("/big") { return .Ok(Reply { status: 200, body: big().bytes() }) }
+    .Ok(Reply { status: 200, body: r.url.bytes() })
+}
+
+/// Nine million octets.
+fn big() -> string {
+    let thousand = repeat("x", 1000)
+    [thousand for _i in 0..9000].join("")
+}
+
+fn parsed(r: Reply) -> Result<int, string> { .Ok(r.body.length) }
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(v) -> "ready ${v}",
+    }
+}
+
+fn view() -> item {
+    item {
+        items: [
+            button "Left" { on press { let _ = fetched(left, Request.get("/tasks"), parsed) } },
+            button "Right" { on press { let _ = fetched(right, Request.get("/tasks"), parsed) } },
+            button "Sorted" { on press { let _ = fetched(sorted, Request.get("/t?a=1&b=2"), parsed) } },
+            button "Shuffled" { on press { let _ = fetched(shuffled, Request.get("/t?b=2&a=1"), parsed) } },
+            button "Post" { on press { let _ = fetched(left, Request.post("/tasks", Body.Text("x")), parsed) } },
+            button "Post again" { on press { let _ = fetched(right, Request.post("/tasks", Body.Text("x")), parsed) } },
+        ]
+    }
+}
+
+fn held_view() -> item {
+    item { items: [button "Ask" { on press { let _ = fetched(held, Request.get(path), parsed) } }] }
+}
+
+fn goes(to: string) -> bool {
+    path = to
+    true
+}
+
+fn standing() -> string {
+    let on? = running() else { return "no loop" }
+    [e.key?.path ?? "-" for e in on.observed.entries.get()].join(" ")
+}
+
+fn entries() -> int {
+    let on? = running() else { return -1 }
+    on.observed.entries.get().length
+}
+
+let screen = headless(view)
+screen.wired(network)
+screen
+    .running(
+        () -> {
+            let _ = screen.press("Left")
+            let _ = screen.press("Right")
+            println("both asked: ${words(left.state())} ${words(right.state())} sent ${sent}")
+            screen.advance(ms(10))
+            println(
+                "one request answered both: ${words(left.state())} ${words(right.state())} sent ${sent}",
+            )
+            let _ = screen.press("Sorted")
+            let _ = screen.press("Shuffled")
+            screen.advance(ms(10))
+            println(
+                "a query's order is no second observation: ${words(sorted.state())} ${words(shuffled.state())} sent ${sent}",
+            )
+            let _ = screen.press("Post")
+            let _ = screen.press("Post again")
+            screen.advance(ms(10))
+            println("two writes are two requests: sent ${sent}")
+        },
+    )
+
+let timed = headless(held_view)
+timed.wired(network)
+timed
+    .looped(
+        () -> {
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            let _ = timed.turn(() -> goes("/new"))
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            println("the view left /old and reads /new: ${standing()}")
+            timed.advance(mins(4))
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            println("four minutes on, /old is kept: ${standing()}")
+            timed.advance(mins(2))
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            println("six minutes on, /old is gone and /new, read, stands: ${standing()}")
+            let _ = timed.turn(() -> goes("/big1"))
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            let _ = timed.turn(() -> goes("/big2"))
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            let _ = timed.turn(() -> goes("/big3"))
+            let _ = timed.press("Ask")
+            timed.advance(ms(10))
+            println(
+                "two unread 9 MB answers pass the cap, the least recently read goes: ${standing()}",
+            )
+        },
+    )

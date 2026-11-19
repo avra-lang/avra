@@ -1,0 +1,86 @@
+// proves: a terminal session — keys in, lines out. One view of module
+// `state` is drawn in thirty cells; Tab moves the focus, a typed line
+// fills the field that holds it, Enter presses and checks, and the screen
+// printed after each run of keys is the state the handlers left.
+use @std.text.{from_codepoint}
+use @std.ui.components.{button, card, checkbox, column, field, item, list, row, text}
+use @std.ui.terminal.{terminal}
+use @std.ui.style.layout.{Layout}
+
+type Todo = { id: string, title: string, done: bool }
+
+state draft: string = ""
+state seq: int = 2
+state todos: List<Todo> = [Todo { id: "t1", title: "Water the plants", done: false }]
+
+fn add() {
+    if draft == "" { return }
+    todos = todos.concat([Todo { id: "t${seq}", title: draft, done: false }])
+    seq = seq + 1
+    draft = ""
+}
+
+fn rows() -> list {
+    list todos by it.id { t ->
+        item {
+            items: [
+                checkbox t.title {
+                    checked: t.done
+                    on change { checked -> todos = [if x.id == t.id { x with { done: checked } } else { x } for x in todos] }
+                },
+                button "Remove" { on press { todos = [x for x in todos if x.id != t.id] } },
+            ]
+        }
+    }
+}
+
+fn view() -> card {
+    card "Today" {
+        layout: Layout { gap: .S }
+        items: [
+            row {
+                layout: Layout { gap: .S }
+                items: [
+                    field "New" {
+                        value: draft
+                        on input { typed -> draft = typed }
+                    },
+                    button "Add" { on press { add() } },
+                ]
+            },
+            rows(),
+            text "${[t for t in todos if !t.done].length} left",
+        ]
+    }
+}
+
+let on = terminal(view, width: 30)
+let back = "${from_codepoint(27)}[Z"
+
+println("── start")
+println(on.screen())
+
+on.feed("Call the bank")
+println("── type a task")
+println(on.screen())
+
+on.feed("\t\n")
+println("── tab, enter: add it")
+println(on.screen())
+
+on.feed("\t\n")
+println("── tab, enter: check the first")
+println(on.screen())
+
+on.feed("\t\t\t\n")
+println("── tab tab tab, enter: remove the second")
+println(on.screen())
+
+on.feed("${back}${back}${back}${from_codepoint(127)}")
+println("── shift-tab three times, backspace on an empty field")
+println(on.screen())
+
+on.feed("${from_codepoint(4)}\tx\n")
+println("── ctrl-d ends: the keys after it are not read")
+println(on.screen())
+println("ended=${on.ended.get()} left=[${[t.title for t in todos].join(",")}] draft=[${draft}]")

@@ -1,0 +1,27 @@
+// proves: a fork in the same process as a program that ended with a transaction open is served, not refused
+// (cores_dead_a_leaves ran before it).
+use @std.http.http.{text}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.net.{NetError}
+use tests.support.{asked, refused}
+
+fn shown() -> Result<string, NetError> {
+    server app {
+        port: 0
+        get "/" { _req -> text(200, "up") }
+    }
+    let up = match app.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return .Err(refused(e.describe().message)) },
+    }
+    let ran = spawn up.run(3)
+    let port = up.listener.port
+    let sent = [spawn asked(port, "GET") for i in 0..6]
+    let answers = [t.await? for t in sent]
+    up.stop()
+    let second = match ran.await { .Ok(n) -> "ran ${n}", .Err(e) -> "err ${e.errno} ${e.subject}" }
+    .Ok("${answers.all(it == "up")} ${second}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -1,0 +1,222 @@
+//! THE DISK HOST: the workspace's questions answered by this machine's
+//! disk, environment and running binary — the door's body on the CLI's side.
+use @std.avrac.compiler.{digest_of_binary}
+use @std.avrac.compiler.store.{machine_cache}
+use @std.avrac.core.{qtrace, traced, EmbedKind}
+use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
+use @std.path.{dir_of, joined_path, file_name, normalized}
+use @std.process.{tool as process_tool, exit, Exit}
+use @std.io.{
+    read_text,
+    read_bytes,
+    write_text,
+    exists,
+    is_dir,
+    list_dir,
+    env,
+    make_dirs,
+    stamp,
+    open_beneath,
+    IoError,
+}
+
+/// The disk, as the workspace's four questions — a listing the host
+/// refuses reads as empty (the workspace asks `exists` first); a FILE
+/// it refuses is spoken and exits, never parsed as empty.
+fn disk_host() -> Host {
+    Host {
+        exists: (p: string) -> exists(p),
+        peek: (p: string) -> disk_peek(p),
+        refused: (p: string) -> refusal_spoken(p),
+        beneath: (root: string, rel: string, kind: EmbedKind) -> disk_beneath(root, rel, kind),
+        list: (dir: string) -> list_dir(dir) catch [],
+        write: (p: string, text: string) -> write_file(p, text),
+        is_dir: (dir: string) -> is_dir(dir),
+        reads_ahead: (files: int) -> light_or_leave(files),
+        env: process_env,
+        print: own_print,
+        tool: disk_tool,
+        octets: (p: string) -> disk_octets(p),
+        std_root: std_root(),
+        cwd: env("PWD") ?? ".",
+        compiler: own_binary(),
+        cache: machine_cache(),
+    }
+}
+
+/// Whether a directory stands at `path` — the door's listing, asked for
+/// its presence alone. A command reads the path it was given before any
+/// workspace exists.
+fn is_a_dir(path: string) -> bool {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    match disk_host().listing(path) { .Listing(_, entries) -> entries != null, rest -> false }
+}
+
+/// What stands at `rel` beneath `root` on the disk, opened segment by
+/// segment and never through a link (`@std/io`'s `open_beneath`). A
+/// refusal the path itself survives — something stands there when
+/// links are followed — was a link's.
+fn disk_beneath(root: string, rel: string, kind: EmbedKind) -> Beneath {
+    let o = match open_beneath(root, rel) {
+        .Ok(o) -> o,
+        .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
+    }
+    defer o.close()
+    match o.kind {
+        .File -> match kind {
+            .Text -> match o.text() { .Ok(text) -> Beneath.Text(text), .Err(e) -> unread(e) },
+            .Octets -> match o.span(0, o.size) {
+                .Ok(octets) -> Beneath.Octets(octets),
+                .Err(e) -> Beneath.Refused(e.describe().message),
+            },
+        },
+        .Missing or .Dir or .Other -> Beneath.Refused("`${rel}` is not a file"),
+    }
+}
+
+/// Why a path beneath a root did not open.
+fn unopened(e: IoError, stands: bool) -> Beneath {
+    match e {
+        .NotFound(_) -> Beneath.Missing,
+        .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
+        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
+    }
+}
+
+/// The disk host's refusal of a file it would not give: read again for
+/// the reason, spoken, and the run ended.
+fn refusal_spoken(path: string) {
+    let _ = read_or_die(path)
+}
+
+/// The disk's whole-file read, links followed.
+fn disk_text(path: string) -> Result<string, IoError> { read_text(path) }
+
+/// The disk's octets at a path, links followed: the bytes, nothing where
+/// none stand, or the disk's refusal in its own words.
+fn disk_octets(path: string) -> Octet {
+    match read_bytes(path) {
+        .Ok(bytes) -> Octet.Bytes(bytes),
+        .Err(.NotFound(_)) -> Octet.Missing,
+        .Err(e) -> Octet.Refused(e.describe().message),
+    }
+}
+
+/// What stands at a path on the disk, links followed — and never the
+/// end of the run.
+fn disk_peek(path: string) -> Beneath {
+    match disk_text(path) { .Ok(text) -> Beneath.Text(text), .Err(e) -> unpeeked(e) }
+}
+
+/// Why a whole-file read gave no text.
+fn unpeeked(e: IoError) -> Beneath {
+    match e {
+        .NotFound(_) -> Beneath.Missing,
+        .NotText(_, at) -> Beneath.NotText(at),
+        .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
+    }
+}
+
+/// Why an opened file gave no text.
+fn unread(e: IoError) -> Beneath {
+    match e {
+        .NotText(_, at) -> Beneath.NotText(at),
+        .NotFound(_) or .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
+    }
+}
+
+/// How many files a LIGHT run may read: an edit's, never a cold tree's.
+const LIGHT_READS: int = 16
+
+/// The status a run leaves with when it was asked to stay light and cannot:
+/// whoever asked runs it again where heavy work is allowed. Nothing was said
+/// and nothing was read.
+const TOO_HEAVY: int = 75
+
+/// `AVRA_LIGHT` asks a run to do no heavy work where it stands — the tree's
+/// shim tries every package-scale `check`, `build` and `fmt` so, and sends the ones
+/// that leave through the machine's watchdog.
+fn light_or_leave(files: int) {
+    if files > LIGHT_READS && env("AVRA_LIGHT") != null { exit(Exit.Code(TOO_HEAVY)) }
+}
+
+/// This binary's own path — the compiler a store's rows are the work of: the file the running image
+/// was started from, its links resolved, never another file named as it was invoked.
+fn own_binary() -> string? {
+    let at = avra_self_path()
+    if at.is_empty() { null } else { at }
+}
+
+/// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, settled
+/// once a process — a binary rebuilt under a running process is not the
+/// code that runs. THE ONE IDENTITY EVERY KEPT ARTIFACT'S KEY HOLDS: an
+/// object, a link, a suite binary, an agreement, a machine store's answers
+/// — whatever a compiler made is another compiler's only where their bytes
+/// are one, whatever in them moved: its sources, its C, its LLVM. A record beside the binary names that digest for the
+/// binary's stamp (size, times, inode): the bytes are read again when the
+/// stamp differs, the path differs, or the host cannot tell (a file written
+/// too recently to trust). The value is the bytes' digest either way.
+once fn own_print() -> string? {
+    let at? = own_binary() else { return null }
+    let mark? = stamp(at) else {
+        let read? = digest_of_binary(at) else { return null }
+        printed_by("bytes", read)
+        return read
+    }
+    let head = "${mark}\t${at}\t"
+    let kept = read_text(print_record(at)) catch ""
+    if kept.starts_with(head) {
+        let digest = kept.substring(head.length, kept.length)
+        printed_by("stamp", digest)
+        return digest
+    }
+    let made? = digest_of_binary(at) else { return null }
+    let _ = write_text(print_record(at), "${head}${made}")
+    printed_by("bytes", made)
+    made
+}
+
+/// Where a binary's digest is remembered: beside it, named for it.
+fn print_record(at: string) -> string { joined_path(dir_of(at), ".${file_name(at)}.print") }
+
+fn printed_by(how: string, digest: string) {
+    if traced() { qtrace("Q\tprint\t${how}\t${digest.substring(0, 12)}\n") }
+}
+
+/// A tool by its word on the disk: where `PATH` finds it, or the path as
+/// written, and the disk's mark of what stands there; none when no tool
+/// answers to the word.
+fn disk_tool(word: string) -> Stamp? {
+    match process_tool(word) {
+        .Ok(t) -> Stamp { path: t.path, mark: stamp(t.path) },
+        .Err(_) -> null,
+    }
+}
+
+/// Write a file, making its directory first — a cache keeps artifacts
+/// where nothing has stood before.
+fn write_file(path: string, text: string) -> string? {
+    let _ = make_dirs(dir_of(path))
+    match write_text(path, text) { .Ok(_) -> null, .Err(e) -> e.describe().message }
+}
+
+/// THE TOOLCHAIN'S STD ROOT, found from the binary's own directory: a
+/// checkout keeps its packages beside `build/`, an install keeps them
+/// under `lib/avra/std/`, and a binary a checkout's own package built —
+/// a suite, a tool — stands beneath that checkout's `packages/`. Null
+/// when none stands — a bare binary with no std beside it, which
+/// resolves what its manifests declare and nothing more.
+fn std_root() -> string? { std_roots().find(is_dir(it)) }
+
+/// Where the toolchain's std may stand for this binary: beside a checkout's `build/`, under an
+/// install's `lib/`, then each `packages` directory above it.
+fn std_roots() -> List<string> {
+    toolchain_files(["../packages", "../lib/avra/std"])
+        .concat(packages_above(normalized(avra_self_dir())))
+}
+
+/// Each directory named `packages` at or above `dir`, nearest first.
+fn packages_above(dir: string) -> List<string> {
+    if dir.length <= 1 { return [] }
+    if file_name(dir) == "packages" { [dir] } else { [] }.concat(packages_above(dir_of(dir)))
+}

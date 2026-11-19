@@ -1,0 +1,453 @@
+//! WHAT AN EXTERN DECLARATION MAY SAY, as the program layer reads a written item: a `mut` seat a cell
+//! C writes can be, a plain seat and an answer that cross to C in one register, a callback that
+//! answers no pointer, a runtime row's own shape — its seats, the box each reads, its answer — and a
+//! host fn's plain seats and answer. A runtime row with an evaluator arm materialises what crosses, so
+//! the crossing law asks it nothing; any other row, and any symbol that is no row, crosses by the
+//! uniform frame. The voices are the old checker's own.
+use core.{
+    OwnType,
+    Param,
+    RtKind,
+    RtSig,
+    SignedType,
+    Span,
+    StmtId,
+    TypeRef,
+    flatten,
+    named_ref,
+    rt_sig_of,
+    spelled,
+    width_named,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.fns.{
+    absence_voice,
+    answer_box_voice,
+    answer_crossing_voice,
+    answer_kind_voice,
+    box_seat,
+    box_word,
+    callback_pointer_voice,
+    crossing_voice,
+    fits_box,
+    host_answer_voice,
+    host_promise_voice,
+    host_row_voice,
+    host_seat_voice,
+    inout_unable_voice,
+    kind_word,
+    row_arity_voice,
+    same_kind,
+    seat_box_voice,
+    written_ret,
+}
+use @std.meta.{derive}
+use @std.text.{parse_int}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// What an extern declaration's law found.
+@derive(Saved)
+enum ExternLaw {
+    /// A `mut` seat no cell C writes is: the extern, the seat's place, what it wears.
+    Inout
+    /// A plain seat that cannot cross to C: the extern, the seat's place, its type.
+    Crossing
+    /// An answer that cannot cross back: the extern, its type.
+    Answer
+    /// A callback seat answering a pointer: the extern, the seat's name.
+    Callback
+    /// A runtime row's seat wearing absence: the row, the seat's place, its type.
+    Absence
+    /// A runtime row declared with another count of seats: the row, its count, the declared one.
+    RowArity
+    /// A runtime row's pointer seat wearing another box: the row, the seat's place, the box's
+    /// words, what it wears, the seat the box takes.
+    RowSeat
+    /// A runtime row declared to answer in another currency: the row, its answer's words, what's
+    /// declared, the currency that rides.
+    RowAnswer
+    /// A runtime row declared to answer another box: the row, the box's words, what's declared, the
+    /// seat the box takes.
+    RowAnswerBox
+    /// A host fn named as a runtime row: the name.
+    HostRow
+    /// A host fn's marked seat: the fn, the seat's name.
+    HostPromise
+    /// A host fn's seat no host hands over: the fn, the seat's name, its type.
+    HostSeat
+    /// A host fn's answer no host takes: the fn, its type.
+    HostAnswer
+}
+
+/// One finding: where its declaration stands, the law it is, and the words its voice is handed.
+@derive(Saved)
+type ExternFinding = { at: FindingAt?, kind: ExternLaw, args: List<string> }
+
+/// Every finding the extern laws make in one written item.
+@derive(Saved)
+type ItemExterns = { rows: List<ExternFinding> }
+
+/// Every finding the extern laws make in the written item `at` of `file`: each `extern fn` it
+/// declares, and each host fn.
+@query
+fn item_externs(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemExterns {
+    if !item_held(engine, file, at) { return ItemExterns { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return ItemExterns { rows: [] } }
+    ItemExterns { rows: flatten([declaration_findings(engine, file, item, s) for s in item.stmts]) }
+}
+
+/// What the extern laws find in the statement `s` of `item`: an extern's laws, a host fn's, or none.
+fn declaration_findings(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, s: StmtId) -> List<
+    ExternFinding,
+> {
+    let at = kept_at(item.store.stmt_span(s))
+    if item.store.is_host_fn(s) {
+        let declared? = item.store.fn_parts(s) else { return [] }
+        let sig? = fn_signature(engine, file, declared.name) else { return [] }
+        return findings_at(at, host_found(declared.name, declared.params, sig))
+    }
+    let parts? = item.store.extern_parts(s) else { return [] }
+    let sig? = fn_signature(engine, file, parts.name) else { return [] }
+    findings_at(at, extern_found(parts.name, parts.params, parts.ret, sig))
+}
+
+/// Each of `found` placed at the declaration standing `at`.
+fn findings_at(at: FindingAt?, found: List<ExternSaid>) -> List<ExternFinding> { [ExternFinding { at: at, kind: f.kind, args: f.args } for f in found] }
+
+/// A finding before it is placed: the law it is, and its words.
+type ExternSaid = { kind: ExternLaw, args: List<string> }
+
+/// What the laws of an `extern fn` named `name` find, in the order the old checker says them: each
+/// `mut` seat's cell, each plain seat's and the answer's crossing, each callback, a runtime row's
+/// shape, a runtime row's absence.
+fn extern_found(name: string, written: List<Param>, ret: TypeRef, sig: FnSignature) -> List<
+    ExternSaid,
+> {
+    let signed = sig.params
+    let inout = [ExternSaid { kind: ExternLaw.Inout, args: [name, "${j}", spelled(p.ty ?? named_ref("void"))] } for j, p in written if p.promises.mutable && !inout_cell(p.ty)]
+    let row = rt_sig_of(name)
+    let armed = row?.armed() ?? false
+    let seats = if armed { [] } else { [ExternSaid { kind: ExternLaw.Crossing, args: [name, "${j}", t.spelled()] } for j, p in signed if j < written.length && !written[j].promises.mutable for t in some_signed(p.ty) if !crosses(t)] }
+    let answer = if armed || answers(sig.answer) { [] } else { [ExternSaid { kind: ExternLaw.Answer, args: [name, sig.answer.spelled()] }] }
+    let callbacks = [ExternSaid { kind: ExternLaw.Callback, args: [name, p.name] } for p in signed for t in some_signed(p.ty) if callback_pointer(t)]
+    let shaped = if row == null { [] } else { row_found(row!, written, ret, sig) }
+    let absent = if row == null { [] } else { [ExternSaid { kind: ExternLaw.Absence, args: [name, "${j}", t.spelled()] } for j, p in signed if j < written.length && !written[j].promises.mutable for t in some_signed(p.ty) if t.nullable()] }
+    inout.concat(seats).concat(answer).concat(callbacks).concat(shaped).concat(absent)
+}
+
+/// What a runtime row's shape law finds of a declaration naming it: its count of seats alone where
+/// that differs, else each pointer seat's box, then the answer's currency, then its box.
+fn row_found(row: RtSig, written: List<Param>, ret: TypeRef, sig: FnSignature) -> List<ExternSaid> {
+    if written.length != row.params.length {
+        return [
+            ExternSaid {
+                kind: ExternLaw.RowArity,
+                args: [row.name, "${row.params.length}", "${written.length}"],
+            },
+        ]
+    }
+    let seats = [ExternSaid {
+        kind: ExternLaw.RowSeat,
+        args: [
+            row.name,
+            "${j}",
+            box_word(row.box_at(j)),
+            spelled(p.ty ?? named_ref("void")),
+            box_seat(row.box_at(j)),
+        ],
+    } for j, p in written if row.params[j] is .Ptr && !fits_box(p.ty, row.box_at(j))]
+    let got = width_named(written_ret(ret)?.name ?? "") ?? kind_of(sig.answer)
+    if !same_kind(got, row.ret) {
+        return seats
+            .concat(
+                [
+                    ExternSaid {
+                        kind: ExternLaw.RowAnswer,
+                        args: [row.name, kind_word(row.ret), spelled(ret), kind_word(got)],
+                    },
+                ],
+            )
+    }
+    if row.ret is .Ptr && !fits_box(ret, row.answer) {
+        return seats
+            .concat(
+                [
+                    ExternSaid {
+                        kind: ExternLaw.RowAnswerBox,
+                        args: [row.name, box_word(row.answer), spelled(ret), box_seat(row.answer)],
+                    },
+                ],
+            )
+    }
+    seats
+}
+
+/// What the host fn laws find of the host fn `name`: a name the runtime carries, each marked seat,
+/// each seat and the answer no host hands over or takes.
+fn host_found(name: string, written: List<Param>, sig: FnSignature) -> List<ExternSaid> {
+    let row = if rt_sig_of(name) == null { [] } else { [ExternSaid { kind: ExternLaw.HostRow, args: [name] }] }
+    let marked = [ExternSaid { kind: ExternLaw.HostPromise, args: [name, p.name.of] } for p in written if p.promises.mutable || p.promises.settled]
+    let seats = [ExternSaid { kind: ExternLaw.HostSeat, args: [name, p.name, t.spelled()] } for p in sig.params for t in some_signed(p.ty) if !host_handed(t)]
+    let answer = if sig.answer.owns(OwnType.Void) || host_handed(sig.answer) { [] } else { [ExternSaid { kind: ExternLaw.HostAnswer, args: [name, sig.answer.spelled()] }] }
+    row.concat(marked).concat(seats).concat(answer)
+}
+
+/// `ty` as a list of none or one.
+fn some_signed(ty: SignedType?) -> List<SignedType> {
+    let t? = ty else { return [] }
+    [t]
+}
+
+/// Whether a `mut` seat written as `t` is a cell C writes: `ptr`, `ptr?`, or an integer at its width.
+fn inout_cell(t: TypeRef?) -> bool {
+    let written? = t else { return false }
+    ["ptr", "i64", "i32", "u32"].contains(written.name)
+}
+
+/// The machine words and the one pointer C reads that cross at a plain seat, by the word the
+/// language owns: a nullable over one of them crosses too.
+const CROSSING: List<string> = [
+    "int",
+    "float",
+    "bool",
+    "string",
+    "Bytes",
+    "ptr",
+    "i64",
+    "i32",
+    "u32",
+    "f64",
+]
+
+/// What an extern's answer may wear: not a seat's set — `void` answers, and `Bytes` doesn't.
+const ANSWERING: List<string> = [
+    "int",
+    "float",
+    "bool",
+    "string",
+    "ptr",
+    "void",
+    "i64",
+    "i32",
+    "u32",
+    "f64",
+]
+
+/// What a host fn's seat and answer wear: one register in both engines' own shape.
+const HANDED: List<string> = ["int", "float", "string", "Bytes", "ptr", "i64", "i32", "u32", "f64"]
+
+/// Whether a value of `t` crosses to C at a plain seat. A type the program doesn't name, or one
+/// holding a width, which only a seat itself wears, is the unknown-type law's, and crosses here.
+fn crosses(t: SignedType) -> bool { named_among(t.unwrapped(), CROSSING) || width_held(t) }
+
+/// Whether a type `t` is applied to holds a width word.
+fn width_held(t: SignedType) -> bool { t.args.any((a) -> width_named(a.word()) != null || width_held(a)) }
+
+/// Whether an extern's answer of `t` crosses back from C.
+fn answers(t: SignedType) -> bool { named_among(t.unwrapped(), ANSWERING) }
+
+/// Whether a host hands over, or takes, a value of `t`: never absence.
+fn host_handed(t: SignedType) -> bool { named_among(t, HANDED) }
+
+/// Whether `t`, held directly, is one of the language's own `words`, or a type no declaration
+/// answers, whose own law speaks.
+fn named_among(t: SignedType, words: List<string>) -> bool {
+    match t.head { .Unnamed(_) or .Inferred -> true, rest -> words.contains(t.owned() ?? "") }
+}
+
+/// Whether a seat of `t` is a callback whose answer rides a pointer the C would follow.
+fn callback_pointer(t: SignedType) -> bool {
+    if !(t.head is .Function) { return false }
+    let answer? = t.answer else { return false }
+    !(answer.head is .Never) && !(answer.head is .Unnamed) && kind_of(answer) is .Ptr
+}
+
+/// The currency an answer of `t` rides from C.
+fn kind_of(t: SignedType) -> RtKind {
+    match t.owned() ?? "" {
+        "int" or "bool" -> RtKind.I64,
+        "float" -> RtKind.F64,
+        "void" -> RtKind.Void,
+        rest -> RtKind.Ptr,
+    }
+}
+
+/// The findings of the law `kind` in the written item `at` of `file`, placed.
+fn found_of(engine: QueryEngine, file: SourceFileAddress, at: int, kind: ExternLaw) -> List<Found> {
+    [Found { at: span_of_finding(r.at), args: r.args } for r in item_externs(engine, file, at).rows if r.kind == kind]
+}
+
+/// A kept place as a span.
+fn span_of_finding(at: FindingAt?) -> Span? {
+    let held? = at else { return null }
+    Span { lo: held.lo, hi: held.hi }
+}
+
+/// The seat's place a finding's words spell.
+fn place(spelled: string) -> int { parse_int(spelled) ?? 0 }
+
+fn inouts(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.Inout) }
+
+fn crossings(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.Crossing) }
+
+fn answers_found(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.Answer) }
+
+fn callbacks(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.Callback) }
+
+fn absences(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.Absence) }
+
+fn row_arities(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.RowArity) }
+
+fn row_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.RowSeat) }
+
+fn row_answers(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.RowAnswer) }
+
+fn row_answer_boxes(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.RowAnswerBox) }
+
+fn host_rows(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.HostRow) }
+
+fn host_promises(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.HostPromise) }
+
+fn host_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.HostSeat) }
+
+fn host_answers(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { found_of(engine, file, at, ExternLaw.HostAnswer) }
+
+/// a `mut` host seat is a cell C writes
+export law extern_cell {
+    kind: "type.host_seat"
+    reads: inouts
+    voice: inout_words
+    witness: "extern fn c_ck(mut n: int) -> i32\n"
+}
+
+/// a plain host seat crosses to C in one register
+export law extern_crossing {
+    kind: "type.host_seat"
+    reads: crossings
+    voice: crossing_words
+    witness: "extern fn c_take(xs: List<int>)\n"
+}
+
+/// an extern's answer crosses back from C in one register
+export law extern_crossing_answer {
+    kind: "type.host_seat"
+    reads: answers_found
+    voice: answer_words
+    witness: "extern fn c_give() -> List<int>\n"
+}
+
+/// a callback under a cancel answers no pointer
+export law extern_crossing_callback {
+    kind: "flow.callback_pointer"
+    reads: callbacks
+    voice: callback_words
+    witness: "extern fn c_on(cb: fn(int) -> ptr)\n"
+}
+
+/// a runtime row's seat takes no absence
+export law extern_row_without_absence {
+    kind: "type.host_absence"
+    reads: absences
+    voice: absence_words
+    witness: "extern fn avra_rc_release(p: ptr?)\n"
+}
+
+/// an extern naming a runtime row declares its seats
+export law extern_row_arity {
+    kind: "type.row_shape"
+    reads: row_arities
+    voice: arity_words
+    witness: "extern fn avra_rc_release(a: ptr, b: ptr)\n"
+}
+
+/// a runtime row's pointer seat wears the box it reads
+export law extern_row_box {
+    kind: "type.row_shape"
+    reads: row_seats
+    voice: seat_box_words
+    witness: "extern fn avra_str_len(xs: List<int>) -> int\n"
+}
+
+/// a runtime row answers in its own currency
+export law extern_row_currency {
+    kind: "type.row_shape"
+    reads: row_answers
+    voice: answer_kind_words
+    witness: "extern fn avra_array_new() -> bool\n"
+}
+
+/// a runtime row answers the box its C body built
+export law extern_row_currency_box {
+    kind: "type.row_shape"
+    reads: row_answer_boxes
+    voice: answer_box_words
+    witness: "extern fn avra_array_new() -> string\n"
+}
+
+/// a host fn is no runtime row
+export law host_fn_name {
+    kind: "type.host_fn"
+    reads: host_rows
+    voice: host_row_words
+    witness: "extern fn avra_rc_release(p: ptr) {}\n"
+}
+
+/// a host fn's seats make no promise
+export law host_fn_promise {
+    kind: "type.host_fn"
+    reads: host_promises
+    voice: host_promise_words
+    witness: "extern fn c_host(mut n: int) -> int { n }\n"
+}
+
+/// a host fn's seat is one a host hands over
+export law host_fn_seat {
+    kind: "type.host_fn"
+    reads: host_seats
+    voice: host_seat_words
+    witness: "extern fn c_host(xs: List<int>) -> int { 0 }\n"
+}
+
+/// a host fn's answer is one a host takes
+export law host_fn_taken {
+    kind: "type.host_fn"
+    reads: host_answers
+    voice: host_answer_words
+    witness: "extern fn c_host() -> List<int> { [] }\n"
+}
+
+fn inout_words(a: List<string>) -> Voice { inout_unable_voice(a[0], place(a[1]), a[2]) }
+
+fn crossing_words(a: List<string>) -> Voice { crossing_voice(a[0], place(a[1]), a[2]) }
+
+fn answer_words(a: List<string>) -> Voice { answer_crossing_voice(a[0], a[1]) }
+
+fn callback_words(a: List<string>) -> Voice { callback_pointer_voice(a[0], a[1]) }
+
+fn absence_words(a: List<string>) -> Voice { absence_voice(a[0], place(a[1]), a[2]) }
+
+fn arity_words(a: List<string>) -> Voice { row_arity_voice(a[0], place(a[1]), place(a[2])) }
+
+fn seat_box_words(a: List<string>) -> Voice { seat_box_voice(a[0], place(a[1]), a[2], a[3], a[4]) }
+
+fn answer_kind_words(a: List<string>) -> Voice { answer_kind_voice(a[0], a[1], a[2], a[3]) }
+
+fn answer_box_words(a: List<string>) -> Voice { answer_box_voice(a[0], a[1], a[2], a[3]) }
+
+fn host_row_words(a: List<string>) -> Voice { host_row_voice(a[0]) }
+
+fn host_promise_words(a: List<string>) -> Voice { host_promise_voice(a[0], a[1]) }
+
+fn host_seat_words(a: List<string>) -> Voice { host_seat_voice(a[0], a[1], a[2]) }
+
+fn host_answer_words(a: List<string>) -> Voice { host_answer_voice(a[0], a[1]) }
+
+collect listed_extern_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the extern laws are read through, for a process to hand its engine.
+export fn extern_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_extern_facts) }

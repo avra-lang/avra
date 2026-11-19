@@ -1,0 +1,23 @@
+//! The lowering rule of `let`: the value lowered, and its name bound to the register that holds it;
+//! a task it holds is joined where its scope ends. A named instance binds AND leaves its value, so a
+//! `collect` open around it gathers it. One a writing method writes through binds a cell seeded with
+//! the value, as a `mut` binding does.
+use core.{Bound, Lowering, StmtId, StmtLowers}
+use core.stmt.{Let}
+
+impl StmtLowers for Let {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let r = cx.lower(self.value)
+        let ty? = cx.binding_type(self.ty, self.value, s) else { return cx.missed("an untyped `let`") }
+        if cx.let_celled(s) && !cx.holds_tasks(ty) {
+            let cell = cx.seeded_cell(cx.laid_out(ty), r)
+            cx.seed_kept(cell, cx.read_from_place(self.value))
+            return cx.bind(self.name.of, Bound.Slot(cell, ty))
+        }
+        cx.bind(self.name.of, Bound.Value(r, ty))
+        cx.owns(r, ty)
+        if !cx.store.is_component_inst(s) { return }
+        let j? = cx.joining(self.value) else { return }
+        cx.gathered_into(j, self.value, r)
+    }
+}

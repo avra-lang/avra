@@ -1,0 +1,33 @@
+//! proves a send into a full queue under `park` waits for room: it is
+//! not in the queue while the queue is full, and is kept once a take
+//! made room.
+use @std.queue.{open_queue, key, Order, Overflow, Queue, Terms}
+use @std.time.{ms, sleep}
+
+fn opened() -> Queue<int>? {
+    let made = open_queue<int>(
+        "jobs",
+        Terms {
+            capacity: 1,
+            lease: ms(60000),
+            retries: 3,
+            dead: "jobs/dead",
+            overflow: Overflow.park,
+            order: Order.fifo,
+        },
+    )
+    match made { .Ok(q) -> q, .Err(_) -> null }
+}
+
+fn sent(q: Queue<int>, n: int) -> bool {
+    (q.send(n, key("k")) catch null) != null
+}
+
+let q = opened()!
+let first = sent(q, 1)
+let parked = spawn sent(q, 2)
+sleep(ms(20))
+let full = q.depth() catch 0 - 1
+let held = q.take() catch null
+let second = parked.await
+"${first} ${full} ${held!.item} ${second} ${q.depth() catch 0 - 1}"

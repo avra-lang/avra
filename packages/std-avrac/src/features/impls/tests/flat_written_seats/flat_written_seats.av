@@ -1,0 +1,49 @@
+// proves: a write through a written seat of a value that rides no pointer
+// reaches the caller's place — a `mut` local, a field of a boxed record, a
+// list's element, a nested path — once, after the call; a writing method
+// calling another on `self` hands on the same place; a `mut` parameter is
+// handed its place as the receiver is.
+type Count = { n: int }
+
+type Pair = { a: int, b: int }
+
+type Holder = { name: string, c: Count }
+
+type Outer = { h: Holder }
+
+impl Count {
+    mut fn bump() { self.n = self.n + 1 }
+
+    mut fn twice() {
+        self.bump()
+        self.bump()
+    }
+}
+
+impl Pair {
+    mut fn swap() {
+        let t = self.a
+        self.a = self.b
+        self.b = t
+    }
+}
+
+fn raised(mut p: Pair, by: int) { p.a = p.a + by }
+
+fn shown() -> string {
+    mut c = Count { n: 0 }
+    c.bump()
+    c.twice()
+    mut p = Pair { a: 1, b: 2 }
+    p.swap()
+    raised(p, 10)
+    mut h = Holder { name: "h", c: Count { n: 5 } }
+    h.c.bump()
+    mut xs = [Count { n: 1 }, Count { n: 2 }]
+    xs[1].twice()
+    mut o = Outer { h: Holder { name: "o", c: Count { n: 7 } } }
+    o.h.c.bump()
+    "${c.n} ${p.a} ${p.b} ${h.c.n} ${xs[0].n} ${xs[1].n} ${o.h.c.n}"
+}
+
+shown()

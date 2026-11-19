@@ -1,0 +1,42 @@
+//! proves a poison item ends: an item whose handler started as many
+//! times as the terms allow, each start lost with its worker, is buried
+//! by the next drain and its handler is not started again.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+let starts: Cell<int> = Cell.new(0)
+let buried: Cell<List<string>> = Cell.new([])
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn pay(starts: Cell<int>, d: Delivery<Job>) -> Result<int, string> {
+    starts.set(starts.get() + 1)
+    .Ok(d.item.n)
+}
+
+queue<Dead<Job, string>> letters {}
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(0)
+    retries: 3
+}
+worker settle {
+    reads: jobs
+    each: (d: Delivery<Job>) -> pay(starts, d)
+    dead: letters
+    buried: (gone: Dead<Job, string>) -> buried.push(why(gone.fate))
+}
+let q = jobs.home()
+let _ = q.send(Job { n: 7 }, key("k"))
+for _i in 0..3 {
+    let lost = q.take() catch null
+    let _ = q.began(lost!)
+}
+use tests.support.letters.{first_letter}
+let settled = drain(settle) catch 0 - 1
+let gone = first_letter(letters)
+"${settled} starts ${starts.get()} buried ${buried.get().join(",")} letter ${gone!.item.n} ${why(gone!.fate)} depth ${q.depth() catch 0 - 1}"

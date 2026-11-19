@@ -1,0 +1,25 @@
+// proves: a read through a `Cell` a field holds, used before anything writes the cell, is a borrow —
+// the memory pass takes no owned twin for it, so the write that follows lands in place.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.compiler.backend.{render_ir}
+use @std.text.{from_codepoint}
+
+let lines = [
+    "type Table = { kins: Cell<Map<string, int>> }",
+    "impl Table {",
+    "    fn kin_of(id: string) -> int {",
+    "        let known? = self.kins.get().get(id) else {",
+    "            let k = self.kins.get().length",
+    "            self.kins.put(id, k)",
+    "            return k",
+    "        }",
+    "        known",
+    "    }",
+    "}",
+    "let seed: Map<string, int> = {}",
+    "let t = Table { kins: Cell.new(seed) }",
+    "t.kin_of(t.kins.get().keys()[0])",
+]
+
+let ir = render_ir(analyze_source(lines.join(from_codepoint(10))).lowered())
+"${ir.contains("avra_slot_get(")} ${ir.contains("avra_slot_get_owned(")}"

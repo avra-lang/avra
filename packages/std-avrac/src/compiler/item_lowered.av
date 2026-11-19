@@ -1,0 +1,1511 @@
+//! WHAT A FN DOES, AS IR: the core its body means, lowered node by node by each node's feature, every
+//! register typed by its layout. A node no rule lowers yet is named, never guessed at.
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use core.{
+    NodeNotes,
+    SettledSeat,
+    settled_seat_key,
+    settled_symbol,
+    ConstSeed,
+    NamesRead,
+    StatesAsked,
+    FilledRole,
+    filled_type,
+    literal_of,
+    template_file,
+    template_home,
+    Seating,
+    callee_said,
+    kept_by_key,
+    named_said,
+    cell_of,
+    BoxedValue,
+    StructParts,
+    Arm,
+    CollectKind,
+    doc_first_paragraph,
+    pattern_kinds,
+    root_kind_of,
+    CalledFn,
+    CalledSeat,
+    ContextMarks,
+    HeldContext,
+    CollectedRow,
+    CollectedValue,
+    Defaulting,
+    Expr,
+    ExprId,
+    FnWrapper,
+    Ins,
+    Layout,
+    LiftedBody,
+    Literal,
+    LoweredProgram,
+    Lowering,
+    ProjField,
+    NamedValue,
+    Param,
+    ParameterLayout,
+    RECEIVER,
+    SignedType,
+    Slot,
+    Span,
+    Static,
+    StaticBox,
+    StmtId,
+    SyntaxArena,
+    TaskChecks,
+    TaskTest,
+    TestSite,
+    TraitMember,
+    TypeHead,
+    headed_type,
+    instance_symbol,
+    lowering,
+    module_path,
+    tests_chosen,
+    tests_kept,
+    new_node_store,
+    rt_sig_of,
+    owned_type,
+}
+use features.collects.{collected_list}
+use features.specs.{case_lowered}
+use @std.program.address.{SourceFileAddress}
+use @std.program.source_facts.{source_text}
+use diagnostics.{new_source_file}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+
+/// A fn's body as IR: its seats' layouts and its answer's, its instructions, each register's layout
+/// by its index, the fns it calls, what wasn't lowered yet, in the order it was met, and the data it
+/// and its lambdas read.
+@derive(Saved)
+export type LoweredFn = {
+    params: List<Layout>,
+    answer: Layout,
+    ins: List<Ins>,
+    layouts: List<Layout>,
+    callees: List<CalledFn>,
+    missing: List<string>,
+    /// The lambdas its body lifts, each body its own unit.
+    lifts: List<LiftedBody>,
+    statics: List<Static>,
+    /// The types whose tags it and its lambdas hold in a `dyn` box.
+    tagged: List<SignedType> = [],
+    /// The wrappers of the declared fns it and its lambdas name as values.
+    wrappers: List<FnWrapper> = [],
+    /// How many of its and its lambdas' statements lower through a meaning other lowerings may shape
+    /// otherwise.
+    reshaped: int = 0,
+    /// Whether it or a lambda it lifts lowers a `while`, whose back edge is a cancel point.
+    spins: bool = false,
+    /// The task tests it holds, not placed yet.
+    tests: List<TaskTest> = [],
+    /// Its registers holding a fn value's box, each with the box's type.
+    boxed: List<BoxedValue> = [],
+    /// Its `ctx` sets and its calls through a `dyn` box, its lambdas' aside.
+    marks: ContextMarks = ContextMarks {},
+    /// How many nodes of its body a seat refused: a unit built over a refusal is no program.
+    refused: int = 0,
+    /// Each name its body reads that nothing binds and the program gives no type: one nothing
+    /// declares makes it no program.
+    unread: List<UnreadAt> = [],
+    /// An entry's answer that no text spells, so no program shows it: absent where it has one.
+    unprojected: Unprojected? = null,
+    /// Each seat it consumes, by its place among its seats: one it keeps whole on every path to its
+    /// answer, which a caller hands its own reference to. Empty where it consumes none.
+    consumed: List<bool> = [],
+}
+
+/// An entry's answer whose type has no text projection: the type, spelled, and where the statement
+/// that answers stands in its file.
+@derive(Saved)
+export type Unprojected = { name: string, lo: int, hi: int }
+
+/// WHICH OF A BODY'S HELD TESTS ARE PLACED, decided by each test's own site: those `checks` names, a
+/// fn's call where the fn's body key is one of `reaching`. A rule over sites, never a flag per test,
+/// so it places every revision of a body, however many tests it holds.
+@derive(Saved)
+export type TestsKept = { checks: TaskChecks, reaching: List<string> }
+
+impl TestsKept {
+    /// Whether a test at `site` is placed.
+    fn keeps(site: TestSite) -> bool { self.checks.keeps(site, (c: CalledFn) -> self.reaching.contains(body_at(c).key())) }
+
+    /// Which of `tests` are placed, in their order.
+    fn keeping(tests: List<TaskTest>) -> List<bool> { tests_chosen(tests, (site: TestSite) -> self.keeps(site)) }
+}
+
+impl LoweredFn {
+    /// Whether every node of the body was lowered.
+    fn whole() -> bool { self.missing.is_empty() }
+
+    /// The sites of its tests and its lambdas'.
+    fn test_sites() -> List<TestSite> { [t.site for t in self.tests].concat([t.site for l in self.lifts for t in l.tests]) }
+
+    /// The body with the tests `keep` names placed, and its lambdas' too.
+    fn placed_keeping(keep: TestsKept) -> LoweredFn {
+        let p = tests_kept(
+            self.ins,
+            self.layouts,
+            self.missing,
+            self.tests,
+            keep.keeping(self.tests),
+            keep.checks.unwinds(),
+        )
+        self with { ins: p.ins, layouts: p.layouts, missing: p.missing, tests: [], lifts: [l.placed_keeping(keep.keeping(l.tests), keep.checks.unwinds()) for l in self.lifts] }
+    }
+}
+
+/// The body of the fn `file` declares as `name`, lowered with its task tests held: its seats the
+/// first registers, the body inside their scope, then its answer. Absent when it declares none with a
+/// body.
+export fn lowered_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? { lowered_under(engine, file, name, null, []) }
+
+/// The body of the generic fn `file` declares as `name`, lowered under `parameters`, one per type
+/// parameter it declares. Absent when it declares none with a body.
+export fn lowered_generic(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    parameters: List<ParameterLayout>,
+) -> LoweredFn? { lowered_under(engine, file, name, parameters, []) }
+
+/// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic, each
+/// `const` seat `settled` names settled to its value: the unit every call settling them alike runs.
+@query
+export fn lowered_settled(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    parameters: List<ParameterLayout>?,
+    settled: List<SettledSeat>,
+) -> LoweredFn? {
+    let signed? = signed_body(engine, file, name) else { return null }
+    lowered_signed(engine, file, answered_fn(engine, file, name, signed), name, parameters, settled)
+}
+
+/// The fn `file` declares as `name`, its body `signed` as its inference answers it, typed, and the
+/// seats it takes.
+fn answered_fn(engine: QueryEngine, file: SourceFileAddress, name: string, signed: SignedBody) -> SignedBody {
+    let answered = answered_body(engine, InferringFn { file: file, name: name }, signed)
+    answered with { typed: typed_fn(engine, file, name), seats: seats_taken(file, answered) }
+}
+
+/// The body of the fn `file` declares as `name`, lowered under `parameters` where it's generic.
+@query
+fn lowered_under(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    parameters: List<ParameterLayout>?,
+    framed: List<string>,
+) -> LoweredFn? {
+    let signed? = signed_body(engine, file, name) else {
+        return if parameters == null {
+            lowered_collect(engine, file, name) ?? lowered_instance(engine, file, name) ?? lowered_state(
+                engine,
+                file,
+                name,
+            ) ?? lowered_context(engine, file, name)
+        } else {
+            null
+        }
+    }
+    lowered_signed(
+        engine,
+        file,
+        answered_fn(engine, file, name, signed),
+        name,
+        parameters,
+        [],
+        framed,
+    )
+}
+
+/// A signed body `file` writes, lowered as the unit `name` under `parameters` where it's generic: a
+/// method's receiver its first seat.
+fn lowered_signed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    name: string,
+    parameters: List<ParameterLayout>?,
+    settled: List<SettledSeat> = [],
+    framed: List<string> = [],
+    notes: NodeNotes? = null,
+) -> LoweredFn {
+    let refused = lowering_refused(signed, parameters)
+    if refused != null {
+        return LoweredFn {
+            params: [],
+            answer: Layout.Void,
+            ins: [],
+            layouts: [],
+            callees: [],
+            missing: [refused!],
+            lifts: [],
+            statics: [],
+        }
+    }
+    signed_lowered(engine, file, signed, name, parameters, settled, framed, notes)
+}
+
+/// A signed body `file` writes, lowered as `lowered_signed` says, past its refusals; under bounded
+/// parameters' fills, every type it holds reads those fills; what it meets at each written node noted
+/// in `notes` where a law asks.
+fn signed_lowered(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    name: string,
+    parameters: List<ParameterLayout>?,
+    settled: List<SettledSeat> = [],
+    framed: List<string> = [],
+    notes: NodeNotes? = null,
+) -> LoweredFn {
+    let body = elaborated(engine, file, signed)
+    let fills = bound_fills(parameters ?? [])
+    let signature = signed.signature with { params: [p with { ty: p.ty?.filled(fills) } for p in signed.signature.params], answer: signed.signature.answer.filled(fills) }
+    mut seats: Map<string, SignedType> = {}
+    for k, v in body.seats { seats.set(k, v.filled(fills)) }
+    mut cx = lowering(
+        body.store,
+        lowered_program(
+            engine,
+            file,
+            body.store,
+            settled_unit_name(name, parameters, settled),
+            signature.type_params,
+            parameters,
+            written_by(signed.item.store, signed.stmt),
+            signed.item.store.expr_span(signed.body)?.lo ?? 0,
+            signed.item.at,
+            framed,
+            notes,
+        ),
+        [t?.filled(fills) for t in body.core],
+        seats,
+        signature.answer,
+    ) with { written_seats: [p.name for p in signature.params if p.mutable], frame: unwind_frame(
+        file,
+        name,
+        settled_unit_name(name, parameters, settled),
+        body_written_at(engine, file, signed),
+    ), names: NamesRead { reads: body.reads }, roots: [body.body] }
+    cx.unbroken = wears_meta(engine, file, signed.item.store, signed.stmt, UNBROKEN)
+    if signed.receiver != null { cx.seated_written(RECEIVER, signed.receiver!.filled(fills), signed.receiver_written) }
+    for c in signed.consts { cx.seeded(c) }
+    let seated = [p for j, p in signature.params if !settled.any(it.at == j)]
+    for p in seated {
+        if p.state { cx.seated_state(p.name, p.ty!) } else { cx.seated_written(p.name, p.ty!, p.mutable) }
+    }
+    cx.settled_seats = [s.at for s in settled]
+    for s in settled {
+        let p = signature.params[s.at]
+        let seed = ConstSeed { name: p.name, ty: p.ty!, value: NamedValue.Literal(s.value) }
+        cx.settled_consts.put(settled_seat_key(s.at), seed)
+        cx.seeded(seed)
+    }
+    cx.scope_enter()
+    let r = when {
+        signed.item.store.is_once(signed.stmt) -> cx
+            .once_answered(declared_symbol(file, name), body.body, signature.answer)
+        signed.case -> case_lowered(cx, body.body)
+        _ -> cx.lower(body.body)
+    }
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    let answer = cx.laid_out(signature.answer)
+    let eligible = [consumable(signed, name, p) && cx.laid_out(p.ty!).counted() for p in seated]
+    let names = cx.names
+    let places = seat_places(signature.params.length, settled)
+    let consumed = if eligible.any(it) { kept_seats(body.store, body.body, eligible, (e: ExprId) -> seat_read(names, places, e)) } else { [] }
+    unit_lowered(cx, seated.length + if signed.receiver == null { 0 } else { 1 }, answer) with { refused: body.refused, unread: body.unread, consumed: if consumed.any(it) { consumed } else { [] } }
+}
+
+/// `@std/meta`'s annotation for a fn that lets no other task run.
+const UNBROKEN: string = "unbroken"
+
+/// The name a unit of the fn `name` under `parameters`, its `const` seats settled as `settled` says,
+/// gives what it names after itself: its lambdas, its consts, its frame.
+fn settled_unit_name(name: string, parameters: List<ParameterLayout>?, settled: List<SettledSeat>) -> string {
+    let unit = unit_name(name, parameters)
+    if settled.is_empty() { unit } else { settled_symbol(unit, settled) }
+}
+
+/// Each seat's place among the registers of a unit whose seats `settled` names hold none, by its
+/// place among the fn's `n` seats; absent for a settled one.
+fn seat_places(n: int, settled: List<SettledSeat>) -> List<int?> {
+    mut at = 0
+    mut out: List<int?> = []
+    for j in 0..n {
+        if settled.any(it.at == j) {
+            out.push(null)
+        } else {
+            out.push(at)
+            at = at + 1
+        }
+    }
+    out
+}
+
+/// Whether the seat `p` of the body `signed` declares as `name` may be one it consumes: a seat of a
+/// free fn a call reaches by its symbol alone — no method, whose receiver or impl a dispatch may
+/// stand between, no host fn, which the host calls, no `once` fn and no case — taking a value by
+/// itself, no `mut`, `const`, `state`, isolated, spread or rest seat.
+fn consumable(signed: SignedBody, name: string, p: SignedParam) -> bool {
+    let store = signed.item.store
+    signed.receiver == null &&
+        !name.contains(".") &&
+        !signed.case &&
+        !store.is_host_fn(signed.stmt) &&
+        !store.is_once(signed.stmt) &&
+        p.ty != null &&
+        !p.mutable &&
+        !p.settled &&
+        !p.state &&
+        !p.unshared &&
+        !p.spread &&
+        !p.rest
+}
+
+/// The register of the seat a bare name read at `e` reads, by `places`; absent for a capture and a
+/// settled seat.
+fn seat_read(names: NamesRead, places: List<int?>, e: ExprId) -> int? {
+    let r? = names.at(e) else { return null }
+    if !r.crossed.is_empty() { return null }
+    let b? = r.binder else { return null }
+    match b { .Seat(i) -> if i < places.length { places[i] } else { null }, rest -> null }
+}
+
+/// The types the bounded parameters of a unit under `parameters` are filled by, by place: what a
+/// body asks such a parameter is asked of that type.
+fn bound_fills(parameters: List<ParameterLayout>) -> Map<string, SignedType> {
+    mut found: Map<string, SignedType> = {}
+    for j, p in parameters { if p.fill != null { found.set("${j}", p.fill!) } }
+    found
+}
+
+/// What a body of `store` in `file`, of the unit `unit` under `parameters` where it's generic, reads
+/// of the program as it lowers, the lambdas it lifts, the data it lays out and the types it tags
+/// gathered as they're met; a body a template wrote reads the types it wrote in `writer`. A lambda is
+/// named by where it stands from `from`, its body's start, so an edit above the body renames nothing
+/// in it.
+/// Where the body `signed` writes stands in `file`; absent for one no source spans.
+fn body_written_at(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> Span? {
+    let written? = signed.item.store.expr_span(signed.body) else { return null }
+    span_in_file(engine, file, signed.item, written)
+}
+
+/// `span`, counted from the start of the item `frame` of `file`, counted from the file's start; as it
+/// is where `frame` is absent, a span of a store read at its file's places.
+fn in_file(engine: QueryEngine, file: SourceFileAddress, frame: int?, span: Span) -> Span {
+    let at? = frame else { return span }
+    let placed = file_placed(engine, file, at, FindingAt { lo: span.lo, hi: span.hi })
+    Span { lo: placed.lo, hi: placed.hi }
+}
+
+/// Where the node `e` of `store` was written in `file`, as the old path names a task's site: the file
+/// under its package's name, its path inside its sources, and the line; absent for a node a template
+/// wrote, which no line of this file holds.
+fn written_site(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    frame: int?,
+) -> string? {
+    if store.spanned_elsewhere(e) { return null }
+    let written? = store.expr_span(e) else { return null }
+    let at = in_file(engine, file, frame, written)
+    let text? = source_text(engine, file) else { return null }
+    let path = if file.path_in_package.starts_with("src/") { file.path_in_package.substring(4, file.path_in_package.length) } else { file.path_in_package }
+    "${file.package_name}/${path}:${new_source_file(file.path_in_package, text).linecol(at.lo).line}"
+}
+
+fn lowered_program(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    unit: string,
+    type_params: List<string>,
+    parameters: List<ParameterLayout>?,
+    writer: SourceFileAddress? = null,
+    from: int = 0,
+    frame: int? = null,
+    framed: List<string> = [],
+    notes: NodeNotes? = null,
+) -> LoweredProgram {
+    let lifts: Cell<List<LiftedBody>> = Cell.new([])
+    let data: Cell<List<Static>> = Cell.new([])
+    let tagged: Cell<List<SignedType>> = Cell.new([])
+    let wrappers: Cell<List<FnWrapper>> = Cell.new([])
+    let memos = type_memos(engine)
+    LoweredProgram {
+        framed: framed,
+        checked: program_of(
+            engine,
+            file,
+            Signing { engine: engine, file: file, type_params: type_params, writer: writer },
+        ) with { parameters: parameters ?? [] },
+        named: (n: string, home: string?) -> kept_by_key(
+            memos,
+            memos.named,
+            "named",
+            memos.read_key(file, home, n),
+            () -> read_from(engine, file, home).find_map((f) -> named_value(engine, f, n)),
+            named_said,
+        ),
+        method: (ty: SignedType, m: string) -> kept_by_key(
+            memos,
+            memos.methods,
+            "method",
+            memos.member_key(file.package_name, ty, m),
+            () -> method_callee(engine, ty, m, false, file.package_name),
+            callee_said,
+        ),
+        statics: (ty: SignedType, m: string) -> method_callee(engine, ty, m, true, file.package_name),
+        statics_among: (ty: SignedType, m: string) -> method_callees(engine, ty, m, true, file.package_name),
+        methods_among: (ty: SignedType, m: string) -> method_callees(engine, ty, m, false, file.package_name),
+        marked: (ty: SignedType) -> statics_marked(engine, ty),
+        verb: (ty: SignedType, m: string) -> verb_callee(engine, ty, m),
+        declared_verb: (ty: SignedType, m: string) -> verb_declared(engine, ty, m),
+        lifts: lifts,
+        lift_symbol: (lo: int) -> declared_symbol(file, "${unit}.lambda${lo - from}"),
+        data: data,
+        literal_symbol: (e: ExprId, ty: SignedType) -> literal_symbol(engine, file, store, unit, e, ty, frame),
+        traits: (ty: SignedType) -> trait_members(engine, ty),
+        type_symbol: (ty: SignedType) -> type_symbol(ty),
+        tagged: tagged,
+        wrappers: wrappers,
+        reshaped: Cell.new(0),
+        defaults: (ty: SignedType, field: string) -> default_callee(engine, ty, field),
+        roles: (ty: SignedType, field: string) -> field_role(engine, ty, field),
+        site: (e: ExprId) -> literal_site(engine, file, store, e, frame),
+        written_at: (e: ExprId) -> written_site(
+            engine,
+            writer ?? file,
+            store,
+            e,
+            if writer == null { frame } else { null },
+        ),
+        states: (asked: StatesAsked) -> states_read(engine, file, asked),
+        toolchain_fn: (module: string, n: string) -> toolchain_callee(engine, module, n),
+        home: template_home(file),
+        home_at: (lo: int) -> in_file(engine, file, frame, Span { lo: lo, hi: lo }).lo,
+        body_const: (s: StmtId, ty: SignedType, seeds: List<ConstSeed>) -> body_const_value(
+            engine,
+            file,
+            store,
+            unit,
+            s,
+            ty,
+            seeds,
+            frame,
+        ),
+        spins: Cell.new(false),
+        notes: notes,
+        compared: (n: string, home: string?) -> compared_value(engine, home_file(engine, home) ?? file, n),
+        contexts: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> held_context(engine, f, n)),
+    }
+}
+
+/// Whether `name` names a const or a collection from `file`'s top level among written names, the
+/// file's own or its module's exports: what a pattern's bare name compares with rather than binds. A
+/// sibling's private const never turns a binder. Absent where only a generator makes a const or a
+/// collection of that name in `file`, which a binder's question doesn't read.
+fn compared_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool? {
+    let scope? = file_scope(engine, file) else { return false }
+    let own = scope.own.held(Space.Value, name)
+    let d? = own ?? winner(engine, file, Space.Value, name) else {
+        return if generated_declares(engine, file)
+            .names
+            .any((g) -> g.name == name && compares_kind(g.kind)) { null } else { false }
+    }
+    if !same_file(d.file, file) && !d.exported { return false }
+    compares_kind(d.kind)
+}
+
+/// Whether `name` names a const or a collection `file` reads at its top level: its own, an import, or
+/// its module's, a sibling's private one too, written or one a generator makes.
+fn settled_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let scope? = file_scope(engine, file) else { return false }
+    let d? = scope.own.held(Space.Value, name) ?? winner(engine, file, Space.Value, name) else {
+        return generated_declares(engine, file)
+            .names
+            .any((g) -> g.name == name && compares_kind(g.kind))
+    }
+    compares_kind(d.kind)
+}
+
+/// Whether a declaration of `kind` is a value a pattern's bare name compares with: a const's or a
+/// collection's.
+fn compares_kind(kind: ItemKind) -> bool {
+    match kind {
+        .Const or .Collect -> true,
+        .Fn or .State or .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .Ctx -> false,
+    }
+}
+
+/// The body `cx` lowered: its first `seats` registers its seats, answering `answer`.
+fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
+    LoweredFn {
+        params: cx.layouts.get().take(seats),
+        answer: answer,
+        ins: cx.ins.get(),
+        layouts: cx.layouts.get(),
+        callees: cx.callees.get(),
+        missing: cx.missing.get(),
+        lifts: cx.program.lifts.get(),
+        statics: cx.program.data.get(),
+        tagged: cx.program.tagged.get(),
+        wrappers: cx.program.wrappers.get(),
+        reshaped: cx.program.reshaped.get(),
+        spins: cx.program.spins.get(),
+        tests: cx.tests.get(),
+        boxed: cx.boxed.get(),
+        marks: cx.marks.get(),
+    }
+}
+
+/// The `Frame` an unwind out of the unit `unit` pushes: its label the name its body is declared by,
+/// its place the body's span in `file`, laid out as the binary's data, the place first. Absent for a
+/// body no source spans.
+fn unwind_frame(file: SourceFileAddress, label: string, unit: string, at: Span?) -> Static? {
+    let span? = at else { return null }
+    let site = StaticBox
+        .Slots([Slot.Text(spelled_file(file)), Slot.Int(span.lo), Slot.Int(span.hi)])
+    Static {
+        name: "frame\$${declared_symbol(file, unit)}",
+        boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])],
+        debug: true,
+    }
+}
+
+/// The name a body's unit is known by in its file: a generic fn's names its layouts too.
+fn unit_name(name: string, parameters: List<ParameterLayout>?) -> string {
+    let ps? = parameters else { return name }
+    instance_symbol(name, ps)
+}
+
+/// Why a fn's body isn't lowered yet before any of it is read: it's generic and isn't lowered under
+/// one layout per type parameter, it takes a `state` seat, or an annotation may make what it does. A
+/// `const` seat is a promise checked where the fn is called; its argument rides as any value does.
+fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> string? {
+    if parameters?.length ?? 0 != signed.signature.type_params.length { return "a generic fn" }
+    if signed.unmade != null { return "an annotated fn whose annotation made nothing: ${signed.unmade!}" }
+    let params = signed.item.store.fn_parts(signed.stmt)?.params ?? []
+    if params.any(it.ty == null) { return "an untyped seat" }
+    if params.any(it.state) { return "a `state` seat" }
+    null
+}
+
+/// What a top-level value's name is from `file`, as code reads it: a fn the program declares, or a
+/// `const` as written or as it settles. Absent for any other name.
+fn named_value(engine: QueryEngine, file: SourceFileAddress, name: string) -> NamedValue? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    match d.kind {
+        .Fn -> {
+            let callee? = callee_of(engine, d) else { return null }
+            NamedValue.Fn(callee)
+        },
+        .Const -> const_named(engine, d),
+        .Collect -> collected_value(engine, d),
+        .State -> kept_value(engine, d),
+        .Record or .Enum or .Named or .Alias or .Trait or .Component or .Syntax or .CollectEnum or .Ctx -> null,
+    }
+}
+
+/// The `const` `d` names, as code reads it: an instance's value its unit builds, the literal it's
+/// written as, or what it settles to.
+fn const_named(engine: QueryEngine, d: DeclaredName) -> NamedValue {
+    if built_where_read(engine, d) { return NamedValue.Built(unit_callee(d)) }
+    let value = const_literal(engine, d)
+    if value == null { settled_const(engine, d) } else { NamedValue.Literal(value!) }
+}
+
+/// The module `state` `d` names, as code reads it: what the box its unit answers holds. Absent where
+/// its type isn't known.
+fn kept_value(engine: QueryEngine, d: DeclaredName) -> NamedValue? {
+    let held? = state_type(engine, d) else { return null }
+    NamedValue.Kept(unit_callee(d), held)
+}
+
+/// The type the module `state` `d` holds: as it's written, else as its value is.
+fn state_type(engine: QueryEngine, d: DeclaredName) -> SignedType? { binding_type(engine, d.file, d.name) }
+
+/// The start the module `state` `d` writes, as a body of no seats answering its type; absent where
+/// it writes none, or its type isn't known.
+fn state_body(engine: QueryEngine, d: DeclaredName) -> SignedBody? {
+    let held? = state_type(engine, d) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    let stmt? = item
+        .stmts
+        .find((s) -> item.store.let_name(s) == d.name && item.store.is_module_state(s)) else { return null }
+    let init? = item.store.stmt_value(stmt) else { return null }
+    SignedBody {
+        signature: value_signature(held),
+        item: item,
+        body: init,
+        stmt: stmt,
+        seat: Seating.Binding(d.name),
+    }
+}
+
+/// The unit of the module `state` `file` declares as `name`: no seats, the box keeping it built at
+/// its first call and answered by every call. Absent where it declares none, or its type isn't known.
+fn lowered_state(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.State) else { return null }
+    let signed? = state_body(engine, d) else { return null }
+    let held = signed.signature.answer
+    let body = elaborated(engine, file, signed)
+    mut cx = lowering(
+        body.store,
+        lowered_program(engine, file, body.store, name, [], null, null, 0, signed.item.at),
+        body.core,
+        body.seats,
+        held,
+    )
+    cx.scope_enter()
+    let r = cx.state_kept(declared_symbol(file, name), body.body, held)
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(cell_of(held))) with { refused: body.refused, unread: body.unread }
+}
+
+/// The default the context `d` declares, as a body of no seats answering its type; absent where it's
+/// required, or its type isn't known.
+fn context_body(engine: QueryEngine, d: DeclaredName) -> SignedBody? {
+    let held? = context_type(engine, d) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    let stmt? = item.stmts.find((s) -> item.store.ctx_declared(s) == d.name) else { return null }
+    let start? = item.store.stmt_value(stmt) else { return null }
+    SignedBody {
+        signature: value_signature(held),
+        item: item,
+        body: start,
+        stmt: stmt,
+        seat: Seating.Binding(d.name),
+    }
+}
+
+/// The unit of the context `file` declares as `name`: no seats, the box keeping its default built at
+/// its first call and answered by every call. Absent where it declares none with a default, or its
+/// type isn't known.
+fn lowered_context(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Ctx) else { return null }
+    let signed? = context_body(engine, d) else { return null }
+    let held = signed.signature.answer
+    let body = elaborated(engine, file, signed)
+    mut cx = lowering(
+        body.store,
+        lowered_program(engine, file, body.store, name, [], null),
+        body.core,
+        body.seats,
+        held,
+    )
+    cx.scope_enter()
+    let r = cx.state_kept(declared_symbol(file, name), body.body, held)
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(cell_of(held))) with { refused: body.refused, unread: body.unread }
+}
+
+/// The context `name` read from `file` names, as a read or a set reaches it. Absent where it names
+/// none, or its type isn't known.
+fn held_context(engine: QueryEngine, file: SourceFileAddress, name: string) -> HeldContext? {
+    let d? = context_named(engine, file, name) else { return null }
+    let held? = context_type(engine, d) else { return null }
+    HeldContext {
+        key: context_key(d),
+        held: held,
+        start: if context_body(engine, d) == null { null } else { unit_callee(d) },
+    }
+}
+
+/// The `collect` `d` names, as code reads it: a call of the unit that builds its list, one a program
+/// names its own where it gathers `in closure`; else why what it gathers isn't known, where something
+/// says. Absent where what it gathers isn't read here.
+fn collected_value(engine: QueryEngine, d: DeclaredName) -> NamedValue? {
+    if collected(engine, d.file, d.name, "") != null {
+        return NamedValue.Built(unit_callee(d) with { gathers_closure: gathers_closure(engine, d) })
+    }
+    let why? = collect_members(engine, d.file, d.name, true, "").why else { return null }
+    NamedValue.Unsettled(why)
+}
+
+/// What the `collect` `file` declares as `name` gathers, read for the package `gathering` (empty: its
+/// own): its projection's fields, in the order written, and each member, in its order, as the values
+/// those fields read off it. Absent where it
+/// declares none, gathers only once built, or a field reads what only a built program answers.
+type Collected = { fields: List<string>, rows: List<CollectedRow> }
+
+fn collected(engine: QueryEngine, file: SourceFileAddress, name: string, gathering: string) -> Collected? {
+    let item? = declaring_item(engine, file, name, ItemKind.Collect) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.collect_parts(s)] if p != null]
+        .find(it.name == name) else { return null }
+    let members? = members_of(engine, file, name, true, gathering) else { return null }
+    let program = program_of(engine, file, Signing { engine: engine, file: file, type_params: [] })
+    let entry = binding_type(engine, file, name)?.listed()
+    let seats = if entry == null { null } else { program.record_of(entry!)?.fields }
+    let read = [[projected(
+        engine,
+        Projecting { field: f, seat: seats?.find(it.name == f.field.of)?.ty, reader: file },
+        m,
+        parts.kind,
+    ) for f in parts.proj.fields] for m in members]
+    if read.any((r) -> r.any(it == null)) { return null }
+    Collected {
+        fields: [f.field.of for f in parts.proj.fields],
+        rows: [CollectedRow { values: [v! for v in r] } for r in read],
+    }
+}
+
+/// The unit of the `collect` `file` declares as `name`: no seats, its list built and answered.
+/// Absent where it declares none, or what it gathers isn't read here.
+fn lowered_collect(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? { lowered_collect_for(engine, file, name, "") }
+
+/// The unit of the `collect` `file` declares as `name` gathering `in closure`, as the program of the
+/// package `program` reads it: its list over that program's closure. Absent as `lowered_collect` is.
+@query
+export fn lowered_gathered(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    program: string,
+) -> LoweredFn? {
+    lowered_collect_for(engine, file, name, program)
+}
+
+/// The unit of the `collect` `file` declares as `name`, its members read for the package `gathering`.
+fn lowered_collect_for(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    gathering: string,
+) -> LoweredFn? {
+    let made? = collected(engine, file, name, gathering) else { return null }
+    let ty? = binding_type(engine, file, name) else { return null }
+    let store = new_node_store()
+    mut cx = lowering(store, lowered_program(engine, file, store, name, [], null), [], {}, ty)
+    cx.scope_enter()
+    let r = collected_list(cx, ty, made.fields, made.rows)
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(ty))
+}
+
+/// A body that isn't lowered yet, standing where the one `file` knows as `symbol` would: seats laid out as `seats`, an answer
+/// of layout `answer`, and a trap naming the body and why, run the moment the body is reached.
+export fn trapped_unit(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    symbol: string,
+    why: string,
+    seats: List<Layout>,
+    answer: Layout,
+) -> LoweredFn {
+    stand_in(engine, file, symbol, seats, answer, unlowered_reached(symbol, why))
+}
+
+/// A body of `seats` answering `answer`'s zero, trapping first with `trap` where it says one.
+fn stand_in(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    symbol: string,
+    seats: List<Layout>,
+    answer: Layout,
+    trap: string?,
+) -> LoweredFn {
+    let store = new_node_store()
+    mut cx = lowering(
+        store,
+        lowered_program(engine, file, store, symbol, [], null),
+        [],
+        {},
+        owned_type("void"),
+    )
+    for l in seats { let _ = cx.mint(l) }
+    if trap != null { cx.run_row(rt_sig_of("avra_trap")!, [cx.const_str(trap!)]) }
+    cx.emit(Ins.RetVal(cx.zero_of(answer)))
+    unit_lowered(cx, seats.length, answer)
+}
+
+fn unlowered_reached(symbol: string, why: string) -> string { "a body not lowered yet was reached: ${symbol}: ${why}" }
+
+/// The unit of the static `all` the enum `file` declares as `name` has where its variants carry
+/// nothing: no seats, each variant in the order declared, listed and answered. Absent for any other
+/// type, or name.
+@query
+export fn lowered_every_variant(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: string,
+) -> LoweredFn? {
+    let of = headed_type(TypeHead.Declared(file, name))
+    let ty? = enum_static(engine, of, file, name, method)?.answer else { return null }
+    let shape? = enum_signature(engine, file, name) else { return null }
+    let store = new_node_store()
+    mut cx = lowering(
+        store,
+        lowered_program(engine, file, store, "${name}.${method}", [], null),
+        [],
+        {},
+        ty,
+    )
+    cx.scope_enter()
+    let l = cx.laid_out(of)
+    let r = cx
+        .listed(
+            ty,
+            [cx.tagged_value(l, i, []) for i, _v in shape.variants],
+            [false for _v in shape.variants],
+        )
+    cx.scope_exit(r)
+    cx.emit(Ins.RetVal(r))
+    unit_lowered(cx, 0, cx.laid_out(ty))
+}
+
+/// What one projected field reads off the member `m` a gathering of `kind` took: the member itself
+/// for a bare `it`, a fn as a value, a const as its value, a type as its `Type`; for `it.name`, `it.module`, `it.file` and `it.doc`, the text its
+/// declaration spells; for a component's instance, the kinds its written arms are rooted at and name
+/// (`it.root_kind`, `it.node_kinds`), and any other word the field of that name its value holds.
+/// Absent for any other read.
+fn projected(engine: QueryEngine, p: Projecting, m: DeclaredName, kind: CollectKind) -> CollectedValue? {
+    let f = p.field
+    if f.path.is_empty() { return member_itself(engine, p, m) }
+    if f.path.length != 1 { return null }
+    let word = f.path[0].of
+    let spelled = member_text(engine, m, word)
+    if spelled != null { return CollectedValue.Spelled(Literal.Text(spelled!)) }
+    match kind {
+        .Component(_) -> instance_read(engine, m, word),
+        .Annotated(mark) -> if word == MARK_WORD { marked(engine, m, mark) } else { null },
+    }
+}
+
+/// One projected field as a gathering reads it: the field, the type its record's seat gives it, and
+/// the file the collect stands in.
+type Projecting = { field: ProjField, seat: SignedType?, reader: SourceFileAddress }
+
+/// The member `m` itself (`it`): a fn as a value, a const as its value, a declared type as its
+/// `Type`, carried as the binary's own data; absent for any other.
+fn member_itself(engine: QueryEngine, p: Projecting, m: DeclaredName) -> CollectedValue? {
+    match m.kind {
+        .Fn -> {
+            let callee? = callee_of(engine, m) else { return null }
+            CollectedValue.Member(callee)
+        },
+        .Const -> CollectedValue.Valued(const_named(engine, m)),
+        .Record or .Enum or .Named or .Alias -> {
+            let seat? = p.seat else { return null }
+            CollectedValue.Valued(settled_type(engine, p.reader, m, seat))
+        },
+        .Trait or .Component or .Syntax or .Collect or .CollectEnum or .State or .Ctx -> null,
+    }
+}
+
+/// The mark `mark` the member `m` wears, its literals read off it; absent where one isn't a literal.
+fn marked(engine: QueryEngine, m: DeclaredName, mark: string) -> CollectedValue? {
+    let args? = mark_literals(engine, m, mark) else { return null }
+    CollectedValue.Marked(mark, args)
+}
+
+/// The text a member's declaration spells for `word`: its name, its module's last word, its file's
+/// path, its doc's first paragraph; absent for any other word.
+fn member_text(engine: QueryEngine, m: DeclaredName, word: string) -> string? {
+    if word == NAME_KEY { return m.name }
+    if word == MODULE_KEY { return short_module(m.file) }
+    if word == FILE_WORD { return m.file.path_in_package }
+    if word == DOC_WORD { member_doc(engine, m) } else { null }
+}
+
+/// The first paragraph of the doc a member's declaration is written under, its lines joined.
+fn member_doc(engine: QueryEngine, m: DeclaredName) -> string {
+    let item = read_item(engine, m.file, m.item)
+    let s? = declaring_stmt(item, m) else { return "" }
+    doc_first_paragraph(item.store.doc_comment(s) ?? []).join(" ")
+}
+
+/// What the component instance `m` answers for `word`: the kinds its written arms are rooted at, or
+/// that its patterns name; else the field of that name its value holds.
+fn instance_read(engine: QueryEngine, m: DeclaredName, word: string) -> CollectedValue? {
+    if word == ROOT_KIND_WORD {
+        let arms = instance_arms(engine, m)
+        return CollectedValue
+            .Numbers(
+                if arms == null { [any_root] } else { root_kind_of(arms!.store, arms!.arms) ?? [any_root] },
+            )
+    }
+    if word == NODE_KINDS_WORD {
+        let arms = instance_arms(engine, m)
+        return CollectedValue
+            .Numbers(if arms == null { [] } else { pattern_kinds(arms!.store, arms!.arms) })
+    }
+    match const_body(engine, m) {
+        .Ok(body) -> CollectedValue.Field(unit_callee(m), body.signature.answer, word),
+        .Err(_) -> null,
+    }
+}
+
+/// The arms a component instance's body is written as, and the store they stand in.
+type WrittenArms = { store: SyntaxArena, arms: List<Arm> }
+
+/// The arms the one fn of the instance `m`'s body is written as; absent for a body written otherwise.
+fn instance_arms(engine: QueryEngine, m: DeclaredName) -> WrittenArms? {
+    let item = read_item(engine, m.file, m.item)
+    let s? = declaring_stmt(item, m) else { return null }
+    let v? = item.store.const_value(s) else { return null }
+    let inst? = item.store.instance_parts(v) else { return null }
+    let body? = inst.body else { return null }
+    let f? = item.store.body_fn(body) else { return null }
+    let parts? = item.store.lambda_parts(f) else { return null }
+    let arms? = item.store.match_arms(parts.body) else { return null }
+    WrittenArms { store: item.store, arms: arms }
+}
+
+/// The unit a top-level value is built by where it's read — a `collect`'s list, a component
+/// instance's value, a module `state`'s box — as a call reaches it.
+fn unit_callee(m: DeclaredName) -> CalledFn {
+    CalledFn {
+        file: m.file,
+        name: m.name,
+        symbol: declared_symbol(m.file, m.name),
+        external: false,
+        plain: true,
+    }
+}
+
+/// The unit the const `file` declares as `name` builds its value by where it's read
+/// (`built_where_read`): no seats, its value answered. Absent for any other declaration.
+fn lowered_instance(engine: QueryEngine, file: SourceFileAddress, name: string) -> LoweredFn? {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Const) else { return null }
+    if !built_where_read(engine, d) { return null }
+    match const_body(engine, d) {
+        .Ok(body) -> signed_lowered(engine, file, body, name, null),
+        .Err(_) -> null,
+    }
+}
+
+/// Whether the collect `d` gathers `in closure`, so a program reads it over its own closure.
+fn gathers_closure(engine: QueryEngine, d: DeclaredName) -> bool {
+    let item? = declaring_item(engine, d.file, d.name, ItemKind.Collect) else { return false }
+    let parts? = [p! for s in item.stmts for p in [item.store.collect_parts(s)] if p != null]
+        .find(it.name == d.name) else { return false }
+    parts.scope is .Closure
+}
+
+/// Whether the `const` `d`'s value is built by its unit where it's read: a component's instance, or a
+/// value each program gathers over its own closure.
+fn built_where_read(engine: QueryEngine, d: DeclaredName) -> bool {
+    built_instance(engine, d) ||
+        d.kind == ItemKind.Const && const_settlement(engine, d.file, d.name, d.item).per_program
+}
+
+/// Whether the `const` `d` is a component's instance, whose value its unit builds where it's read.
+fn built_instance(engine: QueryEngine, d: DeclaredName) -> bool {
+    d.kind == ItemKind.Const && file_instances(engine, d.file).any(it.name == d.name)
+}
+
+/// The projection word naming a member's file.
+const FILE_WORD: string = "file"
+
+/// The projection word naming the mark a member wears.
+const MARK_WORD: string = "mark"
+
+/// The projection word naming a member's doc.
+const DOC_WORD: string = "doc"
+
+/// The projection word naming the kinds a component instance's arms are rooted at.
+const ROOT_KIND_WORD: string = "root_kind"
+
+/// The projection word naming every kind a component instance's patterns name.
+const NODE_KINDS_WORD: string = "node_kinds"
+
+/// The fn the toolchain's module `module` (`@std.meta`) declares as `name`, as a call reaches it.
+@query
+fn toolchain_callee(engine: QueryEngine, module: string, name: string) -> CalledFn? {
+    let m = module_path(module.split("."))
+    let package? = m.package() else { return null }
+    let d? = declarations_of(engine, package, m.local(), false, name)
+        .find(space_of(it.kind) == Space.Value) else { return null }
+    callee_of(engine, d)
+}
+
+/// The fn `d` names, as a call reaches it: an extern by the symbol C knows it by, its `mut` seats
+/// handed the places they write through; a declared fn by the one its body is known by.
+fn callee_of(engine: QueryEngine, d: DeclaredName) -> CalledFn? { callee_at(engine, d.file, d.item, d.name) }
+
+/// The fn the item `at` of `file` declares as `name`, as a call reaches it: read from its item once,
+/// so a call of it elsewhere reads this answer and never its item.
+@query
+fn callee_at(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> CalledFn? {
+    let item = read_item(engine, file, at)
+    let host = item
+        .stmts
+        .find((s) -> item.store.is_host_fn(s) && item.store.fn_parts(s)?.name == name)
+    if host != null {
+        return CalledFn {
+            file: file,
+            name: name,
+            symbol: name,
+            external: false,
+            hosted: true,
+            plain: item.store.fn_parts(host!)!.params.all(plain_seat),
+            params: signed_seats(fn_signature(engine, file, name)?.params ?? []),
+        }
+    }
+    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == name]
+        .first()
+    if external != null {
+        return CalledFn {
+            file: file,
+            name: name,
+            symbol: name,
+            external: true,
+            plain: external!.params.all(plain_seat),
+            params: signed_seats(fn_signature(engine, file, name)?.params ?? []),
+        }
+    }
+    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == name]
+        .first() else { return null }
+    let signed = fn_signature(engine, file, name)
+    CalledFn {
+        file: file,
+        name: name,
+        symbol: declared_symbol(file, name),
+        external: false,
+        plain: declared.params.all(plain_seat),
+        type_params: declared.tparams.length,
+        params: signed_seats(signed?.params ?? []),
+        bounded: bounded_params(signed?.bounds ?? []),
+    }
+}
+
+/// Whether each type parameter of a fn whose bounds are `bounds` carries a bound: its own, or one
+/// of another's that names it — a call's choice of impl rides what fills it.
+fn bounded_params(bounds: List<SignedType?>) -> List<bool> {
+    [b != null || bounds.any((o) -> o != null && names_parameter(o!, at)) for at, b in bounds]
+}
+
+/// Whether `ty` names the type parameter at `at`, itself or among its arguments.
+fn names_parameter(ty: SignedType, at: int) -> bool {
+    match ty.head { .Parameter(i, _) -> i == at, rest -> ty.args.any(names_parameter(it, at)) }
+}
+
+/// Each seat `signed` declares, as a call fills it, a `const` one's argument as any value, a `state`
+/// one's as the caller's Cell; none where one isn't typed.
+fn signed_seats(signed: List<SignedParam>) -> List<CalledSeat> {
+    if signed.any(it.ty == null) { return [] }
+    [CalledSeat {
+        name: s.name,
+        ty: s.ty!,
+        mutable: s.mutable,
+        defaulted: s.defaulted,
+        rest: s.rest,
+        state: s.state,
+        settled: s.settled,
+    } for s in signed]
+}
+
+/// The verb `name` `@std/prelude`'s `verbs/` writes a body for on the language's own type `ty`, as a
+/// call reaches it, the receiver its first seat. Absent for a verb whose body is empty, which is the
+/// compiler's, and for any other type.
+fn verb_callee(engine: QueryEngine, ty: SignedType, name: string) -> CalledFn? {
+    let d? = verb_declaring(engine, ty, name) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    if !item.stmts.any((s) -> says_body(item.store, s, name)) { return null }
+    callee_of(engine, d)
+}
+
+/// The verb `name` `@std/prelude`'s `verbs/` declares on the language's own type `ty`, its body
+/// written or the compiler's, as a call reaches it, the receiver its first seat. Absent for any other.
+fn verb_declared(engine: QueryEngine, ty: SignedType, name: string) -> CalledFn? {
+    let d? = verb_declaring(engine, ty, name) else { return null }
+    callee_of(engine, d)
+}
+
+/// Where `@std/prelude`'s `verbs/` declares the verb `name` on the language's own type `ty`.
+fn verb_declaring(engine: QueryEngine, ty: SignedType, name: string) -> DeclaredName? {
+    let at? = owned_at(ty) else { return null }
+    file_declares_named(engine, at.file, name).names.find(it.name == name && it.kind == ItemKind.Fn)
+}
+
+/// Whether `s` declares the fn `name` with a body that holds a statement.
+fn says_body(store: SyntaxArena, s: StmtId, name: string) -> bool {
+    let p? = store.fn_parts(s) else { return false }
+    p.name == name && !(store.block_stmts(p.body)?.is_empty() ?? true)
+}
+
+/// Where the language's own type `ty` is filed as declared, absent for any other type.
+fn owned_at(ty: SignedType) -> DeclaredAt? {
+    let word? = ty.owned() else { return null }
+    own_declared(word)
+}
+
+/// The method `name` a value of `subject`'s type has, or when `statics` the static fn the type has,
+/// as a call reaches it: the one the one impl that gives it writes — in the type's package, else in
+/// the first package `reader` reaches that writes one — or the body the one trait it implements gives where the type is applied to nothing, on
+/// a type the program declares, by the symbol its body is known by. Absent for any other, and for a
+/// trait's own static, which no impl gives.
+fn method_callee(
+    engine: QueryEngine,
+    subject: SignedType,
+    name: string,
+    statics: bool,
+    reader: string,
+) -> CalledFn? {
+    if subject.nullable() || subject.dynamic { return null }
+    if !subject.args.is_empty() && statics { return null }
+    let declared? = declared_at(subject) ?? owned_at(subject) else { return null }
+    if statics && declaring_item(engine, declared.file, declared.name, ItemKind.Trait) != null { return trait_static_callee(engine, declared, name) }
+    let impls = impls_given(engine, declared.file, declared.name, name, statics, reader)
+    if impls.is_empty() && !statics && subject.args.is_empty() { return given_callee(engine, declared.file, declared.name, name) }
+    if impls.is_empty() && statics { return every_variant_callee(engine, subject, declared, name) }
+    if impls.length != 1 { return null }
+    impl_callee(engine, impls[0], declared, name, statics, null)
+}
+
+/// Each impl of `subject`'s type giving the method, or when `statics` the static, `name`, as a callee
+/// of its own, where more than one gives it: a call chooses among them by its arguments.
+fn method_callees(
+    engine: QueryEngine,
+    subject: SignedType,
+    name: string,
+    statics: bool,
+    reader: string,
+) -> List<CalledFn> {
+    let declared? = declared_at(subject) ?? owned_at(subject) else { return [] }
+    [c! for g in impls_giving(engine, subject, name, statics, reader) for c in [
+        if g.by_default { given_callee(engine, declared.file, declared.name, name, g.implemented) } else { impl_callee(engine, g.at, declared, name, statics, g.implemented) },
+    ] if c != null]
+}
+
+/// The method, or when `statics` the static, `name` the impl at `at` gives the type `declared`, as a
+/// callee; one of several impls giving it is told apart by the trait it implements, `trait_given`.
+fn impl_callee(
+    engine: QueryEngine,
+    at: ImplAt,
+    declared: DeclaredAt,
+    name: string,
+    statics: bool,
+    trait_given: string?,
+) -> CalledFn? {
+    let sig? = method_signature(engine, at, name) else { return null }
+    let used = if statics { ReceiverUse.Read } else { receiver_use(engine, declared.file, declared.name, name, at.file.package_name) }
+    let unit = if trait_given == null { "${declared.name}.${name}" } else { "${declared.name}.${name}@${trait_given!}" }
+    CalledFn {
+        file: at.file,
+        name: name,
+        symbol: declared_symbol(at.file, unit),
+        given_in: trait_given,
+        external: false,
+        plain: sig.type_params.length == at.params.length && sig.params.all(it.plain()),
+        owner: declared.name,
+        of: declared.file,
+        statics: statics,
+        writes: used.written(),
+        unproved: used.unproved(),
+        type_params: sig.type_params.length,
+        params: signed_seats(sig.params),
+        bounded: bounded_params(sig.bounds),
+    }
+}
+
+/// The static fn `name` the trait `declared` writes in its own body, as a callee of its unit; absent
+/// where it writes none with a body.
+fn trait_static_callee(engine: QueryEngine, declared: DeclaredAt, name: string) -> CalledFn? {
+    let signed? = trait_static_body(
+        engine,
+        TraitAt { file: declared.file, name: declared.name },
+        name,
+    ) else { return null }
+    let parts = signed.item.store.fn_parts(signed.stmt)!
+    CalledFn {
+        file: declared.file,
+        name: name,
+        symbol: declared_symbol(declared.file, "${declared.name}.${name}"),
+        external: false,
+        plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
+        owner: declared.name,
+        of: declared.file,
+        statics: true,
+    }
+}
+
+/// The unit of the static fn `name` the trait `file` declares as `owner` writes in its own body;
+/// absent where it writes none with a body.
+@query
+export fn lowered_trait_static(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    name: string,
+) -> LoweredFn? {
+    let signed? = trait_static_body(engine, TraitAt { file: file, name: owner }, name) else { return null }
+    lowered_signed(engine, file, signed, "${owner}.${name}", null)
+}
+
+/// The static `all` of the enum `subject` names whose variants carry nothing, as a callee of its
+/// unit; absent for any other type, or name.
+fn every_variant_callee(
+    engine: QueryEngine,
+    subject: SignedType,
+    declared: DeclaredAt,
+    name: string,
+) -> CalledFn? {
+    if enum_static(engine, subject, declared.file, declared.name, name) == null { return null }
+    CalledFn {
+        file: declared.file,
+        name: name,
+        symbol: declared_symbol(declared.file, "${declared.name}.${name}"),
+        external: false,
+        plain: true,
+        owner: declared.name,
+        of: declared.file,
+        statics: true,
+    }
+}
+
+/// The methods a `dyn` of the trait `ty` names has, in the trait's order: each it declares with a
+/// receiver. Absent for a type that's no trait the program declares applied to nothing.
+fn trait_members(engine: QueryEngine, ty: SignedType) -> List<TraitMember>? {
+    if !ty.dynamic || ty.nullable() || !ty.args.is_empty() { return null }
+    let at? = declared_at(ty) else { return null }
+    let item? = declaring_item(engine, at.file, at.name, ItemKind.Trait) else { return null }
+    let fns? = [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null && p!.name == at.name]
+        .first() else { return null }
+    let held = TraitAt { file: at.file, name: at.name }
+    [TraitMember {
+        name: p!.name,
+        writes: item.store.is_mutating(m),
+        plain: p!.tparams.is_empty() && p!.params.all(plain_seat),
+        seats: signed_seats(trait_method_signature(engine, held, p!.name, ty)?.params ?? []),
+        callee: CalledFn {
+            file: at.file,
+            name: p!.name,
+            symbol: declared_symbol(at.file, "${at.name}.${p!.name}"),
+            external: false,
+            plain: false,
+            owner: at.name,
+            of: at.file,
+        },
+    } for m in fns if !item.store.is_static(m) for p in [item.store.fn_parts(m)] if p != null]
+}
+
+/// The symbol the type `ty` names is known by: a declared type's, or a word the language owns under
+/// the language's own name; absent for any other.
+fn type_symbol(ty: SignedType) -> string? {
+    let at? = declared_at(ty) else { return own_symbol(ty) }
+    declared_symbol(at.file, at.name)
+}
+
+/// The symbol a type the language owns, taking no arguments, is known by; absent for any other.
+fn own_symbol(ty: SignedType) -> string? {
+    if ty.nullable() || ty.dynamic || !ty.args.is_empty() || ty.own() == null { return null }
+    "${OWN_TYPES}${ty.spelled()}"
+}
+
+/// What the symbol of a type the language owns begins with, which no declared type's does.
+const OWN_TYPES: string = "@own."
+
+/// The fn whose body is the default the record `ty` writes for its field `field`, as a call reaches
+/// it. Absent for a field whose type names the record's type parameters, a field it doesn't write
+/// itself or writes without a default.
+fn default_callee(engine: QueryEngine, ty: SignedType, field: string) -> CalledFn? {
+    if ty.nullable() || ty.dynamic { return null }
+    let at? = declared_at(ty) else { return null }
+    let item? = record_item(engine, at.file, at.name) else { return null }
+    let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
+        .find(it.name == at.name) else { return null }
+    let written? = parts.fields.find(it.name.of == field) else {
+        return spread_default(engine, at.file, parts, field) ?? carried_default(
+            engine,
+            at.file,
+            field,
+        )
+    }
+    if written.default == null { return null }
+    let signed = (record_signature(engine, at.file, at.name)?.fields ?? []).find(it.name == field)?.ty
+    if !ty.args.is_empty() && signed == null { return null }
+    CalledFn {
+        file: at.file,
+        name: field,
+        symbol: declared_symbol(at.file, "${at.name}.${field}\$default"),
+        external: false,
+        plain: true,
+        owner: at.name,
+        defaulted: Defaulting.Field,
+        type_params: if signed?.generic() ?? false { parts.tparams.length } else { 0 },
+    }
+}
+
+/// The default a record `file` declares as `parts` takes for `field` from a record it spreads: the
+/// first spread's that writes one.
+fn spread_default(engine: QueryEngine, file: SourceFileAddress, parts: StructParts, field: string) -> CalledFn? {
+    let signing = Signing { engine: engine, file: file, type_params: parts.tparams }
+    [c! for x in parts.spreads for c in [default_callee(engine, signing.signed(x.of), field)] if c != null]
+        .first()
+}
+
+/// The default a component of `file` takes for a field it carries, `field`: the one the record the
+/// trait composing it composes writes.
+fn carried_default(engine: QueryEngine, file: SourceFileAddress, field: string) -> CalledFn? {
+    let t? = composer(engine, file) else { return null }
+    let record? = composed_record(engine, t) else { return null }
+    default_callee(engine, headed_type(TypeHead.Declared(record.file, record.name)), field)
+}
+
+/// The default the record `file` declares as `owner` writes for its field `field`, lowered as a fn of
+/// nothing answering the field's type; under `under`, the layouts the record's type arguments have,
+/// for a field whose type names its type parameters. Absent where it writes none.
+@query
+export fn lowered_field_default(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    field: string,
+    under: List<ParameterLayout>?,
+) -> LoweredFn? {
+    let signed? = field_default_body(engine, file, owner, field) else { return null }
+    signed_lowered(engine, file, signed, "${owner}.${field}\$default", under)
+}
+
+/// The default the record or component `file` declares as `owner` writes for its field `field`, as
+/// a body of no seats answering the field's type — a component member's that reads the instance, of
+/// the instance as its receiver. Absent where it writes none.
+fn field_default_body(engine: QueryEngine, file: SourceFileAddress, owner: string, field: string) -> SignedBody? {
+    let item? = record_item(engine, file, owner) else { return null }
+    let stmt? = item.stmts.find((s) -> fields_written(item.store, s)?.name == owner) else { return null }
+    let value? = fields_written(item.store, stmt)!
+        .fields
+        .find(it.name.of == field && it.default != null)?.default else { return null }
+    let seat? = (record_signature(engine, file, owner)?.fields ?? []).find(it.name == field) else { return null }
+    let ty? = seat.ty else { return null }
+    SignedBody {
+        signature: value_signature(ty) with { type_params: written_params(engine, file, owner) ?? [] },
+        item: item,
+        body: value,
+        stmt: stmt,
+        receiver: if seat.made { headed_type(TypeHead.Declared(file, owner)) } else { null },
+        seat: Seating.FieldDefault(field),
+    }
+}
+
+/// The default the fn `file` declares as `owner` writes for its seat `seat`, lowered as a fn of nothing
+/// answering the seat's type. Absent where it writes none.
+@query
+export fn lowered_seat_default(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    seat: string,
+) -> LoweredFn? {
+    let signed? = signed_body(engine, file, owner) else { return null }
+    seat_default_lowered(engine, file, signed, owner, seat)
+}
+
+/// The default the fn `signed`, its unit named `unit`, writes for its seat `seat`, lowered as a fn of
+/// nothing answering the seat's type, reading no receiver. Absent where it writes none.
+export fn seat_default_lowered(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    unit: string,
+    seat: string,
+) -> LoweredFn? {
+    let defaulted? = seat_default_body(signed, seat) else { return null }
+    signed_lowered(engine, file, defaulted, "${unit}.${seat}\$default", null)
+}
+
+/// The default the fn `signed` writes for its seat `seat`, as a body of no seats answering the seat's
+/// type and reading no receiver. Absent where it writes none.
+fn seat_default_body(signed: SignedBody, seat: string) -> SignedBody? {
+    let value? = signed.item.store.fn_parts(signed.stmt)?.params?.find(it.name.of == seat)?.default else { return null }
+    let ty? = signed.signature.params.find(it.name == seat)?.ty else { return null }
+    signed with { signature: value_signature(ty), body: value, receiver: null, seat: Seating.SeatDefault(seat) }
+}
+
+/// The role of the field `field` the record `ty` declares, absent for one the compiler doesn't fill.
+fn field_role(engine: QueryEngine, ty: SignedType, field: string) -> FilledRole? {
+    if ty.nullable() || ty.dynamic { return null }
+    let at? = declared_at(ty) else { return null }
+    let signed? = (record_signature(engine, at.file, at.name)?.fields ?? []).find(it.name == field)?.ty else { return null }
+    role_of(signed)
+}
+
+/// The role a field of type `ty` has: a type of `@std/meta` that stands for the literal's own place,
+/// text or cells. Absent for any other.
+fn role_of(ty: SignedType) -> FilledRole? {
+    match ty.head {
+        .Declared(file, name) if file.package_name == META -> FILLED_ROLES.find(filled_type(it) == name),
+        rest -> null,
+    }
+}
+
+/// The roles the compiler fills a field of where a literal leaves it out.
+const FILLED_ROLES: List<FilledRole> = [
+    FilledRole.Site,
+    FilledRole.Words,
+    FilledRole.Cells,
+    FilledRole.Structural,
+    FilledRole.Opaque,
+]
+
+/// Whether a seat takes its argument as it is: typed, promising nothing a run sees (a `const` seat's
+/// promise is the call's to keep), with no default, one value.
+fn plain_seat(p: Param) -> bool {
+    p.ty != null &&
+        !p.promises.mutable &&
+        !p.state &&
+        !p.promises.state &&
+        p.default == null &&
+        p.spread == null
+}
+
+/// Where a name a body in `file` reads is looked up, in order: where the read was written when it
+/// was written elsewhere (`home`: a template's file, or a module), then `file`.
+fn read_from(engine: QueryEngine, file: SourceFileAddress, home: string?) -> List<SourceFileAddress> {
+    let written? = home_file(engine, home) else { return [file] }
+    [written, file]
+}
+
+/// The file a node written elsewhere reads its names in: its template's, or one of its module's.
+fn home_file(engine: QueryEngine, home: string?) -> SourceFileAddress? {
+    let h? = home else { return null }
+    template_file(h) ?? module_file(engine, h)
+}
+
+/// A file of the module `dotted` spells (`@std.grammar`), which reads every name the module declares.
+fn module_file(engine: QueryEngine, dotted: string) -> SourceFileAddress? {
+    let m = module_path(dotted.split("."))
+    let package? = m.package() else { return null }
+    module_files(engine, package, m.local(), false).first()
+}
+
+/// The symbol a declared fn's body is known by: its file, then its name.
+export fn declared_symbol(file: SourceFileAddress, name: string) -> string { "${spelled_file(file)}.${name}" }
+
+/// The literal the `const` `d` names is written as, absent when its value is computed.
+fn const_literal(engine: QueryEngine, d: DeclaredName) -> Literal? {
+    let item = read_item(engine, d.file, d.item)
+    let value? = [v! for s in item.stmts if item.store.let_name(s) == d.name for v in [item.store.const_value(s)] if v != null]
+        .first() else { return null }
+    literal_of(item.store.valued(value))
+}
+
+collect listed_lowered_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a body's lowering reads through, for a process to hand its engine.
+export fn lowered_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_lowered_facts) }

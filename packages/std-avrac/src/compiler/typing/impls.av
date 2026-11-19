@@ -1,0 +1,824 @@
+//! Traits, impls and methods: a trait's method sigs (no receiver
+//! seat — the signatory supplies it), an impl's methods under their
+//! target (the receiver typed as the target at seat 0), the impl-for
+//! contract (every trait method, exactly, nothing beyond), the orphan
+//! rule, and the voices these laws speak.
+use core.{
+    StmtId,
+    ExprId,
+    TypeId,
+    DeclId,
+    FnParts,
+    ImplParts,
+    Type,
+    TypeRef,
+    filled,
+    same_decl,
+    Param,
+    Plain,
+    counted,
+}
+use core.{SeatMark, plain_mark}
+use diagnostics.{Severity, Voice, said_as, warning}
+use features.{
+    TypeCx,
+    FnSig,
+    DeclSig,
+    Decl,
+    Namespace,
+    written_seats,
+    EnumSig,
+    method_row,
+    property_row,
+}
+
+impl TypeCx {
+    /// A trait member's sig: `Self` at seat 0 — the trait's own
+    /// type parameter, which a default's body reads as `self` and a
+    /// signatory's method answers with its own type.
+    fn declare_trait_sig(f: StmtId) {
+        let fp? = self.view.store.fn_parts(f) else { return }
+        let m = self.decl_of(f)
+        let contract: DeclId = self.view.decls.decl(m).parent!
+        if self.repeated_member(f, contract) { self.member_twice(f, contract, fp.name) }
+        // AN ASSOCIATED FN spends no receiver seat. An abstract one names
+        // `Self` and the trait's parameters, each signatory answering; a
+        // bodied one is one definition for the whole trait, so nothing
+        // names its `Self` and its signature names none.
+        if self.view.store.is_static(f) {
+            self.record_receiver_word(f, [])
+            let abstract = !self.view.decls.has_body(m)
+            if abstract { self.enter_target_scope(contract) }
+            self.seated_answer(f, fp.params, null, fp.name, fp.ret)
+            if abstract { self.leave_tscope() }
+            // A BODIED ASSOCIATED FN IS ONE DEFINITION FOR THE WHOLE
+            // TRAIT, never per-signatory, so it is a method of the
+            // trait's OWN name — `Foo.make(…)`, no implementor in
+            // sight. An abstract one (no body) answers only through a
+            // concrete signatory's table, which files its own answer.
+            if self.view.decls.has_body(m) { self.view.decls.declare_method(contract, m) }
+            return
+        }
+        self.record_receiver_word(f, [plain_mark])
+        // `Self` is in scope for the sig's annotations
+        self.enter_target_scope(contract)
+        self.seated_answer(f, fp.params, self.impl_self_type(contract), fp.name, fp.ret)
+        self.leave_tscope()
+    }
+
+    /// The seats a fn-shaped declaration declared `mut` — a method's
+    /// receiver seat first, never declared — and its `mut fn` word.
+    /// A `state` seat is a free fn's: a method has no caller's cell
+    /// to reach, so it is refused here.
+    fn record_receiver_word(f: StmtId, receiver: List<SeatMark>) {
+        let d = self.decl_of(f)
+        let parts: FnParts? = self.view.store.fn_parts(f)
+        let written = written_seats(self.keywords, parts?.params ?? [])
+        for pp in written {
+            if pp.promises.state { self.state_seat_on_a_method(f, pp.name.of) }
+        }
+        let marks = [pp.promises for pp in written]
+        self.view.decls.record_seats(d, receiver.concat(marks))
+        if self.view.store.is_mutating(f) { self.view.decls.record_declared_writing(d) }
+    }
+
+    fn state_seat_on_a_method(f: StmtId, name: string) { self.emit(said_as("type.state_seat", self.stmt_loc(f), method_state_seat(name))) }
+
+    /// A trait by name: in the namespace of the file that WROTE the type
+    /// being read, then where the code lands.
+    fn trait_decl_named(name: string) -> DeclId? {
+        let landed = self.view.decls.trait_named(self.names, name)
+        let writer? = self.writer else { return landed }
+        self.trait_in(writer, name) ?? landed
+    }
+
+    /// THE TRAIT AN IMPL IS FOR, READ WHERE ITS NAME WAS WRITTEN. A
+    /// generated impl's text is its template's: the trait it names is
+    /// the one its own library's file names so, whatever the file it
+    /// lands in imports — nothing, or an unrelated declaration of the
+    /// same name. A written impl reads its own file.
+    fn impl_trait(s: StmtId, of: string) -> DeclId? {
+        let origin? = self.view.origin_of_stmt(s) else { return self.view.decls.trait_named(self.names, of) }
+        self.trait_in(self.written_in(origin), of)
+    }
+
+    /// The trait a namespace binds `name` to — none when it binds no
+    /// trait there.
+    fn trait_in(names: Namespace, name: string) -> DeclId? {
+        let d? = names.type_decl(name) else { return null }
+        if self.view.decls.is_trait(d) { d } else { null }
+    }
+
+    /// A member's sig under its parent: a trait's method declares
+    /// its contract; an impl's method declares under the impl's
+    /// verdict — real when the block is lawful, wreckage otherwise; a
+    /// record's own method (a component's) declares under the record.
+    fn declare_member(x: Decl) {
+        if x.parent == null { return self.declare_wreckage(x.stmt) }
+        let parent = self.view.decls.decl(x.parent!)
+        match parent.kind {
+            .Trait -> self.declare_trait_sig(x.stmt),
+            .Impl -> self.declare_under_impl(parent.stmt, x.stmt),
+            .Record -> self.declare_record_method(x),
+            .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> self.declare_wreckage(x.stmt),
+        }
+    }
+
+    /// A record's own method — a component's — signed under it and
+    /// REGISTERED in its table, as an impl block's are.
+    fn declare_record_method(x: Decl) {
+        self.declare_under(x.parent!, x.stmt)
+        if self.registrable(x.stmt) { self.view.decls.declare_method(x.parent!, x.id) }
+    }
+
+    fn declare_under_impl(block: StmtId, f: StmtId) {
+        let parts? = self.view.store.impl_parts(block) else { return self.seated_wreckage(f) }
+        let d? = self.impl_target(block, parts, false) else { return self.seated_wreckage(f) }
+        self.view.decls.record_target(self.decl_of(block), d)
+        self.declare_under(d, f)
+        let of? = parts.of else { return }
+        let tr? = self.impl_trait(block, of) else { return }
+        let member? = self.view.decls.trait_member(tr, self.fn_named(f)) else { return }
+        self.view.decls.record_answered(self.decl_of(f), member)
+    }
+
+    /// A method declared under the type it belongs to: that type's
+    /// Vars in scope, `self` its instance.
+    fn declare_under(d: DeclId, f: StmtId) {
+        self.enter_target_scope(d)
+        self.declare_method(self.impl_self_type(d), f)
+        self.leave_tscope()
+    }
+
+    /// The type an impl's `self` wears — the ONE definition, shared
+    /// with the receivers pass.
+    fn impl_self_type(d: DeclId) -> TypeId {
+        self.view.decls.self_type_of(d)
+    }
+
+    fn enter_target_scope(d: DeclId) {
+        // LICENSED loops.push_loop: pushing through the field alias — concat would rebind the local
+        for v in self.view.decls.instance_vars(d) { self.tscope.push(v) }
+    }
+
+    /// The impl block's law: its target is declared, plain, and
+    /// this module's (or the trait is); its methods' sigs are asked
+    /// and REGISTERED under the target (a name taken twice is the
+    /// method table's clash, spoken once per type); then the
+    /// contract.
+    fn declare_impl_block(s: StmtId) {
+        let parts? = self.view.store.impl_parts(s) else { return }
+        let target: DeclId? = self.impl_target(s, parts, true)
+        if target == null { return }
+        let d = target!
+        self.view.decls.record_target(self.decl_of(s), d)
+        // A METHOD THAT WRITES THROUGH `self` KEEPS ITS BOX. A flat record is a value in a
+        // register with no identity to write through — but an impl whose methods only READ
+        // (a DERIVED `Fingerprint`, say) never writes, and sealing on its ACCOUNT made a
+        // `DeclId` boxed in a parsed build and bare in a held one: the two objects then
+        // disagreed on the representation and the link mixed `ptr` with `i64` in silence.
+        // THE SEAL IS DRIVEN BY THE DECLARATION — a `mut fn` method, a
+        // `mut` seat, or an assignment rooted at `self` in the body —
+        // never by an impl's mere existence, so an impl that only READS
+        // does not box its target.
+        mut seals = false
+        for f in parts.fns { if self.writes_receiver(f) { seals = true } }
+        if seals {
+            self.view.decls.sealed(self.impl_self_type(d))
+        }
+        for f in parts.fns {
+            let m = self.decl_of(f)
+            let _ = self.view.decls.sig(m)
+            if self.registrable(f) { self.view.decls.declare_method(d, m) }
+            self.static_shadows(f, d, parts.target)
+            self.register_wrapper(d, m)
+        }
+        if parts.of != null { self.check_trait_impl(s, parts.of!, d, parts.target, parts.fns) }
+    }
+
+    /// The wrapper a WRAP installed over a member's moved body, signed
+    /// and registered under the same target: callers reach it by the
+    /// written name, and it reaches the body by the mangled one.
+    fn register_wrapper(target: DeclId, body: DeclId) {
+        let w? = self.view.decls.wrapper_of(body) else { return }
+        let _ = self.view.decls.sig(w)
+        self.view.decls.declare_method(target, w)
+    }
+
+    /// Whether a method's receiver is a place to write through — the ONE
+    /// fact that forces its target to keep a box, so a flat record's
+    /// `self` is a place. Read from the PARSE, so it is answerable before
+    /// the method is signed: the `mut fn` word, a written `mut` seat, or
+    /// an assignment whose PLACE ROOT is `self` in the method's own body.
+    fn writes_receiver(f: StmtId) -> bool {
+        let store = self.view.store
+        if store.is_mutating(f) { return true }
+        let ps: List<Param> = store.fn_parts(f)?.params ?? []
+        if ps.any(it.promises.mutable) { return true }
+        let x = self.view.decls.decl(self.decl_of(f))
+        // A declaration's range is over the EXPRESSION arena; statements are
+        // their own, so walk the statements and keep the targets this method
+        // owns by their place's index.
+        for s in store.stmt_ids() {
+            let t: ExprId? = store.assign_target(s)
+            if t != null {
+                let root: ExprId? = store.place_root(t!)
+                if root != null {
+                    let r = root!
+                    if x.body().holds(r.index) && store.expr(r) is .Receiver { return true }
+                }
+            }
+        }
+        false
+    }
+
+    /// A `static fn` and a VARIANT of the same name are two things
+    /// spelled `Type.name` — the variant wins at the call, so the
+    /// pair is refused where it is written rather than shadowed.
+    fn static_shadows(f: StmtId, target: DeclId, tname: string) {
+        if !self.view.store.is_static(f) { return }
+        let name? = self.view.store.fn_parts(f)?.name else { return }
+        // the DECLARATION answers, never an interned type: a record
+        // target would mint a bogus `Type.Enum` the registry keeps
+        let sig: EnumSig? = self.view.decls.sig(target)?.enum_sig()
+        if sig == null || sig!.tag_of(name) == null { return }
+        self.static_names_a_variant(f, tname, name)
+    }
+
+    /// A method the table can serve: plain — generic methods wait.
+    fn registrable(f: StmtId) -> bool {
+        let parts: FnParts? = self.view.store.fn_parts(f)
+        parts != null && parts!.tparams.is_empty()
+    }
+
+    /// The impl's verdict: the target's declaration when the block
+    /// is lawful, else absence — spoken only when `loud`.
+    fn impl_target(s: StmtId, parts: ImplParts, loud: bool) -> DeclId? {
+        let target = parts.target
+        let d? = self.type_decl_named(target) else {
+            if loud { self.no_such_target(s, target) }
+            return null
+        }
+        // impls are filed under the name they are written on
+        if self.view.decls.is_alias(d) {
+            if loud { self.alias_target(s, target, d) }
+            return null
+        }
+        if self.view.decls.is_builtin(d) { return self.builtin_target(s, d, parts, loud) }
+        // A TRAIT impl lands for the WHOLE generic: a written target
+        // argument must be the type's OWN parameter name, or the impl
+        // would silently serve an instantiation it does not name.
+        if parts.of != null && !self.worn_params(s, d) {
+            if loud { self.concrete_target(s, parts.of!, target, self.view.decls.tparams(d)) }
+            return null
+        }
+        self.orphan_law(s, d, parts.of, target, loud)
+        d
+    }
+
+    /// Whether an impl's written target parameters agree with the
+    /// type's own — absent parameters (the bare `impl Trait for Box`
+    /// spelling) and a spelling that repeats the declared names both
+    /// mean the whole generic; a concrete argument (`Box<int>`) does
+    /// not.
+    fn worn_params(s: StmtId, d: DeclId) -> bool {
+        let written: List<Plain> = self.view.store.impl_tparams_of(s)?.target ?? []
+        let declared = self.view.decls.tparams(d)
+        written.is_empty() ||
+            written.length == declared.length &&
+                [j for j, w in written if w.of != declared[j]].is_empty()
+    }
+
+    /// THE LANGUAGE OWNS ITS BUILTIN TYPES: an impl on one implements
+    /// this package's own trait, and adds no name the type already
+    /// answers — one name, one meaning on every path. A refusal is
+    /// spoken once and the block still serves its type, so its bodies
+    /// and callers say nothing more.
+    fn builtin_target(s: StmtId, d: DeclId, parts: ImplParts, loud: bool) -> DeclId? {
+        if loud { self.builtin_law(s, d, parts) }
+        // A built-in generic's parameters are ordinal (T1, T2), so a
+        // written argument that NAMES A TYPE (`Result<int, string>`)
+        // is a specific instantiation read as the whole generic.
+        if parts.of != null && !self.free_target_params(s) {
+            if loud { self.concrete_target(s, parts.of!, parts.target, self.view.decls.tparams(d)) }
+            return null
+        }
+        d
+    }
+
+    /// Whether every written target parameter is a FREE name — one
+    /// that names no declared or built-in type. A generic target's
+    /// arguments are parameter names, never types.
+    fn free_target_params(s: StmtId) -> bool {
+        let written: List<Plain> = self.view.store.impl_tparams_of(s)?.target ?? []
+        [w for w in written if self.names_a_type(w.of)].is_empty()
+    }
+
+    fn names_a_type(name: string) -> bool {
+        self.type_decl_named(name) != null || builtin_type_name(self.view.lang.types, name)
+    }
+
+    fn builtin_law(s: StmtId, d: DeclId, parts: ImplParts) {
+        let target = parts.target
+        let of? = parts.of else { return self.builtin_inherent(s, target) }
+        let tr: DeclId? = self.impl_trait(s, of)
+        if tr != null && self.view.decls.package_of(tr!) != self.view.package() { return self.builtin_foreign(s, of, target) }
+        let sh = self.view.types.shape_of(self.view.decls.self_type_of(d))
+        let taken? = parts.fns.find((f) -> self.builtin_answers(sh, self.fn_named(f))) else { return }
+        self.builtin_renamed(taken, target, self.fn_named(taken))
+    }
+
+    /// Whether a builtin shape's own vocabulary answers this name.
+    fn builtin_answers(sh: Type, name: string) -> bool {
+        method_row(self.view.lang.methods, name, sh) != null ||
+            property_row(self.view.lang.properties, name, sh) != null
+    }
+
+    /// A refused declaration still declares — hole seats, so the
+    /// body types without a crash and speaks nothing more.
+    fn declare_wreckage(f: StmtId) { self.declare_holes(f, 0) }
+
+    /// A refused impl's method declares its RECEIVER's hole seat
+    /// too: the body's reads index the seats it was written with.
+    fn seated_wreckage(f: StmtId) { self.declare_holes(f, 1) }
+
+    fn declare_holes(f: StmtId, seats: int) {
+        let parts? = self.view.store.fn_parts(f) else { return }
+        self
+            .declare(
+                f,
+                DeclSig
+                    .Fn(
+                        FnSig {
+                            params: filled<TypeId>(seats + parts.params.length, self.error_type),
+                            ret: self.error_type,
+                        },
+                    ),
+            )
+    }
+
+    /// THE ORPHAN RULE (spec 16.5): an impl lives in its type's
+    /// PACKAGE — or in its trait's, when the trait is this package's.
+    /// Ownership is the package's, so a module may give a sibling's
+    /// type its verbs; a dependency's type takes only a local trait.
+    /// The refusal stands ALONE: the impl still serves its target for
+    /// the rest of the walk, so a call of an orphan's method speaks
+    /// nothing more.
+    fn orphan_law(s: StmtId, d: DeclId, of: string?, target: string, loud: bool) {
+        if !loud { return }
+        let owner = self.view.decls.package_of(d)
+        if owner == self.view.package() { return }
+        let tr: DeclId? = if of == null { null } else { self.impl_trait(s, of!) }
+        if tr != null && self.view.decls.package_of(tr!) == self.view.package() { return }
+        self.orphan_impl(s, impl_heading(of, target), target, owner)
+    }
+
+    /// An impl-for answers EVERY trait method, exactly — name,
+    /// arity, param types, and return — and nothing beyond them
+    /// (the recorded bs2 law, now ours).
+    mut fn check_trait_impl(s: StmtId, of: string, target: DeclId, tname: string, fns: List<StmtId>) {
+        let tdecl? = self.impl_trait(s, of) else { return self.no_such_trait(s, of) }
+        let args = [self.written_type_of(s, a) for a in self.view.store.trait_args_of(s)]
+        let takes = self.view.decls.tparams(tdecl).length - 1
+        if args.length != takes { return self.trait_args_miscounted(s, of, takes, args.length) }
+        let members = self.view.decls.trait_fns(tdecl)
+        let wanted = [self.view.decls.fn_name(m) ?? "" for m in members]
+        // the impl is recorded FIRST: a member the signatory never
+        // wrote is answered by the trait's default through it
+        self.view.decls.record_impl(target, tdecl)
+        let at = TraitAt { decl: tdecl, args: [self.impl_self_type(target)].concat(args) }
+        for m in members { self.check_trait_member(s, of, target, tname, m, at, fns) }
+        for f in fns {
+            let mn = self.fn_named(f)
+            if !wanted.contains(mn) { self.beyond_the_trait(f, of, tname, mn) }
+        }
+    }
+
+    /// A member is answered by the signatory's own method, or by
+    /// the trait's DEFAULT — which agrees with itself.
+    fn check_trait_member(
+        s: StmtId,
+        of: string,
+        target: DeclId,
+        tname: string,
+        m: DeclId,
+        at: TraitAt,
+        fns: List<StmtId>,
+    ) {
+        let mn = self.view.decls.fn_name(m) ?? ""
+        let declared: FnSig? = self.view.decls.sig(m)?.fn_sig()
+        let want = if declared == null { null } else { self.at_trait_args(declared!, at) }
+        let own = [self.decl_of(f) for f in fns if self.fn_named(f) == mn].first()
+        let answered? = own ?? self.view.decls.method(target, mn) else { return self.unanswered(s, of, tname, mn) }
+        if same_decl(answered, m) { return }
+        let got: FnSig? = self.view.decls.sig(answered)?.fn_sig()
+        // A STATIC SPENDS NO SEAT ON A RECEIVER, so its first seat is judged too
+        let from = if self.view.decls.is_static_of(m) { 0 } else { 1 }
+        if want != null && got != null && !sigs_agree(want!, got!, from) { self.sig_unworn(s, of, tname, mn) }
+    }
+
+    /// A member's signature at the impl's arguments — `Self` first,
+    /// then the trait's own.
+    fn at_trait_args(sig: FnSig, at: TraitAt) -> FnSig {
+        let sub = (t: TypeId) -> self.view.types.substituted(t, at.decl, at.args)
+        FnSig { params: [sub(p) for p in sig.params], ret: sub(sig.ret) }
+    }
+
+    /// A fn's typed seats recorded, then its answer typed and the whole signature
+    /// declared — the ONE spelling every seat-declaring site shares (the literal
+    /// three of them wrote alike, compiler.duplicated_literal's own finding).
+    /// `seat_types_so_far`, never `seats`: this IS the natural signing (a method
+    /// or trait member is never an extern, so `params`/`receiver` already say
+    /// everything `typed_seats` needs — no structural re-derivation wanted).
+    /// Reuses failures.av's early ask if it beat this fn here.
+    fn seated_answer(f: StmtId, params: List<Param>, receiver: TypeId?, name: string, ret: TypeRef) {
+        let d = self.decl_of(f)
+        let ptypes = self.view.decls.seat_types_so_far(d) ?? self.typed_seats(f, params, receiver)
+        self.view.decls.record_seat_types(d, ptypes)
+        self.declare(f, DeclSig.Fn(FnSig { params: ptypes, ret: self.answer_type(f, name, ret) }))
+    }
+
+    fn declare_method(ty: TypeId, f: StmtId) {
+        let fp? = self.view.store.fn_parts(f) else { return }
+        if !fp.tparams.is_empty() { return self.generic_method(f, fp.name) }
+        if self.view.store.is_once(f) { self.once_is_a_method(f, fp.name) }
+        // A STATIC SPENDS NO SEAT ON A RECEIVER: the marks and the
+        // params both start at the written seats.
+        let receiverless = self.view.store.is_static(f)
+        self.record_receiver_word(f, if receiverless { [] } else { [plain_mark] })
+        self.seated_answer(f, fp.params, if receiverless { null } else { ty }, fp.name, fp.ret)
+    }
+
+    /// THE RECEIVER'S CONTRACT, judged once the body is typed: a
+    /// method that writes through `self` under a trait sig that
+    /// declares no `mut` refuses; an inherent `mut fn` that never
+    /// writes is warned. The receivers pass answers the writing.
+    fn receiver_contract(x: Decl) {
+        if x.parent == null { return }
+        let parent = self.view.decls.decl(x.parent!)
+        if !(parent.kind is .Impl) { return }
+        // a generic method was refused whole; its receiver has no say
+        if !(self.view.store.fn_parts(x.stmt)?.tparams ?? []).is_empty() { return }
+        // the receiver's kind was checked above, so the absence here is
+        // the INHERENT impl's, not a missing parts record
+        let writes = self.view.decls.writes_receiver(x.id)
+        let of? = self.view.store.impl_parts(parent.stmt)?.of else {
+            if self.view.store.is_mutating(x.stmt) && self.view.decls.written_found(x.id) == false { self.never_writes(x) }
+            // A STATIC SPENDS NO SEAT ON A RECEIVER: its first written seat is seat 0
+            self.seat_contract(x, if self.view.store.is_static(x.stmt) { 0 } else { 1 })
+            return
+        }
+        let tdecl? = self.impl_trait(parent.stmt, of) else { return }
+        let member? = self.view.decls.trait_member(tdecl, x.name) else { return }
+        if writes && !self.view.decls.declares_writing(member) { self.writes_under_plain_sig(x, of) }
+        self.default_contract(x, member, of)
+    }
+
+    /// THE DEFAULTS' CONTRACT: a seat the trait member defaults takes
+    /// that default in every impl, so an impl's method writes none of
+    /// its own there — one seat, one default, whoever calls.
+    fn default_contract(x: Decl, member: DeclId, of: string) {
+        let theirs = self.view.decls.own_seat_defaults(member)
+        for j, d in self.view.decls.own_seat_defaults(x.id) {
+            if d != null && j < theirs.length && theirs[j] != null { self.default_twice(d!, of, x.name) }
+        }
+    }
+
+    // ── The declare voices — each refusal worded once, at its name ──
+
+    /// Whether an earlier member of the trait already took `f`'s name.
+    fn repeated_member(f: StmtId, contract: DeclId) -> bool {
+        let name = self.fn_named(f)
+        self
+            .view
+            .store
+            .member_fns(self.view.decls.decl(contract).stmt)
+            .any((s) -> s.index < f.index && self.fn_named(s) == name)
+    }
+
+    /// A declared fn's name, or the empty word — the totality laws
+    /// compare names, and a nameless decl matches nothing.
+    fn fn_named(f: StmtId) -> string {
+        self.view.store.fn_parts(f)?.name ?? ""
+    }
+
+    fn member_twice(f: StmtId, contract: DeclId, name: string) {
+        self
+            .emit(
+                said_as(
+                    "type.trait_member",
+                    self.stmt_loc(f),
+                    trait_member_twice(self.view.decls.decl(contract).name, name),
+                ),
+            )
+    }
+
+    fn no_such_target(s: StmtId, target: string) {
+        self.emit(said_as("type.impl", self.stmt_loc(s), serves_nothing(target)))
+    }
+
+    fn alias_target(s: StmtId, target: string, d: DeclId) {
+        let of = self.view.types.name_of(self.view.decls.alias_of(d) ?? self.error_type)
+        self.emit(said_as("type.impl", self.stmt_loc(s), impl_on_alias(target, of)))
+    }
+
+    fn concrete_target(s: StmtId, of: string, target: string, params: List<string>) {
+        let written = params.join(", ")
+        self
+            .emit(said_as("type.impl", self.stmt_loc(s), impl_of_instantiation(of, target, written)))
+    }
+
+    fn no_such_trait(s: StmtId, of: string) {
+        self.speak_unread(said_as("type.trait", self.stmt_loc(s), impl_no_trait(of)), of)
+    }
+
+    fn beyond_the_trait(f: StmtId, of: string, target: string, mn: string) { self.emit(said_as("type.trait", self.stmt_loc(f), beyond_trait(mn, of, target))) }
+
+    fn unanswered(s: StmtId, of: string, target: string, mn: string) {
+        self.emit(said_as("type.trait", self.stmt_loc(s), impl_unanswered(of, target, mn)))
+    }
+
+    fn trait_args_miscounted(s: StmtId, of: string, takes: int, gave: int) {
+        self.emit(said_as("type.trait", self.stmt_loc(s), impl_miscounts_trait(of, takes, gave)))
+    }
+
+    fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
+        self.emit(said_as("type.trait", self.stmt_loc(s), signature_unworn(of, target, mn)))
+    }
+
+    /// THE SEATS' CONTRACT: a `mut` seat the body never writes
+    /// through lies at every call site — warned, as an unused `mut`
+    /// local is. Seats count from `base` (1 past a method's own
+    /// receiver); a trait's signatories keep the contract's seats.
+    fn seat_contract(x: Decl, base: int) {
+        let params = written_seats(self.keywords, self.view.store.fn_parts(x.stmt)?.params ?? [])
+        for j, pp in params {
+            if pp.promises.mutable && !self.view.decls.seat_written(x.id, base + j) { self.seat_never_written(x, pp.name.of) }
+        }
+    }
+
+    fn seat_never_written(x: Decl, seat: string) {
+        self
+            .emit(
+                said_as(
+                    "type.seat_unused",
+                    self.stmt_loc(x.stmt),
+                    unwritten_seat_said(seat, x.name),
+                ) with { severity: Severity.Warning },
+            )
+    }
+
+    fn never_writes(x: Decl) {
+        self
+            .emit(
+                said_as("type.mut_fn_unused", self.stmt_loc(x.stmt), self_unwritten(x.name)) with { severity: Severity.Warning },
+            )
+    }
+
+    fn default_twice(d: DeclId, of: string, name: string) {
+        let root: ExprId? = self.view.decls.decl(d).root
+        self
+            .emit(
+                said_as(
+                    "type.trait_member",
+                    if root == null { self.stmt_loc(self.view.decls.decl(d).stmt) } else { self.loc_of(root!) },
+                    default_is_the_traits(self.view.decls.decl(d).name, of, name),
+                ),
+            )
+    }
+
+    fn writes_under_plain_sig(x: Decl, of: string) {
+        self
+            .emit(
+                said_as(
+                    "type.contract_write",
+                    self.stmt_loc(x.stmt),
+                    plain_contract_written(x.name, of),
+                ),
+            )
+    }
+
+    fn generic_method(f: StmtId, name: string) { self.emit(said_as("type.impl", self.stmt_loc(f), generic_method_said(name))) }
+
+    fn static_names_a_variant(f: StmtId, tname: string, name: string) {
+        self
+            .emit(said_as("type.static_name", self.stmt_loc(f), static_shadows_variant(tname, name)))
+    }
+
+    fn builtin_inherent(s: StmtId, target: string) { self.emit(said_as("type.orphan", self.stmt_loc(s), inherent_on_builtin(target))) }
+
+    fn builtin_foreign(s: StmtId, of: string, target: string) { self.emit(said_as("type.orphan", self.stmt_loc(s), foreign_trait_on_builtin(of, target))) }
+
+    fn builtin_renamed(f: StmtId, target: string, name: string) {
+        self
+            .emit(
+                said_as(
+                    "type.builtin_name",
+                    self.stmt_loc(f),
+                    builtin_answers_already(target, name),
+                ),
+            )
+    }
+
+    fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {
+        self
+            .emit(
+                said_as(
+                    "type.orphan",
+                    self.stmt_loc(s),
+                    impl_away_from_type(heading, target, owner),
+                ),
+            )
+    }
+}
+
+/// An impl block's heading as written — `T`, or `Tr for T`.
+export fn impl_heading(of: string?, target: string) -> string {
+    if of == null { return target }
+    "${of!} for ${target}"
+}
+
+/// A trait at the arguments one impl gives it: `Self` first, then the
+/// trait's own parameters, by ordinal.
+type TraitAt = { decl: DeclId, args: List<TypeId> }
+
+/// An impl written on the alias `target`, which names `of`.
+export fn impl_on_alias(target: string, of: string) -> Voice {
+    Voice {
+        message: "`impl ${target}` is written on an alias — `${target}` names `${of}`",
+        label: "this impl",
+        help: "write the impl on the type itself: `impl ${of}`",
+    }
+}
+
+/// A trait impl naming one instantiation of the generic `target`, whose parameters are `written`.
+export fn impl_of_instantiation(of: string, target: string, written: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}<...>` names a specific instantiation — a trait impl lands for the WHOLE generic",
+        label: "this impl",
+        help: "write `impl ${of} for ${target}<${written}>`",
+    }
+}
+
+/// An impl of `of` for `target` that answers no `mn`.
+export fn impl_unanswered(of: string, target: string, mn: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}` must answer `${mn}`",
+        label: "this impl",
+        help: "add `fn ${mn}(self, …)`",
+    }
+}
+
+/// An impl naming the trait `of`, which takes `takes` type arguments, at `gave`.
+export fn impl_miscounts_trait(of: string, takes: int, gave: int) -> Voice {
+    Voice {
+        message: "`${of}` takes ${counted(takes, "type argument")}, and this impl gives ${gave}",
+        label: "this impl",
+        help: "an impl names its trait at every parameter the trait declares",
+    }
+}
+
+/// `target`'s method `mn`, whose signature isn't the one `of` declares for it.
+export fn signature_unworn(of: string, target: string, mn: string) -> Voice {
+    Voice {
+        message: "`${target}.${mn}` does not wear `${of}.${mn}`'s signature",
+        label: "this impl",
+        help: "match the trait's parameters and return exactly",
+    }
+}
+
+/// The seat `seat` of an impl's method `name` writing a default its trait `of` writes already.
+export fn default_is_the_traits(seat: string, of: string, name: string) -> Voice {
+    Voice {
+        message: "`${seat}`'s default is `${of}.${name}`'s — an impl's method takes its trait's",
+        label: "a second default",
+        help: "drop this default: `${of}.${name}` writes the seat's for every impl",
+    }
+}
+
+/// A `mut` seat the fn `name` never writes through.
+export fn unwritten_seat_said(seat: string, name: string) -> Voice {
+    Voice {
+        message: "`${seat}` is a `mut` seat — `${name}` never writes through it",
+        label: "declared `mut`",
+        help: "drop `mut`: the caller then hands a value",
+    }
+}
+
+/// A `mut fn` method `name` that never writes through `self`.
+export fn self_unwritten(name: string) -> Voice {
+    Voice {
+        message: "`mut fn` — `${name}` never writes through `self`",
+        label: "declared `mut`",
+        help: "drop `mut`: the compiler infers a writing method",
+    }
+}
+
+/// The method `name`, which declares type parameters of its own: an impl lands no generic method.
+export fn generic_method_said(name: string) -> Voice {
+    Voice {
+        message: "`${name}` is generic — generic methods are recorded, not landed",
+        label: "this method",
+        help: "declare it as a free fn — `fn ${name}<T>(…)` — and pass the receiver as its first parameter",
+    }
+}
+
+/// An impl whose target names no declared type.
+export fn serves_nothing(target: string) -> Voice {
+    Voice {
+        message: "`impl ${target}` serves no declared type",
+        label: "this impl",
+        help: "declare `${target}` first — `type` or `enum`",
+    }
+}
+
+/// A trait `owner` naming its member `name` a second time.
+export fn trait_member_twice(owner: string, name: string) -> Voice {
+    Voice {
+        message: "`${owner}.${name}` is declared twice",
+        label: "declared again here",
+        help: "a trait names each member once — drop or rename one",
+    }
+}
+
+/// A `static fn` `name` on the enum `owner`, which has a variant of that name.
+export fn static_shadows_variant(owner: string, name: string) -> Voice {
+    Voice {
+        message: "`${owner}.${name}` is already a variant — a `static fn` of that name is uncallable",
+        label: "declared here",
+        help: "rename the `static fn`: a variant wins the spelling `${owner}.${name}`",
+    }
+}
+
+/// An impl of no trait on `target`, a type the language owns.
+export fn inherent_on_builtin(target: string) -> Voice {
+    Voice {
+        message: "`${target}` is the language's own type — a package adds to it only by implementing its own trait",
+        label: "this impl",
+        help: "declare a trait here and write `impl YourTrait for ${target}`, or write a free fn",
+    }
+}
+
+/// The method `name` an impl of the trait `of` gives, writing through `self` where the trait declares
+/// no `mut`.
+export fn plain_contract_written(name: string, of: string) -> Voice {
+    Voice {
+        message: "`${name}` writes through `self`, but `${of}.${name}` declares no `mut`",
+        label: "writes here",
+        help: "declare `mut fn ${name}(…)` in the trait — the contract decides for every signatory",
+    }
+}
+
+/// A method `name` an impl writes on `target`, a type the language owns that already answers it.
+export fn builtin_answers_already(target: string, name: string) -> Voice {
+    Voice {
+        message: "`${target}` already answers `${name}` — an impl on a builtin type adds names, it never changes one",
+        label: "this method",
+        help: "rename the trait's method",
+    }
+}
+
+/// An impl of `of`, a trait another package declares, on `target`, a type the language owns.
+export fn foreign_trait_on_builtin(of: string, target: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for ${target}` belongs in `${of}`'s package — `${target}` is the language's, so only the trait's package may implement it",
+        label: "this impl",
+        help: "an impl on a builtin type lives with its trait",
+    }
+}
+
+/// An impl headed `heading` written outside `owner`, the package that declares its type `target`.
+export fn impl_away_from_type(heading: string, target: string, owner: string) -> Voice {
+    Voice {
+        message: "`impl ${heading}` belongs in ${package_word(owner)}, where `${target}` is declared",
+        label: "this impl",
+        help: "an impl lives in its type's package — or in its trait's, when the trait is this package's",
+    }
+}
+
+/// A method `name` an impl of the trait `of` for `target` writes that the trait doesn't declare.
+export fn beyond_trait(name: string, of: string, target: string) -> Voice {
+    Voice {
+        message: "`${name}` is not part of `${of}` — an impl-for holds only the trait's methods",
+        label: "declared here",
+        help: "move it to a separate `impl ${target} { … }` block",
+    }
+}
+
+/// A method declaring the `state` seat `name`, which only a free fn's caller has a cell for.
+export fn method_state_seat(name: string) -> Voice {
+    Voice {
+        message: "`state ${name}` is a free fn's seat — a method has no caller's cell to reach",
+        label: "declared here",
+        help: "move `${name}` onto the free fn the method runs inside",
+    }
+}
+
+/// An impl-for of `of`, which names no trait.
+export fn impl_no_trait(of: string) -> Voice {
+    Voice {
+        message: "`impl ${of} for` names no trait",
+        label: "this impl",
+        help: "declare it — `trait ${of} { … }`",
+    }
+}

@@ -1,0 +1,61 @@
+//! The lowering rules of the verbs that do arithmetic by name on an `int`: a wrapping verb is the
+//! operator's own low 64 bits, over the receiver and the one argument; a checked verb asks the runtime
+//! whether the exact answer fits, and answers absence, or that same answer, present.
+use core.{BinOp, ExprId, Layout, Lowering, OwnType, Reg, owned_type, rt_sig_of}
+use core.expr.{MethodCall}
+
+impl Lowering {
+    /// `m`, a wrapping verb on a value of the type the language owns `own`: the operator over the
+    /// receiver then the argument; absent, with nothing emitted, for any other verb.
+    mut fn int_wrapped(m: MethodCall, e: ExprId, own: OwnType) -> Reg? {
+        if own != OwnType.Int || m.args.length != 1 { return null }
+        let op? = wrapping_op(m.name.of) else { return null }
+        let a = self.lower(m.subject)
+        let b = self.lower(m.args[0])
+        self.bin(self.layout_at(e), op, a, b)
+    }
+
+    /// `m`, a checked verb on a value of the type the language owns `own`: absence where the runtime
+    /// says the exact answer has no int, else the operator's answer, present; absent, with nothing
+    /// emitted, for any other verb.
+    mut fn int_checked(m: MethodCall, e: ExprId, own: OwnType) -> Reg? {
+        if own != OwnType.Int || m.args.length != 1 { return null }
+        let c? = checked_of(m.name.of) else { return null }
+        let opt? = self.type_at(e) else { return self.missed_as("an untyped `${m.name.of}`") }
+        let a = self.lower(m.subject)
+        let b = self.lower(m.args[0])
+        let over = self.call_row(Layout.Word, rt_sig_of(c.row)!, [a, b])
+        let fits = self.bin(Layout.Truth, BinOp.Eq, over, self.const_int(0))
+        let l = self.laid_out(opt)
+        self
+            .region(fits, l) { cx -> cx.lifted(cx.bin(Layout.Word, c.op, a, b), owned_type("int"), opt) } else { cx ->
+                cx.absent_of(opt, l)
+            }
+    }
+}
+
+/// A checked verb: the operator it answers by, and the runtime row that says whether its exact answer
+/// overflows an int.
+type Checked = { op: BinOp, row: string }
+
+/// The checked verb `verb` is, absent for a verb that isn't one.
+fn checked_of(verb: string) -> Checked? {
+    match verb {
+        "checked_add" -> Checked { op: BinOp.Add, row: "avra_int_add_overflows" },
+        "checked_sub" -> Checked { op: BinOp.Sub, row: "avra_int_sub_overflows" },
+        "checked_mul" -> Checked { op: BinOp.Mul, row: "avra_int_mul_overflows" },
+        "checked_shl" -> Checked { op: BinOp.Shl, row: "avra_int_shl_overflows" },
+        rest -> null,
+    }
+}
+
+/// The operator a wrapping verb is, absent for a verb that isn't one.
+fn wrapping_op(verb: string) -> BinOp? {
+    match verb {
+        "wrapping_add" -> BinOp.Add,
+        "wrapping_sub" -> BinOp.Sub,
+        "wrapping_mul" -> BinOp.Mul,
+        "wrapping_shl" -> BinOp.Shl,
+        rest -> null,
+    }
+}

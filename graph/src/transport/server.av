@@ -1,0 +1,50 @@
+use @std.net.{listen}
+use @std.http.http.{Request, Response, Unrouted, text}
+use @std.http.server.{served, timing}
+use @std.http.frame.{limits}
+use @std.http_message.message.{Method}
+use @std.json.{Json}
+use schema.{Registration}
+use store.open.{Graph}
+use transport.dispatch.{failure}
+
+type Service = { path: string, token: string }
+
+/// Only loopback, authenticated JSON requests, and bounded request bodies.
+export fn serve(path: string, models: List<Registration>, port: int, token: string) -> Result<
+    int,
+    string,
+> {
+    if port < 1 || port > 65535 { fail "port must be 1..65535" }
+    if token.length < 24 { fail "the bearer token must contain at least 24 bytes" }
+    let graph = Graph.open(path, models)?
+    let _ = graph.close()
+    let listener = match listen("127.0.0.1", port) {
+        .Ok(l) -> l,
+        .Err(e) -> { fail "listen: ${e.errno}" },
+    }
+    let server = served(listener, () -> Service { path: path, token: token }, limits(), timing()) { service, request ->
+        answer(service, models, request)
+    }
+    println("graph listening on 127.0.0.1:${port}")
+    match server.run(cores: 1) { .Ok(count) -> count, .Err(e) -> { fail "server: ${e.errno}" } }
+}
+
+fn answer(service: Service, models: List<Registration>, request: Request<Unrouted>) -> Response {
+    if request.header("authorization") != "Bearer ${service.token}" { return text(401, "bearer token required") }
+    if request.method() != Method.Post || request.target() != "/graph" { return text(404, "POST /graph") }
+    let body = match request.json() { .Ok(j) -> j, .Err(response) -> { return response } }
+    match dispatched(service.path, models, body) {
+        .Ok(response) -> response,
+        .Err(e) -> Response.json(failure(e)) with { status: 409 },
+    }
+}
+
+fn dispatched(path: string, models: List<Registration>, body: Json) -> Result<Response, string> {
+    mut graph = Graph.attach(path, models)?
+    defer { let _ = graph.close() }
+    match graph.dispatch(body) {
+        .Ok(j) -> Response.json(j),
+        .Err(e) -> Response.json(failure(e)) with { status: 400 },
+    }
+}

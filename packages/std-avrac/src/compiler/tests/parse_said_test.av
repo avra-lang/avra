@@ -1,0 +1,48 @@
+// A FILE'S PARSE DIAGNOSTICS STAND ON ITS SOURCE ALONE. A second process over the same store,
+// after a sibling file's edit, works nothing of the broken file out again, and what it says is
+// what a fresh process says.
+use @std.avrac.testing.held.{Pass, beyond, empty_store, held_at}
+
+const PS_MAIN: string = "/w/src/main.av"
+
+const BROKEN: string = "fn f() -> int {\n    1 +\n}\n"
+
+const WHOLE: string = "fn f() -> int {\n    1\n}\n"
+
+fn ps_files(main: string, sibling: string) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        PS_MAIN: main,
+        "/w/src/b.av": sibling,
+    }
+}
+
+const SIBLING: string = "export fn g() -> int { 2 }\n"
+
+const SIBLING_EDITED: string = "export fn g() -> int { 3 }\n"
+
+/// What a second process makes of `main` after the sibling's edit, over the store the first left.
+fn ps_second(main: string) -> Pass {
+    let s = empty_store()
+    let _ = held_at(ps_files(main, SIBLING), "/w").passed_over(PS_MAIN, s)
+    held_at(ps_files(main, SIBLING_EDITED), "/w").passed_over(PS_MAIN, s)
+}
+
+spec "compiler/parse_said — a file's parse diagnostics restore without a parse" {
+    given "a file with a parse error, said once, then a sibling edited" {
+        then "the first process says something" {
+            !held_at(ps_files(BROKEN, SIBLING), "/w")
+                .passed_over(PS_MAIN, empty_store())
+                .report
+                .is_empty()
+        }
+        then "a second process works out nothing of it past what a whole file costs" {
+            beyond(ps_second(BROKEN).worked, ps_second(WHOLE).worked).is_empty()
+        }
+        then "what it says is what a fresh process says" {
+            ps_second(BROKEN).report == held_at(ps_files(BROKEN, SIBLING_EDITED), "/w")
+                .passed_over(PS_MAIN, empty_store())
+                .report
+        }
+    }
+}

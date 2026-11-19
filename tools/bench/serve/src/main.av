@@ -1,0 +1,17 @@
+use @std.net.{NetError, listen}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, Timing}
+
+type App = { name: string }
+
+fn serving() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 18080)?
+    let s = served(l, () -> App { name: "bench" }, limits(), Timing { requests: 1000000000 }) { app, q -> text(200, "hello") }
+    s.run()
+}
+
+match serving() {
+    .Ok(n) -> "${n}",
+    .Err(e) -> "failed: ${e.describe().message}",
+}

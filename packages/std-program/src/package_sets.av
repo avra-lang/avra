@@ -1,0 +1,66 @@
+//! SETS OF NAMES, EACH KEPT ONCE: a set is an id, the same id for the same members whatever order
+//! they came in, so a question's set is one number and the union of two sets is looked up once. Id
+//! zero is the empty set. An identity: every holder sees one table.
+use @std.meta.{identity}
+use sorted.{sorted_by}
+use @std.text.{text_before}
+
+@identity
+export type NameSets = {
+    /// Each set's members, sorted, by its id.
+    members: Cell<List<List<string>>>,
+    /// Each set's id, by its members spelled.
+    ids: Cell<Map<string, int>>,
+    /// Each union asked, by the two ids.
+    unions: Cell<Map<string, int>>,
+}
+
+/// A table holding only the empty set.
+export fn name_sets() -> NameSets {
+    let empty: List<string> = []
+    let members: Cell<List<List<string>>> = Cell.new([empty])
+    let ids: Cell<Map<string, int>> = Cell.new({"": 0})
+    let unions: Cell<Map<string, int>> = Cell.new({})
+    NameSets { members: members, ids: ids, unions: unions }
+}
+
+/// The id of the empty set.
+export const NO_NAMES: int = 0
+
+impl NameSets {
+    /// The id of the set holding `names`, kept now if it's new.
+    fn of(names: List<string>) -> int {
+        let sorted = distinct_sorted(names)
+        let spelled = spelled_set(sorted)
+        let known = self.ids.get().get(spelled)
+        if known != null { return known! }
+        let id = self.members.get().length
+        self.members.push(sorted)
+        self.ids.put(spelled, id)
+        id
+    }
+
+    /// The id of the set holding every member of `a` and of `b`.
+    fn union(a: int, b: int) -> int {
+        if a == b || b == NO_NAMES { return a }
+        if a == NO_NAMES { return b }
+        let key = if a < b { "${a},${b}" } else { "${b},${a}" }
+        let known = self.unions.get().get(key)
+        if known != null { return known! }
+        let id = self.of(self.members_of(a).concat(self.members_of(b)))
+        self.unions.put(key, id)
+        id
+    }
+
+    /// The members of the set `id`, sorted.
+    fn members_of(id: int) -> List<string> { self.members.get()[id] }
+}
+
+/// `names` with each kept once, in text order.
+fn distinct_sorted(names: List<string>) -> List<string> {
+    let sorted = sorted_by(names, text_before)
+    [name for at, name in sorted if at == 0 || sorted[at - 1] != name]
+}
+
+/// A sorted set's members as one text, each counted so no two sets spell alike.
+fn spelled_set(sorted: List<string>) -> string { ["${n.length}:${n}" for n in sorted].join("") }

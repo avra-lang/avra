@@ -1,0 +1,70 @@
+// The ONE semantics runs: clean programs interpret over the same IR
+// the backend compiles, and anything diagnosed REFUSES to run — the
+// report is the refusal.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_at_run}
+
+spec "compiler/run" {
+    given "arithmetic" {
+        then "the program's value is its last statement's" {
+            shown("1 + 2") == "3" && shown("let x = 1 + 2\nx - 4") == "-1"
+        }
+        then "names read their definitions, shadowing included" {
+            shown("let a = 2\nlet b = a + 3\nb - a") == "3" &&
+                shown("let x = 1\nlet x = x + 1\nx") == "2"
+        }
+    }
+    given "strings" {
+        then "a string program prints its text" {
+            shown("let s = \"hello\"\ns") == "hello"
+        }
+    }
+    given "a program that does not analyze clean" {
+        then "it refuses to run and the refusal IS the report" {
+            match analyze_source("let x = 1 + y").run() {
+                .Err(report) -> report.contains("resolve.unresolved") && report.contains("did you mean"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a type mismatch refuses the same way" {
+            shown("let x = 1 + \"a\"\nx") == "<refused>"
+        }
+    }
+    given "a `Bytes` handed to a text row through an extern" {
+        then "UTF-8 octets are the text they spell — the evaluator answers what native does" {
+            shown(
+                "extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim(\" hi \".bytes()).length",
+            ) == "2"
+        }
+        then "octets that are not UTF-8 are refused by name, never approximated" {
+            refused_at_run(
+                "extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim([255].bytes()!)",
+                "octets that are not UTF-8 reached a text seat",
+            )
+        }
+        then "a length reads the header and never decodes, so octets that are not UTF-8 still answer" {
+            shown("extern fn avra_str_len(b: Bytes) -> int\navra_str_len([255, 254].bytes()!)") == "2"
+        }
+    }
+    given "an empty program" {
+        then "it runs and shows nothing" {
+            match analyze_source("").run() { .Ok(out) -> out == "", .Err(_) -> false }
+        }
+    }
+    given "a root-module fn named `main`" {
+        then "calling it answers its own body, not the program's own entry" {
+            shown("fn main() -> int { 1 }\nmain()") == "1"
+        }
+    }
+}
+
+spec "a closed workspace" {
+    given "the analysis of a lone source, its captures ended" {
+        then "it runs twice and lowers after — the record is remade over its memoized parts" {
+            let a = analyze_source("let x = 1\nx")
+            let first: string? = a.ran()
+            let again: string? = a.ran()
+            first == "1" && again == "1" && a.lowered().fns.length >= 0
+        }
+    }
+}

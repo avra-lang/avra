@@ -1,0 +1,89 @@
+// A compaction keeps what the questions a frontier names reach: each question's newest records, and
+// the answers and questions those records read.
+use answer_record.{
+    AnswerRecord,
+    ContentHash,
+    Question,
+    RecordedRead,
+    answer_record,
+    content_hash,
+    question,
+}
+use pack_collection.{Live, QuestionRecords, live_in, newest_records, records_in}
+use saved_layout.{SavedAt, SavedRecord, saved_bytes_in_memory}
+
+fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
+
+fn asked(name: string, code: string, arguments: string) -> Question { question(name, code, arguments.bytes()) }
+
+/// A record answering `answer` that read `reads`, each a whole read of what it saw then.
+fn record(answer: string, reads: List<Question>) -> AnswerRecord {
+    answer_record(
+        hash_of(answer),
+        [RecordedRead { question: r.known_as, whole_answer: hash_of("seen"), part: null } for r in reads],
+    )
+}
+
+fn entry(q: Question, records: List<AnswerRecord>, written_in: int) -> QuestionRecords {
+    QuestionRecords { question: q.known_as, asked: q, records: records, written_in: written_in }
+}
+
+/// Each entry saved and read where it lies, as a store reads it.
+fn laid(questions: List<QuestionRecords>) -> List<SavedAt<SavedRecord>> { [saved_bytes_in_memory(q.saved_bytes()).root_at() for q in questions] }
+
+/// What a compaction of `questions` keeps alive from the questions `seeds`.
+fn live_of(seeds: List<Question>, questions: List<QuestionRecords>) -> Live {
+    let entries = laid(questions)
+    live_in(
+        [s.known_as for s in seeds],
+        (question) -> [r for at, e in entries if questions[at].question.same_as(question) for r in records_in(e)],
+    )
+}
+
+fn kept(live: Live, q: Question) -> bool { live.questions.get(q.known_as) != null }
+
+/// How many of the records of `q`, the entry at `at`, a compaction keeps.
+fn records_kept(questions: List<QuestionRecords>, at: int) -> int { newest_records(records_in(laid(questions)[at])).length }
+
+spec "pack_collection — what a compaction keeps" {
+    given "nothing" {
+        then "nothing is kept" { live_of([], []).questions.is_empty() }
+    }
+    given "a root and what it read" {
+        then "both stay, with the answers they found, and a question nobody reads goes" {
+            let leaf = asked("leaf", "c", "x")
+            let root = asked("root", "c", "x")
+            let stray = asked("stray", "c", "x")
+            let questions = [
+                entry(leaf, [record("leaf answer", [])], 1),
+                entry(root, [record("root answer", [leaf])], 1),
+                entry(stray, [record("stray answer", [])], 1),
+            ]
+            let live = live_of([root], questions)
+            kept(live, root) &&
+                kept(live, leaf) &&
+                !kept(live, stray) &&
+                live.answers.get(hash_of("leaf answer")) != null &&
+                live.answers.get(hash_of("stray answer")) == null
+        }
+    }
+    given "a question answered many ways" {
+        then "only its newest three records stay, and what only an older one read goes" {
+            let old_read = asked("old", "c", "x")
+            let root = asked("root", "c", "x")
+            let questions = [
+                entry(old_read, [record("old answer", [])], 1),
+                entry(
+                    root,
+                    [record("r1", [old_read]), record("r2", []), record("r3", []), record("r4", [])],
+                    4,
+                ),
+            ]
+            let live = live_of([root], questions)
+            records_kept(questions, 1) == 3 &&
+                !kept(live, old_read) &&
+                live.answers.get(hash_of("r1")) == null &&
+                live.answers.get(hash_of("r4")) != null
+        }
+    }
+}

@@ -1,0 +1,158 @@
+// The expression spine through the driver: real source through the
+// composed language, builders allocating into the arena — asserting
+// structure, spans (cover in anger), and the fingerprint invariant
+// across differently-formatted sources.
+use @std.avrac.core.{SyntaxArena, BinOp, ExprId, StmtId}
+use @std.avrac.compiler.{parse_source, analyze_source}
+use @std.avrac.testing.{shown, refused_with, refused_at_run}
+
+type Tree = { store: SyntaxArena, root: ExprId?, diagnostics: int }
+
+/// One expression line, parsed as a program; the root is its value.
+fn parse_expr(source: string) -> Tree {
+    let p = parse_source(source)
+    let head: StmtId? = p.stmts.first()
+    let root: ExprId? = if head == null { null } else { p.store.stmt_value(head!) }
+    Tree { store: p.store, root: root, diagnostics: p.voices.list.length }
+}
+
+spec "features/expr_spine" {
+    given "1 + 2 - x" {
+        then "the tree is left-associative with five arena nodes" {
+            let p = parse_expr("1 + 2 - x")
+            let tree_ok = match p.store.expr(p.root!) {
+                .Binary(op, left, right) -> {
+                    let inner = match p.store.expr(left) {
+                        .Binary(iop, il, ir) -> iop == BinOp.Add &&
+                            p.store.expr(il) is .IntLit &&
+                            p.store.expr(ir) is .IntLit,
+                        _ -> false,
+                    }
+                    op == BinOp.Sub && inner && p.store.expr(right) is .Ident
+                },
+                _ -> false,
+            }
+            p.diagnostics == 0 && p.store.exprs.count() == 5 && tree_ok
+        }
+        then "the root's span covers the whole expression" {
+            let p = parse_expr("1 + 2 - x")
+            let s = p.store.expr_span(p.root!)
+            s?.lo == 0 && s?.hi == 9
+        }
+        then "a literal's span arrives from the engine, not the builder" {
+            let p = parse_expr("40 + 2")
+            match p.store.expr(p.root!) {
+                .Binary(_, left, _) -> {
+                    let s = p.store.expr_span(left)
+                    s?.lo == 0 && s?.hi == 2
+                },
+                _ -> false,
+            }
+        }
+        then "literal payloads parse as integers" {
+            let p = parse_expr("40 + 2")
+            match p.store.expr(p.root!) {
+                .Binary(_, left, _) -> match p.store.expr(left) { .IntLit(v) -> v == 40, _ -> false },
+                _ -> false,
+            }
+        }
+    }
+    given "the same content formatted differently" {
+        then "root fingerprints agree across stores; spans do not intrude" {
+            let a = parse_expr("1 + 2 - x")
+            let b = parse_expr("1   +   2   -   x")
+            a.store.expr_fingerprint(a.root!) == b.store.expr_fingerprint(b.root!)
+        }
+    }
+    given "broken source" {
+        then "diagnostics arrive instead of a crash" {
+            let p = parse_expr("1 +")
+            p.diagnostics == 1
+        }
+    }
+    given "`+` on text and `==` on enums" {
+        then "plus joins two texts" {
+            shown("let a = \"ab\"\na + \"cd\" + \"e\"") == "abcde"
+        }
+        then "a text and an int refuse in the seat's words" {
+            refused_with("\"a\" + 1", "`+` needs `string` operands, found `int`")
+        }
+        then "an enum carrying nothing compares by variant" {
+            shown(
+                "enum C {\n    red\n    blue\n}\nfn pick(b: bool) -> C { if b { C.red } else { C.blue } }\n\"" +
+                    "\${pick(true) == C.red} " +
+                    "\${pick(false) != C.blue}\"",
+            ) == "true false"
+        }
+        then "an enum carrying a payload still refuses" {
+            refused_with(
+                "enum E {\n    a(int)\n    b\n}\nE.b == E.b",
+                "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+            )
+        }
+    }
+    given "the operator ladder" {
+        then "multiplication binds tighter than addition" {
+            shown("2 + 3 * 4 - 10 / 2") == "9"
+        }
+        then "parens override precedence" {
+            shown("(2 + 3) * 4") == "20"
+        }
+        then "the comparisons answer" {
+            shown("(3 <= 3) == (4 > 3) && 19 % 4 == 3 && 5 != 4") == "true"
+        }
+        then "`!` negates" {
+            shown("!(1 == 2)") == "true"
+        }
+        then "strings compare with `!=` by value" {
+            shown("\"ab\" != \"cd\"") == "true"
+        }
+    }
+    given "the lazy ops" {
+        then "`&&` never touches a right side that cannot matter" {
+            shown("1 < 0 && 1 / 0 == 0") == "false"
+        }
+        then "`||` decides on a true left alone" {
+            shown("0 < 1 || 1 / 0 == 0") == "true"
+        }
+        then "a division by zero that DOES run refuses the run" {
+            shown("1 / 0") == "<refused>"
+        }
+    }
+    given "the operators' laws" {
+        then "a lazy op wants bools, in its own words" {
+            let a = analyze_source("1 && true")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`&&` needs `bool` operands, found `int`")
+        }
+        then "`!` wants a bool, in its own words" {
+            let a = analyze_source("!5")
+            a.diagnostics.length == 1 && a.report().contains("`!` negates a `bool`, found `int`")
+        }
+        then "`!=` compares matching types, in its own words" {
+            let a = analyze_source("1 != \"a\"")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`!=` compares matching types, found `int` and `string`")
+        }
+    }
+}
+
+spec "features/expr_spine — arithmetic that must not diverge" {
+    given "a zero divisor" {
+        then "`/` by zero REFUSES rather than answering" {
+            refused_at_run("1 / 0", "division by zero")
+        }
+        then "`%` by zero refuses the same way" {
+            refused_at_run("1 % 0", "division by zero")
+        }
+        then "a divisor computed at RUNTIME is caught too" {
+            refused_at_run("fn z() -> int { 0 }\n10 / z()", "division by zero")
+        }
+        then "ordinary division still answers" {
+            analyze_source("100 / 7").ran() == "14"
+        }
+        then "ordinary modulo still answers" {
+            analyze_source("100 % 7").ran() == "2"
+        }
+    }
+}

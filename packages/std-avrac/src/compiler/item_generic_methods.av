@@ -1,0 +1,59 @@
+//! WHERE AN IMPL WRITES A GENERIC METHOD: a method that declares type parameters of its own, which an
+//! impl doesn't land. Read off a written item's syntax alone.
+use core.{StmtId, SyntaxArena, flatten}
+use compiler.laws.{Found, law}
+use compiler.typing.{generic_method_said}
+use diagnostics.{Voice}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A method an impl writes with type parameters of its own: where it stands, and its name.
+@derive(Saved)
+type GenericMethodAt = { at: FindingAt?, name: string }
+
+/// Every generic method one written item's impls write.
+@derive(Saved)
+type ItemGenericMethods = { rows: List<GenericMethodAt> }
+
+/// Every method the impls of the written item `at` of `file` write with type parameters of its own.
+@query
+fn item_generic_methods(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemGenericMethods {
+    if !item_held(engine, file, at) { return ItemGenericMethods { rows: [] } }
+    let item = read_item(engine, file, at)
+    ItemGenericMethods { rows: flatten([generic_methods(item.store, s) for s in item.stmts]) }
+}
+
+/// The methods the impl `s` writes with type parameters of their own; none for a statement that is
+/// no impl.
+fn generic_methods(store: SyntaxArena, s: StmtId) -> List<GenericMethodAt> {
+    let parts? = store.impl_parts(s) else { return [] }
+    [GenericMethodAt { at: kept_at(store.stmt_span(f)), name: p!.name } for f in parts.fns for p in [store.fn_parts(f)] if p != null && !p!.tparams.is_empty()]
+}
+
+/// Whether a written item of `file` holds a generic method: a build that reaches the file fails on it.
+export fn writes_generic_methods(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    (0..item_count(engine, file)).any(!item_generic_methods(engine, file, it).rows.is_empty())
+}
+
+/// Each generic method the written item `at` of `file` writes: its name.
+fn generic_methods_written(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(r.at), args: [r.name] } for r in item_generic_methods(engine, file, at).rows]
+}
+
+/// an impl's method declaring type parameters of its own
+export law generic_method {
+    kind: "type.impl"
+    reads: generic_methods_written
+    voice: generic_method_words
+    witness: "type Box = { n: int }\n\nimpl Box {\n    fn first<U>(xs: List<U>) -> U { xs[0] }\n}\n"
+}
+
+fn generic_method_words(a: List<string>) -> Voice { generic_method_said(a[0]) }
+
+collect listed_generic_method_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the generic-method law is read through, for a process to hand its engine.
+export fn generic_method_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generic_method_facts) }

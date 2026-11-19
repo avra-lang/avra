@@ -1,0 +1,57 @@
+//! The lowering rule of a `const` written in a body: A CONST WHOSE VALUE READS, OF WHAT THE BODY
+//! BINDS, ONLY CONSTS BEFORE IT AND SEATS ITS UNIT SETTLES THAT SETTLED IS SETTLED AT COMPILE TIME, as a top-level one is, each
+//! of those handed to it, and a read of it is the binary's own data; any other is lowered where it
+//! stands. Either way its name binds, for the statements after it, as a const a pattern compares
+//! with. A const's value is pure, so one reading per declaration answers what each read of it would.
+use core.{
+    Bound,
+    ConstSeed,
+    ExprId,
+    Lowering,
+    StmtId,
+    StmtLowers,
+    body_const_reads,
+    settled_seat_key,
+    settled_seat_reads,
+}
+use core.stmt.{ConstDecl}
+
+impl StmtLowers for ConstDecl {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let ty? = cx.binding_type(self.ty, self.value, s) else { return cx.missed("an untyped `const`") }
+        let seeds = settled_reads(cx, self)
+        if seeds != null {
+            let settled = (cx.program.body_const)(s, ty, seeds!)
+            if settled is .Settled {
+                cx
+                    .settled_consts
+                    .put("${s.index}", ConstSeed { name: self.name.of, ty: ty, value: settled })
+                return cx.bind(self.name.of, Bound.Const(cx.const_read(settled, ty), ty))
+            }
+        }
+        let r = cx.lower(self.value)
+        cx.bind(self.name.of, Bound.Const(r, ty))
+        cx.owns(r, ty)
+    }
+}
+
+/// The consts before it the const's value reads, each as it settled; absent where the value reads
+/// anything else the body binds where it stands, or a const before it that didn't settle.
+fn settled_reads(cx: Lowering, c: ConstDecl) -> List<ConstSeed>? {
+    let held = cx.settled_consts.get()
+    let seats = cx.settled_seats
+    let consts? = body_const_reads(cx.store, cx.names, c.value, seats) else { return null }
+    if cx.store.every_expr(c.value).any((e) -> local_unresolved(cx, e)) { return null }
+    let seeds = [held.get("${s.index}") for s in consts]
+        .concat(
+            [held.get(settled_seat_key(j)) for j in settled_seat_reads(cx.store, cx.names, c.value, seats)],
+        )
+    if seeds.any(it == null) { return null }
+    [seed! for seed in seeds]
+}
+
+/// Whether `e` reads a name the body binds where it stands that typing kept no binding for.
+fn local_unresolved(cx: Lowering, e: ExprId) -> bool {
+    let name? = cx.store.ident_name(e) else { return false }
+    cx.bound(name) != null && cx.names.at(e)?.binder == null
+}

@@ -1,0 +1,917 @@
+//! THE READS OVER FACTS — one definition each, crossing values
+//! (a type's fields ask the declaration table; a name's declaration
+//! asks the namespace) — and the CONTEXTS' vocabularies: every
+//! method a feature's rule calls on a TypeCx, LowerCx or statement
+//! context forwards from here to the one definition.
+use core.{
+    Expr,
+    FileId,
+    DeclId,
+    StmtId,
+    ExprId,
+    TypeId,
+    PatId,
+    Type,
+    TypeLit,
+    ResSides,
+    SyntaxArena,
+    TypeRegistry,
+    Binding,
+    DeclKind,
+    Param,
+    Reg,
+    Ins,
+    MethodParts,
+    same_stmt,
+    same_expr,
+    same_decl,
+    same_type,
+    TypeRef,
+    joined,
+    flatten,
+}
+use diagnostics.{Diag, Voice, Voices, refusal, said_as}
+use @std.errors.{Loc, Frame}
+
+/// The mark on a verb handed on uncalled: where the value was written.
+const handed_on_uncalled = "handed on uncalled here"
+
+impl Decls {
+    /// A record's fields, the declaration's or the instantiation's.
+    fn fields_of_type(ty: TypeId) -> StructSig? {
+        match self.types.shape_of(ty) {
+            .Struct(decl, _) -> self.sig(decl)?.record_sig(),
+            .App(decl, _, args) -> subbed_fields(self.types, self.sig(decl)?.record_sig(), decl, args),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> null,
+        }
+    }
+
+    /// The first IDENTITY inside a value of type `ty` — a `Cell`, a
+    /// task, a host pointer, or what may hold one unseen (a fn value,
+    /// a `dyn`, a type parameter) — or null when the value is plain
+    /// data a copy duplicates whole. `seen` guards a recursive type.
+    fn identity_in(ty: TypeId, seen: List<int>) -> TypeId? {
+        if seen.contains(ty.index) { return null }
+        if self.is_identity(ty) { return ty }
+        let walked = seen.concat([ty.index])
+        for p in self.held_types(ty) {
+            let held: TypeId? = self.identity_in(p, walked)
+            if held != null { return held }
+        }
+        null
+    }
+
+    /// The types a value of type `ty` holds, seen through a name: an
+    /// element, a key and a value, a declared type's contents — none
+    /// for a scalar, or for what holds its contents unseen.
+    fn held_types(ty: TypeId) -> List<TypeId> {
+        match self.types.shape_of(self.types.seen_through(ty)) {
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .Range -> [],
+            .List(t) or .Opt(t) -> [t],
+            .Map(k, v) or .Res(k, v) -> [k, v],
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> self.parts_of(ty),
+            .Union(members) -> members,
+        }
+    }
+
+    /// `ty` and every type a value of it holds, each once, `seen` first.
+    fn reached_types(ty: TypeId, seen: List<TypeId>) -> List<TypeId> {
+        if seen.any((t) -> same_type(t, ty)) { return seen }
+        mut walked = seen.concat([ty])
+        for p in self.held_types(ty) { walked = self.reached_types(p, walked) }
+        walked
+    }
+
+    /// THE LAYOUT A VALUE OF `ty` CROSSES UNDER: every declared type its
+    /// static type reaches, by name, beside how many fields it is when
+    /// flat and whether it is a value enum — what a `mut` seat anywhere
+    /// in the program moves, each asked of its declaration first.
+    fn crossing_layout(ty: TypeId) -> string {
+        joined(
+            [self.layout_word(t) for t in self.reached_types(ty, []) if self.declared_shape(t)],
+            ";",
+        )
+    }
+
+    fn layout_word(t: TypeId) -> string {
+        self.declared_first(t)
+        "${self.types.name_of(t)}:${self.types.flat_fields(t).length}:${if self.types.is_valued(t) { 1 } else { 0 }}"
+    }
+
+    /// Whether a type is a declaration's own — a record, an enum, or an
+    /// instantiation of one.
+    fn declared_shape(t: TypeId) -> bool {
+        match self.types.shape_of(t) {
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> true,
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .Range or .List(_) or .Opt(_) or .Map(_, _) or .Res(_, _) or .Union(_) -> false,
+        }
+    }
+
+    /// Whether a value of type `ty` IS an identity — one a copy forks —
+    /// or may be one unseen: a fn value, a `dyn`, a type parameter.
+    fn is_identity(ty: TypeId) -> bool {
+        match self.types.shape_of(self.types.seen_through(ty)) {
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) -> true,
+            .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .List(_) or .Opt(_) or .Map(_, _) or .Res(_, _) or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Union(_) or .Range -> false,
+        }
+    }
+
+    /// A declared type's contents: its fields, or every variant's
+    /// payloads.
+    fn parts_of(ty: TypeId) -> List<TypeId> {
+        let fields: StructSig? = self.fields_of_type(ty)
+        if fields != null { return fields!.types }
+        flatten(self.variants_of_type(ty)?.payloads ?? [])
+    }
+
+    /// A record field's TYPE by name, or null — the one `slot_of` then
+    /// slot read; a non-record or a missing field is absence.
+    fn field_type_named(ty: TypeId, name: string) -> TypeId? {
+        let sig? = self.fields_of_type(ty) else { return null }
+        let slot? = sig.slot_of(name) else { return null }
+        sig.types[slot]
+    }
+
+    /// An enum's variants, the declaration's, a Result's, or the
+    /// instantiation's.
+    fn variants_of_type(ty: TypeId) -> EnumSig? {
+        match self.types.shape_of(ty) {
+            .Enum(decl, _) -> self.sig(decl)?.enum_sig(),
+            .Res(ok, err) -> res_enum_sig(ok, err),
+            .App(decl, _, args) -> subbed_variants(self.types, self.sig(decl)?.enum_sig(), decl, args),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> null,
+        }
+    }
+
+    /// The trait a name stands for, in the file's namespace.
+    fn trait_named(names: NameFacts, name: string) -> DeclId? {
+        let d: DeclId? = names.names.type_decl(name)
+        if d == null || !self.is_trait(d!) { return null }
+        d
+    }
+
+    /// The impl table's answer — a sig whose params[0] is `self`.
+    fn method_sig_of(target: DeclId, mname: string) -> FnSig? {
+        let m? = self.method(target, mname) else { return null }
+        self.sig(m)?.fn_sig()
+    }
+
+    /// A trait method's sig — `Self` at seat 0, like every method — or
+    /// absence, the trait by its name in this file's scope.
+    fn trait_sig_of(names: NameFacts, tname: string, mname: string) -> FnSig? {
+        let decl? = self.trait_named(names, tname) else { return null }
+        self.trait_sig_under(decl, mname)
+    }
+
+    /// A trait method's sig under the trait's DECLARATION — what a
+    /// `dyn` carries, so a contract dispatches wherever it travels.
+    fn trait_sig_under(tdecl: DeclId, mname: string) -> FnSig? {
+        let f? = self.trait_member(tdecl, mname) else { return null }
+        self.sig(f)?.fn_sig()
+    }
+
+    /// A trait's member DECLARATION by name — the contract's own word
+    /// on its receiver and seats lives there.
+    fn trait_member(tdecl: DeclId, mname: string) -> DeclId? {
+        self.trait_fns(tdecl).find((f) -> self.decl_named(f, mname))
+    }
+
+    /// A declaration read as a value: a type's name, or a fn worn as a
+    /// value (a generic fn wears no single signature, and an extern
+    /// names a C symbol rather than a callable Avra fn). `read_at` is
+    /// the READING expression's own location when one is in hand — the
+    /// mistake lives at the read, not at the declaration.
+    fn decl_type_of(mut voices: Voices, error_type: TypeId, read_at: Loc?, d: DeclId) -> TypeId {
+        let x = self.decl(d)
+        if x.kind is .Const || x.kind is .Collect || x.kind is .State { return self.declared_const_type(voices, error_type, d) }
+        let named: TypeId? = self.type_name_type(d)
+        if named != null { return named! }
+        if !self.tparams(d).is_empty() {
+            voices.speak(self.not_a_value(d))
+            return error_type
+        }
+        if self.is_extern(d) {
+            voices.speak(self.extern_not_a_value(read_at, d))
+            return error_type
+        }
+        if self.embed_kind_of(d) != null {
+            voices.speak(self.embed_not_a_value(read_at ?? self.loc(d)))
+            return error_type
+        }
+        if self.is_meta_fn(d, "guarded") {
+            voices.speak(self.guard_not_a_value(read_at ?? self.loc(d)))
+            return error_type
+        }
+        let sig? = self.sig(d)?.fn_sig() else { return error_type }
+        // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
+        // its declaration wrote travel with the type, so a writing fn
+        // cannot be stored where nothing may write.
+        self.types.intern(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
+    }
+
+    /// `decl_type_of`'s read door for a rule: the same answer,
+    /// without interning or speaking. On an already-typed program
+    /// every shape `decl_type_of` could mint here is already in the
+    /// registry; a generic fn's refusal is `decl_type_of`'s alone to
+    /// voice, so a rule reading this name as a value sees absence
+    /// instead, same as any other seat it cannot answer.
+    fn known_decl_type_of(d: DeclId) -> TypeId? {
+        let x = self.decl(d)
+        if x.kind is .Const || x.kind is .Collect || x.kind is .State { return self.type_of_const(x.file, x.stmt) }
+        let shown = self.named_by(d) ?? d
+        let tname: string? = self.type_name(shown)
+        if tname != null { return self.types.known(Type.TypeName(shown, tname!)) }
+        if !self.tparams(d).is_empty() { return null }
+        let sig? = self.sig(d)?.fn_sig() else { return null }
+        self.types.known(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
+    }
+
+    /// A type's name read as a value — its `TypeName`, the same in
+    /// every pass whatever has been typed so far — or null for a
+    /// declaration that names no type.
+    fn type_name_type(d: DeclId) -> TypeId? {
+        let shown = self.named_by(d) ?? d
+        let tname? = self.type_name(shown) else { return null }
+        self.types.intern(Type.TypeName(shown, tname))
+    }
+}
+
+/// The declaration a call's name stands for, when it is one.
+export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
+    let b? = names.binding(e) else { return null }
+    match b {
+        .Decl(d) -> d,
+        .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> null,
+    }
+}
+
+/// A type's OWN declaration, when its shape declares the impl table
+/// a receiver of it answers through — a struct, an enum, a generic
+/// instance. Null for everything else (a name, a bound parameter, a
+/// contract, a scalar): `method_of` stops there rather than guess.
+export fn declaring_decl(sh: Type) -> DeclId? {
+    match sh {
+        .Struct(d, _) or .Enum(d, _) or .App(d, _, _) -> d,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Error or .Void or .Union(_) or .Range -> null,
+    }
+}
+
+/// A call's declared signature, when its name is a declared fn.
+export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
+    let d? = bound_decl_of(names, e) else { return null }
+    decls.sig(d)?.fn_sig()
+}
+
+/// The seats a fn declares: its written params minus a BARE
+/// keyword — the old receiver habit (`fn get()`), refused by
+/// the naming law and given no seat, so the one refusal stands
+/// alone and the call's arity still counts.
+export fn written_seats(keywords: List<string>, params: List<Param>) -> List<Param> {
+    [pp for pp in params if takes_a_seat(keywords, pp)]
+}
+
+fn takes_a_seat(keywords: List<string>, pp: Param) -> bool {
+    pp.ty != null || !keywords.contains(pp.name.of)
+}
+
+/// Whether a name reads a `mut` binding.
+export fn is_mut_at(names: NameFacts, view: FileView, e: ExprId) -> bool {
+    let b? = names.binding(e) else { return false }
+    if shares_place(view, names, b) { return true }
+    match b {
+        .Def(s) -> view.store.stmt(s) is .MutLet,
+        // a method's receiver is a place: a write through it is what
+        // makes the method a writing one (ROADMAP: the inout receiver)
+        .Receiver -> true,
+        // a `mut` seat is a place the fn was handed to write — a
+        // lambda's written one as much as a fn's
+        .Param(_) or .LambdaParam(_, _) -> names.reads_mut_seat(e),
+        .Decl(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> false,
+    }
+}
+
+/// Whether a binding is a `state`, or a lambda's capture of one: a place
+/// whose one cell every reader shares — a module's or a component's own —
+/// so a fn body, a lambda and a `mut` seat all write the one cell.
+export fn shares_place(view: FileView, names: NameFacts, b: Binding) -> bool {
+    match b {
+        .Def(s) -> view.store.is_state_stmt(s),
+        .Decl(d) -> declares_state(view.decls.decl(d).kind),
+        .Capture(l, j) -> captured_place(view, names, l, j),
+        .Param(_) or .LambdaParam(_, _) or .Receiver or .Pattern(_, _) or .Index(_) or .TypeParam(_) -> false,
+    }
+}
+
+fn captured_place(view: FileView, names: NameFacts, l: ExprId, j: int) -> bool {
+    let cap? = names.capture(l) else { return false }
+    if j >= cap.sources.length { return false }
+    shares_place(view, names, cap.sources[j])
+}
+
+/// Whether a declaration of this kind is a module `state`.
+export fn declares_state(k: DeclKind) -> bool {
+    match k {
+        .State -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> false,
+    }
+}
+
+/// The declaration a type name stands for, in the file's namespace.
+export fn type_named(names: NameFacts, name: string) -> DeclId? {
+    names.names.type_decl(name)
+}
+
+/// Whether a type registered an impl for the trait this file names —
+/// and a `dyn` of the very trait, or a type parameter bounded by it,
+/// implements it BY CONSTRUCTION — each instantiation re-proves the
+/// bound.
+export fn implements_of(
+    types: TypeRegistry,
+    decls: Decls,
+    names: NameFacts,
+    ty: TypeId,
+    tname: string,
+) -> bool {
+    implements_named(types, decls, ty, tname, decls.trait_named(names, tname))
+}
+
+/// The same answer, given the trait the name stands for WHERE IT WAS
+/// WRITTEN — absent when that file names no such trait.
+export fn implements_named(
+    types: TypeRegistry,
+    decls: Decls,
+    ty: TypeId,
+    tname: string,
+    tr: DeclId?,
+) -> bool {
+    let worn: string? = dyn_contract(types.shape_of(ty))
+    if worn != null { return worn! == tname }
+    if bound_of(types, decls, ty) == tname { return true }
+    let t? = tr else { return false }
+    implements_trait(types, decls, ty, t)
+}
+
+/// The bound a type parameter declares — "" for every other type.
+fn bound_of(types: TypeRegistry, decls: Decls, ty: TypeId) -> string {
+    match types.shape_of(ty) { .Var(d, j, _) -> decls.bound_name(d, j), _ -> "" }
+}
+
+/// Whether a type registered an impl for the trait DECLARATION — asked
+/// of the trait itself, so the answer never depends on what the asking
+/// file imports.
+export fn implements_trait(types: TypeRegistry, decls: Decls, ty: TypeId, tr: DeclId) -> bool {
+    let worn: DynContract? = dyn_decl(types.shape_of(ty))
+    if worn != null { return same_decl(worn!.decl, tr) }
+    let d? = decls.implementor(ty) else { return false }
+    decls.implements(d, tr)
+}
+
+/// A `dyn`'s trait: its declaration, and the name it is spelled by.
+export type DynContract = { decl: DeclId, name: string }
+
+export fn dyn_decl(sh: Type) -> DynContract? {
+    match sh { .Dyn(d, n) -> DynContract { decl: d, name: n }, _ -> null }
+}
+
+export fn dyn_contract(sh: Type) -> string? {
+    match sh { .Dyn(_, n) -> n, _ -> null }
+}
+
+/// A declared type's DECLARATION — the impl table's key. A nominal
+/// declaration answers here; every other shape is absent, and
+/// `Decls.implementor` adds a scalar's builtin or a generic
+/// instantiation's declaration, so one `impl Trait for Box<T>`
+/// serves every `Box<...>`.
+export fn declared_decl(sh: Type) -> DeclId? {
+    match sh {
+        .Struct(d, _) or .Enum(d, _) -> d,
+        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> null,
+    }
+}
+
+/// The declaration a TYPE USED AS A VALUE names — `UserId` in
+/// `UserId(5)`, `Color` in `Color.red`. A PROJECTION: one shape
+/// answers, and the catch-all pins every other to absence.
+export fn type_name_decl(sh: Type) -> DeclId? {
+    match sh { .TypeName(d, _) -> d, _ -> null }
+}
+
+/// `def_type_of`'s READ half: every branch it can answer without
+/// interning anything — a rule reads a binding's already-settled
+/// type, and on an already-typed program every shape it could name
+/// is already in the registry. The one branch that COULD mint (a
+/// `for` loop's own `int` counter) asks the registry's lookup door
+/// instead; a miss there is the honest absence, not a reason to grow
+/// the registry from a read.
+/// A CONST'S TYPE AS THE FACTS IN HAND KNOW IT: this body's own record, else
+/// the program's answer — the ONE projection a reader of a const shares, so a
+/// reader holding facts answers after the workspace's hooks are let go.
+export fn type_of_const_in(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
+    facts.const_type(s) ?? view.decls.type_of_const(view.file, s)
+}
+
+export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
+    // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
+    // body's facts hold only its own range — so a const's type is
+    // this body's own record, else the program's answer or the HOLE.
+    // Falling through would index the asker's table with another
+    // body's expression (-1).
+    if view.store.const_value(s) != null || view.store.collect_parts(s) != null {
+        return type_of_const_in(facts, view, s)
+    }
+    let declared: TypeId? = facts.declared_binding(s)
+    if declared != null { return declared }
+    let v? = view.store.stmt_value(s) else { return null }
+    facts.type_at(v)
+}
+
+/// What a `let`/`mut` binding holds: its declared type or its value's
+/// type; the error type for a binding nothing typed.
+export fn def_type_of(facts: TypeFacts, view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
+    known_def_type_of(facts, view, s) ?? error_type
+}
+
+impl Decls {
+    /// A literal const's type, read off what is written.
+    fn literal_const_type(f: FileId, s: StmtId) -> TypeId? { settled_type(self.store_of(f), self.types, s) }
+
+    /// The type a const carries, when it carries one.
+    fn type_of_const(f: FileId, s: StmtId) -> TypeId? {
+        match self.const_type(f, s) { .Known(t) -> t, .Refused or .Cyclic -> null }
+    }
+}
+
+/// A literal const's type can be read without asking the workspace.
+/// Computed and nominal types fall through to the const-type query.
+fn settled_type(store: SyntaxArena, types: TypeRegistry, s: StmtId) -> TypeId? {
+    let v? = store.const_value(s) else { return null }
+    let word? = literal_shape(store.valued(v)) else { return spelled_type(types, store.binding_ty(s)) }
+    let held = types.intern(word)
+    if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
+    held
+}
+
+/// A type an annotation spells IN WORDS — a scalar, text, `List<…>`,
+/// `Map<string, …>`, each under `?` — resolved from the registry
+/// alone. A declared type's NAME needs the namespace, which no store
+/// read has; it answers null here.
+export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
+    if ann == null { return null }
+    let a = ann!
+    let held? = spelled_plain(types, a) else { return null }
+    if !a.optional { return held }
+    // `?` over a scalar is a box the runtime cannot keep (the once law
+    // refuses it too); over a pointer it is the pointer, null for absent
+    if !types.rides_pointer(held) { return null }
+    types.type(held?)
+}
+
+fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
+    if a.applied.is_empty() {
+        let word: Type? = scalar_named(a.name)
+        return if word == null { null } else { types.intern(word!) }
+    }
+    let elem? = spelled_type(types, a.applied.last()) else { return null }
+    match a.name {
+        "List" if a.applied.length == 1 -> types.type(List<elem>),
+        "Map" if a.applied.length == 2 && keyed_by_text(a.applied[0]) -> types.type(Map<string, elem>),
+        _ -> null,
+    }
+}
+
+/// A map's key spelled `string`, bare.
+fn keyed_by_text(k: TypeRef) -> bool {
+    k.name == "string" && k.applied.is_empty() && !k.optional
+}
+
+/// The shape a literal wears.
+fn literal_shape(value: Expr) -> Type? {
+    if value.int_of() != null { return Type.Int }
+    if value.text_of() != null { return Type.Str }
+    if value.bool_of() != null { return Type.Bool }
+    if value.bits_of() != null { return Type.Float }
+    null
+}
+
+/// What a settlement SPELLS today: a scalar or text, by its word.
+export fn scalar_named(name: string) -> Type? {
+    scalar_types().find(it.name == name)?.builds(TypeArgs { parts: [] })
+}
+
+/// The scalars as the language's own type declarations — the ONE
+/// spelling of each, and a declaration a trait's own package may
+/// implement its trait for (`impl Respond for string`).
+export once fn scalar_types() -> List<TypeRow> {
+    table<TypeRow> {
+        name     | arity | slots | judge  | builds      | variants
+        "int"    | 0     | false | no_law | int_shape   | no_variants
+        "float"  | 0     | false | no_law | float_shape | no_variants
+        "string" | 0     | false | no_law | str_shape   | no_variants
+        "bool"   | 0     | false | no_law | bool_shape  | no_variants
+    }
+}
+
+fn int_shape(_args: TypeArgs) -> Type { Type.Int }
+
+fn float_shape(_args: TypeArgs) -> Type { Type.Float }
+
+fn str_shape(_args: TypeArgs) -> Type { Type.Str }
+
+fn bool_shape(_args: TypeArgs) -> Type { Type.Bool }
+
+/// A type under a body's instantiation — IDENTITY for a plain body.
+export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
+    if sub == null { return ty }
+    types.substituted(ty, sub!.target, sub!.args)
+}
+
+// ── The contexts' reads: forwards to the one definition ──
+
+impl TypeCx {
+    fn type_at(e: ExprId) -> TypeId { self.facts.type_at(e) }
+    /// A type literal's answer — `cx.type(T)` interns into this view's table.
+    fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
+    fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    /// A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ: these
+    /// are the read's two doors — the shape a node reads AS, and the
+    /// type a name stands over. A seat law asks `shape_at`/`type_at`
+    /// and keeps the name.
+    fn seen_at(e: ExprId) -> Type { self.view.types.seen_shape(self.type_at(e)) }
+    fn seen(ty: TypeId) -> TypeId { self.view.types.seen_through(ty) }
+    /// Whether typing already refused here — the cause spoke, so the
+    /// site absorbs instead of speaking twice.
+    fn errored(e: ExprId) -> bool { self.shape_at(e) is .Error }
+    fn errored_ty(ty: TypeId) -> bool { self.view.types.shape_of(ty) is .Error }
+    fn name_at(e: ExprId) -> string { self.view.types.name_of(self.type_at(e)) }
+    fn loc_of(e: ExprId) -> Loc? { self.view.loc_of(e) }
+    fn stmt_loc(s: StmtId) -> Loc? { self.view.stmt_loc(s) }
+    fn emit(d: Diag) { self.facts.speak(self.told(d)) }
+
+    /// A refusal spoken while a sugar's minted node is typed also says
+    /// what the sugar means, at the sugar the author wrote.
+    fn told(d: Diag) -> Diag {
+        let sugar? = self.rewriting else { return d }
+        let note? = self.view.store.means_note(sugar) else { return d }
+        if note.is_empty() { return d }
+        d with { secondary: d.secondary.concat([Frame { label: note, loc: self.loc_of(sugar) }]) }
+    }
+    fn stmt_sig(s: StmtId) -> FnSig? {
+        let d? = self.view.decls.decl_of(self.view.file, s) else { return null }
+        self.view.decls.sig(d)?.fn_sig()
+    }
+    fn bound_decl(e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
+    fn tparams(d: DeclId) -> List<string> { self.view.decls.tparams(d) }
+    fn tbounds(d: DeclId) -> List<string> { self.view.decls.tbounds(d) }
+    fn sig_of(e: ExprId) -> FnSig? { sig_of_at(self.names, self.view.decls, e) }
+    fn fields_of(ty: TypeId) -> StructSig? { self.view.decls.fields_of_type(ty) }
+    fn variants_of(ty: TypeId) -> EnumSig? { self.view.decls.variants_of_type(ty) }
+    /// THE FAILURE VIEW a subject carries: a `Result`'s own sides, or
+    /// the view the row its READ selected declares (`await` answers
+    /// `(T, Cancelled)`). `catch` asks this ONE verb; the pair is never
+    /// interned as a `Result`.
+    fn failure_view(e: ExprId) -> FailureView {
+        let direct? = self.view.types.res_parts(self.type_at(e)) else { return self.read_view(e) }
+        FailureView.Sides(direct)
+    }
+    /// The view of the row a property READ selected; none for any
+    /// other expression.
+    fn read_view(e: ExprId) -> FailureView {
+        let read? = property_prop(
+            self.view.types,
+            self.view.lang.properties,
+            self.view.store,
+            e,
+            (s) -> self.type_at(s),
+        ) else {
+            return FailureView.Nothing
+        }
+        read.row.view(self, self.type_at(e))
+    }
+    fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
+    fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
+    fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    /// Whether `ty` meets a declaration's bound — the trait read in the
+    /// file that WROTE the bound, never the caller's: a caller need not
+    /// import the trait a callee is bounded by.
+    fn meets_bound(decl: DeclId, tname: string, ty: TypeId, at: List<TypeId> = []) -> bool {
+        let tr = self.bound_trait(decl, tname)
+        if at.is_empty() { return implements_named(self.view.types, self.view.decls, ty, tname, tr) }
+        let g? = tr else { return false }
+        self.view.decls.implements_at(ty, g, at)
+    }
+    /// The trait a declaration's bound names — read in the file that
+    /// WROTE the bound, then where the asking file stands.
+    fn bound_trait(decl: DeclId, tname: string) -> DeclId? {
+        let written: DeclId? = self.written_in(self.view.decls.decl(decl).file).type_decl(tname)
+        if written != null && self.view.decls.is_trait(written!) { written } else { self.view.decls.trait_named(self.names, tname) }
+    }
+    fn implements_decl(ty: TypeId, tr: DeclId) -> bool { implements_trait(self.view.types, self.view.decls, ty, tr) }
+    /// A `mut` binding: a `mut` local, a receiver, a `mut` seat — or
+    /// a lambda's seat that HEARD its mark from the slot, which only
+    /// typing knows.
+    fn is_mut(e: ExprId) -> bool { is_mut_at(self.names, self.view, e) || self.heard_mut_at(e) }
+    fn heard_mut_at(e: ExprId) -> bool {
+        let b? = self.names.binding(e) else { return false }
+        match b { .LambdaParam(l, i) -> self.heard_mut(l, i), _ -> false }
+    }
+    fn def_type(s: StmtId) -> TypeId { def_type_of(self.facts, self.view, self.error_type, s) }
+    fn bind_types(v: ExprId, tys: List<TypeId>) { self.facts.bind_types(v, tys) }
+    fn pat_loc(p: PatId) -> Loc? { self.view.pat_loc(p) }
+    fn widen(v: ExprId, ty: TypeId) { self.facts.widen(v, ty) }
+    fn record_ask(e: ExprId, subject: ExprId, on_present: bool) { self.facts.record_ask(e, subject, on_present) }
+    fn ask_of(e: ExprId) -> Asked? { self.facts.ask_of(e) }
+    fn record_subst(e: ExprId, target: DeclId, targs: List<TypeId>, consts: List<string>) { self.facts.record_subst(e, target, targs, consts) }
+    fn subst_at(e: ExprId) -> Sub? { self.facts.subst_at(e) }
+    fn record_chosen(e: ExprId, m: DeclId) { self.facts.record_chosen(e, m) }
+    fn record_dispatch(e: ExprId, d: RunChoice) { self.facts.record_dispatch(e, d) }
+    fn record_binding(s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
+    fn record_index_type(s: StmtId, ty: TypeId) { self.facts.record_index_type(s, ty) }
+    fn index_type(s: StmtId) -> TypeId? { self.facts.index_type(s) }
+    fn want_at(e: ExprId) -> TypeId? { self.facts.want_at(e) }
+    fn narrowed_at(e: ExprId) -> TypeId? { self.facts.narrowed_at(e) }
+    fn starved_at(e: ExprId) -> TypeId? { self.facts.starved_at(e) }
+    fn go_hungry(e: ExprId) { self.facts.go_hungry(e) }
+    fn absorb_hunger(e: ExprId) { self.facts.absorb_hunger(e) }
+    fn starve(e: ExprId, want: TypeId) -> bool {
+        let starved = self.facts.starve(e, want)
+        if starved { let _ = self.facts.starve(self.view.store.closure_of(e), want) }
+        starved
+    }
+}
+
+impl LowerCx {
+    fn viewed(ty: TypeId) -> TypeId { viewed(self.view.types, self.sub, ty) }
+    /// A type literal's answer — `cx.type(T)` interns into this view's table.
+    fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
+    fn type_at(e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
+    fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    /// The type an arm's j-th bind wears, as typing spoke it.
+    fn bind_type(v: ExprId, j: int) -> TypeId? {
+        let ty? = self.facts.pattern_type(v, j) else { return null }
+        self.viewed(ty)
+    }
+    /// The READ's two doors — typing's `seen_at`/`seen` twins: a
+    /// named type is its shape at every read, and identical at
+    /// runtime, so the lowering that fits the shape fits the name.
+    fn seen_at(e: ExprId) -> Type { self.view.types.seen_shape(self.type_at(e)) }
+    fn seen(ty: TypeId) -> TypeId { self.view.types.seen_through(ty) }
+    fn result(e: ExprId) -> Reg { self.out.mint_ty(self.type_at(e)) }
+    fn mint_like(r: Reg) -> Reg { self.out.mint_ty(self.out.type_of_reg(r)) }
+    fn mint_shape(sh: Type) -> Reg { self.out.mint_ty(self.view.types.intern(sh)) }
+    fn mint_ty(ty: TypeId) -> Reg { self.out.mint_ty(ty) }
+    fn emit(i: Ins) { self.out.give(i) }
+    fn fail(msg: string) { self.out.record(msg) }
+    fn defect(what: string) { self.out.defect(what) }
+    fn seeded() { self.out.seeded() }
+    fn speak(d: Diag) { self.out.voices.speak(d) }
+    fn enclosing_ret() -> TypeId? { self.fn_ret }
+
+    /// A call's target: the bound declaration's body as instantiated
+    /// here — or the name itself, a run-time fn's.
+    /// The host symbol a call names, when its callee is extern.
+    fn extern_callee(e: ExprId) -> string? {
+        let d: DeclId? = bound_decl_of(self.names, e)
+        if d == null || !self.view.decls.is_extern(d!) { return null }
+        self.view.decls.symbol(d!)
+    }
+    fn callee_of(e: ExprId, name: string) -> string {
+        let d? = bound_decl_of(self.names, e) else { return name }
+        self.symbol_at(d, e)
+    }
+    fn fields_at(e: ExprId) -> StructSig? { self.view.decls.fields_of_type(self.type_at(e)) }
+    fn fields_of(ty: TypeId) -> StructSig? { self.view.decls.fields_of_type(ty) }
+    fn variants_at(e: ExprId) -> EnumSig? { self.view.decls.variants_of_type(self.type_at(e)) }
+    fn variants_of(ty: TypeId) -> EnumSig? { self.view.decls.variants_of_type(ty) }
+    /// A method call's pieces, when the expression is one.
+    fn method_at(e: ExprId) -> MethodParts? { self.view.store.method_parts(e) }
+    /// The impl table's method a concrete receiver (a struct, enum or
+    /// generic instance) answers by name — the one arm of
+    /// `impls/callee.av`'s dispatch precedence a receiver of this
+    /// shape can still reach (a fn-typed FIELD of the same name wins
+    /// there first); a caller that needs the WHOLE precedence — a
+    /// variant, a contract, a bounded parameter — asks `impls`
+    /// itself, which this narrow reader is not.
+    fn method_of(ty: TypeId, name: string) -> DeclId? {
+        let d = declaring_decl(self.view.types.shape_of(ty))?
+        if self.fn_typed_field(ty, name) { return null }
+        self.view.decls.method(d, name)
+    }
+    /// A fn-typed FIELD of this name — the impl table's one
+    /// competitor for a struct/enum receiver.
+    fn fn_typed_field(ty: TypeId, name: string) -> bool {
+        let sig? = self.fields_of(ty) else { return false }
+        let slot? = sig.slot_of(name) else { return false }
+        self.view.types.shape_of(sig.types[slot]) is .Fn
+    }
+    fn bind_patterns(v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
+    /// The property read a caught subject IS, when it is one — the
+    /// door to its row's caught lowering.
+    fn caught_read(e: ExprId) -> PropertyRead? {
+        property_prop(
+            self.view.types,
+            self.view.lang.properties,
+            self.view.store,
+            e,
+            (s) -> self.type_at(s),
+        )
+    }
+    /// The registers a pattern's TEST produced, for its BINDS to read.
+    fn test_regs_of(p: PatId) -> List<Reg> { self.body.test_regs_of(p) }
+    fn bind_test(p: PatId, regs: List<Reg>) { self.body.bind_test(p, regs) }
+    /// A `mut` binding's cell, when the binding lives in one.
+    fn cell_of(e: ExprId) -> Reg? {
+        let b? = self.names.binding(e) else { return null }
+        match b {
+            .Def(s) if self.body.is_boxed(s) -> self.body.slot_of(s),
+            .Def(_) or .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .TypeParam(_) -> null,
+        }
+    }
+
+    /// The slot a `mut` binding owns — a memory CELL: idents load
+    /// through it, and the driver's value write defers to it.
+    fn bind_slot(s: StmtId, cell: Reg) { self.body.bind_slot(s, cell) }
+    fn bind_index(s: StmtId, r: Reg) { self.body.bind_index(s, r) }
+}
+
+// ── voices ──
+
+impl Decls {
+    /// A type literal's answer — `self.type(T)` interns into the table.
+    fn interned(t: TypeLit) -> TypeId { self.types.interned(t) }
+
+    /// A declared const read as a value: its type — read off a
+    /// literal, else the program's answer — and the one refusal only
+    /// the READ can speak: a value that asks for its own type.
+    fn declared_const_type(mut voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
+        let x = self.decl(d)
+        match self.const_type(x.file, x.stmt) {
+            .Known(t) -> t,
+            .Refused -> error_type,
+            .Cyclic -> {
+                voices.speak(self.self_referent(d))
+                error_type
+            },
+        }
+    }
+
+    fn self_referent(d: DeclId) -> Diag { said_as("const.cycle", self.loc(d), const_reads_itself(self.decl(d).name)) }
+
+    fn not_a_value(d: DeclId) -> Diag {
+        said_as(
+            "type.lambda",
+            self.loc(d),
+            generic_no_value(self.fn_name(d) ?? "f", (self.sig(d)?.fn_sig()?.params ?? []).length),
+        )
+    }
+
+    /// An extern names a C SYMBOL, called across the host seam — it
+    /// wears no address a value can carry, so a `let`, a list element
+    /// or a fn-typed seat reading it by name reads a callee that does
+    /// not exist on this side. The mistake is AT THE READ, so that is
+    /// where the primary mark goes, with the declaration as a second
+    /// frame — a caller with no read site in hand (a capture's source
+    /// binding, which never resolves to an extern in practice) still
+    /// gets a sound answer, pointed at the declaration alone.
+    /// `embed` is called where its path is written: a value of it would
+    /// be handed a path nothing read at admit time.
+    fn embed_not_a_value(at: Loc?) -> Diag {
+        refusal(
+            "type.embed_literal",
+            at,
+            embed_literal_law,
+            handed_on_uncalled,
+            "call it where the path is written — `embed(\"schema.sql\")`",
+        )
+    }
+
+    /// `guarded` is lowered where it is called: a value of it would run
+    /// nothing, and a guard that quietly runs nothing is the worst failure.
+    fn guard_not_a_value(at: Loc?) -> Diag {
+        refusal(
+            "type.guard_value",
+            at,
+            "`guarded` is lowered where it is called, and handed on uncalled it would run nothing",
+            handed_on_uncalled,
+            "call it where the body is written — `guarded(() -> …)`",
+        )
+    }
+
+    fn extern_not_a_value(read_at: Loc?, d: DeclId) -> Diag {
+        let declared = self.loc(d)
+        let primary = read_at ?? declared
+        let read = extern_unvalued(self.wrapper_hint(d))
+        let secondary = if read_at != null { [Frame { label: DECLARED_HERE, loc: declared }] } else { [] }
+        said_as(
+            "type.extern_value",
+            primary,
+            if read_at != null { read } else { read with { label: DECLARED_HERE } },
+        ) with { secondary: secondary }
+    }
+
+    /// The wrapper the help offers, over the extern's OWN arity and
+    /// seat types. A one-argument, UNTYPED shape suggested for any
+    /// other extern reads as a fix and is not one: a bare `let`'s
+    /// lambda has no seat to infer from, so applying an arity-wrong OR
+    /// an untyped suggestion literally trades this refusal for an
+    /// unrelated "needs a type" one. A signature this door cannot find
+    /// (a malformed declaration) falls back to a bare `()`.
+    fn wrapper_hint(d: DeclId) -> string {
+        let params: List<TypeId> = self.sig(d)?.fn_sig()?.params ?? []
+        let marks = self.marks_of(d, params.length)
+        extern_wrapper(
+            self.fn_name(d) ?? "f",
+            [self.types.name_of(p) for p in params],
+            [m.mutable for m in marks],
+        )
+    }
+
+    /// A declared type's INSTANCE type — what its impl's receiver wears:
+    /// the record or enum itself, applied to its own Vars when generic;
+    /// a trait's is its `Self`, the Var its defaults are generic over.
+    fn self_type_of(d: DeclId) -> TypeId {
+        let name = self.decl(d).name
+        let vars = self.instance_vars(d)
+        if self.is_trait(d) { return vars[0] }
+        if self.is_builtin(d) { return self.built_type(d, vars) }
+        if !vars.is_empty() { return self.types.intern(Type.App(d, name, vars)) }
+        if self.is_enum(d) { return self.types.intern(Type.Enum(d, name)) }
+        self.types.intern(Type.Struct(d, name))
+    }
+
+    /// A generic declaration's own Vars, under the names it declared —
+    /// `impl Arena<N>` spells them as `type Arena<N>` did.
+    fn instance_vars(d: DeclId) -> List<TypeId> {
+        [self.types.intern(Type.Var(d, j, n)) for j, n in self.tparams(d)]
+    }
+}
+
+/// One wrapper seat's name, by position.
+/// The generic fn `name`, of `seats` seats, read as a value: said where it's declared.
+export fn generic_no_value(name: string, seats: int) -> Voice {
+    let names = joined([wrapper_seat(i) for i in 0..seats], ", ")
+    Voice {
+        message: "a generic fn is not a value — no single signature to wear",
+        label: "declared here",
+        help: "wrap it in a lambda — `(${names}) -> ${name}(${names})` — whose seat's own type pins the generic's",
+    }
+}
+
+fn wrapper_seat(i: int) -> string {
+    "x${i}"
+}
+
+/// One wrapper seat's name, annotated with its type — `mut` first
+/// where the extern's own seat writes through it, so the wrapper's
+/// seat carries the same contract and a `mut` extern's suggestion
+/// stands on its own too.
+fn wrapper_typed_seat(i: int, ty: string, mutable: bool) -> string {
+    let prefix = if mutable { "mut " } else { "" }
+    "${prefix}${wrapper_seat(i)}: ${ty}"
+}
+
+/// Two bindings name the same thing — the identity every seat law
+/// compares roots by.
+export fn same_binding(a: Binding, b: Binding) -> bool {
+    match a {
+        .Param(i) -> match b { .Param(k) -> i == k, _ -> false },
+        .Receiver -> b is .Receiver,
+        .Def(s) -> match b { .Def(t) -> same_stmt(s, t), _ -> false },
+        .Pattern(v, j) -> match b { .Pattern(w, k) -> same_expr(v, w) && j == k, _ -> false },
+        .LambdaParam(l, i) -> match b { .LambdaParam(m, k) -> same_expr(l, m) && i == k, _ -> false },
+        .Capture(l, j) -> match b { .Capture(m, k) -> same_expr(l, m) && j == k, _ -> false },
+        .Index(s) -> match b { .Index(t) -> same_stmt(s, t), _ -> false },
+        .Decl(d) -> match b { .Decl(e) -> same_decl(d, e), _ -> false },
+        .TypeParam(n) -> match b { .TypeParam(m) -> n == m, _ -> false },
+    }
+}
+
+/// A const `name` whose value asks for its own type.
+export fn const_reads_itself(name: string) -> Voice {
+    Voice {
+        message: "a const's value asks for its own type",
+        label: "`${name}` reads itself here",
+        help: "a const settles from what is written and from other consts — not from its own value",
+    }
+}
+
+/// The wrapper an extern `name` of seats typed `types`, `mutable` where marked, is handed on through.
+export fn extern_wrapper(name: string, types: List<string>, mutable: List<bool>) -> string {
+    let typed = joined(
+        [wrapper_typed_seat(i, t, i < mutable.length && mutable[i]) for i, t in types],
+        ", ",
+    )
+    let names = joined([wrapper_seat(i) for i, _t in types], ", ")
+    "(${typed}) -> ${name}(${names})"
+}
+
+/// An extern read as a value, which `wrapper` hands on.
+export fn extern_unvalued(wrapper: string) -> Voice {
+    Voice {
+        message: "an extern fn is not a value — it names a C symbol, not an Avra fn",
+        label: "read as a value here",
+        help: "wrap it — `${wrapper}`",
+    }
+}
+
+/// Where an extern read as a value is declared, as its refusal labels it.
+export const DECLARED_HERE: string = "declared here"

@@ -1,0 +1,119 @@
+//! WHERE A `dyn` ARGUMENT'S RUN-TIME TYPE CHOOSES A MEMBER THAT ISN'T THERE: a method several impls
+//! give, called with one `dyn` argument, is chosen by that value's type as the program runs; every
+//! type that implements the argument's trait must have a member, or a value of it reaches a call that
+//! takes nothing.
+use core.{ExprId, SignedType, SyntaxArena, TypeHead, flatten}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.impls.{members_incomplete_said}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A call a `dyn` argument's type chooses a member of, where types implementing its trait have
+/// none: where, the type the method is of, the method, and those types.
+@derive(Saved)
+type UnmetAt = { at: FindingAt?, target: string, method: string, unmet: List<string> }
+
+/// Every such call one written item holds.
+@derive(Saved)
+type ItemUnmet = { rows: List<UnmetAt> }
+
+/// Every such call in the bodies the written item `at` of `file` declares.
+@query
+fn item_unmet(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemUnmet {
+    if !item_held(engine, file, at) { return ItemUnmet { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return ItemUnmet { rows: [] } }
+    ItemUnmet {
+        rows: flatten(
+            [unmet_in(engine, file, b.signed.item.store, b.typed.types) for b in item_signed_bodies(engine, file, at, item)],
+        ),
+    }
+}
+
+/// Every such call among the statements the entry `file` runs, with the written item it stands in:
+/// the entry typed once, for all of its items.
+@query
+fn entry_unmet(engine: QueryEngine, file: SourceFileAddress) -> EntryUnmet {
+    let read = entry_read(engine, file)
+    let signed? = entry_signed(read) else { return EntryUnmet { rows: [] } }
+    let typed = kept_body(body_checked(engine, file, signed, false))
+    EntryUnmet {
+        rows: [EntryUnmetAt { item: item_holding(read, k), row: r! } for k in 0..typed.types.length for r in [unmet_at(engine, file, read.store, typed.types, ExprId { index: k })] if r != null],
+    }
+}
+
+/// An entry's call a `dyn` argument chooses a member of, where some type has none, and the written
+/// item it stands in.
+@derive(Saved)
+type EntryUnmetAt = { item: int, row: UnmetAt }
+
+/// Every such call the entry runs.
+@derive(Saved)
+type EntryUnmet = { rows: List<EntryUnmetAt> }
+
+/// Every such call among the nodes `types` gives a type in `store`.
+fn unmet_in(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    types: List<SignedType?>,
+) -> List<UnmetAt> {
+    [r! for k in 0..types.length for r in [unmet_at(engine, file, store, types, ExprId { index: k })] if r != null]
+}
+
+/// The node `e` as a call a `dyn` argument chooses a member of, where types implementing its trait
+/// have none; absent for any other node.
+fn unmet_at(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    types: List<SignedType?>,
+    e: ExprId,
+) -> UnmetAt? {
+    let call? = store.method_parts(e) else { return null }
+    let subject? = typed_at(types, call.subject.index) else { return null }
+    let args = [typed_at(types, store.unnamed(a).index) for a in call.args]
+    let dyns = [j for j, t in args if t?.dynamic ?? false]
+    if dyns.length != 1 { return null }
+    let k = dyns[0]
+    let members = impls_giving(engine, subject, call.name, false, file.package_name)
+    if members.length < 2 { return null }
+    let held? = declared_at(args[k]!) else { return null }
+    let taken = [d! for g in members if g.ty.seats.length > k + 1 for d in [declared_at(g.ty.seats[k + 1].ty)] if d != null]
+    let unmet = [h.name for h in heirs_of(engine, TraitAt { file: held.file, name: held.name }) if !taken.any((d) -> d.name == h.name && same_file(d.file, h.file))]
+    if unmet.is_empty() { return null }
+    UnmetAt {
+        at: kept_at(store.expr_span(e)),
+        target: subject.spelled(),
+        method: call.name,
+        unmet: unmet,
+    }
+}
+
+/// Each call the written item `at` of `file` makes that a `dyn` argument chooses a member of, where
+/// types implementing its trait have none: the type, the method, those types.
+fn members_unmet(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let rows = item_unmet(engine, file, at)
+        .rows
+        .concat([e.row for e in entry_unmet(engine, file).rows if e.item == at])
+    [Found { at: span_of(r.at), args: [r.target, r.method].concat(r.unmet) } for r in rows]
+}
+
+/// a call a `dyn` argument's type chooses a member of, where a type implementing its trait has none
+export law members_incomplete {
+    kind: "type.method"
+    reads: members_unmet
+    voice: incomplete_words
+    witness: "trait View {\n    fn name() -> string\n}\n\ntype Text = { s: string }\n\ntype Button = { s: string }\n\ntype Image = { s: string }\n\nimpl View for Text {\n    fn name() -> string { \"t\" }\n}\n\nimpl View for Button {\n    fn name() -> string { \"b\" }\n}\n\nimpl View for Image {\n    fn name() -> string { \"i\" }\n}\n\ntrait Realize<T> {\n    fn draw(t: T) -> string\n}\n\ntype Html = { tag: string = \"\" }\n\nimpl Realize<Text> for Html {\n    fn draw(t: Text) -> string { t.s }\n}\n\nimpl Realize<Button> for Html {\n    fn draw(t: Button) -> string { t.s }\n}\n\nfn f(h: Html, v: dyn View) -> string { h.draw(v) }\n"
+}
+
+fn incomplete_words(a: List<string>) -> Voice { members_incomplete_said(a[0], a[1], a.drop(2)) }
+
+collect listed_run_choice_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the run-time choice law is read through, for a process to hand its engine.
+export fn run_choice_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_run_choice_facts) }

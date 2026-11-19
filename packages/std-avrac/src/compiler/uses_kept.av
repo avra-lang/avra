@@ -1,0 +1,86 @@
+//! A FILE'S USE LINES, KEPT: what its last parse said they were, the guess its next parse
+//! is made under and checks (`Workspace.parsed_under_blocks`).
+use core.{UseParts, StmtId, joined, wire_fields}
+use compiler.store.{Store, Stored, node_key}
+use @std.relation.{codec}
+
+impl Workspace {
+    /// The use lines a file's last parse said, when a store keeps them.
+    fn kept_uses(path: string) -> KeptUses? {
+        let store? = self.store.get() else { return null }
+        let wire? = store.get(Stored.Unit, self.uses_key(path)) else { return null }
+        let uses? = uses_of_wire(wire) else { return null }
+        KeptUses { wire: wire, uses: uses }
+    }
+
+    /// Every file's use lines its parse said this build, kept for its next parse to guess its
+    /// words by.
+    fn keep_uses(store: Store) {
+        for path, a in self.records.admits_seen.get() {
+            let _ = store
+                .keep_octets(Stored.Unit, self.admits_key(path), a.encoded_in(self.query_scope()), [])
+        }
+        for path, wire in self.records.uses_seen.get() {
+            let key = self.uses_key(path)
+            if store.get(Stored.Unit, key) != wire { let _ = store.keep(Stored.Unit, key, wire, []) }
+        }
+    }
+
+    /// What a file's last parse reached; a run on kept rows reads it only under a text unmoved.
+    fn kept_admits(path: string) -> Admits? {
+        let store? = self.store.get() else { return null }
+        let bytes? = store.get_octets(Stored.Unit, self.admits_key(path)) else { return null }
+        match Admits.decoded_in(self.query_scope(), bytes) { .Ok(a) -> a, .Err(_) -> null }
+    }
+
+    fn admits_key(path: string) -> string { node_key(Stored.Unit, ["admits", self.root, path]) }
+
+    /// WHERE A FILE'S USE LINES ARE KEPT: under its text, so a guess is only ever the lines
+    /// that very text said — a file at the same path with other text, in another tree or after
+    /// an edit, admits nothing its own lines do not name.
+    fn uses_key(path: string) -> string { node_key(Stored.Unit, ["uses", self.root, path, self.text_digest(path)]) }
+}
+
+/// What a file reaches past itself: what an admission walks without its parse.
+@codec
+export type Admits = { modules: List<List<string>>, gathers: bool, exports: string }
+
+/// What a file that declares a component keeps in place of its use lines: no guess.
+const DECLARES: string = "declares"
+
+/// A file's kept use lines, and the wire they were kept as — what a parse's own lines are
+/// compared by.
+type KeptUses = { wire: string, uses: List<UseParts> }
+
+/// A file's use lines as one text: each line's path, items and aliases. Never empty, so a file
+/// with no use line keeps a row.
+fn uses_wire(uses: List<UseParts>) -> string {
+    joined(
+        ["uses"]
+            .concat(
+                [joined([joined(u.path, "."), joined(u.items, ","), joined(u.aliases, ",")], "\t") for u in uses],
+            ),
+        "\n",
+    )
+}
+
+/// `uses_wire`'s inverse; null for a text that is no such wire.
+fn uses_of_wire(wire: string) -> List<UseParts>? {
+    let lines = wire_fields(wire, "\n")
+    if lines.first() != "uses" { return null }
+    [use_of_line(l)? for l in lines.drop(1)]
+}
+
+fn use_of_line(line: string) -> UseParts? {
+    let cols = wire_fields(line, "\t")
+    if cols.length != 3 { return null }
+    UseParts {
+        path: wire_fields(cols[0], "."),
+        items: some_words(cols[1]),
+        aliases: some_words(cols[2]),
+        stmt: StmtId { index: 0 },
+    }
+}
+
+/// A comma list's words; none for an empty one.
+fn some_words(field: string) -> List<string> { if field.is_empty() { [] } else { wire_fields(field, ",") } }

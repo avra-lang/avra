@@ -1,0 +1,184 @@
+//! `tree/chord.av` — A KEY WITH ITS MODIFIERS. A `Chord` is written once as text (`"ctrl+s"`, `"alt+Enter"`,
+//! `"F5"`) and read once, by `chord`, into a value no target has to parse
+//! again: SEALED, so every chord anywhere is one the door below answered.
+//!
+//! The key is a single character, written as it is typed unshifted, or one
+//! of the named keys; the modifiers are `ctrl`, `alt` and `shift`, in any
+//! order, each once. Tab and Shift-Tab move the focus, and Ctrl-D ends the
+//! input, so a key cannot take them.
+use @std.meta.{sealed}
+use @std.text.{ascii_lower, codepoints, from_codepoint}
+
+/// A key and the modifiers held with it.
+@sealed
+export type Chord = { key: string, ctrl: bool, alt: bool, shift: bool }
+
+/// The keys that have a name rather than a character, as written.
+const named = [
+    "Enter",
+    "Escape",
+    "Tab",
+    "Space",
+    "Backspace",
+    "Delete",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Plus",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+]
+
+/// The named key `word` spells in any case, as it is written above.
+fn named_key(word: string) -> string? { named.find(ascii_lower(it) == ascii_lower(word)) }
+
+/// The modifier a word names, as its lower-case word.
+fn modifier(word: string) -> string? { ["ctrl", "alt", "shift"].find(it == ascii_lower(word)) }
+
+/// The chord `text` writes, or the words that say why it is none. The words
+/// are spoken where the chord is written.
+export fn chord(text: string) -> Result<Chord, string> {
+    if text.ends_with("+") { return .Err(no_key(text)) }
+    let parts = text.split("+")
+    let word? = parts.last() else { return .Err(no_key(text)) }
+    if word == "" { return .Err(no_key(text)) }
+    let held = parts.slice(0, parts.length - 1)
+    let words = [modifier(m) ?? "" for m in held]
+    let unknown = [j for j, w in words if w == ""].first()
+    if unknown != null { return .Err(unknown_modifier(held[unknown!], text)) }
+    let twice = [j for j, w in words if words.slice(0, j).contains(w)].first()
+    if twice != null { return .Err(repeated(held[twice!], text)) }
+    let key? = key_of(word) else { return .Err(unknown_key(word, text)) }
+    let made = Chord {
+        key: key,
+        ctrl: words.contains("ctrl"),
+        alt: words.contains("alt"),
+        shift: words.contains("shift"),
+    }
+    reserved(made, text)
+}
+
+/// A key as it is stored: a named key in its written case, a character as typed.
+fn key_of(word: string) -> string? { named_key(word) ?? typed(word) }
+
+/// A single character, written as typed unshifted.
+fn typed(word: string) -> string? { if codepoints(word).length == 1 && ascii_lower(word) == word { word } else { null } }
+
+/// The chord, unless the terminal keeps it.
+fn reserved(c: Chord, text: string) -> Result<Chord, string> {
+    if c.key == "Tab" && !c.ctrl && !c.alt { return .Err(focus_key(text)) }
+    if c.key == "d" && c.ctrl && !c.alt && !c.shift { return .Err(end_key(text)) }
+    .Ok(c)
+}
+
+impl Chord {
+    /// The chord as a page's keydown is read by it: the modifiers held (`c`,
+    /// `a`, `s`), the `KeyboardEvent.code` of the key's place, and the key as
+    /// `KeyboardEvent.key` names it, each after a slash — the code lets a
+    /// layout whose `key` is another script meet the chord by its place.
+    fn web_spec() -> string {
+        let held = [
+            if self.ctrl { "c" } else { "" },
+            if self.alt { "a" } else { "" },
+            if self.shift { "s" } else { "" },
+        ]
+        "${held.join("")}/${dom_code(self.key)}/${dom_key(self.key)}"
+    }
+
+    /// The chord as it is written: modifiers in a fixed order, then the key.
+    fn text() -> string {
+        if self.ctrl { ["ctrl"] } else { [] }
+            .concat(if self.alt { ["alt"] } else { [] })
+            .concat(if self.shift { ["shift"] } else { [] })
+            .concat([self.key])
+            .join("+")
+    }
+}
+
+/// The key a named key is to `KeyboardEvent.key`; a character is its own.
+fn dom_key(key: string) -> string {
+    match key {
+        "Up" -> "ArrowUp",
+        "Down" -> "ArrowDown",
+        "Left" -> "ArrowLeft",
+        "Right" -> "ArrowRight",
+        "Space" -> " ",
+        "Plus" -> "+",
+        other -> other,
+    }
+}
+
+/// The `KeyboardEvent.code` of the place a printable key sits at on a US
+/// layout; none for a key with no printable place.
+fn dom_code(key: string) -> string {
+    match key {
+        "-" -> "Minus",
+        "=" -> "Equal",
+        "[" -> "BracketLeft",
+        "]" -> "BracketRight",
+        "\\" -> "Backslash",
+        ";" -> "Semicolon",
+        "'" -> "Quote",
+        "," -> "Comma",
+        "." -> "Period",
+        "/" -> "Slash",
+        "`" -> "Backquote",
+        other -> lettered(other),
+    }
+}
+
+/// The place of a letter or a digit, none for anything longer.
+fn lettered(key: string) -> string {
+    let at = codepoints(key)
+    let c = at.first() ?? 0
+    when {
+        at.length != 1 -> ""
+        c >= 97 && c <= 122 -> "Key${from_codepoint(c - 32)}"
+        c >= 48 && c <= 57 -> "Digit${key}"
+        _ -> ""
+    }
+}
+
+/// The chord `text` writes, or none.
+export fn parsed(text: string) -> Chord? {
+    match chord(text) { .Ok(c) -> c, .Err(_) -> null }
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn no_key(text: string) -> string {
+    "`${text}` names no key: a chord ends in the key, as in `ctrl+s` or `F5`"
+}
+
+fn unknown_modifier(word: string, text: string) -> string {
+    "`${word}` in `${text}` is no modifier: the modifiers are `ctrl`, `alt` and `shift`"
+}
+
+fn repeated(word: string, text: string) -> string { "`${word}` is held twice in `${text}`" }
+
+fn unknown_key(word: string, text: string) -> string {
+    "`${word}` in `${text}` is no key: a key is one character, written as typed unshifted (`s`, not `S` — hold `shift` for that), or one of ${named.join(", ")}"
+}
+
+fn focus_key(text: string) -> string {
+    "`${text}` is a focus key: Tab and Shift-Tab move the focus, so a key cannot take them"
+}
+
+fn end_key(text: string) -> string {
+    "`${text}` ends the input: Ctrl-D is the terminal's, so a key cannot take it"
+}

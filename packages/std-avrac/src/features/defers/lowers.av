@@ -1,0 +1,70 @@
+//! The lowering rule of `defer` and `errdefer`: a body that is one call, every operand a scalar
+//! literal or a name holding no counted reference, is that call lowered where the scope it stands in
+//! ends or the fn leaves, each name reading what it held at the statement; any other body is the
+//! lambda that is the statement's body boxed where the statement stands, its captures read now, and
+//! the box called where that scope ends or the fn leaves.
+use core.{Bound, DeferredRun, ExprId, HeldName, Lowering, StmtId, StmtLowers, owned_type}
+use core.stmt.{Defer}
+
+impl StmtLowers for Defer {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let ty? = cx.type_at(self.body) else { return cx.stmt_unlowered(s) }
+        let answer = cx.laid_out(ty.answer ?? owned_type("void"))
+        let run = in_place(cx, self.body) ?? DeferredRun.Boxed(cx.lower(self.body))
+        cx.deferred(run, answer, self.on_error)
+        cx.reshaped()
+    }
+}
+
+/// The lambda `lam` run in place, its call's operands' names held as they stand now; absent where
+/// its body is no call `in_place_operands` passes.
+fn in_place(mut cx: Lowering, lam: ExprId) -> DeferredRun? {
+    let body? = match cx.store.expr(lam) { .Lambda(_, body) -> body, _ -> null } else { return null }
+    let operands? = in_place_operands(cx, body) else { return null }
+    mut held: List<HeldName> = []
+    for a in operands {
+        if !fixed_early(cx, a) { return null }
+        let name? = cx.store.ident_name(a) else { continue }
+        let bound = cx.bound(name)!
+        held.push(HeldName { name: name, b: Bound.Value(cx.held(bound), bound.type()) })
+    }
+    DeferredRun.InPlace(body, held)
+}
+
+/// The operands of `body` where it's a call of a fn the program declares, by name, or of a method a
+/// type the program declares has: each argument, a method's receiver first. Absent for any other
+/// body, and for a callee a seat of which a write reaches the caller through, or takes a `state` or
+/// `const` argument.
+fn in_place_operands(cx: Lowering, body: ExprId) -> List<ExprId>? {
+    match cx.store.expr(body) {
+        .Call(callee, _, args) -> {
+            if cx.bound(callee.of) != null { return null }
+            let named? = cx.named(body, callee.of) else { return null }
+            let f? = match named { .Fn(c) -> c, rest -> null } else { return null }
+            if f.params.is_empty() && !args.is_empty() || f.params.any(it.mutable) { null } else { args }
+        },
+        .MethodCall(subject, name, args) -> {
+            let ty? = cx.type_at(subject) else { return null }
+            let m? = cx.method(ty, name.of) else { return null }
+            if m.writes || m.params.is_empty() && !args.is_empty() || m.params.any(it.mutable) { null } else { [subject].concat(args) }
+        },
+        rest -> null,
+    }
+}
+
+/// Whether the operand `a` reads at the exit what it read at the `defer` once its name is held: a
+/// scalar literal, or a name bound in the body whose value holds no counted reference, so holding it
+/// keeps nothing alive. A `state` local is shared, never held.
+fn fixed_early(mut cx: Lowering, a: ExprId) -> bool {
+    match cx.store.expr(a) {
+        .IntLit(_) or .BoolLit(_) or .FloatLit(_) -> true,
+        .Ident(name) -> {
+            let b? = cx.bound(name.of) else { return false }
+            match b {
+                .Shared(_, _) or .OuterShared(_, _, _) -> false,
+                .Value(_, t) or .Const(_, t) or .Slot(_, t) or .Outer(_, t, _) or .Held(_, t) -> !cx.laid_out(t).counted(),
+            }
+        },
+        rest -> false,
+    }
+}

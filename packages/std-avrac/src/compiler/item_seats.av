@@ -1,0 +1,242 @@
+//! A `mut` SEAT THE FN NEVER WRITES THROUGH: every caller of a fn hands a `mut` seat a place, so a
+//! seat the body never writes lies at each call. A write is an assignment to a place rooted in the
+//! seat, a method on one that writes its receiver or can't be read to say, a verb whose receiver seat
+//! is `mut`, or the place handed to a seat that is `mut` or can't be read, of a declared fn or of a
+//! fn value. A free fn's seats and an
+//! inherent method's are judged; a trait's contract keeps its seats. Read over a written item's
+//! bodies as the program layer types them.
+use core.{ExprId, Param, SignedType, StmtId, flatten}
+use compiler.laws.{Found, law}
+use compiler.typing.{unwritten_seat_said}
+use diagnostics.{Voice}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A `mut` seat its fn never writes through: where the fn is declared, the seat and the fn.
+@derive(Saved)
+type UnwrittenSeat = { at: FindingAt?, seat: string, fn_name: string }
+
+/// Every such seat one written item declares.
+@derive(Saved)
+type ItemSeats = { seats: List<UnwrittenSeat> }
+
+/// Each `mut` seat of the item `at` of `file` its fn never writes through.
+fn seats_unwritten(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(s.at), args: [s.seat, s.fn_name] } for s in item_seats(engine, file, at).seats]
+}
+
+/// Every `mut` seat a free fn or an inherent method of the written item `at` of `file` declares
+/// that its body never writes through, in the order they're declared.
+@query
+fn item_seats(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemSeats {
+    if !item_held(engine, file, at) { return ItemSeats { seats: [] } }
+    let item = read_item(engine, file, at)
+    let judged = [s for s in item.stmts if judged_fn(item, s)]
+        .concat(inherent_fns(engine, file, at, item))
+    if !judged.any((s) -> marked_seats(item, s).length > 0) { return ItemSeats { seats: [] } }
+    let cx = copies_in(engine, file, at, item)
+    ItemSeats { seats: flatten([unwritten_seats(engine, cx, file, s) for s in judged]) }
+}
+
+/// Whether the item's statement `s` is a fn a seat law judges: one with a body.
+fn judged_fn(item: ReadItem, s: StmtId) -> bool { item.store.fn_parts(s) != null }
+
+/// The methods and statics the inherent impls of the written item `at` of `file` declare.
+fn inherent_fns(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    StmtId,
+> {
+    flatten(
+        [impl_fns_at(item, ImplAt { file: file, item: at, params: [], nth: nth }) for nth, i in item_impls(engine, file, at) if i.implements == null],
+    )
+}
+
+/// The `mut` seats the fn `s` of `item` writes, as written.
+fn marked_seats(item: ReadItem, s: StmtId) -> List<Param> { [p for p in item.store.fn_parts(s)?.params ?? [] if p.promises.mutable && p.seated()] }
+
+/// Each `mut` seat of the fn `s` its body never writes through, read by `cx` from `package`.
+fn unwritten_seats(engine: QueryEngine, cx: Copies, file: SourceFileAddress, s: StmtId) -> List<
+    UnwrittenSeat,
+> {
+    let parts? = cx.store.fn_parts(s) else { return [] }
+    let span? = cx.store.stmt_span(s) else { return [] }
+    let at = kept_at(span)
+    [UnwrittenSeat { at: at, seat: p.name.of, fn_name: parts.name } for p in parts.params if p.promises.mutable &&
+        p.seated() &&
+        !written_through(engine, seat_body_evidence(engine, cx, file, p.name.of, span.lo, span.hi))]
+}
+
+/// A seat of a declared fn: the fn, by its file, its item and its name, and the seat's place.
+@derive(Saved)
+type SeatOf = { file: SourceFileAddress, item: int, fn_name: string, at: int }
+
+/// What a fn's body does with one seat: whether it writes through it itself or may, and the `mut`
+/// seats of declared fns it hands it to, which write it where they write theirs.
+@derive(Saved)
+type SeatEvidence = { direct: bool, handed: List<SeatOf> }
+
+/// What a body that writes through the seat itself, or may, does with it.
+fn seat_written_here() -> SeatEvidence { SeatEvidence { direct: true, handed: [] } }
+
+/// What a body that neither writes through the seat nor hands it on does with it.
+fn seat_untouched() -> SeatEvidence { SeatEvidence { direct: false, handed: [] } }
+
+/// Whether `evidence`, or what a seat it hands on to does, writes: the seats reached through each
+/// hand-off read once, so a recursion asks nothing twice.
+fn written_through(engine: QueryEngine, evidence: SeatEvidence) -> bool {
+    if evidence.direct { return true }
+    mut reached = evidence.handed
+    mut at = 0
+    while at < reached.length {
+        let found = seat_evidence(engine, reached[at])
+        if found.direct { return true }
+        for h in found.handed { if !reached.any((r) -> same_seat(r, h)) { reached.push(h) } }
+        at = at + 1
+    }
+    false
+}
+
+fn same_seat(a: SeatOf, b: SeatOf) -> bool {
+    a.at == b.at &&
+        a.item == b.item &&
+        a.fn_name == b.fn_name &&
+        a.file.package_name == b.file.package_name &&
+        a.file.path_in_package == b.file.path_in_package
+}
+
+/// What the declared fn `s` names does with its seat, read from its body; a fn whose body isn't
+/// read may write it.
+@query
+fn seat_evidence(engine: QueryEngine, s: SeatOf) -> SeatEvidence {
+    let item = read_item(engine, s.file, s.item)
+    let stmt? = item.stmts.find((st) -> item.store.fn_parts(st)?.name == s.fn_name) else { return seat_written_here() }
+    let params = item.store.fn_parts(stmt)?.params ?? []
+    let span? = item.store.stmt_span(stmt) else { return seat_written_here() }
+    if s.at >= params.length { return seat_written_here() }
+    seat_body_evidence(
+        engine,
+        copies_in(engine, s.file, s.item, item),
+        s.file,
+        params[s.at].name.of,
+        span.lo,
+        span.hi,
+    )
+}
+
+/// What everything between `lo` and `hi` does with places rooted in the seat `name`.
+fn seat_body_evidence(
+    engine: QueryEngine,
+    cx: Copies,
+    file: SourceFileAddress,
+    name: string,
+    lo: int,
+    hi: int,
+) -> SeatEvidence {
+    let inside = [ExprId { index: i } for i in 0..cx.store.expr_count() if seat_span_holds(cx, ExprId { index: i }, lo, hi)]
+    let assigned = [t! for st in cx.store.stmt_ids() for t in [cx.store.assign_target(st)] if t != null && seat_span_holds(cx, t!, lo, hi)]
+    if assigned.any((t) -> rooted_in(cx, t, name)) { return seat_written_here() }
+    let each = [writes_seat(engine, cx, file, e, name) for e in inside]
+    SeatEvidence { direct: each.any(it.direct), handed: flatten([e.handed for e in each]) }
+}
+
+/// Whether the node `e` starts between `lo` and `hi`.
+fn seat_span_holds(cx: Copies, e: ExprId, lo: int, hi: int) -> bool {
+    let span? = cx.store.expr_span(e) else { return false }
+    span.lo >= lo && span.lo < hi
+}
+
+/// Whether the place `e` is rooted in the name `name`.
+fn rooted_in(cx: Copies, e: ExprId, name: string) -> bool {
+    let root? = cx.store.place_root(e) else { return false }
+    cx.store.ident_name(root) == name
+}
+
+/// What the call at `e` does with places rooted in `name`: a write, or a hand-off to a declared fn's
+/// `mut` seat.
+fn writes_seat(engine: QueryEngine, cx: Copies, file: SourceFileAddress, e: ExprId, name: string) -> SeatEvidence {
+    let mp? = cx.store.method_parts(e) else {
+        let call? = cx.store.call_parts(e) else { return applied_with_seat(cx, e, name) }
+        return called_with_seat(engine, cx, file, call.callee, call.args, name)
+    }
+    let ty? = (cx.type_at)(mp.subject.index) else {
+        return SeatEvidence {
+            direct: rooted_in(cx, mp.subject, name) || hands_seat(cx, [], mp.args, name),
+            handed: [],
+        }
+    }
+    let receiver = rooted_in(cx, mp.subject, name) &&
+        receiver_may_be_written(engine, ty, mp.name, file.package_name)
+    SeatEvidence {
+        direct: receiver || hands_seat(cx, (cx.method_marks)(ty, mp.name), mp.args, name),
+        handed: [],
+    }
+}
+
+/// What the call through a fn value at `e` does with places rooted in `name`: one handed to a seat
+/// the value's type marks `mut`, or to a value whose type isn't read, a write; any other node
+/// nothing.
+fn applied_with_seat(cx: Copies, e: ExprId, name: string) -> SeatEvidence {
+    let applied? = cx.store.applied_parts(e) else { return seat_untouched() }
+    let marks = [s.mutable for s in (cx.type_at)(applied.subject.index)?.seats ?? []]
+    SeatEvidence { direct: hands_seat(cx, marks, applied.args, name), handed: [] }
+}
+
+/// What the call of `callee` with `args` does with places rooted in `name`: each handed to a `mut`
+/// seat of the declared fn it names, a hand-off; handed to a fn whose seats aren't read, a write.
+fn called_with_seat(
+    engine: QueryEngine,
+    cx: Copies,
+    file: SourceFileAddress,
+    callee: string,
+    args: List<ExprId>,
+    name: string,
+) -> SeatEvidence {
+    let at = [j for j, a in args if rooted_in(cx, cx.store.unnamed(a), name)]
+    if at.is_empty() { return seat_untouched() }
+    let d? = resolved(engine, file, Space.Value, callee).named() else { return seat_written_here() }
+    let marks? = written_seats(engine, d) else { return seat_written_here() }
+    if at.any(it >= marks.length) { return seat_written_here() }
+    SeatEvidence {
+        direct: false,
+        handed: [SeatOf { file: d.file, item: d.item, fn_name: d.name, at: j } for j in at if marks[j]],
+    }
+}
+
+/// Whether an argument among `args` rooted in `name` lands in a seat `marks` says is `mut`, or past
+/// the seats `marks` reads.
+fn hands_seat(cx: Copies, marks: List<bool>, args: List<ExprId>, name: string) -> bool {
+    [j for j, a in args if rooted_in(cx, cx.store.unnamed(a), name)]
+        .any(it >= marks.length || marks[it])
+}
+
+/// Whether a call of `name` on a value of `ty` from `package` writes its receiver, or can't be read
+/// to say: a verb the language owns by its receiver seat, a declared type's method by its body.
+fn receiver_may_be_written(engine: QueryEngine, ty: SignedType, name: string, package: string) -> bool {
+    let d? = declared_at(ty) else {
+        let verb? = method_type(engine, ty, name, package) else { return true }
+        let receiver? = verb.seats.first() else { return true }
+        return receiver.mutable
+    }
+    match receiver_use(engine, d.file, d.name, name, package) {
+        .Read -> false,
+        .Written or .Unproved(_) -> true,
+    }
+}
+
+/// a `mut` seat the fn never writes through
+export law seat_never_written {
+    kind: "type.seat_unused"
+    reads: seats_unwritten
+    voice: seat_words
+    warns: true
+    witness: "fn f(mut xs: List<int>) -> int { xs.length }\n"
+}
+
+fn seat_words(a: List<string>) -> Voice { unwritten_seat_said(a[0], a[1]) }
+
+collect listed_seat_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unwritten-seat law is read through, for a process to hand its engine.
+export fn seat_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_seat_facts) }

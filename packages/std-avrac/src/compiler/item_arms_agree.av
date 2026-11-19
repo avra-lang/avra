@@ -1,0 +1,239 @@
+//! WHERE A `match`'S ARMS MEET AT NO TYPE: an arm answering what the others' answer can't join,
+//! judged as the old path's arms law judges them — against the seat where one plants its want on
+//! the arms, else against the first arm joined with each arm in turn, as the body's typing refused
+//! it; one a `void` fn, method or static ends on against the seat, read off the item's typed
+//! nodes. A build that let them through would join values of two types, or a value with nothing.
+use core.{ExprId, OwnType, SignedType, Span, StmtId, flatten, owned_type}
+use compiler.laws.{Found, FoundFix, law}
+use diagnostics.{Voice}
+use features.{
+    Conversion,
+    arms_disagreement,
+    interpolation,
+    presence_asserted,
+    this_is,
+    value_wanted,
+    wrapped,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.source_facts.{source_text}
+
+/// What a `match`'s arms are judged against: its first arm's answer, or the seat's.
+type ArmsAnchor = { name: string, want: SignedType }
+
+/// Every arm of a `match` in the written item `at` of `file` that its anchor can't join: each the
+/// body's typing refused as an arm, and each of a `match` a `void` fn ends on.
+fn arms_disagreeing(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if !item_held(engine, file, at) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    let void_tails = [b! for s in item.stmts for b in void_fn_bodies(engine, file, item, s) if b != null]
+        .concat(void_method_bodies(engine, file, at, item))
+    let text = item_under(engine, file, at).text
+    flatten([arm_refused(r, text) for r in refused_in(engine, file, at)])
+        .concat(
+            flatten(
+                [void_disagreeing(t, void_tails, text) for t in item_typed_nodes(engine, file, at, item)],
+            ),
+        )
+}
+
+/// The arm the body's typing refused as `r`, against the anchor it names; none for any other refusal.
+fn arm_refused(r: RefusedSeat, text: string) -> List<Found> {
+    match r.seat {
+        .Arm(seated) -> [
+            said_apart(
+                span_of(r.at),
+                r.found,
+                if seated { SEAT } else { FIRST_ARM },
+                r.want,
+                conversion_spelled(r.found, r.want, text_at(r.at, text)),
+            ),
+        ],
+        rest -> [],
+    }
+}
+
+const SEAT: string = "the seat"
+
+const FIRST_ARM: string = "the first arm"
+
+/// The text standing at `at`; absent where the file doesn't hold it.
+fn text_at(at: FindingAt?, text: string) -> string? {
+    let held? = at else { return null }
+    if held.hi > text.length { null } else { text.substring(held.lo, held.hi) }
+}
+
+/// The conversion the old path offers of a value spelled `found`, written `shown`, into a seat
+/// spelled `want`: the value as a list's one element, or a scalar interpolated into text.
+fn conversion_spelled(found: string, want: string, shown: string?) -> Conversion? {
+    let s? = shown else { return null }
+    if want == "List<${found}>" { return wrapped(s) }
+    if want == "string" && ["int", "float", "bool"].contains(found) { interpolation(s) } else { null }
+}
+
+/// The one conversion a seat's value of type `found`, written `shown`, offers into a seat spelled
+/// `want`: the arms' own, or a nullable handed to the seat that wants what it carries, asserted
+/// present.
+fn seat_conversion(found: string, want: string, shown: string?) -> Conversion? {
+    let s? = shown else { return null }
+    let arms = conversion_spelled(found, want, s)
+    if arms != null || found != "${want}?" { return arms }
+    presence_asserted(s, if postfix_written(s) { s } else { "(${s})" })
+}
+
+/// Whether `s` reads as one operand a postfix binds to: a name, a path of names, or a call.
+fn postfix_written(s: string) -> bool {
+    !s.contains(" ") && !s.starts_with("(") && !s.contains("?") && !s.contains("!")
+}
+
+/// The body of the fn `s` declares where it answers `void`; none for any other statement.
+fn void_fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, s: StmtId) -> List<
+    ExprId?,
+> {
+    let parts? = item.store.fn_parts(s) else { return [] }
+    let sig? = fn_signature(engine, file, parts.name) else { return [] }
+    if sig.answer.spelled() == "void" { [parts.body] } else { [] }
+}
+
+/// The bodies of the methods and statics each impl the written item `at` of `file` writes answers
+/// `void` from.
+fn void_method_bodies(engine: QueryEngine, file: SourceFileAddress, at: int, item: ReadItem) -> List<
+    ExprId,
+> {
+    [p!.body for a in impls_at(engine, file, at) for s in impl_fns(item, a) for p in [item.store.fn_parts(s)] if p != null && answers_void(method_signature(engine, a, p!.name))]
+}
+
+/// Whether `sig` answers `void`; absent, it answers nothing known.
+fn answers_void(sig: FnSignature?) -> bool {
+    let known? = sig else { return false }
+    known.answer.spelled() == "void"
+}
+
+/// Every disagreeing arm of each `match` a `void` fn's body, among `void_tails`, ends on, among the
+/// nodes `t` reads.
+fn void_disagreeing(t: TypedNodes, void_tails: List<ExprId>, text: string) -> List<Found> {
+    let tails = [x! for b in void_tails for x in [t.store.tail_of(b)] if x != null && x!.index >= t.lo && x!.index < t.hi]
+    flatten([arms_against(t, m, void_seat(), text) for m in tails])
+}
+
+/// The seat a `void` fn's tail is judged against: `void`.
+fn void_seat() -> ArmsAnchor { ArmsAnchor { name: "the seat", want: owned_type("void") } }
+
+/// The type each arm of the `match` `m` answers, absent where typing doesn't know it whole or the
+/// arm leaves; none where `m` is no `match`.
+fn arm_types(t: TypedNodes, m: ExprId) -> List<SignedType?> {
+    [settled_arm((t.type_at)(a.value.index)) for a in t.store.match_arms(m) ?? []]
+}
+
+/// An arm's type as the law reads it: absent where it leaves or isn't known whole.
+fn settled_arm(ty: SignedType?) -> SignedType? {
+    let known? = ty else { return null }
+    if known.bottom() ||
+        known.dynamic ||
+        known.generic() ||
+        known.inferred() ||
+        known.head is .Unnamed { null } else { known }
+}
+
+/// The first arm whose type is known, joined with each arm in turn that joins it, as the anchor its
+/// fellows are judged against.
+fn first_arm(types: List<SignedType?>) -> ArmsAnchor? {
+    let known = [ty! for ty in types if ty != null]
+    let first? = known.first() else { return null }
+    mut want = first
+    // LICENSED loops.push_loop: the want is the fold of the arms' joins, each read against the last
+    for ty in known.drop(1) {
+        let both = want.joined_with(ty)
+        if both != null { want = both! }
+    }
+    ArmsAnchor { name: "the first arm", want: want }
+}
+
+/// Whether `ty` answers nothing.
+fn voided(ty: SignedType) -> bool { ty.spelled() == "void" }
+
+/// Every arm of the `match` `m` that its anchor — `seat`, or else its first arm joined with the rest —
+/// can't join.
+fn arms_against(t: TypedNodes, m: ExprId, seat: ArmsAnchor?, text: string) -> List<Found> {
+    let arms = t.store.match_arms(m) ?? []
+    let types = arm_types(t, m)
+    let anchor? = seat ?? first_arm(types) else { return [] }
+    if !(anchor.want.head is .Owned) || anchor.want.nullable() { return [] }
+    [disagreeing(t, arms[j].value, ty!, anchor, text) for j, ty in types if ty != null && disagrees(ty!, anchor.want)]
+}
+
+/// The arm `v` of type `ty` refused against `anchor`, offering the conversion the old path offers
+/// where there is one, over the arm's written text.
+fn disagreeing(t: TypedNodes, v: ExprId, ty: SignedType, anchor: ArmsAnchor, text: string) -> Found {
+    said_apart(
+        arm_span(t, v),
+        ty.spelled(),
+        anchor.name,
+        anchor.want.spelled(),
+        conversion_of(ty, anchor.want, written(t, v, text)),
+    )
+}
+
+/// An arm spelled `found`, standing at `span`, refused against the anchor `name` wanting `want`,
+/// offering `c` where there is one.
+fn said_apart(span: Span?, found: string, name: string, want: string, c: Conversion?) -> Found {
+    let args = [found, name, want]
+    let offered? = c else { return Found { at: span, args: args.concat([""]) } }
+    Found {
+        at: span,
+        args: args.concat([offered.help]),
+        fixes: [
+            FoundFix {
+                description: offered.how,
+                at: span,
+                replacement: offered.text,
+                sure: offered.confidence is .High,
+            },
+        ],
+    }
+}
+
+/// The text the arm `v` is written as; absent where a template wrote it.
+fn written(t: TypedNodes, v: ExprId, text: string) -> string? {
+    if t.store.foreign_of(v) != null { return null }
+    let span? = t.store.expr_span(v) else { return null }
+    if span.hi > text.length { null } else { text.substring(span.lo, span.hi) }
+}
+
+/// The conversion the old path offers of a `ty` written `shown` into a seat wanting `want`: the arm
+/// as a list's one element, or a scalar interpolated into text; absent for none, or where the arm's
+/// text isn't the file's own.
+fn conversion_of(ty: SignedType, want: SignedType, shown: string?) -> Conversion? {
+    let s? = shown else { return null }
+    let element = want.listed()
+    if element != null && element!.joined_with(ty) != null { return wrapped(s) }
+    if want.owns(OwnType.Str) && scalar(ty) { interpolation(s) } else { null }
+}
+
+/// Whether `ty` is a number or a truth, which interpolation writes as text.
+fn scalar(ty: SignedType) -> bool { ty.owns(OwnType.Int) || ty.owns(OwnType.Float) || ty.owns(OwnType.Bool) }
+
+/// Whether an arm of type `ty` meets the want at no type: the language's own, not absence, and no join
+/// between them.
+fn disagrees(ty: SignedType, want: SignedType) -> bool { ty.head is .Owned && !ty.absence() && want.joined_with(ty) == null }
+
+/// Where an arm's refusal points: its value.
+fn arm_span(t: TypedNodes, v: ExprId) -> Span? { t.store.expr_span(v) }
+
+/// a `match`'s arms meet at one type
+export law match_arms_agree {
+    kind: "type.match"
+    reads: arms_disagreeing
+    voice: disagreeing_words
+    witness: "enum H {\n    A\n    B\n}\n\nfn note(n: int) { }\n\nfn f(h: H) -> int {\n    match h {\n        .A -> note(1),\n        rest -> {}\n    }\n    2\n}\n\nf(H.A)\n"
+}
+
+fn disagreeing_words(a: List<string>) -> Voice {
+    Voice {
+        message: arms_disagreement("a `match`'s arms", a[0], a[1], a[2]),
+        label: this_is(a[0]),
+        help: if a[3].is_empty() { value_wanted(a[2]) } else { a[3] },
+    }
+}

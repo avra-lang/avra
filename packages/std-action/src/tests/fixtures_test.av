@@ -1,0 +1,43 @@
+// THE FIXTURES THE SUITES SHARE: a request builder over the real
+// framer, and a form of fields from a flat list. Annotated actions live
+// in the suite that uses them — a generated declaration is visible to
+// its own file only.
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.body.{Body, whole}
+
+/// A map from a flat `[name, value, name, value…]` list.
+fn sent(xs: List<string>) -> Map<string, string> {
+    mut m: Map<string, string> = {}
+    for i in 0..xs.length / 2 { m.set(xs[i * 2], xs[i * 2 + 1]) }
+    m
+}
+
+/// A POST as the server holds one: framed from its octets, the body
+/// beside the head.
+fn posted(target: string, content_type: string?, body: Bytes) -> Request<Unrouted>? {
+    let raw = "POST ${target} HTTP/1.1\r\nHost: h\r\n${type_line(content_type)}\r\n".bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: whole(body), peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+fn type_line(content_type: string?) -> string {
+    let kind? = content_type else { return "" }
+    "Content-Type: ${kind}\r\n"
+}
+
+/// A form POST of this body to an action.
+fn form_post(name: string, body: string) -> Request<Unrouted>? {
+    posted("/actions/${name}", "application/x-www-form-urlencoded", body.bytes())
+}
+
+/// A GET of one target.
+fn asked_get(target: string) -> Request<Unrouted>? {
+    let raw = "GET ${target} HTTP/1.1\r\nHost: h\r\n\r\n".bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}

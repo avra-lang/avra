@@ -1,0 +1,27 @@
+// proves: a pipe stage binds the pronoun as a method call does —
+// `users |> keep(it.age >= 18) |> names(it.name)` reads as the method
+// chain would; a stage inside a method's argument takes its own `it`
+// while the piped value reads the method's; a plain call inside a
+// stage's argument leaves `it` to the stage and a method call there
+// takes its own; a named argument and an applied value ride it too.
+type User = { name: string, age: int }
+fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }
+fn each2(xs: List<List<int>>, f: fn(List<int>) -> int) -> List<int> { [f(x) for x in xs] }
+fn has(xs: List<int>, f: fn(int) -> bool) -> bool { xs.any(f) }
+fn keep<T>(xs: List<T>, f: fn(T) -> bool) -> List<T> { xs.filter(f) }
+fn names<T>(xs: List<T>, f: fn(T) -> string) -> List<string> { xs.map(f) }
+fn joined(xs: List<string>) -> string { xs.join(",") }
+fn add(a: int, b: int) -> int { a + b }
+let users = [
+    User { name: "ann", age: 30 },
+    User { name: "bo", age: 12 },
+    User { name: "cy", age: 18 },
+]
+let chain = users |> keep(it.age >= 18) |> names(it.name) |> joined
+let rows = [[1, 5], [2], [7, 8]]
+let nested = [rows.map(it |> has(it > 4)).length, rows.filter(it |> has(it > 4)).length].sum()
+let inner = ([1, 2] |> each(add(it, 10)))[1]
+let nearer = (rows |> each2(it.filter(it > 1).length)).sum()
+let named = ([1, 2] |> each(f: it * 3))[1]
+let applied = ([1, 2] |> (each)(it + 5))[0]
+"${chain} ${nested} ${inner} ${nearer} ${named} ${applied}"

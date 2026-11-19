@@ -1,0 +1,89 @@
+//! The durable declaration: a queue that says `durable:` stands on the
+//! store home of the program's database.
+//!
+//!     queue<Email> emails {
+//!         name: "emails"
+//!         durable: stored<Email>()
+//!         dedupe: mins(1440)
+//!     }
+//!
+//! The database is the context `db`. It has no default, so a program
+//! that reaches a durable queue on a path that never set it does not
+//! build. The home is opened at the queue's first use, where the
+//! context stands. A worker run `in_tx` over it hands each handler the
+//! context set to that same connection, so a handler that writes
+//! through `ctx.db` writes inside the transaction its ack ends.
+use @std.queue.{Delivery, Durable, HomeError, Key, Lasting, Settles, Terms, Transaction}
+use @std.sqlite.{Db}
+use @std.time.{Duration, Time, ms, now}
+use @std.relation.{Storable}
+use queue_store.{Store, Sync, Wire, store_home_with, wire}
+use waiting.{listening}
+
+/// The database every durable queue of the program stands on.
+export ctx db: Db
+
+/// A queue's `durable:` for a coded item: the store home of `ctx.db`,
+/// its items crossing by their own codec.
+export fn stored<T: Storable>(
+    sync: Sync = Sync.every_send,
+    poll: Duration = ms(250),
+    clock: fn() -> Time = now,
+) -> Durable<T> {
+    stored_with(wire<T>(), sync, poll, clock)
+}
+
+/// A queue's `durable:`: the store home of `ctx.db`, its items crossing
+/// by `wire`, its commits pressed as `sync` asks. `poll` is the longest
+/// a waiting worker goes without asking the rows again, and `clock` the
+/// instant leases and backoffs are measured against.
+export fn stored_with<T>(
+    wire: Wire<T>,
+    sync: Sync = Sync.every_send,
+    poll: Duration = ms(250),
+    clock: fn() -> Time = now,
+) -> Durable<T> {
+    Durable {
+        open: (name: string, terms: Terms, dedupe: Duration) -> opened(
+            name,
+            terms,
+            dedupe,
+            wire,
+            sync,
+            poll,
+            clock,
+        ),
+    }
+}
+
+/// The queue `name` of `ctx.db`, opened under `terms`.
+fn opened<T>(
+    name: string,
+    terms: Terms,
+    dedupe: Duration,
+    wire: Wire<T>,
+    sync: Sync,
+    poll: Duration,
+    clock: fn() -> Time,
+) -> Result<Lasting<T>, HomeError> {
+    let store = store_home_with<T>(ctx.db, name, terms, wire, sync)? with { dedupe: dedupe, clock: clock }
+    let heard = listening(store, poll)
+    Lasting {
+        home: heard.home() with { settles: Settles {
+            run: (d: Delivery<T>, work: fn(Delivery<T>) -> bool) -> settled_on(store, d, work),
+        } },
+        send_as: (item: T, k: Key, id: string) -> heard.send_as(item, k, id),
+        delay_as: (item: T, k: Key, id: string, after: Duration) -> heard.send_as_after(item, k, id, after),
+        joins: (tx: dyn Transaction) -> heard.joins(tx),
+    }
+}
+
+/// `store`'s settle with `ctx.db` set to its connection, so a handler
+/// that reads the context writes inside the transaction it stands in.
+fn settled_on<T>(store: Store<T>, d: Delivery<T>, work: fn(Delivery<T>) -> bool) -> Result<
+    bool,
+    HomeError,
+> {
+    ctx db = store.db
+    store.settled_in(d, work)
+}

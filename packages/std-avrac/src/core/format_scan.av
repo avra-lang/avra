@@ -1,0 +1,190 @@
+//! A FORMAT PATTERN'S SCAN: one anchored left-to-right pass over the subject's octets — the head a
+//! prefix, the last piece a suffix, and each piece between them found at its first place at or past
+//! the cursor, or its last where its hole is greedy. Nothing goes back, so the scan is linear in the
+//! subject, and a greedy hole may fail where its lazy twin would take: the place it took can leave a
+//! later piece unfound. Each step runs only where every step before it held, which keeps a cursor
+//! past the end from the search, whose start must stand inside. Each hole's span lands in cells the
+//! steps write; a value is cut from them only where an arm binds it. A hole that reads as an `int`
+//! reads its span once every span is found, still inside the verdict: a span that spells no `int`
+//! fails the scan, as a missing piece does, and the `int` lands in the hole's own cell.
+
+/// A format's scan over a subject: whether it took it, the octets it read, the cells holding each
+/// hole's span, its start then its end, in hole order, and a cell per hole for the `int` a hole that
+/// reads as one read.
+export type FormatScan = { ok: Reg, octets: Reg, spans: List<Reg>, reads: List<Reg> }
+
+impl Lowering {
+    /// The scan of `v`, octets where `bytes` and text otherwise, by the format whose head is `head`
+    /// and whose holes, each with the piece after it, are `parts`.
+    mut fn format_scanned(v: Reg, bytes: bool, head: string, parts: List<FormatPart>) -> FormatScan {
+        let octets = if bytes { v } else { self.call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_bytes_of_str")!, [v]) }
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_bytes_len")!, [octets])
+        let spans = flatten(
+            [[
+                self.seeded_cell(Layout.Word, self.const_int(0)),
+                self.seeded_cell(Layout.Word, self.const_int(0)),
+            ] for _p in parts],
+        )
+        let last? = parts.last() else {
+            return FormatScan {
+                ok: self.format_whole(octets, len, head),
+                octets: octets,
+                spans: [],
+                reads: [],
+            }
+        }
+        let stop = self
+            .seeded_cell(
+                Layout.Word,
+                self.bin(Layout.Word, BinOp.Sub, len, self.const_int(octet_count(last.piece))),
+            )
+        let cur = self.seeded_cell(Layout.Word, self.const_int(octet_count(head)))
+        let s = FormatScan {
+            ok: self.format_anchored(octets, len, head, last.piece),
+            octets: octets,
+            spans: spans,
+            reads: [self.seeded_cell(Layout.Word, self.const_int(0)) for _p in parts],
+        }
+        self.format_read(v, bytes, self.format_spanned(s, parts, cur, stop, 0), parts, 0)
+    }
+
+    /// What each hole that binds holds once the scan `s` of `v` took it, in hole order: its span cut,
+    /// as octets where `bytes` and as text otherwise.
+    mut fn format_cut(v: Reg, bytes: bool, s: FormatScan, parts: List<FormatPart>) -> List<Reg> {
+        [if reads_int(p.hole) { self.loaded(Layout.Word, s.reads[k]) } else { self.span_cut(v, bytes, s, k) } for k, p in parts if binds(p.hole)]
+    }
+
+    /// Hole `k`'s span of the scan `s` of `v`, cut: from the octets where `bytes`, else from the text
+    /// itself, whose byte places the octets share.
+    mut fn span_cut(v: Reg, bytes: bool, s: FormatScan, k: int) -> Reg {
+        let lo = self.loaded(Layout.Word, s.spans[2 * k])
+        let hi = self.loaded(Layout.Word, s.spans[2 * k + 1])
+        if bytes {
+            return self
+                .call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_bytes_slice")!, [s.octets, lo, hi])
+        }
+        self.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_str_substring")!, [v, lo, hi])
+    }
+
+    /// Each hole from `k` on that reads as an `int` read from its span, each only where the scan so
+    /// far took the subject.
+    mut fn format_read(v: Reg, bytes: bool, s: FormatScan, parts: List<FormatPart>, k: int) -> FormatScan {
+        if k == parts.length { return s }
+        if !reads_int(parts[k].hole) { return self.format_read(v, bytes, s, parts, k + 1) }
+        let ok = self
+            .region(s.ok, Layout.Truth) { cx -> cx.int_read(v, bytes, s, k) } else { cx -> cx.const_bool(false) }
+        self.format_read(v, bytes, s with { ok: ok }, parts, k + 1)
+    }
+
+    /// Whether hole `k`'s span spells an `int`, which lands in its cell: octets only where they are
+    /// text.
+    mut fn int_read(v: Reg, bytes: bool, s: FormatScan, k: int) -> Reg {
+        let span = self.span_cut(v, bytes, s, k)
+        if !bytes { return self.parsed_into(span, s.reads[k]) }
+        let text = owned_type("string") with { nulls: 1 }
+        let held = self.call_row(self.laid_out(text), rt_sig_of("avra_str_of_bytes")!, [span])
+        self
+            .region(self.present(held, text), Layout.Truth) { cx -> cx.parsed_into(cx.carried(held, text), s.reads[k]) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Whether `text` spells an `int`; where it does, the `int` lands in `cell`.
+    mut fn parsed_into(text: Reg, cell: Reg) -> Reg {
+        self
+            .region(self.call_row(Layout.Truth, rt_sig_of("avra_str_parses_int")!, [text]), Layout.Truth) { cx ->
+                cx.stored(cell, cx.call_row(Layout.Word, rt_sig_of("avra_str_parsed_int")!, [text]))
+                cx.const_bool(true)
+            } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Whether the octets are the head whole, a format of no holes: exactly as long, the same bytes.
+    mut fn format_whole(octets: Reg, len: Reg, head: string) -> Reg {
+        let need = self.const_int(octet_count(head))
+        self
+            .region(self.bin(Layout.Truth, BinOp.Eq, len, need), Layout.Truth) { cx -> cx.octets_are(octets, cx.const_int(0), need, head) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// THE TWO ANCHORS, before any cursor moves: the octets hold the head and the last piece without
+    /// them overlapping, the head is their prefix, and the last piece their suffix.
+    mut fn format_anchored(octets: Reg, len: Reg, head: string, last: string) -> Reg {
+        let need = self.const_int(octet_count(head) + octet_count(last))
+        let prefix = self
+            .region(self.bin(Layout.Truth, BinOp.Ge, len, need), Layout.Truth) { cx -> cx.octets_are(octets, cx.const_int(0), cx.const_int(octet_count(head)), head) } else { cx -> cx.const_bool(false) }
+        self
+            .region(prefix, Layout.Truth) { cx ->
+                let from = cx.bin(Layout.Word, BinOp.Sub, len, cx.const_int(octet_count(last)))
+                cx.octets_are(octets, from, len, last)
+            } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Hole `k` onward spanned, each only where the scan so far took the octets.
+    mut fn format_spanned(s: FormatScan, parts: List<FormatPart>, cur: Reg, stop: Reg, k: int) -> FormatScan {
+        if k == parts.length { return s }
+        let ok = self
+            .region(s.ok, Layout.Truth) { cx -> cx.hole_spanned(s, parts, k, cur, stop) } else { cx -> cx.const_bool(false) }
+        self.format_spanned(s with { ok: ok }, parts, cur, stop, k + 1)
+    }
+
+    /// Whether hole `k` finds its span: the last runs from the cursor to the suffix; any other ends
+    /// at the piece after it, taken at its first place at or past the cursor, or its last where the
+    /// hole is greedy, the cursor moved past it.
+    mut fn hole_spanned(s: FormatScan, parts: List<FormatPart>, k: int, cur: Reg, stop: Reg) -> Reg {
+        let from = self.loaded(Layout.Word, cur)
+        self.stored(s.spans[2 * k], from)
+        if k == parts.length - 1 {
+            let upto = self.loaded(Layout.Word, stop)
+            self.stored(s.spans[2 * k + 1], upto)
+            return self.bin(Layout.Truth, BinOp.Le, from, upto)
+        }
+        let piece = parts[k].piece
+        let needle = self.octets_of(piece)
+        let first = self.found_from(s.octets, needle, from)
+        let at = if parts[k].hole.greedy { self.found_last(s.octets, needle, first) } else { first }
+        self.stored(s.spans[2 * k + 1], at)
+        self.stored(cur, self.bin(Layout.Word, BinOp.Add, at, self.const_int(octet_count(piece))))
+        self.bin(Layout.Truth, BinOp.Ge, at, self.const_int(0))
+    }
+
+    /// The last place `needle` stands in `octets` from `first`, its first place there: each place
+    /// found kept and the search taken up one past it, until none is; -1 where `first` is.
+    mut fn found_last(octets: Reg, needle: Reg, first: Reg) -> Reg {
+        let probe = self.seeded_cell(Layout.Word, first)
+        let best = self.seeded_cell(Layout.Word, self.const_int(-1))
+        self.loop_start()
+        self
+            .loop_cond(self.bin(Layout.Truth, BinOp.Ge, self.loaded(Layout.Word, probe), self.const_int(0)))
+        let here = self.loaded(Layout.Word, probe)
+        self.stored(best, here)
+        self
+            .stored(
+                probe,
+                self
+                    .found_from(octets, needle, self.bin(Layout.Word, BinOp.Add, here, self.const_int(1))),
+            )
+        self.loop_end()
+        self.loaded(Layout.Word, best)
+    }
+
+    /// The first place `needle` stands in `octets` at or past `from`, -1 where it stands nowhere.
+    mut fn found_from(octets: Reg, needle: Reg, from: Reg) -> Reg { self.call_row(Layout.Word, rt_sig_of("avra_bytes_index_of")!, [octets, needle, from]) }
+
+    /// Whether the octets from `lo` up to `hi` are the text `piece`'s.
+    mut fn octets_are(octets: Reg, lo: Reg, hi: Reg, piece: string) -> Reg {
+        self
+            .call_row(Layout.Truth, rt_sig_of("avra_bytes_eq_at")!, [octets, lo, hi, self.octets_of(piece)])
+    }
+
+    /// The text `piece` as octets.
+    mut fn octets_of(piece: string) -> Reg {
+        self
+            .call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_bytes_of_str")!, [self.const_str(piece)])
+    }
+}
+
+/// How many octets the text `piece` is, which is what the scan counts.
+fn octet_count(piece: string) -> int { piece.bytes().length }
+
+/// Whether a hole reads its span as an `int`, its written type.
+export fn reads_int(h: Hole) -> bool { h.ty?.name == "int" }
+
+/// Whether a hole reads its span as a type the scan reads: text, written or not, or an `int`.
+export fn hole_read(h: Hole) -> bool { h.ty == null || h.ty?.name == "string" || reads_int(h) }

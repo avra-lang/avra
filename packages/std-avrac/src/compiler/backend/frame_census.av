@@ -1,0 +1,166 @@
+//! THE FRAME CENSUS: which boxes a body mints could live in its own frame — a census build's label,
+//! never a rule. A box is a candidate where a row mints it at a size known where it is made (a
+//! constant `avra_array_sized`), and it stays one while every use in the body is a count, a read, a
+//! write that fills it, or a hand-over to a seat that never keeps it. A store, an answer, a yield, a
+//! pack, a `once` keep, a consuming row or a kept seat takes it out. What remains is labelled by WHY
+//! it is eligible (a record, a list read in place, a list handed over), by the SOURCE of the
+//! hand-over's lent fact (a runtime row's `keeps` column, or a user fn whose seats no analysis proves
+//! lent yet), and by its size, with `single` where its one hand-over is all it is made for.
+use core.{Ins, Reg, Layout, RtSig}
+use features.{nothing}
+
+/// One candidate's uses so far.
+type FrameUse = { at: int, size: int, escaped: bool, row_handed: int, user_handed: int, reads: int }
+
+/// The census label each frame-eligible box minted in `ins` carries, by its register's index.
+export fn frame_tags(ins: List<Ins>, layouts: List<Layout>, rt: Map<string, RtSig>) -> Map<
+    string,
+    string,
+> {
+    mut consts: Map<string, int> = {}
+    mut uses: Map<string, FrameUse> = {}
+    mut root: Map<string, string> = {}
+    for i in ins {
+        match i {
+            .ConstInt(dst, v) -> consts.set("${dst.index}", v),
+            .CallRt(dst, callee, args) -> {
+                if callee == "avra_array_sized" && args.length == 1 {
+                    let n = consts.get("${args[0].index}")
+                    if n != null {
+                        let key = "${dst.index}"
+                        uses
+                            .set(
+                                key,
+                                FrameUse {
+                                    at: dst.index,
+                                    size: n!,
+                                    escaped: false,
+                                    row_handed: 0,
+                                    user_handed: 0,
+                                    reads: 0,
+                                },
+                            )
+                        root.set(key, key)
+                    }
+                } else {
+                    let row = rt.get(callee)
+                    if row != null && row!.aliases_arg0 && !args.is_empty() {
+                        let r = root.get("${args[0].index}")
+                        if r != null { root.set("${dst.index}", r!) }
+                    }
+                }
+            },
+            rest -> nothing(),
+        }
+    }
+    for i in ins {
+        match i {
+            .CallRt(dst, callee, args) -> {
+                if callee != "avra_array_sized" { row_used(uses, root, rt, callee, args) }
+            },
+            .CallRtVoid(callee, args) -> row_used(uses, root, rt, callee, args),
+            .Call(_, _, args) -> {
+                for a in args { handed_to_user(uses, root, a) }
+            },
+            .CallPtr(_, f, args) -> {
+                escaped_by(uses, root, f)
+                for a in args { handed_to_user(uses, root, a) }
+            },
+            .Store(_, src) -> escaped_by(uses, root, src),
+            .Pack(_, elems) -> {
+                for e in elems { escaped_by(uses, root, e) }
+            },
+            .RetVal(r) -> escaped_by(uses, root, r),
+            .FnExit(gives) or .ArmEnd(gives) or .RegionEnd(_, gives) -> escaped_by(uses, root, gives),
+            .OnceCommit(_, value) -> escaped_by(uses, root, value),
+            .ScopeExit(gives) -> {
+                if gives != null { escaped_by(uses, root, gives!) }
+            },
+            rest -> nothing(),
+        }
+    }
+    mut tags: Map<string, string> = {}
+    for key in uses.keys() {
+        let u = uses.get(key)!
+        if u.escaped { continue }
+        let record = layouts[u.at].spelled() == "box record"
+        let why = when {
+            record -> "record"
+            u.row_handed + u.user_handed > 0 -> "handed"
+            _ -> "read"
+        }
+        let source = if u.user_handed > 0 { "user" } else { "row" }
+        let single = u.row_handed + u.user_handed == 1 && u.reads == 0 && u.size <= 4
+        tags
+            .set(
+                key,
+                "frame:${why}:${source}:${size_word(u.size)}${if single { ":single" } else { "" }}",
+            )
+    }
+    tags
+}
+
+/// The uses a row call makes: a kept seat or a consuming row takes the box out; a seat the row
+/// writes fills it; any other seat reads it, in place where the row is a read, else handed over.
+fn row_used(
+    mut uses: Map<string, FrameUse>,
+    root: Map<string, string>,
+    rt: Map<string, RtSig>,
+    callee: string,
+    args: List<Reg>,
+) {
+    let row = rt.get(callee)
+    for j, a in args {
+        let key? = root.get("${a.index}") else { continue }
+        let u? = uses.get(key) else { continue }
+        let sig? = row else {
+            uses.set(key, u with { escaped: true })
+            continue
+        }
+        let kept = j < sig.keeps.length && sig.keeps[j]
+        let written = j < sig.writes.length && sig.writes[j]
+        if kept || callee.ends_with("_reusing") || callee.ends_with("_moved") {
+            uses.set(key, u with { escaped: true })
+        } else if written {
+            continue
+        } else if reads_in_place(callee) {
+            uses.set(key, u with { reads: u.reads + 1 })
+        } else {
+            uses.set(key, u with { row_handed: u.row_handed + 1 })
+        }
+    }
+}
+
+/// A box handed to a user fn's seat, which no analysis proves lent yet.
+fn handed_to_user(mut uses: Map<string, FrameUse>, root: Map<string, string>, a: Reg) {
+    let key? = root.get("${a.index}") else { return }
+    let u? = uses.get(key) else { return }
+    uses.set(key, u with { user_handed: u.user_handed + 1 })
+}
+
+/// A box taken out of the frame by this use.
+fn escaped_by(mut uses: Map<string, FrameUse>, root: Map<string, string>, a: Reg) {
+    let key? = root.get("${a.index}") else { return }
+    let u? = uses.get(key) else { return }
+    uses.set(key, u with { escaped: true })
+}
+
+/// Whether a row reads the box in place: an element, a slot, a length, a presence or a tag.
+fn reads_in_place(callee: string) -> bool {
+    callee.starts_with("avra_array_get") ||
+        callee.starts_with("avra_slot_get") ||
+        callee == "avra_array_len" ||
+        callee == "avra_slot_present" ||
+        callee == "avra_array_last_present" ||
+        callee.starts_with("avra_enum_")
+}
+
+/// A size as the label buckets it.
+fn size_word(n: int) -> string {
+    when {
+        n <= 4 -> "n${n}"
+        n <= 8 -> "n5-8"
+        _ -> "n9+"
+    }
+}
+

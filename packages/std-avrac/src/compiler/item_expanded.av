@@ -1,0 +1,86 @@
+//! A FILE AS COMPILED — `avra expand`'s answer (P7): each item as it was written, in the order
+//! written; under each statement, what each component instance in it became and what each sugar in
+//! it means; and after each item, every declaration a generator made over it, under a line saying
+//! which annotation asked, on what, and the template that wrote it.
+use core.{ExprId, StmtId, SyntaxArena, flatten, joined, new_node_store, template_file}
+use compiler.format.{render_expression, render_statement}
+use diagnostics.{new_source_file}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.source_facts.{PlacedTape, source_text}
+use @std.program.syntax_tape.{SyntaxTape}
+
+/// The file as compiled, its chunks a blank line apart.
+export fn file_expanded(engine: QueryEngine, file: SourceFileAddress) -> string {
+    let sites = generator_sites(engine, file)
+    joined(
+        flatten(
+            [written_chunks(engine, file, at)
+                .concat(flatten([made_chunks(engine, file, s) for s in sites if s.item == at])) for at in 0..item_count(engine, file)],
+        ),
+        "\n\n",
+    )
+}
+
+/// The written item `at` of `file`: each statement as canonical source, then what each instance in
+/// it became and what each sugar in it means.
+fn written_chunks(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<string> {
+    let item = read_item(engine, file, at)
+    flatten(
+        [[render_statement(item.store, s)]
+            .concat(
+                [n for e in item.store.instances_in(s) for n in [expansion_note(item.store, e)] if !n.is_empty()],
+            )
+            .concat(["// ${n}" for n in item.store.means_in(s)]) for s in item.stmts if !item.store.is_hoisted(s)],
+    )
+}
+
+/// What an instance became — its expansion as source, under the module its names resolve in. A
+/// comment, since those names are the provider's: a template may call what this file cannot name.
+fn expansion_note(store: SyntaxArena, e: ExprId) -> string {
+    let x? = store.expansion_of(e) else { return "" }
+    let word? = store.instance_word(e) else { return "" }
+    let from = origin_module(store.foreign_of(x)?.home() ?? "")
+    joined(
+        ["// `${word}`${if from.is_empty() { "" } else { " (from ${from})" }} expands to:"]
+            .concat(["//     ${l}" for l in render_expression(store, x).split("\n")]),
+        "\n",
+    )
+}
+
+/// The module an origin's home names: a file's, dotted from its package; a module's, itself.
+fn origin_module(home: string) -> string {
+    let file? = template_file(home) else { return home }
+    dotted_module(file)
+}
+
+/// What one site's generator made over its declaration: each made item as source, under the line
+/// that says where it came from.
+fn made_chunks(engine: QueryEngine, file: SourceFileAddress, site: GeneratorSite) -> List<string> {
+    [made_block(engine, file, site, g.tape) for g in site_generated(engine, file, site).items]
+}
+
+fn made_block(engine: QueryEngine, file: SourceFileAddress, site: GeneratorSite, tape: SyntaxTape) -> string {
+    let store = new_node_store(spelled_file(file))
+    let stmts = item_read_back(store, PlacedTape { start: 0, tape: tape })
+    let source = joined([render_statement(store, s) for s in stmts if !store.is_hoisted(s)], "\n\n")
+    let template = stmts.find_map((s) -> template_said(engine, store, s)) ?? ""
+    "// from @${asked_by(site)} on ${site.name}${template}\n${source}"
+}
+
+/// The annotation a site's generator answers to: `derive` for a trait's own, else the fn's name.
+fn asked_by(site: GeneratorSite) -> string {
+    match site.generator.kind { .Derive -> "derive", rest -> site.generator.name }
+}
+
+/// The template a made statement was copied from: its file as the program spells it, and its line
+/// there; absent for a statement no template wrote, or one whose file this program doesn't read.
+fn template_said(engine: QueryEngine, store: SyntaxArena, s: StmtId) -> string? {
+    let origin? = store.stmt_origins.at(s.index) else { return null }
+    if !origin.spanned_home { return null }
+    let home? = template_file(origin.path) else { return null }
+    let text? = source_text(engine, home) else { return null }
+    let lo? = store.stmt_span(s)?.lo else { return null }
+    if lo > text.length { return null }
+    " — template ${spelled_file(home)}:${new_source_file(spelled_file(home), text).linecol(lo).line}"
+}

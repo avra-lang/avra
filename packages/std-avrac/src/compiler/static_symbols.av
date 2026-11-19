@@ -1,0 +1,132 @@
+//! THE NAME A LITERAL HELD AS DATA IS LAID OUT UNDER: its file, then a site folded from its file's
+//! module and stem, its content with the type that decides its layout, and its turn among the
+//! literals its file writes alike, ordered by where they stand. A line added above moves nothing, and
+//! two literals written alike are told apart by their turn. A literal no source wrote is named by the
+//! unit that holds it, its content with its type, and its turn among that unit's literals alike.
+use core.{
+    ExprId,
+    SignedType,
+    SyntaxArena,
+    digest_of,
+    distinct_ints,
+    fp_list,
+    fp_str,
+    key_spelled,
+    mix_final,
+}
+use @std.path.{stem_of}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The name the literal `e` of type `ty`, standing in `store` in the unit `unit`, is laid out under,
+/// read from the item `frame` of `file`, whose places `store` counts from that item's start; a store
+/// read at its file's places names no item, and its literals are named as made.
+fn literal_symbol(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    unit: string,
+    e: ExprId,
+    ty: SignedType,
+    frame: int?,
+) -> string {
+    let sourced = if frame == null { null } else { sourced_symbol(engine, file, store, e, ty, frame!) }
+    sourced ?? made_symbol(file, store, unit, e, ty)
+}
+
+/// The name of a literal no source wrote, `e` standing in `store` in the unit `unit`.
+fn made_symbol(file: SourceFileAddress, store: SyntaxArena, unit: string, e: ExprId, ty: SignedType) -> string {
+    let print = store.expr_fingerprint(e)
+    let turn = [1 for x in store.exprs_by_kind(0, e.index, store.tag_expr(store.expr(e))) if store.expr_fingerprint(x) == print]
+        .length
+    site_symbol(file, "made", [unit, "${print}", ty.spelled(), "${turn}"])
+}
+
+/// The name a literal's site, said by `parts`, is laid out under in `file`: a digest of the parts
+/// whole, so two sites whose parts differ are two names.
+fn site_symbol(file: SourceFileAddress, kind: string, parts: List<string>) -> string {
+    "${spelled_file(file)}\$${kind}${digest_of(parts.join("\n")).substring(0, 16)}"
+}
+
+/// The name the literal `e` of type `ty` is laid out under where a source wrote it, `e` standing in
+/// `store`, read from the item `frame` of `file`; absent for one no source wrote. Its turn counts the
+/// literals of its print before it: in an earlier item, or earlier in its own.
+fn sourced_symbol(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    ty: SignedType,
+    frame: int,
+) -> string? {
+    let span? = store.expr_span(e) else { return null }
+    let sites = written_sites(engine, file, store.tag_expr(store.expr(e)))
+    let home? = sites
+        .find(it.item == frame && it.expr() == e && it.lo == span.lo && it.hi == span.hi) else { return null }
+    let turn = [1 for s in sites if s.print == home.print &&
+        (s.item < home.item || s.item == home.item && stands_before(s.lo, s.index < e.index, span.lo))]
+        .length
+    site_symbol(
+        file,
+        "lit",
+        [
+            module_spelled(file),
+            stem_of(file.path_in_package),
+            "${home.print}",
+            ty.spelled(),
+            "${turn}",
+        ],
+    )
+}
+
+/// The site the record literal `e`, standing in `store`, was written at in `file`: its file's module
+/// and stem, the shape its site folds, and its turn among the literals of that shape the file holds
+/// standing before it.
+fn literal_site(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    frame: int?,
+) -> int {
+    let print = store.site_fingerprint(e)
+    mix_final(
+        fp_list(
+            [
+                fp_str(module_spelled(file)),
+                fp_str(stem_of(file.path_in_package)),
+                print,
+                literal_turn(engine, file, store, e, print, frame),
+            ],
+        ),
+    )
+}
+
+/// How many places of `file` before the literal `e`, its site's shape `print`, hold a literal of that
+/// shape, each place counted from the file's start; none for a literal that stands nowhere. `store`
+/// counts its places from the start of the item `frame`, or from its file's where it names none.
+fn literal_turn(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    print: int,
+    frame: int?,
+) -> int {
+    let written? = store.expr_span(e) else { return 0 }
+    let at = in_file(engine, file, frame, written).lo
+    distinct_ints(
+        [placed for p in literal_prints(engine, file) if p.print == print for placed in [file_placed(engine, file, p.item, FindingAt { lo: p.lo, hi: p.lo }).lo] if placed < at],
+    )
+        .length
+}
+
+/// Whether `store`'s node `x` is one its own source wrote: it stands somewhere, and no template copied
+/// it from another file.
+export fn source_wrote(store: SyntaxArena, x: ExprId) -> bool { store.expr_span(x) != null && !store.spanned_elsewhere(x) }
+
+/// Whether a node at `lo` stands before one at `at`; `earlier` tells two at one place apart.
+fn stands_before(lo: int, earlier: bool, at: int) -> bool { lo < at || lo == at && earlier }
+
+/// A file's module as its package and directories spell it: `@std.text.sub`, `cli.commands`.
+export fn module_spelled(file: SourceFileAddress) -> string { [key_spelled(file.package_name)].concat(module_segments(file)).join(".") }

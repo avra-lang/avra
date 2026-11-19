@@ -1,0 +1,108 @@
+//! WHERE A TRAIT'S `derive` BREAKS ITS CONTRACT: a trait that declares `derive` declares it
+//! `static fn derive(t: Type) -> List<Directive>` (or `Declared`), and a `marks` beside it
+//! `static fn marks(t: Type) -> List<string>`, `Fn` or `Named` standing for `Type` — held where the
+//! trait is written, so its author hears it first. Read off the trait's written members and what
+//! their types name.
+use core.{Span, StmtId, TypeRef}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.impls.{derive_unshaped, marks_unshaped}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The member of a trait, by name, the written item `at` of `file` declares; absent where it holds
+/// no trait or the trait no member of that name.
+type Member = { at: Span?, statics: bool, params: List<TypeRef>, answer: TypeRef? }
+
+/// Each trait member of the written item `at` of `file` named `name`.
+fn members_named(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> List<
+    Member,
+> {
+    if !item_held(engine, file, at) { return [] }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return [] }
+    [Member {
+        at: item.store.stmt_span(m),
+        statics: item.store.is_static(m),
+        params: [t! for p in f!.params for t in [p.ty] if t != null],
+        answer: f!.ret,
+    } for s in item.stmts for t in [item.store.trait_parts(s)] if t != null for m in t!.fns for f in [item.store.fn_parts(m)] if f != null && f!.name == name]
+}
+
+/// Whether `t`, read from `file`, names the `@std/meta` type `name`, under whatever name it's
+/// imported as.
+fn names_meta(engine: QueryEngine, file: SourceFileAddress, t: TypeRef?, name: string) -> bool {
+    let written? = t else { return false }
+    let d? = resolved(engine, file, Space.Type, written.name).named() else { return false }
+    d.name == name && d.file.package_name == META
+}
+
+/// Whether the member takes one declaration, statically.
+fn takes_one_declaration(engine: QueryEngine, file: SourceFileAddress, m: Member) -> bool {
+    m.statics &&
+        m.params.length == 1 &&
+        ["Type", "Fn", "Named"].any(names_meta(engine, file, m.params[0], it))
+}
+
+/// Whether a `derive` answers the declarations it makes: `List<Directive>` or `Declared`.
+fn answers_declarations(engine: QueryEngine, file: SourceFileAddress, answer: TypeRef?) -> bool {
+    let a? = answer else { return false }
+    if names_meta(engine, file, a, "Declared") { return true }
+    a.name == "List" && a.applied.length == 1 && names_meta(engine, file, a.applied[0], "Directive")
+}
+
+/// Whether a `marks` answers `List<string>`.
+fn answers_names(answer: TypeRef?) -> bool {
+    let a? = answer else { return false }
+    a.name == "List" && a.applied.length == 1 && a.applied[0].name == "string"
+}
+
+/// Every trait member `name` the written item `at` of `file` declares that takes no one declaration
+/// statically or whose answer `answers` doesn't take.
+fn members_off(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    name: string,
+    answers: fn(Member) -> bool,
+) -> List<Found> {
+    [Found { at: m.at, args: [] } for m in members_named(engine, file, at, name) if !(takes_one_declaration(engine, file, m) && answers(m))]
+}
+
+/// Every trait `derive` the written item `at` of `file` declares out of its contract.
+fn derives_unshaped(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    members_off(
+        engine,
+        file,
+        at,
+        "derive",
+        (m: Member) -> answers_declarations(engine, file, m.answer),
+    )
+}
+
+/// Every trait `marks` beside a `derive` the written item `at` of `file` declares out of its
+/// contract.
+fn marks_off_contract(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    if members_named(engine, file, at, "derive").is_empty() { return [] }
+    members_off(engine, file, at, "marks", (m: Member) -> answers_names(m.answer))
+}
+
+/// a trait's `derive` takes one declaration and answers the declarations it makes
+export law derive_contract {
+    kind: "type.derive_contract"
+    reads: derives_unshaped
+    voice: derive_words
+    witness: "trait T {\n    static fn derive(n: int) -> int { n }\n}\n"
+}
+
+/// a trait's `marks` takes the declaration and answers the mark names
+export law marks_contract {
+    kind: "type.derive_contract"
+    reads: marks_off_contract
+    voice: marks_words
+    witness: "use @std.meta.{Type, Directive}\n\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(n: int) -> int { n }\n}\n"
+}
+
+fn derive_words(_a: List<string>) -> Voice { derive_unshaped() }
+
+fn marks_words(_a: List<string>) -> Voice { marks_unshaped() }

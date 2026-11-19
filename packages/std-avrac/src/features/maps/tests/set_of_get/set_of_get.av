@@ -1,0 +1,30 @@
+// proves: `m.set(k, f(m.get(k)))` — the read and the write of one
+// key — answers what two probes would: a counter, a literal key, a fn
+// over the read, a managed value, a nullable one, a field of `self`,
+// and a snapshot the write leaves alone.
+type Tally = { counts: Map<string, int>, seen: int }
+impl Tally {
+    mut fn note(w: string) {
+        self.counts.set(w, (self.counts.get(w) ?? 0) + 1)
+        self.seen = self.seen + 1
+    }
+}
+fn twice(n: int?) -> int { (n ?? 0) * 2 + 1 }
+mut m: Map<string, int> = {}
+for w in ["a", "b", "a", "c", "a", "b"] { m.set(w, (m.get(w) ?? 0) + 1) }
+m.set("lit", (m.get("lit") ?? 40) + 2)
+m.set("a", twice(m.get("a")))
+mut groups: Map<string, List<int>> = {}
+for i in 0..6 {
+    let k = if i % 2 == 0 { "even" } else { "odd" }
+    groups.set(k, (groups.get(k) ?? []).concat([i]))
+}
+mut opt: Map<string, int?> = {}
+opt.set("x", null)
+opt.set("x", opt.get("x") ?? 5)
+opt.set("y", opt.get("y") ?? null)
+mut t = Tally { counts: {}, seen: 0 }
+for w in ["p", "q", "p"] { t.note(w) }
+let snap = m
+m.set("b", (m.get("b") ?? 0) + 10)
+"${m.keys().join("")} ${m.get("a") ?? 0} ${m.get("b") ?? 0} ${m.get("c") ?? 0} ${m.get("lit") ?? 0} ${groups.get("even")?.length ?? 0}${groups.get("odd")?.sum() ?? 0} ${opt.get("x") ?? null ?? -1} ${opt.has("y")} ${t.counts.get("p") ?? 0}${t.seen} ${snap.get("b") ?? 0}"

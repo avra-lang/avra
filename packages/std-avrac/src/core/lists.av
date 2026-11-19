@@ -1,0 +1,167 @@
+//! Shared list helpers — infrastructure only.
+
+/// Any number of lists, in order — the pipeline-merge shape.
+/// ACCUMULATES BY PUSH: a nested comprehension and a `concat` fold are
+/// linear too, and both cost more per element than the push.
+export fn flatten<T>(xs: List<List<T>>) -> List<T> {
+    mut out: List<T> = []
+    for x in xs {
+        // LICENSED loops.push_loop: the cheapest of the linear spellings, in a hot fold
+        for v in x { out.push(v) }
+    }
+    out
+}
+
+/// A list of `n` copies of `v` — the dense-table prefill.
+export fn filled<T>(n: int, v: T) -> List<T> {
+    [v for i in 0..n]
+}
+
+/// Two lists, elementwise, under a caller's own equality — never `==`,
+/// which compares scalars only. Same length and every pair agrees.
+export fn list_eq<T>(a: List<T>, b: List<T>, eq: fn(T, T) -> bool) -> bool {
+    a.length == b.length && [i for i in 0..a.length if !eq(a[i], b[i])].is_empty()
+}
+
+/// Two nullables, elementwise, under a caller's own equality — both
+/// absent, or both present and equal.
+export fn opt_eq<T>(a: T?, b: T?, eq: fn(T, T) -> bool) -> bool {
+    (a == null) == (b == null) && (a == null || eq(a!, b!))
+}
+
+/// `dst` with `src` laid over it from position `at` — the answer,
+/// never a write through the argument: a fn cannot change its
+/// caller's value, so the owner assigns what comes back.
+export fn copied<T>(dst: List<T>, src: List<T>, at: int) -> List<T> {
+    mut out = dst
+    // LICENSED loops.push_loop: a write per element into the copy, not a build
+    for j, v in src { out.set(at + j, v) }
+    out
+}
+
+/// A value asked for its effect alone.
+// LICENSED fns.dead_parameter: the parameter IS the contract — the value was computed
+export fn touch<T>(x: T) {}
+
+/// A copy with `x` at position `at` — the insertion every ordered
+/// build shares.
+export fn inserted<T>(xs: List<T>, at: int, x: T) -> List<T> {
+    xs.slice(0, at).concat([x]).concat(xs.slice(at, xs.length))
+}
+
+/// A copy in reverse — `.reverse()` mutates in place and aliases.
+export fn reversed<T>(xs: List<T>) -> List<T> {
+    mut out: List<T> = []
+    mut i = xs.length - 1
+    while i >= 0 {
+        out.push(xs[i])
+        i = i - 1
+    }
+    out
+}
+
+/// A name's first position, or absence — `index_of` answers a miss
+/// as -1.
+export fn found_at(names: List<string>, name: string) -> int? {
+    let i = names.index_of(name)
+    if i < 0 { null } else { i }
+}
+
+/// An optional as a 0/1-element list — comprehensions consume absence
+/// without a match.
+export fn some_list<T>(x: T?) -> List<T> {
+    if x == null { return [] }
+    [x!]
+}
+
+/// Elements joined with `sep`.
+export fn joined(xs: List<string>, sep: string) -> string { xs.join(sep) }
+
+/// The list with each string's FIRST appearance kept, order intact.
+/// String-only on purpose: `contains` compares other elements by
+/// identity.
+export fn distinct(xs: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<string> = []
+    for x in xs {
+        if seen.get(x) == null {
+            seen.set(x, true)
+            out.push(x)
+        }
+    }
+    out
+}
+
+/// The list with each number's first appearance kept, order intact.
+export fn distinct_ints(xs: List<int>) -> List<int> { [x for i, x in xs if xs.index_of(x) == i] }
+
+/// `xs` filed under `key`: each key's items in order, keys in first-seen order. Each key's
+/// list grows in place in its own cell, so the fold is linear.
+export fn grouped_by<T>(xs: List<T>, key: fn(T) -> string) -> Map<string, List<T>> {
+    mut cells: Map<string, Cell<List<T>>> = {}
+    for x in xs {
+        let k = key(x)
+        let cell = cells.get(k) ?? {
+            let fresh: Cell<List<T>> = Cell.new([])
+            cells.set(k, fresh)
+            fresh
+        }
+        cell.push(x)
+    }
+    mut out: Map<string, List<T>> = {}
+    for k, cell in cells { out.set(k, cell.get()) }
+    out
+}
+
+/// A `///` doc's own SENTENCE — its lines up to the first blank one.
+export fn doc_first_paragraph(lines: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for l in lines {
+        if l == "" { return out }
+        out.push(l)
+    }
+    out
+}
+
+/// `xs` in the order `before` answers, STABLE: equals keep their order. A bottom-up merge
+/// sort over two buffers, since the lists it meets run to thousands; a list already in order
+/// is one pass.
+export fn sorted_by<T>(xs: List<T>, before: fn(T, T) -> bool) -> List<T> {
+    let n = xs.length
+    if n < 2 || (1..n).all((k: int) -> !before(xs[k], xs[k - 1])) { return [x for x in xs] }
+    mut from = [x for x in xs]
+    mut width = 1
+    while width < n {
+        mut into: List<T> = []
+        mut lo = 0
+        while lo < n {
+            merge_runs(from, lo, width, before, into)
+            lo = lo + 2 * width
+        }
+        from = into
+        width = width * 2
+    }
+    from
+}
+
+/// The runs `from[lo, lo + width)` and the one after it, merged onto `into`, the first run's
+/// items ahead of their equals.
+fn merge_runs<T>(from: List<T>, lo: int, width: int, before: fn(T, T) -> bool, mut into: List<T>) {
+    let mid = if lo + width < from.length { lo + width } else { from.length }
+    let hi = if mid + width < from.length { mid + width } else { from.length }
+    mut i = lo
+    mut j = mid
+    while i < mid && j < hi {
+        if before(from[j], from[i]) {
+            into.push(from[j])
+            j = j + 1
+        } else {
+            into.push(from[i])
+            i = i + 1
+        }
+    }
+    // LICENSED loops.push_loop: the tail of a run, appended in place to the merge's buffer
+    for k in i..mid { into.push(from[k]) }
+    // LICENSED loops.push_loop: the tail of a run, appended in place to the merge's buffer
+    for k in j..hi { into.push(from[k]) }
+}

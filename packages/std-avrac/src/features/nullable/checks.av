@@ -1,0 +1,102 @@
+//! The typing rules of absence: `null`, `??`, `!`, and `let x? = v else { … }`, whose else block
+//! checks in a scope of its own, its value dropped, before `x` is bound to what `v` holds when it's
+//! present.
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtChecks, StmtId, null_type}
+use core.expr.{Chain, Coalesce, Force, MatchOpt, NullLit, Propagate}
+use core.stmt.{LetElse}
+
+impl StmtChecks for LetElse {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        let held = cx.check(self.subject, Expected.Free)
+        cx.opened()
+        for st in self.stmts { cx.check_stmt(st) }
+        cx.closed()
+        cx.bind(self.name.of, present(held))
+    }
+}
+
+/// What an optional type holds when present; absent for any other, whose presence is another
+/// feature's to say.
+fn present(ty: SignedType?) -> SignedType? {
+    let t? = ty else { return null }
+    if t.nullable() { t.unwrapped() } else { null }
+}
+
+impl Checks for NullLit {
+    /// `null` is the absent value's own type, whatever seat it fills.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { null_type() }
+}
+
+impl Checks for Coalesce {
+    /// `a ?? b` is what `a` holds when present, joined with `b`, or itself where `b` stands in a
+    /// seat of it, as a literal fills a named type; a `b` that says nothing of its own type (a bare
+    /// variant) hears what `a` holds.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let left = cx.check(self.left, Expected.Free)
+        let held = left?.unwrapped()
+        let right? = cx.check(self.right, Expected.Free) ?? cx.heard(self.right, held) else { return null }
+        let carried? = held else { return null }
+        let joined? = carried.joined_with(right) else {
+            if !cx.stands_in(self.right, right, carried) { return null }
+            if !right.reaches(carried) && cx.store.expr(self.right).literal_form() { cx.seals_filled(self.right, carried) }
+            return carried
+        }
+        joined
+    }
+
+    /// Its sides are typed as they stand, so its meaning is typed so too; a value nothing reads stays
+    /// one.
+    fn meaning_expected(expected: Expected) -> Expected { if expected is .Dropped { expected } else { Expected.Free } }
+}
+
+impl Checks for Force {
+    /// `v!` is what `v` holds when present; a value that isn't optional (a name a test proved
+    /// present) is itself.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let held? = cx.check(self.subject, Expected.Free) else { return null }
+        present(held) ?? held
+    }
+}
+
+impl Checks for MatchOpt {
+    /// `match v { b? -> p, null -> a }`: `b` binds what `v` holds in `p`'s scope; the value is where
+    /// the arms meet.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let held = present(cx.check(self.subject, Expected.Free))
+        let arm = if expected is .Dropped { Expected.Free } else { expected }
+        let arms = [self.present, self.absent]
+        let first = [present_checked(cx, self, held, arm), cx.check(self.absent, arm)]
+        let again? = cx.pinning(first, expected) else { return cx.arms_met(arms, first, expected) }
+        let pinned = [
+            first[0] ?? present_checked(cx, self, held, Expected.Exactly(again)),
+            first[1] ?? cx.check(self.absent, Expected.Exactly(again)),
+        ]
+        cx.arms_met(arms, pinned, expected)
+    }
+}
+
+/// The present arm of `m` checked against `want`, in a scope where its name binds what `held` is.
+fn present_checked(mut cx: Checking, m: MatchOpt, held: SignedType?, want: Expected) -> SignedType? {
+    cx.opened()
+    cx.bind(m.bind.of, held)
+    let ty = cx.check(m.present, want)
+    cx.closed()
+    ty
+}
+
+impl Checks for Propagate {
+    /// `v?` is what `v` holds when it carries on: a `Result`'s ok side, an optional's value.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let s? = cx.check(self.subject, Expected.Free) else { return null }
+        cx.propagated(self.subject, s)
+        cx.payload_of(s, "Ok") ?? present(s)
+    }
+}
+
+impl Checks for Chain {
+    /// `a?.b` is `b`, a field or a property, on what `a` holds when present, made optional.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        cx.chained(subject, (s: SignedType) -> cx.member_read(s, self.name.of))
+    }
+}

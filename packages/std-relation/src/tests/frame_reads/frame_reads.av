@@ -1,0 +1,31 @@
+// proves: a frame's repeat read of one bucket is one edge of that frame,
+// and a nested frame's read never stands for its caller's: outer reads,
+// inner reads, the outer reads again — each holds the bucket once, in
+// both engines
+use @std.relation.{relation}
+use @std.relation.db.{new_db}
+use @std.relation.engine.{Key, new_kernel}
+
+@relation
+type Fact = { @key name: string, n: int }
+
+fn run() -> string {
+    let kernel = new_kernel()
+    let queries = kernel.family()
+    let db = new_db()
+    db.given_to(kernel)
+    let _ = Fact.insert(db, name: "b", n: 1)
+    let outer = Key { family: queries, arg: 7 }
+    let inner = Key { family: queries, arg: 8 }
+    kernel.begin(outer)
+    let _ = Fact.by_key(db, FactKey { name: "b" })
+    let _ = Fact.by_key(db, FactKey { name: "b" })
+    kernel.begin(inner)
+    let _ = Fact.by_key(db, FactKey { name: "b" })
+    kernel.settle(inner, 0)
+    let _ = Fact.by_key(db, FactKey { name: "b" })
+    kernel.settle(outer, 0)
+    "${["${d.arg}" for d in kernel.deps_of(outer)].join(",")} ${["${d.arg}" for d in kernel.deps_of(inner)].join(",")}"
+}
+
+run()

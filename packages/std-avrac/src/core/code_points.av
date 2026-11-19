@@ -1,0 +1,125 @@
+//! A WALK OVER A TEXT'S CODE POINTS: the text is no list until one is asked for, so a walk over its
+//! `chars` view reads the text itself. Its cell holds the offset of the next lead byte and each turn
+//! steps past one UTF-8 sequence — what its lead declares where every tail is there and is a tail,
+//! else the byte alone, so the walk never overruns — decoding the code point it is; a separate count
+//! is each code point's place.
+
+impl Lowering {
+    /// A walk over the code points of the text `s`, each an `int`, from its first byte to its length.
+    mut fn walk_chars(s: Reg) -> ListWalk {
+        ListWalk {
+            list: s,
+            len: self.call_row(Layout.Word, rt_sig_of("avra_str_len")!, [s]),
+            at: self.seeded_cell(Layout.Word, self.const_int(0)),
+            elem: owned_type("int"),
+            elem_layout: Layout.Word,
+            ordinal: self.seeded_cell(Layout.Word, self.const_int(0)),
+        }
+    }
+
+    /// The text a `chars` view `e` reads, where `e` is one: a text's own `chars()`.
+    fn chars_viewed(e: ExprId) -> ExprId? {
+        let core = self.meaning_of(e)
+        match self.store.expr(core) {
+            .MethodCall(text, name, args) -> if name.of == "chars" &&
+                args.is_empty() &&
+                self.type_at(text)?.owns(OwnType.Str) ?? false { text } else { null },
+            rest -> null,
+        }
+    }
+
+    /// The code point the turn at the offset `here` of the walk `w` over a text stands on: its lead's
+    /// mark stripped, then six bits from each tail, high to low. The walk stepped past the sequence as
+    /// the turn began, so its width is how far it stepped.
+    mut fn code_point_at(w: ListWalk, here: Reg) -> Reg {
+        let s = w.list!
+        let width = self.bin(Layout.Word, BinOp.Sub, self.loaded(Layout.Word, w.at), here)
+        let lead = self.byte_of(s, here)
+        self
+            .tails_folded(self.bin(Layout.Word, BinOp.Sub, lead, self.lead_mark(width)), s, here, 1, width)
+    }
+
+    /// The UTF-8 sequence's width at the offset `at` of the text `s`, `len` bytes long.
+    mut fn sequence_width(s: Reg, at: Reg, len: Reg) -> Reg {
+        let declared = self.lead_width(self.byte_of(s, at))
+        let fits = self
+            .bin(Layout.Truth, BinOp.Le, self.bin(Layout.Word, BinOp.Add, at, declared), len)
+        let whole = self
+            .region(fits, Layout.Truth) { cx -> cx.tails_from(s, at, 1, declared) } else { cx -> cx.const_bool(false) }
+        self.region(whole, Layout.Word) { cx -> declared } else { cx -> cx.const_int(1) }
+    }
+
+    /// The byte at the offset `at` of the text `s`.
+    mut fn byte_of(s: Reg, at: Reg) -> Reg { self.call_row(Layout.Word, rt_sig_of("avra_str_char_code")!, [s, at]) }
+
+    /// Whether the bytes from `at + k` up to `at + w` of the text `s` are all tails.
+    mut fn tails_from(s: Reg, at: Reg, k: int, w: Reg) -> Reg {
+        if k > 3 { return self.const_bool(true) }
+        let owed = self.bin(Layout.Truth, BinOp.Gt, w, self.const_int(k))
+        self
+            .region(owed, Layout.Truth) { cx ->
+                let b = cx.byte_of(s, cx.bin(Layout.Word, BinOp.Add, at, cx.const_int(k)))
+                cx
+                    .region(cx.byte_between(b, 128, 191), Layout.Truth) { cx -> cx.tails_from(s, at, k + 1, w) } else { cx -> cx.const_bool(false) }
+            } else { cx -> cx.const_bool(true) }
+    }
+
+    /// `code` with the tails from `at + k` up to `at + w` of the text `s` folded in, six bits each.
+    mut fn tails_folded(code: Reg, s: Reg, at: Reg, k: int, w: Reg) -> Reg {
+        if k > 3 { return code }
+        let more = self.bin(Layout.Truth, BinOp.Gt, w, self.const_int(k))
+        let next = self
+            .region(more, Layout.Word) { cx ->
+                let b = cx.byte_of(s, cx.bin(Layout.Word, BinOp.Add, at, cx.const_int(k)))
+                let six = cx.bin(Layout.Word, BinOp.Mul, code, cx.const_int(64))
+                cx
+                    .bin(
+                        Layout.Word,
+                        BinOp.Add,
+                        six,
+                        cx.bin(Layout.Word, BinOp.Sub, b, cx.const_int(128)),
+                    )
+            } else { cx -> code }
+        self.tails_folded(next, s, at, k + 1, w)
+    }
+
+    /// The width the lead byte `b` declares, by the rows from the `j`th on: 1 past them all.
+    mut fn lead_width(b: Reg, j: int = 0) -> Reg {
+        let rows = lead_rows()
+        if j == rows.length { return self.const_int(1) }
+        let row = rows[j]
+        self
+            .region(self.byte_between(b, row.lo, row.hi), Layout.Word) { cx -> cx.const_int(row.width) } else { cx -> cx.lead_width(b, j + 1) }
+    }
+
+    /// The bits a lead of a sequence `w` bytes wide marks itself with, by the rows from the `j`th on:
+    /// 0 past them all.
+    mut fn lead_mark(w: Reg, j: int = 0) -> Reg {
+        let rows = lead_rows()
+        if j == rows.length { return self.const_int(0) }
+        let row = rows[j]
+        let wide = self.bin(Layout.Truth, BinOp.Eq, w, self.const_int(row.width))
+        self
+            .region(wide, Layout.Word) { cx -> cx.const_int(row.mark) } else { cx -> cx.lead_mark(w, j + 1) }
+    }
+
+    /// Whether the byte `b` stands from `lo` to `hi`: the upper bound read only past the lower.
+    mut fn byte_between(b: Reg, lo: int, hi: int) -> Reg {
+        let ge = self.bin(Layout.Truth, BinOp.Ge, b, self.const_int(lo))
+        self
+            .region(ge, Layout.Truth) { cx -> cx.bin(Layout.Truth, BinOp.Le, b, cx.const_int(hi)) } else { cx -> cx.const_bool(false) }
+    }
+}
+
+/// A lead byte of a sequence wider than one byte: the range it stands in, the width it declares, and
+/// the bits it marks itself with.
+type LeadRow = { lo: int, hi: int, width: int, mark: int }
+
+/// The leads, widest first.
+fn lead_rows() -> List<LeadRow> {
+    [
+        LeadRow { lo: 240, hi: 247, width: 4, mark: 240 },
+        LeadRow { lo: 224, hi: 239, width: 3, mark: 224 },
+        LeadRow { lo: 192, hi: 223, width: 2, mark: 192 },
+    ]
+}

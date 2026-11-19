@@ -1,0 +1,25 @@
+// proves: a lambda and a task capture a value record and a value enum
+// across slots of their own, beside a word and a text, and read each
+// back whole.
+type Point = { x: int, y: int }
+
+enum Shape {
+    Dot(n: int)
+    Name(s: string)
+    Empty
+}
+
+fn described(s: Shape) -> string {
+    match s { .Dot(n) -> "dot ${n}", .Name(t) -> "name ${t}", .Empty -> "empty" }
+}
+
+fn reader(p: Point, s: Shape, k: int, w: string) -> fn(int) -> string {
+    (n: int) -> "${w} ${p.x + n} ${k} ${p.y} ${described(s)}"
+}
+
+let p = Point { x: 3, y: 4 }
+let named = reader(p, Shape.Name("a"), 7, "at")
+let dotted = reader(Point { x: 10, y: 20 }, Shape.Dot(5), 1, "by")
+let empty = reader(p, Shape.Empty, 0, "on")
+let task = spawn { "${p.x * p.y} ${described(Shape.Dot(p.y))}" }
+"${named(1)} / ${dotted(2)} / ${empty(0)} / ${task.await}"

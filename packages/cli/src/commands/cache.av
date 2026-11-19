@@ -1,0 +1,98 @@
+//! `avra cache` — the program layer's store of the package the command stands
+//! in, its own verbs. The store is a directory of immutable packs, each the
+//! answers one compiler learned (`@std/program`'s disk_store): `clean`
+//! compacts them — every pack as one for each compiler the store keeps,
+//! holding only what that compiler's frontier still reaches, the packs of a
+//! compiler past the ones kept let go; `log` lists the packs, oldest first;
+//! `show <n>` names the questions one pack answers.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.path.{joined_path}
+use @std.program.disk_store.{PackListed, disk_store_at, pack_questions, packs_listed}
+use @std.avrac.core.{distinct}
+use @std.text.{parse_int}
+
+type CacheCmd = {}
+
+impl Runnable for CacheCmd {
+    fn run(args: CliResult) -> int {
+        let action = args.arg("action")
+        let dir = cache_dir()
+        if action == "clean" { return cache_clean(dir) }
+        if action == "log" { return cache_log(dir) }
+        if action == "show" { return cache_show(dir, args.arg("rev")) }
+        eprintln("avra cache: `clean`, `log` or `show <n>`")
+        2
+    }
+}
+
+export command cache {
+    description: "The program layer's store of this package: compact it (`clean`), list its packs (`log`), name the questions one answers (`show <n>`)"
+    arg action {
+        description: "`clean`, `log` or `show`"
+        required: true
+    }
+    arg rev {
+        description: "the pack `show` reads, by the number `log` lists it under"
+    }
+    run: CacheCmd {}
+}
+
+/// Where the store of the package the command stands in lies: under the nearest package root at or
+/// above it, else where it stands.
+fn cache_dir() -> string { joined_path(package_root(here()) ?? here(), ".avra-cache/tapes") }
+
+/// `clean` compacts the store and says what it held before and holds after; the machine's shared
+/// store after it, where this process uses one.
+fn cache_clean(dir: string) -> int {
+    println("avra cache clean: ${compacted_said(dir)}")
+    let shared? = machine_layer() else { return 0 }
+    println("avra cache clean: the machine's store — ${compacted_said(shared.directory)}")
+    0
+}
+
+/// The store at `dir` compacted, said: its packs and octets before and after, and the compilers it
+/// keeps answers for; or why it couldn't be.
+fn compacted_said(dir: string) -> string {
+    let before = packs_listed(dir)
+    match disk_store_at(dir).compacted() {
+        .Ok(_) -> {
+            let after = packs_listed(dir)
+            "packs ${before.length} → ${after.length} · bytes ${octets_of(before)} → ${octets_of(after)} · ${distinct([p.print for p in after]).length} compiler(s) kept"
+        },
+        .Err(e) -> "not compacted: ${e.describe().message}",
+    }
+}
+
+fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }
+
+/// `log` lists every pack, oldest first, numbered, with the compiler whose answers it holds and what
+/// it weighs on disk.
+fn cache_log(dir: string) -> int {
+    let packs = packs_listed(dir)
+    if packs.is_empty() {
+        println("avra cache log: no pack")
+        return 0
+    }
+    for j, p in packs {
+        println(
+            "pack ${j + 1} · generation ${p.generation} · compiler ${p.print} · ${p.octets} bytes",
+        )
+    }
+    0
+}
+
+/// `show <n>` names each question the pack `log` numbers `n` answers: its query, and what the
+/// question is known by. A number no pack wears, or a pack that isn't whole, refuses.
+fn cache_show(dir: string, raw: string) -> int {
+    let n? = parse_int(raw) else {
+        eprintln("avra cache show: `${raw}` is no pack's number — write one `log` lists")
+        return 2
+    }
+    let packs = packs_listed(dir)
+    let questions? = (if n < 1 || n > packs.length { null } else { pack_questions(dir, packs[n - 1].name) }) else {
+        eprintln("avra cache show: pack ${n} holds nothing — no pack stands there, or it is torn")
+        return 1
+    }
+    for q in questions { println("${q.query_name}\t${q.known_as.high_word}_${q.known_as.low_word}") }
+    0
+}

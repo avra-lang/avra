@@ -1,0 +1,323 @@
+//! THE RULES PASS: every node a file's own declarations hold, the
+//! table's rules tried where their root-kind index admits (or
+//! carries `any_root`) — design §5: nodes touched, never nodes ×
+//! rules. `rule_candidates` is the ONE walk — `avra check`'s findings
+//! (`rule_findings`) and `avra fix`'s proof both read it, so a
+//! rewrite `check` shows is the exact one `fix` proves or refuses,
+//! never a second derivation that could disagree.
+use core.{At, StmtId, DeclId, SyntaxArena, flatten, some_list}
+use features.{Code, Fix, Analysed, RuleFile, Syntax, SyntaxFile, analysed_file, syntax_of}
+use diagnostics.{Diag, loc_at, warning}
+use @std.errors.{Suggestion, Edit, Confidence, Loc}
+use compiler.backend.{trimmed}
+use compiler.work.{work_rule_node, work_rule_run, work_rule_ns}
+use @std.time.{now_ns}
+
+/// One rule's hit at one node, before any Diag is built.
+export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
+
+/// Every rule hit under these statements — each walked from its own
+/// root, expressions and nested statements alike (`places_under`), the
+/// table's rules tried at every node whose root-kind index admits
+/// it.
+export fn rule_candidates(a: Analysed, stmts: List<StmtId>) -> List<Candidate> {
+    candidates_by(
+        syntax_of(a),
+        stmts,
+        (r: RuleEntry, at: At) -> r.run.applied(code_at(a, at)),
+        every_rule,
+    )
+}
+
+/// What every fact rule the program layer runs finds under these statements of `file`, as `check`
+/// says it.
+export fn held_fact_findings(file: RuleFile, stmts: List<StmtId>) -> List<Diag> {
+    [p.diag for p in placed_fact_findings(file, stmts)]
+}
+
+/// Each finding as `check` says it, beside the span of the node its rule fired at, which orders the
+/// findings of one walk.
+export type PlacedDiag = { lo: int, hi: int, diag: Diag }
+
+/// What every fact rule the program layer runs finds under these statements of `file`, each beside
+/// the node it fired at.
+export fn placed_fact_findings(file: RuleFile, stmts: List<StmtId>) -> List<PlacedDiag> {
+    let syntax = SyntaxFile { view: file.view }
+    let found = candidates_by(
+        syntax,
+        stmts,
+        (r: RuleEntry, at: At) -> fact_fix(r, held_code(file, at)),
+        reads_facts,
+    )
+    flatten([fact_placed(file, syntax, c) for c in found])
+}
+
+/// A fact rule's findings beside the node it fired at, a delete carrying the edits its facts state.
+fn fact_placed(file: RuleFile, syntax: SyntaxFile, c: Candidate) -> List<PlacedDiag> {
+    let placed = placed_diags(syntax, c)
+    let edits = match c.fix { .Delete(_) -> held_delete_edits(file, c.at), rest -> [] }
+    if edits.is_empty() { return placed }
+    [p with { diag: p.diag with { suggestions: [deleting(edits)] } } for p in placed]
+}
+
+/// The edits a delete at `at` states where the facts name what it deletes: the names a `use` line
+/// imports that nothing reads, taken off it — the line itself where none stays.
+fn held_delete_edits(file: RuleFile, at: At) -> List<Edit> {
+    let s? = stmt_of(at) else { return [] }
+    let store = file.view.store
+    let u? = store.use_parts(s) else { return [] }
+    let unused = held_code(file, at).unused_imports()
+    if unused.is_empty() { return [] }
+    let loc? = loc_at(file.view.source.file, store.stmt_span(s)) else { return [] }
+    let text = file.view.source.text
+    let kept = [j for j in 0..u.items.length if !unused.contains(u.items[j])]
+    if kept.is_empty() { return [deletion_edit(loc, text)] }
+    [
+        Edit {
+            loc: loc,
+            replacement: use_line_text(u.path, [u.items[j] for j in kept], [u.aliases[j] for j in kept]) +
+                swallowed_break(text, loc),
+        },
+    ]
+}
+
+/// The node at `at` of `file`, as a fact rule reads it.
+fn held_code(file: RuleFile, at: At) -> Code { Code { of: file, at: at } }
+
+/// A delete's fix: the edits that take away what it finds.
+fn deleting(edits: List<Edit>) -> Suggestion { Suggestion { confidence: Confidence.High, description: "delete this", edits: edits } }
+
+/// The statement a node is, where it is one.
+fn stmt_of(at: At) -> StmtId? {
+    match at { .Stmt(id) -> id, .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null }
+}
+
+/// What each rule `which` takes that reads syntax alone finds under these statements of `file`,
+/// each beside the node it fired at.
+export fn placed_syntax_findings(
+    file: SyntaxFile,
+    stmts: List<StmtId>,
+    which: fn(RuleEntry) -> bool,
+) -> List<PlacedDiag> {
+    flatten([placed_diags(file, c) for c in syntax_candidates(file, stmts, which)])
+}
+
+/// Every rule, for a walk that tries them all.
+export fn every_rule(_r: RuleEntry) -> bool { true }
+
+/// Whether a rule reads facts beyond syntax: the rules a walk over the facts tries.
+fn reads_facts(r: RuleEntry) -> bool { !r.run.reads_syntax() }
+
+/// A candidate's findings beside the node it fired at; a node with no span stands where its finding
+/// points.
+fn placed_diags(file: SyntaxFile, c: Candidate) -> List<PlacedDiag> {
+    let node = syntax_at(file, c.at).loc()
+    [PlacedDiag { lo: at.lo, hi: at.hi, diag: d } for d in syntax_diags(file, c) for at in some_list(node ?? d.primary.loc)]
+}
+
+/// What the rule `r` finds at `c` when it reads facts beyond syntax.
+fn fact_fix(r: RuleEntry, c: Code) -> Fix? {
+    if r.run.reads_syntax() { return null }
+    r.run.applied(c)
+}
+
+/// Every hit of a rule `which` takes that reads syntax alone under these statements of `file`; a
+/// rule that reads facts is never tried there.
+export fn syntax_candidates(file: SyntaxFile, stmts: List<StmtId>, which: fn(RuleEntry) -> bool) -> List<
+    Candidate,
+> {
+    candidates_by(
+        file,
+        stmts,
+        (r: RuleEntry, at: At) -> r.run.on_syntax(syntax_at(file, at)),
+        (r) -> r.run.reads_syntax() && which(r),
+    )
+}
+
+/// Every hit under these statements of `file` of each rule `which` takes, each rule at a node
+/// answering as `run` says: every node under a statement, the statement among them, children
+/// before owner.
+fn candidates_by(
+    file: SyntaxFile,
+    stmts: List<StmtId>,
+    run: fn(RuleEntry, At) -> Fix?,
+    which: fn(RuleEntry) -> bool,
+) -> List<Candidate> {
+    let index = rule_index()
+    stale_rules_spoken(file.view.store)
+    flatten(
+        [node_candidates(file, index, at, run, which) for s in stmts for at in file.view.store.places_under(At.Stmt(s), .Post, (at) -> quote_pattern(file.view.store, at))],
+    )
+}
+
+/// Whether `at` is a `Pat.Quote` — the PATTERN position, where a
+/// rule's walk stops: listed, its own BODY never descended. That body
+/// is the pattern's TEXT, mirrored into an expr tree so a `quote{ ... }`
+/// pattern can be WRITTEN as code — never code a rule should fire ON.
+/// Without this stop, a rule's own declaration matches ITSELF:
+/// `if_start_raw`'s pattern spells `Ins.IfStart(${c})`, and that reads
+/// as a real `Ins.IfStart` call to every rule walking
+/// compiler/idioms.av (or any feature's own idioms.av) — a PRECISION
+/// bug, not debt to license away. A rewrite's own `-> quote { ... }`
+/// is an ordinary `Expr`, ANSWER position, real code the walk still
+/// reaches and rules may still fire on.
+fn quote_pattern(store: SyntaxArena, at: At) -> bool {
+    match at { .Pat(id) -> store.pat(id) is .Quote, _ -> false }
+}
+
+fn node_candidates(
+    file: SyntaxFile,
+    index: RootIndex<RuleEntry>,
+    at: At,
+    run: fn(RuleEntry, At) -> Fix?,
+    which: fn(RuleEntry) -> bool,
+) -> List<Candidate> {
+    work_rule_node()
+    let store = file.view.store
+    flatten(
+        [one_candidate(file, at, r, run) for r in index.at_node(store.shallow_at(at), store.kind_at(at)) if which(r)],
+    )
+}
+
+fn one_candidate(file: SyntaxFile, at: At, r: RuleEntry, run: fn(RuleEntry, At) -> Fix?) -> List<
+    Candidate,
+> {
+    work_rule_run()
+    let f? = run(r, at) else { return [] }
+    if site_licenses(file, at, f, r) { return [] }
+    [Candidate { at: at, owner: r, fix: f }]
+}
+
+/// Whether the firing rule's own site carries `// LICENSED <id>:
+/// <reason>` on the line directly above (`compiler.licenses`'
+/// `site_licensed`, CLAUDE.md's exemption law) — a finding never
+/// built for a site whose author already decided this IS the law,
+/// not a defect.
+///
+/// The site is the FINDING's own place, the line the reader sees,
+/// never the matched subject's: a rule whose subject is a BLOCK (a
+/// `push(…)` held open across a stretch of work until a later `pop()`)
+/// has no span of its own, so reading one left every such licence
+/// unread — `resolution_state`'s `// LICENSED compiler.bracket_ritual`
+/// lines were decorative.
+fn site_licenses(file: SyntaxFile, at: At, f: Fix, r: RuleEntry) -> bool {
+    let loc? = syntax_at(file, at).loc() ?? said_loc(f) else { return false }
+    site_licensed(
+        file.view.store,
+        file.view.source,
+        file.view.source.linecol(loc.lo).line,
+        rule_id(r),
+    )
+}
+
+/// Where a `Say` finding points, when it points anywhere.
+fn said_loc(f: Fix) -> Loc? {
+    match f { .Say(voice) -> voice.primary.loc, rest -> null }
+}
+
+/// The one construction seam: a rule's own subject, one node in one
+/// analysis.
+export fn code_at(a: Analysed, at: At) -> Code {
+    Code { of: analysed_file(a), at: at }
+}
+
+/// Every candidate as a `Diag` — `avra check`'s findings. A `Fix.Say`'s
+/// voice carries no kind of its own (`features/fix.av`'s `said`); this
+/// is the ONE place either fix shape's `Diag` is stamped with the
+/// firing rule's own identity (`rule_id`) — a `Fix.Rewrite` wraps in a
+/// `Suggestion` over one `Edit` at the matched node's own span besides.
+export fn rule_findings(a: Analysed, stmts: List<StmtId>) -> List<Diag> {
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    let began = now_ns()
+    let found = flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    work_rule_ns(now_ns() - began)
+    found
+}
+
+fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
+    match c.fix {
+        .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
+        .Rewrite(_) -> rewrite_diags(syntax_of(a), c.at, c.owner, c.fix),
+        .Delete(what) -> delete_diags(a, c.at, c.owner, what),
+    }
+}
+
+/// What every rule that reads syntax alone finds under these statements of `file`, as `check`
+/// says it; a delete names declarations, which syntax alone never holds.
+export fn syntax_findings(file: SyntaxFile, stmts: List<StmtId>) -> List<Diag> {
+    flatten([syntax_diags(file, c) for c in syntax_candidates(file, stmts, every_rule)])
+}
+
+fn syntax_diags(file: SyntaxFile, c: Candidate) -> List<Diag> {
+    match c.fix {
+        .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
+        .Rewrite(_) -> rewrite_diags(file, c.at, c.owner, c.fix),
+        .Delete(_) -> deleted_diags(file, c.at, c.owner),
+    }
+}
+
+/// A delete said where only syntax stands: at the matched node, without the edit, which `avra fix`
+/// splices off the old pass tables.
+fn deleted_diags(file: SyntaxFile, at: At, r: RuleEntry) -> List<Diag> {
+    let loc? = syntax_at(file, at).loc() else { return [] }
+    [warning(rule_id(r), loc, dead_said(r), "this code", applied_by(r))]
+}
+
+/// What a delete says of what it finds.
+fn dead_said(r: RuleEntry) -> string { "${rule_id(r)} — this is provably dead" }
+
+fn rewrite_diags(file: SyntaxFile, at: At, r: RuleEntry, f: Fix) -> List<Diag> {
+    let d? = rewrite_diag(file, at, r, f) else { return [] }
+    [d]
+}
+
+/// A REWRITE'S DIAG CARRIES THE PROOF, NOT A CLAIM ABOUT IT: the
+/// suggestion's one edit IS the rewrite, at the matched node's own
+/// span — a node with no span (synthesized, never real source) has
+/// nowhere to point an edit and answers no finding at all.
+fn rewrite_diag(file: SyntaxFile, at: At, r: RuleEntry, f: Fix) -> Diag? {
+    let raw? = f.rendered() else { return null }
+    let text = trimmed(raw)
+    let loc? = syntax_at(file, at).loc() else { return null }
+    let edit = Edit { loc: loc, replacement: text }
+    let sg = Suggestion {
+        confidence: Confidence.High,
+        description: "rewrite to `${text}`",
+        edits: [edit],
+    }
+    warning(
+        rule_id(r),
+        loc,
+        "${rule_id(r)} — this is provably `${text}`",
+        "this code",
+        applied_by(r),
+    ) with { suggestions: [sg] }
+}
+
+fn delete_diags(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> List<Diag> {
+    let d? = delete_diag(a, at, r, what) else { return [] }
+    [d]
+}
+
+/// A DELETE'S DIAG CARRIES THE SAME EDITS `avra fix` would splice —
+/// `delete_edits` (`rule_delete.av`) is the ONE builder, so a finding
+/// `check` shows is the exact removal `fix` proves or refuses, never
+/// a second derivation. `null` when nothing can be placed (no span at
+/// the matched node) or nothing survives the References cross-check.
+fn delete_diag(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> Diag? {
+    let loc? = code_at(a, at).loc() else { return null }
+    let edits? = delete_edits(a, a.view.source.text, what) else { return null }
+    let sg = deleting(edits)
+    warning(rule_id(r), loc, dead_said(r), "this code", applied_by(r)) with { suggestions: [sg] }
+}
+
+/// A finding's help: the commands that explain the rule and apply the edit.
+/// The rule's own doc is read by `avra docs`, never here — a finding's help is
+/// built on every check of a body, and a doc is another file's text.
+fn applied_by(r: RuleEntry) -> string {
+    "`avra docs ${rule_id(r)}` says why; `avra fix --only ${rule_id(r)}` applies it"
+}
+
+/// The node at `at` of `file`, as a rule reads it.
+fn syntax_at(file: SyntaxFile, at: At) -> Syntax { Syntax { of: file, at: at } }

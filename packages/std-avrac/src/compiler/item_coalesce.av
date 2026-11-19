@@ -1,0 +1,145 @@
+//! A `??` THAT NEVER FIRES: its left side is never absent, so its right side never runs. A read a
+//! test proved present asks a redundant question and is left alone; anything else is warned of, with
+//! the fix that drops the `??` and its right side. Read over a written item's bodies as the program
+//! layer types them.
+use core.{ExprId, PlaceStep, SignedType, Span, TypeRef}
+use compiler.laws.{Found, FoundFix, law}
+use diagnostics.{Voice}
+use features.nullable.{coalesce_never_said}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A `??` that never fires: its left side's place, the type that side always is, and the text the
+/// fix cuts: from the left side's end to the right side's.
+@derive(Saved)
+type NeverFires = { at: FindingAt?, ty: string, cut: FindingAt? }
+
+/// Every such `??` one written item's bodies hold.
+@derive(Saved)
+type ItemCoalesces = { never: List<NeverFires> }
+
+/// Each `??` of the item `at` of `file` that never fires.
+fn coalesces_unfired(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found {
+        at: span_of(n.at),
+        args: [n.ty],
+        fixes: [
+            FoundFix {
+                description: coalesce_never_said(n.ty).help ?? "",
+                at: span_of(n.cut),
+                replacement: "",
+                sure: true,
+            },
+        ],
+    } for n in item_coalesces(engine, file, at).never]
+}
+
+/// Every `??` in the written item `at` of `file` whose left side is never absent, in node order, in
+/// its fns' bodies and in the statements the file runs: a read a test proved present aside.
+@query
+fn item_coalesces(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemCoalesces {
+    if !item_held(engine, file, at) { return ItemCoalesces { never: [] } }
+    let item = read_item(engine, file, at)
+    let asks = [e for i in 0..item.store.expr_count() for e in [ExprId { index: i }] if item.store.coalesced(e).length == 2]
+    if asks.is_empty() { return ItemCoalesces { never: [] } }
+    let cx = copies_in(engine, file, at, item)
+    ItemCoalesces {
+        never: [n! for e in asks for n in [never_fires(engine, file, at, cx, e)] if n != null],
+    }
+}
+
+/// The `??` at `e` as one that never fires; absent where its left side may be absent, isn't typed,
+/// or is a read a test proved present.
+fn never_fires(engine: QueryEngine, file: SourceFileAddress, at: int, cx: Copies, e: ExprId) -> NeverFires? {
+    let sides = cx.store.coalesced(e)
+    let left = sides[0]
+    let ty? = (cx.type_at)(left.index) else { return null }
+    if ty.nullable() || ty.dynamic || ty.spelled() == "null" || narrowed(engine, file, at, cx, left) { return null }
+    let l? = cx.store.expr_span(left) else { return null }
+    let r? = cx.store.expr_span(sides[1]) else { return null }
+    NeverFires { at: kept_at(l), ty: ty.spelled(), cut: kept_at(Span { lo: l.hi, hi: r.hi }) }
+}
+
+/// Whether the left side `left` is a read whose own declaration may be absent, which only a test
+/// made present: a name no `let` binds to a value that's never absent — the item's own, else the
+/// file's top-level binding of it — or a field its record declares optional.
+fn narrowed(engine: QueryEngine, file: SourceFileAddress, at: int, cx: Copies, left: ExprId) -> bool {
+    let step? = cx.store.place_step(left) else { return false }
+    match step {
+        .Root(n) -> !let_never_absent(cx, n.of, left) && !entry_never_absent(engine, file, at, cx, n.of, left),
+        .Field(subject, name) -> field_optional(engine, cx, subject, name.of),
+        .At(_, _) or .Unwrap(_) -> false,
+    }
+}
+
+/// Whether the last `let` before `at` binding `name` binds what's never absent: the type it writes,
+/// else its value's.
+fn let_never_absent(cx: Copies, name: string, at: ExprId) -> bool {
+    let before = [s for s in cx.store.stmt_ids() if cx.store.let_name(s) == name && cx.stmt_lo(s) < cx.lo(at)]
+    let s? = before.last() else { return false }
+    let written = cx.store.binding_ty(s)
+    if written != null { return never_absent_written(written!) }
+    let v? = cx.store.stmt_value(s) else { return false }
+    let ty? = (cx.type_at)(v.index) else { return false }
+    !ty.nullable()
+}
+
+/// Whether `name`, bound by no `let` of the item `at` itself, is bound by the last `let` before the
+/// read `left` among the statements the entry `file` runs to what's never absent: the type it
+/// writes, else its value's.
+fn entry_never_absent(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    cx: Copies,
+    name: string,
+    left: ExprId,
+) -> bool {
+    if cx.store.stmt_ids().any((s) -> cx.store.let_name(s) == name) { return false }
+    let entry = entry_types(engine, file)
+    let base? = entry.bases.find(it.at == at)?.base else { return false }
+    let read = entry_read(engine, file)
+    let binds = [s for s in read.store.stmt_ids() if read.store.let_name(s) == name &&
+        read.store.stmt_value(s)?.index ?? left.index + base < left.index + base]
+    let s? = binds.last() else { return false }
+    let written = read.store.binding_ty(s)
+    if written != null { return never_absent_written(written!) }
+    let v? = read.store.stmt_value(s) else { return false }
+    let ty? = node_type(entry.types, v.index) else { return false }
+    !ty.nullable() && !ty.dynamic
+}
+
+/// Whether a written type is never absent: not optional, and no union of alternatives (one may be
+/// `null`).
+fn never_absent_written(t: TypeRef) -> bool { !t.optional && t.alternatives.is_empty() }
+
+/// Whether the record a value of the node `subject` is declares its field `name` optional; true
+/// where it can't be read. A property of a type the language owns is what its type says.
+fn field_optional(engine: QueryEngine, cx: Copies, subject: ExprId, name: string) -> bool {
+    let holder? = (cx.type_at)(subject.index) else { return true }
+    let own = holder.unwrapped() ?? holder
+    if own.head is .Owned { return false }
+    let d? = declared_at(own) else { return true }
+    let record? = record_signature(engine, d.file, d.name) else { return true }
+    let f? = record.fields.find(it.name == name) else { return true }
+    f.ty?.nullable() ?? true
+}
+
+/// a `??` whose left side is never absent
+export law coalesce_never_fires {
+    kind: "type.coalesce_never"
+    reads: coalesces_unfired
+    voice: never_words
+    warns: true
+    witness: "fn f(n: int) -> int { n + 1 ?? 0 }\n"
+}
+
+fn never_words(a: List<string>) -> Voice { coalesce_never_said(a[0]) }
+
+collect listed_coalesce_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the never-firing `??` law is read through, for a process to hand its engine.
+export fn coalesce_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_coalesce_facts) }

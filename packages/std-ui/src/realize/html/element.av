@@ -1,0 +1,356 @@
+//! `realize/html/element.av` — the LOWERING: a neutral node as the
+//! elements an HTML page holds. ONE place knows the page's structure — a
+//! control cannot hold its own words, so a `label` takes its node's place
+//! and the words sit beside the control inside it; a card draws its title
+//! above its children; a void element's children follow it. The static
+//! writer and the live page both read this tree, so neither knows any of
+//! it.
+//!
+//! Every element stands at a SEAT among its siblings: its node's own
+//! step, or — for an element the lowering makes inside a node — that
+//! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
+//! value, and every other value is escaped by whoever writes it.
+use tree.identity.{NodeId, Step, Stepped, root as root_step, stepped, unplaced}
+use tree.node.{Node, Attribute, Prim, Action, submits_among, masked_among}
+use realize.html.delivery.{always_seat_of, web_event}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
+use realize.html.css.{class_names, box_vars, drawn_box, CssVar}
+use tree.sites.{Reading}
+use @std.meta.{Structural, Opaque}
+use @std.assets.{Picture}
+
+/// One piece of a page: an element, or a run of text.
+export enum Element {
+    Tag(el: Tagged)
+    Text(run: Worded)
+}
+
+/// A run of text: where it stands among its siblings, and its words.
+/// `id` is the number a page gave it — none until a page places it.
+export type Worded = { id: NodeId = unplaced, seat: Step, content: string }
+
+/// An element: where it stands among its siblings (`seat`, the step it is
+/// matched by, which a reader is shown as `reads()` says), its tag,
+/// its attributes in written order, the custom properties its classes read (`vars`), what it hears, and what it holds. `id` is the number a page gave it — none until a
+/// page places it. `rests` names what its node draws AT REST: a box
+/// drawn unticked holds no attribute, and is drawn all the same.
+export type Tagged = {
+    id: NodeId = unplaced,
+    seat: Step,
+    tag: HtmlTag,
+    attrs: List<HtmlAttr> = [],
+    vars: List<CssVar> = [],
+    rests: List<HtmlAttrName> = [],
+    hears: List<Action> = [],
+    sites: List<Reading> = [],
+    structural: Structural = [],
+    opaque: Opaque = false,
+    kids: List<Element> = [],
+    crowded: bool = false,
+    says: List<HtmlAttrName> = [],
+}
+
+impl Element {
+    fn id() -> NodeId {
+        match self { .Tag(el) -> el.id, .Text(run) -> run.id }
+    }
+
+    /// Where this stands among its siblings.
+    fn seat() -> Step {
+        match self { .Tag(el) -> el.seat, .Text(run) -> run.seat }
+    }
+
+    /// Where this stands, as a reader's path shows it: made only when a reader asks.
+    fn reads() -> string { self.seat().shown() }
+
+    /// The element, when this is one.
+    fn tagged() -> Tagged? {
+        match self { .Tag(el) -> el, .Text(_) -> null }
+    }
+
+    /// The text, when this is a run of it.
+    fn text() -> string? {
+        match self { .Text(run) -> run.content, .Tag(_) -> null }
+    }
+}
+
+// ── the attribute table ─────────────────────────────────────────
+
+/// What one component property writes under an attribute's name: its
+/// value, or — a flag drawn `false` — the name left off.
+type Wrote = { name: HtmlAttrName, value: string = "", on: bool = true }
+
+fn flag(name: HtmlAttrName, on: bool, value: string) -> List<Wrote> {
+    [Wrote { name: name, value: value, on: on }]
+}
+
+/// A picture as the attributes that draw it: where it is read from, and the
+/// size it keeps whatever has loaded. A bundled picture is read from the
+/// site's assets by its id.
+fn picture_wrote(p: Picture) -> List<Wrote> {
+    match p {
+        .Bundled(name, width, height, _, _, _) -> sized("/assets/${name}", width, height),
+        .Remote(url, width, height) -> sized(url.text(), width, height),
+    }
+}
+
+fn sized(src: string, width: int, height: int) -> List<Wrote> {
+    [
+        Wrote { name: .Src, value: src },
+        Wrote { name: .Width, value: "${width}" },
+        Wrote { name: .Height, value: "${height}" },
+    ]
+}
+
+/// A component property as what it writes, or nothing (content and
+/// levels are drawn, not attached). Every arm spelled.
+fn wrote(a: Attribute) -> List<Wrote> {
+    match a {
+        .Value(v) -> [Wrote { name: .Value, value: v }],
+        .Amount(n) -> [Wrote { name: .Value, value: "${n}" }],
+        .Placeholder(t) -> [Wrote { name: .Placeholder, value: t }],
+        .Source(p) -> picture_wrote(p),
+        .Decorative(on) -> flag(.AriaHidden, on, "true"),
+        .Alt(t) -> [Wrote { name: .Alt, value: t }],
+        .Href(u) -> [Wrote { name: .Href, value: u.text() }],
+        .Min(n) -> [Wrote { name: .Min, value: "${n}" }],
+        .Max(n) -> [Wrote { name: .Max, value: "${n}" }],
+        .Disabled(on) -> flag(.Disabled, on, ""),
+        .Checked(on) -> flag(.Checked, on, ""),
+        .Selected(on) -> flag(.AriaSelected, on, "true"),
+        .Open(on) -> flag(.Open, on, ""),
+        .Invalid(on) -> flag(.AriaInvalid, on, "true"),
+        .Loading(on) -> flag(.AriaBusy, on, "true"),
+        .Urgency(u) -> [Wrote { name: .AriaLive, value: u.word() }],
+        .Title(t) -> [Wrote { name: .Title, value: t }],
+        .Name(t) or .Label(t) -> [Wrote { name: .AriaLabel, value: t }],
+        .Skipped(path, rows, extent) -> [
+            Wrote { name: .AriaHidden, value: "true" },
+            Wrote { name: .DataWindow, value: path },
+            Wrote { name: .DataSkip, value: "${rows}" },
+            Wrote { name: .DataExtent, value: "${extent}" },
+        ],
+        .Placed(at, of, reveal) -> [
+            Wrote { name: .AriaPosinset, value: "${at + 1}" },
+            Wrote { name: .AriaSetsize, value: "${of}" },
+            Wrote { name: .DataReveal, on: reveal },
+        ],
+        .Text(_) or .Level(_) or .Submits(_) or .Masked(_) -> [],
+    }
+}
+
+/// What a node's properties write, EACH NAME ONCE: a name two properties
+/// write holds what the later one wrote, as a page set twice would — so
+/// the page written out, the page first painted and the page repainted
+/// are one page.
+fn written(attrs: List<Attribute>) -> List<Wrote> {
+    let all = [w for a in attrs for w in wrote(a)]
+    [w for j, w in all if !all.drop(j + 1).any(it.name == w.name)]
+}
+
+/// A node's properties as attributes.
+fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
+    [HtmlAttr { name: w.name, value: w.value } for w in written(attrs) if w.on]
+}
+
+/// The names a node draws AT REST: each flag its properties leave off.
+fn rests_of(attrs: List<Attribute>) -> List<HtmlAttrName> {
+    [w.name for w in written(attrs) if !w.on]
+}
+
+/// An element's attributes from the neutral node: what kind of control it
+/// is, then its properties — a masked control's value never written, so
+/// a page's text never holds the secret.
+fn element_attrs(n: Node) -> List<HtmlAttr> {
+    let masked = masked_among(n.attrs)
+    control_attrs(n.prim, submits_among(n.attrs), masked, n.words())
+        .concat(attrs_of([a for a in n.attrs if !masked || !(a is .Value)]))
+}
+
+// ── the class attribute ─────────────────────────────────────────
+
+fn class_attrs(n: Node) -> List<HtmlAttr> {
+    let names = class_names(n)
+    if names.is_empty() { [] } else { [HtmlAttr { name: .Class, value: names.join(" ") }] }
+}
+
+/// A node's own attributes: its identity, its classes, its box.
+fn node_attrs(n: Node) -> List<HtmlAttr> {
+    let keyed: List<HtmlAttr> = match n.box.key {
+        k? -> [HtmlAttr { name: .DataKey, value: k.spoken() }]
+        null -> []
+    }
+    keyed.concat(class_attrs(n))
+}
+
+// ── the elements a node lowers to ───────────────────────────────
+
+/// Where an element stands among its siblings: the step it is matched
+/// by, and whether it is told from a sibling by order alone.
+type Seat = { matched: Step, crowded: bool = false }
+
+/// The seat of a step, under the seat of what its siblings stand beside
+/// — none, when they stand inside their node.
+fn seat_of(seat: Seat?, step: Step, crowded: bool = false) -> Seat {
+    let above? = seat else { return Seat { matched: step, crowded: crowded } }
+    Seat { matched: Step.Under(above.matched, step), crowded: crowded }
+}
+
+/// The parts a lowering makes inside a node, by the step each stands at.
+const text_part = Step.Part("text")
+export const control_part = Step.Part("control")
+export const words_part = Step.Part("words")
+
+fn title_part(j: int) -> Step { Step.Part(if j == 0 { "title" } else { "title~${j}" }) }
+
+/// A node's words as a run: always one when the node carries a reading, so
+/// an empty text is a run the page can place and later patch.
+fn said_of(n: Node) -> List<Element> {
+    if n.words() == "" && n.sites.is_empty() { return [] }
+    [Element.Text(Worded { seat: text_part, content: n.words() })]
+}
+
+/// A run of text, when there are words to say.
+fn said(words: string) -> List<Element> {
+    if words == "" { [] } else { [Element.Text(Worded { seat: text_part, content: words })] }
+}
+
+/// The title an attribute carries, when it is one.
+fn titles(a: Attribute) -> List<string> {
+    match a { .Title(t) -> [t], _ -> [] }
+}
+
+/// The headings a titled grouping shows above its children. Every
+/// primitive spelled: a card draws its title, a fieldset its legend.
+fn headings(n: Node) -> List<Element> {
+    match n.prim {
+        .Card -> titled(n, .H2),
+        .Fieldset -> titled(n, .Legend),
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> [],
+    }
+}
+
+/// The title a node carries, drawn as `tag`.
+fn titled(n: Node, tag: HtmlTag) -> List<Element> {
+    [Element.Tag(Tagged { seat: title_part(j), tag: tag, kids: said(title) }) for j, title in [t for a in n.attrs for t in titles(a)]]
+}
+
+/// Whether a control's words are read before it. Every primitive
+/// spelled: a field, a slider and a progress are named and then shown; a
+/// box is ticked and then named.
+fn words_lead(p: Prim) -> bool {
+    match p {
+        .Field or .Slider or .Progress -> true,
+        .Checkbox or .Switch or .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Fieldset or .Alert or .Spinner or .Form or .Key -> false,
+    }
+}
+
+/// The attribute that says a node's words again: a label names the element
+/// too, unless a name written after it takes the place.
+fn words_attrs(attrs: List<Attribute>) -> List<HtmlAttrName> {
+    let last? = [a for a in attrs if names_element(a)].last() else { return [] }
+    match last { .Label(_) -> [HtmlAttrName.AriaLabel], rest -> [] }
+}
+
+fn names_element(a: Attribute) -> bool {
+    match a { .Name(_) or .Label(_) -> true, rest -> false }
+}
+
+/// A control under its label: the label takes the node's place — its
+/// seat, its key and its classes — and the control inside it takes the
+/// node's attributes and hears its events. The control and its words
+/// stand in the order a reader expects of its kind.
+fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
+    let control = Element
+        .Tag(
+            Tagged {
+                seat: control_part,
+                tag: tag_of(n),
+                attrs: element_attrs(n),
+                rests: rests_of(n.attrs),
+                hears: heard(n),
+                crowded: at.crowded,
+            },
+        )
+    let words = Element.Tag(Tagged { seat: words_part, tag: .Span, kids: said_of(n) })
+    Element
+        .Tag(
+            Tagged {
+                seat: at.matched,
+                tag: .Label,
+                attrs: node_attrs(n),
+                vars: box_vars(drawn_box(n)),
+                sites: n.sites,
+                says: words_attrs(n.attrs),
+                structural: n.box.structural,
+                opaque: n.box.opaque,
+                kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
+                crowded: at.crowded,
+            },
+        )
+}
+
+fn unheard() {}
+
+/// What a node's element hears: its own events a page delivers, and the
+/// one its primitive always hears, doing nothing, when no handler does. The
+/// page listens for that event handler or none: its own answer to it would
+/// undo what the program drew — a form's submit leaves the page, a dialog's
+/// dismissal closes it. The page's table says so (`WebRow.always`).
+fn heard(n: Node) -> List<Action> {
+    let delivered = n.events.filter(web_event(it.seat) != null)
+    let seat? = always_seat_of(n.prim) else { return delivered }
+    if delivered.any(it.seat == seat) { return delivered }
+    delivered.concat([Action { seat: seat, handler: .Nothing(unheard) }])
+}
+
+/// The node itself as one element holding `kids`.
+fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
+    Element
+        .Tag(
+            Tagged {
+                seat: at.matched,
+                tag: tag_of(n),
+                attrs: element_attrs(n).concat(node_attrs(n)),
+                vars: box_vars(drawn_box(n)),
+                rests: rests_of(n.attrs),
+                hears: heard(n),
+                sites: n.sites,
+                says: words_attrs(n.attrs),
+                structural: n.box.structural,
+                opaque: n.box.opaque,
+                kids: kids,
+                crowded: at.crowded,
+            },
+        )
+}
+
+/// The elements `n` lowers to, the node standing at `at`: one, or —
+/// for an element that holds nothing — that one and then its children,
+/// each standing under the node's seat so it is told from the node's own
+/// siblings.
+fn lower(n: Node, at: Seat) -> List<Element> {
+    let stands = stepped([c.box.stand() for c in n.children])
+    match carries(tag_of(n)) {
+        .Within -> [
+            element(
+                n,
+                at,
+                said_of(n).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
+            ),
+        ],
+        .Never -> [element(n, at, [])].concat(lower_each(n, stands, at, at.crowded)),
+        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded))],
+    }
+}
+
+/// Each child of `n` lowered at its own step — under `within`, when its
+/// children stand beside the node rather than inside it. A child is crowded
+/// when it, or what holds it, is told from a sibling by order alone. A key
+/// stands hidden and says its chord.
+fn lower_each(n: Node, stands: Stepped, seat: Seat?, above: bool) -> List<Element> {
+    [e for i, c in n.children for e in lower(c, seat_of(seat, stands.steps[i], above || c.drawn_by_order || stands.shared[i]))]
+}
+
+/// The elements a tree lowers to, in page order.
+export fn lowered(root: Node) -> List<Element> { lower(root, seat_of(null, root_step(root.box.key))) }
